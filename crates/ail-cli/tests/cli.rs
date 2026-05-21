@@ -1,11 +1,12 @@
-// ── ail-cli integration tests (PR3 — full suite) ─────────────────────────
+// ── ail-cli integration tests (G8 — durable storage + new subcommands) ───
 //
-// Covers all spec scenarios for the six-command CLI:
+// Covers all spec scenarios for the ten-command CLI:
 //
 //   Task 3.2 — subcommand dispatch, context, change (file + stdin)
 //   Task 3.3 — verify/apply domain error cases
-//   Task 3.4 — --json output across all six commands
+//   Task 3.4 — --json output across all six original commands
 //   Task 3.5 — E2E chain: change → verify → apply → compile → run
+//   G8       — init, status, inspect, diff subcommands
 //
 // Each test cites the spec scenario it exercises in its doc comment.
 
@@ -62,16 +63,17 @@ fn version_exits_zero_and_prints_version() {
 /// Spec scenario: unknown subcommand rejected
 ///   GIVEN `ail frobnicate` is invoked
 ///   WHEN dispatch runs
-///   THEN stderr lists the six subcommands; exit code 2
+///   THEN stderr lists the ten subcommands; exit code 2
 #[test]
-fn unknown_subcommand_lists_six() {
+fn unknown_subcommand_lists_ten() {
     ail()
         .arg("frobnicate")
         .assert()
         .failure()
         .code(2)
         .stderr(predicate::str::contains(
-            "Available subcommands: context, change, verify, apply, compile, run",
+            "Available subcommands: context, change, verify, apply, compile, run, \
+             init, status, inspect, diff",
         ));
 }
 
@@ -239,8 +241,8 @@ fn apply_success_prints_snapshot_id() {
 
     let stdout = std::str::from_utf8(&output.stdout).expect("stdout must be UTF-8");
     assert!(
-        stdout.contains("new snapshot id:") || stdout.contains("new_snapshot_id"),
-        "apply output must mention snapshot id; got:\n{stdout}"
+        stdout.contains("new snapshot id:"),
+        "apply output must mention 'new snapshot id:'; got:\n{stdout}"
     );
 }
 
@@ -339,10 +341,13 @@ fn json_flag_apply_is_parseable() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok", "status must be 'ok'; got: {v}");
+    // new_snapshot_id is now an ObjectId hex string (not an integer).
     assert!(
-        v["data"]["new_snapshot_id"].is_number(),
-        "data.new_snapshot_id must be a number; got: {v}"
+        v["data"]["new_snapshot_id"].is_string(),
+        "data.new_snapshot_id must be a hex string; got: {v}"
     );
+    let id_str = v["data"]["new_snapshot_id"].as_str().unwrap();
+    assert!(!id_str.is_empty(), "new_snapshot_id must be non-empty");
 }
 
 #[test]
@@ -490,12 +495,13 @@ fn e2e_change_verify_apply_compile_run() {
 
     let apply_json = parse_json_output(&apply_output);
     assert_eq!(apply_json["status"], "ok", "step 3 (apply) must succeed");
+    // new_snapshot_id is now an ObjectId hex string.
     let new_snapshot_id = apply_json["data"]["new_snapshot_id"]
-        .as_u64()
-        .expect("new_snapshot_id must be a u64");
+        .as_str()
+        .expect("new_snapshot_id must be a hex string");
     assert!(
-        new_snapshot_id > 0,
-        "new_snapshot_id must be > 0; got: {new_snapshot_id}"
+        !new_snapshot_id.is_empty(),
+        "new_snapshot_id must be non-empty"
     );
 
     // Step 4: compile — lower_to_core_ir → lower_to_anf → emit_wasm
@@ -537,6 +543,165 @@ fn e2e_change_verify_apply_compile_run() {
         1,
         "exactly one AuditEvent must be appended on success"
     );
+}
+
+// ── G8: new subcommands (init, status, inspect, diff) ─────────────────────
+
+/// Spec scenario: init exits 0 and creates .ail/ directory.
+///   GIVEN an empty temp directory
+///   WHEN `ail init` runs
+///   THEN exit 0; .ail/ dir created; JSON reports initialized=true
+#[test]
+fn init_exits_zero_and_creates_ail_dir() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let output = ail()
+        .arg("init")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = std::str::from_utf8(&output.stdout).expect("stdout must be UTF-8");
+    assert!(
+        stdout.contains("initialized") || stdout.contains(".ail"),
+        "init output must mention initialization; got:\n{stdout}"
+    );
+
+    // .ail/ must have been created.
+    dir.child(".ail").assert(predicate::path::is_dir());
+}
+
+/// Spec scenario: init is idempotent.
+///   GIVEN `ail init` has already been run
+///   WHEN `ail init` runs again
+///   THEN exit 0; no error
+#[test]
+fn init_is_idempotent() {
+    use assert_fs::prelude::*;
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    // First init.
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    // Second init must also succeed.
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    dir.child(".ail").assert(predicate::path::is_dir());
+}
+
+/// Spec scenario: init JSON output contains genesis_snapshot_id.
+///   GIVEN `ail init --json` runs
+///   WHEN init completes
+///   THEN JSON has initialized=true and genesis_snapshot_id string
+#[test]
+fn init_json_output_has_genesis_id() {
+    use assert_fs::TempDir;
+    let dir = TempDir::new().expect("temp dir");
+    let output = ail()
+        .args(["init", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["initialized"], true);
+    assert!(
+        v["data"]["genesis_snapshot_id"].is_string(),
+        "genesis_snapshot_id must be a string; got: {v}"
+    );
+}
+
+/// Spec scenario: status exits 0.
+///   GIVEN any store state
+///   WHEN `ail status` runs
+///   THEN exit 0
+#[test]
+fn status_exits_zero() {
+    ail().arg("status").assert().success();
+}
+
+/// Spec scenario: status JSON output has required fields.
+///   GIVEN `ail status --json` runs
+///   WHEN status completes
+///   THEN JSON has snapshot_id and pending_changes fields
+#[test]
+fn status_json_output_has_required_fields() {
+    let output = ail()
+        .args(["status", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        v["data"].get("pending_changes").is_some(),
+        "data must have pending_changes; got: {v}"
+    );
+    assert!(
+        v["data"].get("snapshot_id").is_some(),
+        "data must have snapshot_id; got: {v}"
+    );
+}
+
+/// Spec scenario: inspect unknown id exits 1.
+///   GIVEN <id> not in store (valid format but unknown)
+///   WHEN `ail inspect <id>` runs
+///   THEN exit 1; stderr contains "not found"
+#[test]
+fn inspect_unknown_exits_one() {
+    let unknown_id = "dead".repeat(16); // 64 valid hex chars
+    ail()
+        .args(["inspect", &unknown_id])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("not found"));
+}
+
+/// Spec scenario: inspect bad format exits 1.
+///   GIVEN <id> is not a valid 64-char hex string
+///   WHEN `ail inspect <id>` runs
+///   THEN exit 1
+#[test]
+fn inspect_invalid_format_exits_one() {
+    ail()
+        .args(["inspect", "not-a-hex-id"])
+        .assert()
+        .failure()
+        .code(1);
+}
+
+/// Spec scenario: diff with missing snapshot exits 1.
+///   GIVEN snapshot <a> not in store
+///   WHEN `ail diff <a> <b>` runs
+///   THEN exit 1
+#[test]
+fn diff_missing_snapshots_exits_one() {
+    let id_a = "aa".repeat(32); // 64 hex chars
+    let id_b = "bb".repeat(32);
+    ail()
+        .args(["diff", &id_a, &id_b])
+        .assert()
+        .failure()
+        .code(1);
+}
+
+/// Spec scenario: diff with invalid format exits 1.
+///   GIVEN <a> is not a valid 64-char hex string
+///   WHEN `ail diff <a> <b>` runs
+///   THEN exit 1
+#[test]
+fn diff_invalid_format_exits_one() {
+    ail()
+        .args(["diff", "bad-id", "also-bad"])
+        .assert()
+        .failure()
+        .code(1);
 }
 
 // ── private helpers ───────────────────────────────────────────────────────

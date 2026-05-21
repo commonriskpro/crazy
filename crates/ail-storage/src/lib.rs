@@ -13,4 +13,5 @@ pub mod error;
 pub mod graph;
 pub mod object;
 
+pub use backends::postgres::PostgresGraphStore;
 pub use graph::{ChangeSetLogEntry, GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};

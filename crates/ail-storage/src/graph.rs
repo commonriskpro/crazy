@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::codec::{CborCodec, ContentCodec};
-use crate::error::StorageResult;
+use crate::error::{StorageError, StorageResult};
 use crate::object::{ObjectId, ObjectStore, RawObject};
 
 // ── SnapshotEnvelope ──────────────────────────────────────────────────────
@@ -114,6 +114,11 @@ pub trait GraphStore {
         &self,
         entry: &ChangeSetLogEntry,
     ) -> impl Future<Output = StorageResult<ObjectId>> + Send;
+
+    /// List all saved `SnapshotEnvelope`s in insertion order.
+    ///
+    /// Returns an empty `Vec` when no snapshots have been saved.
+    fn list_snapshots(&self) -> impl Future<Output = StorageResult<Vec<SnapshotEnvelope>>> + Send;
 }
 
 // ── ObjectBackedGraphStore ────────────────────────────────────────────────
@@ -189,5 +194,103 @@ impl<S: ObjectStore + Send + Sync> GraphStore for ObjectBackedGraphStore<S> {
     async fn append_changeset_log(&self, entry: &ChangeSetLogEntry) -> StorageResult<ObjectId> {
         let bytes = self.codec.encode(entry)?;
         self.store.put(RawObject(bytes)).await
+    }
+
+    async fn list_snapshots(&self) -> StorageResult<Vec<SnapshotEnvelope>> {
+        // Collect all (envelope_id → cas_id) pairs from the index.
+        let pairs: Vec<(ObjectId, ObjectId)> = {
+            let guard = self
+                .snapshot_index
+                .lock()
+                .expect("snapshot_index lock must not be poisoned");
+            guard.iter().map(|(k, v)| (*k, *v)).collect()
+        };
+
+        let mut result = Vec::with_capacity(pairs.len());
+        for (_envelope_id, cas_id) in pairs {
+            match self.store.get(&cas_id).await? {
+                None => {
+                    // Index points to a missing CAS object — treat as corruption.
+                    return Err(StorageError::NotFound);
+                }
+                Some(raw) => {
+                    let snap: SnapshotEnvelope = self.codec.decode(&raw.0)?;
+                    result.push(snap);
+                }
+            }
+        }
+        Ok(result)
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backends::memory::MemoryObjectStore;
+
+    fn make_envelope(seed: &[u8]) -> SnapshotEnvelope {
+        let id = ObjectId::from_bytes(seed);
+        let root = ObjectId::from_bytes(&[seed[0]; 32]);
+        SnapshotEnvelope {
+            id,
+            graph_root_hash: root,
+            parent_id: None,
+            applied_change_id: None,
+            created_at: 0,
+        }
+    }
+
+    // Scenario: list_snapshots returns empty vec when no snapshots saved.
+    //   GIVEN a fresh ObjectBackedGraphStore
+    //   WHEN list_snapshots is called
+    //   THEN an empty vec is returned
+    #[tokio::test]
+    async fn list_snapshots_empty_on_fresh_store() {
+        let store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+        let list = store
+            .list_snapshots()
+            .await
+            .expect("list_snapshots must succeed");
+        assert!(list.is_empty(), "fresh store must return empty list");
+    }
+
+    // Scenario: list_snapshots returns saved envelopes.
+    //   GIVEN save_snapshot was called with two envelopes
+    //   WHEN list_snapshots is called
+    //   THEN both envelopes are present in the result
+    #[tokio::test]
+    async fn list_snapshots_returns_saved_envelopes() {
+        let store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+        let e1 = make_envelope(b"envelope-one");
+        let e2 = make_envelope(b"envelope-two");
+
+        store.save_snapshot(&e1).await.expect("save e1");
+        store.save_snapshot(&e2).await.expect("save e2");
+
+        let list = store
+            .list_snapshots()
+            .await
+            .expect("list_snapshots must succeed");
+        assert_eq!(list.len(), 2, "must return exactly two envelopes");
+
+        // Both ids must be present (order may vary).
+        let ids: Vec<ObjectId> = list.iter().map(|s| s.id).collect();
+        assert!(ids.contains(&e1.id), "e1 must be in list");
+        assert!(ids.contains(&e2.id), "e2 must be in list");
+    }
+
+    // TRIANGULATE: save + load roundtrip for SnapshotEnvelope.
+    //   GIVEN save_snapshot(e) was called
+    //   WHEN load_snapshot(e.id) is called
+    //   THEN the returned envelope equals e
+    #[tokio::test]
+    async fn save_and_load_snapshot_roundtrip() {
+        let store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+        let e = make_envelope(b"roundtrip-test");
+        store.save_snapshot(&e).await.expect("save must succeed");
+        let loaded = store.load_snapshot(&e.id).await.expect("load must succeed");
+        assert_eq!(loaded, Some(e), "loaded envelope must equal original");
     }
 }
