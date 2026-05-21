@@ -1,1 +1,4 @@
-// MemoryObjectStore and TempfileObjectStore — implemented in Phase 2 (PR 2).
+// Backend implementations of `ObjectStore`.
+
+pub mod memory;
+pub mod tempfile;
