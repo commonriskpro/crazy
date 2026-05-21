@@ -112,6 +112,7 @@ mod tests {
             core_ir_hash: [seed + 2; 32],
             anf_ir_hash: None,
             wasm_hash: None,
+            native_hash: None,
         }
     }
 

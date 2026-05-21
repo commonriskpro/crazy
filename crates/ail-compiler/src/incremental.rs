@@ -245,6 +245,7 @@ pub fn compile_incremental(
                 core_ir_hash,
                 anf_ir_hash: None,
                 wasm_hash: None,
+                native_hash: None,
             };
 
             let entry = ArtifactEntry {
@@ -285,6 +286,7 @@ pub fn compile_incremental(
             core_ir_hash,
             anf_ir_hash: None,
             wasm_hash: None,
+            native_hash: None,
         }
     });
 
