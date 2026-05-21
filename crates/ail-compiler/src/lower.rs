@@ -49,7 +49,7 @@ pub fn is_report_accepted(report: &VerificationReport) -> bool {
 /// In Phase 7 the two enums are structurally identical; the mapping is kept
 /// explicit so the compiler IR can diverge from the source model in future
 /// phases without a breaking change here.
-fn map_node_kind(kind: NodeKind) -> CoreNodeKind {
+pub(crate) fn map_node_kind(kind: NodeKind) -> CoreNodeKind {
     match kind {
         NodeKind::Module => CoreNodeKind::Module,
         NodeKind::Function => CoreNodeKind::Function,

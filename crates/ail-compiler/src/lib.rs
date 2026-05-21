@@ -15,14 +15,18 @@
 //! - No expression / body codegen (deferred to Phase 8).
 
 pub mod anf;
+pub mod cache;
 pub mod core_ir;
 pub mod error;
 pub mod hash;
+pub mod incremental;
 pub mod lower;
 pub mod wasm;
 
 pub use anf::{AnfBinding, AnfIr};
+pub use cache::{ArtifactCache, ArtifactEntry, MemoryArtifactCache};
 pub use core_ir::{CoreIr, CoreNode, CoreNodeKind, StageHashes};
 pub use error::CompileError;
+pub use incremental::{DirtySet, NodeHashes, compile_incremental, compute_node_hashes};
 pub use lower::{is_report_accepted, lower_to_anf, lower_to_core_ir};
 pub use wasm::{WasmArtifact, emit_wasm};

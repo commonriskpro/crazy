@@ -14,6 +14,11 @@ wasm-encoder = { workspace = true }
 [dev-dependencies]
 ail-testkit  = { workspace = true }
 wasmparser   = { workspace = true }
+criterion    = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name    = "large_graph"
+harness = false
 
 [lints]
 workspace = true
