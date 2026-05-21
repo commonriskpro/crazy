@@ -15,6 +15,12 @@
 //               (six-state enum + priority-based summary).
 // - `checker` — `Checker::check(&SemanticGraph) -> VerificationReport`
 //               (pure graph walker; no I/O, no mutation).
+// - `proof`   — `ClauseRole`, `ProofObligation`
+//               (proof obligation value types consumed by solvers).
+// - `solver`  — `SolverOutcome`, `Solver` trait, `SimpleSolver`
+//               (conservative literal-only solver; injectable via `&dyn Solver`).
 
 pub mod checker;
+pub mod proof;
 pub mod report;
+pub mod solver;
