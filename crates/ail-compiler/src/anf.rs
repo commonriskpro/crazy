@@ -95,6 +95,7 @@ mod tests {
                 core_ir_hash: [1u8; 32],
                 anf_ir_hash: Some([2u8; 32]),
                 wasm_hash: None,
+                native_hash: None,
             },
         };
         assert_eq!(ir.bindings.len(), 2);

@@ -143,6 +143,7 @@ pub fn lower_to_core_ir(
             core_ir_hash,
             anf_ir_hash: None,
             wasm_hash: None,
+            native_hash: None,
         },
     })
 }
