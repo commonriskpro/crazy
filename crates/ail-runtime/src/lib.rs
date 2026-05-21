@@ -8,8 +8,8 @@
 //! - Validates WASM module hashes and capability manifests before instantiation.
 //! - Appends exactly one redacted [`AuditEvent`] per preflight call.
 //!
-//! # What this crate does NOT do (Phase 8 PR 1)
-//! - No host-call linker registration (handler wiring deferred to PR 2).
+//! # What this crate does NOT do (Phase 8 PR 2)
+//! - No host-call linker registration (handler wiring deferred to a later phase).
 //! - No CLI surface or Context Server integration.
 //! - No persistent audit backend (events are in-memory only).
 //!
@@ -31,11 +31,13 @@
 pub mod abi;
 pub mod audit;
 pub mod error;
+pub mod host;
 pub mod manifest;
 pub mod profile;
 
 pub use abi::{HostCallId, HostError, HostResult};
 pub use audit::{AuditEvent, AuditLog};
 pub use error::{PreflightFailure, RuntimeError, RuntimeResult};
-pub use manifest::CapabilityManifest;
+pub use host::{RuntimeHost, RuntimeInstance};
+pub use manifest::{CapabilityManifest, blake3_hex_of};
 pub use profile::{CapabilityGrant, CapabilityId, ResourceLimits, RuntimeProfile};

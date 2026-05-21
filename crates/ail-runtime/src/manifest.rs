@@ -56,7 +56,10 @@ impl Serialize for CapabilityId {
 // ── Internal helpers ──────────────────────────────────────────────────────
 
 /// Compute a BLAKE3 hex digest of a byte slice.
-pub(crate) fn blake3_hex_of(bytes: &[u8]) -> String {
+///
+/// Exposed publicly so callers can pre-compute the `module_hash` to store in
+/// a [`RuntimeProfile`](crate::profile::RuntimeProfile) before preflight.
+pub fn blake3_hex_of(bytes: &[u8]) -> String {
     let mut hasher = Hasher::new();
     hasher.update(bytes);
     hasher.finalize().to_hex().to_string()
