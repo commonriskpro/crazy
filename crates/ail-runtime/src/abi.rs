@@ -4,7 +4,8 @@
 //
 // `HostCallId` and `HostResult<T>` are defined here so that they can be
 // referenced in tests and documentation.  No linker imports or host-function
-// handlers are registered in this phase; that wiring is deferred to PR 2.
+// handlers are registered in this phase; that wiring is deferred to a later
+// runtime capability execution phase.
 
 use crate::profile::CapabilityId;
 
