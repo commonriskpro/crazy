@@ -19,15 +19,22 @@
 // Introducing an upward dependency would create a cycle.
 
 pub mod assumption;
+pub mod export;
+pub mod handler;
+pub mod import;
 pub mod lockfile;
 pub mod manifest;
 pub mod registry;
 pub mod surface;
 pub mod trust;
+pub mod verification;
 
 // ── Public re-exports ─────────────────────────────────────────────────────
 
 pub use assumption::{AssumptionState, PackageAssumption};
+pub use export::{ExportDeclaration, ExportStability, ExportVisibility};
+pub use handler::HandlerExport;
+pub use import::ImportDeclaration;
 pub use lockfile::LockfileEntry;
 pub use manifest::{
     ArtifactHashEntry, PackageDef, PackageError, PackageManifest, PackageValidationError,
@@ -35,3 +42,4 @@ pub use manifest::{
 pub use registry::PackageRegistry;
 pub use surface::UnsafeSurfaceEntry;
 pub use trust::TrustLevel;
+pub use verification::PackageVerificationReport;
