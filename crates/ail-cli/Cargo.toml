@@ -8,13 +8,24 @@ name = "ail"
 path = "src/main.rs"
 
 [dependencies]
-ail-core = { workspace = true }
-clap     = { workspace = true }
+ail-change   = { workspace = true }
+ail-compiler = { workspace = true }
+ail-core     = { workspace = true }
+ail-runtime  = { workspace = true }
+ail-storage  = { workspace = true }
+ail-verify   = { workspace = true }
+blake3       = { workspace = true }
+ciborium     = { workspace = true }
+clap         = { workspace = true }
+futures      = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
-predicates = { workspace = true }
 assert_fs  = { workspace = true }
+predicates = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

@@ -41,6 +41,7 @@ dependencies = [
  "ail-testkit",
  "blake3",
  "ciborium",
+ "futures",
  "serde",
 ]
 
@@ -48,11 +49,21 @@ dependencies = [
 name = "ail-cli"
 version = "0.1.0"
 dependencies = [
+ "ail-change",
+ "ail-compiler",
  "ail-core",
+ "ail-runtime",
+ "ail-storage",
+ "ail-verify",
  "assert_cmd",
  "assert_fs",
+ "blake3",
+ "ciborium",
  "clap",
+ "futures",
  "predicates",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
