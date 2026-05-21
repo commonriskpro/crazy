@@ -1,31 +1,23 @@
 // ── ail-cli::changeset_input ─────────────────────────────────────────────
-// `ChangeInput` and `load_changeset` are wired into the `change` command in PR2.
+// `ChangeInput` and `load_changeset` are wired into the `change` command.
 #![allow(dead_code)]
 //
 // Line-oriented `ChangeSet` loader for file and stdin input.
 //
-// # Line format
+// Delegates all parsing to `ail_change::parser::parse_changeset`, which
+// supports the full ACL DSL including sections (`metadata`, `requires`, `ops`),
+// preconditions (`assert_exists`, `assert_hash`), and the complete op-verb
+// prefix mapping.
 //
-// ```text
-// author   <name>
-// description <text>
-// base     <u64 snapshot id>
-// op       Create | Set | Add | Remove | Connect | Infer | Verify
-// ```
+// # I/O wrapper
 //
-// Blank lines and lines starting with `#` are ignored.
-// `description` is optional; all other fields are required.
-// Multiple `op` lines are collected in order.
-//
-// # Pure function
-//
-// `parse_changeset` is a pure function: it takes `&str` and returns a `Result`.
-// `load_changeset` is the I/O wrapper that reads from a file or stdin.
+// `load_changeset` is the only I/O entry-point here.  The underlying
+// `parse_changeset` (in `ail-change`) is a pure function.
 
 use std::io::Read;
 use std::path::PathBuf;
 
-use ail_change::model::{ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp};
+use ail_change::model::ChangeSet;
 
 use crate::error::CliError;
 
@@ -57,84 +49,24 @@ pub fn load_changeset(input: ChangeInput) -> Result<ChangeSet, CliError> {
     parse_changeset(&content)
 }
 
-// ── parse_changeset (pure) ────────────────────────────────────────────────
+// ── parse_changeset ───────────────────────────────────────────────────────
 
-/// Parse a line-oriented `ChangeSet` document from a string.
+/// Parse an ACL document from a string into a `ChangeSet`.
 ///
-/// This is a **pure function**: no I/O, no side effects.
+/// Delegates to `ail_change::parser::parse_changeset` and maps the error
+/// type to `CliError::ParseError`.
+///
+/// Preconditions from a `requires` section are discarded here — the CLI
+/// changeset pipeline passes the `ChangeSet` through canonicalization, which
+/// re-attaches preconditions via `ParsedChangeSet`.
 ///
 /// # Errors
 ///
-/// Returns `CliError::ParseError` if:
-/// - `author` is missing
-/// - `base` is missing or not a valid `u64`
-/// - An `op` name is not one of the seven canonical ops
-/// - An unrecognised directive is encountered
+/// Returns `CliError::ParseError` on any ACL grammar violation.
 pub fn parse_changeset(src: &str) -> Result<ChangeSet, CliError> {
-    let mut author: Option<String> = None;
-    let mut description: Option<String> = None;
-    let mut base: Option<SnapshotId> = None;
-    let mut ops: Vec<ChangeSetOp> = Vec::new();
-
-    for line in src.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        if let Some(v) = line.strip_prefix("author ") {
-            author = Some(v.to_string());
-        } else if let Some(v) = line.strip_prefix("description ") {
-            description = Some(v.to_string());
-        } else if let Some(v) = line.strip_prefix("base ") {
-            let id: u64 = v
-                .trim()
-                .parse()
-                .map_err(|_| CliError::ParseError(format!("invalid base snapshot id: '{v}'")))?;
-            base = Some(SnapshotId(id));
-        } else if let Some(v) = line.strip_prefix("op ") {
-            let op = parse_op(v.trim())?;
-            ops.push(op);
-        } else {
-            return Err(CliError::ParseError(format!(
-                "unrecognised directive: '{line}'"
-            )));
-        }
-    }
-
-    let author =
-        author.ok_or_else(|| CliError::ParseError("missing required field: author".to_string()))?;
-    let base_snapshot_id =
-        base.ok_or_else(|| CliError::ParseError("missing required field: base".to_string()))?;
-    let description = description.unwrap_or_default();
-
-    Ok(ChangeSet {
-        meta: ChangeSetMeta {
-            author,
-            description,
-            // The CLI does not set the timestamp; downstream canonicalization
-            // may fill this in. Using epoch zero as a neutral sentinel.
-            timestamp: Timestamp(0),
-        },
-        base_snapshot_id,
-        ops,
-    })
-}
-
-// ── parse_op (pure, private) ──────────────────────────────────────────────
-
-/// Parse a single op name into a `ChangeSetOp` variant.
-fn parse_op(name: &str) -> Result<ChangeSetOp, CliError> {
-    match name {
-        "Create" => Ok(ChangeSetOp::Create),
-        "Set" => Ok(ChangeSetOp::Set),
-        "Add" => Ok(ChangeSetOp::Add),
-        "Remove" => Ok(ChangeSetOp::Remove),
-        "Connect" => Ok(ChangeSetOp::Connect),
-        "Infer" => Ok(ChangeSetOp::Infer),
-        "Verify" => Ok(ChangeSetOp::Verify),
-        other => Err(CliError::ParseError(format!("unknown op: '{other}'"))),
-    }
+    ail_change::parser::parse_changeset(src)
+        .map(|parsed| parsed.changeset)
+        .map_err(CliError::ParseError)
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────
@@ -142,15 +74,15 @@ fn parse_op(name: &str) -> Result<ChangeSetOp, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ail_change::model::ChangeSetOp;
+    use ail_change::model::{ChangeSetOp, SnapshotId};
 
     // Scenario: minimal valid input parses correctly.
-    //   GIVEN a well-formed line-oriented ChangeSet string
+    //   GIVEN a well-formed ACL ChangeSet string
     //   WHEN parse_changeset is called
     //   THEN the returned ChangeSet has the expected author
     #[test]
     fn parse_minimal_changeset_succeeds() {
-        let src = "author Alice\ndescription test change\nbase 0\nop Create\n";
+        let src = "change minimal\nauthor Alice\ndescription test change\nbase 0\nop create_function id=fn.x\nend\n";
         let cs = parse_changeset(src).expect("minimal changeset must parse successfully");
         assert_eq!(
             cs.meta.author, "Alice",
@@ -158,14 +90,25 @@ mod tests {
         );
     }
 
-    // TRIANGULATE: all op variants parse correctly.
-    //   GIVEN a changeset with all seven op types
+    // TRIANGULATE: all op categories parse correctly.
+    //   GIVEN a changeset with one op for each of the 7 categories
     //   WHEN parse_changeset is called
     //   THEN the ops vec contains all seven variants in order
     #[test]
     fn parse_all_op_variants() {
-        let src = "author Bob\nbase 1\n\
-            op Create\nop Set\nop Add\nop Remove\nop Connect\nop Infer\nop Verify\n";
+        let src = "\
+change test
+author Bob
+base 1
+op create_function id=fn.x
+op set_return target=fn.x type=Unit
+op add_param target=fn.x name=a type=Int
+op remove_effect target=fn.x effect=io
+op connect source=fn.x relation=uses target=cap.y
+op infer_boundary target=fn.x
+op verify
+end
+";
         let cs = parse_changeset(src).expect("all ops must parse");
         assert_eq!(
             cs.ops,
@@ -188,7 +131,7 @@ mod tests {
     //   THEN the ops vec is empty (identity changeset)
     #[test]
     fn parse_changeset_with_no_ops_is_valid() {
-        let src = "author Carol\nbase 5\n";
+        let src = "change x\nauthor Carol\nbase 5\nend\n";
         let cs = parse_changeset(src).expect("identity changeset must parse");
         assert!(
             cs.ops.is_empty(),
@@ -203,7 +146,7 @@ mod tests {
     //   THEN Err(CliError::ParseError) is returned
     #[test]
     fn parse_missing_author_returns_error() {
-        let src = "base 0\nop Create\n";
+        let src = "change x\nbase 0\nop create id=fn.x\nend\n";
         let result = parse_changeset(src);
         assert!(
             matches!(result, Err(CliError::ParseError(_))),
@@ -217,7 +160,7 @@ mod tests {
     //   THEN Err(CliError::ParseError) is returned
     #[test]
     fn parse_missing_base_returns_error() {
-        let src = "author Dave\nop Create\n";
+        let src = "change x\nauthor Dave\nop create id=fn.x\nend\n";
         let result = parse_changeset(src);
         assert!(
             matches!(result, Err(CliError::ParseError(_))),
@@ -225,13 +168,13 @@ mod tests {
         );
     }
 
-    // TRIANGULATE: unknown op name returns an error.
-    //   GIVEN a changeset with an unrecognised op name
+    // TRIANGULATE: unknown op verb returns an error.
+    //   GIVEN a changeset with an unrecognised op verb
     //   WHEN parse_changeset is called
     //   THEN Err(CliError::ParseError) is returned
     #[test]
     fn parse_unknown_op_returns_error() {
-        let src = "author Eve\nbase 0\nop Frobnicate\n";
+        let src = "change x\nauthor Eve\nbase 0\nop frobnicate target=fn.x\nend\n";
         let result = parse_changeset(src);
         assert!(
             matches!(result, Err(CliError::ParseError(_))),
@@ -245,7 +188,7 @@ mod tests {
     //   THEN the parse succeeds and only content lines are processed
     #[test]
     fn parse_ignores_blank_lines_and_comments() {
-        let src = "\n# this is a comment\nauthor Frank\n\nbase 3\n# another comment\nop Set\n";
+        let src = "\n# this is a comment\nchange x\nauthor Frank\n\nbase 3\n# another comment\nop set_return target=fn.x type=Unit\nend\n";
         let cs = parse_changeset(src).expect("blank lines and comments must be ignored");
         assert_eq!(cs.meta.author, "Frank");
         assert_eq!(cs.base_snapshot_id, SnapshotId(3));

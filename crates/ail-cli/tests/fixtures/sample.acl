@@ -1,14 +1,23 @@
 # sample.acl — minimal valid ChangeSet fixture for ail-cli integration tests
 #
-# Line format:
-#   author      <name>
-#   description <text>           (optional)
-#   base        <u64 snapshot-id>
-#   op          Create | Set | Add | Remove | Connect | Infer | Verify
+# ACL DSL format (ail-change::parser):
+#   change <id>
+#     author      <name>
+#     description <text>          (optional)
+#     base        <u64 snapshot-id>
+#     op          <verb> [key=value ...]
+#   end
+#
+# Op verbs map to ChangeSetOp variants by prefix:
+#   create_* → Create, set_* → Set, add_* → Add,
+#   remove_* | disconnect | delete → Remove,
+#   connect → Connect, infer_* → Infer, verify → Verify
 #
 # Blank lines and lines starting with '#' are ignored.
 
-author  test-author
+change sample_fixture
+author test-author
 description sample fixture for CLI integration tests
-base    0
-op      Create
+base 0
+op create_function id=fn.sample
+end
