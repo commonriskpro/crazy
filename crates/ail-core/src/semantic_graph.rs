@@ -51,6 +51,12 @@ pub enum NodeKind {
     Test,
     /// An architectural boundary marker.
     Boundary,
+    /// A package boundary in the semantic graph.
+    ///
+    /// Added in Phase 12 (packages-trust-model) as an additive variant.
+    /// Existing CBOR fixtures that do not use `Package` are unaffected
+    /// because `ciborium` encodes enum variants by name string.
+    Package,
 }
 
 // ── EdgeKind ──────────────────────────────────────────────────────────────
@@ -456,6 +462,37 @@ mod tests {
         assert_eq!(
             decoded, graph,
             "decoded SemanticGraph must equal the original"
+        );
+    }
+
+    // ── package_node_cbor_round_trip ──────────────────────────────────────
+    // Spec scenario: "Package node round-trips through CBOR"
+    //   GIVEN a GraphNode with kind: NodeKind::Package
+    //   WHEN serialized to CBOR and deserialized
+    //   THEN kind equals NodeKind::Package
+    //
+    // Also verifies the additive variant does not disturb existing node kinds.
+    #[test]
+    fn package_node_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+
+        let codec = CborCodec;
+        let graph = SemanticGraph {
+            nodes: vec![
+                node(0, NodeKind::Module, "root"),
+                node(1, NodeKind::Package, "payments.stripe"),
+            ],
+            edges: vec![edge(0, 1, EdgeKind::DependsOn)],
+        };
+
+        let bytes = codec.encode(&graph).expect("encode must succeed");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode must succeed");
+
+        assert_eq!(decoded, graph, "graph with Package node must survive CBOR round-trip");
+        assert_eq!(
+            decoded.nodes[1].kind,
+            NodeKind::Package,
+            "Package kind must be preserved"
         );
     }
 

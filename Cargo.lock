@@ -104,6 +104,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ail-package"
+version = "0.1.0"
+dependencies = [
+ "ail-core",
+ "blake3",
+ "ciborium",
+ "serde",
+]
+
+[[package]]
 name = "ail-runtime"
 version = "0.1.0"
 dependencies = [
