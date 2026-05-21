@@ -16,7 +16,7 @@ use crate::error::StorageResult;
 ///
 /// `ObjectId` is derived from the raw bytes of the object; storing identical
 /// bytes in any backend always yields the same identifier.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub struct ObjectId([u8; 32]);
 
 impl ObjectId {

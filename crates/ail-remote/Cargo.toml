@@ -1,0 +1,23 @@
+[package]
+name    = "ail-remote"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ail-change  = { workspace = true }
+ail-context = { workspace = true }
+ail-storage = { workspace = true }
+ciborium     = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand          = { workspace = true }
+serde         = { workspace = true }
+
+[dev-dependencies]
+ail-change  = { workspace = true }
+ail-context = { workspace = true }
+ail-core    = { workspace = true }
+ail-storage = { workspace = true }
+blake3      = { workspace = true }
+
+[lints]
+workspace = true
