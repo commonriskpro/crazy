@@ -3,10 +3,14 @@ name    = "ail-verify"
 version.workspace = true
 edition.workspace = true
 
+[features]
+z3-solver = ["dep:z3"]
+
 [dependencies]
 ail-core    = { workspace = true }
 ail-package = { workspace = true }
 serde       = { workspace = true }
+z3          = { workspace = true, optional = true }
 
 [dev-dependencies]
 ciborium = { workspace = true }
