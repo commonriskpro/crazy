@@ -30,13 +30,24 @@ fn make_snapshot(tag: &[u8]) -> SnapshotEnvelope {
 }
 
 fn make_context_response(tag: &[u8]) -> ContextResponse {
+    use ail_context::ContextQuery;
+    use ail_context::dto::{CONTEXT_SCHEMA_V1, ResponseLimits};
     let codec = CborCodec;
     let snapshot = make_snapshot(tag);
     let structured = Vec::new();
+    let query = ContextQuery::Graph {
+        scope: ail_context::QueryScope::Full,
+        budget: usize::MAX,
+    };
+    let query_bytes = codec.encode(&query).expect("encode query");
+    let query_hash = *blake3::hash(&query_bytes).as_bytes();
     let structured_bytes = codec.encode(&structured).expect("encode structured");
     let context_hash = *blake3::hash(&structured_bytes).as_bytes();
+    let bytes_used = structured_bytes.len();
     ContextResponse {
+        schema: CONTEXT_SCHEMA_V1.to_string(),
         graph_root_hash: snapshot.graph_root_hash,
+        query_hash,
         context_hash,
         freshness: snapshot.created_at,
         snapshot,
@@ -44,6 +55,13 @@ fn make_context_response(tag: &[u8]) -> ContextResponse {
         summary: "integration test".to_string(),
         redacted: false,
         truncated: false,
+        limits: ResponseLimits {
+            budget_bytes: usize::MAX,
+            bytes_used,
+            truncated: false,
+            omitted_sections: Vec::new(),
+        },
+        history_entries: Vec::new(),
     }
 }
 

@@ -20,6 +20,12 @@ pub const E_NODE_NOT_FOUND: &str = "E_NODE_NOT_FOUND";
 pub const E_INVALID_BUDGET: &str = "E_INVALID_BUDGET";
 /// Stable code for `ContextError::Codec`: encode/decode failure.
 pub const E_CODEC: &str = "E_CODEC";
+/// Stable code for `ContextError::AccessDenied`: caller lacks required permission.
+pub const E_ACCESS_DENIED: &str = "E_ACCESS_DENIED";
+/// Stable code for `ContextError::BudgetExceeded`: response would exceed budget with no nodes.
+pub const E_BUDGET_EXCEEDED: &str = "E_BUDGET_EXCEEDED";
+/// Stable code for `ContextError::IndexStale`: a derived index is behind the current snapshot.
+pub const E_INDEX_STALE: &str = "E_INDEX_STALE";
 
 // ── ContextError ──────────────────────────────────────────────────────────
 
@@ -37,6 +43,16 @@ pub enum ContextError {
     InvalidBudget,
     /// Encode/decode failure with a descriptive message (`E_CODEC`).
     Codec(String),
+    /// Caller does not have the required permission to access the requested
+    /// context slice (`E_ACCESS_DENIED`).
+    AccessDenied,
+    /// The response budget is non-zero but would be exceeded before a single
+    /// node could be included — the caller must increase the budget
+    /// (`E_BUDGET_EXCEEDED`).
+    BudgetExceeded,
+    /// A derived index (call graph, effect graph, etc.) is behind the current
+    /// snapshot; rebuild the index and retry (`E_INDEX_STALE`).
+    IndexStale,
 }
 
 impl fmt::Display for ContextError {
@@ -56,6 +72,26 @@ impl fmt::Display for ContextError {
             }
             ContextError::Codec(msg) => {
                 write!(f, "{E_CODEC}: {msg}")
+            }
+            ContextError::AccessDenied => {
+                write!(
+                    f,
+                    "{E_ACCESS_DENIED}: caller lacks permission to access this context slice"
+                )
+            }
+            ContextError::BudgetExceeded => {
+                write!(
+                    f,
+                    "{E_BUDGET_EXCEEDED}: budget exhausted before any node could be included; \
+                     increase the budget or narrow the query scope"
+                )
+            }
+            ContextError::IndexStale => {
+                write!(
+                    f,
+                    "{E_INDEX_STALE}: derived index is behind the current snapshot; \
+                     rebuild the index and retry"
+                )
             }
         }
     }
@@ -139,5 +175,51 @@ mod tests {
             ContextError::Codec("a".to_string()),
             ContextError::Codec("b".to_string())
         );
+    }
+
+    // ── access_denied_displays_with_error_code ────────────────────────────
+    // Spec: E_ACCESS_DENIED maps to ContextError::AccessDenied.
+    #[test]
+    fn access_denied_displays_with_error_code() {
+        let err = ContextError::AccessDenied;
+        let s = err.to_string();
+        assert!(
+            s.contains(E_ACCESS_DENIED),
+            "Display for AccessDenied must contain {E_ACCESS_DENIED}, got: {s}"
+        );
+    }
+
+    // ── budget_exceeded_displays_with_error_code ──────────────────────────
+    // Spec: E_BUDGET_EXCEEDED maps to ContextError::BudgetExceeded.
+    #[test]
+    fn budget_exceeded_displays_with_error_code() {
+        let err = ContextError::BudgetExceeded;
+        let s = err.to_string();
+        assert!(
+            s.contains(E_BUDGET_EXCEEDED),
+            "Display for BudgetExceeded must contain {E_BUDGET_EXCEEDED}, got: {s}"
+        );
+    }
+
+    // ── index_stale_displays_with_error_code ──────────────────────────────
+    // Spec: E_INDEX_STALE maps to ContextError::IndexStale.
+    #[test]
+    fn index_stale_displays_with_error_code() {
+        let err = ContextError::IndexStale;
+        let s = err.to_string();
+        assert!(
+            s.contains(E_INDEX_STALE),
+            "Display for IndexStale must contain {E_INDEX_STALE}, got: {s}"
+        );
+    }
+
+    // ── TRIANGULATE: new_variants_are_distinct_from_existing ─────────────
+    #[test]
+    fn new_variants_are_distinct_from_existing() {
+        assert_ne!(ContextError::AccessDenied, ContextError::Stale);
+        assert_ne!(ContextError::BudgetExceeded, ContextError::InvalidBudget);
+        assert_ne!(ContextError::IndexStale, ContextError::Stale);
+        assert_ne!(ContextError::AccessDenied, ContextError::BudgetExceeded);
+        assert_ne!(ContextError::BudgetExceeded, ContextError::IndexStale);
     }
 }

@@ -195,13 +195,24 @@ mod tests {
     }
 
     fn make_response() -> ContextResponse {
+        use ail_context::dto::{CONTEXT_SCHEMA_V1, ResponseLimits};
+        use ail_context::{ContextQuery, QueryScope};
         let snapshot = make_snapshot();
         let structured = Vec::new();
         let codec = CborCodec;
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
+        let query_bytes = codec.encode(&query).expect("encode query");
+        let query_hash = *blake3::hash(&query_bytes).as_bytes();
         let structured_bytes = codec.encode(&structured).expect("encode structured");
         let context_hash = *blake3::hash(&structured_bytes).as_bytes();
+        let bytes_used = structured_bytes.len();
         ContextResponse {
+            schema: CONTEXT_SCHEMA_V1.to_string(),
             graph_root_hash: snapshot.graph_root_hash,
+            query_hash,
             context_hash,
             freshness: snapshot.created_at,
             snapshot,
@@ -209,6 +220,13 @@ mod tests {
             summary: String::new(),
             redacted: false,
             truncated: false,
+            limits: ResponseLimits {
+                budget_bytes: usize::MAX,
+                bytes_used,
+                truncated: false,
+                omitted_sections: Vec::new(),
+            },
+            history_entries: Vec::new(),
         }
     }
 
