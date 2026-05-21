@@ -5,6 +5,7 @@ members = [
     "crates/ail-compiler",
     "crates/ail-context",
     "crates/ail-core",
+    "crates/ail-dogfood",
     "crates/ail-runtime",
     "crates/ail-storage",
     "crates/ail-stdlib",
@@ -22,6 +23,7 @@ ail-change   = { path = "crates/ail-change" }
 ail-compiler = { path = "crates/ail-compiler" }
 ail-context  = { path = "crates/ail-context" }
 ail-core     = { path = "crates/ail-core" }
+ail-dogfood  = { path = "crates/ail-dogfood" }
 ail-runtime  = { path = "crates/ail-runtime" }
 ail-storage  = { path = "crates/ail-storage" }
 ail-stdlib   = { path = "crates/ail-stdlib" }

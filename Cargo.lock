@@ -104,6 +104,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ail-dogfood"
+version = "0.1.0"
+dependencies = [
+ "ail-change",
+ "ail-context",
+ "ail-core",
+ "ail-stdlib",
+ "ail-storage",
+ "blake3",
+ "ciborium",
+ "serde",
+]
+
+[[package]]
 name = "ail-runtime"
 version = "0.1.0"
 dependencies = [
