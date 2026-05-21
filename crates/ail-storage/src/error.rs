@@ -7,6 +7,8 @@ pub enum StorageError {
     NotFound,
     /// An underlying I/O error occurred.
     Io(std::io::Error),
+    /// A Postgres client or server error occurred.
+    Postgres(Box<tokio_postgres::Error>),
 }
 
 impl std::fmt::Display for StorageError {
@@ -15,6 +17,7 @@ impl std::fmt::Display for StorageError {
             StorageError::Codec(msg) => write!(f, "codec error: {msg}"),
             StorageError::NotFound => write!(f, "object not found"),
             StorageError::Io(e) => write!(f, "io error: {e}"),
+            StorageError::Postgres(e) => write!(f, "postgres error: {e}"),
         }
     }
 }
@@ -23,6 +26,7 @@ impl std::error::Error for StorageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             StorageError::Io(e) => Some(e),
+            StorageError::Postgres(e) => Some(e.as_ref()),
             _ => None,
         }
     }
@@ -31,6 +35,12 @@ impl std::error::Error for StorageError {
 impl From<std::io::Error> for StorageError {
     fn from(e: std::io::Error) -> Self {
         StorageError::Io(e)
+    }
+}
+
+impl From<tokio_postgres::Error> for StorageError {
+    fn from(e: tokio_postgres::Error) -> Self {
+        StorageError::Postgres(Box::new(e))
     }
 }
 
