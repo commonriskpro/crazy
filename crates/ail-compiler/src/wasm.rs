@@ -112,6 +112,65 @@ fn build_code_section(n_functions: usize) -> Option<CodeSection> {
     Some(codes)
 }
 
+// ── leb128_u32 ────────────────────────────────────────────────────────────
+
+/// Decode one LEB128-encoded unsigned 32-bit integer from `bytes`.
+///
+/// Returns `(value, bytes_consumed)`.  Panics if `bytes` is empty or the
+/// encoding exceeds 5 bytes (which cannot happen for a valid WASM binary).
+fn leb128_u32(bytes: &[u8]) -> (u32, usize) {
+    let mut result = 0u32;
+    let mut shift = 0u32;
+    let mut n = 0usize;
+    for &b in bytes {
+        result |= u32::from(b & 0x7f) << shift;
+        shift += 7;
+        n += 1;
+        if b & 0x80 == 0 {
+            break;
+        }
+    }
+    (result, n)
+}
+
+// ── code_entry_offsets ────────────────────────────────────────────────────
+
+/// Scan `wasm` for the code section (section id 10) and return the absolute
+/// byte offset of each code-entry header (the LEB128-encoded body-size
+/// prefix) in function order.
+///
+/// Returns an empty `Vec` when the module contains no code section.
+fn code_entry_offsets(wasm: &[u8]) -> Vec<u32> {
+    const HEADER_LEN: usize = 8; // 4-byte magic + 4-byte version
+    let mut pos = HEADER_LEN;
+
+    while pos < wasm.len() {
+        let section_id = wasm[pos];
+        pos += 1;
+
+        let (section_size, leb_len) = leb128_u32(&wasm[pos..]);
+        let content_start = pos + leb_len;
+        pos = content_start + section_size as usize;
+
+        if section_id == 10 {
+            // Code section: content = LEB128(count) + entries
+            let (count, count_len) = leb128_u32(&wasm[content_start..]);
+            let mut entry_pos = content_start + count_len;
+            let mut offsets = Vec::with_capacity(count as usize);
+
+            for _ in 0..count {
+                offsets.push(entry_pos as u32);
+                let (entry_size, entry_size_len) = leb128_u32(&wasm[entry_pos..]);
+                entry_pos += entry_size_len + entry_size as usize;
+            }
+
+            return offsets;
+        }
+    }
+
+    Vec::new()
+}
+
 // ── emit_wasm ─────────────────────────────────────────────────────────────
 
 /// Emit a structurally valid WASM module from an `AnfIr`.
@@ -138,15 +197,7 @@ pub fn emit_wasm(anf: &AnfIr) -> Result<WasmArtifact, CompileError> {
 
     let n = anf.bindings.len();
 
-    // Build provenance map: NodeRef → WASM function index (0-based).
-    let provenance: BTreeMap<NodeRef, u32> = anf
-        .bindings
-        .iter()
-        .enumerate()
-        .map(|(i, b)| (b.source_ref, i as u32))
-        .collect();
-
-    // Assemble WASM module.
+    // Assemble WASM module first so we can compute byte offsets.
     let mut module = Module::new();
     if let Some(types) = build_type_section(n) {
         module.section(&types);
@@ -158,6 +209,17 @@ pub fn emit_wasm(anf: &AnfIr) -> Result<WasmArtifact, CompileError> {
         module.section(&codes);
     }
     let wasm = module.finish();
+
+    // Build provenance map: NodeRef → WASM byte offset of the code entry.
+    // `code_entry_offsets` scans the binary and returns the position of each
+    // function's LEB128-encoded body-size prefix in the code section.
+    let entry_offsets = code_entry_offsets(&wasm);
+    let provenance: BTreeMap<NodeRef, u32> = anf
+        .bindings
+        .iter()
+        .zip(entry_offsets.iter())
+        .map(|(b, &offset)| (b.source_ref, offset))
+        .collect();
 
     // Seal: wasm_hash = blake3(anf_ir_hash || wasm_binary).
     let wasm_hash = hash_with_parent(&anf_ir_hash, &wasm);

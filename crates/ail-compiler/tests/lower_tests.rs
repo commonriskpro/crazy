@@ -1,10 +1,11 @@
-// ── ail-compiler::lower — TDD tests (Task 2.1 RED + Task 2.3 RED) ─────────
+// ── ail-compiler::lower — TDD tests (Task 2.1 RED + Task 2.3 RED + verify fixes) ──
 //
 // Tests for `lower_to_core_ir` and `lower_to_anf`.
 // Written BEFORE the production code exists (strict TDD).
 
+use ail_compiler::hash::{hash_with_parent, stable_cbor_bytes};
 use ail_compiler::{CompileError, lower_to_anf, lower_to_core_ir};
-use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
+use ail_core::semantic_graph::{EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_verify::report::{VerificationEntry, VerificationReport, VerificationState};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -287,5 +288,72 @@ fn different_core_ir_produces_different_anf_ir_hash() {
     assert_ne!(
         anf_a.stage_hashes.anf_ir_hash, anf_b.stage_hashes.anf_ir_hash,
         "different CoreIr inputs must produce different anf_ir_hash"
+    );
+}
+
+// ── Fix: graph validation (verify-fixes RED) ─────────────────────────────
+
+// Spec: "Unresolvable / invalid graph is refused"
+// GIVEN a SemanticGraph with two nodes sharing the same NodeRef
+// WHEN lower_to_core_ir is called
+// THEN Err(CompileError::InvalidGraph(_)) is returned
+#[test]
+fn invalid_graph_duplicate_node_refs_returns_invalid_graph_error() {
+    let graph = SemanticGraph {
+        nodes: vec![
+            GraphNode::new(NodeRef(0), NodeKind::Function, "fn_a"),
+            GraphNode::new(NodeRef(0), NodeKind::Function, "fn_b"), // duplicate ref
+        ],
+        edges: vec![],
+    };
+    let report = proven_report();
+    let result = lower_to_core_ir(&graph, &report);
+    assert!(
+        matches!(result, Err(CompileError::InvalidGraph(_))),
+        "duplicate NodeRef must produce InvalidGraph, got {result:?}"
+    );
+}
+
+// TRIANGULATE: dangling edge endpoint → MissingNode (the NodeRef is absent)
+#[test]
+fn invalid_graph_dangling_edge_returns_missing_node_error() {
+    let graph = SemanticGraph {
+        nodes: vec![GraphNode::new(NodeRef(0), NodeKind::Function, "fn_a")],
+        edges: vec![GraphEdge {
+            source: NodeRef(0),
+            target: NodeRef(99), // NodeRef(99) is not in the node list
+            kind: EdgeKind::Calls,
+        }],
+    };
+    let report = proven_report();
+    let result = lower_to_core_ir(&graph, &report);
+    assert!(
+        matches!(result, Err(CompileError::MissingNode(NodeRef(99)))),
+        "dangling edge target must produce MissingNode(NodeRef(99)), got {result:?}"
+    );
+}
+
+// ── Fix: explicit hash-chain recomputation (verify-fixes RED) ─────────────
+
+// Spec: "Hash chain continuation — anf_ir_hash = blake3(core_ir_hash || anf_bytes)"
+// GIVEN a CoreIr produced from a known graph
+// WHEN we recompute blake3(core_ir_hash || cbor(bindings)) manually
+// THEN the value equals anf.stage_hashes.anf_ir_hash exactly
+#[test]
+fn anf_hash_chain_matches_explicit_recomputation() {
+    let graph = make_n_node_graph(3);
+    let report = proven_report();
+    let core = lower_to_core_ir(&graph, &report).expect("core must succeed");
+    let anf = lower_to_anf(&core).expect("anf must succeed");
+
+    // Recompute: anf_ir_hash = blake3(core_ir_hash || cbor(anf_bindings))
+    let anf_bindings_bytes =
+        stable_cbor_bytes(&anf.bindings).expect("stable_cbor_bytes for bindings must succeed");
+    let expected_hash = hash_with_parent(&core.stage_hashes.core_ir_hash, &anf_bindings_bytes);
+
+    assert_eq!(
+        anf.stage_hashes.anf_ir_hash,
+        Some(expected_hash),
+        "anf_ir_hash must equal blake3(core_ir_hash || cbor(bindings))"
     );
 }

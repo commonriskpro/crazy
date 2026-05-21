@@ -20,7 +20,7 @@
 // All collections are `Vec` / `BTreeMap` — never `HashMap`.
 // `stable_cbor_bytes` + BLAKE3 gives byte-identical output across runs.
 
-use ail_core::semantic_graph::{NodeKind, SemanticGraph};
+use ail_core::semantic_graph::{GraphValidationError, NodeKind, SemanticGraph};
 use ail_verify::report::{VerificationReport, VerificationState};
 
 use crate::anf::{AnfBinding, AnfIr};
@@ -103,6 +103,14 @@ pub fn lower_to_core_ir(
     if !is_report_accepted(report) {
         return Err(CompileError::RejectedReport);
     }
+
+    // Gate: validate graph structural invariants (unique refs, no dangling edges).
+    graph.validate().map_err(|e| match e {
+        GraphValidationError::DuplicateRef(r) => {
+            CompileError::InvalidGraph(format!("duplicate NodeRef({})", r.0))
+        }
+        GraphValidationError::DanglingEdge { r#ref, .. } => CompileError::MissingNode(r#ref),
+    })?;
 
     // Hash the pipeline inputs (empty parent → blake3(content)).
     let graph_cbor = stable_cbor_bytes(graph)?;

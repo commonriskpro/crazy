@@ -168,13 +168,12 @@ fn different_anf_inputs_produce_different_wasm_hashes() {
     );
 }
 
-// ── Task 3.1: function body stubs ────────────────────────────────────────
+// ── Task 3.1 / verify-fix: function body stubs (exact sequence) ──────────
 
-// Spec: each function body is [unreachable, end].
-// We verify by parsing the emitted module with wasmparser and counting
-// CodeSectionEntry payloads, then checking first operator is Unreachable.
+// Spec: each function body is EXACTLY [unreachable, end] — no extra instructions.
+// Parse with wasmparser and assert the full operator sequence for every body.
 #[test]
-fn function_bodies_contain_unreachable_instruction() {
+fn function_bodies_are_exactly_unreachable_end() {
     use wasmparser::{Operator, Parser, Payload};
 
     let anf = anf_for_graph(&graph_with_n_nodes(2));
@@ -184,20 +183,94 @@ fn function_bodies_contain_unreachable_instruction() {
     for payload in Parser::new(0).parse_all(&artifact.wasm) {
         if let Ok(Payload::CodeSectionEntry(body)) = payload {
             function_bodies_found += 1;
-            // Verify first instruction is Unreachable.
             let mut reader = body
                 .get_operators_reader()
                 .expect("get_operators_reader failed");
-            let first_op = reader.read().expect("read first operator failed");
+
+            // Read all operators and assert exact sequence: Unreachable, End.
+            let ops: Vec<_> = std::iter::from_fn(|| reader.read().ok()).collect();
+
+            assert_eq!(
+                ops.len(),
+                2,
+                "function body must have exactly 2 instructions (unreachable + end), got {ops:?}"
+            );
             assert!(
-                matches!(first_op, Operator::Unreachable),
-                "first instruction must be Unreachable, got {first_op:?}"
+                matches!(ops[0], Operator::Unreachable),
+                "instruction 0 must be Unreachable, got {:?}",
+                ops[0]
+            );
+            assert!(
+                matches!(ops[1], Operator::End),
+                "instruction 1 must be End, got {:?}",
+                ops[1]
             );
         }
     }
-    // We expect exactly 2 function bodies for a 2-binding AnfIr.
     assert_eq!(
         function_bodies_found, 2,
         "expected 2 code section entries for 2-binding AnfIr"
+    );
+}
+
+// ── verify-fix: provenance values are byte offsets, not function indexes ──
+
+// Spec: provenance map stores the WASM byte offset of each code entry.
+// For a stub body [0-locals, unreachable, end] the body-size LEB128 is 0x03.
+// We assert that wasm[provenance[NodeRef(i)]] == 0x03, proving the stored
+// value is a byte position in the binary, NOT the function index.
+#[test]
+fn provenance_values_are_byte_offsets_not_function_indexes() {
+    let n = 3usize;
+    let anf = anf_for_graph(&graph_with_n_nodes(n));
+    let artifact = emit_wasm(&anf).expect("emit_wasm failed");
+
+    assert_eq!(
+        artifact.provenance.len(),
+        n,
+        "provenance must have {n} entries"
+    );
+
+    for i in 0..n {
+        let nr = NodeRef(i as u32);
+        let offset = *artifact
+            .provenance
+            .get(&nr)
+            .unwrap_or_else(|| panic!("NodeRef({i}) missing from provenance"));
+
+        // The byte at the stored offset is the LEB128-encoded body size (= 3).
+        // Body = [0 locals, unreachable, end] → 3 bytes → encoded as 0x03.
+        assert_eq!(
+            artifact.wasm[offset as usize], 0x03,
+            "wasm[provenance[NodeRef({i})]] = wasm[{offset}] must be 0x03 (body size), \
+             got 0x{:02x} — stored value must be a byte offset, not a function index",
+            artifact.wasm[offset as usize]
+        );
+    }
+}
+
+// ── verify-fix: explicit WASM hash-chain recomputation ────────────────────
+
+// Spec: wasm_hash = blake3(anf_ir_hash || wasm_binary)
+// Verify by recomputing the hash explicitly and comparing.
+#[test]
+fn wasm_hash_chain_matches_explicit_recomputation() {
+    use ail_compiler::hash::hash_with_parent;
+
+    let anf = anf_for_graph(&graph_with_n_nodes(2));
+    let artifact = emit_wasm(&anf).expect("emit_wasm failed");
+
+    let anf_ir_hash = anf
+        .stage_hashes
+        .anf_ir_hash
+        .expect("anf_ir_hash must be sealed before emit_wasm");
+
+    // Recompute: wasm_hash = blake3(anf_ir_hash || wasm_bytes)
+    let expected_hash = hash_with_parent(&anf_ir_hash, &artifact.wasm);
+
+    assert_eq!(
+        artifact.hash_chain.wasm_hash,
+        Some(expected_hash),
+        "wasm_hash must equal blake3(anf_ir_hash || wasm_binary)"
     );
 }
