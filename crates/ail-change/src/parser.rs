@@ -19,15 +19,35 @@
 //
 // # Verb → ChangeSetOp mapping
 //
-// | Prefix / exact match         | Variant  |
-// |------------------------------|----------|
-// | `create` / `create_*`        | Create   |
-// | `set` / `set_*`              | Set      |
-// | `add` / `add_*`              | Add      |
-// | `remove` / `remove_*` / `disconnect` / `delete` | Remove |
-// | `connect`                    | Connect  |
-// | `infer` / `infer_*`          | Infer    |
-// | `verify`                     | Verify   |
+// | Prefix / exact match              | Variant    |
+// |-----------------------------------|------------|
+// | `create` / `create_*`             | Create     |
+// | `set` / `set_*`                   | Set        |
+// | `add` / `add_*`                   | Add        |
+// | `remove` / `remove_*`             | Remove     |
+// | `delete` / `delete_*`             | Delete     |
+// | `disconnect` / `disconnect_*`     | Disconnect |
+// | `rename` / `rename_*`             | Rename     |
+// | `move` / `move_*`                 | Move       |
+// | `replace` / `replace_*`           | Replace    |
+// | `connect` / `connect_*`           | Connect    |
+// | `bind` / `bind_*`                 | Bind       |
+// | `expose` / `expose_*`             | Expose     |
+// | `hide` / `hide_*`                 | Hide       |
+// | `grant` / `grant_*`               | Grant      |
+// | `revoke` / `revoke_*`             | Revoke     |
+// | `infer` / `infer_*`               | Infer      |
+// | `derive` / `derive_*`             | Derive     |
+// | `generate` / `generate_*`         | Generate   |
+// | `assert` / `assert_*`             | Assert     |
+// | `lock` / `lock_*`                 | Lock       |
+// | `refactor` / `refactor_*`         | Refactor   |
+// | `migrate` / `migrate_*`           | Migrate    |
+// | `approve` / `approve_*`           | Approve    |
+// | `reject` / `reject_*`             | Reject     |
+// | `deprecate` / `deprecate_*`       | Deprecate  |
+// | `annotate` / `annotate_*`         | Annotate   |
+// | `verify` / `verify_*`             | Verify     |
 //
 // # Pure function
 //
@@ -315,23 +335,64 @@ fn parse_precondition_line(
 ///
 /// Returns `None` if the verb does not match any known prefix rule.
 fn map_verb(verb: &str) -> Option<ChangeSetOp> {
-    if verb == "create" || verb.starts_with("create_") {
+    // Helper: exact match or `<stem>_` prefix.
+    fn matches(verb: &str, stem: &str) -> bool {
+        verb == stem || verb.starts_with(&format!("{stem}_"))
+    }
+
+    if matches(verb, "create") {
         Some(ChangeSetOp::Create)
-    } else if verb == "set" || verb.starts_with("set_") {
+    } else if matches(verb, "set") {
         Some(ChangeSetOp::Set)
-    } else if verb == "add" || verb.starts_with("add_") {
+    } else if matches(verb, "add") {
         Some(ChangeSetOp::Add)
-    } else if verb == "remove"
-        || verb.starts_with("remove_")
-        || verb == "disconnect"
-        || verb == "delete"
-    {
+    } else if matches(verb, "remove") {
         Some(ChangeSetOp::Remove)
-    } else if verb == "connect" {
+    } else if matches(verb, "delete") {
+        Some(ChangeSetOp::Delete)
+    } else if matches(verb, "disconnect") {
+        Some(ChangeSetOp::Disconnect)
+    } else if matches(verb, "rename") {
+        Some(ChangeSetOp::Rename)
+    } else if matches(verb, "move") {
+        Some(ChangeSetOp::Move)
+    } else if matches(verb, "replace") {
+        Some(ChangeSetOp::Replace)
+    } else if matches(verb, "connect") {
         Some(ChangeSetOp::Connect)
-    } else if verb == "infer" || verb.starts_with("infer_") {
+    } else if matches(verb, "bind") {
+        Some(ChangeSetOp::Bind)
+    } else if matches(verb, "expose") {
+        Some(ChangeSetOp::Expose)
+    } else if matches(verb, "hide") {
+        Some(ChangeSetOp::Hide)
+    } else if matches(verb, "grant") {
+        Some(ChangeSetOp::Grant)
+    } else if matches(verb, "revoke") {
+        Some(ChangeSetOp::Revoke)
+    } else if matches(verb, "infer") {
         Some(ChangeSetOp::Infer)
-    } else if verb == "verify" {
+    } else if matches(verb, "derive") {
+        Some(ChangeSetOp::Derive)
+    } else if matches(verb, "generate") {
+        Some(ChangeSetOp::Generate)
+    } else if matches(verb, "assert") {
+        Some(ChangeSetOp::Assert)
+    } else if matches(verb, "lock") {
+        Some(ChangeSetOp::Lock)
+    } else if matches(verb, "refactor") {
+        Some(ChangeSetOp::Refactor)
+    } else if matches(verb, "migrate") {
+        Some(ChangeSetOp::Migrate)
+    } else if matches(verb, "approve") {
+        Some(ChangeSetOp::Approve)
+    } else if matches(verb, "reject") {
+        Some(ChangeSetOp::Reject)
+    } else if matches(verb, "deprecate") {
+        Some(ChangeSetOp::Deprecate)
+    } else if matches(verb, "annotate") {
+        Some(ChangeSetOp::Annotate)
+    } else if matches(verb, "verify") {
         Some(ChangeSetOp::Verify)
     } else {
         None
@@ -488,14 +549,14 @@ end
         );
     }
 
-    // Scenario: `delete` and `disconnect` map to Remove.
+    // Scenario: `delete` maps to Delete and `disconnect` maps to Disconnect.
     #[test]
-    fn parse_delete_and_disconnect_map_to_remove() {
+    fn parse_delete_and_disconnect_map_to_own_variants() {
         let src = "change x\nauthor D\nbase 0\nop delete target=fn.old\nop disconnect source=a relation=r target=b\nend\n";
         let result = parse_changeset(src).expect("must parse");
         assert_eq!(
             result.changeset.ops,
-            vec![ChangeSetOp::Remove, ChangeSetOp::Remove]
+            vec![ChangeSetOp::Delete, ChangeSetOp::Disconnect]
         );
     }
 
@@ -758,6 +819,123 @@ end
                 ChangeSetOp::Set,
                 ChangeSetOp::Add,
                 ChangeSetOp::Infer,
+            ]
+        );
+    }
+
+    // Scenario: all 20 new verbs (phase 1-4 additions) parse to their own variants.
+    //   GIVEN one representative op for each new verb
+    //   WHEN parse_changeset is called
+    //   THEN each verb maps to its dedicated ChangeSetOp variant
+    #[test]
+    fn parse_all_new_verb_variants() {
+        let src = "\
+change test_new_verbs
+author TestAgent
+base 0
+op delete target=fn.old
+op disconnect source=fn.a relation=uses target=cap.b
+op rename target=fn.old name=fn.new
+op move target=fn.util to=module.utils
+op replace target=fn.checkout.body with=@expr.v2
+op bind_handler capability=payment.charge handler=handler.Stripe profile=prod
+op expose target=fn.checkout as=api.checkout
+op hide target=fn.internal_helper
+op grant target=module.checkout capability=database.read profile=prod
+op revoke target=module.checkout capability=file.write profile=prod
+op derive_eq target=type.Address mode=structural
+op generate_tests target=fn.checkout from=contracts
+op assert_exists target=fn.checkout
+op lock_behavior target=fn.checkout
+op refactor_extract_function from=fn.checkout range=@range.payment to=fn.charge
+op migrate_api target=fn.checkout from=sig.v1 to=sig.v2
+op approve_inferred_boundary target=fn.checkout version=sig_123
+op reject_inferred_boundary target=fn.checkout version=sig_124
+op deprecate target=fn.old_checkout replacement=fn.checkout_v2
+op annotate target=fn.checkout key=rationale value=\"Checkout must be idempotent\"
+end
+";
+        let result = parse_changeset(src).expect("all new verbs must parse");
+        assert_eq!(
+            result.changeset.ops,
+            vec![
+                ChangeSetOp::Delete,
+                ChangeSetOp::Disconnect,
+                ChangeSetOp::Rename,
+                ChangeSetOp::Move,
+                ChangeSetOp::Replace,
+                ChangeSetOp::Bind,
+                ChangeSetOp::Expose,
+                ChangeSetOp::Hide,
+                ChangeSetOp::Grant,
+                ChangeSetOp::Revoke,
+                ChangeSetOp::Derive,
+                ChangeSetOp::Generate,
+                ChangeSetOp::Assert,
+                ChangeSetOp::Lock,
+                ChangeSetOp::Refactor,
+                ChangeSetOp::Migrate,
+                ChangeSetOp::Approve,
+                ChangeSetOp::Reject,
+                ChangeSetOp::Deprecate,
+                ChangeSetOp::Annotate,
+            ]
+        );
+    }
+
+    // Scenario: bare new verbs (no underscore suffix) also map correctly.
+    #[test]
+    fn parse_bare_new_verb_variants() {
+        let src = "\
+change x
+author S
+base 0
+op delete
+op disconnect
+op rename
+op move
+op replace
+op bind
+op expose
+op hide
+op grant
+op revoke
+op derive
+op generate
+op assert
+op lock
+op refactor
+op migrate
+op approve
+op reject
+op deprecate
+op annotate
+end
+";
+        let result = parse_changeset(src).expect("bare new verbs must parse");
+        assert_eq!(
+            result.changeset.ops,
+            vec![
+                ChangeSetOp::Delete,
+                ChangeSetOp::Disconnect,
+                ChangeSetOp::Rename,
+                ChangeSetOp::Move,
+                ChangeSetOp::Replace,
+                ChangeSetOp::Bind,
+                ChangeSetOp::Expose,
+                ChangeSetOp::Hide,
+                ChangeSetOp::Grant,
+                ChangeSetOp::Revoke,
+                ChangeSetOp::Derive,
+                ChangeSetOp::Generate,
+                ChangeSetOp::Assert,
+                ChangeSetOp::Lock,
+                ChangeSetOp::Refactor,
+                ChangeSetOp::Migrate,
+                ChangeSetOp::Approve,
+                ChangeSetOp::Reject,
+                ChangeSetOp::Deprecate,
+                ChangeSetOp::Annotate,
             ]
         );
     }

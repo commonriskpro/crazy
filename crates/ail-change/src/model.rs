@@ -46,23 +46,81 @@ pub struct ChangeSetMeta {
 
 // ── ChangeSetOp ───────────────────────────────────────────────────────────
 
-/// The seven operation phases of a `ChangeSet`, in canonical order:
-/// `Create` → `Set`/`Add`/`Remove` → `Connect` → `Infer` → `Verify`.
+/// The 27 operation variants of a `ChangeSet`, grouped by canonical phase.
+///
+/// Phase ordering (used by `canonical::phase_order`):
+///
+/// | Phase | Variants |
+/// |-------|----------|
+/// | 0 | `Create` |
+/// | 1 | `Set`, `Add`, `Remove`, `Delete`, `Disconnect`, `Rename`, `Move`, `Replace` |
+/// | 2 | `Connect`, `Bind`, `Expose`, `Hide`, `Grant`, `Revoke` |
+/// | 3 | `Infer`, `Derive`, `Generate` |
+/// | 4 | `Assert`, `Lock`, `Refactor`, `Migrate`, `Approve`, `Reject`, `Deprecate`, `Annotate`, `Verify` |
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChangeSetOp {
+    // ── Phase 0: creation ────────────────────────────────────────────────
     /// Create a new node in the graph.
     Create,
+
+    // ── Phase 1: property / structural mutations ──────────────────────────
     /// Set (overwrite) a property on an existing node.
     Set,
     /// Add a value to a collection property.
     Add,
-    /// Remove a value from a collection property or remove a node.
+    /// Remove a value from a collection property.
     Remove,
-    /// Connect two nodes with a typed edge.
+    /// Delete a node entirely from the graph (always requires impact analysis).
+    Delete,
+    /// Sever a typed edge between two nodes.
+    Disconnect,
+    /// Change a node's visible name without altering its stable identity.
+    Rename,
+    /// Move a node between modules/packages while preserving its identity.
+    Move,
+    /// Replace a definition or block in its entirety.
+    Replace,
+
+    // ── Phase 2: relationship / security / visibility ─────────────────────
+    /// Establish a typed edge between two nodes.
     Connect,
-    /// Declare an inference rule to evaluate.
+    /// Associate a handler with a capability in an environment/run-profile.
+    Bind,
+    /// Make a node part of a public API surface.
+    Expose,
+    /// Remove a node from the public API surface.
+    Hide,
+    /// Grant a capability to a module, package, or run-profile.
+    Grant,
+    /// Revoke a previously granted capability.
+    Revoke,
+
+    // ── Phase 3: inference / materialization ──────────────────────────────
+    /// Trigger an inference rule (e.g., infer boundary, effects, return type).
     Infer,
-    /// Declare a verification assertion to evaluate.
+    /// Generate a derived implementation from a type/schema under verifiable rules.
+    Derive,
+    /// Request controlled generation of derived artifacts (tests, SDK, docs).
+    Generate,
+
+    // ── Phase 4: workflow / semantic / verification ───────────────────────
+    /// Declare a precondition about the current graph state before applying ops.
+    Assert,
+    /// Lock an API, behavior, or contract to prevent accidental mutation.
+    Lock,
+    /// Apply a semantics-preserving transformation.
+    Refactor,
+    /// Declare an intentional change of API, contract, or behavior.
+    Migrate,
+    /// Accept an inferred boundary, assumption, or proposal.
+    Approve,
+    /// Reject an inferred boundary, assumption, or proposal.
+    Reject,
+    /// Mark a node as superseded without removing it.
+    Deprecate,
+    /// Attach metadata, rationale, or review notes to a node.
+    Annotate,
+    /// Validate a change, scope, or node against its contracts and effects.
     Verify,
 }
 

@@ -54,23 +54,48 @@ fn changeset_with_empty_ops_is_valid() {
     assert!(cs.ops.is_empty());
 }
 
-// ── Scenario: All seven ChangeSetOp variants present ─────────────────────
+// ── Scenario: All 27 ChangeSetOp variants present ────────────────────────
 // GIVEN the `ChangeSetOp` enum definition
 // WHEN its variants are constructed
-// THEN all seven named variants exist
+// THEN all 27 named variants exist and compile
 #[test]
-fn changeset_op_all_seven_variants_exist() {
+fn changeset_op_all_variants_exist() {
     // Constructing each variant confirms it compiles and exists.
     let variants: Vec<ChangeSetOp> = vec![
+        // Phase 0: creation
         ChangeSetOp::Create,
+        // Phase 1: property / structural mutations
         ChangeSetOp::Set,
         ChangeSetOp::Add,
         ChangeSetOp::Remove,
+        ChangeSetOp::Delete,
+        ChangeSetOp::Disconnect,
+        ChangeSetOp::Rename,
+        ChangeSetOp::Move,
+        ChangeSetOp::Replace,
+        // Phase 2: relationship / security / visibility
         ChangeSetOp::Connect,
+        ChangeSetOp::Bind,
+        ChangeSetOp::Expose,
+        ChangeSetOp::Hide,
+        ChangeSetOp::Grant,
+        ChangeSetOp::Revoke,
+        // Phase 3: inference / materialization
         ChangeSetOp::Infer,
+        ChangeSetOp::Derive,
+        ChangeSetOp::Generate,
+        // Phase 4: workflow / semantic / verification
+        ChangeSetOp::Assert,
+        ChangeSetOp::Lock,
+        ChangeSetOp::Refactor,
+        ChangeSetOp::Migrate,
+        ChangeSetOp::Approve,
+        ChangeSetOp::Reject,
+        ChangeSetOp::Deprecate,
+        ChangeSetOp::Annotate,
         ChangeSetOp::Verify,
     ];
-    assert_eq!(variants.len(), 7);
+    assert_eq!(variants.len(), 27);
 }
 
 // ── Scenario: ChangeSetMeta fields readable ───────────────────────────────
