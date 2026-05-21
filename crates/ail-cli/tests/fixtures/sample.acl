@@ -1,0 +1,14 @@
+# sample.acl — minimal valid ChangeSet fixture for ail-cli integration tests
+#
+# Line format:
+#   author      <name>
+#   description <text>           (optional)
+#   base        <u64 snapshot-id>
+#   op          Create | Set | Add | Remove | Connect | Infer | Verify
+#
+# Blank lines and lines starting with '#' are ignored.
+
+author  test-author
+description sample fixture for CLI integration tests
+base    0
+op      Create

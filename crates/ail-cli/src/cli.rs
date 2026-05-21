@@ -603,4 +603,44 @@ mod tests {
     fn cmd_context_json_mode_does_not_panic() {
         assert!(cmd_context(OutputMode::Json).is_ok());
     }
+
+    // Spec scenario: stale base rejected
+    //   GIVEN base_snapshot_id does not match the live snapshot
+    //   WHEN apply() is called
+    //   THEN RebaseRequired { current_snapshot_id } is returned
+    //
+    // The binary always uses base=0 and bridge=SnapshotId(0), so this path can
+    // only be exercised at the domain unit level. This test calls apply_changeset
+    // directly with a mismatching base to prove the guard fires.
+    #[test]
+    fn apply_stale_base_returns_rebase_required() {
+        use ail_change::apply::apply as apply_changeset;
+        use ail_change::canonical::{CanonicalChangeSet, CanonicalMeta};
+        use ail_change::model::{ChangeSetOutcome, Timestamp};
+        use ail_core::semantic_graph::SemanticGraph;
+
+        // Bridge reports snapshot id = 1 (live); ChangeSet targets base = 0 (stale).
+        let bridge = SimpleSnapshotBridge(SnapshotId(1));
+        let mut graph = SemanticGraph { nodes: vec![], edges: vec![] };
+
+        let canonical = CanonicalChangeSet {
+            meta: CanonicalMeta {
+                author: "test".to_string(),
+                description: "stale-base test".to_string(),
+                timestamp: Timestamp(0),
+            },
+            base_snapshot_id: SnapshotId(0), // does NOT match bridge (1)
+            preconditions: vec![],
+            ops: vec![],
+        };
+
+        let outcome = apply_changeset(canonical, &mut graph, &bridge);
+        assert!(
+            matches!(
+                outcome,
+                ChangeSetOutcome::RebaseRequired { current_snapshot_id: SnapshotId(1) }
+            ),
+            "stale base must return RebaseRequired with live id; got: {outcome:?}"
+        );
+    }
 }
