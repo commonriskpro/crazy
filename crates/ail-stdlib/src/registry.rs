@@ -153,8 +153,7 @@ impl StdlibRegistry {
 
     /// Deserialize a registry from CBOR bytes produced by `cbor_bytes()`.
     pub fn from_cbor_bytes(bytes: &[u8]) -> Result<Self, StdlibError> {
-        ciborium::de::from_reader(bytes)
-            .map_err(|e| StdlibError::SerializationError(e.to_string()))
+        ciborium::de::from_reader(bytes).map_err(|e| StdlibError::SerializationError(e.to_string()))
     }
 
     // ── hash ──────────────────────────────────────────────────────────────

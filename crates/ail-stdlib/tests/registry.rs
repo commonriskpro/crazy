@@ -312,11 +312,15 @@ fn capability_constants_are_lower_dotted_strings() {
     ];
     for c in constants {
         assert!(
-            c.chars().all(|ch| ch.is_lowercase() || ch == '.' || ch.is_ascii_digit()),
+            c.chars()
+                .all(|ch| ch.is_lowercase() || ch == '.' || ch.is_ascii_digit()),
             "capability constant {c:?} must be lower-dotted (lowercase + dots only)"
         );
         assert!(!c.is_empty(), "capability constant must not be empty");
-        assert!(c.contains('.'), "capability constant must contain a dot: {c:?}");
+        assert!(
+            c.contains('.'),
+            "capability constant must contain a dot: {c:?}"
+        );
     }
 }
 
