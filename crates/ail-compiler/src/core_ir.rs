@@ -76,6 +76,9 @@ pub struct StageHashes {
     /// `blake3(anf_ir_hash || wasm_binary)` — set by `emit_wasm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wasm_hash: Option<[u8; 32]>,
+    /// `blake3(anf_ir_hash || native_binary)` — set by `emit_native`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_hash: Option<[u8; 32]>,
 }
 
 // ── CoreIr ────────────────────────────────────────────────────────────────
@@ -116,6 +119,7 @@ mod tests {
                 core_ir_hash: [1u8; 32],
                 anf_ir_hash: None,
                 wasm_hash: None,
+                native_hash: None,
             },
         };
         assert_eq!(ir.nodes.len(), 1);
@@ -196,9 +200,11 @@ mod tests {
             core_ir_hash: [42u8; 32],
             anf_ir_hash: None,
             wasm_hash: None,
+            native_hash: None,
         };
         assert!(h.anf_ir_hash.is_none());
         assert!(h.wasm_hash.is_none());
+        assert!(h.native_hash.is_none());
         assert_eq!(h.core_ir_hash, [42u8; 32]);
     }
 

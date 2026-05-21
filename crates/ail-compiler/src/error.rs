@@ -1,13 +1,14 @@
 // ── ail-compiler::error ───────────────────────────────────────────────────
 //
-// `CompileError` — exhaustive error enum for the three-stage pipeline.
+// `CompileError` — exhaustive error enum for the compilation pipeline.
 
 use ail_core::semantic_graph::NodeRef;
 
 /// Errors produced by the `ail-compiler` pipeline.
 ///
 /// Each variant corresponds to a distinct failure mode; the `lower_to_core_ir`,
-/// `lower_to_anf`, and `emit_wasm` functions all return `CompileError` on failure.
+/// `lower_to_anf`, `emit_wasm`, and `emit_native` functions all return
+/// `CompileError` on failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompileError {
     /// The `VerificationReport` did not have an accepted summary
@@ -22,6 +23,12 @@ pub enum CompileError {
 
     /// CBOR serialization failed while computing a stage hash.
     EncodingError(String),
+
+    /// A Cranelift native-backend codegen failure.
+    ///
+    /// Distinct from `EncodingError` — this variant is only produced by
+    /// `emit_native`; it carries the Cranelift error message.
+    NativeEncodingError(String),
 }
 
 impl std::fmt::Display for CompileError {
@@ -33,6 +40,9 @@ impl std::fmt::Display for CompileError {
             CompileError::InvalidGraph(msg) => write!(f, "invalid graph: {msg}"),
             CompileError::MissingNode(r) => write!(f, "missing node: NodeRef({})", r.0),
             CompileError::EncodingError(msg) => write!(f, "encoding error: {msg}"),
+            CompileError::NativeEncodingError(msg) => {
+                write!(f, "native encoding error: {msg}")
+            }
         }
     }
 }
@@ -114,6 +124,33 @@ mod tests {
         assert_ne!(
             CompileError::EncodingError("a".to_string()),
             CompileError::EncodingError("b".to_string())
+        );
+    }
+
+    // Scenario: NativeEncodingError variant is constructible and distinct from EncodingError.
+    #[test]
+    fn native_encoding_error_is_constructible_and_distinct() {
+        let e = CompileError::NativeEncodingError("cranelift trap".to_string());
+        match &e {
+            CompileError::NativeEncodingError(msg) => {
+                assert_eq!(msg, "cranelift trap");
+            }
+            other => panic!("expected NativeEncodingError, got {other:?}"),
+        }
+        assert_ne!(
+            e,
+            CompileError::EncodingError("cranelift trap".to_string()),
+            "NativeEncodingError must be distinct from EncodingError"
+        );
+    }
+
+    // Scenario: NativeEncodingError Display contains 'native'.
+    #[test]
+    fn native_encoding_error_display_mentions_native() {
+        let msg = CompileError::NativeEncodingError("test reason".to_string()).to_string();
+        assert!(
+            msg.contains("native"),
+            "display must mention 'native', got: {msg}"
         );
     }
 }

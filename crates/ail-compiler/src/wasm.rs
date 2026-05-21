@@ -276,6 +276,7 @@ mod tests {
                 core_ir_hash: [1u8; 32],
                 anf_ir_hash: None, // unsealed
                 wasm_hash: None,
+                native_hash: None,
             },
         };
         let result = emit_wasm(&anf);

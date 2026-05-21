@@ -21,6 +21,9 @@ pub mod hash;
 pub mod lower;
 pub mod wasm;
 
+#[cfg(test)]
+mod spike_v03;
+
 pub use anf::{AnfBinding, AnfIr};
 pub use core_ir::{CoreIr, CoreNode, CoreNodeKind, StageHashes};
 pub use error::CompileError;
