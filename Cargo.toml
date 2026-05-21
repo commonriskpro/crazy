@@ -4,6 +4,7 @@ members = [
     "crates/ail-cli",
     "crates/ail-compiler",
     "crates/ail-core",
+    "crates/ail-runtime",
     "crates/ail-storage",
     "crates/ail-testkit",
     "crates/ail-verify",
@@ -18,9 +19,11 @@ version = "0.1.0"
 ail-change   = { path = "crates/ail-change" }
 ail-compiler = { path = "crates/ail-compiler" }
 ail-core     = { path = "crates/ail-core" }
+ail-runtime  = { path = "crates/ail-runtime" }
 ail-storage  = { path = "crates/ail-storage" }
 ail-testkit  = { path = "crates/ail-testkit" }
 ail-verify   = { path = "crates/ail-verify" }
+wasmtime     = "28"
 wasm-encoder = "0.244"
 wasmparser   = "0.244"
 blake3      = "1.5"
