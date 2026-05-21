@@ -18,7 +18,7 @@ Diseño de un lenguaje general-purpose optimizado para LLMs: el humano dirige in
 - `docs/tooling.md` — developer workflow/tooling.
 - `docs/risks.md` — risks and research questions.
 - `docs/decision-log.md` — decisiones aceptadas.
-- `docs/open-questions.md` — preguntas abiertas consolidadas.
+- `docs/open-questions.md` — closed decisions and validation-required items register.
 - `docs/consistency-review.md` — revisión de consistencia.
 
 `ai-native-language-draft.md` queda como archivo histórico/raw.

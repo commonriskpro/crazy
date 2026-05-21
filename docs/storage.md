@@ -458,12 +458,15 @@ indexes match snapshot or are marked stale
 10. Views/artifacts are derived and hash-linked.
 ```
 
-### Open design questions
+### Storage backend decisions
 
-```txt
-1. Concrete storage backend: embedded DB, content-addressed filesystem, object DB, or hybrid?
-2. Hash algorithm and canonical serialization format.
-3. Distributed collaboration protocol for graph branches.
-4. How much history to keep by default for local projects.
-5. Whether protected audit history can be externally archived/pruned locally.
-```
+| Area | Decision |
+|------|----------|
+| Storage API | Async-native `GraphStore`. Compiler consumes immutable snapshots and an in-memory/mmap compilation database — not repeated live queries. |
+| Storage model | FoundationDB-compatible: ordered keys, immutable snapshots, ChangeSet log, CAS blobs, transactionally updated indexes. |
+| Initial backend | Postgres (metadata + indexes) + CAS object store / filesystem (blobs). FDB is the aspirational production backend; a spike is required to confirm operational cost justifies it over Postgres. SQLite/libSQL is an optional simple/local backend — not the primary architecture. |
+| Hash algorithm | BLAKE3 |
+| Canonical serialization | Deterministic CBOR for storage objects and runtime payloads. |
+| Distributed collaboration | Agents submit ChangeSets against base snapshots; a coordinator serializes authoritative commits; stale changes rebase and reverify. Detailed protocol is a validation spike — see [Risks](risks.md) V-06. |
+| Default local retention | Configurable per project; defaults defined in retention policy examples above. |
+| Protected audit archive | External archival via export bundles; local pruning allowed by retention policy once audit obligations are satisfied. |

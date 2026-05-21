@@ -484,13 +484,15 @@ Meaning: after optimization/codegen, validate output preserves ANF/Core semantic
 10. Every artifact is hash-linked to the verification report.
 ```
 
-### Open design questions
+### Compiler technology decisions
 
-```txt
-1. Exact ANF representation and serialization.
-2. Whether SSA is custom or delegated to Cranelift/LLVM IR.
-3. Exact WASM ABI layout for values, records, variants, Result/Option.
-4. GC/memory management strategy for WASM target.
-5. How much translation validation is required for prod/critical.
-6. Native backend priority and sandboxing model.
-```
+| Area | Decision |
+|------|----------|
+| Toolchain language | Rust |
+| Parser | chumsky or lalrpop — exact crate decided by implementation spike |
+| ANF serialization | Exact format decided during implementation; must be deterministic and schema-versioned |
+| SSA / backend | Cranelift for WASM v1. LLVM/native added later if needed. Custom SSA not required. |
+| WASM ABI layout | Exact encoding for records, variants, `Result`, `Option`, handles finalized during implementation |
+| Memory management | RC vs GC deferred to implementation spike — see [Risks](risks.md) V-08 |
+| Translation validation | Required for `prod`/`critical`; scope per profile. Cranelift source-map and capability-boundary preservation is a validation spike — see [Risks](risks.md) V-03 |
+| Native backend | Deferred; LLVM path preferred when added |

@@ -1,16 +1,20 @@
-# Risks / research questions
+# Risks and validation register
 
-> Full extracted design. Related: [Open questions](open-questions.md), [Decision log](decision-log.md), [Consistency review](consistency-review.md).
+> Related: [Decisions register](open-questions.md), [Decision log](decision-log.md), [Consistency review](consistency-review.md).
 
-## Risks / research questions: propuesta completa
+The primary risk is not building a language. It is building a system too complex to be reliable, usable, and verifiable.
 
-Este bloque captura qué puede matar el proyecto, qué partes requieren investigación seria y qué preguntas abiertas deben resolverse durante la implementación completa del producto.
+Technology choices are closed — see [Decision log](decision-log.md). This register captures what can kill the project, what requires serious research during implementation, and what validation spikes must confirm the chosen decisions hold.
 
-### Tesis
+Each risk entry shape:
 
 ```txt
-El riesgo principal no es “hacer un lenguaje”.
-El riesgo principal es hacer un sistema demasiado complejo para ser confiable, usable y verificable.
+description
+impact
+likelihood
+mitigation
+validation strategy
+owner/area
 ```
 
 Cada riesgo debe tener:
@@ -345,17 +349,120 @@ examples end-to-end
 docs enfocadas en conceptos
 ```
 
-### Preguntas de investigación abiertas consolidadas
+### Closed design questions (decisions made)
 
-#### Core IR / type system
+All previously open design questions are now closed. See [Decisions register](open-questions.md) for the full table. Summary:
+
+| Area | Key decisions |
+|------|--------------|
+| Toolchain | Rust, chumsky/lalrpop (spike), Z3 + abstract solver API, Wasmtime, Cranelift v1 |
+| Formats | BLAKE3 hashing, deterministic CBOR payloads, OpenTelemetry tracing |
+| Crypto | AES-256-GCM, Ed25519, Argon2id, X25519 |
+| Storage | Async GraphStore API; FoundationDB-compatible model; Postgres + CAS initial backend |
+| Packages | Sigstore-style signing; reproducible builds for verified trust |
+| Stdlib | Semantic core only; DB is official package; crypto defaults defined |
+| Tooling | CLI `ail`; no interactive shell for v1 |
+
+### Validation-required items
+
+These are not open questions. Decisions are made; these spikes confirm the decisions hold under real conditions. Failure triggers a documented re-evaluation, not a scope cut.
+
+#### V-01: Refinement predicate expressiveness and solver performance
 
 ```txt
-1. Exact formal semantics of Core IR.
-2. How powerful refinement predicates can be before solver performance collapses.
-3. Whether effect handlers need algebraic effect semantics or simpler handler model is enough.
-4. How far resource ownership should go toward linear/affine type theory.
-5. Exact model for Dyn<Interface> + contracts + effects.
+area        verification
+impact      high
+likelihood  medium
+mitigation  abstract solver API; design contracts for composability; bound proof obligations
+validation  spike: run Z3 against representative stdlib contracts and real programs
 ```
+
+#### V-02: Formal semantics sufficiency for critical profile
+
+```txt
+area        verification
+impact      high
+likelihood  medium
+mitigation  formal-ish semantics doc; golden tests; property tests per IR stage
+validation  spike: define critical profile requirements; verify formal model covers them
+```
+
+#### V-03: Cranelift source-map and capability-boundary preservation
+
+```txt
+area        compiler
+impact      high
+likelihood  medium
+mitigation  ANF-level checks before backend; semantic source maps required per stage
+validation  spike: compile representative programs via Cranelift; verify provenance and capability boundaries in output
+```
+
+#### V-04: Postgres + CAS graph store — scale and compile latency on large apps
+
+```txt
+area        storage / compiler
+impact      high
+likelihood  medium
+mitigation  compiler consumes immutable snapshots, not repeated live queries; derived indexes; snapshot-aware caching
+validation  spike: benchmark compile time on large graph snapshots; if latency is unacceptable, evaluate FoundationDB
+```
+
+#### V-05: Handler isolation latency
+
+```txt
+area        runtime
+impact      medium
+likelihood  medium
+mitigation  typed binary ABI; batch capability calls; zero-copy where safe; profile-guided optimization
+validation  spike: measure isolation overhead under representative handler load
+```
+
+#### V-06: Distributed graph collaboration protocol
+
+```txt
+area        storage / multi-agent
+impact      high
+likelihood  medium
+mitigation  coordinator serializes commits; stale changes rebase/reverify; ChangeSet log provides ordering
+validation  spike: simulate concurrent agent ChangeSets; measure rebase correctness and latency
+```
+
+#### V-07: Context-slice signing key management
+
+```txt
+area        context server / security
+impact      medium
+likelihood  medium
+mitigation  Sigstore-style keyless signing; structured context is authoritative
+validation  spike: define key lifecycle for distributed agents; confirm signing does not break latency budget
+```
+
+#### V-08: WASM memory management — RC vs GC
+
+```txt
+area        compiler / runtime
+impact      high
+likelihood  medium
+mitigation  decision deferred to implementation spike; resource modes constrain ownership patterns
+validation  spike: prototype RC and GC approaches; evaluate performance, correctness, and WASM ABI complexity
+```
+
+### Validation milestones (behavioral)
+
+These confirm the system delivers on its thesis. They are not scope cuts — they are proofs the design works.
+
+| # | Validation |
+|---|-----------|
+| B-01 | LLM generates valid ChangeSets reliably for representative programs |
+| B-02 | Context Server slices reduce token/context needs versus raw file reading |
+| B-03 | Canonicalization produces stable, deterministic diffs |
+| B-04 | Type/effect checker catches real LLM-generated mistakes |
+| B-05 | Refinement/contract obligations produce useful, actionable repairs |
+| B-06 | Runtime host denies ungranted capabilities under adversarial input |
+| B-07 | Profile-bound artifacts prevent prod misuse at the toolchain level |
+| B-08 | Semantic rebase handles non-conflicting concurrent graph changes |
+| B-09 | Storage GC/compaction keeps growth bounded under realistic project load |
+| B-10 | Structural diff UX makes ChangeSet review understandable to humans |
 
 #### Compiler
 
@@ -446,7 +553,7 @@ Estas validaciones no son “MVP” del producto; son pruebas de riesgo que debe
 
 ### Risk register format
 
-Cada riesgo abierto debe registrarse así:
+Each risk entry follows this shape:
 
 ```txt
 risk <id>
@@ -460,9 +567,10 @@ risk <id>
 end
 ```
 
-### Final rule
+### Rule
 
 ```txt
-No open question should remain hidden in prose.
-Every serious unknown becomes a tracked research question or risk.
+No serious unknown should remain hidden in prose.
+Every unresolved concern becomes a tracked risk or validation spike.
+Closed decisions live in the decision log and decisions register.
 ```
