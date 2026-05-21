@@ -232,6 +232,11 @@ pub fn compile_incremental(
                 source_ref: gn.id,
                 kind: map_node_kind(gn.kind),
                 name: gn.name.clone(),
+                ty: gn
+                    .type_facts
+                    .as_ref()
+                    .map(|tf| crate::lower::nominal_to_core_type(&tf.nominal)),
+                expr: None,
             };
 
             // Compute core_ir_hash for this node's lowering (matches existing
@@ -266,6 +271,11 @@ pub fn compile_incremental(
                 source_ref: gn.id,
                 kind: map_node_kind(gn.kind),
                 name: gn.name.clone(),
+                ty: gn
+                    .type_facts
+                    .as_ref()
+                    .map(|tf| crate::lower::nominal_to_core_type(&tf.nominal)),
+                expr: None,
             };
 
             if total_stage_hashes.is_none() {

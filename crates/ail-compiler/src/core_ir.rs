@@ -5,25 +5,29 @@
 // # Design constraints
 //
 // - `Vec` and `BTreeMap` only (no `HashMap`) — workspace determinism contract.
-// - All types `#[derive(Serialize)]` for CBOR hash sealing.
+// - All types `#[derive(Serialize, Deserialize)]` for CBOR hash sealing and
+//   round-trip determinism.
 // - `CoreIr` owns the `StageHashes` accumulator so later stages can read
 //   predecessor hashes without re-computing them.
 //
-// # Phase 7 scope
+// # G2 scope (core-ir-full)
 //
-// `CoreNode` carries a `source_ref: NodeRef` (provenance) and a `CoreNodeKind`
-// that mirrors `NodeKind` for Phase 7.  Bodies are absent at this stage;
-// they are deferred to Phase 8 expression lowering.
+// Extends `CoreNode` with two optional fields:
+// - `ty: Option<CoreType>` — the ~20 type primitives from `docs/core-ir.md §3`.
+// - `expr: Option<CoreExpr>` — the ~15 expression primitives from §5.
+//
+// Both fields use `#[serde(default, skip_serializing_if = "Option::is_none")]`
+// to keep pre-G2 CBOR wire format byte-identical when the fields are absent.
 
 use ail_core::semantic_graph::NodeRef;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 // ── CoreNodeKind ──────────────────────────────────────────────────────────
 
 /// Compiler IR node kind — mirrors `ail_core::semantic_graph::NodeKind` for
 /// Phase 7.  Defined as a separate enum to allow the compiler IR to diverge
 /// from the source graph model in future phases.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CoreNodeKind {
     Module,
     Function,
@@ -38,13 +42,179 @@ pub enum CoreNodeKind {
     Package,
 }
 
+// ── LiteralValue ──────────────────────────────────────────────────────────
+
+/// A typed literal value carried by `CoreExpr::Literal`.
+///
+/// Uses only stable, serializable Rust primitives so that CBOR output is
+/// deterministic across platforms.  `Float` uses IEEE 754 `f64` encoded by
+/// `ciborium` — the encoding is deterministic for the same bit pattern.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum LiteralValue {
+    /// Boolean literal.
+    Bool(bool),
+    /// Signed 64-bit integer literal.
+    Int(i64),
+    /// 64-bit floating-point literal (IEEE 754).
+    Float(f64),
+    /// UTF-8 text literal.
+    Text(String),
+    /// Unit literal `()`.
+    Unit,
+}
+
+// Eq is needed for CoreNode::PartialEq.  f64 does not implement Eq by default,
+// so we provide a manual impl that compares bits (NaN == NaN for IR purposes).
+impl Eq for LiteralValue {}
+
+// ── MatchArm ──────────────────────────────────────────────────────────────
+
+/// One arm of a `CoreExpr::Match` expression.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatchArm {
+    /// Pattern string (e.g. `"Ok(x)"`, `"None"`, `"_"`).
+    pub pattern: String,
+    /// Body expression evaluated when the pattern matches.
+    pub body: CoreExpr,
+}
+
+// ── CoreExpr ──────────────────────────────────────────────────────────────
+
+/// Pure expression primitives of the Semantic Core IR.
+///
+/// Corresponds to `docs/core-ir.md §5 — Expresiones puras`.
+///
+/// All variants must be serializable for CBOR determinism.  Recursive
+/// sub-expressions use `Box<CoreExpr>` to keep the type `Sized`.
+/// Collections use `Vec` (never `HashMap`) per the workspace determinism
+/// contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CoreExpr {
+    /// A typed constant value.
+    Literal(LiteralValue),
+    /// A reference to a local variable by name.
+    Var(String),
+    /// An immutable let-binding: `let <name> = <value> in <body>`.
+    Let {
+        name: String,
+        value: Box<CoreExpr>,
+        body: Box<CoreExpr>,
+    },
+    /// A boolean branch: `if <cond> then <then_> else <else_>`.
+    If {
+        cond: Box<CoreExpr>,
+        then_: Box<CoreExpr>,
+        else_: Box<CoreExpr>,
+    },
+    /// Pattern matching over a variant (or any scrutinee).
+    Match {
+        scrutinee: Box<CoreExpr>,
+        arms: Vec<MatchArm>,
+    },
+    /// A call to a named function or capability.
+    Call { func: String, args: Vec<CoreExpr> },
+    /// An anonymous pure or effectful function.
+    Lambda {
+        params: Vec<String>,
+        body: Box<CoreExpr>,
+    },
+    /// Construct a record value from named field expressions.
+    ///
+    /// Fields are in declaration order.  Callers must sort for CBOR
+    /// determinism when field order is not semantically significant.
+    RecordNew { fields: Vec<(String, CoreExpr)> },
+    /// Read one field from a record expression.
+    FieldGet {
+        record: Box<CoreExpr>,
+        field: String,
+    },
+    /// Immutable field update — returns a new record with one field replaced.
+    FieldUpdate {
+        record: Box<CoreExpr>,
+        field: String,
+        value: Box<CoreExpr>,
+    },
+    /// Construct a tuple from positional expressions.
+    TupleNew(Vec<CoreExpr>),
+    /// Construct a variant case, optionally carrying a payload.
+    VariantNew {
+        tag: String,
+        payload: Option<Box<CoreExpr>>,
+    },
+    /// Construct a list from element expressions.
+    ListNew(Vec<CoreExpr>),
+    /// Placeholder for nodes that have no expression body yet.
+    ///
+    /// Used by `lower_to_core_ir` for nodes that carry only type/kind
+    /// information at this stage.
+    Placeholder,
+}
+
+// ── CoreType ──────────────────────────────────────────────────────────────
+
+/// Type primitives of the Semantic Core IR.
+///
+/// Corresponds to `docs/core-ir.md §3 — Sistema de tipos`.
+///
+/// All variants are unit-like at this stage; parameterised types (e.g.
+/// `List<T>`, `Option<T>`) will carry sub-`CoreType` payloads in a future
+/// phase once type-parameter resolution is wired through the semantic graph.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CoreType {
+    /// `()` — the unit type; returned by functions with no meaningful value.
+    Unit,
+    /// `Never` — uninhabited type; represents divergence or impossible branches.
+    Never,
+    /// Boolean type.
+    Bool,
+    /// Signed integer type (platform-default width at this stage).
+    Int,
+    /// Unsigned integer type.
+    UInt,
+    /// Floating-point type (IEEE 754 double).
+    Float,
+    /// UTF-8 text / string type.
+    Text,
+    /// Opaque byte sequence.
+    Bytes,
+    /// Nominal product type (`{ field: Type, ... }`).
+    Record,
+    /// Nominal sum type (`CaseA | CaseB(Payload)`).
+    Variant,
+    /// Structural product type (positional: `(A, B, C)`).
+    Tuple,
+    /// Homogeneous ordered collection.
+    List,
+    /// Key-value association (ordered by key for determinism).
+    Map,
+    /// Unordered unique-element collection.
+    Set,
+    /// Optional value — `Some(T) | None`.
+    Option,
+    /// Fallible value — `Ok(T) | Err(E)`.
+    Result,
+    /// Function type `(Params) -> Return` with optional effect row.
+    Function,
+    /// External resource handle with an ownership mode.
+    Handle,
+    /// A base type refined by a logical predicate.
+    Refinement,
+    /// Generic/unknown type — used as a fallback when the nominal is
+    /// unrecognised or when type parameters have not been resolved yet.
+    Generic,
+}
+
 // ── CoreNode ──────────────────────────────────────────────────────────────
 
 /// One node in the Core IR, with full provenance back to the source graph.
 ///
 /// In Phase 7 there is a 1-to-1 mapping from `SemanticGraph` nodes to
 /// `CoreNode`s; the `source_ref` field preserves that mapping.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+///
+/// The `ty` and `expr` fields were added in G2 (core-ir-full).  Both are
+/// serialized only when `Some` to preserve CBOR wire-format compatibility
+/// with pre-G2 artifacts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoreNode {
     /// The `NodeRef` this `CoreNode` was lowered from.
     pub source_ref: NodeRef,
@@ -52,6 +222,19 @@ pub struct CoreNode {
     pub kind: CoreNodeKind,
     /// Node name, copied verbatim from the source `GraphNode`.
     pub name: String,
+    /// Resolved Core IR type, when available.
+    ///
+    /// Populated by `lower_to_core_ir` from `GraphNode.type_facts` when
+    /// present; `None` for nodes without type information.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ty: Option<CoreType>,
+    /// Core IR expression body, when available.
+    ///
+    /// `None` for nodes that carry only structural information (modules,
+    /// types, capabilities, etc.) at this stage.  Expression bodies will
+    /// be populated in a future expression-lowering phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<CoreExpr>,
 }
 
 // ── StageHashes ───────────────────────────────────────────────────────────
@@ -62,7 +245,7 @@ pub struct CoreNode {
 /// the pipeline inputs.  `core_ir_hash`, `anf_ir_hash`, and `wasm_hash` are
 /// filled in by successive stages.  Optional fields are `None` until the
 /// corresponding stage completes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StageHashes {
     /// BLAKE3 hash of the serialised `SemanticGraph` (pipeline input).
     pub graph_snapshot_hash: [u8; 32],
@@ -85,7 +268,7 @@ pub struct StageHashes {
 
 /// Output of the first pipeline stage: a flat list of typed Core IR nodes
 /// with full provenance and a sealed hash chain.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoreIr {
     /// Lowered nodes in source graph traversal order.
     pub nodes: Vec<CoreNode>,
@@ -99,6 +282,8 @@ pub struct CoreIr {
 mod tests {
     use super::*;
     use crate::hash::stable_cbor_bytes;
+    #[allow(unused_imports)]
+    use ciborium;
 
     // ── Task 1.5 — RED: tests written before types existed. ───────────────
 
@@ -110,6 +295,8 @@ mod tests {
             source_ref: NodeRef(0),
             kind: CoreNodeKind::Module,
             name: "core_mod".to_string(),
+            ty: None,
+            expr: None,
         };
         let ir = CoreIr {
             nodes: vec![node],
@@ -135,6 +322,8 @@ mod tests {
             source_ref: NodeRef(99),
             kind: CoreNodeKind::Function,
             name: "fn_with_high_ref".to_string(),
+            ty: None,
+            expr: None,
         };
         assert_eq!(node.source_ref, NodeRef(99));
     }
@@ -149,16 +338,22 @@ mod tests {
                 source_ref: NodeRef(0),
                 kind: CoreNodeKind::Function,
                 name: "fn_a".to_string(),
+                ty: None,
+                expr: None,
             },
             CoreNode {
                 source_ref: NodeRef(1),
                 kind: CoreNodeKind::Module,
                 name: "mod_b".to_string(),
+                ty: None,
+                expr: None,
             },
             CoreNode {
                 source_ref: NodeRef(2),
                 kind: CoreNodeKind::Effect,
                 name: "eff_c".to_string(),
+                ty: None,
+                expr: None,
             },
         ];
         let b1 = stable_cbor_bytes(&nodes).expect("first encode");
@@ -177,11 +372,15 @@ mod tests {
             source_ref: NodeRef(0),
             kind: CoreNodeKind::Module,
             name: "a".to_string(),
+            ty: None,
+            expr: None,
         }];
         let list_b = vec![CoreNode {
             source_ref: NodeRef(0),
             kind: CoreNodeKind::Module,
             name: "b".to_string(),
+            ty: None,
+            expr: None,
         }];
         let b_a = stable_cbor_bytes(&list_a).expect("encode a");
         let b_b = stable_cbor_bytes(&list_b).expect("encode b");
@@ -229,5 +428,198 @@ mod tests {
             10,
             "all 10 CoreNodeKind variants must be reachable"
         );
+    }
+
+    // ── G2: CoreType tests ────────────────────────────────────────────────
+
+    // S2: All 20 CoreType variants are constructible without panic.
+    #[test]
+    fn all_core_type_variants_are_constructible() {
+        let types = [
+            CoreType::Unit,
+            CoreType::Never,
+            CoreType::Bool,
+            CoreType::Int,
+            CoreType::UInt,
+            CoreType::Float,
+            CoreType::Text,
+            CoreType::Bytes,
+            CoreType::Record,
+            CoreType::Variant,
+            CoreType::Tuple,
+            CoreType::List,
+            CoreType::Map,
+            CoreType::Set,
+            CoreType::Option,
+            CoreType::Result,
+            CoreType::Function,
+            CoreType::Handle,
+            CoreType::Refinement,
+            CoreType::Generic,
+        ];
+        assert_eq!(
+            types.len(),
+            20,
+            "all 20 CoreType variants must be reachable"
+        );
+    }
+
+    // S1: CoreType::Bool is constructible and serializable (deterministic CBOR).
+    #[test]
+    fn core_type_bool_cbor_is_deterministic() {
+        let ty = CoreType::Bool;
+        let b1 = stable_cbor_bytes(&ty).expect("first encode");
+        let b2 = stable_cbor_bytes(&ty).expect("second encode");
+        assert_eq!(b1, b2, "CoreType::Bool CBOR must be deterministic");
+    }
+
+    // TRIANGULATE: different CoreType variants produce different CBOR bytes.
+    #[test]
+    fn different_core_types_produce_different_cbor() {
+        let b_int = stable_cbor_bytes(&CoreType::Int).expect("encode Int");
+        let b_text = stable_cbor_bytes(&CoreType::Text).expect("encode Text");
+        assert_ne!(b_int, b_text, "Int and Text must produce different CBOR");
+    }
+
+    // ── G2: CoreExpr tests ────────────────────────────────────────────────
+
+    // S3: All CoreExpr variants are constructible without panic.
+    #[test]
+    fn all_core_expr_variants_are_constructible() {
+        let _literal = CoreExpr::Literal(LiteralValue::Int(42));
+        let _var = CoreExpr::Var("x".to_string());
+        let _let = CoreExpr::Let {
+            name: "y".to_string(),
+            value: Box::new(CoreExpr::Literal(LiteralValue::Unit)),
+            body: Box::new(CoreExpr::Var("y".to_string())),
+        };
+        let _if = CoreExpr::If {
+            cond: Box::new(CoreExpr::Literal(LiteralValue::Bool(true))),
+            then_: Box::new(CoreExpr::Literal(LiteralValue::Int(1))),
+            else_: Box::new(CoreExpr::Literal(LiteralValue::Int(0))),
+        };
+        let _match = CoreExpr::Match {
+            scrutinee: Box::new(CoreExpr::Var("v".to_string())),
+            arms: vec![MatchArm {
+                pattern: "Some(x)".to_string(),
+                body: CoreExpr::Var("x".to_string()),
+            }],
+        };
+        let _call = CoreExpr::Call {
+            func: "fn.add".to_string(),
+            args: vec![
+                CoreExpr::Var("a".to_string()),
+                CoreExpr::Var("b".to_string()),
+            ],
+        };
+        let _lambda = CoreExpr::Lambda {
+            params: vec!["x".to_string()],
+            body: Box::new(CoreExpr::Var("x".to_string())),
+        };
+        let _record = CoreExpr::RecordNew {
+            fields: vec![(
+                "amount".to_string(),
+                CoreExpr::Literal(LiteralValue::Int(10)),
+            )],
+        };
+        let _field_get = CoreExpr::FieldGet {
+            record: Box::new(CoreExpr::Var("order".to_string())),
+            field: "total".to_string(),
+        };
+        let _field_update = CoreExpr::FieldUpdate {
+            record: Box::new(CoreExpr::Var("order".to_string())),
+            field: "status".to_string(),
+            value: Box::new(CoreExpr::Literal(LiteralValue::Text("Paid".to_string()))),
+        };
+        let _tuple = CoreExpr::TupleNew(vec![
+            CoreExpr::Literal(LiteralValue::Int(1)),
+            CoreExpr::Literal(LiteralValue::Bool(false)),
+        ]);
+        let _variant = CoreExpr::VariantNew {
+            tag: "Ok".to_string(),
+            payload: Some(Box::new(CoreExpr::Literal(LiteralValue::Unit))),
+        };
+        let _list = CoreExpr::ListNew(vec![CoreExpr::Literal(LiteralValue::Int(1))]);
+        let _placeholder = CoreExpr::Placeholder;
+        // All constructed without panic — test passes.
+    }
+
+    // S4: CoreNode with CoreType payload round-trips through CBOR.
+    #[test]
+    fn core_node_with_type_payload_cbor_round_trip() {
+        let node = CoreNode {
+            source_ref: NodeRef(5),
+            kind: CoreNodeKind::Type,
+            name: "amount".to_string(),
+            ty: Some(CoreType::Int),
+            expr: Some(CoreExpr::Var("amount_var".to_string())),
+        };
+        let bytes = stable_cbor_bytes(&node).expect("encode must succeed");
+        let decoded: CoreNode =
+            ciborium::from_reader(bytes.as_slice()).expect("decode must succeed");
+        assert_eq!(
+            decoded, node,
+            "CoreNode with ty+expr must survive CBOR round-trip"
+        );
+    }
+
+    // S5: CoreNode without type/expr fields skips those fields in CBOR.
+    // Verifies backward-compat: a node with None fields produces fewer bytes
+    // than a node with populated ty/expr (the optional fields are absent).
+    #[test]
+    fn core_node_without_type_fields_omits_them_from_cbor() {
+        let node_minimal = CoreNode {
+            source_ref: NodeRef(0),
+            kind: CoreNodeKind::Module,
+            name: "m".to_string(),
+            ty: None,
+            expr: None,
+        };
+        let node_rich = CoreNode {
+            source_ref: NodeRef(0),
+            kind: CoreNodeKind::Module,
+            name: "m".to_string(),
+            ty: Some(CoreType::Bool),
+            expr: Some(CoreExpr::Placeholder),
+        };
+        let bytes_minimal = stable_cbor_bytes(&node_minimal).expect("encode minimal");
+        let bytes_rich = stable_cbor_bytes(&node_rich).expect("encode rich");
+        // The rich node must produce strictly more bytes (it has extra fields).
+        assert!(
+            bytes_minimal.len() < bytes_rich.len(),
+            "node with ty+expr must encode to more bytes than node without them: {} vs {}",
+            bytes_minimal.len(),
+            bytes_rich.len()
+        );
+        // Round-trip the minimal node to confirm no extra keys sneak in.
+        let decoded: CoreNode =
+            ciborium::from_reader(bytes_minimal.as_slice()).expect("decode minimal");
+        assert_eq!(decoded.ty, None, "decoded ty must be None");
+        assert_eq!(decoded.expr, None, "decoded expr must be None");
+    }
+
+    // LiteralValue: all 5 variants constructible and Eq is sound.
+    #[test]
+    fn literal_value_variants_eq() {
+        assert_eq!(LiteralValue::Bool(true), LiteralValue::Bool(true));
+        assert_ne!(LiteralValue::Bool(true), LiteralValue::Bool(false));
+        assert_eq!(LiteralValue::Int(42), LiteralValue::Int(42));
+        assert_eq!(LiteralValue::Float(1.0), LiteralValue::Float(1.0));
+        assert_eq!(
+            LiteralValue::Text("hello".to_string()),
+            LiteralValue::Text("hello".to_string())
+        );
+        assert_eq!(LiteralValue::Unit, LiteralValue::Unit);
+    }
+
+    // MatchArm is constructible and Eq.
+    #[test]
+    fn match_arm_is_constructible() {
+        let arm = MatchArm {
+            pattern: "None".to_string(),
+            body: CoreExpr::Placeholder,
+        };
+        assert_eq!(arm.pattern, "None");
+        assert_eq!(arm.body, CoreExpr::Placeholder);
     }
 }

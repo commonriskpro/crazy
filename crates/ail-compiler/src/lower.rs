@@ -24,7 +24,7 @@ use ail_core::semantic_graph::{GraphValidationError, NodeKind, SemanticGraph};
 use ail_verify::report::{VerificationReport, VerificationState};
 
 use crate::anf::{AnfBinding, AnfIr};
-use crate::core_ir::{CoreIr, CoreNode, CoreNodeKind, StageHashes};
+use crate::core_ir::{CoreIr, CoreNode, CoreNodeKind, CoreType, StageHashes};
 use crate::error::CompileError;
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
 
@@ -77,6 +77,39 @@ fn map_core_node_to_anf(node: &CoreNode) -> AnfBinding {
     }
 }
 
+// ── nominal_to_core_type ─────────────────────────────────────────────────
+
+/// Map a `TypeFacts.nominal` string to a `CoreType` variant.
+///
+/// Recognised nominals correspond to the 20 type primitives listed in
+/// `docs/core-ir.md §3`.  Any unrecognised nominal falls back to
+/// `CoreType::Generic`.
+pub fn nominal_to_core_type(nominal: &str) -> CoreType {
+    match nominal {
+        "Unit" => CoreType::Unit,
+        "Never" => CoreType::Never,
+        "Bool" => CoreType::Bool,
+        "Int" => CoreType::Int,
+        "UInt" => CoreType::UInt,
+        "Float" => CoreType::Float,
+        "Text" => CoreType::Text,
+        "Bytes" => CoreType::Bytes,
+        "Record" => CoreType::Record,
+        "Variant" => CoreType::Variant,
+        "Tuple" => CoreType::Tuple,
+        "List" => CoreType::List,
+        "Map" => CoreType::Map,
+        "Set" => CoreType::Set,
+        "Option" => CoreType::Option,
+        "Result" => CoreType::Result,
+        "Function" => CoreType::Function,
+        "Handle" => CoreType::Handle,
+        "Refinement" => CoreType::Refinement,
+        "Generic" => CoreType::Generic,
+        _ => CoreType::Generic,
+    }
+}
+
 // ── lower_to_core_ir ──────────────────────────────────────────────────────
 
 /// Lower a verified `SemanticGraph` into a `CoreIr`.
@@ -121,6 +154,9 @@ pub fn lower_to_core_ir(
     let verification_report_hash = hash_with_parent(&[], &report_cbor);
 
     // Lower each source GraphNode to a CoreNode (1-to-1, in traversal order).
+    // G2: populate `ty` from `GraphNode.type_facts.nominal` when present.
+    // `expr` is left `None` at this stage; expression bodies are deferred to
+    // the expression-lowering phase.
     let nodes: Vec<CoreNode> = graph
         .nodes
         .iter()
@@ -128,6 +164,11 @@ pub fn lower_to_core_ir(
             source_ref: gn.id,
             kind: map_node_kind(gn.kind),
             name: gn.name.clone(),
+            ty: gn
+                .type_facts
+                .as_ref()
+                .map(|tf| nominal_to_core_type(&tf.nominal)),
+            expr: None,
         })
         .collect();
 
@@ -294,6 +335,8 @@ mod tests {
             source_ref: NodeRef(7),
             kind: CoreNodeKind::Function,
             name: "fn_x".to_string(),
+            ty: None,
+            expr: None,
         };
         let binding = map_core_node_to_anf(&node);
         assert_eq!(binding.source_ref, NodeRef(7));
@@ -340,5 +383,122 @@ mod tests {
         let core = lower_to_core_ir(&graph, &report).unwrap();
         let anf = lower_to_anf(&core).unwrap();
         assert!(anf.stage_hashes.anf_ir_hash.is_some());
+    }
+
+    // ── nominal_to_core_type ─────────────────────────────────────────────
+
+    // S6 (partial): all 20 known nominals map to their CoreType variant.
+    #[test]
+    fn all_known_nominals_map_to_correct_core_type() {
+        let cases: &[(&str, CoreType)] = &[
+            ("Unit", CoreType::Unit),
+            ("Never", CoreType::Never),
+            ("Bool", CoreType::Bool),
+            ("Int", CoreType::Int),
+            ("UInt", CoreType::UInt),
+            ("Float", CoreType::Float),
+            ("Text", CoreType::Text),
+            ("Bytes", CoreType::Bytes),
+            ("Record", CoreType::Record),
+            ("Variant", CoreType::Variant),
+            ("Tuple", CoreType::Tuple),
+            ("List", CoreType::List),
+            ("Map", CoreType::Map),
+            ("Set", CoreType::Set),
+            ("Option", CoreType::Option),
+            ("Result", CoreType::Result),
+            ("Function", CoreType::Function),
+            ("Handle", CoreType::Handle),
+            ("Refinement", CoreType::Refinement),
+            ("Generic", CoreType::Generic),
+        ];
+        for (nominal, expected) in cases {
+            assert_eq!(
+                nominal_to_core_type(nominal),
+                *expected,
+                "nominal {nominal:?} must map to {expected:?}"
+            );
+        }
+    }
+
+    // S7: unknown nominal falls back to CoreType::Generic.
+    #[test]
+    fn unknown_nominal_maps_to_generic() {
+        assert_eq!(nominal_to_core_type("Exotic"), CoreType::Generic);
+        assert_eq!(nominal_to_core_type(""), CoreType::Generic);
+        assert_eq!(nominal_to_core_type("int"), CoreType::Generic); // case-sensitive
+    }
+
+    // ── G2 lower_to_core_ir with type_facts ──────────────────────────────
+
+    // S6: lower_to_core_ir populates CoreType::Int for a node with
+    // type_facts.nominal = "Int".
+    #[test]
+    fn lower_to_core_ir_populates_core_type_from_type_facts() {
+        use ail_core::semantic_graph::TypeFacts;
+
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "amount");
+        node.type_facts = Some(TypeFacts {
+            nominal: "Int".to_string(),
+            generics: vec![],
+        });
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
+        let report = proven_report();
+        let core = lower_to_core_ir(&graph, &report).unwrap();
+        assert_eq!(
+            core.nodes[0].ty,
+            Some(CoreType::Int),
+            "node with TypeFacts.nominal=Int must get ty=Some(CoreType::Int)"
+        );
+    }
+
+    // S8: lower_to_core_ir leaves ty = None for nodes without type_facts.
+    #[test]
+    fn lower_to_core_ir_leaves_ty_none_without_type_facts() {
+        let graph = one_node_graph(); // GraphNode::new — type_facts is None
+        let report = proven_report();
+        let core = lower_to_core_ir(&graph, &report).unwrap();
+        assert_eq!(
+            core.nodes[0].ty, None,
+            "node without TypeFacts must have ty=None"
+        );
+    }
+
+    // S7 (lowering): lower_to_core_ir uses Generic for unknown nominals.
+    #[test]
+    fn lower_to_core_ir_uses_generic_for_unknown_nominal() {
+        use ail_core::semantic_graph::TypeFacts;
+
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "exotic");
+        node.type_facts = Some(TypeFacts {
+            nominal: "Exotic".to_string(),
+            generics: vec![],
+        });
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
+        let report = proven_report();
+        let core = lower_to_core_ir(&graph, &report).unwrap();
+        assert_eq!(
+            core.nodes[0].ty,
+            Some(CoreType::Generic),
+            "unknown nominal must produce CoreType::Generic"
+        );
+    }
+
+    // expr is always None after lower_to_core_ir (deferred phase).
+    #[test]
+    fn lower_to_core_ir_expr_is_always_none() {
+        let graph = one_node_graph();
+        let report = proven_report();
+        let core = lower_to_core_ir(&graph, &report).unwrap();
+        assert!(
+            core.nodes[0].expr.is_none(),
+            "expr must be None after lower_to_core_ir (deferred to expression lowering)"
+        );
     }
 }
