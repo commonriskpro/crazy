@@ -258,7 +258,11 @@ mod tests {
     // TRIANGULATE: non-Unsafe packages pass validation with empty surface.
     #[test]
     fn validate_accepts_non_unsafe_with_empty_surface() {
-        for level in [TrustLevel::Verified, TrustLevel::Assumed, TrustLevel::Unverified] {
+        for level in [
+            TrustLevel::Verified,
+            TrustLevel::Assumed,
+            TrustLevel::Unverified,
+        ] {
             let m = PackageManifest::from_def(minimal_def(level));
             assert_eq!(m.validate(), Ok(()), "level {level} should pass validate");
         }

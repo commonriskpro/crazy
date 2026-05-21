@@ -119,6 +119,7 @@ version = "0.1.0"
 dependencies = [
  "ail-compiler",
  "ail-core",
+ "ail-package",
  "ail-verify",
  "blake3",
  "ciborium",
@@ -160,6 +161,7 @@ name = "ail-verify"
 version = "0.1.0"
 dependencies = [
  "ail-core",
+ "ail-package",
  "ciborium",
  "serde",
 ]

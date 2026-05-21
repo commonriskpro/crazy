@@ -488,7 +488,10 @@ mod tests {
         let bytes = codec.encode(&graph).expect("encode must succeed");
         let decoded: SemanticGraph = codec.decode(&bytes).expect("decode must succeed");
 
-        assert_eq!(decoded, graph, "graph with Package node must survive CBOR round-trip");
+        assert_eq!(
+            decoded, graph,
+            "graph with Package node must survive CBOR round-trip"
+        );
         assert_eq!(
             decoded.nodes[1].kind,
             NodeKind::Package,

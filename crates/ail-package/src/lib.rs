@@ -29,7 +29,9 @@ pub mod trust;
 
 pub use assumption::{AssumptionState, PackageAssumption};
 pub use lockfile::LockfileEntry;
-pub use manifest::{ArtifactHashEntry, PackageDef, PackageError, PackageManifest, PackageValidationError};
+pub use manifest::{
+    ArtifactHashEntry, PackageDef, PackageError, PackageManifest, PackageValidationError,
+};
 pub use registry::PackageRegistry;
 pub use surface::UnsafeSurfaceEntry;
 pub use trust::TrustLevel;

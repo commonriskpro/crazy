@@ -65,8 +65,7 @@ mod tests {
         let original = sample_entry();
 
         let mut buf = Vec::new();
-        ciborium::ser::into_writer(&original, &mut buf)
-            .expect("CBOR serialization must succeed");
+        ciborium::ser::into_writer(&original, &mut buf).expect("CBOR serialization must succeed");
 
         let decoded: LockfileEntry =
             ciborium::de::from_reader(buf.as_slice()).expect("CBOR deserialization must succeed");
@@ -86,7 +85,10 @@ mod tests {
         let mut buf2 = Vec::new();
         ciborium::ser::into_writer(&entry, &mut buf2).expect("second encode");
 
-        assert_eq!(buf1, buf2, "identical inputs must produce identical CBOR bytes");
+        assert_eq!(
+            buf1, buf2,
+            "identical inputs must produce identical CBOR bytes"
+        );
     }
 
     // ── lockfile_entry_without_report_hash ────────────────────────────────
@@ -101,8 +103,7 @@ mod tests {
 
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&entry, &mut buf).expect("encode");
-        let decoded: LockfileEntry =
-            ciborium::de::from_reader(buf.as_slice()).expect("decode");
+        let decoded: LockfileEntry = ciborium::de::from_reader(buf.as_slice()).expect("decode");
 
         assert_eq!(decoded.verification_report_hash, None);
         assert!(decoded.accepted_assumptions.is_empty());

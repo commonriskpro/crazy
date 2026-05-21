@@ -7,6 +7,8 @@
 // profile_tests.rs and audit_tests.rs that exercise error variants as
 // part of preflight behaviour, rather than here in isolation.
 
+use ail_package::trust::TrustLevel;
+
 use crate::profile::CapabilityId;
 
 // ── PreflightFailure ─────────────────────────────────────────────────────
@@ -35,6 +37,28 @@ pub enum PreflightFailure {
 
     /// Wasmtime rejected the WASM binary during structural validation.
     WasmValidationError(String),
+
+    /// A package manifest's trust level does not meet the profile's minimum.
+    ///
+    /// Emitted during Stage 0 preflight when `profile.min_package_trust` is
+    /// `Some(required)` and a declared package has `trust_level < required`.
+    PackageTrustViolation {
+        /// Package name as declared in the manifest.
+        package: String,
+        /// Minimum trust level required by the active profile.
+        required: TrustLevel,
+        /// Actual trust level of the package.
+        actual: TrustLevel,
+    },
+
+    /// An `Unsafe` package has no explicit approval record in the profile.
+    ///
+    /// `TrustLevel::Unsafe` packages are unconditionally blocked unless the
+    /// profile carries an explicit approval for that package.
+    UnsafePackageNotApproved {
+        /// Package name as declared in the manifest.
+        package: String,
+    },
 }
 
 impl std::fmt::Display for PreflightFailure {
@@ -49,6 +73,24 @@ impl std::fmt::Display for PreflightFailure {
             }
             PreflightFailure::WasmValidationError(msg) => {
                 write!(f, "wasm validation error: {msg}")
+            }
+            PreflightFailure::PackageTrustViolation {
+                package,
+                required,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "package trust violation: `{package}` has trust level `{actual}`, \
+                     profile requires `{required}`"
+                )
+            }
+            PreflightFailure::UnsafePackageNotApproved { package } => {
+                write!(
+                    f,
+                    "unsafe package not approved: `{package}` has TrustLevel::Unsafe \
+                     with no explicit approval in the profile"
+                )
             }
         }
     }
@@ -91,6 +133,8 @@ pub type RuntimeResult<T> = Result<T, RuntimeError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ail_package::trust::TrustLevel;
+
     use crate::profile::CapabilityId;
 
     // Structural test: PreflightFailure::HashMismatch carries both hashes.

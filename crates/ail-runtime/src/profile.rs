@@ -5,6 +5,12 @@
 // `RuntimeProfile` carries the hashes and grants that drive preflight.
 // Construction is via `RuntimeProfile::new`; all fields are read-only after
 // construction.
+//
+// Phase 12 adds `min_package_trust: Option<TrustLevel>` as an optional
+// builder field (`with_package_trust`) so existing `RuntimeProfile::new`
+// call sites are unaffected.
+
+use ail_package::trust::TrustLevel;
 
 // ── CapabilityId ─────────────────────────────────────────────────────────
 
@@ -72,6 +78,13 @@ pub struct RuntimeProfile {
     capability_manifest_hash: String,
     grants: Vec<CapabilityGrant>,
     limits: ResourceLimits,
+    /// Optional minimum trust tier for package manifests.
+    ///
+    /// `None` disables the package trust gate entirely (preserves existing
+    /// behaviour for callers that don't opt in to package trust checking).
+    /// `Some(level)` causes preflight to reject any package manifest whose
+    /// `trust_level` does not satisfy `level`.
+    min_package_trust: Option<TrustLevel>,
 }
 
 impl RuntimeProfile {
@@ -95,7 +108,19 @@ impl RuntimeProfile {
             capability_manifest_hash,
             grants,
             limits,
+            min_package_trust: None,
         }
+    }
+
+    /// Set the minimum package trust tier for this profile.
+    ///
+    /// Consumes `self` and returns a new `RuntimeProfile` with
+    /// `min_package_trust` set to `Some(level)`.  Use this builder method
+    /// to opt in to package trust gating without changing the `new`
+    /// constructor signature.
+    pub fn with_package_trust(mut self, level: TrustLevel) -> Self {
+        self.min_package_trust = Some(level);
+        self
     }
 
     /// Profile name (human-readable label).
@@ -128,6 +153,13 @@ impl RuntimeProfile {
     /// Optional resource constraints.
     pub fn limits(&self) -> &ResourceLimits {
         &self.limits
+    }
+
+    /// Minimum package trust tier required by this profile.
+    ///
+    /// `None` means the package trust gate is disabled.
+    pub fn min_package_trust(&self) -> Option<TrustLevel> {
+        self.min_package_trust
     }
 
     /// Return `true` if `capability` is present in the grants list.
