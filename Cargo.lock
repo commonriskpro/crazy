@@ -99,6 +99,7 @@ version = "0.1.0"
 dependencies = [
  "ail-change",
  "ail-core",
+ "ail-remote",
  "serde",
  "tokio",
 ]
