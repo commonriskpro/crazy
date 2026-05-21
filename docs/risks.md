@@ -395,7 +395,13 @@ impact      high
 likelihood  medium
 mitigation  ANF-level checks before backend; semantic source maps required per stage
 validation  spike: compile representative programs via Cranelift; verify provenance and capability boundaries in output
+status      closed
 ```
+
+Closed in Phase 17. V-03 evaluation spike (Engram: `sdd/native-backend-expansion/v03-spike`)
+confirmed that `NodeRef → native_offset` provenance round-trips correctly through Cranelift
+codegen. `emit_native` is implemented in `crates/ail-compiler/src/native.rs`; integration
+tests (determinism, provenance, capability manifest, no-runtime-dep) all pass.
 
 #### V-04: Postgres + CAS graph store — scale and compile latency on large apps
 

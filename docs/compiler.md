@@ -300,11 +300,22 @@ Initial target:
 WASM
 ```
 
-Future target:
+Available targets (Phase 17+):
 
 ```txt
-native via LLVM/Cranelift/custom backend
+WASM (primary)
+native object file via Cranelift (Phase 17)
 ```
+
+The native Cranelift path is implemented in `crates/ail-compiler/src/native.rs`
+via `emit_native(anf: &AnfIr) -> Result<NativeArtifact, CompileError>`.
+It produces platform-native ELF/Mach-O/COFF object files with:
+- Full provenance (`BTreeMap<NodeRef, u64>` — byte offsets in code section).
+- Capability manifest (same schema as WASM backend).
+- Sealed hash chain: `native_hash = blake3(anf_ir_hash || native_bytes)`.
+
+In Phase 17 function bodies are `trap` stubs; expression lowering is deferred
+to Phase 8+. The WASM pipeline is unaffected.
 
 WASM output:
 
@@ -495,4 +506,4 @@ Meaning: after optimization/codegen, validate output preserves ANF/Core semantic
 | WASM ABI layout | Exact encoding for records, variants, `Result`, `Option`, handles finalized during implementation |
 | Memory management | RC vs GC deferred to implementation spike — see [Risks](risks.md) V-08 |
 | Translation validation | Required for `prod`/`critical`; scope per profile. Cranelift source-map and capability-boundary preservation is a validation spike — see [Risks](risks.md) V-03 |
-| Native backend | Deferred; LLVM path preferred when added |
+| Native backend | Cranelift (Phase 17, implemented). `emit_native` produces ELF/Mach-O/COFF with provenance + capability manifest. Expression body lowering deferred to Phase 8+. |

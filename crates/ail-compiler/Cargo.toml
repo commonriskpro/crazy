@@ -4,21 +4,21 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-ail-core          = { workspace = true }
-ail-verify        = { workspace = true }
-blake3            = { workspace = true }
-ciborium          = { workspace = true }
-serde             = { workspace = true }
-wasm-encoder      = { workspace = true }
-cranelift-codegen = { workspace = true }
-cranelift-module  = { workspace = true }
-cranelift-object  = { workspace = true }
+ail-core           = { workspace = true }
+ail-verify         = { workspace = true }
+blake3             = { workspace = true }
+ciborium           = { workspace = true }
+serde              = { workspace = true }
+wasm-encoder       = { workspace = true }
+cranelift-codegen  = { workspace = true }
+cranelift-frontend = { workspace = true }
+cranelift-module   = { workspace = true }
+cranelift-native   = { workspace = true }
+cranelift-object   = { workspace = true }
 
 [dev-dependencies]
 ail-testkit        = { workspace = true }
 wasmparser         = { workspace = true }
-cranelift-frontend = { workspace = true }
-cranelift-native   = { workspace = true }
 
 [lints]
 workspace = true

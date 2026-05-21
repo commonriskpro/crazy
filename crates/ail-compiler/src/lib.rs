@@ -1,13 +1,15 @@
 //! # ail-compiler
 //!
 //! Pure deterministic transformation pipeline:
-//! `SemanticGraph + VerificationReport → CoreIr → AnfIr → WasmArtifact`.
+//! `SemanticGraph + VerificationReport → CoreIr → AnfIr → WasmArtifact | NativeArtifact`.
 //!
 //! # What this crate does
-//! - Lowers a verified `SemanticGraph` through three IR stages (Core → ANF → WASM).
+//! - Lowers a verified `SemanticGraph` through three IR stages (Core → ANF → WASM/native).
 //! - Maintains a BLAKE3 hash chain across every stage for reproducibility.
 //! - Emits structurally valid WASM via `wasm-encoder`; function bodies are
 //!   `unreachable` stubs until Phase 8 adds expression lowering.
+//! - Emits platform-native object files via Cranelift (Phase 17); function
+//!   bodies are `trap` stubs until Phase 8+ adds expression lowering.
 //!
 //! # What this crate does NOT do
 //! - No parsing, no source mutation, no runtime/Wasmtime dependency.
@@ -19,6 +21,7 @@ pub mod core_ir;
 pub mod error;
 pub mod hash;
 pub mod lower;
+pub mod native;
 pub mod wasm;
 
 #[cfg(test)]
@@ -28,4 +31,5 @@ pub use anf::{AnfBinding, AnfIr};
 pub use core_ir::{CoreIr, CoreNode, CoreNodeKind, StageHashes};
 pub use error::CompileError;
 pub use lower::{is_report_accepted, lower_to_anf, lower_to_core_ir};
+pub use native::{CapabilitiesManifest, CapabilityEntry, NativeArtifact, emit_native};
 pub use wasm::{WasmArtifact, emit_wasm};
