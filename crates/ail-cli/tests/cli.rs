@@ -1,3 +1,11 @@
+// ── ail-cli integration tests (PR2 baseline) ─────────────────────────────
+//
+// These tests cover the minimum viable surface that must pass after PR2:
+// binary presence, help/version flags, and unknown subcommand dispatch.
+//
+// The full test suite (unknown_subcommand_lists_six, context, change, verify,
+// apply, JSON mode, E2E) will be added in PR3 (tasks 3.1–3.5).
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 
@@ -12,7 +20,7 @@ fn help_exits_zero() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("parse"));
+        .stdout(predicate::str::contains("context"));
 }
 
 /// Scenario: Version flag — exits 0 and version string is present.
@@ -25,32 +33,47 @@ fn version_exits_zero_and_prints_version() {
         .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
 }
 
-/// Scenario: Parse stub with path — exits 0 and prints "not yet implemented".
+/// Scenario: Unknown subcommand — exits 2 and stderr names the six subcommands.
 #[test]
-fn parse_with_path_exits_zero_and_prints_stub() {
-    ail()
-        .args(["parse", "some/file.atl"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("not yet implemented"));
-}
-
-/// Scenario: Parse stub missing path argument — exits non-zero with diagnostic on stderr.
-#[test]
-fn parse_without_path_exits_nonzero() {
-    ail()
-        .arg("parse")
-        .assert()
-        .failure()
-        .stderr(predicate::str::is_empty().not());
-}
-
-/// Scenario: Unknown subcommand — exits non-zero and stderr names available subcommands.
-#[test]
-fn unknown_subcommand_exits_nonzero() {
+fn unknown_subcommand_exits_two_and_lists_six() {
     ail()
         .arg("unknowncmd")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("parse"));
+        .stderr(predicate::str::contains(
+            "Available subcommands: context, change, verify, apply, compile, run",
+        ));
+}
+
+/// Scenario: `ail context` — exits 0 (empty store is valid).
+#[test]
+fn context_exits_zero() {
+    ail().arg("context").assert().success();
+}
+
+/// Scenario: `ail context --json` — exits 0 and stdout is valid JSON.
+///
+/// JSON output must have top-level `status` and `data` fields per spec.
+#[test]
+fn context_json_flag_produces_parseable_json() {
+    let output = ail()
+        .args(["context", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let text = String::from_utf8(output).expect("stdout must be utf8");
+    let parsed: serde_json::Value =
+        serde_json::from_str(text.trim()).expect("--json output must be parseable JSON");
+
+    assert_eq!(
+        parsed["status"], "ok",
+        "JSON envelope must have status == \"ok\"; got: {parsed}"
+    );
+    assert!(
+        parsed["data"].is_object(),
+        "JSON envelope must have a data object; got: {parsed}"
+    );
 }

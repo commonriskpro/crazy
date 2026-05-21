@@ -51,6 +51,7 @@ version = "0.1.0"
 dependencies = [
  "ail-change",
  "ail-compiler",
+ "ail-core",
  "ail-runtime",
  "ail-storage",
  "ail-verify",
