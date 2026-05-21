@@ -27,4 +27,7 @@ pub mod proof;
 pub mod report;
 pub mod solver;
 
+#[cfg(feature = "z3-solver")]
+pub mod z3_solver;
+
 pub use package_checker::PackageTrustChecker;
