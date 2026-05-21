@@ -22,8 +22,8 @@ fn ail() -> Command {
 
 /// Return the path to the sample fixture file (relative to CARGO_MANIFEST_DIR).
 fn sample_acl_path() -> std::path::PathBuf {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR must be set during tests");
+    let manifest =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set during tests");
     std::path::Path::new(&manifest)
         .join("tests")
         .join("fixtures")
@@ -92,7 +92,11 @@ fn context_empty_store_exits_zero() {
 fn change_from_file_prints_hash() {
     let path = sample_acl_path();
     let output = ail()
-        .args(["change", "--file", path.to_str().expect("path must be UTF-8")])
+        .args([
+            "change",
+            "--file",
+            path.to_str().expect("path must be UTF-8"),
+        ])
         .assert()
         .success()
         .get_output()
@@ -130,8 +134,8 @@ fn change_from_file_prints_hash() {
 ///   THEN ChangeSet summary and BlockHash printed; exit 0
 #[test]
 fn change_from_stdin_prints_hash() {
-    let acl_content = std::fs::read_to_string(sample_acl_path())
-        .expect("sample.acl must be readable");
+    let acl_content =
+        std::fs::read_to_string(sample_acl_path()).expect("sample.acl must be readable");
 
     let output = ail()
         .arg("change")
@@ -155,7 +159,11 @@ fn change_file_and_stdin_produce_same_hash() {
     let acl_content = std::fs::read_to_string(&path).expect("sample.acl must be readable");
 
     let file_output = ail()
-        .args(["change", "--file", path.to_str().expect("path must be UTF-8")])
+        .args([
+            "change",
+            "--file",
+            path.to_str().expect("path must be UTF-8"),
+        ])
         .assert()
         .success()
         .get_output()
@@ -169,12 +177,10 @@ fn change_file_and_stdin_produce_same_hash() {
         .get_output()
         .clone();
 
-    let file_hash = extract_change_id(
-        std::str::from_utf8(&file_output.stdout).expect("stdout must be UTF-8"),
-    );
-    let stdin_hash = extract_change_id(
-        std::str::from_utf8(&stdin_output.stdout).expect("stdout must be UTF-8"),
-    );
+    let file_hash =
+        extract_change_id(std::str::from_utf8(&file_output.stdout).expect("stdout must be UTF-8"));
+    let stdin_hash =
+        extract_change_id(std::str::from_utf8(&stdin_output.stdout).expect("stdout must be UTF-8"));
     assert_eq!(
         file_hash, stdin_hash,
         "file and stdin inputs for the same ACL must produce the same change-id"
@@ -399,12 +405,7 @@ fn json_flag_output_is_parseable() {
     ];
 
     for (name, args) in &cases {
-        let output = ail()
-            .args(args)
-            .assert()
-            .success()
-            .get_output()
-            .clone();
+        let output = ail().args(args).assert().success().get_output().clone();
 
         let v = parse_json_output(&output);
         assert!(
@@ -417,7 +418,10 @@ fn json_flag_output_is_parseable() {
         );
         // Assert no extra top-level keys beyond "status" and "data".
         if let Some(obj) = v.as_object() {
-            let extra: Vec<&String> = obj.keys().filter(|k| *k != "status" && *k != "data").collect();
+            let extra: Vec<&String> = obj
+                .keys()
+                .filter(|k| *k != "status" && *k != "data")
+                .collect();
             assert!(
                 extra.is_empty(),
                 "command '{name}': JSON envelope must only have 'status' and 'data'; extra keys: {extra:?}"
@@ -503,7 +507,10 @@ fn e2e_change_verify_apply_compile_run() {
         .clone();
 
     let compile_json = parse_json_output(&compile_output);
-    assert_eq!(compile_json["status"], "ok", "step 4 (compile) must succeed");
+    assert_eq!(
+        compile_json["status"], "ok",
+        "step 4 (compile) must succeed"
+    );
     assert!(
         compile_json["data"]["wasm_bytes"].as_u64().unwrap_or(0) > 0
             || compile_json["data"]["wasm_bytes"].as_u64().is_some(),
@@ -553,7 +560,11 @@ fn extract_change_id(stdout: &str) -> String {
 fn compute_sample_change_id() -> String {
     let path = sample_acl_path();
     let output = ail()
-        .args(["change", "--file", path.to_str().expect("path must be UTF-8")])
+        .args([
+            "change",
+            "--file",
+            path.to_str().expect("path must be UTF-8"),
+        ])
         .assert()
         .success()
         .get_output()

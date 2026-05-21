@@ -55,10 +55,7 @@ mod bridge {
         ///
         /// Returns `envelope.id` on success (per `GraphStore::save_snapshot`
         /// spec: callers use this id with `load_snapshot`).
-        pub async fn save_snapshot(
-            &self,
-            envelope: &SnapshotEnvelope,
-        ) -> StorageResult<ObjectId> {
+        pub async fn save_snapshot(&self, envelope: &SnapshotEnvelope) -> StorageResult<ObjectId> {
             self.store.save_snapshot(envelope).await
         }
 
@@ -190,7 +187,10 @@ mod tests {
         };
 
         let result = block_on(bridge.append_changeset_log(&entry));
-        assert!(result.is_ok(), "append_changeset_log must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "append_changeset_log must succeed; got: {result:?}"
+        );
         let cas_id = result.unwrap();
         assert_ne!(
             cas_id.as_bytes(),

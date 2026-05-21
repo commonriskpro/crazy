@@ -41,7 +41,9 @@ impl fmt::Display for CliError {
             CliError::Io(e) => write!(f, "I/O error: {e}"),
             CliError::ParseError(msg) => write!(f, "parse error: {msg}"),
             CliError::NotFound(msg) => write!(f, "not found: {msg}"),
-            CliError::RebaseRequired { current_snapshot_id } => write!(
+            CliError::RebaseRequired {
+                current_snapshot_id,
+            } => write!(
                 f,
                 "rebase required: current snapshot is {current_snapshot_id}"
             ),
@@ -120,7 +122,10 @@ mod tests {
     fn not_found_display_contains_not_found() {
         let err = CliError::NotFound("change-id not found: abc".to_string());
         let msg = format!("{err}");
-        assert!(msg.contains("not found"), "NotFound Display must say 'not found'; got: {msg}");
+        assert!(
+            msg.contains("not found"),
+            "NotFound Display must say 'not found'; got: {msg}"
+        );
     }
 
     // TRIANGULATE: RebaseRequired carries the current snapshot id.
@@ -129,7 +134,9 @@ mod tests {
     //   THEN the output contains "42"
     #[test]
     fn rebase_required_display_contains_snapshot_id() {
-        let err = CliError::RebaseRequired { current_snapshot_id: 42 };
+        let err = CliError::RebaseRequired {
+            current_snapshot_id: 42,
+        };
         let msg = format!("{err}");
         assert!(
             msg.contains("42"),
@@ -159,6 +166,11 @@ mod tests {
     fn exit_code_returns_one_for_domain_errors() {
         assert_eq!(exit_code(&CliError::NotFound("x".to_string())), 1);
         assert_eq!(exit_code(&CliError::Domain("y".to_string())), 1);
-        assert_eq!(exit_code(&CliError::RebaseRequired { current_snapshot_id: 0 }), 1);
+        assert_eq!(
+            exit_code(&CliError::RebaseRequired {
+                current_snapshot_id: 0
+            }),
+            1
+        );
     }
 }

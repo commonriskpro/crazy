@@ -49,9 +49,7 @@ pub enum OutputMode {
 pub fn format_response(mode: OutputMode, human_msg: &str, data: Value) -> String {
     match mode {
         OutputMode::Human => human_msg.to_string(),
-        OutputMode::Json => {
-            serde_json::json!({ "status": "ok", "data": data }).to_string()
-        }
+        OutputMode::Json => serde_json::json!({ "status": "ok", "data": data }).to_string(),
     }
 }
 
@@ -79,7 +77,10 @@ mod tests {
     #[test]
     fn human_mode_returns_message_as_is() {
         let result = format_response(OutputMode::Human, "hello world", Value::Null);
-        assert_eq!(result, "hello world", "Human mode must return message unchanged");
+        assert_eq!(
+            result, "hello world",
+            "Human mode must return message unchanged"
+        );
     }
 
     // TRIANGULATE: Json mode returns valid JSON with status and data fields.
@@ -91,8 +92,8 @@ mod tests {
         let data = json!({ "hash": "abc123" });
         let result = format_response(OutputMode::Json, "ignored", data.clone());
 
-        let parsed: Value = serde_json::from_str(&result)
-            .expect("Json mode output must be valid JSON");
+        let parsed: Value =
+            serde_json::from_str(&result).expect("Json mode output must be valid JSON");
 
         assert_eq!(
             parsed["status"], "ok",
@@ -112,6 +113,9 @@ mod tests {
     fn human_mode_ignores_data() {
         let data = json!({ "irrelevant": true });
         let result = format_response(OutputMode::Human, "plain output", data);
-        assert_eq!(result, "plain output", "Human mode must not include JSON data");
+        assert_eq!(
+            result, "plain output",
+            "Human mode must not include JSON data"
+        );
     }
 }

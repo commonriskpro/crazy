@@ -87,9 +87,10 @@ pub fn parse_changeset(src: &str) -> Result<ChangeSet, CliError> {
         } else if let Some(v) = line.strip_prefix("description ") {
             description = Some(v.to_string());
         } else if let Some(v) = line.strip_prefix("base ") {
-            let id: u64 = v.trim().parse().map_err(|_| {
-                CliError::ParseError(format!("invalid base snapshot id: '{v}'"))
-            })?;
+            let id: u64 = v
+                .trim()
+                .parse()
+                .map_err(|_| CliError::ParseError(format!("invalid base snapshot id: '{v}'")))?;
             base = Some(SnapshotId(id));
         } else if let Some(v) = line.strip_prefix("op ") {
             let op = parse_op(v.trim())?;
@@ -151,7 +152,10 @@ mod tests {
     fn parse_minimal_changeset_succeeds() {
         let src = "author Alice\ndescription test change\nbase 0\nop Create\n";
         let cs = parse_changeset(src).expect("minimal changeset must parse successfully");
-        assert_eq!(cs.meta.author, "Alice", "author must be parsed from 'author' line");
+        assert_eq!(
+            cs.meta.author, "Alice",
+            "author must be parsed from 'author' line"
+        );
     }
 
     // TRIANGULATE: all op variants parse correctly.
