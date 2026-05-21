@@ -170,6 +170,7 @@ dependencies = [
  "blake3",
  "ciborium",
  "serde",
+ "wasm-encoder 0.244.0",
  "wasmtime",
 ]
 
