@@ -248,7 +248,7 @@ mod tests {
     use crate::lower::{lower_to_anf, lower_to_core_ir};
 
     fn proven_report() -> VerificationReport {
-        VerificationReport { entries: vec![] }
+        VerificationReport { entries: vec![], ..Default::default() }
     }
 
     fn anf_for_n(n: usize) -> AnfIr {

@@ -375,11 +375,12 @@ mod tests {
                 scope: "s".to_string(),
                 evidence: None,
             }],
+            ..Default::default()
         }
     }
 
     fn proven_report() -> VerificationReport {
-        VerificationReport { entries: vec![] }
+        VerificationReport { entries: vec![], ..Default::default() }
     }
 
     fn one_node_graph() -> SemanticGraph {

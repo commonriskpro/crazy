@@ -20,12 +20,13 @@ fn report_with_state(state: VerificationState) -> VerificationReport {
             scope: "test".to_string(),
             evidence: None,
         }],
+        ..Default::default()
     }
 }
 
 /// Build an empty `VerificationReport` — summary is vacuous `Proven`.
 fn proven_report() -> VerificationReport {
-    VerificationReport { entries: vec![] }
+    VerificationReport { entries: vec![], ..Default::default() }
 }
 
 /// Build a `SemanticGraph` with exactly N nodes (Module, Function, Effect,
