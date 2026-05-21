@@ -41,6 +41,49 @@ pub fn make_semantic_graph() -> ail_core::semantic_graph::SemanticGraph {
     }
 }
 
+// ── Large graph fixture ───────────────────────────────────────────────────
+
+/// Build a [`SemanticGraph`](ail_core::semantic_graph::SemanticGraph) with `n`
+/// nodes connected by a linear `Calls` chain:
+///
+/// `NodeRef(0) → NodeRef(1) → NodeRef(2) → … → NodeRef(n-1)`
+///
+/// The resulting graph is structurally valid (`validate()` returns `Ok(())`).
+/// Use this fixture for benchmarks and integration tests that need a realistic,
+/// deterministic large graph without hand-crafting hundreds of nodes.
+///
+/// # Panics
+///
+/// Does not panic; `n = 0` returns an empty (valid) graph.
+///
+/// # Example
+///
+/// ```rust
+/// let graph = ail_testkit::make_large_graph(500);
+/// assert!(graph.validate().is_ok());
+/// assert_eq!(graph.nodes.len(), 500);
+/// ```
+pub fn make_large_graph(n: usize) -> ail_core::semantic_graph::SemanticGraph {
+    use ail_core::semantic_graph::{
+        EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph,
+    };
+
+    let nodes: Vec<GraphNode> = (0..n)
+        .map(|i| GraphNode::new(NodeRef(i as u32), NodeKind::Function, format!("fn_{i}")))
+        .collect();
+
+    // Linear chain: NodeRef(i) Calls NodeRef(i+1) for i in 0..n-1.
+    let edges: Vec<GraphEdge> = (0..n.saturating_sub(1))
+        .map(|i| GraphEdge {
+            source: NodeRef(i as u32),
+            target: NodeRef((i + 1) as u32),
+            kind: EdgeKind::Calls,
+        })
+        .collect();
+
+    SemanticGraph { nodes, edges }
+}
+
 // ── Storage fixture helpers ───────────────────────────────────────────────
 
 /// Re-export of [`ail_storage::backends::memory::MemoryObjectStore`] for use
@@ -140,5 +183,38 @@ mod tests {
             graph.validate().is_ok(),
             "make_semantic_graph() fixture must pass structural validation"
         );
+    }
+
+    // ── Spec scenario: Large graph passes validation ───────────────────────
+    // GIVEN make_large_graph(500) is called
+    // WHEN graph.validate() is invoked
+    // THEN validation returns Ok(())
+    #[test]
+    fn make_large_graph_500_is_valid() {
+        let graph = crate::make_large_graph(500);
+        assert_eq!(graph.nodes.len(), 500, "must have exactly 500 nodes");
+        assert_eq!(graph.edges.len(), 499, "linear chain must have n-1 edges");
+        assert!(
+            graph.validate().is_ok(),
+            "make_large_graph(500) must pass structural validation"
+        );
+    }
+
+    // ── TRIANGULATE: make_large_graph(0) is valid ─────────────────────────
+    #[test]
+    fn make_large_graph_zero_is_valid() {
+        let graph = crate::make_large_graph(0);
+        assert_eq!(graph.nodes.len(), 0);
+        assert_eq!(graph.edges.len(), 0);
+        assert!(graph.validate().is_ok());
+    }
+
+    // ── TRIANGULATE: make_large_graph(1) has no edges ─────────────────────
+    #[test]
+    fn make_large_graph_one_has_no_edges() {
+        let graph = crate::make_large_graph(1);
+        assert_eq!(graph.nodes.len(), 1);
+        assert_eq!(graph.edges.len(), 0, "single node has no edges");
+        assert!(graph.validate().is_ok());
     }
 }
