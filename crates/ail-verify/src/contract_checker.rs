@@ -77,7 +77,7 @@ impl<'s> ContractChecker<'s> {
                 }
             }
         }
-        VerificationReport { entries }
+        VerificationReport::new(entries)
     }
 
     /// Evaluate one clause predicate and return the corresponding entry.
@@ -98,6 +98,7 @@ impl<'s> ContractChecker<'s> {
         let obligation = ProofObligation {
             predicate: predicate.to_string(),
             role,
+            scope: scope.to_string(),
         };
 
         let (state, evidence) = match self.solver.solve(&obligation) {

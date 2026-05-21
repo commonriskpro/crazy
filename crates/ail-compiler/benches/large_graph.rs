@@ -30,7 +30,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 const N: usize = 500;
 
 fn proven_report() -> VerificationReport {
-    VerificationReport { entries: vec![] }
+    VerificationReport::new(vec![])
 }
 
 // ── bench_full_compile ────────────────────────────────────────────────────

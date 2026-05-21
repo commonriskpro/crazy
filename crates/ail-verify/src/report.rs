@@ -18,6 +18,12 @@
 // `Failed > Unsafe > Unverified > Assumed > RuntimeChecked > Proven`
 //
 // An empty report has vacuous summary `Proven`.
+//
+// # Report schema
+//
+// `VerificationReport` carries a `schema_version` ("verification/1.0"), an
+// optional `profile`, and pre-computed `summary_counts` so consumers do not
+// need to re-iterate entries.
 
 use serde::{Deserialize, Serialize};
 
@@ -82,19 +88,125 @@ pub struct VerificationEntry {
     pub evidence: Option<String>,
 }
 
+// ── SummaryCounts ─────────────────────────────────────────────────────────
+
+/// Pre-computed per-state entry counts for one `VerificationReport`.
+///
+/// Mirrors the `summary` block from the verification report schema
+/// (`docs/verification.md` §Verification report schema).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SummaryCounts {
+    /// Entries in state `Proven`.
+    pub verified_count: u32,
+    /// Entries in state `RuntimeChecked`.
+    pub runtime_checked_count: u32,
+    /// Entries in state `Assumed`.
+    pub assumed_count: u32,
+    /// Entries in state `Unverified`.
+    pub unverified_count: u32,
+    /// Entries in state `Unsafe`.
+    pub unsafe_count: u32,
+    /// Entries in state `Failed`.
+    pub failed_count: u32,
+}
+
+impl SummaryCounts {
+    /// Compute `SummaryCounts` from a slice of `VerificationEntry` items.
+    ///
+    /// Each entry's `state` is counted once.  The counts are non-overlapping
+    /// and sum to `entries.len()`.
+    pub fn from_entries(entries: &[VerificationEntry]) -> Self {
+        let mut counts = SummaryCounts::default();
+        for entry in entries {
+            match entry.state {
+                VerificationState::Proven => counts.verified_count += 1,
+                VerificationState::RuntimeChecked => counts.runtime_checked_count += 1,
+                VerificationState::Assumed => counts.assumed_count += 1,
+                VerificationState::Unverified => counts.unverified_count += 1,
+                VerificationState::Unsafe => counts.unsafe_count += 1,
+                VerificationState::Failed => counts.failed_count += 1,
+            }
+        }
+        counts
+    }
+}
+
 // ── VerificationReport ────────────────────────────────────────────────────
+
+/// The canonical report schema version.
+pub const SCHEMA_VERSION: &str = "verification/1.0";
 
 /// Ordered collection of verification entries for one `SemanticGraph` pass.
 ///
 /// Iteration order is preserved from the graph traversal, guaranteeing
 /// deterministic output across runs.
+///
+/// # Schema enrichment
+///
+/// `schema_version` is always `"verification/1.0"`.  `profile` is the build
+/// profile under which verification ran (e.g. `"prod"`, `"dev"`).
+/// `summary_counts` mirrors the `summary` block in the verification report
+/// schema and is automatically derived from `entries` by `VerificationReport::new`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationReport {
     /// Verification entries in graph traversal order.
     pub entries: Vec<VerificationEntry>,
+    /// Report schema version — always `"verification/1.0"`.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: String,
+    /// Optional build profile under which this report was produced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Pre-computed per-state counts (derived from `entries`).
+    #[serde(default)]
+    pub summary_counts: SummaryCounts,
+}
+
+impl Default for VerificationReport {
+    fn default() -> Self {
+        Self {
+            entries: vec![],
+            schema_version: SCHEMA_VERSION.to_string(),
+            profile: None,
+            summary_counts: SummaryCounts::default(),
+        }
+    }
+}
+
+fn default_schema_version() -> String {
+    SCHEMA_VERSION.to_string()
 }
 
 impl VerificationReport {
+    /// Construct a `VerificationReport` from entries, computing `summary_counts`
+    /// automatically.
+    ///
+    /// Prefer this over direct struct literal construction for new code.
+    pub fn new(entries: Vec<VerificationEntry>) -> Self {
+        let summary_counts = SummaryCounts::from_entries(&entries);
+        Self {
+            entries,
+            schema_version: SCHEMA_VERSION.to_string(),
+            profile: None,
+            summary_counts,
+        }
+    }
+
+    /// Set the profile and return `Self` (builder pattern).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ail_verify::report::VerificationReport;
+    ///
+    /// let report = VerificationReport::new(vec![]).with_profile("prod");
+    /// assert_eq!(report.profile.as_deref(), Some("prod"));
+    /// ```
+    pub fn with_profile(mut self, profile: impl Into<String>) -> Self {
+        self.profile = Some(profile.into());
+        self
+    }
+
     /// Returns the highest-severity `VerificationState` present in the report.
     ///
     /// An empty report returns `Proven` (vacuous truth — nothing has failed).

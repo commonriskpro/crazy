@@ -24,7 +24,7 @@ fn compiler_wasm() -> Vec<u8> {
         nodes: vec![],
         edges: vec![],
     };
-    let report = VerificationReport { entries: vec![] };
+    let report = VerificationReport::new(vec![]);
     let core = lower_to_core_ir(&graph, &report).expect("lower_to_core_ir failed");
     let anf = lower_to_anf(&core).expect("lower_to_anf failed");
     emit_wasm(&anf).expect("emit_wasm failed").wasm
