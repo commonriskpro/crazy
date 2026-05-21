@@ -23,8 +23,10 @@
 use ail_core::semantic_graph::{GraphValidationError, NodeKind, SemanticGraph};
 use ail_verify::report::{VerificationReport, VerificationState};
 
-use crate::anf::{AnfBinding, AnfIr};
-use crate::core_ir::{CoreIr, CoreNode, CoreNodeKind, CoreType, StageHashes};
+use crate::anf::{AnfBinding, AnfExpr, AnfIr};
+use crate::core_ir::{
+    CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, StageHashes,
+};
 use crate::error::CompileError;
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
 
@@ -64,17 +66,138 @@ pub(crate) fn map_node_kind(kind: NodeKind) -> CoreNodeKind {
     }
 }
 
+// ── atomize ───────────────────────────────────────────────────────────────
+
+/// Ensure `expr` is atomic (a variable name).
+///
+/// If `expr` is already `CoreExpr::Var(n)`, returns `n` without emitting any
+/// binding.  Otherwise lowers `expr` to an `AnfExpr`, pushes a synthetic
+/// `AnfBinding` with a fresh name, and returns that fresh name.
+///
+/// The pushed binding carries the same `source_ref` as the enclosing node
+/// (provenance is preserved for synthetic temporaries).
+fn atomize(
+    expr: &CoreExpr,
+    fresh: &mut u32,
+    source_ref: ail_core::semantic_graph::NodeRef,
+    out: &mut Vec<AnfBinding>,
+) -> String {
+    if let CoreExpr::Var(name) = expr {
+        return name.clone();
+    }
+    let anf_expr = lower_core_expr_to_anf(expr, fresh, source_ref, out);
+    let name = format!("anf_{}", *fresh);
+    *fresh += 1;
+    out.push(AnfBinding {
+        source_ref,
+        name: name.clone(),
+        expr: anf_expr,
+    });
+    name
+}
+
+// ── lower_core_expr_to_anf ────────────────────────────────────────────────
+
+/// Recursively lower a `CoreExpr` to an `AnfExpr`.
+///
+/// Non-atomic sub-expressions (nested calls, non-trivial conditions, etc.)
+/// are atomized: a synthetic `AnfBinding` is pushed to `out` and the
+/// sub-expression is replaced by a `Var` reference to that binding.
+///
+/// All synthetic bindings carry `source_ref` for end-to-end provenance.
+pub fn lower_core_expr_to_anf(
+    expr: &CoreExpr,
+    fresh: &mut u32,
+    source_ref: ail_core::semantic_graph::NodeRef,
+    out: &mut Vec<AnfBinding>,
+) -> AnfExpr {
+    match expr {
+        // Atomic values — no sub-expressions to flatten.
+        CoreExpr::Literal(v) => AnfExpr::Literal(v.clone()),
+        CoreExpr::Var(n) => AnfExpr::Var(n.clone()),
+
+        // Let: lower value and body recursively; no atomization needed.
+        CoreExpr::Let { name, value, body } => {
+            let anf_value = lower_core_expr_to_anf(value, fresh, source_ref, out);
+            let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
+            AnfExpr::Let {
+                name: name.clone(),
+                value: Box::new(anf_value),
+                body: Box::new(anf_body),
+            }
+        }
+
+        // If: condition must be atomic (atomize if needed).
+        CoreExpr::If { cond, then_, else_ } => {
+            let cond_name = atomize(cond, fresh, source_ref, out);
+            let anf_then = lower_core_expr_to_anf(then_, fresh, source_ref, out);
+            let anf_else = lower_core_expr_to_anf(else_, fresh, source_ref, out);
+            AnfExpr::If {
+                cond: cond_name,
+                then_branch: Box::new(anf_then),
+                else_branch: Box::new(anf_else),
+            }
+        }
+
+        // Call: all args must be atomic (atomize each non-Var arg).
+        CoreExpr::Call { func, args } => {
+            let atomic_args: Vec<String> = args
+                .iter()
+                .map(|a| atomize(a, fresh, source_ref, out))
+                .collect();
+            AnfExpr::Call {
+                func: func.clone(),
+                args: atomic_args,
+            }
+        }
+
+        // FieldGet: record expression must be atomic.
+        CoreExpr::FieldGet { record, field } => {
+            let record_name = atomize(record, fresh, source_ref, out);
+            AnfExpr::FieldGet {
+                record: record_name,
+                field: field.clone(),
+            }
+        }
+
+        // Complex CoreExpr variants not yet lowered to ANF → Placeholder.
+        // Future phases will handle Match, Lambda, RecordNew, FieldUpdate,
+        // TupleNew, VariantNew, ListNew.
+        CoreExpr::Match { .. }
+        | CoreExpr::Lambda { .. }
+        | CoreExpr::RecordNew { .. }
+        | CoreExpr::FieldUpdate { .. }
+        | CoreExpr::TupleNew(_)
+        | CoreExpr::VariantNew { .. }
+        | CoreExpr::ListNew(_)
+        | CoreExpr::Placeholder => AnfExpr::Placeholder,
+    }
+}
+
 // ── map_core_node_to_anf ──────────────────────────────────────────────────
 
-/// Lower one `CoreNode` into a single `AnfBinding`.
+/// Lower one `CoreNode` into one or more `AnfBinding`s.
 ///
-/// Provenance (`source_ref`) is preserved verbatim.  The binding name is
-/// copied from the `CoreNode` without modification.
-fn map_core_node_to_anf(node: &CoreNode) -> AnfBinding {
-    AnfBinding {
+/// If the node has a `CoreExpr` body, it is lowered via
+/// `lower_core_expr_to_anf`.  Any synthetic temporaries produced during
+/// flattening are pushed to `out` first (in emission order), then the node's
+/// own binding is appended.
+///
+/// Nodes without `expr` (modules, types, capabilities, etc.) get a default
+/// `AnfExpr::Literal(LiteralValue::Unit)`.
+///
+/// Provenance (`source_ref`) is preserved verbatim on every emitted binding,
+/// including synthetic temporaries.
+fn map_core_node_to_anf(node: &CoreNode, fresh: &mut u32, out: &mut Vec<AnfBinding>) {
+    let anf_expr = match &node.expr {
+        Some(core_expr) => lower_core_expr_to_anf(core_expr, fresh, node.source_ref, out),
+        None => AnfExpr::Literal(LiteralValue::Unit),
+    };
+    out.push(AnfBinding {
         source_ref: node.source_ref,
         name: node.name.clone(),
-    }
+        expr: anf_expr,
+    });
 }
 
 // ── nominal_to_core_type ─────────────────────────────────────────────────
@@ -212,8 +335,12 @@ pub fn lower_to_core_ir(
 ///
 /// - `CompileError::EncodingError` — CBOR serialization failed.
 pub fn lower_to_anf(core: &CoreIr) -> Result<AnfIr, CompileError> {
-    // Lower each CoreNode to an AnfBinding in traversal order.
-    let bindings: Vec<AnfBinding> = core.nodes.iter().map(map_core_node_to_anf).collect();
+    // Lower each CoreNode — collecting synthetic temporaries and node bindings.
+    let mut bindings: Vec<AnfBinding> = Vec::with_capacity(core.nodes.len());
+    let mut fresh: u32 = 0;
+    for node in &core.nodes {
+        map_core_node_to_anf(node, &mut fresh, &mut bindings);
+    }
 
     // Seal: anf_ir_hash = blake3(core_ir_hash || anf_ir_bytes).
     let anf_ir_bytes = stable_cbor_bytes(&bindings)?;
@@ -338,7 +465,10 @@ mod tests {
             ty: None,
             expr: None,
         };
-        let binding = map_core_node_to_anf(&node);
+        let mut fresh = 0u32;
+        let mut out = Vec::new();
+        map_core_node_to_anf(&node, &mut fresh, &mut out);
+        let binding = out.into_iter().next().expect("must produce one binding");
         assert_eq!(binding.source_ref, NodeRef(7));
         assert_eq!(binding.name, "fn_x");
     }
