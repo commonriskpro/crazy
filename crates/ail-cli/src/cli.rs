@@ -34,11 +34,9 @@ use std::path::PathBuf;
 
 use ail_change::{apply::SnapshotBridge, canonical::canonicalize, model::SnapshotId};
 use ail_compiler::{emit_wasm, lower_to_anf, lower_to_core_ir};
-use ail_runtime::{
-    CapabilityManifest, RuntimeHost, RuntimeProfile, ResourceLimits, blake3_hex_of,
-};
-use ail_verify::checker::Checker;
 use ail_core::semantic_graph::SemanticGraph;
+use ail_runtime::{CapabilityManifest, ResourceLimits, RuntimeHost, RuntimeProfile, blake3_hex_of};
+use ail_verify::checker::Checker;
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
@@ -114,9 +112,7 @@ pub fn run() -> Result<(), CliError> {
         let code = err.exit_code();
         let _ = err.print();
         if kind == ErrorKind::InvalidSubcommand {
-            eprintln!(
-                "Available subcommands: context, change, verify, apply, compile, run"
-            );
+            eprintln!("Available subcommands: context, change, verify, apply, compile, run");
             std::process::exit(2);
         }
         std::process::exit(code);
@@ -215,14 +211,15 @@ fn cmd_verify(mode: OutputMode, change_id: &str) -> Result<(), CliError> {
     // In Phase 9 this will load the ChangeSet from the durable store using the
     // change-id.  For now we verify against an empty in-memory graph, which
     // satisfies the spec's scope ("Semantic queries are out of scope").
-    let graph = SemanticGraph { nodes: vec![], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![],
+        edges: vec![],
+    };
     let report = Checker::check(&graph);
     let summary = format!("{:?}", report.summary());
     let entry_count = report.entries.len();
 
-    let human_msg = format!(
-        "change-id: {change_id}\nentries: {entry_count}\nsummary: {summary}"
-    );
+    let human_msg = format!("change-id: {change_id}\nentries: {entry_count}\nsummary: {summary}");
     let entries_json: Vec<Value> = report
         .entries
         .iter()
@@ -275,7 +272,10 @@ fn cmd_apply(mode: OutputMode, change_id: &str) -> Result<(), CliError> {
     // The ChangeSet we construct below has base_snapshot_id = SnapshotId(0),
     // so the snapshot guard passes and the apply succeeds.
     let bridge = SimpleSnapshotBridge(SnapshotId(0));
-    let mut graph = SemanticGraph { nodes: vec![], edges: vec![] };
+    let mut graph = SemanticGraph {
+        nodes: vec![],
+        edges: vec![],
+    };
 
     let canonical = CanonicalChangeSet {
         meta: CanonicalMeta {
@@ -294,7 +294,7 @@ fn cmd_apply(mode: OutputMode, change_id: &str) -> Result<(), CliError> {
         ail_change::model::ChangeSetOutcome::Applied => {
             // In Phase 9 we will persist a real SnapshotEnvelope here.
             // For now the "new snapshot id" is the next sequential id.
-            let new_snapshot_id = bridge.0 .0 + 1;
+            let new_snapshot_id = bridge.0.0 + 1;
             let human_msg = format!("applied; new snapshot id: {new_snapshot_id}");
             print_response(
                 mode,
@@ -324,20 +324,19 @@ fn cmd_apply(mode: OutputMode, change_id: &str) -> Result<(), CliError> {
 /// hash chain. A `--profile` name is accepted and echoed but not yet used to
 /// configure the pipeline (profile configuration is a Phase 9 concern).
 fn cmd_compile(mode: OutputMode, profile: &str) -> Result<(), CliError> {
-    let graph = SemanticGraph { nodes: vec![], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![],
+        edges: vec![],
+    };
     let report = Checker::check(&graph);
 
-    let core = lower_to_core_ir(&graph, &report).map_err(|e| {
-        CliError::Domain(format!("compile (core ir): {e:?}"))
-    })?;
+    let core = lower_to_core_ir(&graph, &report)
+        .map_err(|e| CliError::Domain(format!("compile (core ir): {e:?}")))?;
 
-    let anf = lower_to_anf(&core).map_err(|e| {
-        CliError::Domain(format!("compile (anf): {e:?}"))
-    })?;
+    let anf = lower_to_anf(&core).map_err(|e| CliError::Domain(format!("compile (anf): {e:?}")))?;
 
-    let artifact = emit_wasm(&anf).map_err(|e| {
-        CliError::Domain(format!("compile (wasm): {e:?}"))
-    })?;
+    let artifact =
+        emit_wasm(&anf).map_err(|e| CliError::Domain(format!("compile (wasm): {e:?}")))?;
 
     let wasm_hash = artifact
         .hash_chain
@@ -346,9 +345,7 @@ fn cmd_compile(mode: OutputMode, profile: &str) -> Result<(), CliError> {
         .unwrap_or_else(|| "<none>".to_string());
     let wasm_size = artifact.wasm.len();
 
-    let human_msg = format!(
-        "profile: {profile}\nwasm bytes: {wasm_size}\nwasm-hash: {wasm_hash}"
-    );
+    let human_msg = format!("profile: {profile}\nwasm bytes: {wasm_size}\nwasm-hash: {wasm_hash}");
     print_response(
         mode,
         &human_msg,
@@ -369,15 +366,16 @@ fn cmd_compile(mode: OutputMode, profile: &str) -> Result<(), CliError> {
 /// artifact's hashes so the preflight passes.
 fn cmd_run(mode: OutputMode, profile: &str) -> Result<(), CliError> {
     // Compile pipeline (same as `compile` command).
-    let graph = SemanticGraph { nodes: vec![], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![],
+        edges: vec![],
+    };
     let report = Checker::check(&graph);
 
     let core = lower_to_core_ir(&graph, &report)
         .map_err(|e| CliError::Domain(format!("run (core ir): {e:?}")))?;
-    let anf = lower_to_anf(&core)
-        .map_err(|e| CliError::Domain(format!("run (anf): {e:?}")))?;
-    let artifact = emit_wasm(&anf)
-        .map_err(|e| CliError::Domain(format!("run (wasm): {e:?}")))?;
+    let anf = lower_to_anf(&core).map_err(|e| CliError::Domain(format!("run (anf): {e:?}")))?;
+    let artifact = emit_wasm(&anf).map_err(|e| CliError::Domain(format!("run (wasm): {e:?}")))?;
 
     // Build manifest and profile with matching hashes so preflight passes.
     let manifest = CapabilityManifest {
@@ -394,7 +392,7 @@ fn cmd_run(mode: OutputMode, profile: &str) -> Result<(), CliError> {
         module_hash,
         String::new(), // verification_report_hash not checked in current preflight
         manifest_hash,
-        vec![],        // no grants needed — no capabilities required
+        vec![], // no grants needed — no capabilities required
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
@@ -560,7 +558,10 @@ mod tests {
     fn cmd_verify_succeeds_for_valid_change_id() {
         let id = "a".repeat(64);
         let result = cmd_verify(OutputMode::Human, &id);
-        assert!(result.is_ok(), "cmd_verify must succeed for valid id; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "cmd_verify must succeed for valid id; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_apply succeeds when base matches bridge (exit 0).
@@ -604,6 +605,53 @@ mod tests {
         assert!(cmd_context(OutputMode::Json).is_ok());
     }
 
+    // Scenario: Run Command / preflight fails
+    //   GIVEN a RuntimeProfile whose module_hash does NOT match the actual WASM bytes
+    //   WHEN validate_and_instantiate is called
+    //   THEN RuntimeError::PreflightFailed is returned
+    //
+    // The `cmd_run` handler always derives matching hashes from the compiled
+    // artifact, so this failure path is unreachable through the binary.  This
+    // unit test exercises the domain logic directly.
+    #[test]
+    fn preflight_fails_on_module_hash_mismatch() {
+        use ail_runtime::{CapabilityManifest, ResourceLimits, RuntimeHost, RuntimeProfile};
+
+        let wasm_bytes: &[u8] = b"not-real-wasm";
+        let wrong_module_hash = "0".repeat(64); // does not match blake3(wasm_bytes)
+
+        let manifest = CapabilityManifest {
+            module: "test".to_string(),
+            requires: vec![],
+        };
+        let manifest_hash = manifest.blake3_hex().expect("manifest hash must succeed");
+
+        let profile = RuntimeProfile::new(
+            "test".to_string(),
+            wrong_module_hash,
+            String::new(),
+            manifest_hash,
+            vec![],
+            ResourceLimits {
+                max_memory_bytes: None,
+                max_fuel: None,
+            },
+        );
+
+        let mut host = RuntimeHost::new();
+        let result = host.validate_and_instantiate(wasm_bytes, &manifest, &profile);
+
+        assert!(
+            result.is_err(),
+            "validate_and_instantiate must fail when module_hash mismatches"
+        );
+        let err_str = format!("{}", result.unwrap_err());
+        assert!(
+            err_str.contains("preflight failed"),
+            "error must mention 'preflight failed'; got: {err_str}"
+        );
+    }
+
     // Spec scenario: stale base rejected
     //   GIVEN base_snapshot_id does not match the live snapshot
     //   WHEN apply() is called
@@ -621,7 +669,10 @@ mod tests {
 
         // Bridge reports snapshot id = 1 (live); ChangeSet targets base = 0 (stale).
         let bridge = SimpleSnapshotBridge(SnapshotId(1));
-        let mut graph = SemanticGraph { nodes: vec![], edges: vec![] };
+        let mut graph = SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
 
         let canonical = CanonicalChangeSet {
             meta: CanonicalMeta {
@@ -638,7 +689,9 @@ mod tests {
         assert!(
             matches!(
                 outcome,
-                ChangeSetOutcome::RebaseRequired { current_snapshot_id: SnapshotId(1) }
+                ChangeSetOutcome::RebaseRequired {
+                    current_snapshot_id: SnapshotId(1)
+                }
             ),
             "stale base must return RebaseRequired with live id; got: {outcome:?}"
         );
