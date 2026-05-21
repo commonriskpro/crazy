@@ -4,10 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-ail-change = { workspace = true, features = ["storage-bridge"] }
-ail-core   = { workspace = true }
-tokio      = { workspace = true }
-serde      = { workspace = true }
+ail-change  = { workspace = true, features = ["storage-bridge"] }
+ail-core    = { workspace = true }
+ail-remote  = { workspace = true }
+tokio       = { workspace = true }
+serde       = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

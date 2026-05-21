@@ -45,6 +45,7 @@ use ail_change::{
     storage_bridge::MemorySnapshotBridge,
 };
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
+use ail_remote::{RemoteChangeSet, RemoteError};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -242,6 +243,32 @@ impl Coordinator {
                     CoordinatorOutcome::ConflictIrresolvable { reason }
                 }
             }
+        }
+    }
+
+    /// Verify the Ed25519 signature on a `RemoteChangeSet` and, if valid, submit
+    /// the enclosed `CanonicalChangeSet` via the existing [`submit`](Self::submit) protocol.
+    ///
+    /// # Errors
+    ///
+    /// - Returns `Err(RemoteError::SignatureInvalid)` if signature verification
+    ///   fails.  The coordinator's live snapshot does **not** advance.
+    /// - Returns `Err(RemoteError::CoordinatorFailed(reason))` if `submit()`
+    ///   returns a [`CoordinatorOutcome::Failed`] outcome.
+    pub async fn verify_remote_submission(
+        &self,
+        rcs: RemoteChangeSet,
+    ) -> Result<CoordinatorOutcome, RemoteError> {
+        rcs.verify_signature()
+            .map_err(|_| RemoteError::SignatureInvalid)?;
+
+        let outcome = self.submit(rcs.changeset).await;
+
+        match &outcome {
+            CoordinatorOutcome::Failed { reason } => {
+                Err(RemoteError::CoordinatorFailed(reason.clone()))
+            }
+            _ => Ok(outcome),
         }
     }
 }

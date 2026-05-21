@@ -8,6 +8,7 @@ members = [
     "crates/ail-core",
     "crates/ail-dogfood",
     "crates/ail-package",
+    "crates/ail-remote",
     "crates/ail-runtime",
     "crates/ail-storage",
     "crates/ail-stdlib",
@@ -28,6 +29,7 @@ ail-context  = { path = "crates/ail-context" }
 ail-core     = { path = "crates/ail-core" }
 ail-dogfood  = { path = "crates/ail-dogfood" }
 ail-package  = { path = "crates/ail-package" }
+ail-remote   = { path = "crates/ail-remote" }
 ail-runtime  = { path = "crates/ail-runtime" }
 ail-storage  = { path = "crates/ail-storage" }
 ail-stdlib   = { path = "crates/ail-stdlib" }
@@ -41,8 +43,10 @@ cranelift-frontend = "= 0.115.1"
 cranelift-module   = "= 0.115.1"
 cranelift-native   = "= 0.115.1"
 cranelift-object   = "= 0.115.1"
-blake3      = "1.5"
-ciborium    = "0.2"
+blake3          = "1.5"
+ciborium        = "0.2"
+ed25519-dalek   = { version = "2", features = ["rand_core"] }
+rand            = "0.8"
 clap        = { version = "4.5", features = ["derive"] }
 futures     = "0.3"
 tokio       = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] }
