@@ -1,0 +1,13 @@
+[package]
+name    = "ail-stdlib"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ail-core = { workspace = true }
+blake3   = { workspace = true }
+ciborium = { workspace = true }
+serde    = { workspace = true }
+
+[lints]
+workspace = true
