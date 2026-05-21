@@ -1,9 +1,8 @@
-// Integration tests for ail-stdlib PR 1 slice.
+// Integration tests for ail-stdlib (PR 1 + PR 2 slices).
 //
 // Covers spec scenarios: StabilityTier, CBOR round-trips, deterministic hash,
-// graph projection infrastructure, and capability constant contracts.
-//
-// Tests that require v1_registry() (4.6–4.10) are deferred to PR 2.
+// graph projection infrastructure, capability constant contracts, and the
+// canonical v1 registry (scenarios 4.6–4.10 added in PR 2).
 
 use ail_core::semantic_graph::{
     CapabilityReqs, ContractClauses, EffectRow, NodeKind, NodeRef, SemanticGraph, TypeFacts,
@@ -11,6 +10,7 @@ use ail_core::semantic_graph::{
 use ail_stdlib::{
     capability,
     registry::{StabilityTier, StdlibEntry, StdlibId, StdlibRegistry},
+    v1_registry,
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -318,6 +318,111 @@ fn capability_constants_are_lower_dotted_strings() {
         assert!(!c.is_empty(), "capability constant must not be empty");
         assert!(c.contains('.'), "capability constant must contain a dot: {c:?}");
     }
+}
+
+// ── Spec: v1 registry — scenarios 4.6–4.10 ───────────────────────────────
+//
+// These tests exercise `v1_registry()` — added in PR 2.
+
+// Spec scenario 4.6: Projected nodes pass graph validation
+//   GIVEN the default v1 StdlibRegistry
+//   WHEN to_graph_nodes() is called and all nodes are inserted into an empty SemanticGraph
+//   THEN SemanticGraph::validate() returns Ok(())
+#[test]
+fn v1_projected_nodes_pass_semantic_graph_validation() {
+    let reg = v1_registry();
+    let nodes = reg.to_graph_nodes();
+    let graph = SemanticGraph {
+        nodes,
+        edges: vec![],
+    };
+    assert_eq!(
+        graph.validate(),
+        Ok(()),
+        "v1 projected nodes must pass SemanticGraph::validate()"
+    );
+}
+
+// Spec scenario 4.7: All projected NodeRef values are unique
+//   GIVEN a StdlibRegistry with N entries
+//   WHEN to_graph_nodes() is called
+//   THEN every returned GraphNode carries a distinct NodeRef
+#[test]
+fn v1_projected_node_refs_are_unique() {
+    let reg = v1_registry();
+    let nodes = reg.to_graph_nodes();
+    let mut refs: Vec<NodeRef> = nodes.iter().map(|n| n.id).collect();
+    let original_len = refs.len();
+    refs.sort();
+    refs.dedup();
+    assert_eq!(
+        refs.len(),
+        original_len,
+        "all projected NodeRef values must be unique"
+    );
+}
+
+// Spec scenario 4.8: NodeKind is preserved from StdlibEntry
+//   GIVEN a StdlibEntry with kind = NodeKind::Capability
+//   WHEN projected via to_graph_nodes()
+//   THEN the resulting GraphNode has kind = NodeKind::Capability
+#[test]
+fn v1_node_kind_preserved_through_projection() {
+    let reg = v1_registry();
+    // std.capability is the last (index 8) and is NodeKind::Capability
+    let capability_entry = reg
+        .entries
+        .iter()
+        .find(|e| e.id.0 == "std.capability")
+        .expect("std.capability must be present in v1 registry");
+    assert_eq!(
+        capability_entry.kind,
+        NodeKind::Capability,
+        "std.capability entry must have NodeKind::Capability"
+    );
+
+    let nodes = reg.to_graph_nodes();
+    let capability_node = nodes
+        .iter()
+        .find(|n| n.name == "std.capability")
+        .expect("projected std.capability node must exist");
+    assert_eq!(
+        capability_node.kind,
+        NodeKind::Capability,
+        "projected std.capability node must preserve NodeKind::Capability"
+    );
+}
+
+// Spec scenario 4.9: Entry count equals 9
+//   GIVEN the default v1 StdlibRegistry
+//   WHEN entries are counted
+//   THEN count equals 9
+#[test]
+fn v1_registry_contains_exactly_9_entries() {
+    let reg = v1_registry();
+    assert_eq!(
+        reg.entries.len(),
+        9,
+        "v1 registry must contain exactly 9 entries"
+    );
+}
+
+// Spec scenario 4.10: Out-of-scope modules are absent
+//   GIVEN the default v1 StdlibRegistry
+//   WHEN searched for std.fs or std.net entries
+//   THEN neither entry is present
+#[test]
+fn v1_registry_excludes_out_of_scope_modules() {
+    let reg = v1_registry();
+    let ids: Vec<&str> = reg.entries.iter().map(|e| e.id.0.as_str()).collect();
+    assert!(
+        !ids.contains(&"std.fs"),
+        "std.fs must not be present in the v1 registry"
+    );
+    assert!(
+        !ids.contains(&"std.net"),
+        "std.net must not be present in the v1 registry"
+    );
 }
 
 // ── Spec: validate() duplicate-ID detection ───────────────────────────────

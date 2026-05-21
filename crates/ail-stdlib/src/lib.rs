@@ -8,9 +8,7 @@
 // |--------|----------|
 // | `registry` | `StabilityTier`, `StdlibId`, `StdlibEntry`, `StdlibRegistry`, `StdlibError` |
 // | `capability` | `pub const &str` capability name constants |
-//
-// `v1::v1_registry()` will be added in PR 2 when the ordered v1 module data
-// is implemented.
+// | `v1` | `v1_registry()` — the canonical 9-entry v1 stdlib registry |
 //
 // # Dependency isolation
 //
@@ -24,4 +22,8 @@ pub mod capability;
 /// `StdlibRegistry`, `StdlibError`, and all associated methods.
 pub mod registry;
 
+/// Canonical v1 stdlib module registry — `v1_registry()`.
+pub mod v1;
+
 pub use registry::{StabilityTier, StdlibEntry, StdlibError, StdlibId, StdlibRegistry};
+pub use v1::v1_registry;
