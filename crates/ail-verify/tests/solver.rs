@@ -24,6 +24,7 @@ fn literal_true_resolves_to_proven() {
     let obligation = ProofObligation {
         predicate: "true".into(),
         role: ClauseRole::Requires,
+        scope: String::new(),
     };
     assert_eq!(solver.solve(&obligation), SolverOutcome::Proven);
 }
@@ -36,6 +37,7 @@ fn non_trivial_predicate_is_unsupported() {
     let obligation = ProofObligation {
         predicate: "x + y < z".into(),
         role: ClauseRole::Ensures,
+        scope: String::new(),
     };
     let outcome = solver.solve(&obligation);
     // MUST NOT be Proven
@@ -55,6 +57,7 @@ fn literal_true_on_ensures_role_is_proven() {
     let obligation = ProofObligation {
         predicate: "true".into(),
         role: ClauseRole::Ensures,
+        scope: String::new(),
     };
     assert_eq!(solver.solve(&obligation), SolverOutcome::Proven);
 }
@@ -67,6 +70,7 @@ fn complex_requires_clause_is_unsupported() {
     let obligation = ProofObligation {
         predicate: "user.age >= 18".into(),
         role: ClauseRole::Requires,
+        scope: String::new(),
     };
     let outcome = solver.solve(&obligation);
     assert_ne!(outcome, SolverOutcome::Proven);
@@ -82,6 +86,7 @@ fn repeated_calls_return_same_outcome() {
     let true_oblig = ProofObligation {
         predicate: "true".into(),
         role: ClauseRole::Requires,
+        scope: String::new(),
     };
     let first = solver.solve(&true_oblig);
     let second = solver.solve(&true_oblig);
@@ -90,6 +95,7 @@ fn repeated_calls_return_same_outcome() {
     let complex_oblig = ProofObligation {
         predicate: "result > 0".into(),
         role: ClauseRole::Ensures,
+        scope: String::new(),
     };
     let first_c = solver.solve(&complex_oblig);
     let second_c = solver.solve(&complex_oblig);
@@ -116,6 +122,7 @@ fn run_solver(solver: &dyn Solver, predicate: &str, role: ClauseRole) -> SolverO
     let oblig = ProofObligation {
         predicate: predicate.into(),
         role,
+        scope: String::new(),
     };
     solver.solve(&oblig)
 }

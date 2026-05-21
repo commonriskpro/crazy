@@ -1,4 +1,4 @@
-// ── ail-verify::report tests ──────────────────────────────────────────────
+// ── ail-verify::report tests — includes SummaryCounts + enrichment ────────
 //
 // Strict TDD — RED phase.  These tests are written BEFORE src/report.rs
 // exists; they define the acceptance criteria from the spec.
@@ -9,7 +9,9 @@
 //   - Entry structure: claim, state, scope, evidence: Option<String>
 //   - evidence: None must NOT be coerced to empty string on serde
 
-use ail_verify::report::{VerificationEntry, VerificationReport, VerificationState};
+use ail_verify::report::{
+    SCHEMA_VERSION, SummaryCounts, VerificationEntry, VerificationReport, VerificationState,
+};
 
 // ── Scenario: All six variants representable ──────────────────────────────
 
@@ -40,28 +42,26 @@ fn all_six_states_are_representable() {
 
 #[test]
 fn mixed_states_summary_is_failed() {
-    let report = VerificationReport {
-        entries: vec![
-            VerificationEntry {
-                claim: "type".into(),
-                state: VerificationState::Proven,
-                scope: "node_a".into(),
-                evidence: None,
-            },
-            VerificationEntry {
-                claim: "effect".into(),
-                state: VerificationState::Assumed,
-                scope: "node_a".into(),
-                evidence: None,
-            },
-            VerificationEntry {
-                claim: "cap".into(),
-                state: VerificationState::Failed,
-                scope: "node_a".into(),
-                evidence: Some("failed invariant".into()),
-            },
-        ],
-    };
+    let report = VerificationReport::new(vec![
+        VerificationEntry {
+            claim: "type".into(),
+            state: VerificationState::Proven,
+            scope: "node_a".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "effect".into(),
+            state: VerificationState::Assumed,
+            scope: "node_a".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "cap".into(),
+            state: VerificationState::Failed,
+            scope: "node_a".into(),
+            evidence: Some("failed invariant".into()),
+        },
+    ]);
     assert_eq!(report.summary(), VerificationState::Failed);
 }
 
@@ -69,28 +69,26 @@ fn mixed_states_summary_is_failed() {
 
 #[test]
 fn unsafe_beats_unverified_and_assumed() {
-    let report = VerificationReport {
-        entries: vec![
-            VerificationEntry {
-                claim: "type".into(),
-                state: VerificationState::Unverified,
-                scope: "n1".into(),
-                evidence: None,
-            },
-            VerificationEntry {
-                claim: "effect".into(),
-                state: VerificationState::Assumed,
-                scope: "n1".into(),
-                evidence: None,
-            },
-            VerificationEntry {
-                claim: "boundary".into(),
-                state: VerificationState::Unsafe,
-                scope: "n1".into(),
-                evidence: None,
-            },
-        ],
-    };
+    let report = VerificationReport::new(vec![
+        VerificationEntry {
+            claim: "type".into(),
+            state: VerificationState::Unverified,
+            scope: "n1".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "effect".into(),
+            state: VerificationState::Assumed,
+            scope: "n1".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "boundary".into(),
+            state: VerificationState::Unsafe,
+            scope: "n1".into(),
+            evidence: None,
+        },
+    ]);
     assert_eq!(report.summary(), VerificationState::Unsafe);
 }
 
@@ -98,22 +96,20 @@ fn unsafe_beats_unverified_and_assumed() {
 
 #[test]
 fn all_proven_summary_is_proven() {
-    let report = VerificationReport {
-        entries: vec![
-            VerificationEntry {
-                claim: "type_a".into(),
-                state: VerificationState::Proven,
-                scope: "node_a".into(),
-                evidence: None,
-            },
-            VerificationEntry {
-                claim: "type_b".into(),
-                state: VerificationState::Proven,
-                scope: "node_b".into(),
-                evidence: None,
-            },
-        ],
-    };
+    let report = VerificationReport::new(vec![
+        VerificationEntry {
+            claim: "type_a".into(),
+            state: VerificationState::Proven,
+            scope: "node_a".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "type_b".into(),
+            state: VerificationState::Proven,
+            scope: "node_b".into(),
+            evidence: None,
+        },
+    ]);
     assert_eq!(report.summary(), VerificationState::Proven);
 }
 
@@ -121,7 +117,7 @@ fn all_proven_summary_is_proven() {
 
 #[test]
 fn empty_report_summary_is_proven() {
-    let report = VerificationReport { entries: vec![] };
+    let report = VerificationReport::new(vec![]);
     assert_eq!(report.summary(), VerificationState::Proven);
 }
 
@@ -130,41 +126,37 @@ fn empty_report_summary_is_proven() {
 #[test]
 fn runtime_checked_beats_proven_but_not_assumed() {
     // RuntimeChecked > Proven
-    let report_rt = VerificationReport {
-        entries: vec![
-            VerificationEntry {
-                claim: "a".into(),
-                state: VerificationState::Proven,
-                scope: "n".into(),
-                evidence: None,
-            },
-            VerificationEntry {
-                claim: "b".into(),
-                state: VerificationState::RuntimeChecked,
-                scope: "n".into(),
-                evidence: None,
-            },
-        ],
-    };
+    let report_rt = VerificationReport::new(vec![
+        VerificationEntry {
+            claim: "a".into(),
+            state: VerificationState::Proven,
+            scope: "n".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "b".into(),
+            state: VerificationState::RuntimeChecked,
+            scope: "n".into(),
+            evidence: None,
+        },
+    ]);
     assert_eq!(report_rt.summary(), VerificationState::RuntimeChecked);
 
     // Assumed > RuntimeChecked
-    let report_assumed = VerificationReport {
-        entries: vec![
-            VerificationEntry {
-                claim: "a".into(),
-                state: VerificationState::RuntimeChecked,
-                scope: "n".into(),
-                evidence: None,
-            },
-            VerificationEntry {
-                claim: "b".into(),
-                state: VerificationState::Assumed,
-                scope: "n".into(),
-                evidence: None,
-            },
-        ],
-    };
+    let report_assumed = VerificationReport::new(vec![
+        VerificationEntry {
+            claim: "a".into(),
+            state: VerificationState::RuntimeChecked,
+            scope: "n".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "b".into(),
+            state: VerificationState::Assumed,
+            scope: "n".into(),
+            evidence: None,
+        },
+    ]);
     assert_eq!(report_assumed.summary(), VerificationState::Assumed);
 }
 
@@ -220,4 +212,115 @@ fn evidence_some_round_trips_via_cbor() {
         Some("contradiction found in nominal type".into())
     );
     assert_eq!(decoded.state, VerificationState::Failed);
+}
+
+// ── SummaryCounts: from_entries produces correct per-state counts ─────────
+
+#[test]
+fn summary_counts_from_entries_are_correct() {
+    let entries = vec![
+        VerificationEntry {
+            claim: "a".into(),
+            state: VerificationState::Proven,
+            scope: "n".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "b".into(),
+            state: VerificationState::Proven,
+            scope: "n".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "c".into(),
+            state: VerificationState::RuntimeChecked,
+            scope: "n".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "d".into(),
+            state: VerificationState::Assumed,
+            scope: "n".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "e".into(),
+            state: VerificationState::Unverified,
+            scope: "n".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "f".into(),
+            state: VerificationState::Unsafe,
+            scope: "n".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "g".into(),
+            state: VerificationState::Failed,
+            scope: "n".into(),
+            evidence: None,
+        },
+    ];
+    let counts = SummaryCounts::from_entries(&entries);
+    assert_eq!(counts.verified_count, 2);
+    assert_eq!(counts.runtime_checked_count, 1);
+    assert_eq!(counts.assumed_count, 1);
+    assert_eq!(counts.unverified_count, 1);
+    assert_eq!(counts.unsafe_count, 1);
+    assert_eq!(counts.failed_count, 1);
+}
+
+// ── SummaryCounts: empty slice → all zeros ────────────────────────────────
+
+#[test]
+fn summary_counts_empty_is_all_zeros() {
+    let counts = SummaryCounts::from_entries(&[]);
+    assert_eq!(counts.verified_count, 0);
+    assert_eq!(counts.runtime_checked_count, 0);
+    assert_eq!(counts.assumed_count, 0);
+    assert_eq!(counts.unverified_count, 0);
+    assert_eq!(counts.unsafe_count, 0);
+    assert_eq!(counts.failed_count, 0);
+}
+
+// ── VerificationReport::new sets schema_version and profile ───────────────
+
+#[test]
+fn new_report_has_schema_version() {
+    let report = VerificationReport::new(vec![]);
+    assert_eq!(report.schema_version, SCHEMA_VERSION);
+    assert_eq!(report.schema_version, "verification/1.0");
+    assert!(report.profile.is_none());
+}
+
+// ── VerificationReport::with_profile sets profile ─────────────────────────
+
+#[test]
+fn with_profile_sets_profile_field() {
+    let report = VerificationReport::new(vec![]).with_profile("prod");
+    assert_eq!(report.profile.as_deref(), Some("prod"));
+}
+
+// ── VerificationReport::new auto-computes summary_counts ──────────────────
+
+#[test]
+fn new_auto_computes_summary_counts() {
+    let entries = vec![
+        VerificationEntry {
+            claim: "x".into(),
+            state: VerificationState::Failed,
+            scope: "n".into(),
+            evidence: None,
+        },
+        VerificationEntry {
+            claim: "y".into(),
+            state: VerificationState::Proven,
+            scope: "n".into(),
+            evidence: None,
+        },
+    ];
+    let report = VerificationReport::new(entries);
+    assert_eq!(report.summary_counts.failed_count, 1);
+    assert_eq!(report.summary_counts.verified_count, 1);
 }

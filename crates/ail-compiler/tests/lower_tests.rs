@@ -13,19 +13,17 @@ use ail_verify::report::{VerificationEntry, VerificationReport, VerificationStat
 /// Build a `VerificationReport` whose summary equals `state`.
 /// Uses a single entry whose state is `state`.
 fn report_with_state(state: VerificationState) -> VerificationReport {
-    VerificationReport {
-        entries: vec![VerificationEntry {
-            claim: "test claim".to_string(),
-            state,
-            scope: "test".to_string(),
-            evidence: None,
-        }],
-    }
+    VerificationReport::new(vec![VerificationEntry {
+        claim: "test claim".to_string(),
+        state,
+        scope: "test".to_string(),
+        evidence: None,
+    }])
 }
 
 /// Build an empty `VerificationReport` — summary is vacuous `Proven`.
 fn proven_report() -> VerificationReport {
-    VerificationReport { entries: vec![] }
+    VerificationReport::new(vec![])
 }
 
 /// Build a `SemanticGraph` with exactly N nodes (Module, Function, Effect,

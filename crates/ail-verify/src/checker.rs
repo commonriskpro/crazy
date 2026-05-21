@@ -45,7 +45,7 @@ impl Checker {
         for node in &graph.nodes {
             Self::classify_node(node, &mut entries);
         }
-        VerificationReport { entries }
+        VerificationReport::new(entries)
     }
 
     /// Produce the three canonical fact entries for one `GraphNode`.
