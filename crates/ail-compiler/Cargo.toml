@@ -1,0 +1,19 @@
+[package]
+name    = "ail-compiler"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ail-core     = { workspace = true }
+ail-verify   = { workspace = true }
+blake3       = { workspace = true }
+ciborium     = { workspace = true }
+serde        = { workspace = true }
+wasm-encoder = { workspace = true }
+
+[dev-dependencies]
+ail-testkit  = { workspace = true }
+wasmparser   = { workspace = true }
+
+[lints]
+workspace = true
