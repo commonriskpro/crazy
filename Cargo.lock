@@ -94,6 +94,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ail-coordinator"
+version = "0.1.0"
+dependencies = [
+ "ail-change",
+ "serde",
+]
+
+[[package]]
 name = "ail-core"
 version = "0.1.0"
 dependencies = [
