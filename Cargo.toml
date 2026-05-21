@@ -4,6 +4,7 @@ members = [
     "crates/ail-cli",
     "crates/ail-compiler",
     "crates/ail-context",
+    "crates/ail-coordinator",
     "crates/ail-core",
     "crates/ail-dogfood",
     "crates/ail-package",
@@ -20,8 +21,9 @@ edition = "2024"
 version = "0.1.0"
 
 [workspace.dependencies]
-ail-change   = { path = "crates/ail-change" }
-ail-compiler = { path = "crates/ail-compiler" }
+ail-change      = { path = "crates/ail-change" }
+ail-compiler    = { path = "crates/ail-compiler" }
+ail-coordinator = { path = "crates/ail-coordinator" }
 ail-context  = { path = "crates/ail-context" }
 ail-core     = { path = "crates/ail-core" }
 ail-dogfood  = { path = "crates/ail-dogfood" }
@@ -38,6 +40,7 @@ blake3      = "1.5"
 ciborium    = "0.2"
 clap        = { version = "4.5", features = ["derive"] }
 futures     = "0.3"
+tokio       = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] }
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
 tempfile    = "3.10"

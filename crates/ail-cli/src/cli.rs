@@ -314,6 +314,12 @@ fn cmd_apply(mode: OutputMode, change_id: &str) -> Result<(), CliError> {
         ail_change::model::ChangeSetOutcome::Failed { reason } => {
             Err(CliError::Domain(format!("apply failed: {reason}")))
         }
+        // ConflictIrresolvable is set by the coordinator layer; the CLI
+        // apply path does not go through the coordinator, but the variant
+        // must be handled for exhaustive match correctness.
+        ail_change::model::ChangeSetOutcome::ConflictIrresolvable { reason } => {
+            Err(CliError::Domain(format!("conflict: {reason:?}")))
+        }
     }
 }
 

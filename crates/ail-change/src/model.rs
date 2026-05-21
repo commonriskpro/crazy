@@ -81,9 +81,32 @@ pub struct ChangeSet {
     pub ops: Vec<ChangeSetOp>,
 }
 
+// ── ConflictReason ────────────────────────────────────────────────────────
+
+/// Typed classification of why two concurrent ChangeSets cannot be reconciled.
+///
+/// Set by the coordinator layer after semantic rebase analysis; `apply()` itself
+/// never emits this — it returns `RebaseRequired` for stale-base situations and
+/// the coordinator escalates to `ConflictIrresolvable` when rebase fails.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConflictReason {
+    /// Two agents modified the same node in incompatible ways (e.g., rename vs. set).
+    SameNodeModifiedIncompatibly,
+    /// One agent deleted a node that another agent is still modifying.
+    NodeDeletedWhileModified,
+    /// Both agents produced changes that alter the same public API surface.
+    PublicApiConflict,
+    /// Both agents touched a graph invariant that cannot be composed.
+    InvariantTouchedConcurrently,
+}
+
 // ── ChangeSetOutcome ──────────────────────────────────────────────────────
 
 /// Result of attempting to apply a `CanonicalChangeSet` to a graph.
+///
+/// `ConflictIrresolvable` is produced by the coordinator layer (not by
+/// `apply()` itself) after semantic rebase analysis determines that two
+/// concurrent ChangeSets cannot be reconciled.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChangeSetOutcome {
     /// All ops were applied successfully.
@@ -97,6 +120,12 @@ pub enum ChangeSetOutcome {
     Failed {
         /// Human-readable explanation of the failure.
         reason: String,
+    },
+    /// The coordinator determined that the changeset conflicts irresolvably
+    /// with already-applied ops; carries the typed conflict classification.
+    ConflictIrresolvable {
+        /// Why the conflict cannot be resolved by semantic rebase.
+        reason: ConflictReason,
     },
 }
 

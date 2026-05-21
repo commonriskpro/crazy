@@ -21,6 +21,9 @@
 
 #[cfg(feature = "storage-bridge")]
 mod bridge {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use ail_storage::{
         backends::memory::MemoryObjectStore,
         error::StorageResult,
@@ -34,21 +37,33 @@ mod bridge {
 
     /// In-memory `SnapshotBridge` for tests and local development.
     ///
-    /// Holds a `current_id` which is returned by `current_snapshot_id()` for
-    /// the snapshot-guard check in `apply()`.  The wrapped `ObjectBackedGraphStore`
-    /// provides persistent (within-process) snapshot and log storage.
+    /// `current_id` is an `Arc<AtomicU64>` so the coordinator can call
+    /// `advance_snapshot_id()` after each successful apply without rebuilding
+    /// the bridge.  The `Arc` makes the bridge `Clone + Send + Sync` while
+    /// the `AtomicU64` keeps snapshot-id increments lock-free.
+    ///
+    /// The wrapped `ObjectBackedGraphStore` provides persistent (within-process)
+    /// snapshot and log storage.
     pub struct MemorySnapshotBridge {
-        current_id: SnapshotId,
+        current_id: Arc<AtomicU64>,
         store: ObjectBackedGraphStore<MemoryObjectStore>,
     }
 
     impl MemorySnapshotBridge {
-        /// Create a new `MemorySnapshotBridge` with the given current snapshot id.
-        pub fn new(current_id: SnapshotId) -> Self {
+        /// Create a new `MemorySnapshotBridge` with the given initial snapshot id.
+        pub fn new(initial: SnapshotId) -> Self {
             Self {
-                current_id,
+                current_id: Arc::new(AtomicU64::new(initial.0)),
                 store: ObjectBackedGraphStore::new(MemoryObjectStore::new()),
             }
+        }
+
+        /// Atomically increment the live snapshot id by one.
+        ///
+        /// Uses `SeqCst` ordering — sufficient and safe for a monotonically
+        /// increasing counter shared between the coordinator and any observers.
+        pub fn advance_snapshot_id(&self) {
+            self.current_id.fetch_add(1, Ordering::SeqCst);
         }
 
         /// Persist a `SnapshotEnvelope` to the backing store.
@@ -82,7 +97,7 @@ mod bridge {
 
     impl SnapshotBridge for MemorySnapshotBridge {
         fn current_snapshot_id(&self) -> SnapshotId {
-            self.current_id
+            SnapshotId(self.current_id.load(Ordering::SeqCst))
         }
     }
 }
@@ -102,6 +117,56 @@ mod tests {
 
     use super::MemorySnapshotBridge;
     use crate::{apply::SnapshotBridge, model::SnapshotId};
+
+    // ── advance_snapshot_id tests ─────────────────────────────────────────
+    //
+    // Spec: MemorySnapshotBridge Advances After Apply
+    //   Scenario: Snapshot id advances after apply
+    //     GIVEN MemorySnapshotBridge initialised with SnapshotId(0)
+    //     WHEN advance_snapshot_id() is called once
+    //     THEN current_snapshot_id() returns SnapshotId(1)
+    #[test]
+    fn advance_snapshot_id_single_increment() {
+        let bridge = MemorySnapshotBridge::new(SnapshotId(0));
+        bridge.advance_snapshot_id();
+        assert_eq!(
+            bridge.current_snapshot_id(),
+            SnapshotId(1),
+            "single advance from 0 must yield SnapshotId(1)"
+        );
+    }
+
+    // Spec: MemorySnapshotBridge Advances After Apply
+    //   Scenario: Snapshot id advances are cumulative
+    //     GIVEN MemorySnapshotBridge initialised with SnapshotId(5)
+    //     WHEN advance_snapshot_id() is called three times
+    //     THEN current_snapshot_id() returns SnapshotId(8)
+    #[test]
+    fn advance_snapshot_id_triple_cumulative() {
+        let bridge = MemorySnapshotBridge::new(SnapshotId(5));
+        bridge.advance_snapshot_id();
+        bridge.advance_snapshot_id();
+        bridge.advance_snapshot_id();
+        assert_eq!(
+            bridge.current_snapshot_id(),
+            SnapshotId(8),
+            "three advances from 5 must yield SnapshotId(8)"
+        );
+    }
+
+    // TRIANGULATE: initial value is preserved before any advance.
+    //   GIVEN MemorySnapshotBridge initialised with SnapshotId(10)
+    //   WHEN no advance is called
+    //   THEN current_snapshot_id() returns SnapshotId(10)
+    #[test]
+    fn advance_snapshot_id_no_advance_preserves_initial() {
+        let bridge = MemorySnapshotBridge::new(SnapshotId(10));
+        assert_eq!(
+            bridge.current_snapshot_id(),
+            SnapshotId(10),
+            "initial value must not change without an advance call"
+        );
+    }
 
     fn oid(label: &str) -> ObjectId {
         ObjectId::from_bytes(label.as_bytes())
