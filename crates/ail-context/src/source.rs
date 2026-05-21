@@ -98,7 +98,10 @@ impl InMemoryContextSource {
 }
 
 impl ContextSource for InMemoryContextSource {
-    async fn resolve_snapshot(&self, selector: &SnapshotSelector) -> ContextResult<SnapshotEnvelope> {
+    async fn resolve_snapshot(
+        &self,
+        selector: &SnapshotSelector,
+    ) -> ContextResult<SnapshotEnvelope> {
         match selector {
             SnapshotSelector::ById(id) => {
                 let guard = self
@@ -115,7 +118,10 @@ impl ContextSource for InMemoryContextSource {
             .graphs
             .lock()
             .expect("graphs lock must not be poisoned");
-        guard.get(graph_root_hash).cloned().ok_or(ContextError::Stale)
+        guard
+            .get(graph_root_hash)
+            .cloned()
+            .ok_or(ContextError::Stale)
     }
 }
 
@@ -146,7 +152,10 @@ where
     G: GraphStore + Send + Sync,
     O: ObjectStore + Send + Sync,
 {
-    async fn resolve_snapshot(&self, selector: &SnapshotSelector) -> ContextResult<SnapshotEnvelope> {
+    async fn resolve_snapshot(
+        &self,
+        selector: &SnapshotSelector,
+    ) -> ContextResult<SnapshotEnvelope> {
         match selector {
             SnapshotSelector::ById(id) => self
                 .graph_store

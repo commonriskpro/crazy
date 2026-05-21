@@ -156,7 +156,10 @@ mod tests {
         };
         let bytes = codec.encode(&query).expect("encode must succeed");
         let decoded: ContextQuery = codec.decode(&bytes).expect("decode must succeed");
-        assert_eq!(decoded, query, "ContextQuery::Graph must survive CBOR roundtrip");
+        assert_eq!(
+            decoded, query,
+            "ContextQuery::Graph must survive CBOR roundtrip"
+        );
     }
 
     // ── context_query_budget_accessor ─────────────────────────────────────
@@ -203,10 +206,7 @@ mod tests {
 
         let bytes = codec.encode(&resp).expect("encode must succeed");
         let decoded: ContextResponse = codec.decode(&bytes).expect("decode must succeed");
-        assert_eq!(
-            decoded, resp,
-            "ContextResponse must survive CBOR roundtrip"
-        );
+        assert_eq!(decoded, resp, "ContextResponse must survive CBOR roundtrip");
     }
 
     // ── context_response_deterministic_encoding ───────────────────────────

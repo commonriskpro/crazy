@@ -43,7 +43,10 @@ impl fmt::Display for ContextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ContextError::Stale => {
-                write!(f, "{E_CONTEXT_STALE}: snapshot or graph root not found in store")
+                write!(
+                    f,
+                    "{E_CONTEXT_STALE}: snapshot or graph root not found in store"
+                )
             }
             ContextError::NodeNotFound => {
                 write!(f, "{E_NODE_NOT_FOUND}: queried node ref absent from graph")

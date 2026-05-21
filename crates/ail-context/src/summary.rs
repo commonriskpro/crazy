@@ -96,6 +96,9 @@ mod tests {
         ];
         let a = render_summary(&nodes);
         let b = render_summary(&nodes);
-        assert_eq!(a, b, "render_summary must be deterministic for identical input");
+        assert_eq!(
+            a, b,
+            "render_summary must be deterministic for identical input"
+        );
     }
 }

@@ -16,16 +16,18 @@
 
 use std::collections::BTreeSet;
 
+use ail_context::source::ContextSource;
 use ail_context::{
     ContextError, ContextQuery, ContextResponse, InMemoryContextSource, QueryScope,
     ResponseBuilder, SnapshotSelector, StoreContextSource,
 };
-use ail_context::source::ContextSource;
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef};
 use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::graph::GraphStore;
 use ail_storage::object::{ObjectId, ObjectStore, RawObject};
-use ail_testkit::{MemoryObjectStore, ObjectBackedGraphStore, make_semantic_graph, make_snapshot_envelope};
+use ail_testkit::{
+    MemoryObjectStore, ObjectBackedGraphStore, make_semantic_graph, make_snapshot_envelope,
+};
 use futures::executor::block_on;
 
 // ── Shared helpers ────────────────────────────────────────────────────────
@@ -133,7 +135,10 @@ fn in_memory_source_node_query_happy_path() {
             "returned node must be the queried target"
         );
         assert!(!resp.truncated, "must not be truncated with max budget");
-        assert!(!resp.redacted, "must not be redacted with empty redaction set");
+        assert!(
+            !resp.redacted,
+            "must not be redacted with empty redaction set"
+        );
     });
 }
 
@@ -276,10 +281,10 @@ fn distinct_structured_layers_produce_distinct_hashes() {
         edges: vec![],
     };
 
-    let resp_a = ResponseBuilder::build(&query, &graph_a, &snap, &no_redactions())
-        .expect("build a");
-    let resp_b = ResponseBuilder::build(&query, &graph_b, &snap, &no_redactions())
-        .expect("build b");
+    let resp_a =
+        ResponseBuilder::build(&query, &graph_a, &snap, &no_redactions()).expect("build a");
+    let resp_b =
+        ResponseBuilder::build(&query, &graph_b, &snap, &no_redactions()).expect("build b");
 
     assert_ne!(
         resp_a.context_hash, resp_b.context_hash,

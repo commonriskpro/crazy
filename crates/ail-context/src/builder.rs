@@ -399,7 +399,10 @@ mod tests {
 
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &redacted_refs)
             .expect("build must succeed");
-        assert!(resp.redacted, "redacted flag must be true when a node is withheld");
+        assert!(
+            resp.redacted,
+            "redacted flag must be true when a node is withheld"
+        );
         let ids: Vec<NodeRef> = resp.structured.iter().map(|n| n.id).collect();
         assert!(
             !ids.contains(&NodeRef(1)),
@@ -420,7 +423,11 @@ mod tests {
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("build must succeed");
-        assert_eq!(resp.structured.len(), 3, "Graph + Full must include all 3 nodes");
+        assert_eq!(
+            resp.structured.len(),
+            3,
+            "Graph + Full must include all 3 nodes"
+        );
         // Verify NodeRef order
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
         assert_eq!(ids, vec![0, 1, 2], "nodes must be sorted by NodeRef");
