@@ -76,6 +76,30 @@ pub enum EdgeKind {
 
 // ── Semantic fact value types ─────────────────────────────────────────────
 
+/// Contract clauses attached to a `GraphNode`.
+///
+/// Uses `Vec<String>` (no `HashMap`) for deterministic CBOR serialization.
+/// Both lists are in declaration order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContractClauses {
+    /// Preconditions that callers must satisfy (e.g., `"x > 0"`).
+    pub requires: Vec<String>,
+    /// Postconditions the implementation guarantees (e.g., `"result >= 0"`).
+    pub ensures: Vec<String>,
+}
+
+/// Materialized metadata for one runtime-check assertion on a `GraphNode`.
+///
+/// Does NOT execute anything; stores the predicate text and a stable content
+/// hash so that tooling can track check identity across revisions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeCheckMeta {
+    /// The predicate expression, as a string (e.g., `"x != null"`).
+    pub predicate: String,
+    /// A stable content hash identifying this predicate (e.g., a hex digest).
+    pub hash: String,
+}
+
 /// Resolved type information for a `GraphNode`.
 ///
 /// Uses only `Vec<String>` (no `HashMap`) to guarantee deterministic CBOR
@@ -112,10 +136,10 @@ pub struct CapabilityReqs {
 ///
 /// # Backward Compatibility
 ///
-/// The three optional fact fields (`type_facts`, `effect_row`,
-/// `capability_reqs`) are serialized only when `Some`; absent fields
-/// deserialize as `None`.  This keeps the Phase 1–4 CBOR wire format
-/// byte-identical when all three are `None`.
+/// All optional fact fields (`type_facts`, `effect_row`, `capability_reqs`,
+/// `contract_clauses`, `runtime_checks`) are serialized only when `Some`;
+/// absent fields deserialize as `None`.  This keeps the Phase 1–5 CBOR wire
+/// format byte-identical when all optional fields are `None`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphNode {
     /// Intra-graph identity.
@@ -133,6 +157,17 @@ pub struct GraphNode {
     /// Declared capability requirements, if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability_reqs: Option<CapabilityReqs>,
+    /// Contract clauses (requires/ensures), if declared.
+    ///
+    /// Serialized only when `Some`; absent fields deserialize as `None`.
+    /// This keeps Phase 1–5 CBOR wire format byte-identical when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_clauses: Option<ContractClauses>,
+    /// Materialized runtime-check metadata, if any checks are registered.
+    ///
+    /// Serialized only when `Some`; absent fields deserialize as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_checks: Option<Vec<RuntimeCheckMeta>>,
 }
 
 impl GraphNode {
@@ -160,6 +195,8 @@ impl GraphNode {
             type_facts: None,
             effect_row: None,
             capability_reqs: None,
+            contract_clauses: None,
+            runtime_checks: None,
         }
     }
 }
