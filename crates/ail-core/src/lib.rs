@@ -1,6 +1,8 @@
 /// Crate version, sourced directly from `Cargo.toml` at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod semantic_graph;
+
 #[cfg(test)]
 mod tests {
     use super::*;

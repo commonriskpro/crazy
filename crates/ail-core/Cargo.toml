@@ -3,5 +3,13 @@ name    = "ail-core"
 version.workspace = true
 edition.workspace = true
 
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+ail-storage = { workspace = true }
+ail-testkit = { workspace = true }
+futures     = { workspace = true }
+
 [lints]
 workspace = true

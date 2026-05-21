@@ -25,6 +25,12 @@ dependencies = [
 [[package]]
 name = "ail-core"
 version = "0.1.0"
+dependencies = [
+ "ail-storage",
+ "ail-testkit",
+ "futures",
+ "serde",
+]
 
 [[package]]
 name = "ail-storage"

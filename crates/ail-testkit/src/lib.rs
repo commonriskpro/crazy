@@ -1,3 +1,58 @@
+// ── Semantic graph fixture helpers ────────────────────────────────────────
+
+/// Build a minimal but multi-typed [`ail_core::semantic_graph::SemanticGraph`]
+/// fixture for use in workspace tests.
+///
+/// Returns a graph with:
+/// - 3 nodes: `NodeRef(0)` (`Module`), `NodeRef(1)` (`Function`), `NodeRef(2)` (`Effect`)
+/// - 2 edges: `0 → 1` (`DependsOn`), `1 → 2` (`Emits`)
+///
+/// The graph is structurally valid (`validate()` returns `Ok(())`).
+///
+/// # Example
+///
+/// ```rust
+/// let graph = ail_testkit::make_semantic_graph();
+/// assert!(graph.validate().is_ok());
+/// ```
+pub fn make_semantic_graph() -> ail_core::semantic_graph::SemanticGraph {
+    use ail_core::semantic_graph::{
+        EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph,
+    };
+
+    SemanticGraph {
+        nodes: vec![
+            GraphNode {
+                id: NodeRef(0),
+                kind: NodeKind::Module,
+                name: "core".to_string(),
+            },
+            GraphNode {
+                id: NodeRef(1),
+                kind: NodeKind::Function,
+                name: "run".to_string(),
+            },
+            GraphNode {
+                id: NodeRef(2),
+                kind: NodeKind::Effect,
+                name: "io".to_string(),
+            },
+        ],
+        edges: vec![
+            GraphEdge {
+                source: NodeRef(0),
+                target: NodeRef(1),
+                kind: EdgeKind::DependsOn,
+            },
+            GraphEdge {
+                source: NodeRef(1),
+                target: NodeRef(2),
+                kind: EdgeKind::Emits,
+            },
+        ],
+    }
+}
+
 // ── Storage fixture helpers ───────────────────────────────────────────────
 
 /// Re-export of [`ail_storage::backends::memory::MemoryObjectStore`] for use
@@ -83,5 +138,19 @@ mod tests {
     #[should_panic(expected = "fixture not found")]
     fn fixture_panics_on_missing_file() {
         crate::fixture!("does_not_exist.atl");
+    }
+
+    // ── make_semantic_graph_is_valid ──────────────────────────────────────
+    // Spec: make_semantic_graph() produces a structurally valid graph.
+    //   GIVEN the fixture returned by make_semantic_graph()
+    //   WHEN validate() is called on it
+    //   THEN it returns Ok(())
+    #[test]
+    fn make_semantic_graph_is_valid() {
+        let graph = crate::make_semantic_graph();
+        assert!(
+            graph.validate().is_ok(),
+            "make_semantic_graph() fixture must pass structural validation"
+        );
     }
 }
