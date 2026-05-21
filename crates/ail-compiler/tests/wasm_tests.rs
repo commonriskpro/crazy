@@ -49,11 +49,28 @@ fn anf_for_graph(graph: &SemanticGraph) -> ail_compiler::AnfIr {
 
 // Scenario: zero-binding graph → minimal valid WASM module.
 // The emitted bytes must pass wasmparser::validate (structural validity only).
+// Approval: for zero bindings the output must be EXACTLY the 8-byte WASM
+// magic-number + version header (no sections appended).
 #[test]
 fn empty_anf_emits_valid_wasm_module() {
+    // WASM magic (0x00 0x61 0x73 0x6d) + version 1 (0x01 0x00 0x00 0x00).
+    const WASM_HEADER: [u8; 8] = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+
     let anf = anf_for_graph(&empty_graph());
     let artifact = emit_wasm(&anf).expect("emit_wasm failed on empty anf");
+
+    // Structural validity via the reference parser.
     wasmparser::validate(&artifact.wasm).expect("wasmparser rejected empty wasm module");
+
+    // Exact byte contract: zero-binding module is header-only (8 bytes).
+    assert_eq!(
+        artifact.wasm.as_slice(),
+        &WASM_HEADER,
+        "empty AnfIr must emit exactly the 8-byte WASM magic+version header, \
+         got {} bytes: {:02x?}",
+        artifact.wasm.len(),
+        artifact.wasm,
+    );
 }
 
 // Scenario: N-binding graph → valid WASM module with N function stubs.

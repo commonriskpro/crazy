@@ -53,7 +53,9 @@ use crate::hash::hash_with_parent;
 pub struct WasmArtifact {
     /// Encoded WASM binary; passes `wasmparser::validate` structural checks.
     pub wasm: Vec<u8>,
-    /// Maps each `NodeRef` from the source graph to its WASM function index.
+    /// Maps each `NodeRef` from the source graph to its byte offset in the
+    /// WASM code section (i.e., the position of the body-size LEB128 byte
+    /// for that function's entry in the encoded binary).
     /// Empty when the input `AnfIr` has no bindings.
     pub provenance: BTreeMap<NodeRef, u32>,
     /// Hash chain extended through the WASM stage.
