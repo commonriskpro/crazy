@@ -3,6 +3,7 @@ members = [
     "crates/ail-change",
     "crates/ail-cli",
     "crates/ail-compiler",
+    "crates/ail-context",
     "crates/ail-core",
     "crates/ail-runtime",
     "crates/ail-storage",
@@ -19,6 +20,7 @@ version = "0.1.0"
 [workspace.dependencies]
 ail-change   = { path = "crates/ail-change" }
 ail-compiler = { path = "crates/ail-compiler" }
+ail-context  = { path = "crates/ail-context" }
 ail-core     = { path = "crates/ail-core" }
 ail-runtime  = { path = "crates/ail-runtime" }
 ail-storage  = { path = "crates/ail-storage" }
