@@ -7,13 +7,16 @@ edition.workspace = true
 z3-solver = ["dep:z3"]
 
 [dependencies]
+ail-change  = { workspace = true }
 ail-core    = { workspace = true }
 ail-package = { workspace = true }
 serde       = { workspace = true }
 z3          = { workspace = true, optional = true }
 
 [dev-dependencies]
-ciborium = { workspace = true }
+ail-change = { workspace = true }
+ail-core   = { workspace = true }
+ciborium   = { workspace = true }
 
 [lints]
 workspace = true

@@ -61,6 +61,7 @@ fn mixed_states_summary_is_failed() {
                 evidence: Some("failed invariant".into()),
             },
         ],
+        ..Default::default()
     };
     assert_eq!(report.summary(), VerificationState::Failed);
 }
@@ -90,6 +91,7 @@ fn unsafe_beats_unverified_and_assumed() {
                 evidence: None,
             },
         ],
+        ..Default::default()
     };
     assert_eq!(report.summary(), VerificationState::Unsafe);
 }
@@ -113,6 +115,7 @@ fn all_proven_summary_is_proven() {
                 evidence: None,
             },
         ],
+        ..Default::default()
     };
     assert_eq!(report.summary(), VerificationState::Proven);
 }
@@ -121,7 +124,10 @@ fn all_proven_summary_is_proven() {
 
 #[test]
 fn empty_report_summary_is_proven() {
-    let report = VerificationReport { entries: vec![] };
+    let report = VerificationReport {
+        entries: vec![],
+        ..Default::default()
+    };
     assert_eq!(report.summary(), VerificationState::Proven);
 }
 
@@ -145,6 +151,7 @@ fn runtime_checked_beats_proven_but_not_assumed() {
                 evidence: None,
             },
         ],
+        ..Default::default()
     };
     assert_eq!(report_rt.summary(), VerificationState::RuntimeChecked);
 
@@ -164,6 +171,7 @@ fn runtime_checked_beats_proven_but_not_assumed() {
                 evidence: None,
             },
         ],
+        ..Default::default()
     };
     assert_eq!(report_assumed.summary(), VerificationState::Assumed);
 }

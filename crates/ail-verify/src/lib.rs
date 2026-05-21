@@ -22,6 +22,7 @@
 
 pub mod checker;
 pub mod contract_checker;
+pub mod diagnostic;
 pub mod package_checker;
 pub mod proof;
 pub mod report;

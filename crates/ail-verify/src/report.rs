@@ -21,6 +21,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::diagnostic::Diagnostic;
+
 // ── VerificationState ─────────────────────────────────────────────────────
 
 /// The result of checking one claim in a `VerificationEntry`.
@@ -84,14 +86,21 @@ pub struct VerificationEntry {
 
 // ── VerificationReport ────────────────────────────────────────────────────
 
-/// Ordered collection of verification entries for one `SemanticGraph` pass.
+/// Ordered collection of verification entries and structured diagnostics for
+/// one `SemanticGraph` pass.
 ///
 /// Iteration order is preserved from the graph traversal, guaranteeing
 /// deterministic output across runs.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `diagnostics` is populated by `Checker` and `ContractChecker` alongside
+/// `entries` when verification conditions are violated.  An empty
+/// `diagnostics` vec means no structured violations were found.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationReport {
     /// Verification entries in graph traversal order.
     pub entries: Vec<VerificationEntry>,
+    /// Structured diagnostics emitted for violated or degraded conditions.
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl VerificationReport {
