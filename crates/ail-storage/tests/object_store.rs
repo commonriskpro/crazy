@@ -116,6 +116,42 @@ fn tempfile_missing_object_returns_none() {
     });
 }
 
+// ── Spec: "MemoryObjectStore per-instance isolation" ─────────────────────────
+// Two separate MemoryObjectStore instances MUST NOT share state.
+// An object stored in instance A must be invisible to instance B.
+//
+// TRIANGULATE: also proves instance A can still see its own object after the
+// isolation check (rules out a bug where put fails silently).
+#[test]
+fn memory_instance_isolation() {
+    block_on(async {
+        let store_a = MemoryObjectStore::new();
+        let store_b = MemoryObjectStore::new();
+        let obj = sample_raw_object();
+
+        let id = store_a.put(obj).await.expect("put in store_a must succeed");
+
+        let exists_in_b = store_b
+            .exists(&id)
+            .await
+            .expect("exists in store_b must not error");
+        assert!(
+            !exists_in_b,
+            "store_b must not see objects stored only in store_a"
+        );
+
+        // TRIANGULATE: store_a can still see its own object
+        let exists_in_a = store_a
+            .exists(&id)
+            .await
+            .expect("exists in store_a must not error");
+        assert!(
+            exists_in_a,
+            "store_a must still see its own object after isolation check"
+        );
+    });
+}
+
 // ── TRIANGULATE: content-addressed identity ───────────────────────────────────
 // Two objects with the same bytes must share the same ObjectId (CAS property).
 // Verifies that put returns a deterministic id — not a random one.
