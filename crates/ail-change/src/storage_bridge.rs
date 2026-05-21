@@ -21,8 +21,8 @@
 
 #[cfg(feature = "storage-bridge")]
 mod bridge {
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use ail_storage::{
         backends::memory::MemoryObjectStore,
