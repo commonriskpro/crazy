@@ -429,6 +429,212 @@ fn v1_registry_excludes_out_of_scope_modules() {
     );
 }
 
+// ── Spec: stdlib-types (G11) — rich metadata scenarios S1–S10 ────────────
+//
+// These tests verify that all 9 v1 entries have populated type_facts,
+// and that effect_row / capability_reqs / contract_clauses are present
+// where the spec requires them.
+
+// S1: all 9 entries have type_facts populated
+#[test]
+fn v1_all_entries_have_type_facts() {
+    let reg = v1_registry();
+    for entry in &reg.entries {
+        assert!(
+            entry.type_facts.is_some(),
+            "entry {:?} must have type_facts populated",
+            entry.id.0
+        );
+    }
+}
+
+// S2: std.option type_facts has generics ["T"]
+#[test]
+fn v1_option_type_facts_generic_t() {
+    let reg = v1_registry();
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.id.0 == "std.option")
+        .expect("std.option must be present");
+    let tf = entry.type_facts.as_ref().expect("type_facts must be Some");
+    assert_eq!(tf.nominal, "Option");
+    assert_eq!(tf.generics, vec!["T"]);
+}
+
+// S3: std.result type_facts has generics ["T", "E"]
+#[test]
+fn v1_result_type_facts_generics_t_e() {
+    let reg = v1_registry();
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.id.0 == "std.result")
+        .expect("std.result must be present");
+    let tf = entry.type_facts.as_ref().expect("type_facts must be Some");
+    assert_eq!(tf.nominal, "Result");
+    assert_eq!(tf.generics, vec!["T", "E"]);
+}
+
+// S4: std.numeric contract_clauses contains "no silent overflow"
+#[test]
+fn v1_numeric_contract_no_silent_overflow() {
+    let reg = v1_registry();
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.id.0 == "std.numeric")
+        .expect("std.numeric must be present");
+    let cc = entry
+        .contract_clauses
+        .as_ref()
+        .expect("std.numeric must have contract_clauses");
+    assert!(
+        cc.requires.iter().any(|r| r.contains("no silent overflow")),
+        "std.numeric requires must contain 'no silent overflow'; got: {:?}",
+        cc.requires
+    );
+}
+
+// S5: std.collections contract_clauses contains "length >= 0"
+#[test]
+fn v1_collections_contract_length_ge_zero() {
+    let reg = v1_registry();
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.id.0 == "std.collections")
+        .expect("std.collections must be present");
+    let cc = entry
+        .contract_clauses
+        .as_ref()
+        .expect("std.collections must have contract_clauses");
+    assert!(
+        cc.requires.iter().any(|r| r.contains("length >= 0")),
+        "std.collections requires must contain 'length >= 0'; got: {:?}",
+        cc.requires
+    );
+}
+
+// S6: std.text contract_clauses contains "valid UTF-8 input"
+#[test]
+fn v1_text_contract_valid_utf8() {
+    let reg = v1_registry();
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.id.0 == "std.text")
+        .expect("std.text must be present");
+    let cc = entry
+        .contract_clauses
+        .as_ref()
+        .expect("std.text must have contract_clauses");
+    assert!(
+        cc.requires.iter().any(|r| r.contains("valid UTF-8")),
+        "std.text requires must contain 'valid UTF-8 input'; got: {:?}",
+        cc.requires
+    );
+}
+
+// S7: std.iter has effect_row with "EffectPoly"
+#[test]
+fn v1_iter_effect_row_effect_poly() {
+    let reg = v1_registry();
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.id.0 == "std.iter")
+        .expect("std.iter must be present");
+    let er = entry
+        .effect_row
+        .as_ref()
+        .expect("std.iter must have effect_row");
+    assert!(
+        er.effects.iter().any(|e| e == "EffectPoly"),
+        "std.iter effect_row must contain 'EffectPoly'; got: {:?}",
+        er.effects
+    );
+}
+
+// S8: std.capability has both effect_row and capability_reqs populated
+#[test]
+fn v1_capability_has_effect_row_and_capability_reqs() {
+    let reg = v1_registry();
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.id.0 == "std.capability")
+        .expect("std.capability must be present");
+    assert!(
+        entry.effect_row.is_some(),
+        "std.capability must have effect_row"
+    );
+    assert!(
+        entry.capability_reqs.is_some(),
+        "std.capability must have capability_reqs"
+    );
+}
+
+// S9: v1_registry CBOR round-trip with rich metadata
+#[test]
+fn v1_registry_rich_metadata_cbor_round_trip() {
+    let reg = v1_registry();
+    let bytes = reg.cbor_bytes().expect("cbor_bytes must succeed");
+    let decoded = StdlibRegistry::from_cbor_bytes(&bytes).expect("from_cbor_bytes must succeed");
+    assert_eq!(
+        decoded, reg,
+        "v1 registry must survive CBOR round-trip with rich metadata"
+    );
+}
+
+// S10: std.capability capability_reqs contains all 14 capability constants
+#[test]
+fn v1_capability_reqs_contains_all_14_constants() {
+    use ail_stdlib::capability;
+    let reg = v1_registry();
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.id.0 == "std.capability")
+        .expect("std.capability must be present");
+    let reqs = entry
+        .capability_reqs
+        .as_ref()
+        .expect("std.capability must have capability_reqs");
+
+    let expected = [
+        capability::CLOCK_NOW,
+        capability::NET_CONNECT,
+        capability::NET_BIND,
+        capability::FS_READ,
+        capability::FS_WRITE,
+        capability::IO_STDIN,
+        capability::IO_STDOUT,
+        capability::IO_STDERR,
+        capability::PROCESS_EXEC,
+        capability::ENV_READ,
+        capability::ENV_WRITE,
+        capability::RANDOM_GENERATE,
+        capability::LOG_EMIT,
+        capability::TRACE_SPAN,
+    ];
+
+    assert_eq!(
+        reqs.caps.len(),
+        expected.len(),
+        "std.capability must declare exactly {} capability constants",
+        expected.len()
+    );
+
+    for cap in expected {
+        assert!(
+            reqs.caps.iter().any(|c| c == cap),
+            "std.capability capability_reqs must contain {:?}",
+            cap
+        );
+    }
+}
+
 // ── Spec: validate() duplicate-ID detection ───────────────────────────────
 
 #[test]
