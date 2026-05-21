@@ -4,8 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-ail-core = { workspace = true }
-serde    = { workspace = true }
+ail-core    = { workspace = true }
+ail-package = { workspace = true }
+serde       = { workspace = true }
 
 [dev-dependencies]
 ciborium = { workspace = true }

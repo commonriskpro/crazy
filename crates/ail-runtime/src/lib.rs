@@ -35,6 +35,9 @@ pub mod host;
 pub mod manifest;
 pub mod profile;
 
+pub use ail_package::manifest::PackageManifest;
+pub use ail_package::trust::TrustLevel;
+
 pub use abi::{HostCallId, HostError, HostResult};
 pub use audit::{AuditEvent, AuditLog};
 pub use error::{PreflightFailure, RuntimeError, RuntimeResult};

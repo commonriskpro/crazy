@@ -22,6 +22,9 @@
 
 pub mod checker;
 pub mod contract_checker;
+pub mod package_checker;
 pub mod proof;
 pub mod report;
 pub mod solver;
+
+pub use package_checker::PackageTrustChecker;

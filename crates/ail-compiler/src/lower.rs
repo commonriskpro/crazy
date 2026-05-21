@@ -60,6 +60,7 @@ fn map_node_kind(kind: NodeKind) -> CoreNodeKind {
         NodeKind::Invariant => CoreNodeKind::Invariant,
         NodeKind::Test => CoreNodeKind::Test,
         NodeKind::Boundary => CoreNodeKind::Boundary,
+        NodeKind::Package => CoreNodeKind::Package,
     }
 }
 
@@ -259,7 +260,7 @@ mod tests {
 
     // ── map_node_kind ─────────────────────────────────────────────────────
 
-    // All 9 source kinds map to their CoreNodeKind counterpart.
+    // All 10 source kinds map to their CoreNodeKind counterpart.
     #[test]
     fn all_node_kinds_map_correctly() {
         let cases = [
@@ -272,6 +273,7 @@ mod tests {
             (NodeKind::Invariant, CoreNodeKind::Invariant),
             (NodeKind::Test, CoreNodeKind::Test),
             (NodeKind::Boundary, CoreNodeKind::Boundary),
+            (NodeKind::Package, CoreNodeKind::Package),
         ];
         for (src, expected) in cases {
             assert_eq!(

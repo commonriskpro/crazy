@@ -34,6 +34,8 @@ pub enum CoreNodeKind {
     Invariant,
     Test,
     Boundary,
+    /// Added in Phase 12 (packages-trust-model) — mirrors `NodeKind::Package`.
+    Package,
 }
 
 // ── CoreNode ──────────────────────────────────────────────────────────────
@@ -214,11 +216,12 @@ mod tests {
             CoreNodeKind::Invariant,
             CoreNodeKind::Test,
             CoreNodeKind::Boundary,
+            CoreNodeKind::Package,
         ];
         assert_eq!(
             kinds.len(),
-            9,
-            "all 9 CoreNodeKind variants must be reachable"
+            10,
+            "all 10 CoreNodeKind variants must be reachable"
         );
     }
 }

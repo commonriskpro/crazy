@@ -16,6 +16,9 @@ use std::fmt;
 
 use wasmtime::{Engine, Instance, Module, Store};
 
+use ail_package::manifest::PackageManifest;
+use ail_package::trust::TrustLevel;
+
 use crate::audit::{AuditEvent, AuditLog};
 use crate::error::{PreflightFailure, RuntimeError, RuntimeResult};
 use crate::manifest::{CapabilityManifest, blake3_hex_of};
@@ -85,8 +88,12 @@ impl RuntimeHost {
 
     /// Preflight-check and instantiate a WASM module.
     ///
-    /// Runs the five-stage preflight pipeline (see module doc).  Appends
-    /// exactly one [`AuditEvent`] to the internal log regardless of outcome.
+    /// Runs the preflight pipeline (see module doc).  Appends exactly one
+    /// [`AuditEvent`] to the internal log regardless of outcome.
+    ///
+    /// `package_manifests` is the list of package manifests declared by the
+    /// module.  Pass `&[]` (or call the two-argument form) when no packages
+    /// are declared; the package trust gate is skipped for existing callers.
     ///
     /// # Errors
     ///
@@ -100,7 +107,22 @@ impl RuntimeHost {
         manifest: &CapabilityManifest,
         profile: &RuntimeProfile,
     ) -> RuntimeResult<RuntimeInstance> {
-        let result = self.preflight_inner(wasm, manifest, profile);
+        self.validate_and_instantiate_with_packages(wasm, manifest, profile, &[])
+    }
+
+    /// Like [`validate_and_instantiate`] but with explicit package manifests.
+    ///
+    /// Package manifests are checked in Stage 0 before any WASM or capability
+    /// checks run.  Existing callers should continue using
+    /// [`validate_and_instantiate`] (which passes `&[]` implicitly).
+    pub fn validate_and_instantiate_with_packages(
+        &mut self,
+        wasm: &[u8],
+        manifest: &CapabilityManifest,
+        profile: &RuntimeProfile,
+        package_manifests: &[PackageManifest],
+    ) -> RuntimeResult<RuntimeInstance> {
+        let result = self.preflight_inner(wasm, manifest, profile, package_manifests);
         let event = Self::build_audit_event(&result, profile, wasm);
         self.audit_log.push(event);
         result
@@ -138,7 +160,16 @@ impl RuntimeHost {
         wasm: &[u8],
         manifest: &CapabilityManifest,
         profile: &RuntimeProfile,
+        package_manifests: &[PackageManifest],
     ) -> RuntimeResult<RuntimeInstance> {
+        // Stage 0 — Package trust gate.
+        //
+        // Runs before any WASM work.  If `profile.min_package_trust()` is
+        // `None`, the gate is skipped entirely (backward-compatible default).
+        if !package_manifests.is_empty() {
+            Self::check_package_trust(package_manifests, profile)?;
+        }
+
         // Stage 1 — WASM bytes hash check.
         let actual_module_hash = blake3_hex_of(wasm);
         if actual_module_hash != profile.module_hash() {
@@ -176,6 +207,46 @@ impl RuntimeHost {
 
         // Stages 4+5 — Wasmtime validate + instantiate.
         self.instantiate_inner(wasm)
+    }
+
+    /// Enforce package trust gates from Stage 0.
+    ///
+    /// Iterates all declared package manifests.  For each:
+    /// 1. If the package has `TrustLevel::Unsafe`, fail with
+    ///    `UnsafePackageNotApproved` immediately (no exceptions in Phase 12).
+    /// 2. If `profile.min_package_trust()` is `Some(required)` and the
+    ///    package's trust does not satisfy `required`, fail with
+    ///    `PackageTrustViolation`.
+    ///
+    /// Returns `Ok(())` if all packages pass; returns the first violation found.
+    fn check_package_trust(
+        manifests: &[PackageManifest],
+        profile: &RuntimeProfile,
+    ) -> RuntimeResult<()> {
+        for m in manifests {
+            // Unsafe packages are unconditionally blocked.
+            if m.trust_level == TrustLevel::Unsafe {
+                return Err(RuntimeError::PreflightFailed(
+                    PreflightFailure::UnsafePackageNotApproved {
+                        package: m.name.clone(),
+                    },
+                ));
+            }
+
+            // Check minimum tier gate.
+            if let Some(required) = profile.min_package_trust()
+                && !m.trust_level.satisfies(required)
+            {
+                return Err(RuntimeError::PreflightFailed(
+                    PreflightFailure::PackageTrustViolation {
+                        package: m.name.clone(),
+                        required,
+                        actual: m.trust_level,
+                    },
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Validate, compile, and instantiate `wasm` with Wasmtime (stages 4 + 5).
@@ -224,7 +295,18 @@ fn failure_parts(err: &RuntimeError) -> (Vec<CapabilityId>, PreflightFailure) {
                 denied: denied.clone(),
             },
         ),
-        RuntimeError::PreflightFailed(failure) => (vec![], failure.clone()),
+        RuntimeError::PreflightFailed(
+            PreflightFailure::PackageTrustViolation { .. }
+            | PreflightFailure::UnsafePackageNotApproved { .. }
+            | PreflightFailure::HashMismatch { .. }
+            | PreflightFailure::WasmValidationError(_),
+        ) => {
+            let failure = match err {
+                RuntimeError::PreflightFailed(f) => f.clone(),
+                _ => unreachable!(),
+            };
+            (vec![], failure)
+        }
         RuntimeError::EncodingError(msg) => (
             vec![],
             PreflightFailure::WasmValidationError(format!("encoding: {msg}")),
