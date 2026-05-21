@@ -13,9 +13,10 @@ use crate::profile::CapabilityId;
 
 // ── AuditEvent ────────────────────────────────────────────────────────────
 
-/// A single preflight audit record.
+/// A single audit record.
 ///
-/// One event is appended to [`AuditLog`] per `validate_and_instantiate` call.
+/// Preflight events: one appended per `validate_and_instantiate` call.
+/// Capability call events: one appended per `call_capability` call.
 /// Payloads are redacted: no raw WASM bytes, no user data, no secrets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuditEvent {
@@ -36,12 +37,35 @@ pub enum AuditEvent {
         /// Machine-readable failure reason (carries hashes/names, no raw bytes).
         reason: PreflightFailure,
     },
+
+    /// A capability call was dispatched (or denied) via `call_capability`.
+    ///
+    /// Appended after every `call_capability` call regardless of outcome.
+    /// Payload bytes are never included; only metadata is recorded.
+    CapabilityCallExecuted {
+        /// The capability that was requested.
+        capability: CapabilityId,
+        /// The specific operation within that capability.
+        operation: String,
+        /// Name of the handler that was dispatched to, or `"none"` if no
+        /// handler was found or the call was denied before dispatch.
+        handler_name: String,
+        /// `true` if the handler returned `Ok(_)`, `false` otherwise.
+        succeeded: bool,
+        /// Wall-clock duration of the dispatch in microseconds.
+        duration_us: u64,
+    },
 }
 
 impl AuditEvent {
     /// `true` if this event represents a successful preflight.
     pub fn is_passed(&self) -> bool {
         matches!(self, AuditEvent::PreflightPassed { .. })
+    }
+
+    /// `true` if this is a `CapabilityCallExecuted` event.
+    pub fn is_capability_call(&self) -> bool {
+        matches!(self, AuditEvent::CapabilityCallExecuted { .. })
     }
 }
 

@@ -59,6 +59,15 @@ pub enum PreflightFailure {
         /// Package name as declared in the manifest.
         package: String,
     },
+
+    /// A required capability has no bound handler.
+    ///
+    /// Emitted during preflight step 5 when `profile.require_handler_binding`
+    /// is `true` and a granted capability has no registered handler.
+    HandlerNotBound {
+        /// The capability that is granted but not handled.
+        capability: CapabilityId,
+    },
 }
 
 impl std::fmt::Display for PreflightFailure {
@@ -92,6 +101,13 @@ impl std::fmt::Display for PreflightFailure {
                      with no explicit approval in the profile"
                 )
             }
+            PreflightFailure::HandlerNotBound { capability } => {
+                write!(
+                    f,
+                    "handler not bound: capability `{}` is granted but no handler is registered",
+                    capability.as_str()
+                )
+            }
         }
     }
 }
@@ -108,6 +124,12 @@ pub enum RuntimeError {
     /// An internal encoding error (e.g. CBOR serialization) prevented
     /// hash computation.
     EncodingError(String),
+
+    /// A capability call dispatched to a handler returned an error.
+    ///
+    /// Produced by [`RuntimeHost::call_capability`](crate::host::RuntimeHost::call_capability)
+    /// when the handler returns `Err(HostError { .. })`.
+    CapabilityCallFailed(crate::abi::HostError),
 }
 
 impl std::fmt::Display for RuntimeError {
@@ -118,6 +140,9 @@ impl std::fmt::Display for RuntimeError {
             }
             RuntimeError::EncodingError(msg) => {
                 write!(f, "encoding error: {msg}")
+            }
+            RuntimeError::CapabilityCallFailed(err) => {
+                write!(f, "capability call failed: {err}")
             }
         }
     }

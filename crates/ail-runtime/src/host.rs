@@ -3,24 +3,31 @@
 // `RuntimeHost` — capability-gated Wasmtime host.
 //
 // Preflight pipeline (strict order):
+//   0. Package trust gate       — optional; skipped when no packages declared
 //   1. WASM bytes hash check    — blake3(wasm) vs profile.module_hash()
 //   2. Manifest hash check      — blake3(cbor(manifest)) vs profile.capability_manifest_hash()
 //   3. Capability grant check   — manifest.requires ⊆ profile.grants
 //   4. Wasmtime validation      — Module::validate (structural / binary format)
 //   5. Wasmtime instantiation   — Module::new + Instance::new
+//   6. Handler binding check    — only when profile.require_handler_binding() is true;
+//                                 every granted capability must have a registered handler
 //
 // Exactly one AuditEvent is appended per `validate_and_instantiate` call.
-// Linker / host-function wiring is deferred to a later phase.
+// One AuditEvent::CapabilityCallExecuted is appended per `call_capability` call.
 
 use std::fmt;
+use std::sync::Arc;
+use std::time::Instant;
 
 use wasmtime::{Engine, Instance, Module, Store};
 
 use ail_package::manifest::PackageManifest;
 use ail_package::trust::TrustLevel;
 
+use crate::abi::{HostError, HostResult};
 use crate::audit::{AuditEvent, AuditLog};
 use crate::error::{PreflightFailure, RuntimeError, RuntimeResult};
+use crate::handler::Handler;
 use crate::manifest::{CapabilityManifest, blake3_hex_of};
 use crate::profile::{CapabilityId, RuntimeProfile};
 
@@ -30,10 +37,7 @@ use crate::profile::{CapabilityId, RuntimeProfile};
 ///
 /// Carries the compiled Wasmtime `Module`, live `Store`, and instantiated
 /// `Instance` as proof that the binary passed preflight and was instantiated
-/// with the Phase 8 empty-import host boundary.
-///
-/// Host-function linker registration (importing capabilities) is deferred
-/// to a later phase; this type does not yet expose call APIs.
+/// with the capability-gated host boundary.
 pub struct RuntimeInstance {
     // Keep the module alive for future metadata/call APIs.
     _module: Module,
@@ -61,24 +65,51 @@ impl fmt::Debug for RuntimeInstance {
 
 /// Capability-gated Wasmtime host.
 ///
-/// Owns a single `Engine` (and its compilation configuration) and an
-/// in-memory `AuditLog`.  All preflight checks are evaluated inside
-/// [`validate_and_instantiate`] before any Wasmtime work is attempted.
+/// Owns a single `Engine` (and its compilation configuration), an
+/// in-memory `AuditLog`, and a pluggable list of [`Handler`]s.
+///
+/// # Handler dispatch
+///
+/// Handlers are checked in registration order.  The first handler whose
+/// [`capabilities()`](Handler::capabilities) list contains the requested
+/// [`CapabilityId`] is used.  If no handler matches, `call_capability`
+/// returns a [`HostError`] with a `"HandlerNotBound"` message.
+///
+/// # Preflight
+///
+/// All preflight checks are evaluated inside [`validate_and_instantiate`]
+/// before any Wasmtime work is attempted.  After a successful preflight the
+/// profile is stored internally so that `call_capability` can enforce
+/// grant checks without requiring callers to pass the profile again.
+///
+/// [`validate_and_instantiate`]: RuntimeHost::validate_and_instantiate
 pub struct RuntimeHost {
     engine: Engine,
     audit_log: AuditLog,
+    handlers: Vec<Arc<dyn Handler + Send + Sync>>,
+    /// Stored after a successful `validate_and_instantiate`; used by
+    /// `call_capability` to enforce grant checks.
+    current_profile: Option<Arc<RuntimeProfile>>,
 }
 
 impl RuntimeHost {
-    /// Create a new host with default Wasmtime configuration.
-    ///
-    /// `Engine::default()` is used; fuel and reference types are disabled,
-    /// which is the correct baseline for Phase 8.
+    /// Create a new host with default Wasmtime configuration and no handlers.
     pub fn new() -> Self {
         RuntimeHost {
             engine: Engine::default(),
             audit_log: AuditLog::new(),
+            handlers: Vec::new(),
+            current_profile: None,
         }
+    }
+
+    /// Register a handler (builder pattern).
+    ///
+    /// Handlers are checked in registration order.  Multiple handlers for
+    /// overlapping capability sets are permitted; only the first match is used.
+    pub fn with_handler(mut self, handler: Arc<dyn Handler + Send + Sync>) -> Self {
+        self.handlers.push(handler);
+        self
     }
 
     /// Read-only access to the accumulated audit log.
@@ -90,6 +121,9 @@ impl RuntimeHost {
     ///
     /// Runs the preflight pipeline (see module doc).  Appends exactly one
     /// [`AuditEvent`] to the internal log regardless of outcome.
+    ///
+    /// On success, stores the profile internally so `call_capability` can
+    /// enforce grant checks.
     ///
     /// `package_manifests` is the list of package manifests declared by the
     /// module.  Pass `&[]` (or call the two-argument form) when no packages
@@ -125,6 +159,94 @@ impl RuntimeHost {
         let result = self.preflight_inner(wasm, manifest, profile, package_manifests);
         let event = Self::build_audit_event(&result, profile, wasm);
         self.audit_log.push(event);
+        if result.is_ok() {
+            self.current_profile = Some(Arc::new(profile.clone()));
+        }
+        result
+    }
+
+    /// Dispatch a capability call to a registered handler.
+    ///
+    /// Steps:
+    /// 1. Check the active profile grants `capability`; deny if not.
+    /// 2. Find the first handler whose `capabilities()` includes `capability`.
+    /// 3. Dispatch to `handler.handle(capability, operation, payload)`.
+    /// 4. Append an [`AuditEvent::CapabilityCallExecuted`] event.
+    ///
+    /// # Errors
+    ///
+    /// - `HostError { message: "CapabilityDenied: <cap>" }` — capability not
+    ///   granted in the active profile (or no profile set).
+    /// - `HostError { message: "HandlerNotBound: <cap>" }` — no registered
+    ///   handler serves this capability.
+    /// - Any error returned by the dispatched handler.
+    pub fn call_capability(
+        &mut self,
+        capability: &CapabilityId,
+        operation: &str,
+        payload: &[u8],
+    ) -> HostResult<Vec<u8>> {
+        let start = Instant::now();
+
+        // Step 1: grant check.
+        let granted = self
+            .current_profile
+            .as_ref()
+            .map(|p| p.grants_capability(capability))
+            .unwrap_or(false);
+
+        if !granted {
+            let err = HostError {
+                message: format!("CapabilityDenied: {}", capability.as_str()),
+            };
+            let duration_us = start.elapsed().as_micros() as u64;
+            self.audit_log.push(AuditEvent::CapabilityCallExecuted {
+                capability: capability.clone(),
+                operation: operation.to_string(),
+                handler_name: "none".to_string(),
+                succeeded: false,
+                duration_us,
+            });
+            return Err(err);
+        }
+
+        // Step 2: find matching handler.
+        let handler = self
+            .handlers
+            .iter()
+            .find(|h| h.capabilities().contains(capability));
+
+        let Some(handler) = handler else {
+            let err = HostError {
+                message: format!("HandlerNotBound: {}", capability.as_str()),
+            };
+            let duration_us = start.elapsed().as_micros() as u64;
+            self.audit_log.push(AuditEvent::CapabilityCallExecuted {
+                capability: capability.clone(),
+                operation: operation.to_string(),
+                handler_name: "none".to_string(),
+                succeeded: false,
+                duration_us,
+            });
+            return Err(err);
+        };
+
+        let handler_name = handler.name().to_string();
+
+        // Step 3: dispatch.
+        let result = handler.handle(capability, operation, payload);
+        let duration_us = start.elapsed().as_micros() as u64;
+        let succeeded = result.is_ok();
+
+        // Step 4: audit.
+        self.audit_log.push(AuditEvent::CapabilityCallExecuted {
+            capability: capability.clone(),
+            operation: operation.to_string(),
+            handler_name,
+            succeeded,
+            duration_us,
+        });
+
         result
     }
 
@@ -206,19 +328,33 @@ impl RuntimeHost {
         }
 
         // Stages 4+5 — Wasmtime validate + instantiate.
-        self.instantiate_inner(wasm)
+        let instance = self.instantiate_inner(wasm)?;
+
+        // Stage 6 — Handler binding check (opt-in).
+        //
+        // Runs after instantiation succeeds.  Only active when
+        // `profile.require_handler_binding()` is true.  Checks that every
+        // *granted* capability has at least one registered handler.
+        if profile.require_handler_binding() {
+            for grant in profile.grants() {
+                let bound = self
+                    .handlers
+                    .iter()
+                    .any(|h| h.capabilities().contains(&grant.capability));
+                if !bound {
+                    return Err(RuntimeError::PreflightFailed(
+                        PreflightFailure::HandlerNotBound {
+                            capability: grant.capability.clone(),
+                        },
+                    ));
+                }
+            }
+        }
+
+        Ok(instance)
     }
 
     /// Enforce package trust gates from Stage 0.
-    ///
-    /// Iterates all declared package manifests.  For each:
-    /// 1. If the package has `TrustLevel::Unsafe`, fail with
-    ///    `UnsafePackageNotApproved` immediately (no exceptions in Phase 12).
-    /// 2. If `profile.min_package_trust()` is `Some(required)` and the
-    ///    package's trust does not satisfy `required`, fail with
-    ///    `PackageTrustViolation`.
-    ///
-    /// Returns `Ok(())` if all packages pass; returns the first violation found.
     fn check_package_trust(
         manifests: &[PackageManifest],
         profile: &RuntimeProfile,
@@ -250,10 +386,6 @@ impl RuntimeHost {
     }
 
     /// Validate, compile, and instantiate `wasm` with Wasmtime (stages 4 + 5).
-    ///
-    /// Called only after all preflight checks pass.  Both Wasmtime errors
-    /// are wrapped in [`PreflightFailure::WasmValidationError`] because they
-    /// both reflect a binary format or structural issue in the submitted bytes.
     fn instantiate_inner(&self, wasm: &[u8]) -> RuntimeResult<RuntimeInstance> {
         Module::validate(&self.engine, wasm).map_err(|e| {
             RuntimeError::PreflightFailed(PreflightFailure::WasmValidationError(e.to_string()))
@@ -299,7 +431,8 @@ fn failure_parts(err: &RuntimeError) -> (Vec<CapabilityId>, PreflightFailure) {
             PreflightFailure::PackageTrustViolation { .. }
             | PreflightFailure::UnsafePackageNotApproved { .. }
             | PreflightFailure::HashMismatch { .. }
-            | PreflightFailure::WasmValidationError(_),
+            | PreflightFailure::WasmValidationError(_)
+            | PreflightFailure::HandlerNotBound { .. },
         ) => {
             let failure = match err {
                 RuntimeError::PreflightFailed(f) => f.clone(),
@@ -310,6 +443,12 @@ fn failure_parts(err: &RuntimeError) -> (Vec<CapabilityId>, PreflightFailure) {
         RuntimeError::EncodingError(msg) => (
             vec![],
             PreflightFailure::WasmValidationError(format!("encoding: {msg}")),
+        ),
+        RuntimeError::CapabilityCallFailed(_) => (
+            vec![],
+            PreflightFailure::WasmValidationError(
+                "unexpected capability call failure in preflight".to_string(),
+            ),
         ),
     }
 }

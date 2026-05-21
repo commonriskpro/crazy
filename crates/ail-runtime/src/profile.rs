@@ -71,6 +71,7 @@ pub struct ResourceLimits {
 ///   does not match `module_hash`.
 /// - **Grants**: explicit capability grants.  Absence is denial.
 /// - **Limits**: optional resource caps applied at instantiation time.
+#[derive(Clone, Debug)]
 pub struct RuntimeProfile {
     name: String,
     module_hash: String,
@@ -85,6 +86,16 @@ pub struct RuntimeProfile {
     /// `Some(level)` causes preflight to reject any package manifest whose
     /// `trust_level` does not satisfy `level`.
     min_package_trust: Option<TrustLevel>,
+
+    /// Whether preflight step 5 must verify that every granted capability
+    /// has a registered handler.
+    ///
+    /// Defaults to `false` for backward compatibility.  Set to `true` via
+    /// [`with_handler_binding_required`] to enforce handler binding at
+    /// instantiation time.
+    ///
+    /// [`with_handler_binding_required`]: RuntimeProfile::with_handler_binding_required
+    require_handler_binding: bool,
 }
 
 impl RuntimeProfile {
@@ -109,6 +120,7 @@ impl RuntimeProfile {
             grants,
             limits,
             min_package_trust: None,
+            require_handler_binding: false,
         }
     }
 
@@ -120,6 +132,18 @@ impl RuntimeProfile {
     /// constructor signature.
     pub fn with_package_trust(mut self, level: TrustLevel) -> Self {
         self.min_package_trust = Some(level);
+        self
+    }
+
+    /// Require that every granted capability has a bound handler at preflight.
+    ///
+    /// When this is set, `validate_and_instantiate` will fail with
+    /// [`PreflightFailure::HandlerNotBound`](crate::error::PreflightFailure::HandlerNotBound)
+    /// if any granted capability lacks a registered handler.
+    ///
+    /// The default is `false` — existing call sites are unaffected.
+    pub fn with_handler_binding_required(mut self) -> Self {
+        self.require_handler_binding = true;
         self
     }
 
@@ -168,5 +192,10 @@ impl RuntimeProfile {
     /// (single-digit items in practice).
     pub fn grants_capability(&self, capability: &CapabilityId) -> bool {
         self.grants.iter().any(|g| &g.capability == capability)
+    }
+
+    /// `true` if preflight must verify handler binding for all grants.
+    pub fn require_handler_binding(&self) -> bool {
+        self.require_handler_binding
     }
 }
