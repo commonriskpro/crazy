@@ -19,8 +19,10 @@ pub mod core_ir;
 pub mod error;
 pub mod hash;
 pub mod lower;
+pub mod wasm;
 
 pub use anf::{AnfBinding, AnfIr};
 pub use core_ir::{CoreIr, CoreNode, CoreNodeKind, StageHashes};
 pub use error::CompileError;
 pub use lower::{is_report_accepted, lower_to_anf, lower_to_core_ir};
+pub use wasm::{WasmArtifact, emit_wasm};
