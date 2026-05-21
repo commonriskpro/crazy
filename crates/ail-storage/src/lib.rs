@@ -12,3 +12,5 @@ pub mod codec;
 pub mod error;
 pub mod graph;
 pub mod object;
+
+pub use graph::{ChangeSetLogEntry, GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};

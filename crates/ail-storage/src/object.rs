@@ -8,13 +8,15 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::StorageResult;
 
 /// A 32-byte BLAKE3 hash that uniquely identifies a `RawObject` by its content.
 ///
 /// `ObjectId` is derived from the raw bytes of the object; storing identical
 /// bytes in any backend always yields the same identifier.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct ObjectId([u8; 32]);
 
 impl ObjectId {

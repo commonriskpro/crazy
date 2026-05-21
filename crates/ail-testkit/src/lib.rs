@@ -1,3 +1,35 @@
+// ── Storage fixture helpers ───────────────────────────────────────────────
+
+/// Re-export of [`ail_storage::backends::memory::MemoryObjectStore`] for use
+/// in tests across the workspace without an explicit `ail-storage` dependency.
+pub use ail_storage::backends::memory::MemoryObjectStore;
+
+/// Re-export of [`ail_storage::graph::ObjectBackedGraphStore`] for use in
+/// workspace tests that need a `GraphStore` backed by an in-memory store.
+pub use ail_storage::graph::ObjectBackedGraphStore;
+
+/// Build a minimal [`ail_storage::graph::SnapshotEnvelope`] fixture.
+///
+/// `label` is hashed with BLAKE3 to produce the `graph_root_hash`, giving a
+/// deterministic but unique `ObjectId` per call site.  `parent` is `None`
+/// (genesis snapshot) and `created_at` is set to `0`.
+///
+/// # Example
+///
+/// ```rust
+/// let snap = ail_testkit::make_snapshot_envelope("my-root");
+/// assert!(snap.parent.is_none());
+/// ```
+pub fn make_snapshot_envelope(label: &str) -> ail_storage::graph::SnapshotEnvelope {
+    ail_storage::graph::SnapshotEnvelope {
+        graph_root_hash: ail_storage::object::ObjectId::from_bytes(label.as_bytes()),
+        parent: None,
+        created_at: 0,
+    }
+}
+
+// ── Fixture path macro ────────────────────────────────────────────────────
+
 /// Returns a [`std::path::PathBuf`] pointing to a file inside the **calling
 /// crate's** `tests/fixtures/` directory.
 ///

@@ -42,6 +42,7 @@ name = "ail-testkit"
 version = "0.1.0"
 dependencies = [
  "ail-core",
+ "ail-storage",
 ]
 
 [[package]]
