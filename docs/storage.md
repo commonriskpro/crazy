@@ -1,0 +1,469 @@
+# Storage / versioning model
+
+> Full extracted design. Related: [AI Change Language](change-language.md), [Context Server](context-server.md), [Verification](verification.md).
+
+## Storage / versioning model: propuesta completa
+
+El storage model define dónde vive el programa. En este lenguaje, el source of truth no son archivos de texto, sino un Semantic Graph versionado.
+
+### Tesis
+
+```txt
+Source of truth = content-addressed Semantic Graph.
+History = append-only ChangeSets + graph snapshots.
+Files/text views = derived artifacts.
+```
+
+### Principios
+
+```txt
+1. Append-only history.
+2. Content-addressed objects.
+3. Transactional snapshots.
+4. Structural diffs, not text diffs.
+5. Branchable graph history.
+6. Schema migration aware.
+7. Logical delete separated from physical GC.
+8. Retention policies control growth.
+```
+
+### Object store layout
+
+Conceptual layout:
+
+```txt
+graph_store/
+  nodes/
+  edges/
+  snapshots/
+  changes/
+  diffs/
+  reports/
+  approvals/
+  assumptions/
+  boundaries/
+  runtime_profiles/
+  artifacts/
+  indexes/
+  migrations/
+```
+
+### Graph objects
+
+Cada nodo relevante se guarda como objeto direccionado por contenido.
+
+```txt
+node_object
+  node_id fn.checkout
+  kind FunctionDef
+  content_hash hash:abc123
+  content ...
+  provenance change.add_checkout
+  schema core_ir/2
+  trust_metadata ...
+end
+```
+
+Edges también son objetos semánticos:
+
+```txt
+edge_object
+  source fn.checkout
+  relation uses
+  target cap.payment.charge
+  hash hash:def456
+end
+```
+
+### Snapshots
+
+Un snapshot es una raíz inmutable del grafo.
+
+```txt
+snapshot snapshot_123
+  graph_root_hash hash:root123
+  parent snapshot_122
+  applied_change change.add_checkout
+  verification_report ver_abc
+  created_at 2026-05-21T00:00:00Z
+end
+```
+
+Regla:
+
+```txt
+Todo ChangeSet aplicado produce un nuevo snapshot.
+```
+
+### Change history
+
+Cada cambio aplicado guarda:
+
+```txt
+submitted_change
+canonical_change
+structural_diff
+verification_report
+policy_report
+approval_record
+new_snapshot
+```
+
+Esto permite auditar:
+
+```txt
+qué pidió la IA
+qué canonicalizó el toolchain
+qué cambió en el grafo
+qué se verificó
+quién aprobó
+qué snapshot resultó
+```
+
+### Structural diffs
+
+Los diffs son semánticos:
+
+```txt
+structural_diff change.add_checkout
+  creates fn.checkout
+  modifies module.checkout
+  connects fn.checkout uses cap.payment.charge
+  exposes api.checkout
+end
+```
+
+No son diffs de líneas.
+
+### Logical delete
+
+Borrar un nodo es un cambio lógico en un snapshot nuevo.
+
+```txt
+op delete target=fn.old_checkout
+```
+
+El nodo deja de estar activo en el nuevo snapshot, pero snapshots anteriores pueden seguir referenciándolo.
+
+Se puede representar con tombstone:
+
+```txt
+tombstone fn.old_checkout
+  deleted_by change.remove_old_checkout
+  replacement fn.checkout_v2
+end
+```
+
+### Physical garbage collection
+
+El storage físico no crece indefinidamente. GC elimina objetos no alcanzables por policies de retención.
+
+Objetos protegidos por:
+
+```txt
+active branches
+tags/releases
+protected snapshots
+approval records
+audit requirements
+retention policies
+security/legal holds
+```
+
+Regla:
+
+```txt
+Semantic history is append-only.
+Physical storage is garbage-collected by policy.
+```
+
+### Retention policies
+
+Ejemplos:
+
+```txt
+keep all snapshots for 90 days
+keep releases forever
+keep security-critical approvals forever
+keep failed draft changes for 7 days
+keep audit logs for 1 year
+keep prod verification reports forever
+```
+
+Policy example:
+
+```txt
+retention_policy default
+  snapshots all keep_for=90d
+  snapshots tagged_release keep_forever
+  changes failed_draft keep_for=7d
+  reports prod keep_forever
+  audit_logs keep_for=1y
+end
+```
+
+### Compaction
+
+Para evitar cadenas enormes de diffs:
+
+```txt
+snapshot_1000_compacted
+  graph_root_hash hash:root_compacted
+  covers snapshot_1..snapshot_1000
+end
+```
+
+Compaction preserva:
+
+```txt
+current graph state
+protected audit records
+release snapshots
+schema migration metadata
+```
+
+Puede archivar diffs antiguos según retention.
+
+### Branching
+
+Branches apuntan a snapshots.
+
+```txt
+branch main -> snapshot_200
+branch feature.checkout -> snapshot_180
+branch experiment.new_effects -> snapshot_150
+```
+
+Merges son semánticos:
+
+```txt
+merge feature.checkout into main
+  base snapshot_180
+  target snapshot_200
+  semantic_rebase required
+end
+```
+
+Conflicts son graph-level:
+
+```txt
+same node modified incompatibly
+public API changed in both branches
+capability grant conflict
+invariant changed while dependent function changed
+```
+
+### Tags and releases
+
+Tags protegen snapshots importantes:
+
+```txt
+tag release.v1.0 snapshot_300
+tag prod.2026-05-21 snapshot_320
+```
+
+Release snapshot incluye:
+
+```txt
+graph_root_hash
+verification_report_hash
+runtime_profile_hash
+artifact_hashes
+```
+
+### Schema versioning and migrations
+
+Storage debe versionar:
+
+```txt
+graph_schema
+core_ir_schema
+acl_version
+verification_schema
+runtime_schema
+artifact_schema
+```
+
+Migrators:
+
+```txt
+migration graph_schema_3_to_4
+  input graph_schema=3
+  output graph_schema=4
+  verifies structural_equivalence
+end
+```
+
+Reglas:
+
+```txt
+1. Old snapshots remain readable through compatibility or migrators.
+2. Migration creates new snapshot; old snapshot not overwritten.
+3. Migration report records equivalence/preserved semantics.
+4. Breaking schema changes require explicit migrator.
+```
+
+### Indexes
+
+Indexes are derived, rebuildable artifacts.
+
+Examples:
+
+```txt
+call graph index
+type graph index
+capability graph index
+invariant dependency index
+context server index
+full-text docs index
+```
+
+Regla:
+
+```txt
+Indexes are not source of truth.
+They can be rebuilt from graph snapshots.
+```
+
+### Artifact store
+
+Large/generated artifacts live separately but are hash-linked.
+
+```txt
+artifacts/
+  wasm/
+  manifests/
+  reports/
+  runtime_logs/
+  generated_sdks/
+  generated_docs/
+```
+
+Rules:
+
+```txt
+1. Artifacts are content-addressed.
+2. Verification reports reference artifact hashes.
+3. Generated artifacts are derived, not source of truth.
+4. Artifact retention can differ from graph retention.
+```
+
+### Approval and audit records
+
+Approvals are stored as immutable records.
+
+```txt
+approval_record approval_123
+  subject change.add_checkout
+  canonical_change_hash hash:change_abc
+  approver role:maintainer
+  approves public_api_changed
+  timestamp 2026-05-21T00:00:00Z
+end
+```
+
+Regla:
+
+```txt
+Approval expires if canonical_change_hash changes.
+```
+
+### Assumption storage
+
+Assumptions are tracked independently and linked to boundaries.
+
+```txt
+assumption stripe_idempotency
+  boundary boundary.Stripe
+  status active
+  expires 2026-12-31
+  owner team.payments
+end
+```
+
+Expired/revoked assumptions affect verification gates.
+
+### Views and files
+
+Text files can exist as views:
+
+```txt
+views/
+  human_readable/
+  llm_context/
+  generated_source/
+  docs/
+```
+
+Rules:
+
+```txt
+1. Views are derived from graph.
+2. Editing a view directly does not mutate source of truth.
+3. To change the program, produce a ChangeSet.
+4. View hashes can be used for caching/diff display.
+```
+
+### Backup and portability
+
+A project can export:
+
+```txt
+graph objects
+snapshots
+ChangeSets
+verification reports
+runtime profiles
+schemas/migrators
+protected artifacts
+```
+
+Export bundle:
+
+```txt
+project_export
+  root_snapshot snapshot_320
+  include history=protected
+  include artifacts=release
+  include schemas=true
+end
+```
+
+### Integrity checks
+
+Storage verifier checks:
+
+```txt
+object hashes match content
+snapshot root resolves
+changes link to reports
+reports link to artifact hashes
+approvals reference existing canonical changes
+assumptions link to boundaries
+indexes match snapshot or are marked stale
+```
+
+### Final rules
+
+```txt
+1. Source of truth is Semantic Graph, not files.
+2. Applied changes create immutable snapshots.
+3. History is append-only semantically.
+4. Deletes are logical tombstones.
+5. Physical deletion happens through GC policy.
+6. Retention/compaction prevent unbounded growth.
+7. Branches point to snapshots.
+8. Diffs are structural, not textual.
+9. Schemas evolve through migrators.
+10. Views/artifacts are derived and hash-linked.
+```
+
+### Open design questions
+
+```txt
+1. Concrete storage backend: embedded DB, content-addressed filesystem, object DB, or hybrid?
+2. Hash algorithm and canonical serialization format.
+3. Distributed collaboration protocol for graph branches.
+4. How much history to keep by default for local projects.
+5. Whether protected audit history can be externally archived/pruned locally.
+```

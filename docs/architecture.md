@@ -1,0 +1,162 @@
+# Architecture overview
+
+> Full extracted design. Start here, then use [README](../README.md) for topic navigation.
+
+## Original preface
+
+# Borrador: lenguaje de programación AI-native
+
+> Estado: archivo histórico/raw. La versión organizada vive en `README.md` y `docs/`. Este archivo conserva el desarrollo completo de la conversación para auditoría y detalle.
+
+Este documento resume la idea conversada: diseñar un lenguaje general-purpose creado para que lo escriban LLMs, no humanos. La interacción humana sería conversacional; la fuente real del programa sería una representación semántica verificable, no archivos de texto tradicionales.
+
+## Tesis principal
+
+No queremos “otro Python” ni “un DSL legible por humanos”. Queremos cambiar qué significa programar:
+
+```txt
+Humano expresa intención
+  ↓
+IA propone cambios semánticos
+  ↓
+Toolchain verifica
+  ↓
+Programa vive como grafo/IR
+  ↓
+Compila a WASM + runtime de capabilities
+```
+
+La IA no debería editar archivos como hoy. Debería emitir operaciones verificables sobre un sistema semántico.
+
+## Principios de diseño
+
+| Principio | Decisión |
+|---|---|
+| Source of truth | El programa vive como Semantic Graph / Core IR, no como texto humano. |
+| Escritura por LLM | El LLM emite ChangeSets: operaciones pequeñas, canónicas y reparables. |
+| Verificación | La IA propone; el verificador acepta o rechaza. |
+| General-purpose | El lenguaje debe soportar funciones, tipos, módulos, efectos, errores, concurrencia, FFI y paquetes. |
+| Efectos | Todo acceso al mundo externo debe ser explícito mediante un sistema extensible de capabilities. |
+| Hardcoded mínimo | El lenguaje hardcodea mecanismos fundamentales, no servicios concretos como DB, HTTP o Stripe. |
+| Compilación | Primero a Core IR verificable; luego a WASM + manifest + reporte de verificación. |
+| Contexto | El LLM consulta slices semánticos, no lee 40 archivos. |
+
+## Componentes principales
+
+```txt
+Conversation Layer
+  ↓
+Intent Compiler
+  ↓
+AI Change Language
+  ↓
+Semantic Program Graph
+  ↓
+Verified Core IR
+  ↓
+Verifier / Type Checker / Effect Checker
+  ↓
+WASM + Runtime Host
+```
+
+## Qué se hardcodea y qué no
+
+Todo lenguaje general-purpose hardcodea una física básica. La pregunta correcta no es si hardcodear, sino qué merece ser parte del lenguaje.
+
+Hardcoded en el lenguaje:
+
+```txt
+- valores
+- funciones
+- tipos
+- módulos
+- contratos
+- referencias estables
+- cambios transaccionales
+- effects/capabilities como mecanismo
+- verificación/reportes
+```
+
+No hardcoded:
+
+```txt
+- database
+- HTTP
+- Stripe
+- filesystem concreto
+- cloud provider
+- framework web
+- proveedor LLM
+```
+
+Analogía:
+
+```txt
+Hardcodear gravedad: sí.
+Hardcodear una silla específica: no.
+```
+
+El lenguaje define leyes. Las librerías y runtimes definen cosas del mundo.
+
+## Relación con lenguajes existentes
+
+Candidatos/inspiraciones:
+
+| Proyecto | Qué aporta |
+|---|---|
+| Unison | Programa como codebase semántica, referencias content-addressed, refactors más seguros. |
+| Koka | Sistema de efectos explícitos. |
+| Lean / F* / Idris | Verificación, pruebas, invariantes. |
+| MLIR | Infraestructura para IRs y compiladores. |
+| WASM | Target ejecutable portable y sandboxeado. |
+
+La opción más cercana filosóficamente para investigar/forkear sería Unison, pero habría que mutarlo fuerte.
+
+## Estrategia de diseño
+
+Decisión de proceso:
+
+```txt
+Diseño completo desde el inicio.
+Implementación por fases después.
+```
+
+No queremos dejar decisiones fundamentales “para más adelante”, porque modificar la arquitectura profunda después sería caro. Lo que sí puede hacerse por etapas es la implementación.
+
+Regla:
+
+```txt
+Nada fundamental queda sin diseñar.
+Solo puede quedar sin implementar temporalmente.
+```
+
+## Matriz de diseño completo
+
+| Área | Decisión necesaria | Estado actual | Implementación sugerida |
+|---|---|---|---|
+| Source of truth | Programa como Semantic Graph / Core IR, no como source files clásicos. | Decidido | Producto completo |
+| AI Change Language | Formato exacto de ChangeSets que escriben los LLMs. | Decidido | Producto completo |
+| Semantic Core IR | Primitivas completas del lenguaje interno verificable. | Decidido | Producto completo |
+| Compiler IR | ANF como compiler IR principal; SSA como backend artifact. | Decidido | Producto completo |
+| Type system | Primitives, records, variants, generics, refinements, interfaces, resources. | Decidido | Producto completo |
+| Error model | `Result`, `Option`, `PatchField`, sin excepciones implícitas. | Decidido | Producto completo |
+| Effects/capabilities | Efectos extensibles, handlers, runtime grants. | Decidido | Producto completo |
+| Contracts | `requires`, `ensures`, `invariant`, proof obligations. | Decidido | Producto completo |
+| Verification model | Estados explícitos y profiles. | Decidido | Producto completo |
+| Refactor model | Refactors como operaciones semánticas verificadas. | Decidido | Producto completo |
+| Package system | Trust, imports/exports, capabilities, assumptions, unsafe surface. | Decidido | Producto completo |
+| Storage/versioning | Graph store, snapshots, ChangeSet history, hashes, GC/retention. | Decidido | Producto completo |
+| Context Server | Semantic slices hash-bound para LLMs. | Decidido | Producto completo |
+| Runtime host | WASM host deny-by-default con capabilities, handlers, limits, audit. | Decidido | Producto completo |
+| Executable target | WASM primero; native posible después. | Decidido | Producto completo |
+| Concurrency | `can_suspend` effect + task/channel primitives. | Decidido | Producto completo |
+| Resource lifecycle | `Handle<Resource, Mode>` con `Affine`, `Linear`, `Shared`. | Decidido | Producto completo |
+| FFI/boundaries | Boundaries con trust, contracts, assumptions, approvals. | Decidido | Producto completo |
+| Standard library | Semántica común + capabilities definitions. | Decidido | Producto completo |
+| Tooling | CLI/workflows sobre graph snapshots y ChangeSets. | Decidido | Producto completo |
+| Security model | Least privilege, deny-by-default, audit, package/runtime trust. | Decidido | Producto completo |
+| LLM repair loop | Diagnósticos estructurados con repair options. | Decidido | Producto completo |
+
+## Implementación
+
+La implementación debe seguir el diseño de producto completo. Puede secuenciarse internamente por subsistemas, pero no debe presentarse como un MVP que recorta la visión o cambia la arquitectura.

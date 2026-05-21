@@ -1,0 +1,650 @@
+# Runtime / capability protocol
+
+> Full extracted design. Related: [Verification](verification.md), [Compiler](compiler.md), [Package trust](packages.md), [Standard library](stdlib.md).
+
+## Capabilities
+
+El módulo WASM no toca base de datos, red, archivos ni reloj directamente. Pide permisos al runtime.
+
+Ejemplo de manifest generado:
+
+```json
+{
+  "requires": [
+    "database.read:Cart",
+    "database.write:Order",
+    "http.call:PaymentProvider",
+    "event.emit:OrderPaid"
+  ]
+}
+```
+
+Esto sale de dos lugares:
+
+1. Declaración semántica generada por la IA.
+2. Análisis automático de efectos sobre el IR.
+
+Si no coinciden, el build falla.
+
+## Efectos
+
+Un efecto es cualquier acción que una función realiza más allá de calcular y devolver un valor.
+
+Ejemplo de función pura:
+
+```txt
+fn cart_total(cart) -> Money
+effects: pure
+```
+
+Ejemplo de función con efectos:
+
+```txt
+fn checkout(cartId) -> OrderId
+effects:
+  database.read:Cart
+  database.write:Order
+  http.call:PaymentProvider
+  event.emit:OrderPaid
+```
+
+Regla del lenguaje:
+
+```txt
+Valor puro = matemática
+Efecto = tocar el mundo
+```
+
+El compilador debe rechazar cualquier efecto usado pero no declarado.
+
+## Sistema extensible de efectos
+
+El lenguaje no debe hardcodear todos los efectos posibles. Eso lo haría rígido y no serviría como lenguaje general-purpose.
+
+El core solo entiende el mecanismo:
+
+```txt
+capability declarada
+capability usada
+capability propagada
+capability otorgada por runtime
+capability auditada
+```
+
+Los efectos concretos los definen paquetes o runtimes:
+
+```txt
+capability database.read<T>
+capability database.write<T>
+capability http.call<Service>
+capability file.read<Scope>
+capability llm.invoke<Model>
+capability gpu.compute<Job>
+```
+
+Así, si mañana aparece una nueva clase de efecto, no hay que cambiar el lenguaje. Se agrega una capability nueva.
+
+Ejemplo:
+
+```txt
+package queue
+  capability queue.publish<Topic>
+  capability queue.consume<Topic>
+end
+
+fn publish_order_paid(event) -> Unit
+effects:
+  queue.publish:OrderEvents
+```
+
+El compilador no necesita saber qué es una queue. Solo necesita verificar que la capability existe, que la función la declara y que el runtime puede proveerla.
+
+## Runtime / capability protocol: propuesta completa
+
+El runtime ejecuta artefactos verificados y controla todo acceso al mundo exterior mediante capabilities explícitas.
+
+### Tesis
+
+```txt
+El programa compilado no accede al mundo directamente.
+Todo acceso externo pasa por capabilities otorgadas por el host runtime.
+```
+
+Principio:
+
+```txt
+deny by default
+```
+
+Si el módulo pide una capability no otorgada, el host la deniega aunque el WASM intente llamarla.
+
+### Arquitectura
+
+```txt
+program.wasm
+program.capabilities.json
+program.verification.json
+program.runtime-profile.json
+        ↓
+Runtime Host
+        ↓
+Handlers / adapters
+        ↓
+DB, HTTP, files, clock, random, OS, external APIs
+```
+
+### Artefactos de runtime
+
+```txt
+program.wasm                 lógica ejecutable sandboxed
+program.capabilities.json    capabilities requeridas/verificadas
+program.verification.json    report autorizado por hashes
+program.runtime-profile.json grants, handlers, limits y policies del profile
+```
+
+Regla:
+
+```txt
+El runtime solo ejecuta si hashes y manifests coinciden con el verification report.
+```
+
+### Capability manifest
+
+Generado desde effects verificados.
+
+Ejemplo:
+
+```json
+{
+  "module": "module.checkout",
+  "requires": [
+    "database.read:Cart",
+    "database.write:Order",
+    "payment.charge:PaymentProvider",
+    "event.emit:OrderPaid"
+  ]
+}
+```
+
+El manifest no es autoridad por sí solo. Debe coincidir con:
+
+```txt
+verified Core IR effects
+ANF effect analysis
+handler transformations
+verification report artifact hashes
+runtime profile grants
+```
+
+### Grants por profile
+
+Capabilities se otorgan por profile, módulo/paquete y scope.
+
+Ejemplo:
+
+```txt
+profile prod
+  grant module.checkout database.read:Cart
+  grant module.checkout database.write:Order
+  grant module.checkout payment.charge:PaymentProvider via handler.StripePayment
+  grant module.checkout event.emit:OrderPaid
+end
+
+profile test
+  grant module.checkout database.read:Cart via handler.InMemoryDb
+  grant module.checkout database.write:Order via handler.InMemoryDb
+  grant module.checkout payment.charge:PaymentProvider via handler.FakePayment
+  grant module.checkout event.emit:OrderPaid via handler.TestEventBus
+end
+```
+
+Rules:
+
+```txt
+1. Grants are least-privilege.
+2. Grants are profile-scoped.
+3. Grants can expire or be revoked.
+4. Broad grants require approval.
+5. Runtime denies capability not granted in active profile.
+```
+
+### Host ABI
+
+Decisión:
+
+```txt
+Host ABI genérico con schemas tipados.
+No imports hardcodeados por DB/HTTP/etc. como modelo principal.
+```
+
+Forma conceptual:
+
+```txt
+host.call(capability_id, operation, encoded_payload) -> HostResult<encoded_response>
+```
+
+Ejemplo:
+
+```txt
+host.call(
+  capability="database.read:Cart",
+  operation="read_by_id",
+  payload=encoded(CartId)
+)
+```
+
+El runtime valida:
+
+```txt
+capability granted?
+payload schema valid?
+handler bound?
+limits available?
+policy allows call?
+```
+
+Puede existir ABI especializada como optimización, pero debe bajar semánticamente al mismo capability call model.
+
+### Payload schemas
+
+Todo payload de capability tiene schema explícito:
+
+```txt
+CapabilityInputSchema
+CapabilityOutputSchema
+CapabilityErrorSchema
+```
+
+Ejemplo:
+
+```txt
+capability payment.charge:PaymentProvider {
+  input PaymentChargeRequest
+  output Result<PaymentReceipt, PaymentError>
+  errors PaymentProviderUnavailable | PaymentDeclined
+}
+```
+
+El host valida boundary encoding/decoding con el Boundary Protocol.
+
+### Handler binding
+
+Handlers interpretan capabilities.
+
+```txt
+bind payment.charge:PaymentProvider -> handler.StripePayment profile=prod
+bind payment.charge:PaymentProvider -> handler.FakePayment profile=test
+```
+
+Rules:
+
+```txt
+1. Handler must declare handled capabilities.
+2. Handler must declare internal effects.
+3. Handler must satisfy capability contract.
+4. Handler trust level must satisfy profile policy.
+5. Handler binding is explicit per profile/environment.
+```
+
+### Handler execution model
+
+Handlers pueden ejecutarse:
+
+```txt
+inside host runtime
+as separate sandboxed process
+as remote adapter
+as native extension boundary
+```
+
+Trust levels:
+
+```txt
+verified
+assumed
+unverified
+unsafe
+```
+
+Rules:
+
+```txt
+unsafe native handler requires strong approval
+remote handler requires boundary contract
+unverified handler blocked in prod/critical unless policy exception
+```
+
+### Runtime checks
+
+Runtime host ejecuta checks materializados:
+
+```txt
+decoder validations
+refinement checks
+capability response validation
+range/bounds checks
+boundary schema validation
+```
+
+Regla:
+
+```txt
+runtime_checked only counts if check exists in verified artifact hash.
+```
+
+### Audit log
+
+Cada capability call produce audit event.
+
+Campos:
+
+```txt
+timestamp
+profile
+module
+function
+capability
+operation
+handler
+input_hash
+output_hash
+result_state
+duration
+trace_id
+verification_report_hash
+```
+
+Sensitive payloads no se loguean crudos por default. Se loguean hashes/redacted views según policy.
+
+### Limits and sandboxing
+
+Runtime aplica límites:
+
+```txt
+timeout
+memory limit
+fuel/instruction limit
+max capability calls
+rate limits
+payload size limit
+concurrency limit
+recursion/stack limit
+output size limit
+```
+
+Si se excede:
+
+```txt
+HostError.LimitExceeded
+```
+
+Failure behavior debe estar declarado:
+
+```txt
+return Err
+abort module
+rollback transaction
+cancel task group
+deny capability response
+```
+
+### Determinism, replay and testing
+
+Profiles pueden usar handlers determinísticos:
+
+```txt
+FixedClock
+SeededRandom
+RecordedHttp
+InMemoryDb
+FakePayment
+```
+
+Replay mode:
+
+```txt
+replay trace_id=trace_123
+  use recorded capability responses
+  verify same output hashes
+end
+```
+
+Rules:
+
+```txt
+clock.now is capability
+random is capability
+external HTTP is capability
+deterministic tests bind deterministic handlers
+```
+
+### Transactions and rollback
+
+Runtime supports transactional capability groups when handlers provide them.
+
+Example:
+
+```txt
+transaction group checkout_tx
+  database.write:Order
+  event.emit:OrderPaid
+end
+```
+
+Rules:
+
+```txt
+transactional effects must declare commit/rollback semantics
+non-transactional external effects must be marked as such
+compensation actions must be explicit when needed
+```
+
+Example non-transactional:
+
+```txt
+payment.charge is non_rollbackable
+requires idempotency + compensation/refund policy
+```
+
+### Error model
+
+Host calls return typed results:
+
+```txt
+HostResult<T> = Ok(T) | Err(HostError)
+```
+
+HostError examples:
+
+```txt
+CapabilityDenied
+HandlerNotBound
+PayloadDecodeError
+PayloadEncodeError
+ContractViolation
+Timeout
+LimitExceeded
+HandlerUnavailable
+BoundaryFailure
+AuditFailure
+ManifestMismatch
+```
+
+No implicit exceptions cross the WASM boundary.
+
+### Security model
+
+```txt
+deny by default
+least privilege grants
+profile-scoped capabilities
+explicit handler binding
+manifest/report hash validation
+runtime denial of ungranted imports
+audit everything
+no raw secrets to modules unless capability grants it
+```
+
+Secret access is capability-controlled:
+
+```txt
+secret.read:StripeApiKey
+```
+
+Rules:
+
+```txt
+secrets are never embedded in WASM
+handlers receive secrets through host-controlled vault
+secret reads are audited/redacted
+```
+
+### Capability lifecycle
+
+Capabilities can be:
+
+```txt
+declared
+verified
+bound
+active
+revoked
+expired
+denied
+```
+
+Revocation:
+
+```txt
+revoke module.checkout payment.charge:PaymentProvider profile=prod
+```
+
+After revoke, runtime denies new calls. In-flight behavior follows policy:
+
+```txt
+allow_complete
+cancel
+timeout_then_cancel
+```
+
+### Runtime profile
+
+Runtime profile includes:
+
+```txt
+profile name
+verification_report_hash
+module hash
+capability grants
+handler bindings
+limits
+policies
+secrets mapping
+audit config
+replay config
+```
+
+Example:
+
+```txt
+runtime_profile prod
+  report hash=ver_abc123
+  module hash=wasm_def456
+
+  grants
+    module.checkout database.read:Cart
+    module.checkout payment.charge:PaymentProvider via handler.StripePayment
+  end
+
+  limits
+    timeout 5s
+    memory 128MiB
+    max_capability_calls 100
+  end
+
+  audit redacted
+end
+```
+
+### Startup validation
+
+Before running, host validates:
+
+```txt
+1. wasm hash matches verification report
+2. capabilities manifest hash matches report
+3. runtime profile references same report/module
+4. required capabilities are granted or intentionally denied by mode
+5. handlers are bound and satisfy trust policy
+6. limits are configured
+7. assumptions used by profile are active/not expired
+```
+
+If not:
+
+```txt
+runtime_start rejected
+```
+
+### Runtime report
+
+Runtime emits execution reports:
+
+```txt
+runtime_report <id>
+profile prod
+module module.checkout
+verification_report hash=ver_abc123
+status completed | failed | denied | timeout | limit_exceeded
+
+capability_calls
+  ...
+end
+
+runtime_checks
+  ...
+end
+
+limits
+  ...
+end
+
+audit_log hash=audit_123
+end
+```
+
+### Relation to verification
+
+Verification proves or classifies before execution. Runtime enforces during execution.
+
+```txt
+Verifier checks: should this module be allowed to run?
+Runtime checks: does this execution obey granted capabilities and materialized checks?
+```
+
+Runtime cannot upgrade verification state. It can only enforce and produce evidence.
+
+### Final rules
+
+```txt
+1. WASM has no direct world access.
+2. Every world access is a capability call.
+3. Every capability call requires grant + handler binding.
+4. Every handler declares internal effects and trust.
+5. Runtime is deny-by-default.
+6. Runtime validates artifact hashes before execution.
+7. Runtime audits capability calls.
+8. Runtime enforces limits.
+9. Runtime checks are materialized and hash-covered.
+10. Runtime profiles are explicit and versioned.
+```
+
+### Open design questions
+
+```txt
+1. Exact binary encoding for host.call payloads: canonical JSON, MessagePack, CBOR, or custom binary schema?
+2. Whether WASI is used as substrate or avoided behind our host ABI.
+3. How much of handler execution can itself be compiled/verified modules.
+4. How to standardize distributed tracing across capability calls.
+5. Whether capability calls are always async/can_suspend or can be sync by type.
+```
