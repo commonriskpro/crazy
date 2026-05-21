@@ -1,0 +1,23 @@
+[package]
+name    = "ail-change"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ail-core  = { workspace = true }
+blake3    = { workspace = true }
+ciborium  = { workspace = true }
+serde     = { workspace = true }
+
+[dependencies.ail-storage]
+workspace = true
+optional  = true
+
+[features]
+storage-bridge = ["dep:ail-storage"]
+
+[dev-dependencies]
+ail-testkit = { workspace = true }
+
+[lints]
+workspace = true

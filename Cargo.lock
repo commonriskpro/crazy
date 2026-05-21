@@ -12,6 +12,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ail-change"
+version = "0.1.0"
+dependencies = [
+ "ail-core",
+ "ail-storage",
+ "ail-testkit",
+ "blake3",
+ "ciborium",
+ "serde",
+]
+
+[[package]]
 name = "ail-cli"
 version = "0.1.0"
 dependencies = [
