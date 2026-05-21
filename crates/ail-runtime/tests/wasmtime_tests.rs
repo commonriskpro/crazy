@@ -122,12 +122,11 @@ fn compiler_wasm_validates_and_instantiates() {
     let profile = matching_profile(&wasm, &manifest);
 
     let mut host = RuntimeHost::new();
-    let result = host.validate_and_instantiate(&wasm, &manifest, &profile);
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("compiler-emitted WASM must instantiate");
 
-    assert!(
-        result.is_ok(),
-        "compiler-emitted WASM must validate and instantiate, got {result:?}"
-    );
+    assert_eq!(instance.export_count(), 0);
 
     let log = host.audit_log();
     assert_eq!(log.len(), 1);
@@ -146,12 +145,11 @@ fn minimal_wasm_header_validates_and_instantiates() {
     let profile = matching_profile(&wasm, &manifest);
 
     let mut host = RuntimeHost::new();
-    let result = host.validate_and_instantiate(&wasm, &manifest, &profile);
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("minimal WASM header must instantiate");
 
-    assert!(
-        result.is_ok(),
-        "minimal WASM header must validate and instantiate, got {result:?}"
-    );
+    assert_eq!(instance.export_count(), 0);
 }
 
 // ── Scenario 3: Failed preflight blocks Wasmtime ─────────────────────────

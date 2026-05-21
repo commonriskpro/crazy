@@ -7,12 +7,14 @@
 //   2. Manifest hash check      — blake3(cbor(manifest)) vs profile.capability_manifest_hash()
 //   3. Capability grant check   — manifest.requires ⊆ profile.grants
 //   4. Wasmtime validation      — Module::validate (structural / binary format)
-//   5. Wasmtime compilation     — Module::new (produces RuntimeInstance)
+//   5. Wasmtime instantiation   — Module::new + Instance::new
 //
 // Exactly one AuditEvent is appended per `validate_and_instantiate` call.
 // Linker / host-function wiring is deferred to a later phase.
 
-use wasmtime::{Engine, Module};
+use std::fmt;
+
+use wasmtime::{Engine, Instance, Module, Store};
 
 use crate::audit::{AuditEvent, AuditLog};
 use crate::error::{PreflightFailure, RuntimeError, RuntimeResult};
@@ -21,18 +23,35 @@ use crate::profile::{CapabilityId, RuntimeProfile};
 
 // ── RuntimeInstance ───────────────────────────────────────────────────────
 
-/// A validated and compiled WASM module ready for future execution.
+/// A validated and instantiated WASM module ready for future execution.
 ///
-/// Carries the compiled Wasmtime `Module` as proof that the binary passed
-/// both preflight checks and Wasmtime's structural validator.
+/// Carries the compiled Wasmtime `Module`, live `Store`, and instantiated
+/// `Instance` as proof that the binary passed preflight and was instantiated
+/// with the Phase 8 empty-import host boundary.
 ///
 /// Host-function linker registration (importing capabilities) is deferred
 /// to a later phase; this type does not yet expose call APIs.
-#[derive(Debug)]
 pub struct RuntimeInstance {
-    // Prefixed with `_` to suppress the unused-field warning for Phase 8.
-    // When call APIs are added the field will be used directly.
+    // Keep the module alive for future metadata/call APIs.
     _module: Module,
+    store: Store<()>,
+    instance: Instance,
+}
+
+impl RuntimeInstance {
+    /// Count exports visible from the instantiated module.
+    ///
+    /// Current compiler output has no exports, but this method proves tests are
+    /// observing a real Wasmtime `Instance` rather than only a compiled module.
+    pub fn export_count(&mut self) -> usize {
+        self.instance.exports(&mut self.store).count()
+    }
+}
+
+impl fmt::Debug for RuntimeInstance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RuntimeInstance").finish_non_exhaustive()
+    }
 }
 
 // ── RuntimeHost ───────────────────────────────────────────────────────────
@@ -64,7 +83,7 @@ impl RuntimeHost {
         &self.audit_log
     }
 
-    /// Preflight-check and compile a WASM module.
+    /// Preflight-check and instantiate a WASM module.
     ///
     /// Runs the five-stage preflight pipeline (see module doc).  Appends
     /// exactly one [`AuditEvent`] to the internal log regardless of outcome.
@@ -111,7 +130,7 @@ impl RuntimeHost {
         }
     }
 
-    /// Execute all preflight stages and compile the module.
+    /// Execute all preflight stages and instantiate the module.
     ///
     /// Does not update the audit log; that is the caller's responsibility.
     fn preflight_inner(
@@ -155,11 +174,11 @@ impl RuntimeHost {
             ));
         }
 
-        // Stages 4+5 — Wasmtime validate + compile.
+        // Stages 4+5 — Wasmtime validate + instantiate.
         self.instantiate_inner(wasm)
     }
 
-    /// Validate and compile `wasm` with Wasmtime (stages 4 + 5).
+    /// Validate, compile, and instantiate `wasm` with Wasmtime (stages 4 + 5).
     ///
     /// Called only after all preflight checks pass.  Both Wasmtime errors
     /// are wrapped in [`PreflightFailure::WasmValidationError`] because they
@@ -173,7 +192,16 @@ impl RuntimeHost {
             RuntimeError::PreflightFailed(PreflightFailure::WasmValidationError(e.to_string()))
         })?;
 
-        Ok(RuntimeInstance { _module: module })
+        let mut store = Store::new(&self.engine, ());
+        let instance = Instance::new(&mut store, &module, &[]).map_err(|e| {
+            RuntimeError::PreflightFailed(PreflightFailure::WasmValidationError(e.to_string()))
+        })?;
+
+        Ok(RuntimeInstance {
+            _module: module,
+            store,
+            instance,
+        })
     }
 }
 
