@@ -122,6 +122,19 @@ impl EffectChecker {
             })
             .collect();
 
-        VerificationReport::new(entries)
+        let summary_counts = crate::report::SummaryCounts {
+            verified_count: entries.iter().filter(|e| e.state == VerificationState::Proven || e.state == VerificationState::RuntimeChecked).count(),
+            runtime_checked_count: entries.iter().filter(|e| e.state == VerificationState::RuntimeChecked).count(),
+            assumed_count: entries.iter().filter(|e| e.state == VerificationState::Assumed).count(),
+            unverified_count: entries.iter().filter(|e| e.state == VerificationState::Unverified).count(),
+            unsafe_count: entries.iter().filter(|e| e.state == VerificationState::Unsafe).count(),
+            failed_count: entries.iter().filter(|e| e.state == VerificationState::Failed).count(),
+        };
+        VerificationReport {
+            entries,
+            schema_version: "verification/1.0".into(),
+            summary_counts,
+            ..Default::default()
+        }
     }
 }

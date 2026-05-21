@@ -14,6 +14,7 @@
 
 use ail_core::semantic_graph::{ContractClauses, GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_verify::contract_checker::ContractChecker;
+use ail_verify::diagnostic::{DiagnosticSeverity, E_CONTRACT_VIOLATED};
 use ail_verify::proof::ProofObligation;
 use ail_verify::report::VerificationState;
 use ail_verify::solver::{Solver, SolverOutcome};
@@ -213,4 +214,102 @@ fn node_without_contract_clauses_produces_empty_report() {
 
     // THEN no entries — ContractChecker only processes contract clauses
     assert_eq!(report.entries.len(), 0);
+}
+
+// ── Diagnostic: "false" clause emits E_CONTRACT_VIOLATED diagnostic ────────
+
+#[test]
+fn failed_clause_emits_contract_violated_diagnostic() {
+    // GIVEN a node with requires: ["false"]
+    let graph = graph_with_clauses(vec!["false"], vec![]);
+    let solver = ail_verify::solver::SimpleSolver;
+    let checker = ContractChecker::new(&solver);
+
+    // WHEN ContractChecker::check processes it
+    let report = checker.check(&graph);
+
+    // THEN exactly one diagnostic with code E_CONTRACT_VIOLATED
+    assert_eq!(
+        report.diagnostics.len(),
+        1,
+        "failed clause must produce exactly one diagnostic"
+    );
+    let diag = &report.diagnostics[0];
+    assert_eq!(diag.code, E_CONTRACT_VIOLATED);
+    assert_eq!(diag.severity, DiagnosticSeverity::Error);
+    assert_eq!(diag.target, NodeRef(0));
+    assert!(diag.blocking, "E_CONTRACT_VIOLATED must be blocking");
+    assert!(
+        diag.evidence.is_some(),
+        "diagnostic must carry evidence text"
+    );
+}
+
+// ── Diagnostic: passing clause emits no diagnostic ─────────────────────────
+
+#[test]
+fn passing_clause_emits_no_diagnostic() {
+    // GIVEN a node with requires: ["true"] (passes → RuntimeChecked)
+    let graph = graph_with_clauses(vec!["true"], vec![]);
+    let solver = ail_verify::solver::SimpleSolver;
+    let checker = ContractChecker::new(&solver);
+
+    let report = checker.check(&graph);
+
+    assert!(
+        report.diagnostics.is_empty(),
+        "passing clause must not produce any diagnostics"
+    );
+}
+
+// ── Diagnostic: multiple failed clauses emit one diagnostic each ───────────
+
+#[test]
+fn multiple_failed_clauses_emit_one_diagnostic_each() {
+    // GIVEN a node with requires: ["false", "false"]
+    let graph = graph_with_clauses(vec!["false", "false"], vec![]);
+    let solver = ail_verify::solver::SimpleSolver;
+    let checker = ContractChecker::new(&solver);
+
+    let report = checker.check(&graph);
+
+    assert_eq!(
+        report.diagnostics.len(),
+        2,
+        "two failed clauses must emit two diagnostics"
+    );
+    for diag in &report.diagnostics {
+        assert_eq!(diag.code, E_CONTRACT_VIOLATED);
+    }
+}
+
+// ── Diagnostic: target in diagnostic matches node id ──────────────────────
+
+#[test]
+fn contract_diagnostic_target_matches_node_id() {
+    // GIVEN a node with NodeRef(77) and requires: ["false"]
+    let mut node = GraphNode::new(NodeRef(77), NodeKind::Function, "fn_77");
+    node.contract_clauses = Some(ContractClauses {
+        requires: vec!["false".into()],
+        ensures: vec![],
+    });
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let solver = ail_verify::solver::SimpleSolver;
+    let checker = ContractChecker::new(&solver);
+
+    let report = checker.check(&graph);
+
+    let diag = report
+        .diagnostics
+        .iter()
+        .find(|d| d.code == E_CONTRACT_VIOLATED)
+        .expect("must have E_CONTRACT_VIOLATED diagnostic");
+    assert_eq!(
+        diag.target,
+        NodeRef(77),
+        "diagnostic target must match node's NodeRef"
+    );
 }

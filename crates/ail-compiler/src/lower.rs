@@ -368,16 +368,19 @@ mod tests {
     // ── Helpers ───────────────────────────────────────────────────────────
 
     fn report_with_state(state: VerificationState) -> VerificationReport {
-        VerificationReport::new(vec![VerificationEntry {
-            claim: "claim".to_string(),
-            state,
-            scope: "s".to_string(),
-            evidence: None,
-        }])
+        VerificationReport {
+            entries: vec![VerificationEntry {
+                claim: "claim".to_string(),
+                state,
+                scope: "s".to_string(),
+                evidence: None,
+            }],
+            ..Default::default()
+        }
     }
 
     fn proven_report() -> VerificationReport {
-        VerificationReport::new(vec![])
+        VerificationReport { entries: vec![], ..Default::default() }
     }
 
     fn one_node_graph() -> SemanticGraph {

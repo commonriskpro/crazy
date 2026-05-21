@@ -329,7 +329,7 @@ mod tests {
     // ── Helpers ───────────────────────────────────────────────────────────
 
     fn proven_report() -> VerificationReport {
-        VerificationReport::new(vec![])
+        VerificationReport { entries: vec![], ..Default::default() }
     }
 
     fn node(id: u32) -> GraphNode {
@@ -581,12 +581,15 @@ mod tests {
             nodes: vec![node(0)],
             edges: vec![],
         };
-        let report = VerificationReport::new(vec![VerificationEntry {
-            claim: "x".to_string(),
-            state: VerificationState::Failed,
-            scope: "s".to_string(),
-            evidence: None,
-        }]);
+        let report = VerificationReport {
+            entries: vec![VerificationEntry {
+                claim: "x".to_string(),
+                state: VerificationState::Failed,
+                scope: "s".to_string(),
+                evidence: None,
+            }],
+            ..Default::default()
+        };
         let cache = MemoryArtifactCache::new();
         let result = compile_incremental(&graph, &report, &cache, &NodeHashes::new());
         assert_eq!(result, Err(CompileError::RejectedReport));

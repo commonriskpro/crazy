@@ -25,6 +25,7 @@
 
 use ail_core::semantic_graph::SemanticGraph;
 
+use crate::diagnostic::{Diagnostic, E_CONTRACT_VIOLATED};
 use crate::proof::{ClauseRole, ProofObligation};
 use crate::report::{VerificationEntry, VerificationReport, VerificationState};
 use crate::solver::{Solver, SolverOutcome};
@@ -64,20 +65,41 @@ impl<'s> ContractChecker<'s> {
     /// Requires clauses are emitted before ensures clauses within each node.
     pub fn check(&self, graph: &SemanticGraph) -> VerificationReport {
         let mut entries = Vec::new();
+        let mut diagnostics = Vec::new();
         for node in &graph.nodes {
             if let Some(clauses) = &node.contract_clauses {
                 let scope = node.name.clone();
 
                 // Requires first, then Ensures — declaration order preserved.
                 for predicate in &clauses.requires {
-                    entries.push(self.evaluate(predicate, ClauseRole::Requires, &scope));
+                    let entry = self.evaluate(predicate, ClauseRole::Requires, &scope);
+                    if entry.state == VerificationState::Failed {
+                        diagnostics.push(
+                            Diagnostic::error(E_CONTRACT_VIOLATED, node.id).with_evidence(format!(
+                                "requires clause failed for '{scope}': {predicate}"
+                            )),
+                        );
+                    }
+                    entries.push(entry);
                 }
                 for predicate in &clauses.ensures {
-                    entries.push(self.evaluate(predicate, ClauseRole::Ensures, &scope));
+                    let entry = self.evaluate(predicate, ClauseRole::Ensures, &scope);
+                    if entry.state == VerificationState::Failed {
+                        diagnostics.push(
+                            Diagnostic::error(E_CONTRACT_VIOLATED, node.id).with_evidence(format!(
+                                "ensures clause failed for '{scope}': {predicate}"
+                            )),
+                        );
+                    }
+                    entries.push(entry);
                 }
             }
         }
-        VerificationReport::new(entries)
+        VerificationReport {
+            entries,
+            diagnostics,
+            ..Default::default()
+        }
     }
 
     /// Evaluate one clause predicate and return the corresponding entry.
@@ -98,7 +120,7 @@ impl<'s> ContractChecker<'s> {
         let obligation = ProofObligation {
             predicate: predicate.to_string(),
             role,
-            scope: scope.to_string(),
+            scope: String::new(),
         };
 
         let (state, evidence) = match self.solver.solve(&obligation) {

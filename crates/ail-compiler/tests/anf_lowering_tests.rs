@@ -28,7 +28,7 @@ use ail_verify::report::VerificationReport;
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 fn proven_report() -> VerificationReport {
-    VerificationReport::new(vec![])
+    VerificationReport { entries: vec![], ..Default::default() }
 }
 
 fn one_fn_graph() -> SemanticGraph {

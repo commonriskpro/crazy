@@ -22,6 +22,7 @@
 
 use ail_core::semantic_graph::{GraphNode, SemanticGraph};
 
+use crate::diagnostic::{Diagnostic, E_TYPE_MISMATCH};
 use crate::report::{VerificationEntry, VerificationReport, VerificationState};
 
 /// Pure, stateless graph checker.
@@ -42,16 +43,30 @@ impl Checker {
     /// reports.
     pub fn check(graph: &SemanticGraph) -> VerificationReport {
         let mut entries = Vec::with_capacity(graph.nodes.len() * 3);
+        let mut diagnostics = Vec::new();
         for node in &graph.nodes {
-            Self::classify_node(node, &mut entries);
+            Self::classify_node(node, &mut entries, &mut diagnostics);
         }
-        VerificationReport::new(entries)
+        VerificationReport {
+            entries,
+            diagnostics,
+            ..Default::default()
+        }
     }
 
-    /// Produce the three canonical fact entries for one `GraphNode`.
+    /// Produce the three canonical fact entries for one `GraphNode` and
+    /// append any structured `Diagnostic` items for violated conditions.
     ///
     /// Entries are appended in fixed order: type → effect → capability.
-    fn classify_node(node: &GraphNode, entries: &mut Vec<VerificationEntry>) {
+    ///
+    /// Diagnostics emitted:
+    /// - `E_TYPE_MISMATCH` (blocking Error) when the type entry is `Unverified`
+    ///   because no type facts were declared.
+    fn classify_node(
+        node: &GraphNode,
+        entries: &mut Vec<VerificationEntry>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
         let scope = node.name.clone();
 
         // ── Type fact ─────────────────────────────────────────────────────
@@ -65,6 +80,14 @@ impl Checker {
             scope: scope.clone(),
             evidence: None,
         });
+
+        // Emit E_TYPE_MISMATCH when the type is unverified (no facts declared).
+        if type_state == VerificationState::Unverified {
+            diagnostics.push(
+                Diagnostic::error(E_TYPE_MISMATCH, node.id)
+                    .with_evidence(format!("node '{scope}' has no declared type facts")),
+            );
+        }
 
         // ── Effect fact ───────────────────────────────────────────────────
         let effect_state = if node.effect_row.is_some() {

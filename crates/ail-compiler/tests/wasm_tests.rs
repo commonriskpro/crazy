@@ -37,7 +37,7 @@ fn graph_with_n_nodes(n: usize) -> SemanticGraph {
 }
 
 fn proven_report() -> VerificationReport {
-    VerificationReport::new(vec![])
+    VerificationReport { entries: vec![], ..Default::default() }
 }
 
 fn anf_for_graph(graph: &SemanticGraph) -> ail_compiler::AnfIr {

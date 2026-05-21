@@ -20,7 +20,7 @@ use ail_verify::report::VerificationReport;
 // ── helpers ───────────────────────────────────────────────────────────────
 
 fn proven_report() -> VerificationReport {
-    VerificationReport::new(vec![])
+    VerificationReport { entries: vec![], ..Default::default() }
 }
 
 fn node(id: u32) -> GraphNode {

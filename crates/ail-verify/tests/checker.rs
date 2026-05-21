@@ -1,4 +1,4 @@
-// ── ail-verify::checker tests ─────────────────────────────────────────────
+// ── ail-verify::checker tests + diagnostic assertions ─────────────────────
 //
 // Strict TDD — RED phase.  Written BEFORE src/checker.rs is implemented.
 // These tests encode the spec scenarios verbatim.
@@ -16,6 +16,7 @@ use ail_core::semantic_graph::{
     CapabilityReqs, EffectRow, GraphNode, NodeKind, NodeRef, SemanticGraph, TypeFacts,
 };
 use ail_verify::checker::Checker;
+use ail_verify::diagnostic::{DiagnosticSeverity, E_TYPE_MISMATCH};
 use ail_verify::report::VerificationState;
 
 // Helper: build a minimal SemanticGraph from a list of nodes.
@@ -180,4 +181,83 @@ fn multi_node_graph_entries_are_in_node_order() {
     assert_eq!(report.entries[3].state, VerificationState::Unverified); // type
     assert_eq!(report.entries[4].state, VerificationState::Assumed); // effect
     assert_eq!(report.entries[5].state, VerificationState::Unverified); // cap
+}
+
+// ── Diagnostic: node without type facts emits E_TYPE_MISMATCH ─────────────
+
+#[test]
+fn node_without_type_facts_emits_type_mismatch_diagnostic() {
+    let node = GraphNode::new(NodeRef(0), NodeKind::Function, "untyped_fn");
+    // type_facts is None → Unverified type entry → diagnostic
+    let graph = graph_from(vec![node]);
+    let report = Checker::check(&graph);
+
+    assert!(
+        !report.diagnostics.is_empty(),
+        "must emit at least one diagnostic for untyped node"
+    );
+    let diag = &report.diagnostics[0];
+    assert_eq!(diag.code, E_TYPE_MISMATCH);
+    assert_eq!(diag.severity, DiagnosticSeverity::Error);
+    assert_eq!(diag.target, NodeRef(0));
+    assert!(diag.blocking, "E_TYPE_MISMATCH must be blocking");
+    assert!(
+        diag.evidence.is_some(),
+        "diagnostic must carry evidence text"
+    );
+}
+
+// ── Diagnostic: node WITH type facts emits no type diagnostic ─────────────
+
+#[test]
+fn node_with_type_facts_emits_no_type_mismatch_diagnostic() {
+    let mut node = GraphNode::new(NodeRef(1), NodeKind::Type, "TypedNode");
+    node.type_facts = Some(TypeFacts {
+        nominal: "Int".into(),
+        generics: vec![],
+    });
+    let graph = graph_from(vec![node]);
+    let report = Checker::check(&graph);
+
+    let type_mismatch_count = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == E_TYPE_MISMATCH)
+        .count();
+    assert_eq!(
+        type_mismatch_count, 0,
+        "typed node must not produce E_TYPE_MISMATCH"
+    );
+}
+
+// ── Diagnostic: empty graph produces no diagnostics ───────────────────────
+
+#[test]
+fn empty_graph_produces_no_diagnostics() {
+    let graph = graph_from(vec![]);
+    let report = Checker::check(&graph);
+    assert!(
+        report.diagnostics.is_empty(),
+        "empty graph must produce zero diagnostics"
+    );
+}
+
+// ── Diagnostic: diagnostic target matches node id ─────────────────────────
+
+#[test]
+fn diagnostic_target_matches_node_id() {
+    let node = GraphNode::new(NodeRef(99), NodeKind::Function, "fn_99");
+    let graph = graph_from(vec![node]);
+    let report = Checker::check(&graph);
+
+    let diag = report
+        .diagnostics
+        .iter()
+        .find(|d| d.code == E_TYPE_MISMATCH)
+        .expect("must have E_TYPE_MISMATCH diagnostic");
+    assert_eq!(
+        diag.target,
+        NodeRef(99),
+        "diagnostic target must match the node's NodeRef"
+    );
 }
