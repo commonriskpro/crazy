@@ -21,6 +21,7 @@
 //               (conservative literal-only solver; injectable via `&dyn Solver`).
 
 pub mod checker;
+pub mod contract_checker;
 pub mod proof;
 pub mod report;
 pub mod solver;
