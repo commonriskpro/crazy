@@ -23,3 +23,21 @@ Diseño de un lenguaje general-purpose optimizado para LLMs: el humano dirige in
 - `docs/consistency-review.md` — revisión de consistencia.
 
 `ai-native-language-draft.md` queda como archivo histórico/raw.
+
+## Building & Testing
+
+Requires Rust 1.95.0 (pinned via `rust-toolchain.toml`).
+
+```sh
+# Build all crates
+cargo build --workspace
+
+# Run all tests
+cargo test --workspace
+
+# Check for lint violations
+cargo clippy --all-targets -- -D warnings
+
+# Verify formatting
+cargo fmt --check
+```

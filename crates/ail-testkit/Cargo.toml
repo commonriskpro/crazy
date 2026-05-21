@@ -1,0 +1,10 @@
+[package]
+name    = "ail-testkit"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ail-core = { workspace = true }
+
+[lints]
+workspace = true
