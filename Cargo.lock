@@ -70,6 +70,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ail-context"
+version = "0.1.0"
+dependencies = [
+ "ail-core",
+ "ail-storage",
+ "ail-testkit",
+ "blake3",
+ "ciborium",
+ "futures",
+ "serde",
+]
+
+[[package]]
 name = "ail-core"
 version = "0.1.0"
 dependencies = [
