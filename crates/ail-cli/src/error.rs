@@ -9,9 +9,12 @@
 // `NotFound`        — a named artifact (change-id, snapshot-id) was not found.
 // `RebaseRequired`  — apply rejected because base_snapshot_id is stale.
 // `PreflightFailed` — runtime preflight did not pass.
+// `Storage`         — a storage layer error (codec, Postgres, I/O).
 // `Domain`          — any other domain-level failure with a description.
 
 use std::fmt;
+
+use ail_storage::error::StorageError;
 
 /// The unified error type for `ail-cli` operations.
 #[derive(Debug)]
@@ -31,6 +34,8 @@ pub enum CliError {
     },
     /// Runtime preflight did not pass.
     PreflightFailed(String),
+    /// A storage layer operation failed.
+    Storage(StorageError),
     /// Any other domain-level failure with a human-readable description.
     Domain(String),
 }
@@ -48,6 +53,7 @@ impl fmt::Display for CliError {
                 "rebase required: current snapshot is {current_snapshot_id}"
             ),
             CliError::PreflightFailed(msg) => write!(f, "preflight failed: {msg}"),
+            CliError::Storage(e) => write!(f, "storage error: {e}"),
             CliError::Domain(msg) => write!(f, "error: {msg}"),
         }
     }
@@ -56,6 +62,12 @@ impl fmt::Display for CliError {
 impl From<std::io::Error> for CliError {
     fn from(e: std::io::Error) -> Self {
         CliError::Io(e)
+    }
+}
+
+impl From<StorageError> for CliError {
+    fn from(e: StorageError) -> Self {
+        CliError::Storage(e)
     }
 }
 

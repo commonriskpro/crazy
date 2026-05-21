@@ -3,11 +3,13 @@ mod cli;
 mod error;
 mod output;
 mod project;
+mod store;
 
 use error::exit_code;
 
-fn main() {
-    if let Err(err) = cli::run() {
+#[tokio::main]
+async fn main() {
+    if let Err(err) = cli::run().await {
         eprintln!("ail: {err}");
         std::process::exit(exit_code(&err));
     }

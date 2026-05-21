@@ -47,6 +47,12 @@ impl fmt::Display for ObjectId {
     }
 }
 
+impl From<[u8; 32]> for ObjectId {
+    fn from(bytes: [u8; 32]) -> Self {
+        ObjectId(bytes)
+    }
+}
+
 /// Raw bytes of a content-addressed object.
 ///
 /// No schema is assumed; the bytes are typically the CBOR encoding of a

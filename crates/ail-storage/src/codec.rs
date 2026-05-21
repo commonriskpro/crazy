@@ -39,6 +39,7 @@ pub trait ContentCodec {
 ///
 /// Deterministic for fixed-layout Serde structs. See the module-level
 /// determinism contract before using this codec in hash-covered contexts.
+#[derive(Clone)]
 pub struct CborCodec;
 
 impl ContentCodec for CborCodec {
