@@ -56,6 +56,16 @@ fn make_package(name: &str, trust: TrustLevel) -> PackageManifest {
         unsafe_surface: vec![],
         artifact_hashes: vec![],
         build_env_hash: None,
+        handlers: vec![],
+        contracts: vec![],
+        exports: vec![],
+        imports: vec![],
+        boundaries: vec![],
+        license: None,
+        provenance: None,
+        verification_report: None,
+        graph_schema: None,
+        core_ir_schema: None,
     })
 }
 
@@ -190,6 +200,16 @@ fn unsafe_package_blocked_without_approval() {
         }],
         artifact_hashes: vec![],
         build_env_hash: None,
+        handlers: vec![],
+        contracts: vec![],
+        exports: vec![],
+        imports: vec![],
+        boundaries: vec![],
+        license: None,
+        provenance: None,
+        verification_report: None,
+        graph_schema: None,
+        core_ir_schema: None,
     };
     let pkg = PackageManifest::from_def(def);
 

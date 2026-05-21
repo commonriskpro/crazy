@@ -27,6 +27,16 @@ fn make_manifest(name: &str, version: &str, trust: TrustLevel) -> PackageManifes
         unsafe_surface: vec![],
         artifact_hashes: vec![],
         build_env_hash: None,
+        handlers: vec![],
+        contracts: vec![],
+        exports: vec![],
+        imports: vec![],
+        boundaries: vec![],
+        license: None,
+        provenance: None,
+        verification_report: None,
+        graph_schema: None,
+        core_ir_schema: None,
     })
 }
 
