@@ -14,11 +14,7 @@
 // - `report`  — `VerificationState`, `VerificationEntry`, `VerificationReport`
 //               (six-state enum + priority-based summary).
 // - `checker` — `Checker::check(&SemanticGraph) -> VerificationReport`
-//               (pure graph walker; stubbed until PR 2).
-//
-// These modules are scaffolded here for workspace compilation; their full
-// implementations ship in PR 2.
+//               (pure graph walker; no I/O, no mutation).
 
-// PR 2 will add:
-// pub mod checker;
-// pub mod report;
+pub mod checker;
+pub mod report;
