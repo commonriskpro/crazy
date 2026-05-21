@@ -31,11 +31,7 @@ fn canonical_meta() -> CanonicalMeta {
 }
 
 fn graph_node(id: u32, kind: NodeKind, name: &str) -> GraphNode {
-    GraphNode {
-        id: NodeRef(id),
-        kind,
-        name: name.to_string(),
-    }
+    GraphNode::new(NodeRef(id), kind, name)
 }
 
 fn graph_edge(source: u32, target: u32, kind: EdgeKind) -> GraphEdge {

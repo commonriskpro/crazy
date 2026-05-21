@@ -74,9 +74,48 @@ pub enum EdgeKind {
     BreaksIfChanged,
 }
 
+// ── Semantic fact value types ─────────────────────────────────────────────
+
+/// Resolved type information for a `GraphNode`.
+///
+/// Uses only `Vec<String>` (no `HashMap`) to guarantee deterministic CBOR
+/// serialization with `ciborium`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeFacts {
+    /// The nominal type name (e.g., `"Int"`, `"Bool"`, `"Map"`).
+    pub nominal: String,
+    /// Type parameters, in declaration order (e.g., `["Key", "Value"]`).
+    pub generics: Vec<String>,
+}
+
+/// Declared effect row for a `GraphNode`.
+///
+/// Uses `Vec<String>` (no `HashMap`) for CBOR determinism.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectRow {
+    /// Named effects declared on this node (e.g., `["IO", "State"]`).
+    pub effects: Vec<String>,
+}
+
+/// Declared capability requirements for a `GraphNode`.
+///
+/// Uses `Vec<String>` (no `HashMap`) for CBOR determinism.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityReqs {
+    /// Named capability requirements (e.g., `["net:read", "fs:write"]`).
+    pub caps: Vec<String>,
+}
+
 // ── GraphNode ─────────────────────────────────────────────────────────────
 
 /// A typed node in the semantic graph.
+///
+/// # Backward Compatibility
+///
+/// The three optional fact fields (`type_facts`, `effect_row`,
+/// `capability_reqs`) are serialized only when `Some`; absent fields
+/// deserialize as `None`.  This keeps the Phase 1–4 CBOR wire format
+/// byte-identical when all three are `None`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphNode {
     /// Intra-graph identity.
@@ -85,6 +124,44 @@ pub struct GraphNode {
     pub kind: NodeKind,
     /// Human-readable name (e.g., fully qualified symbol name).
     pub name: String,
+    /// Resolved type information, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_facts: Option<TypeFacts>,
+    /// Declared effect row, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_row: Option<EffectRow>,
+    /// Declared capability requirements, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_reqs: Option<CapabilityReqs>,
+}
+
+impl GraphNode {
+    /// Create a new `GraphNode` with all optional fact fields set to `None`.
+    ///
+    /// This is the preferred constructor for all Phase 1–4 code and for new
+    /// nodes that do not yet have resolved type/effect/capability information.
+    /// Using this constructor avoids future struct-literal source-compat breaks
+    /// when additional optional fields are introduced.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef};
+    ///
+    /// let node = GraphNode::new(NodeRef(0), NodeKind::Module, "core");
+    /// assert_eq!(node.name, "core");
+    /// assert!(node.type_facts.is_none());
+    /// ```
+    pub fn new(id: NodeRef, kind: NodeKind, name: impl Into<String>) -> Self {
+        Self {
+            id,
+            kind,
+            name: name.into(),
+            type_facts: None,
+            effect_row: None,
+            capability_reqs: None,
+        }
+    }
 }
 
 // ── GraphEdge ─────────────────────────────────────────────────────────────
@@ -187,11 +264,7 @@ mod tests {
     // ── helpers ───────────────────────────────────────────────────────────
 
     fn node(id: u32, kind: NodeKind, name: &str) -> GraphNode {
-        GraphNode {
-            id: NodeRef(id),
-            kind,
-            name: name.to_string(),
-        }
+        GraphNode::new(NodeRef(id), kind, name)
     }
 
     fn edge(source: u32, target: u32, kind: EdgeKind) -> GraphEdge {

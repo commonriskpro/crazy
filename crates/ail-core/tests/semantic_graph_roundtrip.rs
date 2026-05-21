@@ -40,11 +40,7 @@ fn minimal_graph_roundtrips() {
     let codec = CborCodec;
 
     let original = SemanticGraph {
-        nodes: vec![GraphNode {
-            id: NodeRef(0),
-            kind: NodeKind::Module,
-            name: "root".to_string(),
-        }],
+        nodes: vec![GraphNode::new(NodeRef(0), NodeKind::Module, "root")],
         edges: vec![],
     };
 
@@ -165,11 +161,7 @@ fn unknown_node_kind_discriminant_is_rejected() {
     // Encode a valid minimal graph whose NodeKind::Module variant serializes
     // as the 6-byte CBOR text "Module".
     let original = SemanticGraph {
-        nodes: vec![GraphNode {
-            id: NodeRef(0),
-            kind: NodeKind::Module,
-            name: "root".to_string(),
-        }],
+        nodes: vec![GraphNode::new(NodeRef(0), NodeKind::Module, "root")],
         edges: vec![],
     };
     let bytes = codec.encode(&original).expect("encode must succeed");
@@ -216,11 +208,11 @@ fn snapshot_envelope_uses_object_ids_not_node_refs() {
     // Graph node carries NodeRef(42) — this raw value must NOT appear in
     // the SnapshotEnvelope's storage fields.
     let graph = SemanticGraph {
-        nodes: vec![GraphNode {
-            id: NodeRef(42),
-            kind: NodeKind::Contract,
-            name: "boundary-node".to_string(),
-        }],
+        nodes: vec![GraphNode::new(
+            NodeRef(42),
+            NodeKind::Contract,
+            "boundary-node",
+        )],
         edges: vec![],
     };
 
@@ -301,51 +293,15 @@ fn all_node_and_edge_kind_variants_roundtrip() {
     // 7 edges — one per EdgeKind variant, connecting adjacent node pairs.
     let original = SemanticGraph {
         nodes: vec![
-            GraphNode {
-                id: NodeRef(0),
-                kind: NodeKind::Module,
-                name: "m".to_string(),
-            },
-            GraphNode {
-                id: NodeRef(1),
-                kind: NodeKind::Function,
-                name: "f".to_string(),
-            },
-            GraphNode {
-                id: NodeRef(2),
-                kind: NodeKind::Type,
-                name: "t".to_string(),
-            },
-            GraphNode {
-                id: NodeRef(3),
-                kind: NodeKind::Effect,
-                name: "e".to_string(),
-            },
-            GraphNode {
-                id: NodeRef(4),
-                kind: NodeKind::Capability,
-                name: "c".to_string(),
-            },
-            GraphNode {
-                id: NodeRef(5),
-                kind: NodeKind::Contract,
-                name: "k".to_string(),
-            },
-            GraphNode {
-                id: NodeRef(6),
-                kind: NodeKind::Invariant,
-                name: "i".to_string(),
-            },
-            GraphNode {
-                id: NodeRef(7),
-                kind: NodeKind::Test,
-                name: "s".to_string(),
-            },
-            GraphNode {
-                id: NodeRef(8),
-                kind: NodeKind::Boundary,
-                name: "b".to_string(),
-            },
+            GraphNode::new(NodeRef(0), NodeKind::Module, "m"),
+            GraphNode::new(NodeRef(1), NodeKind::Function, "f"),
+            GraphNode::new(NodeRef(2), NodeKind::Type, "t"),
+            GraphNode::new(NodeRef(3), NodeKind::Effect, "e"),
+            GraphNode::new(NodeRef(4), NodeKind::Capability, "c"),
+            GraphNode::new(NodeRef(5), NodeKind::Contract, "k"),
+            GraphNode::new(NodeRef(6), NodeKind::Invariant, "i"),
+            GraphNode::new(NodeRef(7), NodeKind::Test, "s"),
+            GraphNode::new(NodeRef(8), NodeKind::Boundary, "b"),
         ],
         edges: vec![
             GraphEdge {
@@ -436,11 +392,11 @@ fn all_node_and_edge_kind_variants_roundtrip() {
 #[test]
 fn node_ref_and_object_id_are_distinct_types() {
     let graph = SemanticGraph {
-        nodes: vec![GraphNode {
-            id: NodeRef(42),
-            kind: NodeKind::Contract,
-            name: "boundary-check".to_string(),
-        }],
+        nodes: vec![GraphNode::new(
+            NodeRef(42),
+            NodeKind::Contract,
+            "boundary-check",
+        )],
         edges: vec![],
     };
 

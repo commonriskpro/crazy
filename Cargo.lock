@@ -64,6 +64,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ail-verify"
+version = "0.1.0"
+dependencies = [
+ "ail-core",
+ "ciborium",
+ "serde",
+]
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

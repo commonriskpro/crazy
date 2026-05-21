@@ -22,21 +22,9 @@ pub fn make_semantic_graph() -> ail_core::semantic_graph::SemanticGraph {
 
     SemanticGraph {
         nodes: vec![
-            GraphNode {
-                id: NodeRef(0),
-                kind: NodeKind::Module,
-                name: "core".to_string(),
-            },
-            GraphNode {
-                id: NodeRef(1),
-                kind: NodeKind::Function,
-                name: "run".to_string(),
-            },
-            GraphNode {
-                id: NodeRef(2),
-                kind: NodeKind::Effect,
-                name: "io".to_string(),
-            },
+            GraphNode::new(NodeRef(0), NodeKind::Module, "core"),
+            GraphNode::new(NodeRef(1), NodeKind::Function, "run"),
+            GraphNode::new(NodeRef(2), NodeKind::Effect, "io"),
         ],
         edges: vec![
             GraphEdge {
