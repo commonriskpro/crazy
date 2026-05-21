@@ -133,7 +133,6 @@ pub type RuntimeResult<T> = Result<T, RuntimeError>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ail_package::trust::TrustLevel;
 
     use crate::profile::CapabilityId;
 

@@ -175,7 +175,7 @@ fn unsafe_package_blocked_without_approval() {
     let cap_manifest = empty_manifest("test-module");
     let profile = matching_profile(&wasm, &cap_manifest).with_package_trust(TrustLevel::Unverified);
 
-    let mut def = PackageDef {
+    let def = PackageDef {
         name: "ffi.dangerous".to_string(),
         version: "0.1.0".to_string(),
         trust_level: TrustLevel::Unsafe,
