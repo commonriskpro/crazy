@@ -24,20 +24,40 @@ use crate::model::{
 
 /// Canonical phase ordinal for stable sorting.
 ///
-/// | Phase | Ops                       |
-/// |-------|---------------------------|
-/// |     0 | Create                    |
-/// |     1 | Set, Add, Remove          |
-/// |     2 | Connect                   |
-/// |     3 | Infer                     |
-/// |     4 | Verify                    |
+/// | Phase | Ops |
+/// |-------|-----|
+/// |     0 | Create |
+/// |     1 | Set, Add, Remove, Delete, Disconnect, Rename, Move, Replace |
+/// |     2 | Connect, Bind, Expose, Hide, Grant, Revoke |
+/// |     3 | Infer, Derive, Generate |
+/// |     4 | Assert, Lock, Refactor, Migrate, Approve, Reject, Deprecate, Annotate, Verify |
 fn phase_order(op: &ChangeSetOp) -> u8 {
     match op {
         ChangeSetOp::Create => 0,
-        ChangeSetOp::Set | ChangeSetOp::Add | ChangeSetOp::Remove => 1,
-        ChangeSetOp::Connect => 2,
-        ChangeSetOp::Infer => 3,
-        ChangeSetOp::Verify => 4,
+        ChangeSetOp::Set
+        | ChangeSetOp::Add
+        | ChangeSetOp::Remove
+        | ChangeSetOp::Delete
+        | ChangeSetOp::Disconnect
+        | ChangeSetOp::Rename
+        | ChangeSetOp::Move
+        | ChangeSetOp::Replace => 1,
+        ChangeSetOp::Connect
+        | ChangeSetOp::Bind
+        | ChangeSetOp::Expose
+        | ChangeSetOp::Hide
+        | ChangeSetOp::Grant
+        | ChangeSetOp::Revoke => 2,
+        ChangeSetOp::Infer | ChangeSetOp::Derive | ChangeSetOp::Generate => 3,
+        ChangeSetOp::Assert
+        | ChangeSetOp::Lock
+        | ChangeSetOp::Refactor
+        | ChangeSetOp::Migrate
+        | ChangeSetOp::Approve
+        | ChangeSetOp::Reject
+        | ChangeSetOp::Deprecate
+        | ChangeSetOp::Annotate
+        | ChangeSetOp::Verify => 4,
     }
 }
 

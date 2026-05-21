@@ -173,6 +173,52 @@ fn different_op_sequences_produce_different_canonical_bytes() {
     );
 }
 
+// ── Scenario: new verbs sort to their correct phases ─────────────────────
+// GIVEN a mix of new verbs from phase 1-4
+// WHEN canonicalize is called
+// THEN they appear sorted into canonical phase order
+#[test]
+fn new_verbs_sort_to_correct_canonical_phases() {
+    let cs = changeset(
+        vec![
+            ChangeSetOp::Verify,     // phase 4
+            ChangeSetOp::Derive,     // phase 3
+            ChangeSetOp::Grant,      // phase 2
+            ChangeSetOp::Delete,     // phase 1
+            ChangeSetOp::Annotate,   // phase 4
+            ChangeSetOp::Expose,     // phase 2
+            ChangeSetOp::Disconnect, // phase 1
+            ChangeSetOp::Generate,   // phase 3
+            ChangeSetOp::Create,     // phase 0
+            ChangeSetOp::Assert,     // phase 4
+            ChangeSetOp::Rename,     // phase 1
+            ChangeSetOp::Bind,       // phase 2
+        ],
+        "new verb phase ordering",
+    );
+
+    let canonical = canonicalize(cs);
+    let kinds: Vec<&ChangeSetOp> = canonical.ops.iter().map(|o| &o.kind).collect();
+
+    // phase 0 first
+    assert_eq!(kinds[0], &ChangeSetOp::Create);
+    // phase 1 ops next (Delete, Disconnect, Rename — stable order from input)
+    assert_eq!(kinds[1], &ChangeSetOp::Delete);
+    assert_eq!(kinds[2], &ChangeSetOp::Disconnect);
+    assert_eq!(kinds[3], &ChangeSetOp::Rename);
+    // phase 2 ops (Grant, Expose, Bind — stable order from input)
+    assert_eq!(kinds[4], &ChangeSetOp::Grant);
+    assert_eq!(kinds[5], &ChangeSetOp::Expose);
+    assert_eq!(kinds[6], &ChangeSetOp::Bind);
+    // phase 3 ops (Derive, Generate — stable order from input)
+    assert_eq!(kinds[7], &ChangeSetOp::Derive);
+    assert_eq!(kinds[8], &ChangeSetOp::Generate);
+    // phase 4 ops last (Verify, Annotate, Assert — stable order from input)
+    assert_eq!(kinds[9], &ChangeSetOp::Verify);
+    assert_eq!(kinds[10], &ChangeSetOp::Annotate);
+    assert_eq!(kinds[11], &ChangeSetOp::Assert);
+}
+
 // ── CanonicalMeta is accessible and carries all original fields ───────────
 // Ensures the canonical output preserves author and timestamp alongside
 // the materialized description.
