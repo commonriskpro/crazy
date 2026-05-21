@@ -1,0 +1,17 @@
+[package]
+name    = "ail-dogfood"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ail-change  = { workspace = true }
+ail-context = { workspace = true }
+ail-core    = { workspace = true }
+ail-storage = { workspace = true }
+ail-stdlib  = { workspace = true }
+blake3      = { workspace = true }
+ciborium    = { workspace = true }
+serde       = { workspace = true }
+
+[lints]
+workspace = true
