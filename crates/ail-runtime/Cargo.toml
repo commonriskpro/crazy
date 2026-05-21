@@ -11,9 +11,10 @@ serde       = { workspace = true }
 wasmtime    = { workspace = true }
 
 [dev-dependencies]
-ail-compiler = { workspace = true }
-ail-core     = { workspace = true }
-ail-verify   = { workspace = true }
+ail-compiler  = { workspace = true }
+ail-core      = { workspace = true }
+ail-verify    = { workspace = true }
+wasm-encoder  = { workspace = true }
 
 [lints]
 workspace = true
