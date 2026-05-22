@@ -38,7 +38,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
@@ -104,7 +104,10 @@ pub(crate) struct HostState {
     /// phase without changing the `Store` type.
     pub(crate) handlers: Arc<Vec<Arc<dyn Handler + Send + Sync>>>,
     pub(crate) profile: Arc<RuntimeProfile>,
-    pub(crate) audit_log: AuditLog,
+    /// Shared audit log — same `Arc<Mutex<_>>` as `RuntimeHost::audit_log`.
+    /// Events appended by `dispatch_host_call` (WASM-side) are visible in
+    /// `RuntimeHost::audit_log()` after `invoke` returns.
+    pub(crate) audit_log: Arc<Mutex<AuditLog>>,
     /// Resource limiter enforcing `max_memory_bytes`.
     pub(crate) limiter: StoreLimits,
 }
@@ -206,8 +209,14 @@ impl RuntimeInstance {
         }
     }
 
-    pub fn audit_log(&self) -> &AuditLog {
-        &self.store.data().audit_log
+    /// Return a snapshot of the audit log from the shared log.
+    pub fn audit_log(&self) -> AuditLog {
+        self.store
+            .data()
+            .audit_log
+            .lock()
+            .expect("audit_log lock must not be poisoned")
+            .clone()
     }
 }
 
@@ -259,7 +268,7 @@ impl fmt::Debug for RuntimeInstance {
 pub struct RuntimeHost {
     engine: Engine,
     linker: Linker<HostState>,
-    audit_log: AuditLog,
+    audit_log: Arc<Mutex<AuditLog>>,
     handlers: Vec<Arc<dyn Handler + Send + Sync>>,
     /// Schema registry: capability ID string → CapabilityDefinition.
     schema_registry: HashMap<String, CapabilityDefinition>,
@@ -321,7 +330,7 @@ impl RuntimeHost {
         RuntimeHost {
             engine,
             linker,
-            audit_log: AuditLog::new(),
+            audit_log: Arc::new(Mutex::new(AuditLog::new())),
             handlers: Vec::new(),
             schema_registry: HashMap::new(),
             current_profile: None,
@@ -352,9 +361,16 @@ impl RuntimeHost {
         self
     }
 
-    /// Read-only access to the accumulated audit log.
-    pub fn audit_log(&self) -> &AuditLog {
-        &self.audit_log
+    /// Return a snapshot of the accumulated audit log.
+    ///
+    /// Includes events from both host-side (`call_capability`) and WASM-side
+    /// (`dispatch_host_call`) dispatches, since both share the same
+    /// `Arc<Mutex<AuditLog>>`.
+    pub fn audit_log(&self) -> AuditLog {
+        self.audit_log
+            .lock()
+            .expect("audit_log lock must not be poisoned")
+            .clone()
     }
 
     /// Preflight-check and instantiate a WASM module.
@@ -390,7 +406,10 @@ impl RuntimeHost {
     ) -> RuntimeResult<RuntimeInstance> {
         let result = self.preflight_inner(wasm, manifest, profile, package_manifests);
         let event = Self::build_audit_event(&result, profile, wasm);
-        self.audit_log.push(event);
+        self.audit_log
+            .lock()
+            .expect("audit_log lock")
+            .push(event);
         if result.is_ok() {
             self.current_profile = Some(Arc::new(profile.clone()));
             self.current_module_name = Some(manifest.module.clone());
@@ -426,13 +445,16 @@ impl RuntimeHost {
                 message: format!("CapabilityDenied: {}", capability.as_str()),
             };
             let duration_us = start.elapsed().as_micros() as u64;
-            self.audit_log.push(AuditEvent::CapabilityCallExecuted {
-                capability: capability.clone(),
-                operation: operation.to_string(),
-                handler_name: "none".to_string(),
-                succeeded: false,
-                duration_us,
-            });
+            self.audit_log
+                .lock()
+                .expect("audit_log lock")
+                .push(AuditEvent::CapabilityCallExecuted {
+                    capability: capability.clone(),
+                    operation: operation.to_string(),
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us,
+                });
             return Err(err);
         }
 
@@ -447,13 +469,16 @@ impl RuntimeHost {
                     ),
                 };
                 let duration_us = start.elapsed().as_micros() as u64;
-                self.audit_log.push(AuditEvent::CapabilityCallExecuted {
-                    capability: capability.clone(),
-                    operation: operation.to_string(),
-                    handler_name: "none".to_string(),
-                    succeeded: false,
-                    duration_us,
-                });
+                self.audit_log
+                    .lock()
+                    .expect("audit_log lock")
+                    .push(AuditEvent::CapabilityCallExecuted {
+                        capability: capability.clone(),
+                        operation: operation.to_string(),
+                        handler_name: "none".to_string(),
+                        succeeded: false,
+                        duration_us,
+                    });
                 return Err(err);
             }
         }
@@ -469,13 +494,16 @@ impl RuntimeHost {
                 message: format!("HandlerNotBound: {}", capability.as_str()),
             };
             let duration_us = start.elapsed().as_micros() as u64;
-            self.audit_log.push(AuditEvent::CapabilityCallExecuted {
-                capability: capability.clone(),
-                operation: operation.to_string(),
-                handler_name: "none".to_string(),
-                succeeded: false,
-                duration_us,
-            });
+            self.audit_log
+                .lock()
+                .expect("audit_log lock")
+                .push(AuditEvent::CapabilityCallExecuted {
+                    capability: capability.clone(),
+                    operation: operation.to_string(),
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us,
+                });
             return Err(err);
         };
 
@@ -487,13 +515,16 @@ impl RuntimeHost {
         let succeeded = result.is_ok();
 
         // Step 5: audit.
-        self.audit_log.push(AuditEvent::CapabilityCallExecuted {
-            capability: capability.clone(),
-            operation: operation.to_string(),
-            handler_name,
-            succeeded,
-            duration_us,
-        });
+        self.audit_log
+            .lock()
+            .expect("audit_log lock")
+            .push(AuditEvent::CapabilityCallExecuted {
+                capability: capability.clone(),
+                operation: operation.to_string(),
+                handler_name,
+                succeeded,
+                duration_us,
+            });
 
         result
     }
@@ -591,7 +622,13 @@ impl RuntimeHost {
         // Build per-capability summaries from CapabilityCallExecuted events.
         let mut totals: HashMap<String, (u32, u32, u32)> = HashMap::new(); // cap → (total, ok, err)
 
-        for event in self.audit_log.events() {
+        let log_snapshot = self
+            .audit_log
+            .lock()
+            .expect("audit_log lock")
+            .clone();
+
+        for event in log_snapshot.events() {
             if let AuditEvent::CapabilityCallExecuted {
                 capability,
                 succeeded,
@@ -620,9 +657,8 @@ impl RuntimeHost {
 
         // Compute audit log hash: BLAKE3 over the concatenation of all event
         // debug representations (stable, deterministic for the same event set).
-        let audit_log_hash = if !self.audit_log.is_empty() {
-            let serialized: String = self
-                .audit_log
+        let audit_log_hash = if !log_snapshot.is_empty() {
+            let serialized: String = log_snapshot
                 .events()
                 .iter()
                 .map(|e| format!("{e:?}"))
@@ -954,13 +990,17 @@ fn dispatch_host_call(
     let handler = {
         let state = caller.data_mut();
         if !state.profile.grants_capability(&cap) {
-            state.audit_log.push(AuditEvent::CapabilityCallExecuted {
-                capability: cap,
-                operation,
-                handler_name: "none".to_string(),
-                succeeded: false,
-                duration_us: start.elapsed().as_micros() as u64,
-            });
+            state
+                .audit_log
+                .lock()
+                .expect("audit_log lock")
+                .push(AuditEvent::CapabilityCallExecuted {
+                    capability: cap,
+                    operation,
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us: start.elapsed().as_micros() as u64,
+                });
             return Some(-1);
         }
         state
@@ -974,6 +1014,8 @@ fn dispatch_host_call(
         caller
             .data_mut()
             .audit_log
+            .lock()
+            .expect("audit_log lock")
             .push(AuditEvent::CapabilityCallExecuted {
                 capability: cap,
                 operation,
@@ -990,6 +1032,8 @@ fn dispatch_host_call(
     caller
         .data_mut()
         .audit_log
+        .lock()
+        .expect("audit_log lock")
         .push(AuditEvent::CapabilityCallExecuted {
             capability: cap,
             operation,

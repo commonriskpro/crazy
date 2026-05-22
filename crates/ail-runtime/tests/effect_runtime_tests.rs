@@ -133,7 +133,8 @@ end
     assert_eq!(result, RuntimeValue::I64(42));
     assert_eq!(handler.calls(), 1);
 
-    let events = instance.audit_log().events();
+    let audit = instance.audit_log();
+    let events = audit.events();
     assert!(events.iter().any(|event| matches!(
         event,
         AuditEvent::CapabilityCallExecuted {

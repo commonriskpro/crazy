@@ -178,7 +178,8 @@ fn wasm_with_import_and_handler_dispatches_capability() {
     let result = host.call_capability(&cap, "read", &[]);
     assert_eq!(result, Ok(b"result-bytes".to_vec()));
 
-    let events = host.audit_log().events();
+    let audit = host.audit_log();
+    let events = audit.events();
     assert_eq!(events.len(), 2);
     assert!(events[0].is_passed());
     assert!(events[1].is_capability_call());

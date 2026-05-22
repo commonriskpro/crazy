@@ -80,7 +80,8 @@ fn handler_dispatches_canned_response() {
     );
 
     // Audit log: 1 preflight passed + 1 capability call executed
-    let events = host.audit_log().events();
+    let audit = host.audit_log();
+    let events = audit.events();
     assert_eq!(events.len(), 2);
     assert!(events[0].is_passed(), "first event must be PreflightPassed");
     assert!(
@@ -133,7 +134,8 @@ fn missing_handler_returns_handler_not_bound() {
     );
 
     // Audit: preflight passed + capability call failed
-    let events = host.audit_log().events();
+    let audit = host.audit_log();
+    let events = audit.events();
     assert_eq!(events.len(), 2);
     match &events[1] {
         AuditEvent::CapabilityCallExecuted { succeeded, .. } => {
@@ -181,7 +183,8 @@ fn ungranted_capability_denied_at_dispatch() {
     );
 
     // Audit: capability call event with succeeded=false
-    let events = host.audit_log().events();
+    let audit = host.audit_log();
+    let events = audit.events();
     let cap_events: Vec<_> = events.iter().filter(|e| e.is_capability_call()).collect();
     assert_eq!(cap_events.len(), 1);
     match cap_events[0] {
@@ -222,7 +225,8 @@ fn preflight_handler_binding_check_fails_when_no_handler() {
     }
 
     // Audit: one PreflightFailed event
-    let events = host.audit_log().events();
+    let audit = host.audit_log();
+    let events = audit.events();
     assert_eq!(events.len(), 1);
     assert!(!events[0].is_passed());
 }
@@ -322,7 +326,8 @@ fn multiple_capability_calls_accumulate_audit_events() {
     let _ = host.call_capability(&cap_a, "read", &[]);
     let _ = host.call_capability(&cap_b, "write", b"payload");
 
-    let events = host.audit_log().events();
+    let audit = host.audit_log();
+    let events = audit.events();
     // 1 preflight + 2 capability calls = 3 events
     assert_eq!(events.len(), 3, "must have exactly 3 audit events");
     assert!(events[0].is_passed());
