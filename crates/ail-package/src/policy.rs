@@ -118,6 +118,43 @@ impl TrustGate {
     }
 }
 
+// ── UnsafeSurfaceApproval / UnsafeSurfacePolicyEnforcer ───────────────────
+
+/// An explicit approval for one entry in a package's `unsafe_surface` list.
+///
+/// Policy can allow specific unsafe surface items via approval records.
+/// See `docs/packages.md` §Unsafe packages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnsafeSurfaceApproval {
+    /// The `name` field of the approved `UnsafeSurfaceEntry`.
+    pub surface_id: String,
+}
+
+/// Enforces that every declared unsafe surface entry has an explicit approval.
+pub struct UnsafeSurfacePolicyEnforcer;
+
+impl UnsafeSurfacePolicyEnforcer {
+    /// Return the surface IDs of `declared` entries that have no matching
+    /// approval in `approvals`.
+    ///
+    /// An entry is approved when its `name` field matches an
+    /// `UnsafeSurfaceApproval::surface_id`.
+    pub fn check(
+        declared: &[crate::surface::UnsafeSurfaceEntry],
+        approvals: &[UnsafeSurfaceApproval],
+    ) -> Vec<String> {
+        declared
+            .iter()
+            .filter(|entry| {
+                !approvals
+                    .iter()
+                    .any(|approval| approval.surface_id == entry.name)
+            })
+            .map(|entry| entry.name.clone())
+            .collect()
+    }
+}
+
 // ── CapabilityPolicy ──────────────────────────────────────────────────────
 
 /// A policy rule for capability requests.
@@ -425,5 +462,57 @@ mod tests {
         ciborium::ser::into_writer(&p, &mut buf).expect("encode");
         let decoded: CapabilityPolicy = ciborium::de::from_reader(buf.as_slice()).expect("decode");
         assert_eq!(decoded, p);
+    }
+
+    // ── B3: UnsafeSurfacePolicy ────────────────────────────────────────────
+
+    fn make_surface_entry(name: &str) -> crate::surface::UnsafeSurfaceEntry {
+        crate::surface::UnsafeSurfaceEntry {
+            kind: "ffi".to_string(),
+            name: name.to_string(),
+            description: "test".to_string(),
+        }
+    }
+
+    // Spec PKG-UNSAFE-1: unapproved surface entry → violation
+    #[test]
+    fn unsafe_surface_unapproved_entry_produces_violation() {
+        let surface = vec![make_surface_entry("fn.native_hash")];
+        let violations = UnsafeSurfacePolicyEnforcer::check(&surface, &[]);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0], "fn.native_hash");
+    }
+
+    // Spec PKG-UNSAFE-1: approved surface entry → no violation
+    #[test]
+    fn unsafe_surface_approved_entry_produces_no_violation() {
+        let surface = vec![make_surface_entry("fn.native_hash")];
+        let approvals = vec![UnsafeSurfaceApproval {
+            surface_id: "fn.native_hash".to_string(),
+        }];
+        let violations = UnsafeSurfacePolicyEnforcer::check(&surface, &approvals);
+        assert!(violations.is_empty());
+    }
+
+    // Spec PKG-UNSAFE-1: empty surface → no violation
+    #[test]
+    fn unsafe_surface_empty_surface_no_violation() {
+        let violations = UnsafeSurfacePolicyEnforcer::check(&[], &[]);
+        assert!(violations.is_empty());
+    }
+
+    // Spec PKG-UNSAFE-1: multiple entries mixed → only unapproved returned
+    #[test]
+    fn unsafe_surface_mixed_entries_only_unapproved_returned() {
+        let surface = vec![
+            make_surface_entry("fn.approved_fn"),
+            make_surface_entry("fn.unapproved_fn"),
+        ];
+        let approvals = vec![UnsafeSurfaceApproval {
+            surface_id: "fn.approved_fn".to_string(),
+        }];
+        let violations = UnsafeSurfacePolicyEnforcer::check(&surface, &approvals);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0], "fn.unapproved_fn");
     }
 }

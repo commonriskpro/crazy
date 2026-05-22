@@ -1017,3 +1017,155 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
 
     reg
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ail_core::semantic_graph::NodeKind;
+
+    fn has_function_entry(id: &str) -> bool {
+        let reg = v1_registry_with_functions();
+        reg.entries
+            .iter()
+            .any(|e| e.id.0 == id && e.kind == NodeKind::Function)
+    }
+
+    fn has_capability_effect(id: &str) -> bool {
+        let reg = v1_registry_with_functions();
+        reg.entries.iter().any(|e| {
+            e.id.0 == id
+                && e.kind == NodeKind::Function
+                && e.effect_row.is_some()
+                && e.capability_reqs.is_some()
+        })
+    }
+
+    // A7: crypto pure function entries
+    #[test]
+    fn v1_contains_crypto_hash() {
+        assert!(
+            has_function_entry("std.crypto.hash"),
+            "std.crypto.hash must be present"
+        );
+    }
+
+    #[test]
+    fn v1_contains_crypto_hmac() {
+        assert!(
+            has_function_entry("std.crypto.hmac"),
+            "std.crypto.hmac must be present"
+        );
+    }
+
+    #[test]
+    fn v1_contains_crypto_constant_time_eq() {
+        assert!(has_function_entry("std.crypto.constant_time_eq"));
+    }
+
+    // A7: encoding pure function entries
+    #[test]
+    fn v1_contains_encoding_base64_encode() {
+        assert!(has_function_entry("std.encoding.base64_encode"));
+    }
+
+    #[test]
+    fn v1_contains_encoding_base64_decode() {
+        assert!(has_function_entry("std.encoding.base64_decode"));
+    }
+
+    #[test]
+    fn v1_contains_encoding_hex_encode() {
+        assert!(has_function_entry("std.encoding.hex_encode"));
+    }
+
+    #[test]
+    fn v1_contains_encoding_hex_decode() {
+        assert!(has_function_entry("std.encoding.hex_decode"));
+    }
+
+    // A7: json pure function entries
+    #[test]
+    fn v1_contains_json_parse() {
+        assert!(has_function_entry("std.json.parse"));
+    }
+
+    #[test]
+    fn v1_contains_json_stringify() {
+        assert!(has_function_entry("std.json.stringify"));
+    }
+
+    // A7: numeric narrowing entries
+    #[test]
+    fn v1_contains_numeric_narrow_to_i32() {
+        assert!(has_function_entry("std.numeric.narrow_to_i32"));
+    }
+
+    #[test]
+    fn v1_contains_numeric_narrow_to_u32() {
+        assert!(has_function_entry("std.numeric.narrow_to_u32"));
+    }
+
+    // A7: capability (effectful) entries for io
+    #[test]
+    fn v1_contains_io_read_with_effect() {
+        assert!(
+            has_capability_effect("std.io.read"),
+            "std.io.read must have effect_row and capability_reqs"
+        );
+    }
+
+    #[test]
+    fn v1_contains_io_write_with_effect() {
+        assert!(has_capability_effect("std.io.write"));
+    }
+
+    #[test]
+    fn v1_contains_io_flush_with_effect() {
+        assert!(has_capability_effect("std.io.flush"));
+    }
+
+    // A7: capability entries for fs
+    #[test]
+    fn v1_contains_fs_open_with_effect() {
+        assert!(has_capability_effect("std.fs.open"));
+    }
+
+    #[test]
+    fn v1_contains_fs_read_with_effect() {
+        assert!(has_capability_effect("std.fs.read"));
+    }
+
+    #[test]
+    fn v1_contains_fs_write_with_effect() {
+        assert!(has_capability_effect("std.fs.write"));
+    }
+
+    // A7: capability entries for env
+    #[test]
+    fn v1_contains_env_get_with_effect() {
+        assert!(has_capability_effect("std.env.get"));
+    }
+
+    #[test]
+    fn v1_contains_env_set_with_effect() {
+        assert!(has_capability_effect("std.env.set"));
+    }
+
+    // A7: capability entries for log and trace
+    #[test]
+    fn v1_contains_log_log_with_effect() {
+        assert!(has_capability_effect("std.log.log"));
+    }
+
+    #[test]
+    fn v1_contains_trace_span_with_effect() {
+        assert!(has_capability_effect("std.trace.span"));
+    }
+
+    #[test]
+    fn v1_contains_trace_event_with_effect() {
+        assert!(has_capability_effect("std.trace.event"));
+    }
+}

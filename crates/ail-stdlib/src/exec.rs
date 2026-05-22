@@ -7,9 +7,10 @@
 // pointers, while effectful functions carry a capability + operation pair for
 // runtime handler dispatch.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use crate::{crypto, text};
+use crate::{crypto, encoding, json, text};
 
 /// Runtime value shape understood by the stdlib executable dispatch layer.
 #[derive(Clone, Debug)]
@@ -89,6 +90,193 @@ impl std::error::Error for StdlibExecError {}
 
 pub type PureStdlibFn = fn(&[StdlibValue]) -> Result<StdlibValue, StdlibExecError>;
 
+// ── StdlibCapabilityDispatch ──────────────────────────────────────────────
+
+/// Trait for dispatching stdlib capability calls to a host implementation.
+///
+/// Implementors provide in-memory or runtime-backed services for effectful
+/// stdlib operations (clock, env, io, fs, log, trace, random).
+pub trait StdlibCapabilityDispatch {
+    fn call(
+        &self,
+        capability: &str,
+        operation: &str,
+        args: &[StdlibValue],
+    ) -> Result<StdlibValue, StdlibExecError>;
+}
+
+// ── InMemoryCapabilityHost ────────────────────────────────────────────────
+
+/// Deterministic in-memory host for testing effectful stdlib functions.
+///
+/// Builder pattern:
+/// ```
+/// # use ail_stdlib::exec::InMemoryCapabilityHost;
+/// let host = InMemoryCapabilityHost::new()
+///     .with_env("PORT", "8080")
+///     .with_fixed_clock(0);
+/// ```
+pub struct InMemoryCapabilityHost {
+    env: BTreeMap<String, String>,
+    files: BTreeMap<String, Vec<u8>>,
+    stdout: RefCell<Vec<u8>>,
+    logs: RefCell<Vec<(String, String)>>,
+    fixed_clock: Option<i64>,
+    rng_seed: u64,
+}
+
+impl InMemoryCapabilityHost {
+    pub fn new() -> Self {
+        Self {
+            env: BTreeMap::new(),
+            files: BTreeMap::new(),
+            stdout: RefCell::new(Vec::new()),
+            logs: RefCell::new(Vec::new()),
+            fixed_clock: None,
+            rng_seed: 0,
+        }
+    }
+
+    pub fn with_env(mut self, key: &str, value: &str) -> Self {
+        self.env.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    pub fn with_file(mut self, path: &str, content: &[u8]) -> Self {
+        self.files.insert(path.to_string(), content.to_vec());
+        self
+    }
+
+    pub fn with_fixed_clock(mut self, epoch_ms: i64) -> Self {
+        self.fixed_clock = Some(epoch_ms);
+        self
+    }
+
+    pub fn with_rng_seed(mut self, seed: u64) -> Self {
+        self.rng_seed = seed;
+        self
+    }
+
+    /// Retrieve captured stdout bytes.
+    pub fn stdout_bytes(&self) -> Vec<u8> {
+        self.stdout.borrow().clone()
+    }
+
+    /// Retrieve captured log entries.
+    pub fn log_entries(&self) -> Vec<(String, String)> {
+        self.logs.borrow().clone()
+    }
+}
+
+impl Default for InMemoryCapabilityHost {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StdlibCapabilityDispatch for InMemoryCapabilityHost {
+    fn call(
+        &self,
+        capability: &str,
+        operation: &str,
+        args: &[StdlibValue],
+    ) -> Result<StdlibValue, StdlibExecError> {
+        match (capability, operation) {
+            // ── clock ─────────────────────────────────────────────────────
+            ("clock.now", "now") => Ok(StdlibValue::Int(
+                self.fixed_clock.unwrap_or(0),
+            )),
+
+            // ── env.read ──────────────────────────────────────────────────
+            ("env.read", "get") => {
+                let StdlibValue::Text(key) = args.first().ok_or(StdlibExecError::Arity {
+                    expected: 1,
+                    actual: 0,
+                })? else {
+                    return Err(StdlibExecError::Type { expected: "Text" });
+                };
+                Ok(StdlibValue::Option(
+                    self.env
+                        .get(key)
+                        .cloned()
+                        .map(|v| Box::new(StdlibValue::Text(v))),
+                ))
+            }
+            ("env.read", "list") => {
+                let map = self
+                    .env
+                    .iter()
+                    .map(|(k, v)| (k.clone(), StdlibValue::Text(v.clone())))
+                    .collect();
+                Ok(StdlibValue::Map(map))
+            }
+
+            // ── env.write ─────────────────────────────────────────────────
+            // env.write.set is a no-op in InMemoryCapabilityHost (cannot set OS env)
+            ("env.write", "set") => Ok(StdlibValue::Unit),
+
+            // ── io.stdin ──────────────────────────────────────────────────
+            ("io.stdin", "read") => Ok(StdlibValue::Bytes(vec![])),
+
+            // ── io.stdout ─────────────────────────────────────────────────
+            ("io.stdout", "write") => {
+                let StdlibValue::Bytes(bytes) = args.first().ok_or(StdlibExecError::Arity {
+                    expected: 1,
+                    actual: 0,
+                })? else {
+                    return Err(StdlibExecError::Type { expected: "Bytes" });
+                };
+                let len = bytes.len() as i64;
+                self.stdout.borrow_mut().extend_from_slice(bytes);
+                Ok(StdlibValue::Int(len))
+            }
+            ("io.stdout", "flush") => Ok(StdlibValue::Unit),
+
+            // ── file.read ─────────────────────────────────────────────────
+            ("file.read", "read") | ("file.read", "open") | ("file.read", "stat") => {
+                let StdlibValue::Text(path) = args.first().ok_or(StdlibExecError::Arity {
+                    expected: 1,
+                    actual: 0,
+                })? else {
+                    return Err(StdlibExecError::Type { expected: "Text" });
+                };
+                match (operation, self.files.get(path)) {
+                    ("read", Some(content)) => Ok(StdlibValue::Bytes(content.clone())),
+                    ("open", _) => Ok(StdlibValue::Unit),
+                    ("stat", _) => Ok(StdlibValue::Unit),
+                    _ => Err(StdlibExecError::Message(format!("file not found: {path}"))),
+                }
+            }
+            ("file.write", "write") => Ok(StdlibValue::Unit),
+            ("file.delete", "delete") => Ok(StdlibValue::Unit),
+            ("file.list", "list") => Ok(StdlibValue::List(vec![])),
+
+            // ── log.write ─────────────────────────────────────────────────
+            ("log.write", "log") => {
+                if let (Some(StdlibValue::Text(level)), Some(StdlibValue::Text(msg))) =
+                    (args.first(), args.get(1))
+                {
+                    self.logs.borrow_mut().push((level.clone(), msg.clone()));
+                }
+                Ok(StdlibValue::Unit)
+            }
+
+            // ── trace.emit ────────────────────────────────────────────────
+            ("trace.emit", "span") => Ok(StdlibValue::Text("span-0".to_string())),
+            ("trace.emit", "event") => Ok(StdlibValue::Unit),
+
+            // ── random ────────────────────────────────────────────────────
+            ("random.int", "next_int") => Ok(StdlibValue::Int(self.rng_seed as i64)),
+            ("random.float", "next_float") => Ok(StdlibValue::Float(self.rng_seed as f64 / 1000.0)),
+
+            _ => Err(StdlibExecError::CapabilityRequired {
+                capability: capability.to_string(),
+                operation: operation.to_string(),
+            }),
+        }
+    }
+}
+
 /// Executable implementation behind a stdlib function entry.
 #[derive(Clone, Copy)]
 pub enum FunctionImpl {
@@ -111,17 +299,38 @@ pub struct FunctionEntry {
 }
 
 impl FunctionEntry {
-    pub fn call(&self, args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    /// Execute this function, optionally routing capability calls through `host`.
+    ///
+    /// For pure functions, `host` is ignored.
+    /// For capability-backed functions:
+    /// - If `host` is `Some`, dispatches to `host.call(capability, operation, args)`.
+    /// - If `host` is `None`, returns `CapabilityRequired`.
+    pub fn call_with_host(
+        &self,
+        args: &[StdlibValue],
+        host: Option<&dyn StdlibCapabilityDispatch>,
+    ) -> Result<StdlibValue, StdlibExecError> {
         match self.implementation {
             FunctionImpl::Pure(function) => function(args),
             FunctionImpl::Capability {
                 capability,
                 operation,
-            } => Err(StdlibExecError::CapabilityRequired {
-                capability: capability.to_string(),
-                operation: operation.to_string(),
-            }),
+            } => match host {
+                Some(h) => h.call(capability, operation, args),
+                None => Err(StdlibExecError::CapabilityRequired {
+                    capability: capability.to_string(),
+                    operation: operation.to_string(),
+                }),
+            },
         }
+    }
+
+    /// Execute this function without a capability host.
+    ///
+    /// For capability-backed functions this always returns `CapabilityRequired`.
+    /// Use [`call_with_host`](Self::call_with_host) when a host is available.
+    pub fn call(&self, args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+        self.call_with_host(args, None)
     }
 }
 
@@ -311,6 +520,86 @@ pub fn stdlib_function_entries() -> Vec<FunctionEntry> {
             &["Bytes"],
             "Bytes",
             crypto_hash,
+        ),
+        pure(
+            "std.crypto.hmac",
+            "std.crypto",
+            "hmac",
+            &["Bytes", "Bytes"],
+            "Bytes",
+            crypto_hmac,
+        ),
+        pure(
+            "std.crypto.constant_time_eq",
+            "std.crypto",
+            "constant_time_eq",
+            &["Bytes", "Bytes"],
+            "Bool",
+            crypto_constant_time_eq,
+        ),
+        pure(
+            "std.encoding.base64_encode",
+            "std.encoding",
+            "base64_encode",
+            &["Bytes"],
+            "Text",
+            encoding_base64_encode,
+        ),
+        pure(
+            "std.encoding.base64_decode",
+            "std.encoding",
+            "base64_decode",
+            &["Text"],
+            "Result<Bytes, DecodeError>",
+            encoding_base64_decode,
+        ),
+        pure(
+            "std.encoding.hex_encode",
+            "std.encoding",
+            "hex_encode",
+            &["Bytes"],
+            "Text",
+            encoding_hex_encode,
+        ),
+        pure(
+            "std.encoding.hex_decode",
+            "std.encoding",
+            "hex_decode",
+            &["Text"],
+            "Result<Bytes, DecodeError>",
+            encoding_hex_decode,
+        ),
+        pure(
+            "std.json.parse",
+            "std.json",
+            "parse",
+            &["Text"],
+            "Result<Json, DecodeError>",
+            json_parse,
+        ),
+        pure(
+            "std.json.stringify",
+            "std.json",
+            "stringify",
+            &["Map"],
+            "Text",
+            json_stringify,
+        ),
+        pure(
+            "std.numeric.narrow_to_i32",
+            "std.numeric",
+            "narrow_to_i32",
+            &["Int"],
+            "Result<Int32, ArithError>",
+            numeric_narrow_to_i32,
+        ),
+        pure(
+            "std.numeric.narrow_to_u32",
+            "std.numeric",
+            "narrow_to_u32",
+            &["Int"],
+            "Result<UInt32, ArithError>",
+            numeric_narrow_to_u32,
         ),
         capability(
             "std.time.now",
@@ -909,5 +1198,509 @@ fn crypto_hash(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     match &args[0] {
         StdlibValue::Bytes(bytes) => Ok(StdlibValue::Bytes(crypto::Hash::blake3(bytes).0.to_vec())),
         _ => Err(StdlibExecError::Type { expected: "Bytes" }),
+    }
+}
+
+fn crypto_hmac(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Bytes(key), StdlibValue::Bytes(msg)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Bytes, Bytes" });
+    };
+    Ok(StdlibValue::Bytes(
+        crypto::Hmac::compute(key, msg).0.to_vec(),
+    ))
+}
+
+fn crypto_constant_time_eq(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Bytes(a), StdlibValue::Bytes(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Bytes, Bytes" });
+    };
+    Ok(StdlibValue::Bool(crypto::constant_time_eq(a, b)))
+}
+
+fn encoding_base64_encode(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Bytes(bytes) => Ok(StdlibValue::Text(encoding::base64_encode(bytes))),
+        _ => Err(StdlibExecError::Type { expected: "Bytes" }),
+    }
+}
+
+fn encoding_base64_decode(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Text(s) => Ok(StdlibValue::Result(
+            encoding::base64_decode(s)
+                .map(|bytes| Box::new(StdlibValue::Bytes(bytes)))
+                .map_err(|e| Box::new(StdlibValue::Text(e.0))),
+        )),
+        _ => Err(StdlibExecError::Type { expected: "Text" }),
+    }
+}
+
+fn encoding_hex_encode(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Bytes(bytes) => Ok(StdlibValue::Text(encoding::hex_encode(bytes))),
+        _ => Err(StdlibExecError::Type { expected: "Bytes" }),
+    }
+}
+
+fn encoding_hex_decode(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Text(s) => Ok(StdlibValue::Result(
+            encoding::hex_decode(s)
+                .map(|bytes| Box::new(StdlibValue::Bytes(bytes)))
+                .map_err(|e| Box::new(StdlibValue::Text(e.0))),
+        )),
+        _ => Err(StdlibExecError::Type { expected: "Text" }),
+    }
+}
+
+/// Convert a `json::Json` value into a `StdlibValue`.
+fn json_to_stdlib(v: json::Json) -> StdlibValue {
+    match v {
+        json::Json::Null => StdlibValue::Unit,
+        json::Json::Bool(b) => StdlibValue::Bool(b),
+        json::Json::Number(n) => {
+            if n.fract() == 0.0 && n >= i64::MIN as f64 && n <= i64::MAX as f64 {
+                StdlibValue::Int(n as i64)
+            } else {
+                StdlibValue::Float(n)
+            }
+        }
+        json::Json::Str(s) => StdlibValue::Text(s),
+        json::Json::Array(arr) => {
+            StdlibValue::List(arr.into_iter().map(json_to_stdlib).collect())
+        }
+        json::Json::Object(map) => StdlibValue::Map(
+            map.into_iter()
+                .map(|(k, v)| (k, json_to_stdlib(v)))
+                .collect(),
+        ),
+    }
+}
+
+/// Convert a `StdlibValue` into a `json::Json` for stringification.
+fn stdlib_to_json(v: &StdlibValue) -> json::Json {
+    match v {
+        StdlibValue::Unit => json::Json::Null,
+        StdlibValue::Bool(b) => json::Json::Bool(*b),
+        StdlibValue::Int(n) => json::Json::Number(*n as f64),
+        StdlibValue::Float(f) => json::Json::Number(*f),
+        StdlibValue::Text(s) => json::Json::Str(s.clone()),
+        StdlibValue::Bytes(b) => json::Json::Str(encoding::hex_encode(b)),
+        StdlibValue::List(items) => {
+            json::Json::Array(items.iter().map(stdlib_to_json).collect())
+        }
+        StdlibValue::Map(map) => json::Json::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), stdlib_to_json(v)))
+                .collect(),
+        ),
+        StdlibValue::Option(None) => json::Json::Null,
+        StdlibValue::Option(Some(v)) => stdlib_to_json(v),
+        StdlibValue::Result(Ok(v)) => stdlib_to_json(v),
+        StdlibValue::Result(Err(e)) => stdlib_to_json(e),
+        StdlibValue::Function(_) => json::Json::Null,
+    }
+}
+
+fn json_parse(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Text(s) => Ok(StdlibValue::Result(
+            json::parse(s)
+                .map(|v| Box::new(json_to_stdlib(v)))
+                .map_err(|e| Box::new(StdlibValue::Text(e.0))),
+        )),
+        _ => Err(StdlibExecError::Type { expected: "Text" }),
+    }
+}
+
+fn json_stringify(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    Ok(StdlibValue::Text(json::stringify(&stdlib_to_json(&args[0]))))
+}
+
+fn numeric_narrow_to_i32(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match args[0] {
+        StdlibValue::Int(n) => Ok(StdlibValue::Result(
+            i32::try_from(n)
+                .map(|v| Box::new(StdlibValue::Int(v as i64)))
+                .map_err(|e| Box::new(StdlibValue::Text(e.to_string()))),
+        )),
+        _ => Err(StdlibExecError::Type { expected: "Int" }),
+    }
+}
+
+fn numeric_narrow_to_u32(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match args[0] {
+        StdlibValue::Int(n) => Ok(StdlibValue::Result(
+            u32::try_from(n)
+                .map(|v| Box::new(StdlibValue::Int(v as i64)))
+                .map_err(|e| Box::new(StdlibValue::Text(e.to_string()))),
+        )),
+        _ => Err(StdlibExecError::Type { expected: "Int" }),
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── A1: StdlibCapabilityDispatch trait contract ───────────────────────
+
+    // Spec STDLIB-CAP-1:
+    //   GIVEN a capability-backed FunctionEntry
+    //   WHEN call_with_host() is called with a host
+    //   THEN the host is dispatched
+    #[test]
+    fn dispatch_routes_to_host_when_host_provided() {
+        let entry = capability(
+            "std.time.now",
+            "std.time",
+            "now",
+            &[],
+            "Instant",
+            "clock.now",
+            "now",
+        );
+        let host = InMemoryCapabilityHost::new().with_fixed_clock(12345);
+        let result = entry.call_with_host(&[], Some(&host));
+        assert_eq!(result, Ok(StdlibValue::Int(12345)));
+    }
+
+    // Spec STDLIB-CAP-1:
+    //   WHEN no host is provided
+    //   THEN returns CapabilityRequired error
+    #[test]
+    fn returns_capability_required_when_no_host() {
+        let entry = capability(
+            "std.time.now",
+            "std.time",
+            "now",
+            &[],
+            "Instant",
+            "clock.now",
+            "now",
+        );
+        let result = entry.call_with_host(&[], None);
+        assert!(
+            matches!(
+                result,
+                Err(StdlibExecError::CapabilityRequired {
+                    ref capability,
+                    ref operation,
+                }) if capability == "clock.now" && operation == "now"
+            ),
+            "no host must produce CapabilityRequired"
+        );
+    }
+
+    // Spec STDLIB-CAP-2: InMemoryCapabilityHost handles clock.now
+    #[test]
+    fn in_memory_host_clock_now() {
+        let host = InMemoryCapabilityHost::new().with_fixed_clock(9_999_999);
+        let result = host.call("clock.now", "now", &[]);
+        assert_eq!(result, Ok(StdlibValue::Int(9_999_999)));
+    }
+
+    // Spec STDLIB-CAP-2: InMemoryCapabilityHost handles env.read.get
+    #[test]
+    fn in_memory_host_env_read_get() {
+        let host = InMemoryCapabilityHost::new().with_env("MY_KEY", "hello");
+        let result = host.call(
+            "env.read",
+            "get",
+            &[StdlibValue::Text("MY_KEY".to_string())],
+        );
+        assert_eq!(
+            result,
+            Ok(StdlibValue::Option(Some(Box::new(StdlibValue::Text(
+                "hello".to_string()
+            )))))
+        );
+    }
+
+    // Spec STDLIB-CAP-2: missing key returns None
+    #[test]
+    fn in_memory_host_env_read_get_missing() {
+        let host = InMemoryCapabilityHost::new();
+        let result = host.call(
+            "env.read",
+            "get",
+            &[StdlibValue::Text("MISSING".to_string())],
+        );
+        assert_eq!(result, Ok(StdlibValue::Option(None)));
+    }
+
+    // Spec STDLIB-CAP-2: env.write.set returns Unit
+    #[test]
+    fn in_memory_host_env_write_set() {
+        let host = InMemoryCapabilityHost::new();
+        let result = host.call(
+            "env.write",
+            "set",
+            &[
+                StdlibValue::Text("K".to_string()),
+                StdlibValue::Text("V".to_string()),
+            ],
+        );
+        assert_eq!(result, Ok(StdlibValue::Unit));
+    }
+
+    // Spec STDLIB-CAP-2: io.stdout.write returns byte count
+    #[test]
+    fn in_memory_host_io_stdout_write() {
+        let host = InMemoryCapabilityHost::new();
+        let result = host.call(
+            "io.stdout",
+            "write",
+            &[StdlibValue::Bytes(vec![1u8, 2, 3])],
+        );
+        assert_eq!(result, Ok(StdlibValue::Int(3)));
+    }
+
+    // Spec STDLIB-CAP-2: file.read.read reads from in-memory file map
+    #[test]
+    fn in_memory_host_file_read_read() {
+        let host = InMemoryCapabilityHost::new().with_file("/data.bin", b"content");
+        let result = host.call(
+            "file.read",
+            "read",
+            &[StdlibValue::Text("/data.bin".to_string())],
+        );
+        assert_eq!(result, Ok(StdlibValue::Bytes(b"content".to_vec())));
+    }
+
+    // Pure FunctionEntry: call() still works (backward compat)
+    #[test]
+    fn pure_entry_call_still_works() {
+        let result = call_pure_stdlib(
+            "std.text.trim",
+            &[StdlibValue::Text("  hi  ".to_string())],
+        );
+        assert_eq!(result, Ok(StdlibValue::Text("hi".to_string())));
+    }
+
+    // ── A5: Missing exec entries ──────────────────────────────────────────
+
+    // Spec STDLIB-EXEC-1: std.crypto.hmac
+    #[test]
+    fn exec_crypto_hmac_entry_exists() {
+        let result = call_pure_stdlib(
+            "std.crypto.hmac",
+            &[
+                StdlibValue::Bytes(b"secret-key".to_vec()),
+                StdlibValue::Bytes(b"message".to_vec()),
+            ],
+        );
+        assert!(
+            matches!(result, Ok(StdlibValue::Bytes(ref b)) if b.len() == 32),
+            "hmac must return 32-byte Bytes"
+        );
+    }
+
+    // Spec STDLIB-EXEC-1: std.crypto.constant_time_eq — equal
+    #[test]
+    fn exec_crypto_constant_time_eq_equal() {
+        let result = call_pure_stdlib(
+            "std.crypto.constant_time_eq",
+            &[
+                StdlibValue::Bytes(b"abc".to_vec()),
+                StdlibValue::Bytes(b"abc".to_vec()),
+            ],
+        );
+        assert_eq!(result, Ok(StdlibValue::Bool(true)));
+    }
+
+    // Spec STDLIB-EXEC-1: std.crypto.constant_time_eq — not equal
+    #[test]
+    fn exec_crypto_constant_time_eq_not_equal() {
+        let result = call_pure_stdlib(
+            "std.crypto.constant_time_eq",
+            &[
+                StdlibValue::Bytes(b"abc".to_vec()),
+                StdlibValue::Bytes(b"xyz".to_vec()),
+            ],
+        );
+        assert_eq!(result, Ok(StdlibValue::Bool(false)));
+    }
+
+    // Spec STDLIB-EXEC-1: std.encoding.base64_encode
+    #[test]
+    fn exec_encoding_base64_encode() {
+        let result = call_pure_stdlib(
+            "std.encoding.base64_encode",
+            &[StdlibValue::Bytes(b"hello".to_vec())],
+        );
+        // base64("hello") = "aGVsbG8="
+        assert_eq!(
+            result,
+            Ok(StdlibValue::Text("aGVsbG8=".to_string()))
+        );
+    }
+
+    // Spec STDLIB-EXEC-1: std.encoding.base64_decode — success
+    #[test]
+    fn exec_encoding_base64_decode_ok() {
+        let result = call_pure_stdlib(
+            "std.encoding.base64_decode",
+            &[StdlibValue::Text("aGVsbG8=".to_string())],
+        );
+        assert_eq!(
+            result,
+            Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Bytes(
+                b"hello".to_vec()
+            )))))
+        );
+    }
+
+    // Spec STDLIB-EXEC-1: std.encoding.base64_decode — error
+    #[test]
+    fn exec_encoding_base64_decode_err() {
+        let result = call_pure_stdlib(
+            "std.encoding.base64_decode",
+            &[StdlibValue::Text("!!!invalid".to_string())],
+        );
+        assert!(
+            matches!(result, Ok(StdlibValue::Result(Err(_)))),
+            "invalid base64 must return Err"
+        );
+    }
+
+    // Spec STDLIB-EXEC-1: std.encoding.hex_encode
+    #[test]
+    fn exec_encoding_hex_encode() {
+        let result = call_pure_stdlib(
+            "std.encoding.hex_encode",
+            &[StdlibValue::Bytes(vec![0xca, 0xfe])],
+        );
+        assert_eq!(result, Ok(StdlibValue::Text("cafe".to_string())));
+    }
+
+    // Spec STDLIB-EXEC-1: std.encoding.hex_decode — success
+    #[test]
+    fn exec_encoding_hex_decode_ok() {
+        let result = call_pure_stdlib(
+            "std.encoding.hex_decode",
+            &[StdlibValue::Text("cafe".to_string())],
+        );
+        assert_eq!(
+            result,
+            Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Bytes(
+                vec![0xca, 0xfe]
+            )))))
+        );
+    }
+
+    // Spec STDLIB-EXEC-1: std.encoding.hex_decode — error
+    #[test]
+    fn exec_encoding_hex_decode_err() {
+        let result = call_pure_stdlib(
+            "std.encoding.hex_decode",
+            &[StdlibValue::Text("xyz!".to_string())],
+        );
+        assert!(
+            matches!(result, Ok(StdlibValue::Result(Err(_)))),
+            "invalid hex must return Err"
+        );
+    }
+
+    // Spec STDLIB-EXEC-1: std.json.parse — success
+    #[test]
+    fn exec_json_parse_ok() {
+        let result = call_pure_stdlib(
+            "std.json.parse",
+            &[StdlibValue::Text(r#"{"x":1}"#.to_string())],
+        );
+        assert!(
+            matches!(result, Ok(StdlibValue::Result(Ok(_)))),
+            "valid JSON must return Ok(Map)"
+        );
+    }
+
+    // Spec STDLIB-EXEC-1: std.json.parse — error
+    #[test]
+    fn exec_json_parse_err() {
+        let result = call_pure_stdlib(
+            "std.json.parse",
+            &[StdlibValue::Text("not json".to_string())],
+        );
+        assert!(
+            matches!(result, Ok(StdlibValue::Result(Err(_)))),
+            "invalid JSON must return Err"
+        );
+    }
+
+    // Spec STDLIB-EXEC-1: std.json.stringify
+    #[test]
+    fn exec_json_stringify() {
+        let mut map = BTreeMap::new();
+        map.insert("k".to_string(), StdlibValue::Int(42));
+        let result = call_pure_stdlib("std.json.stringify", &[StdlibValue::Map(map)]);
+        assert!(
+            matches!(result, Ok(StdlibValue::Text(ref s)) if s.contains("42")),
+            "stringify must produce JSON text with value"
+        );
+    }
+
+    // Spec STDLIB-EXEC-1: std.numeric.narrow_to_i32 — ok
+    #[test]
+    fn exec_numeric_narrow_to_i32_ok() {
+        let result = call_pure_stdlib(
+            "std.numeric.narrow_to_i32",
+            &[StdlibValue::Int(42)],
+        );
+        assert_eq!(
+            result,
+            Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Int(42)))))
+        );
+    }
+
+    // Spec STDLIB-EXEC-1: std.numeric.narrow_to_i32 — overflow
+    #[test]
+    fn exec_numeric_narrow_to_i32_overflow() {
+        let result = call_pure_stdlib(
+            "std.numeric.narrow_to_i32",
+            &[StdlibValue::Int(i64::MAX)],
+        );
+        assert!(
+            matches!(result, Ok(StdlibValue::Result(Err(_)))),
+            "overflow must return Err"
+        );
+    }
+
+    // Spec STDLIB-EXEC-1: std.numeric.narrow_to_u32 — ok
+    #[test]
+    fn exec_numeric_narrow_to_u32_ok() {
+        let result = call_pure_stdlib(
+            "std.numeric.narrow_to_u32",
+            &[StdlibValue::Int(100)],
+        );
+        assert_eq!(
+            result,
+            Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Int(100)))))
+        );
+    }
+
+    // Spec STDLIB-EXEC-1: std.numeric.narrow_to_u32 — overflow (negative)
+    #[test]
+    fn exec_numeric_narrow_to_u32_negative() {
+        let result = call_pure_stdlib(
+            "std.numeric.narrow_to_u32",
+            &[StdlibValue::Int(-1)],
+        );
+        assert!(
+            matches!(result, Ok(StdlibValue::Result(Err(_)))),
+            "negative value must return Err for u32"
+        );
     }
 }
