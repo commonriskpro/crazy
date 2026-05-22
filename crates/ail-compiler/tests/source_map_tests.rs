@@ -408,3 +408,61 @@ fn lower_to_anf_with_graph_same_anf_ir_hash_as_lower_to_anf_for_plain_nodes() {
         "anf_ir_hash must be identical for the same bindings regardless of provenance enrichment"
     );
 }
+
+#[test]
+fn emit_wasm_sidecar_preserves_enriched_source_map_provenance() {
+    let graph = graph_with_rich_provenance();
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+    let artifact = emit_wasm(&anf).expect("emit_wasm");
+
+    let entry = artifact
+        .source_map
+        .entries
+        .first()
+        .expect("source map entry must exist");
+    assert_eq!(entry.change_set.as_deref(), Some("change.add_checkout"));
+    assert_eq!(
+        entry.effect_ref.as_ref().map(|r| r.0.as_str()),
+        Some("database.read")
+    );
+    assert_eq!(
+        entry.runtime_check_ref.as_ref().map(|r| r.0.as_str()),
+        Some("rtcheck_hash_abc123")
+    );
+    assert!(
+        entry.wasm_offset.is_some(),
+        "WASM backend must add wasm_offset"
+    );
+
+    let sidecar: ail_compiler::SourceMap = serde_json::from_slice(&artifact.source_map_json)
+        .expect("source_map_json must decode to SourceMap");
+    assert_eq!(sidecar, artifact.source_map);
+}
+
+#[test]
+fn emit_native_sidecar_preserves_enriched_source_map_provenance() {
+    let graph = graph_with_rich_provenance();
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+    let artifact = emit_native(&anf).expect("emit_native");
+
+    let entry = artifact
+        .source_map
+        .entries
+        .first()
+        .expect("source map entry must exist");
+    assert_eq!(entry.change_set.as_deref(), Some("change.add_checkout"));
+    assert_eq!(
+        entry.contract_ref.as_ref().map(|r| r.0.as_str()),
+        Some("contract.fn_checkout")
+    );
+    assert!(
+        entry.native_offset.is_some(),
+        "native backend must add native_offset"
+    );
+
+    let sidecar: ail_compiler::SourceMap = serde_json::from_slice(&artifact.source_map_json)
+        .expect("source_map_json must decode to SourceMap");
+    assert_eq!(sidecar, artifact.source_map);
+}
