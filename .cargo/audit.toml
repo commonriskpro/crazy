@@ -1,0 +1,9 @@
+[output]
+# Emit structured JSON so CI can parse results and feed them to SARIF / dashboards
+format = "json"
+
+[advisories]
+# List advisory IDs to suppress after manual review.
+# Document the reason and review date when adding an entry:
+#   { id = "RUSTSEC-0000-0000", reason = "...", reviewed_on = "YYYY-MM-DD" }
+ignore = []

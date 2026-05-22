@@ -2,6 +2,7 @@
 name    = "ail-remote"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [features]
 crypto = ["dep:aes-gcm", "dep:argon2", "dep:x25519-dalek"]

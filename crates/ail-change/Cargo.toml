@@ -2,6 +2,7 @@
 name    = "ail-change"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 ail-core  = { workspace = true }

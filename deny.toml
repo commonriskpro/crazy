@@ -1,0 +1,83 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# All vulnerability advisories are errors by default (cargo-deny 0.14+).
+# Unmaintained crates that are direct workspace deps trigger errors;
+# transitive-only unmaintained crates are downgraded to warnings.
+unmaintained = "workspace"
+
+# Wasmtime 28.0.1 has known CVEs. These are tracked for upgrade in a
+# separate PR (release-hardening/pr2-wasmtime-upgrade). Ignoring here
+# so the audit gate itself is not blocked before the upgrade lands.
+ignore = [
+    # RUSTSEC-2025-0046: Host panic with fd_renumber WASIp1 — wasmtime 28.0.1
+    # Fix: upgrade to >=24.0.4 or >=33.0.2 or >=34.0.2
+    { id = "RUSTSEC-2025-0046", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2025-0118: Unsound API access to WebAssembly shared linear memory
+    { id = "RUSTSEC-2025-0118", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2026-0020: Guest-controlled resource exhaustion in WASI implementations
+    { id = "RUSTSEC-2026-0020", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2026-0021: Panic adding excessive fields to wasi:http/types.fields
+    { id = "RUSTSEC-2026-0021", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2026-0085: Panic lifting flags component value
+    { id = "RUSTSEC-2026-0085", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2026-0086: Host data leakage with 64-bit tables and Winch
+    { id = "RUSTSEC-2026-0086", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2026-0087: Wasmtime segfault with f64x2.splat on Cranelift x86-64
+    { id = "RUSTSEC-2026-0087", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2026-0088: Data leakage between pooling allocator instances
+    { id = "RUSTSEC-2026-0088", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2026-0089: Host panic when Winch compiler executes table.fill
+    { id = "RUSTSEC-2026-0089", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2026-0091: Out-of-bounds write when transcoding component model strings
+    { id = "RUSTSEC-2026-0091", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2026-0092: Panic transcoding misaligned UTF-16 strings
+    { id = "RUSTSEC-2026-0092", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2026-0093: Heap OOB read in UTF-16 to latin1+utf16 string transcoding
+    { id = "RUSTSEC-2026-0093", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2026-0094: Improperly masked return from table.grow with Winch backend
+    { id = "RUSTSEC-2026-0094", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2026-0095: Wasmtime with Winch may allow sandbox-escaping memory access
+    { id = "RUSTSEC-2026-0095", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+    # RUSTSEC-2026-0096: Miscompiled guest heap access enables sandbox escape on aarch64 Cranelift
+    { id = "RUSTSEC-2026-0096", reason = "tracked for wasmtime upgrade in release-hardening/pr2" },
+]
+
+[licenses]
+# Confidence threshold for license detection (0.0–1.0)
+confidence-threshold = 0.8
+
+# Allow-list of acceptable licenses for this project
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # Apache-2.0 WITH LLVM-exception: used by wasmtime, cranelift, wasm toolchain
+    # (bytecodealliance projects). The LLVM exception permits linking without
+    # requiring downstream code to be Apache-2.0 licensed — compatible with MIT.
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    # Zlib: used by foldhash (a fast hashing crate pulled in by wasmtime)
+    "Zlib",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+]
+
+[bans]
+# Warn on multiple versions of the same crate
+multiple-versions = "warn"
+
+# Deny OpenSSL — the project uses the rustls ecosystem instead
+deny = [
+    { crate = "openssl", reason = "Use rustls ecosystem; openssl introduces C FFI and platform build complexity" },
+    { crate = "openssl-sys", reason = "Use rustls ecosystem" },
+]
+
+[sources]
+# Allow only the official crates.io registry and git sources
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
