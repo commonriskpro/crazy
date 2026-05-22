@@ -13,12 +13,15 @@
 //!
 //! # What this crate does NOT do
 //! - No parsing, no source mutation, no runtime/Wasmtime dependency.
-//! - No optimisation passes.
+//! - Optimisation passes in `optimize.rs` (`optimize_bindings`,
+//!   `eliminate_dead_pure`, `inline_small_pure`, `cse_bindings`) are not
+//!   applied automatically — callers opt in explicitly.
 //! - No expression / body codegen (deferred to Phase 8).
 
 pub mod anf;
 pub mod artifact_manifest;
 pub mod cache;
+pub mod compiler_report;
 pub mod core_ir;
 pub mod error;
 pub mod expr_parser;
@@ -42,6 +45,7 @@ pub use core_ir::{
     CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, MatchArm, SelectClause,
     StageHashes,
 };
+pub use compiler_report::{CompilerReport, CompilerWarning, StageRecord};
 pub use error::CompileError;
 pub use expr_parser::{ParseError, parse_expr};
 pub use incremental::{DirtySet, NodeHashes, compile_incremental, compute_node_hashes};
