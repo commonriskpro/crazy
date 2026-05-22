@@ -872,6 +872,7 @@ fn set_type_with_hash_passes() {
         has_eq: true,
         has_ord: false,
         has_hash: true,
+        has_partial_ord: false,
         extras: vec![],
     });
 
@@ -996,6 +997,7 @@ fn generic_fn_eq_constraint_satisfied_passes() {
         has_eq: true,
         has_ord: false,
         has_hash: false,
+        has_partial_ord: false,
         extras: vec![],
     });
 
@@ -1364,6 +1366,7 @@ fn float_type_with_eq_fails_float_policy() {
         has_eq: true, // implicit equality on Float — violation
         has_ord: false,
         has_hash: false,
+        has_partial_ord: false,
         extras: vec![],
     });
 
@@ -1402,6 +1405,7 @@ fn float_type_with_ord_fails_float_policy() {
         has_eq: false,
         has_ord: true, // implicit Ord on Float — violation
         has_hash: false,
+        has_partial_ord: false,
         extras: vec![],
     });
 
@@ -1441,6 +1445,7 @@ fn float_type_without_eq_ord_passes_float_policy() {
         has_eq: false,
         has_ord: false,
         has_hash: false,
+        has_partial_ord: false,
         extras: vec![],
     });
 
@@ -1468,6 +1473,7 @@ fn non_nan_float_refinement_is_exempt_from_float_policy() {
         has_eq: false,
         has_ord: true, // OK — NonNaNFloat can have Ord
         has_hash: false,
+        has_partial_ord: false,
         extras: vec![],
     });
 

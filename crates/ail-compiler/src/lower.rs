@@ -384,7 +384,8 @@ pub fn lower_core_expr_to_anf(
         }
 
         // Loop: body is lowered recursively; exits through Break.
-        CoreExpr::Loop { body } => {
+        // The termination field is not used during ANF lowering.
+        CoreExpr::Loop { body, .. } => {
             let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
             AnfExpr::Loop {
                 body: Box::new(anf_body),
@@ -402,7 +403,8 @@ pub fn lower_core_expr_to_anf(
         CoreExpr::Continue => AnfExpr::Continue,
 
         // WhileLoop: condition must be atomic; body is lowered recursively.
-        CoreExpr::WhileLoop { cond, body } => {
+        // The termination field is not used during ANF lowering.
+        CoreExpr::WhileLoop { cond, body, .. } => {
             let cond_name = atomize(cond, fresh, source_ref, out);
             let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
             AnfExpr::WhileLoop {

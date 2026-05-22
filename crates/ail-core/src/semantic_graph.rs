@@ -311,18 +311,25 @@ pub struct RefinementRef {
 
 /// Explicit constraint declarations on a type node.
 ///
-/// Records whether this type implements `Eq`, `Ord`, and `Hashable`,
+/// Records whether this type implements `Eq`, `Ord`, `PartialOrd`, and `Hashable`,
 /// plus any additional named constraints.  These are used by the type
 /// checker to enforce collection/operator constraint requirements.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstraintSet {
     /// Whether this type implements `Eq` (required for `==`, `Set<T>`, `Map<K,V>`).
     pub has_eq: bool,
-    /// Whether this type implements `Ord` (required for `sort`, `min`, `max`).
+    /// Whether this type implements `Ord` (total order; required for `sort`, `min`, `max`).
     pub has_ord: bool,
     /// Whether this type implements `Hashable` (required for `Set<T>`, `Map<K,V>`).
     pub has_hash: bool,
-    /// Additional named constraints (e.g., `["PartialOrd", "Display"]`).
+    /// Whether this type implements `PartialOrd` (partial order, e.g., for floating-point).
+    ///
+    /// Distinct from `has_ord`: a type may have partial order without total order.
+    /// Serialized only when `true`; defaults to `false` for backward compatibility
+    /// with existing CBOR fixtures that omit this field.
+    #[serde(default)]
+    pub has_partial_ord: bool,
+    /// Additional named constraints (e.g., `["Display"]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extras: Vec<String>,
 }
@@ -1184,6 +1191,7 @@ mod tests {
             has_eq: true,
             has_ord: false,
             has_hash: true,
+            has_partial_ord: false,
             extras: vec!["Display".into()],
         });
 
@@ -1368,6 +1376,59 @@ mod tests {
             original, decoded,
             "ContractRef must survive CBOR round-trip"
         );
+    }
+
+    // ── Task C3 (RED): ConstraintSet::has_partial_ord ────────────────────
+
+    // S-C3a: ConstraintSet with has_partial_ord=true round-trips through CBOR.
+    #[test]
+    fn constraint_set_with_has_partial_ord_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "Price");
+        node.constraint_set = Some(ConstraintSet {
+            has_eq: true,
+            has_ord: false,
+            has_hash: false,
+            has_partial_ord: true,
+            extras: vec![],
+        });
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        let cs = decoded.nodes[0]
+            .constraint_set
+            .as_ref()
+            .expect("constraint_set must be Some");
+        assert!(cs.has_partial_ord, "has_partial_ord must be true after round-trip");
+        assert!(!cs.has_ord, "has_ord must remain false");
+    }
+
+    // S-C3b: Old ConstraintSet without has_partial_ord deserializes with has_partial_ord=false.
+    // Backward compatibility via serde default.
+    #[test]
+    fn legacy_constraint_set_has_partial_ord_defaults_false() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+        // A legacy node with constraint_set that has no has_partial_ord field
+        // in its CBOR bytes must deserialize with has_partial_ord=false.
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "Amount");
+        node.constraint_set = Some(ConstraintSet {
+            has_eq: true,
+            has_ord: true,
+            has_hash: false,
+            has_partial_ord: false, // default — must not be emitted in CBOR when false
+            extras: vec![],
+        });
+        let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        let cs = decoded.nodes[0].constraint_set.as_ref().unwrap();
+        assert!(!cs.has_partial_ord, "has_partial_ord must default to false");
+        assert!(cs.has_ord, "has_ord must be preserved");
     }
 
     // ── Task D1 (RED): new NodeKind variants ──────────────────────────────

@@ -129,6 +129,7 @@ fn loop_break_continue_lower_to_anf_loop_variants() {
         body: Box::new(CoreExpr::Break {
             value: Box::new(CoreExpr::Literal(LiteralValue::Int(10))),
         }),
+        termination: None,
     };
 
     let anf = lower_expr(&expr);
@@ -152,6 +153,7 @@ fn while_loop_condition_is_atomized() {
             args: vec![],
         }),
         body: Box::new(CoreExpr::Continue),
+        termination: None,
     };
 
     let (synth, root) = lower_and_collect(&expr);

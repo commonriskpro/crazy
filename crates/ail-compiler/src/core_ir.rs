@@ -102,6 +102,25 @@ pub struct SelectClause {
     pub body: CoreExpr,
 }
 
+// ── LoopTermination ───────────────────────────────────────────────────────
+
+/// Classification of the termination argument for a loop expression.
+///
+/// Carried as an optional field on `CoreExpr::Loop` and `CoreExpr::WhileLoop`.
+/// `None` means no termination argument is provided (backward-compatible with
+/// pre-ola3 wire format — the field is skipped when None).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LoopTermination {
+    /// Termination proven by the type checker or external solver.
+    Proven,
+    /// Bounded iteration: the loop visits a finite, statically-bounded range.
+    Bounded,
+    /// Termination declared/assumed by the programmer without mechanical proof.
+    Assumed,
+    /// Termination not yet classified; outcome unknown.
+    Unverified,
+}
+
 // ── ResourceMode ──────────────────────────────────────────────────────────
 
 /// The ownership / linearity mode of an external resource handle.
@@ -203,7 +222,12 @@ pub enum CoreExpr {
     ListNew(Vec<CoreExpr>),
 
     /// Infinite loop expression. Exits through `Break`.
-    Loop { body: Box<CoreExpr> },
+    Loop {
+        body: Box<CoreExpr>,
+        /// Optional termination argument — `None` preserves backward compat.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        termination: Option<LoopTermination>,
+    },
     /// Exit the nearest enclosing loop with a value.
     Break { value: Box<CoreExpr> },
     /// Continue at the nearest enclosing loop header.
@@ -212,6 +236,9 @@ pub enum CoreExpr {
     WhileLoop {
         cond: Box<CoreExpr>,
         body: Box<CoreExpr>,
+        /// Optional termination argument — `None` preserves backward compat.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        termination: Option<LoopTermination>,
     },
 
     // ── Semantic effect / concurrency / runtime-check variants ────────────
@@ -939,6 +966,7 @@ mod tests {
             body: Box::new(CoreExpr::Break {
                 value: Box::new(CoreExpr::Literal(LiteralValue::Int(10))),
             }),
+            termination: None,
         };
         let _break = CoreExpr::Break {
             value: Box::new(CoreExpr::Literal(LiteralValue::Int(1))),
@@ -947,6 +975,7 @@ mod tests {
         let _while_loop = CoreExpr::WhileLoop {
             cond: Box::new(CoreExpr::Literal(LiteralValue::Bool(false))),
             body: Box::new(CoreExpr::Continue),
+            termination: None,
         };
         let _placeholder = CoreExpr::Placeholder;
         // All constructed without panic — test passes.
@@ -1128,6 +1157,70 @@ mod tests {
         };
         assert_eq!(arm.pattern, "None");
         assert_eq!(arm.body, CoreExpr::Placeholder);
+    }
+
+    // ── Task C1 (RED): LoopTermination on Loop/WhileLoop ─────────────────
+
+    // S-C1a: Loop with termination=Some(Proven) round-trips through CBOR.
+    #[test]
+    fn loop_with_proven_termination_cbor_round_trip() {
+        let expr = CoreExpr::Loop {
+            body: Box::new(CoreExpr::Break {
+                value: Box::new(CoreExpr::Literal(LiteralValue::Int(0))),
+            }),
+            termination: Some(LoopTermination::Proven),
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: CoreExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "Loop with Proven termination must survive CBOR round-trip");
+        if let CoreExpr::Loop { termination, .. } = &decoded {
+            assert_eq!(termination.as_ref(), Some(&LoopTermination::Proven));
+        } else {
+            panic!("expected Loop variant");
+        }
+    }
+
+    // S-C1b: Loop with termination=None is backward-compatible.
+    // A loop without termination must produce the same bytes as before this change
+    // (serde skips None via skip_serializing_if).
+    #[test]
+    fn loop_without_termination_is_backward_compat() {
+        let expr_with_none = CoreExpr::Loop {
+            body: Box::new(CoreExpr::Continue),
+            termination: None,
+        };
+        // The legacy form (before termination field) is equivalent to termination: None.
+        // Verify round-trip preserves None.
+        let bytes = stable_cbor_bytes(&expr_with_none).expect("encode");
+        let decoded: CoreExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr_with_none);
+        if let CoreExpr::Loop { termination, .. } = decoded {
+            assert!(termination.is_none(), "termination must be None after round-trip");
+        }
+    }
+
+    // S-C1c: WhileLoop with termination=Some(Bounded) round-trips.
+    // Triangulation: WhileLoop termination works independently from Loop.
+    #[test]
+    fn while_loop_with_bounded_termination_cbor_round_trip() {
+        let expr = CoreExpr::WhileLoop {
+            cond: Box::new(CoreExpr::Literal(LiteralValue::Bool(true))),
+            body: Box::new(CoreExpr::Continue),
+            termination: Some(LoopTermination::Bounded),
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: CoreExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "WhileLoop with Bounded termination must round-trip");
+    }
+
+    // S-C1d: All LoopTermination variants are constructible.
+    #[test]
+    fn all_loop_termination_variants_are_constructible() {
+        let _proven = LoopTermination::Proven;
+        let _bounded = LoopTermination::Bounded;
+        let _assumed = LoopTermination::Assumed;
+        let _unverified = LoopTermination::Unverified;
+        // All constructed without panic — test passes.
     }
 
     // ── Task B1 (RED): parameterized CoreType variants ────────────────────
