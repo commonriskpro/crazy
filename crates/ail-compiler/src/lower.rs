@@ -610,6 +610,19 @@ pub fn lower_core_expr_to_anf(
 
         // CoreExpr::Placeholder → AnfExpr::Placeholder (no expression body).
         CoreExpr::Placeholder => AnfExpr::Placeholder,
+
+        // ola3-core-ir-types: new expression primitives not yet lowered to ANF.
+        // These are kept as Placeholder until the expression-lowering phase
+        // handles them explicitly.
+        CoreExpr::ForEach { .. }
+        | CoreExpr::Fold { .. }
+        | CoreExpr::Return { .. }
+        | CoreExpr::MapNew { .. }
+        | CoreExpr::SetNew { .. }
+        | CoreExpr::IndexGet { .. }
+        | CoreExpr::BoundaryCall { .. }
+        | CoreExpr::Assume { .. }
+        | CoreExpr::Abort { .. } => AnfExpr::Placeholder,
     }
 }
 
