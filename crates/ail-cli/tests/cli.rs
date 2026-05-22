@@ -630,6 +630,51 @@ fn init_json_output_has_genesis_id() {
     );
 }
 
+/// Spec scenario: file-backed store persists between CLI invocations.
+///   GIVEN `ail init` has created an on-disk store
+///   WHEN `ail change` writes a snapshot and `ail compile` runs later
+///   THEN compile loads the persisted graph and .ail layout exists
+#[test]
+fn disk_store_persists_change_for_compile() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    ail()
+        .args(["change", "add persisted answer function"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let compile_output = ail()
+        .args(["compile", "--profile", "dev", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let compile_json = parse_json_output(&compile_output);
+    assert_eq!(compile_json["status"], "ok");
+
+    let status_output = ail()
+        .args(["status", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let status_json = parse_json_output(&status_output);
+    assert_eq!(status_json["status"], "ok");
+    assert_eq!(status_json["data"]["snapshot_count"], 2);
+
+    dir.child(".ail/HEAD").assert(predicate::path::exists());
+    dir.child(".ail/refs/branches/main")
+        .assert(predicate::path::exists());
+    dir.child(".ail/store/objects")
+        .assert(predicate::path::is_dir());
+}
+
 /// Spec scenario: status exits 0.
 ///   GIVEN any store state
 ///   WHEN `ail status` runs

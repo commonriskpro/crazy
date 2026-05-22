@@ -70,7 +70,7 @@ use serde_json::{Value, json};
 use crate::changeset_input::{ChangeInput, load_changeset};
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
-use crate::store::{StoreHandle, build_store};
+use crate::store::{StoreHandle, build_store, file_store, init_file_layout};
 
 // ── Cli ───────────────────────────────────────────────────────────────────
 
@@ -370,9 +370,7 @@ pub async fn run() -> Result<(), CliError> {
             yes,
             policy,
         } => cmd_apply(mode, &change_id, yes, policy.as_deref(), &store).await,
-        Commands::Compile { profile, target } => {
-            cmd_compile(mode, &profile, &target, &store).await
-        }
+        Commands::Compile { profile, target } => cmd_compile(mode, &profile, &target, &store).await,
         Commands::Run {
             profile,
             module,
@@ -654,7 +652,7 @@ async fn cmd_change(
 
     let snapshots_before = store.list_snapshots().await?;
     let mut graph = load_current_graph_for_cli(store).await?;
-    let bridge = SimpleSnapshotBridge(SnapshotId(snapshots_before.len() as u64));
+    let bridge = SimpleSnapshotBridge(SnapshotId(snapshots_before.len().saturating_sub(1) as u64));
     match ail_change::apply::apply(canonical.clone(), &mut graph, &bridge) {
         ail_change::model::ChangeSetOutcome::Applied => {
             let graph_root = store.save_graph(&graph).await?;
@@ -1175,6 +1173,8 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError>
 
     let ctx = ProjectContext::from_cwd()?;
 
+    init_file_layout(&ctx.ail_dir)?;
+
     // Create all required subdirectories.
     for kind in [
         ArtifactKind::Change,
@@ -1227,9 +1227,15 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError>
     }
 
     // Persist genesis snapshot (idempotent).
-    let existing = store.list_snapshots().await?;
+    let disk_store = file_store(ctx.ail_dir.clone());
+    let active_store = match store {
+        StoreHandle::Postgres(_) => store,
+        StoreHandle::Memory { .. } | StoreHandle::File { .. } => &disk_store,
+    };
+
+    let existing = active_store.list_snapshots().await?;
     let genesis_id = if existing.is_empty() {
-        let graph_root_hash = store
+        let graph_root_hash = active_store
             .save_graph(&SemanticGraph {
                 nodes: vec![],
                 edges: vec![],
@@ -1243,7 +1249,7 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError>
             created_at: unix_ms_now(),
             verification_report_hash: None,
         };
-        store.save_snapshot(&genesis).await?
+        active_store.save_snapshot(&genesis).await?
     } else {
         existing[0].id
     };
@@ -1284,27 +1290,26 @@ async fn cmd_status(mode: OutputMode, store: &StoreHandle) -> Result<(), CliErro
     let snapshots = store.list_snapshots().await?;
 
     // Compute status fields.
-    let (snap_hex, graph_root_hex, branch, pending_changes, verification_state) = if snapshots
-        .is_empty()
-    {
-        (
-            "(none)".to_string(),
-            "(none)".to_string(),
-            "main".to_string(),
-            0usize,
-            "unverified",
-        )
-    } else {
-        let current = latest_snapshot(&snapshots).expect("non-empty");
-        let snap_hex = current.id.to_hex();
-        let graph_root_hex = current.graph_root_hash.to_hex();
-        let ver_state = if current.verification_report_hash.is_some() {
-            "verified"
+    let (snap_hex, graph_root_hex, branch, pending_changes, verification_state) =
+        if snapshots.is_empty() {
+            (
+                "(none)".to_string(),
+                "(none)".to_string(),
+                "main".to_string(),
+                0usize,
+                "unverified",
+            )
         } else {
-            "unverified"
+            let current = latest_snapshot(&snapshots).expect("non-empty");
+            let snap_hex = current.id.to_hex();
+            let graph_root_hex = current.graph_root_hash.to_hex();
+            let ver_state = if current.verification_report_hash.is_some() {
+                "verified"
+            } else {
+                "unverified"
+            };
+            (snap_hex, graph_root_hex, "main".to_string(), 0, ver_state)
         };
-        (snap_hex, graph_root_hex, "main".to_string(), 0, ver_state)
-    };
 
     // Derived status fields.
     let stale_indexes = false;
@@ -2401,7 +2406,10 @@ mod tests {
         use crate::store::memory_store;
         let store = memory_store();
         let result = cmd_compile(OutputMode::Human, "prod", "native", &store).await;
-        assert!(result.is_ok(), "cmd_compile native must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "cmd_compile native must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_run succeeds when preflight passes (exit 0).
@@ -2418,9 +2426,18 @@ mod tests {
     async fn cmd_run_with_module_succeeds() {
         use crate::store::memory_store;
         let store = memory_store();
-        let result = cmd_run(OutputMode::Human, "dev", Some("module.checkout"), None, &store)
-            .await;
-        assert!(result.is_ok(), "cmd_run with module must succeed; got: {result:?}");
+        let result = cmd_run(
+            OutputMode::Human,
+            "dev",
+            Some("module.checkout"),
+            None,
+            &store,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "cmd_run with module must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_run with replay succeeds.
@@ -2429,7 +2446,10 @@ mod tests {
         use crate::store::memory_store;
         let store = memory_store();
         let result = cmd_run(OutputMode::Human, "test", None, Some("trace_123"), &store).await;
-        assert!(result.is_ok(), "cmd_run with replay must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "cmd_run with replay must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: hex_to_object_id roundtrip.
@@ -2541,7 +2561,10 @@ mod tests {
         assert!(graph.validate().is_ok(), "stored graph must validate");
 
         let compile = cmd_compile(OutputMode::Human, "dev", "wasm", &store).await;
-        assert!(compile.is_ok(), "compile must load stored graph; got: {compile:?}");
+        assert!(
+            compile.is_ok(),
+            "compile must load stored graph; got: {compile:?}"
+        );
     }
 
     // Scenario: cmd_apply rejects invalid change-id.
