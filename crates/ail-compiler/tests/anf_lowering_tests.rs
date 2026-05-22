@@ -53,7 +53,7 @@ fn core_ir_with_expr(source_ref: NodeRef, name: &str, expr: CoreExpr) -> CoreIr 
             name: name.to_string(),
             ty: Some(CoreType::Function {
                 params: vec![],
-                ret: Box::new(CoreType::Generic),
+                ret: Box::new(CoreType::Generic(None)),
                 effects: vec![],
             }),
             expr: Some(expr),
@@ -450,7 +450,7 @@ fn core_node_without_expr_produces_literal_unit() {
                 name: "fn_stub".to_string(),
                 ty: Some(CoreType::Function {
                     params: vec![],
-                    ret: Box::new(CoreType::Generic),
+                    ret: Box::new(CoreType::Generic(None)),
                     effects: vec![],
                 }),
                 expr: None,

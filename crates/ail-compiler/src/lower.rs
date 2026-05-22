@@ -856,7 +856,7 @@ fn map_core_node_to_anf(node: &CoreNode, fresh: &mut u32, out: &mut Vec<AnfBindi
 ///
 /// Recognised nominals correspond to the 20 type primitives listed in
 /// `docs/core-ir.md §3`.  Any unrecognised nominal falls back to
-/// `CoreType::Generic`.
+/// `CoreType::Generic(None)`.
 pub fn nominal_to_core_type(nominal: &str) -> CoreType {
     match nominal {
         "Unit" => CoreType::Unit,
@@ -872,26 +872,26 @@ pub fn nominal_to_core_type(nominal: &str) -> CoreType {
         "Tuple" => CoreType::Tuple,
         // Parameterized variants: inner type defaults to Generic when only the
         // nominal name is available (full resolution requires type-param phase).
-        "List" => CoreType::List(Box::new(CoreType::Generic)),
-        "Map" => CoreType::Map(Box::new(CoreType::Generic), Box::new(CoreType::Generic)),
-        "Set" => CoreType::Set(Box::new(CoreType::Generic)),
-        "Option" => CoreType::Option(Box::new(CoreType::Generic)),
-        "Result" => CoreType::Result(Box::new(CoreType::Generic), Box::new(CoreType::Generic)),
+        "List" => CoreType::List(Box::new(CoreType::Generic(None))),
+        "Map" => CoreType::Map(Box::new(CoreType::Generic(None)), Box::new(CoreType::Generic(None))),
+        "Set" => CoreType::Set(Box::new(CoreType::Generic(None))),
+        "Option" => CoreType::Option(Box::new(CoreType::Generic(None))),
+        "Result" => CoreType::Result(Box::new(CoreType::Generic(None)), Box::new(CoreType::Generic(None))),
         "Function" => CoreType::Function {
             params: vec![],
-            ret: Box::new(CoreType::Generic),
+            ret: Box::new(CoreType::Generic(None)),
             effects: vec![],
         },
         "Handle" => CoreType::Handle {
-            resource: Box::new(CoreType::Generic),
+            resource: Box::new(CoreType::Generic(None)),
             mode: ResourceMode::Copy,
         },
         "Refinement" => CoreType::Refinement {
-            base: Box::new(CoreType::Generic),
+            base: Box::new(CoreType::Generic(None)),
             predicate: String::new(),
         },
-        "Generic" => CoreType::Generic,
-        _ => CoreType::Generic,
+        "Generic" => CoreType::Generic(None),
+        _ => CoreType::Generic(None),
     }
 }
 
@@ -1403,15 +1403,15 @@ mod tests {
             ("Record", CoreType::Record),
             ("Variant", CoreType::Variant),
             ("Tuple", CoreType::Tuple),
-            ("List", CoreType::List(Box::new(CoreType::Generic))),
-            ("Map", CoreType::Map(Box::new(CoreType::Generic), Box::new(CoreType::Generic))),
-            ("Set", CoreType::Set(Box::new(CoreType::Generic))),
-            ("Option", CoreType::Option(Box::new(CoreType::Generic))),
-            ("Result", CoreType::Result(Box::new(CoreType::Generic), Box::new(CoreType::Generic))),
-            ("Function", CoreType::Function { params: vec![], ret: Box::new(CoreType::Generic), effects: vec![] }),
-            ("Handle", CoreType::Handle { resource: Box::new(CoreType::Generic), mode: ResourceMode::Copy }),
-            ("Refinement", CoreType::Refinement { base: Box::new(CoreType::Generic), predicate: String::new() }),
-            ("Generic", CoreType::Generic),
+            ("List", CoreType::List(Box::new(CoreType::Generic(None)))),
+            ("Map", CoreType::Map(Box::new(CoreType::Generic(None)), Box::new(CoreType::Generic(None)))),
+            ("Set", CoreType::Set(Box::new(CoreType::Generic(None)))),
+            ("Option", CoreType::Option(Box::new(CoreType::Generic(None)))),
+            ("Result", CoreType::Result(Box::new(CoreType::Generic(None)), Box::new(CoreType::Generic(None)))),
+            ("Function", CoreType::Function { params: vec![], ret: Box::new(CoreType::Generic(None)), effects: vec![] }),
+            ("Handle", CoreType::Handle { resource: Box::new(CoreType::Generic(None)), mode: ResourceMode::Copy }),
+            ("Refinement", CoreType::Refinement { base: Box::new(CoreType::Generic(None)), predicate: String::new() }),
+            ("Generic", CoreType::Generic(None)),
         ];
         for (nominal, expected) in cases {
             assert_eq!(
@@ -1422,12 +1422,12 @@ mod tests {
         }
     }
 
-    // S7: unknown nominal falls back to CoreType::Generic.
+    // S7: unknown nominal falls back to CoreType::Generic(None).
     #[test]
     fn unknown_nominal_maps_to_generic() {
-        assert_eq!(nominal_to_core_type("Exotic"), CoreType::Generic);
-        assert_eq!(nominal_to_core_type(""), CoreType::Generic);
-        assert_eq!(nominal_to_core_type("int"), CoreType::Generic); // case-sensitive
+        assert_eq!(nominal_to_core_type("Exotic"), CoreType::Generic(None));
+        assert_eq!(nominal_to_core_type(""), CoreType::Generic(None));
+        assert_eq!(nominal_to_core_type("int"), CoreType::Generic(None)); // case-sensitive
     }
 
     // ── G2 lower_to_core_ir with type_facts ──────────────────────────────
@@ -1529,8 +1529,8 @@ mod tests {
         let core = lower_to_core_ir(&graph, &report).unwrap();
         assert_eq!(
             core.nodes[0].ty,
-            Some(CoreType::Generic),
-            "unknown nominal must produce CoreType::Generic"
+            Some(CoreType::Generic(None)),
+            "unknown nominal must produce CoreType::Generic(None)"
         );
     }
 

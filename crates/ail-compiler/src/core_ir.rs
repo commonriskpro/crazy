@@ -642,9 +642,14 @@ pub enum CoreType {
         /// The predicate expression string.
         predicate: String,
     },
-    /// Generic/unknown type — used as a fallback when the nominal is
-    /// unrecognised or when type parameters have not been resolved yet.
-    Generic,
+    /// Generic type parameter — carries an optional inner type.
+    ///
+    /// `Generic(Some(Box::new(CoreType::Int)))` represents `Generic<Int>`.
+    /// `Generic(None)` is the fallback when the nominal is unrecognised
+    /// or when type parameters have not been resolved yet.
+    ///
+    /// Corresponds to `docs/core-ir.md §3 — Generic<T>`.
+    Generic(Option<Box<CoreType>>),
 
     // ── ola3-core-ir-types: new flat numeric and Unicode variants ─────────
     /// Arbitrary-precision decimal number type.
@@ -990,7 +995,7 @@ mod tests {
         let _record = CoreType::Record;
         let _variant = CoreType::Variant;
         let _tuple = CoreType::Tuple;
-        let _generic = CoreType::Generic;
+        let _generic = CoreType::Generic(None);
         // Parameterized variants (now carry inner types).
         let _list = CoreType::List(Box::new(CoreType::Int));
         let _map = CoreType::Map(Box::new(CoreType::Text), Box::new(CoreType::Int));
