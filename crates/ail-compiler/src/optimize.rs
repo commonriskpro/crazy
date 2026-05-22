@@ -284,7 +284,14 @@ fn anf_node_count(expr: &AnfExpr) -> usize {
         | AnfExpr::RuntimeCheck { .. }
         | AnfExpr::WhileLoop { .. }
         | AnfExpr::ShortCircuitAnd { .. }
-        | AnfExpr::ShortCircuitOr { .. } => 1,
+        | AnfExpr::ShortCircuitOr { .. }
+        | AnfExpr::Assume { .. }
+        | AnfExpr::Abort { .. }
+        | AnfExpr::IndexGet { .. }
+        | AnfExpr::MapNew { .. }
+        | AnfExpr::SetNew { .. }
+        | AnfExpr::ForEach { .. }
+        | AnfExpr::Fold { .. } => 1,
         AnfExpr::Let { value, body, .. } => {
             1 + anf_node_count(value) + anf_node_count(body)
         }
