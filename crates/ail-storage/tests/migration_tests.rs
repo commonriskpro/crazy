@@ -7,13 +7,19 @@
 //   - "current_version on empty store returns 0"
 //   - "current_version after migration returns 3"
 //   - "partial migration from v1 advances to v3"
+//   - "apply_with_output returns MigrationReport for each step"
+//   - "DomainVersions tracks all six schema domains"
+//   - "migration creates new snapshot without overwriting old"
 
 use std::sync::Arc;
 
 use ail_storage::{
     MigrationError,
     backends::memory::MemoryObjectStore,
-    migration::{V0ToV1Migration, default_catalog, write_version, MigrationStore},
+    migration::{
+        DomainVersions, MigrationReport, V0ToV1Migration, default_catalog, write_version,
+        MigrationStore,
+    },
 };
 use futures::executor::block_on;
 
@@ -169,5 +175,181 @@ fn v0_to_v1_migration_standalone() {
         catalog.register(V0ToV1Migration);
         let version = catalog.apply(Arc::clone(&store)).await.expect("apply");
         assert_eq!(version, 1);
+    });
+}
+
+// ── apply_with_output returns MigrationReport for each step ──────────────────
+// Spec: migration report records structural equivalence / preserved semantics.
+#[test]
+fn apply_with_output_returns_reports() {
+    block_on(async {
+        let store = Arc::new(MemoryObjectStore::new());
+        let catalog = default_catalog();
+        let (version, outputs) = catalog
+            .apply_with_output(Arc::clone(&store))
+            .await
+            .expect("apply_with_output must succeed");
+        assert_eq!(version, 3, "must advance to version 3");
+        assert_eq!(outputs.len(), 3, "must have one output per migration step");
+        // Every step must carry a report.
+        for (i, output) in outputs.iter().enumerate() {
+            assert!(
+                output.report.is_some(),
+                "step {i} must have a MigrationReport"
+            );
+        }
+        // First step report must assert structural equivalence.
+        let report = outputs[0].report.as_ref().unwrap();
+        assert!(
+            report.structural_equivalence,
+            "step 0 must assert structural equivalence"
+        );
+    });
+}
+
+// ── MigrationReport preserved_semantics is non-empty ─────────────────────────
+#[test]
+fn migration_report_has_preserved_semantics() {
+    block_on(async {
+        let store = Arc::new(MemoryObjectStore::new());
+        let catalog = default_catalog();
+        let (_version, outputs) = catalog
+            .apply_with_output(Arc::clone(&store))
+            .await
+            .expect("apply_with_output");
+        for (i, output) in outputs.iter().enumerate() {
+            let report = output.report.as_ref().unwrap();
+            assert!(
+                !report.preserved_semantics.is_empty(),
+                "step {i} report must list at least one preserved semantic"
+            );
+        }
+    });
+}
+
+// ── DomainVersions has all six required domain fields ────────────────────────
+// Spec: storage versions all listed schema domains:
+//   graph, core_ir, acl, verification, runtime, artifact
+#[test]
+fn domain_versions_has_all_six_fields() {
+    let dv = DomainVersions {
+        graph: 1,
+        core_ir: 2,
+        acl: 3,
+        verification: 4,
+        runtime: 5,
+        artifact: 6,
+    };
+    assert_eq!(dv.graph, 1);
+    assert_eq!(dv.core_ir, 2);
+    assert_eq!(dv.acl, 3);
+    assert_eq!(dv.verification, 4);
+    assert_eq!(dv.runtime, 5);
+    assert_eq!(dv.artifact, 6);
+}
+
+// ── DomainVersions default is all zeros ──────────────────────────────────────
+#[test]
+fn domain_versions_default_is_all_zeros() {
+    let dv = DomainVersions::default();
+    assert_eq!(dv.graph, 0);
+    assert_eq!(dv.core_ir, 0);
+    assert_eq!(dv.acl, 0);
+    assert_eq!(dv.verification, 0);
+    assert_eq!(dv.runtime, 0);
+    assert_eq!(dv.artifact, 0);
+}
+
+// ── DomainVersions domains are independent ────────────────────────────────────
+// Advancing graph version does not change acl or runtime.
+#[test]
+fn domain_versions_domains_are_independent() {
+    let mut dv = DomainVersions::default();
+    dv.graph = 4;
+    assert_eq!(dv.acl, 0, "acl must stay at 0 when only graph advances");
+    assert_eq!(dv.runtime, 0, "runtime must stay at 0 when only graph advances");
+    dv.acl = 2;
+    assert_eq!(dv.graph, 4, "graph must stay at 4 when only acl advances");
+}
+
+// ── MigrationReport is round-trippable as a value ────────────────────────────
+#[test]
+fn migration_report_fields_are_accessible() {
+    let report = MigrationReport {
+        description: "test migration".to_owned(),
+        structural_equivalence: true,
+        preserved_semantics: vec!["all nodes preserved".to_owned()],
+        pre_snapshot_id: None,
+        post_snapshot_id: None,
+    };
+    assert_eq!(report.description, "test migration");
+    assert!(report.structural_equivalence);
+    assert_eq!(report.preserved_semantics.len(), 1);
+}
+
+// ── Migration creating a new snapshot (output.new_snapshot) ──────────────────
+// Spec: Migration creates new snapshot; old snapshot not overwritten.
+// We verify that the output type can carry a SnapshotEnvelope and that the
+// catalog preserves it when returned via apply_with_output.
+#[test]
+fn migration_output_can_carry_new_snapshot() {
+    use ail_storage::graph::SnapshotEnvelope;
+    use ail_storage::object::ObjectId;
+    use ail_storage::migration::{Migration, MigrationCatalog, MigrationOutput, MigrationStore};
+    use std::pin::Pin;
+    use std::future::Future;
+
+    // A migration that produces a new snapshot.
+    struct SnapshotCreatingMigration;
+    impl Migration for SnapshotCreatingMigration {
+        fn source_version(&self) -> u32 { 0 }
+        fn target_version(&self) -> u32 { 1 }
+        fn up(
+            &self,
+            store: MigrationStore,
+        ) -> Pin<Box<dyn Future<Output = Result<MigrationOutput, ail_storage::MigrationError>> + Send + '_>> {
+            Box::pin(async move {
+                write_version(&store, 1).await?;
+                let snap = SnapshotEnvelope {
+                    id: ObjectId::from_bytes(&[0xab; 32]),
+                    graph_root_hash: ObjectId::from_bytes(&[0xcd; 32]),
+                    parent_id: None,
+                    applied_change_id: None,
+                    created_at: 12345,
+                    verification_report_hash: None,
+                };
+                Ok(MigrationOutput {
+                    new_snapshot: Some(snap),
+                    report: Some(MigrationReport {
+                        description: "snapshot migration".to_owned(),
+                        structural_equivalence: true,
+                        preserved_semantics: vec!["genesis snapshot created".to_owned()],
+                        pre_snapshot_id: None,
+                        post_snapshot_id: Some(ObjectId::from_bytes(&[0xab; 32])),
+                    }),
+                })
+            })
+        }
+    }
+
+    block_on(async {
+        let store = Arc::new(MemoryObjectStore::new());
+        let mut catalog = MigrationCatalog::new();
+        catalog.register(SnapshotCreatingMigration);
+        let (_version, outputs) = catalog
+            .apply_with_output(Arc::clone(&store))
+            .await
+            .expect("apply_with_output");
+        assert_eq!(outputs.len(), 1);
+        let output = &outputs[0];
+        let snap = output.new_snapshot.as_ref().expect("must have new snapshot");
+        assert_eq!(snap.id, ail_storage::object::ObjectId::from_bytes(&[0xab; 32]));
+        assert_eq!(snap.created_at, 12345);
+        // Report records the post snapshot id.
+        let report = output.report.as_ref().unwrap();
+        assert_eq!(
+            report.post_snapshot_id,
+            Some(ail_storage::object::ObjectId::from_bytes(&[0xab; 32]))
+        );
     });
 }
