@@ -5,10 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-ail-core = { workspace = true }
-blake3   = { workspace = true }
-ciborium = { workspace = true }
-serde    = { workspace = true }
+ail-core      = { workspace = true }
+blake3        = { workspace = true }
+ciborium      = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde         = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }
 
 [lints]
 workspace = true
