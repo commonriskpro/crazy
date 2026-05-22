@@ -83,6 +83,37 @@ fn compiler_wasm_for_expr(expr: AnfExpr, name: &str) -> Vec<u8> {
     emit_wasm(&anf).expect("emit_wasm failed").wasm
 }
 
+fn invoke_compiler_expr(expr: AnfExpr, name: &str) -> RuntimeValue {
+    let wasm = compiler_wasm_for_expr(expr, name);
+    let manifest = CapabilityManifest {
+        module: format!("{name}-test"),
+        requires: vec![],
+    };
+    let profile = matching_profile(&wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("WASM must instantiate");
+
+    let export = name.rsplit('.').next().unwrap_or(name);
+    instance.invoke(export, &[]).expect("invoke must succeed")
+}
+
+fn binary_i64_call(func: &str, left: i64, right: i64) -> AnfExpr {
+    AnfExpr::Let {
+        name: "a".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(left))),
+        body: Box::new(AnfExpr::Let {
+            name: "b".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(right))),
+            body: Box::new(AnfExpr::Call {
+                func: func.to_string(),
+                args: vec!["a".to_string(), "b".to_string()],
+            }),
+        }),
+    }
+}
+
 // ── Scenario 1: Malformed WASM is rejected ────────────────────────────────
 
 // Garbage bytes that are not a valid WASM module must fail with
@@ -268,6 +299,68 @@ fn compiler_function_call_double_21_invokes_to_42() {
 
     let value = instance.invoke("main", &[]).expect("main must invoke");
     assert_eq!(value, RuntimeValue::I64(42));
+}
+
+#[test]
+fn compiler_arithmetic_ops_invoke_with_i64_results() {
+    let cases = [
+        ("add", binary_i64_call("i64.add", 3, 4), 7),
+        ("mul", binary_i64_call("i64.mul", 6, 7), 42),
+        ("sub", binary_i64_call("i64.sub", 50, 8), 42),
+        ("div", binary_i64_call("i64.div_s", 84, 2), 42),
+        ("mod", binary_i64_call("i64.rem_s", 85, 43), 42),
+    ];
+
+    for (name, expr, expected) in cases {
+        assert_eq!(
+            invoke_compiler_expr(expr, &format!("fn.{name}")),
+            RuntimeValue::I64(expected),
+            "{name} should evaluate to {expected}"
+        );
+    }
+}
+
+#[test]
+fn compiler_comparison_ops_invoke_with_i64_boolean_results() {
+    let cases = [
+        ("eq", binary_i64_call("i64.eq", 42, 42), 1),
+        ("lt", binary_i64_call("i64.lt_s", 3, 5), 1),
+        ("ne", binary_i64_call("i64.ne", 42, 7), 1),
+        ("le", binary_i64_call("i64.le_s", 42, 42), 1),
+        ("gt", binary_i64_call("i64.gt_s", 9, 5), 1),
+        ("ge", binary_i64_call("i64.ge_s", 42, 42), 1),
+    ];
+
+    for (name, expr, expected) in cases {
+        assert_eq!(
+            invoke_compiler_expr(expr, &format!("fn.{name}")),
+            RuntimeValue::I64(expected),
+            "{name} should evaluate to {expected}"
+        );
+    }
+}
+
+#[test]
+fn compiler_unary_ops_invoke_with_i64_results() {
+    let neg = AnfExpr::Let {
+        name: "x".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(-42))),
+        body: Box::new(AnfExpr::Call {
+            func: "i64.neg".to_string(),
+            args: vec!["x".to_string()],
+        }),
+    };
+    let not = AnfExpr::Let {
+        name: "x".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+        body: Box::new(AnfExpr::Call {
+            func: "i64.eqz".to_string(),
+            args: vec!["x".to_string()],
+        }),
+    };
+
+    assert_eq!(invoke_compiler_expr(neg, "fn.neg"), RuntimeValue::I64(42));
+    assert_eq!(invoke_compiler_expr(not, "fn.not"), RuntimeValue::I64(1));
 }
 
 // TRIANGULATE: the 8-byte WASM header (minimal valid module) also succeeds.

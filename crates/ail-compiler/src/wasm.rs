@@ -435,6 +435,56 @@ fn emit_local_get<'a>(ctx: &WasmCodegenCtx<'a>, name: &str, insns: &mut Vec<Inst
     }
 }
 
+fn emit_i64_primitive_call<'a>(
+    func: &str,
+    arg_count: usize,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    match (func, arg_count) {
+        ("i64.add" | "+" | "add", 2) => insns.push(Instruction::I64Add),
+        ("i64.sub" | "-" | "sub", 2) => insns.push(Instruction::I64Sub),
+        ("i64.mul" | "*" | "mul", 2) => insns.push(Instruction::I64Mul),
+        ("i64.div_s" | "/" | "div", 2) => insns.push(Instruction::I64DivS),
+        ("i64.rem_s" | "%" | "mod", 2) => insns.push(Instruction::I64RemS),
+        ("i64.and" | "and", 2) => insns.push(Instruction::I64And),
+        ("i64.or" | "or", 2) => insns.push(Instruction::I64Or),
+        ("i64.neg" | "neg" | "negate", 1) => {
+            insns.push(Instruction::I64Const(-1));
+            insns.push(Instruction::I64Mul);
+        }
+        ("i64.eq" | "==" | "eq", 2) => {
+            insns.push(Instruction::I64Eq);
+            insns.push(Instruction::I64ExtendI32U);
+        }
+        ("i64.ne" | "!=" | "ne", 2) => {
+            insns.push(Instruction::I64Ne);
+            insns.push(Instruction::I64ExtendI32U);
+        }
+        ("i64.lt_s" | "<" | "lt", 2) => {
+            insns.push(Instruction::I64LtS);
+            insns.push(Instruction::I64ExtendI32U);
+        }
+        ("i64.le_s" | "<=" | "le", 2) => {
+            insns.push(Instruction::I64LeS);
+            insns.push(Instruction::I64ExtendI32U);
+        }
+        ("i64.gt_s" | ">" | "gt", 2) => {
+            insns.push(Instruction::I64GtS);
+            insns.push(Instruction::I64ExtendI32U);
+        }
+        ("i64.ge_s" | ">=" | "ge", 2) => {
+            insns.push(Instruction::I64GeS);
+            insns.push(Instruction::I64ExtendI32U);
+        }
+        ("i64.eqz" | "not" | "!", 1) => {
+            insns.push(Instruction::I64Eqz);
+            insns.push(Instruction::I64ExtendI32U);
+        }
+        _ => return None,
+    }
+    Some(ValType::I64)
+}
+
 fn emit_condition_get<'a>(ctx: &WasmCodegenCtx<'a>, name: &str, insns: &mut Vec<Instruction<'a>>) {
     if let Some((idx, ty)) = ctx.lookup(name) {
         insns.push(Instruction::LocalGet(idx));
@@ -662,9 +712,8 @@ fn emit_anf_expr<'a>(
                     return None;
                 }
             }
-            if matches!(func.as_str(), "i64.add" | "+") && args.len() == 2 {
-                insns.push(Instruction::I64Add);
-                Some(ValType::I64)
+            if let Some(ty) = emit_i64_primitive_call(func, args.len(), insns) {
+                Some(ty)
             } else if let Some(idx) = functions.get(func) {
                 insns.push(Instruction::Call(*idx));
                 Some(ValType::I64)
