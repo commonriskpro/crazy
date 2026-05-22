@@ -1316,10 +1316,20 @@ fn emit_anf_expr<'a>(
         | AnfExpr::CellNew { .. }
         | AnfExpr::CellGet { .. }
         | AnfExpr::CellSet { .. }
-        | AnfExpr::RuntimeCheck { .. }
         | AnfExpr::ResourceAcquire { .. }
         | AnfExpr::ResourceRelease { .. } => {
             insns.push(Instruction::Unreachable);
+            None
+        }
+
+        // ── RuntimeCheck ─────────────────────────────────────────────────
+        // Emit a conditional trap: if `cond` is non-zero (violation detected)
+        // → Unreachable.  If `cond` is zero → continue silently.
+        AnfExpr::RuntimeCheck { cond, .. } => {
+            emit_condition_get(ctx, cond, insns);
+            insns.push(Instruction::If(wasm_encoder::BlockType::Empty));
+            insns.push(Instruction::Unreachable);
+            insns.push(Instruction::End);
             None
         }
 
@@ -2127,6 +2137,103 @@ mod tests {
         assert_eq!(
             art1.wasm, art2.wasm,
             "same AnfIr must produce byte-identical WASM (stable discriminant)"
+        );
+    }
+
+    // ── TASK-A5: RuntimeCheck conditional trap tests (TDD RED) ───────────
+    // Spec scenarios C-3a, C-3b.
+    // These tests are structural (wasmparser) — they verify the emitted WASM
+    // instruction sequence for RuntimeCheck without requiring runtime execution.
+
+    fn emit_runtime_check_wasm(cond_name: &str) -> Vec<u8> {
+        use crate::anf::AnfBinding;
+        // Let "ok" = Int(1); RuntimeCheck { cond: "ok", .. }
+        let binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.guarded".to_string(),
+            expr: AnfExpr::Let {
+                name: cond_name.to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                body: Box::new(AnfExpr::RuntimeCheck {
+                    check_ref: "rtcheck.test".to_string(),
+                    cond: cond_name.to_string(),
+                    msg: "check failed".to_string(),
+                }),
+            },
+        };
+        let artifact = emit_wasm(&sealed_anf(vec![binding])).expect("emit_wasm");
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+        artifact.wasm
+    }
+
+    // C-3a: RuntimeCheck emits a conditional trap (If+Unreachable+End),
+    // not an unconditional Unreachable.
+    // This test is RED with the current unconditional-Unreachable implementation.
+    #[test]
+    fn runtime_check_emits_conditional_trap_not_unconditional() {
+        use wasmparser::{Operator, Parser, Payload};
+
+        let wasm = emit_runtime_check_wasm("ok");
+
+        let mut saw_if = false;
+        let mut saw_unreachable_in_if = false;
+        let mut in_if_block = false;
+
+        for payload in Parser::new(0).parse_all(&wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    match reader.read().unwrap() {
+                        Operator::If { .. } => {
+                            saw_if = true;
+                            in_if_block = true;
+                        }
+                        Operator::Unreachable if in_if_block => {
+                            saw_unreachable_in_if = true;
+                        }
+                        Operator::End if in_if_block => {
+                            in_if_block = false;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_if,
+            "RuntimeCheck must emit an If instruction for the conditional trap"
+        );
+        assert!(
+            saw_unreachable_in_if,
+            "RuntimeCheck must emit Unreachable inside an If block"
+        );
+    }
+
+    // C-3b: A RuntimeCheck-returning function must NOT be exported
+    // (binding_result returns None for RuntimeCheck → not exported).
+    #[test]
+    fn runtime_check_function_is_not_exported() {
+        use wasmparser::{ExternalKind, Parser, Payload};
+
+        let wasm = emit_runtime_check_wasm("ok");
+
+        let mut export_names: Vec<String> = Vec::new();
+        for payload in Parser::new(0).parse_all(&wasm) {
+            if let Payload::ExportSection(exports) = payload.unwrap() {
+                for export in exports {
+                    let e = export.unwrap();
+                    if e.kind == ExternalKind::Func {
+                        export_names.push(e.name.to_string());
+                    }
+                }
+            }
+        }
+
+        // RuntimeCheck returns None → binding_result returns None → not exported.
+        assert!(
+            !export_names.contains(&"guarded".to_string()),
+            "RuntimeCheck-only function must not be exported (returns no value); exports: {export_names:?}"
         );
     }
 
