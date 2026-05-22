@@ -297,7 +297,15 @@ fn infer_expr_type(expr: &AnfExpr, locals: &mut Vec<(String, ValType)>) -> Optio
         | AnfExpr::CellSet { .. }
         | AnfExpr::RuntimeCheck { .. }
         | AnfExpr::ResourceAcquire { .. }
-        | AnfExpr::ResourceRelease { .. } => None,
+        | AnfExpr::ResourceRelease { .. }
+        // ola5 Gap 2 — new primitives
+        | AnfExpr::Assume { .. }
+        | AnfExpr::Abort { .. }
+        | AnfExpr::ForEach { .. }
+        | AnfExpr::Fold { .. } => None,
+        AnfExpr::MapNew { .. }
+        | AnfExpr::SetNew { .. }
+        | AnfExpr::IndexGet { .. } => Some(ValType::I64),
         AnfExpr::FieldUpdate { value, .. } => infer_expr_type(value, locals).or(Some(ValType::I32)),
     }
 }
@@ -1498,6 +1506,24 @@ fn emit_anf_expr<'a>(
             insns.push(Instruction::If(wasm_encoder::BlockType::Empty));
             insns.push(Instruction::Unreachable);
             insns.push(Instruction::End);
+            None
+        }
+
+        // ── ola5 Gap 2 — new primitives (WASM stubs) ─────────────────────
+        // Assume: no runtime effect.
+        AnfExpr::Assume { .. } => None,
+        // Abort: always unreachable.
+        AnfExpr::Abort { .. } => {
+            insns.push(Instruction::Unreachable);
+            None
+        }
+        // Collection construction and access — WASM stubs (host-managed).
+        AnfExpr::MapNew { .. }
+        | AnfExpr::SetNew { .. }
+        | AnfExpr::IndexGet { .. }
+        | AnfExpr::ForEach { .. }
+        | AnfExpr::Fold { .. } => {
+            insns.push(Instruction::Unreachable);
             None
         }
 

@@ -229,6 +229,14 @@ fn is_pure(expr: &AnfExpr) -> bool {
         | AnfExpr::CellNew { .. }
         | AnfExpr::CellGet { .. }
         | AnfExpr::CellSet { .. }
+        // ola5 Gap 2 — new primitives
+        | AnfExpr::Assume { .. }
+        | AnfExpr::Abort { .. }
+        | AnfExpr::IndexGet { .. }
+        | AnfExpr::MapNew { .. }
+        | AnfExpr::SetNew { .. }
+        | AnfExpr::ForEach { .. }
+        | AnfExpr::Fold { .. }
         | AnfExpr::Placeholder => false,
     }
 }
@@ -298,7 +306,18 @@ fn uses_var(expr: &AnfExpr, name: &str) -> bool {
         AnfExpr::Literal(_)
         | AnfExpr::Continue
         | AnfExpr::ChannelNew { .. }
+        // ola5 Gap 2 — new primitives
+        | AnfExpr::Assume { .. }
+        | AnfExpr::Abort { .. }
+        | AnfExpr::Fold { .. }
         | AnfExpr::Placeholder => false,
+        AnfExpr::IndexGet { collection, index } => collection == name || index == name,
+        AnfExpr::MapNew { entries } => entries.iter().any(|(k, v)| k == name || v == name),
+        AnfExpr::SetNew { elements } => elements.iter().any(|e| e == name),
+        AnfExpr::ForEach { collection, body, binding } => {
+            collection == name
+                || (!binding.is_empty() && binding != name && uses_var(body, name))
+        }
     }
 }
 
