@@ -15,9 +15,10 @@ serde       = { workspace = true }
 z3          = { workspace = true, optional = true }
 
 [dev-dependencies]
-ail-change = { workspace = true }
-ail-core   = { workspace = true }
-ciborium   = { workspace = true }
+ail-change  = { workspace = true }
+ail-core    = { workspace = true }
+ciborium    = { workspace = true }
+serde_json  = { workspace = true }
 
 [lints]
 workspace = true

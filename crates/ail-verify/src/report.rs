@@ -22,6 +22,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::diagnostic::Diagnostic;
+use crate::policy::{PolicyAudit, PolicyDecision};
+
+// Re-export PolicyAudit sub-types so callers can import from `report` module.
+pub use crate::policy::PolicyAuditEntry;
 
 // ── VerificationState ─────────────────────────────────────────────────────
 
@@ -95,6 +99,9 @@ pub struct VerificationEntry {
 /// `diagnostics` is populated by `Checker` and `ContractChecker` alongside
 /// `entries` when verification conditions are violated.  An empty
 /// `diagnostics` vec means no structured violations were found.
+///
+/// `policy_decision` is set by the caller after running `PolicyEngine::evaluate`.
+/// It is absent (`None`) in reports that have not yet gone through the policy layer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationReport {
     /// Verification entries in graph traversal order.
@@ -107,9 +114,22 @@ pub struct VerificationReport {
     /// Aggregated counts by verification state.
     #[serde(default)]
     pub summary_counts: SummaryCounts,
+    /// Policy engine decision for this report.
+    ///
+    /// `None` means the policy layer has not yet been applied.
+    /// `Some(decision)` contains the result of `PolicyEngine::evaluate`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_decision: Option<PolicyDecision>,
+    /// Per-entry policy audit trail produced by `PolicyEngine::evaluate_with_audit`.
+    ///
+    /// Records the profile used, per-entry gate decisions, and approval scopes
+    /// consulted.  `None` means no audit was requested or stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_audit: Option<PolicyAudit>,
 }
 
 /// Aggregated counts of entries by verification state.
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SummaryCounts {
     pub verified_count: usize,

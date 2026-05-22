@@ -268,6 +268,7 @@ dependencies = [
  "ail-package",
  "ciborium",
  "serde",
+ "serde_json",
  "z3",
 ]
 
