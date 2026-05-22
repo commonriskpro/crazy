@@ -704,6 +704,535 @@ fn diff_invalid_format_exits_one() {
         .code(1);
 }
 
+// ── G31: rollback ─────────────────────────────────────────────────────────
+
+/// SC-R1: rollback with valid snap-id exits 0 and prints new snapshot id.
+#[test]
+fn rollback_valid_id_exits_zero() {
+    let snap_id = "de".repeat(32); // 64 valid hex chars
+    ail()
+        .args(["rollback", "--to", &snap_id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("new snapshot"));
+}
+
+/// SC-R2: rollback with bad-id exits 1.
+#[test]
+fn rollback_invalid_id_exits_one() {
+    ail()
+        .args(["rollback", "--to", "not-a-valid-id"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("invalid")));
+}
+
+/// SC-R3: rollback --json produces JSON with new_snapshot_id field.
+#[test]
+fn rollback_json_has_new_snapshot_id() {
+    let snap_id = "de".repeat(32);
+    let output = ail()
+        .args(["rollback", "--to", &snap_id, "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        v["data"]["new_snapshot_id"].is_string(),
+        "data.new_snapshot_id must be a string; got: {v}"
+    );
+}
+
+// ── G31: rebase ───────────────────────────────────────────────────────────
+
+/// SC-RB1: rebase with valid change-id and onto exits 0.
+#[test]
+fn rebase_valid_ids_exits_zero() {
+    let change_id = "ab".repeat(32);
+    let onto = "cd".repeat(32);
+    ail()
+        .args(["rebase", &change_id, "--onto", &onto])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rebased").or(predicate::str::contains("conflicts")));
+}
+
+/// SC-RB2: rebase with invalid change-id exits 1.
+#[test]
+fn rebase_invalid_change_id_exits_one() {
+    ail()
+        .args(["rebase", "bad-id", "--onto", &"cd".repeat(32)])
+        .assert()
+        .failure()
+        .code(1);
+}
+
+/// SC-RB3: rebase --json produces JSON with conflicts and repair_options.
+#[test]
+fn rebase_json_has_conflicts_and_repair_options() {
+    let change_id = "ab".repeat(32);
+    let onto = "cd".repeat(32);
+    let output = ail()
+        .args(["rebase", &change_id, "--onto", &onto, "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        v["data"]["conflicts"].is_array(),
+        "data.conflicts must be an array; got: {v}"
+    );
+    assert!(
+        v["data"]["repair_options"].is_array(),
+        "data.repair_options must be an array; got: {v}"
+    );
+}
+
+// ── G31: merge ────────────────────────────────────────────────────────────
+
+/// SC-M1: merge exits 0 and prints merge result.
+#[test]
+fn merge_exits_zero() {
+    ail()
+        .args(["merge", "feature.checkout", "--into", "main"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged"));
+}
+
+/// SC-M2: merge --json produces JSON with merged_snapshot_id.
+#[test]
+fn merge_json_has_merged_snapshot_id() {
+    let output = ail()
+        .args(["merge", "feature.checkout", "--into", "main", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        v["data"]["merged_snapshot_id"].is_string(),
+        "data.merged_snapshot_id must be a string; got: {v}"
+    );
+}
+
+// ── G31: refactor ─────────────────────────────────────────────────────────
+
+/// SC-RF1: refactor exits 0 and prints ChangeSet id.
+#[test]
+fn refactor_exits_zero() {
+    ail()
+        .args(["refactor", "extract-function", "fn.checkout"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change_id").or(predicate::str::contains("refactor")));
+}
+
+/// SC-RF2: refactor --json produces JSON with change_id field.
+#[test]
+fn refactor_json_has_change_id() {
+    let output = ail()
+        .args(["refactor", "extract-function", "fn.checkout", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        v["data"]["change_id"].is_string(),
+        "data.change_id must be a string; got: {v}"
+    );
+}
+
+// ── G31: approve / reject ─────────────────────────────────────────────────
+
+/// SC-A1: approve with valid change-id exits 0.
+#[test]
+fn approve_valid_id_exits_zero() {
+    let change_id = "aa".repeat(32);
+    ail()
+        .args(["approve", &change_id, "--for", "public_api_changed"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("approved"));
+}
+
+/// SC-A2: approve with invalid change-id exits 1.
+#[test]
+fn approve_invalid_id_exits_one() {
+    ail()
+        .args(["approve", "bad-id", "--for", "public_api_changed"])
+        .assert()
+        .failure()
+        .code(1);
+}
+
+/// SC-A3: reject exits 0.
+#[test]
+fn reject_exits_zero() {
+    let change_id = "aa".repeat(32);
+    ail()
+        .args(["reject", &change_id, "--reason", "capability too broad"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rejected"));
+}
+
+/// SC-A4: approve --json produces JSON with approved and canonical_hash fields.
+#[test]
+fn approve_json_has_approved_and_canonical_hash() {
+    let change_id = "aa".repeat(32);
+    let output = ail()
+        .args(["approve", &change_id, "--for", "public_api_changed", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["approved"], true, "data.approved must be true; got: {v}");
+    assert!(
+        v["data"]["canonical_hash"].is_string(),
+        "data.canonical_hash must be a string; got: {v}"
+    );
+}
+
+/// Reject --json produces JSON with approved=false.
+#[test]
+fn reject_json_has_approved_false() {
+    let change_id = "aa".repeat(32);
+    let output = ail()
+        .args(["reject", &change_id, "--reason", "too broad", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["approved"], false, "data.approved must be false for reject; got: {v}");
+}
+
+// ── G31: policy ───────────────────────────────────────────────────────────
+
+/// SC-P1: policy check exits 0.
+#[test]
+fn policy_check_exits_zero() {
+    let change_id = "ab".repeat(32);
+    ail()
+        .args(["policy", "check", &change_id, "--profile", "prod"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("policy"));
+}
+
+/// SC-P2: policy explain exits 0.
+#[test]
+fn policy_explain_exits_zero() {
+    ail()
+        .args(["policy", "explain", "no_unverified_public_api"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rule").or(predicate::str::contains("description")));
+}
+
+/// SC-P3: policy set exits 0.
+#[test]
+fn policy_set_exits_zero() {
+    ail()
+        .args(["policy", "set", "max_new_capabilities=2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("policy").or(predicate::str::contains("updated")));
+}
+
+/// SC-P4: policy check --json produces JSON with policy_ok field.
+#[test]
+fn policy_check_json_has_policy_ok() {
+    let change_id = "ab".repeat(32);
+    let output = ail()
+        .args(["policy", "check", &change_id, "--profile", "prod", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        v["data"]["policy_ok"].is_boolean(),
+        "data.policy_ok must be a boolean; got: {v}"
+    );
+}
+
+/// policy explain --json produces JSON with rule and description.
+#[test]
+fn policy_explain_json_has_rule_and_description() {
+    let output = ail()
+        .args(["policy", "explain", "no_unverified_public_api", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        v["data"]["rule"].is_string(),
+        "data.rule must be a string; got: {v}"
+    );
+    assert!(
+        v["data"]["description"].is_string(),
+        "data.description must be a string; got: {v}"
+    );
+}
+
+/// policy set --json produces JSON with key and value.
+#[test]
+fn policy_set_json_has_key_and_value() {
+    let output = ail()
+        .args(["policy", "set", "max_new_capabilities=2", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        v["data"]["key"].is_string(),
+        "data.key must be a string; got: {v}"
+    );
+    assert!(
+        v["data"]["value"].is_string(),
+        "data.value must be a string; got: {v}"
+    );
+}
+
+// ── G31: package ──────────────────────────────────────────────────────────
+
+/// SC-PK1: package add exits 0 and prints trust/capabilities.
+#[test]
+fn package_add_exits_zero() {
+    ail()
+        .args(["package", "add", "payments.stripe@1.2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("trust").or(predicate::str::contains("added")));
+}
+
+/// SC-PK2: package verify exits 0.
+#[test]
+fn package_verify_exits_zero() {
+    ail()
+        .args(["package", "verify"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("verified").or(predicate::str::contains("packages")));
+}
+
+/// SC-PK3: package audit exits 0.
+#[test]
+fn package_audit_exits_zero() {
+    ail()
+        .args(["package", "audit"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("audit").or(predicate::str::contains("advisories")));
+}
+
+/// SC-PK4: package publish exits 0.
+#[test]
+fn package_publish_exits_zero() {
+    ail()
+        .args(["package", "publish"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("publish").or(predicate::str::contains("ok")));
+}
+
+/// SC-PK5: package explain exits 0.
+#[test]
+fn package_explain_exits_zero() {
+    ail()
+        .args(["package", "explain", "payments.stripe"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("package").or(predicate::str::contains("trust")));
+}
+
+/// SC-PK6: package add --json produces JSON with package and trust fields.
+#[test]
+fn package_add_json_has_package_and_trust() {
+    let output = ail()
+        .args(["package", "add", "payments.stripe@1.2", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        v["data"]["package"].is_string(),
+        "data.package must be a string; got: {v}"
+    );
+    assert!(
+        v["data"]["trust"].is_string(),
+        "data.trust must be a string; got: {v}"
+    );
+}
+
+/// package audit --json produces JSON with advisories array.
+#[test]
+fn package_audit_json_has_advisories() {
+    let output = ail()
+        .args(["package", "audit", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        v["data"]["advisories"].is_array(),
+        "data.advisories must be an array; got: {v}"
+    );
+}
+
+/// package verify --json produces JSON with verified field.
+#[test]
+fn package_verify_json_has_verified() {
+    let output = ail()
+        .args(["package", "verify", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        v["data"]["verified"].is_boolean(),
+        "data.verified must be a boolean; got: {v}"
+    );
+}
+
+/// package explain --json produces JSON with package and capabilities.
+#[test]
+fn package_explain_json_has_package_and_capabilities() {
+    let output = ail()
+        .args(["package", "explain", "payments.stripe", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        v["data"]["package"].is_string(),
+        "data.package must be a string; got: {v}"
+    );
+    assert!(
+        v["data"]["capabilities"].is_array(),
+        "data.capabilities must be an array; got: {v}"
+    );
+}
+
+// ── G31: doctor ───────────────────────────────────────────────────────────
+
+/// SC-D1: doctor exits 0 and prints check results.
+#[test]
+fn doctor_exits_zero() {
+    ail()
+        .args(["doctor"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok").or(predicate::str::contains("graph")));
+}
+
+/// SC-D2: doctor --json produces JSON with checks array.
+#[test]
+fn doctor_json_has_checks_array() {
+    let output = ail()
+        .args(["doctor", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        v["data"]["checks"].is_array(),
+        "data.checks must be an array; got: {v}"
+    );
+}
+
+/// SC-D3: each check has name, status, and message fields.
+#[test]
+fn doctor_json_checks_have_required_fields() {
+    let output = ail()
+        .args(["doctor", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    let checks = v["data"]["checks"].as_array().expect("checks must be array");
+    assert!(!checks.is_empty(), "doctor must report at least one check");
+
+    for check in checks {
+        assert!(
+            check["name"].is_string(),
+            "each check must have a name string; got: {check}"
+        );
+        assert!(
+            check["status"].is_string(),
+            "each check must have a status string; got: {check}"
+        );
+        assert!(
+            check["message"].is_string(),
+            "each check must have a message string; got: {check}"
+        );
+    }
+}
+
+/// G31: unknown subcommand error lists all new commands too.
+#[test]
+fn unknown_subcommand_lists_all_commands_including_new() {
+    let stderr = ail()
+        .arg("frobnicate")
+        .assert()
+        .failure()
+        .code(2)
+        .get_output()
+        .clone();
+
+    let err_text = std::str::from_utf8(&stderr.stderr).expect("stderr must be UTF-8");
+    for cmd in &["rollback", "rebase", "merge", "refactor", "approve", "reject", "policy", "package", "doctor"] {
+        assert!(
+            err_text.contains(cmd),
+            "error message must list '{cmd}'; got:\n{err_text}"
+        );
+    }
+}
+
 // ── private helpers ───────────────────────────────────────────────────────
 
 /// Extract the change-id value from human-readable `ail change` output.
