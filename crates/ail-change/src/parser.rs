@@ -10,7 +10,7 @@
 // directive       = ("author" | "description" | "intent" | "base") ws value nl
 // op_line         = "op" ws verb (ws kv)* nl
 // section         = section_name nl section_body "end" nl
-// section_name    = "metadata" | "requires" | "ops"
+// section_name    = "metadata" | "requires" | "ops" | "expect" | "approval"
 // section_body    = (directive | op_line | precondition | comment | blank)*
 // precondition    = ("assert_exists" | "assert_hash") ws args nl
 // kv              = key "=" value
@@ -53,7 +53,70 @@
 //
 // `parse_changeset` is a pure function: it takes `&str` and returns a `Result`.
 
+use std::collections::BTreeMap;
+
 use ail_core::semantic_graph::NodeRef;
+
+// ── OpArgs ────────────────────────────────────────────────────────────────
+
+/// Parsed key=value arguments for a single op line.
+///
+/// Keys and values are kept as strings; semantic validation happens downstream
+/// in op-schema validation and the canonicalizer.
+pub type OpArgs = BTreeMap<String, String>;
+
+// ── ParsedOp ──────────────────────────────────────────────────────────────
+
+/// A fully parsed op line: verb kind, full verb string, and kv args.
+///
+/// `kind` is the coarse `ChangeSetOp` variant derived from the verb prefix.
+/// `verb` is the complete verb as written (e.g. `"create_function"`).
+/// `args` holds every `key=value` pair from the op line, in sorted key order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedOp {
+    /// Coarse variant category of the op.
+    pub kind: ChangeSetOp,
+    /// Full verb as written in the source (e.g. `"create_function"`).
+    pub verb: String,
+    /// Key/value arguments from the op line.
+    pub args: OpArgs,
+}
+
+// ── ChangeComposition ─────────────────────────────────────────────────────
+
+/// Cross-changeset composition relationships.
+///
+/// All fields default to empty vecs; absent directives produce no entries.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ChangeComposition {
+    /// ChangeSet IDs that must be applied before this one.
+    pub depends_on: Vec<String>,
+    /// ChangeSet IDs superseded by this one.
+    pub supersedes: Vec<String>,
+    /// ChangeSet IDs that conflict with this one (require resolution).
+    pub conflicts_with: Vec<String>,
+    /// Parent epic or umbrella changeset this belongs to.
+    pub part_of: Vec<String>,
+    /// ChangeSet IDs blocked from applying until this one resolves.
+    pub blocks: Vec<String>,
+}
+
+// ── ExpectClaims ─────────────────────────────────────────────────────────
+
+/// Claims about the expected diff, written by the LLM in the `expect` section.
+///
+/// These are verifiable claims (not authoritative policy) — the toolchain
+/// checks them against the actual structural diff.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ExpectClaims(pub Vec<String>);
+
+// ── ApprovalRequirements ─────────────────────────────────────────────────
+
+/// Approval requirements declared in the `approval` section.
+///
+/// Each string is a raw `require_if <condition>` directive.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ApprovalRequirements(pub Vec<String>);
 
 use crate::{
     canonical::Precondition,
@@ -71,12 +134,26 @@ use crate::{
 /// declared in the `requires` section.  Preconditions are kept separate
 /// because `ChangeSet` itself is a pure value type with no precondition
 /// field; preconditions are attached during canonicalization.
+///
+/// `parsed_ops` mirrors `changeset.ops` but carries the full verb and
+/// kv args; use these for canonicalization and op-schema validation.
+/// `changeset.ops` is preserved for backward compatibility with apply tests.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedChangeSet {
     /// The typed changeset (ops + metadata + base snapshot).
     pub changeset: ChangeSet,
     /// Preconditions declared in the `requires` section.
     pub preconditions: Vec<Precondition>,
+    /// Enriched ops with full verb and kv args (parallel to `changeset.ops`).
+    pub parsed_ops: Vec<ParsedOp>,
+    /// ACL version declared by the changeset (defaults to `"1.0"`).
+    pub acl_version: String,
+    /// Claims about the expected diff (from `expect` section).
+    pub expect: Option<ExpectClaims>,
+    /// Approval requirements (from `approval` section).
+    pub approval: Option<ApprovalRequirements>,
+    /// Cross-changeset composition relationships (from `metadata` section).
+    pub composition: ChangeComposition,
 }
 
 // ── Section state ─────────────────────────────────────────────────────────
@@ -87,6 +164,8 @@ enum Section {
     Metadata,
     Requires,
     Ops,
+    Expect,
+    Approval,
 }
 
 // ── parse_changeset ───────────────────────────────────────────────────────
@@ -108,8 +187,13 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
     let mut author: Option<String> = None;
     let mut description: Option<String> = None;
     let mut base: Option<SnapshotId> = None;
+    let mut acl_version: String = "1.0".to_string();
     let mut ops: Vec<ChangeSetOp> = Vec::new();
+    let mut parsed_ops: Vec<ParsedOp> = Vec::new();
     let mut preconditions: Vec<Precondition> = Vec::new();
+    let mut expect_claims: Vec<String> = Vec::new();
+    let mut approval_reqs: Vec<String> = Vec::new();
+    let mut composition = ChangeComposition::default();
 
     let mut section = Section::TopLevel;
     let mut line_num: usize = 0;
@@ -135,13 +219,26 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
                 ));
             }
             in_change = true;
+            // Parse inline attrs from the change line (e.g. `acl=1.0 base=0`).
+            let after_id = line
+                .splitn(3, ' ')
+                .nth(2)
+                .unwrap_or("")
+                .trim();
+            if !after_id.is_empty() {
+                parse_change_line_attrs(after_id, line_num, &mut acl_version, &mut base)?;
+            }
             continue;
         }
 
         // Top-level `end` closes the change block.
         if line == "end" {
             match section {
-                Section::Metadata | Section::Requires | Section::Ops => {
+                Section::Metadata
+                | Section::Requires
+                | Section::Ops
+                | Section::Expect
+                | Section::Approval => {
                     // Closes the current inner section.
                     section = Section::TopLevel;
                 }
@@ -167,13 +264,29 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
                 section = Section::Ops;
                 continue;
             }
+            "expect" => {
+                section = Section::Expect;
+                continue;
+            }
+            "approval" => {
+                section = Section::Approval;
+                continue;
+            }
             _ => {}
         }
 
         // Dispatch by current section.
         match section {
             Section::Metadata => {
-                parse_metadata_line(line, line_num, &mut author, &mut description, &mut base)?;
+                parse_metadata_line(
+                    line,
+                    line_num,
+                    &mut author,
+                    &mut description,
+                    &mut base,
+                    &mut acl_version,
+                    &mut composition,
+                )?;
             }
             Section::Requires => {
                 parse_precondition_line(line, line_num, &mut preconditions)?;
@@ -183,11 +296,22 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
                     line,
                     line_num,
                     &mut ops,
+                    &mut parsed_ops,
                     &mut author,
                     &mut description,
                     &mut base,
+                    &mut acl_version,
+                    &mut composition,
                     &section,
                 )?;
+            }
+            Section::Expect => {
+                // Collect raw expect claim lines.
+                expect_claims.push(line.to_string());
+            }
+            Section::Approval => {
+                // Collect raw approval requirement lines.
+                approval_reqs.push(line.to_string());
             }
         }
     }
@@ -200,6 +324,8 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
                 Section::Metadata => "metadata",
                 Section::Requires => "requires",
                 Section::Ops => "ops",
+                Section::Expect => "expect",
+                Section::Approval => "approval",
                 Section::TopLevel => unreachable!(),
             }
         ));
@@ -221,7 +347,45 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
             ops,
         },
         preconditions,
+        parsed_ops,
+        acl_version,
+        expect: if expect_claims.is_empty() {
+            None
+        } else {
+            Some(ExpectClaims(expect_claims))
+        },
+        approval: if approval_reqs.is_empty() {
+            None
+        } else {
+            Some(ApprovalRequirements(approval_reqs))
+        },
+        composition,
     })
+}
+
+// ── parse_change_line_attrs ───────────────────────────────────────────────
+
+/// Parse inline attrs from the `change <id> <attrs>` header line.
+///
+/// Recognises `acl=<version>` and `base=<u64>`.
+fn parse_change_line_attrs(
+    attrs: &str,
+    line_num: usize,
+    acl_version: &mut String,
+    base: &mut Option<SnapshotId>,
+) -> Result<(), String> {
+    for token in attrs.split_whitespace() {
+        if let Some(v) = token.strip_prefix("acl=") {
+            *acl_version = v.to_string();
+        } else if let Some(v) = token.strip_prefix("base=") {
+            let id: u64 = v
+                .parse()
+                .map_err(|_| format!("line {line_num}: invalid base snapshot id in change line: '{v}'"))?;
+            *base = Some(SnapshotId(id));
+        }
+        // Unknown attrs are silently ignored (forward-compatible).
+    }
+    Ok(())
 }
 
 // ── parse_metadata_line ───────────────────────────────────────────────────
@@ -229,12 +393,15 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
 /// Parse a directive that supplies metadata (author, description, base, intent).
 ///
 /// Called when section is `TopLevel` or `Metadata`.
+#[allow(clippy::too_many_arguments)]
 fn parse_metadata_line(
     line: &str,
     line_num: usize,
     author: &mut Option<String>,
     description: &mut Option<String>,
     base: &mut Option<SnapshotId>,
+    acl_version: &mut String,
+    composition: &mut ChangeComposition,
 ) -> Result<(), String> {
     if let Some(v) = line.strip_prefix("author ") {
         *author = Some(v.trim().to_string());
@@ -248,6 +415,29 @@ fn parse_metadata_line(
             .parse()
             .map_err(|_| format!("line {line_num}: invalid base snapshot id: '{raw}'"))?;
         *base = Some(SnapshotId(id));
+    } else if let Some(v) = line.strip_prefix("language ") {
+        // `language acl/1.0` → extract "1.0"
+        let v = v.trim();
+        if let Some(ver) = v.strip_prefix("acl/") {
+            *acl_version = ver.to_string();
+        }
+        // Unknown language ids are silently ignored.
+    } else if let Some(v) = line.strip_prefix("depends_on ") {
+        composition.depends_on.push(v.trim().to_string());
+    } else if let Some(v) = line.strip_prefix("supersedes ") {
+        composition.supersedes.push(v.trim().to_string());
+    } else if let Some(v) = line.strip_prefix("conflicts_with ") {
+        composition.conflicts_with.push(v.trim().to_string());
+    } else if let Some(v) = line.strip_prefix("part_of ") {
+        composition.part_of.push(v.trim().to_string());
+    } else if let Some(v) = line.strip_prefix("blocks ") {
+        composition.blocks.push(v.trim().to_string());
+    } else if let Some(v) = line.strip_prefix("author_role ") {
+        // `author_role` is an optional metadata field — accepted silently.
+        let _ = v;
+    } else if let Some(v) = line.strip_prefix("reason ") {
+        // `reason` is optional free-text metadata — accepted silently.
+        let _ = v;
     } else if line.starts_with("op ") {
         // `op` lines inside `metadata` section are a syntax error.
         return Err(format!(
@@ -266,24 +456,38 @@ fn parse_metadata_line(
 /// When called for `Section::Ops`, only `op` lines are accepted.
 /// When called for `Section::TopLevel`, both `op` and metadata directives
 /// are accepted.
+#[allow(clippy::too_many_arguments)]
 fn parse_op_or_directive(
     line: &str,
     line_num: usize,
     ops: &mut Vec<ChangeSetOp>,
+    parsed_ops: &mut Vec<ParsedOp>,
     author: &mut Option<String>,
     description: &mut Option<String>,
     base: &mut Option<SnapshotId>,
+    acl_version: &mut String,
+    composition: &mut ChangeComposition,
     section: &Section,
 ) -> Result<(), String> {
     if let Some(rest) = line.strip_prefix("op ") {
         // Extract the verb (first token after "op ").
-        let verb = rest.split_whitespace().next().unwrap_or("");
-        let op =
+        let mut tokens = rest.splitn(2, |c: char| c.is_whitespace());
+        let verb = tokens.next().unwrap_or("").trim();
+        let args_str = tokens.next().unwrap_or("").trim();
+
+        let op_kind =
             map_verb(verb).ok_or_else(|| format!("line {line_num}: unknown op verb: '{verb}'"))?;
-        ops.push(op);
+        let args = parse_kv_args(args_str);
+
+        ops.push(op_kind.clone());
+        parsed_ops.push(ParsedOp {
+            kind: op_kind,
+            verb: verb.to_string(),
+            args,
+        });
     } else if *section == Section::TopLevel {
         // Allow metadata directives at the top level.
-        parse_metadata_line(line, line_num, author, description, base)?;
+        parse_metadata_line(line, line_num, author, description, base, acl_version, composition)?;
     } else {
         return Err(format!(
             "line {line_num}: expected 'op' directive inside 'ops' section, got: '{line}'"
@@ -400,6 +604,48 @@ fn map_verb(verb: &str) -> Option<ChangeSetOp> {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
+
+/// Parse a sequence of `key=value` tokens into an `OpArgs` map.
+///
+/// Handles quoted values (`"..."`) by stripping the surrounding quotes.
+/// Tokens that do not contain `=` are silently ignored (forward-compatible).
+pub fn parse_kv_args(args_str: &str) -> OpArgs {
+    let mut map = BTreeMap::new();
+    let mut remaining = args_str.trim();
+
+    while !remaining.is_empty() {
+        // Find the next `key=` boundary.
+        let eq_pos = match remaining.find('=') {
+            Some(p) => p,
+            None => break,
+        };
+        let key = remaining[..eq_pos].trim().to_string();
+        remaining = &remaining[eq_pos + 1..];
+
+        // Parse the value: quoted string or bare word.
+        let (value, rest) = if remaining.starts_with('"') {
+            // Scan for the closing quote.
+            let end = remaining[1..].find('"').map(|p| p + 2).unwrap_or(remaining.len());
+            let raw = &remaining[..end];
+            let value = extract_string_value(raw.trim());
+            let rest = remaining[end..].trim_start();
+            (value, rest)
+        } else {
+            // Bare word ends at the next whitespace.
+            let end = remaining.find(|c: char| c.is_whitespace()).unwrap_or(remaining.len());
+            let value = remaining[..end].trim().to_string();
+            let rest = remaining[end..].trim_start();
+            (value, rest)
+        };
+
+        if !key.is_empty() {
+            map.insert(key, value);
+        }
+        remaining = rest;
+    }
+
+    map
+}
 
 /// Extract the string content from a value token.
 ///
