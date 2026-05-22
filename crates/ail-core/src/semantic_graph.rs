@@ -343,6 +343,80 @@ pub struct CapabilityReqs {
     pub caps: Vec<String>,
 }
 
+// ── Change-language representation metadata ───────────────────────────────
+
+/// Export visibility attached to a graph node.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Visibility {
+    /// The node is exported as public API.
+    Public,
+    /// The node is not exported.
+    #[default]
+    Private,
+    /// The node is visible only inside an implementation boundary.
+    Internal,
+}
+
+/// Binding from a semantic name to an implementation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Binding {
+    /// Bound capability, name, or interface.
+    pub name: String,
+    /// Concrete implementation or handler.
+    pub implementation: String,
+    /// Optional runtime profile for the binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+/// Materialized inference attached to a graph node.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferredFact {
+    /// Inference category, such as `boundary`, `effects`, or `return`.
+    pub kind: String,
+    /// Inferred value or pending marker.
+    pub value: String,
+}
+
+/// Controlled generated artifact reference.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GeneratedArtifact {
+    /// Artifact category, such as `tests`, `sdk`, or `docs`.
+    pub kind: String,
+    /// Source or selector used to generate the artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Compile-time assertion attached to a graph node.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Assertion {
+    /// Assertion category, such as `exists`, `signature`, or `hash`.
+    pub kind: String,
+    /// Assertion value, hash, or marker.
+    pub value: String,
+}
+
+/// Semantic workflow state for a graph node.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkflowState {
+    /// Default editable state.
+    #[default]
+    Draft,
+    /// API, behavior, or contracts are locked.
+    Locked,
+    /// Proposal, inference, or assumption accepted.
+    Approved,
+    /// Proposal, inference, or assumption rejected.
+    Rejected,
+    /// Node has been verified.
+    Verified,
+    /// Node is undergoing an intentional migration.
+    Migrating,
+    /// Node is undergoing behavior-preserving refactoring.
+    Refactoring,
+}
+
 // ── GraphNode ─────────────────────────────────────────────────────────────
 
 /// A typed node in the semantic graph.
@@ -453,6 +527,34 @@ pub struct GraphNode {
     /// Checked by the type checker when verifying generic instantiations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constraint_set: Option<ConstraintSet>,
+
+    /// Export visibility requested through `expose` / `hide` ops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<Visibility>,
+
+    /// Handler/name bindings attached through `bind` ops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bindings: Vec<Binding>,
+
+    /// Inferred facts attached through `infer` ops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inferred: Vec<InferredFact>,
+
+    /// Derived implementation names attached through `derive` ops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derived_impls: Vec<String>,
+
+    /// Generated artifact references attached through `generate` ops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generated_artifacts: Vec<GeneratedArtifact>,
+
+    /// Compile-time assertions attached through `assert` ops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assertions: Vec<Assertion>,
+
+    /// Workflow state attached through workflow ops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_state: Option<WorkflowState>,
 }
 
 impl GraphNode {
@@ -497,6 +599,13 @@ impl GraphNode {
             interface_impls: None,
             refinement_ref: None,
             constraint_set: None,
+            visibility: None,
+            bindings: vec![],
+            inferred: vec![],
+            derived_impls: vec![],
+            generated_artifacts: vec![],
+            assertions: vec![],
+            workflow_state: None,
         }
     }
 }

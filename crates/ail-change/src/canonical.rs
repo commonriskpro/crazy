@@ -22,7 +22,8 @@
 use std::collections::BTreeMap;
 
 use ail_core::semantic_graph::{
-    CapabilityReqs, EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, RuntimeCheckMeta, TypeFacts,
+    Assertion, Binding, CapabilityReqs, EdgeKind, GeneratedArtifact, GraphEdge, GraphNode,
+    InferredFact, NodeKind, NodeRef, RuntimeCheckMeta, TypeFacts, Visibility, WorkflowState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -153,7 +154,33 @@ pub enum OpPayload {
     AddCapabilityReqByName { target: String, capability: String },
     /// Remove a capability requirement from a node by stable graph name.
     RemoveCapabilityReqByName { target: String, capability: String },
-    /// No-op placeholder; used for Infer/Verify and raw-ChangeSet-derived ops.
+    /// Set export visibility by stable graph name.
+    SetVisibilityByName {
+        target: String,
+        visibility: Visibility,
+    },
+    /// Add a binding to a node by stable graph name.
+    AddBindingByName { target: String, binding: Binding },
+    /// Add an inferred fact to a node by stable graph name.
+    AddInferredFactByName { target: String, fact: InferredFact },
+    /// Add a derived implementation to a node by stable graph name.
+    AddDerivedImplByName { target: String, impl_name: String },
+    /// Add a generated artifact reference to a node by stable graph name.
+    AddGeneratedArtifactByName {
+        target: String,
+        artifact: GeneratedArtifact,
+    },
+    /// Add a compile-time assertion to a node by stable graph name.
+    AddAssertionByName {
+        target: String,
+        assertion: Assertion,
+    },
+    /// Set workflow state by stable graph name.
+    SetWorkflowStateByName {
+        target: String,
+        state: WorkflowState,
+    },
+    /// No-op placeholder; used for raw ChangeSet ops or malformed parsed ops.
     Noop,
 }
 
@@ -609,6 +636,85 @@ fn materialize_payload(idx: usize, kind: &ChangeSetOp, verb: &str, args: &OpArgs
         (ChangeSetOp::Revoke, _) => target_and(args, "capability")
             .map(|(target, capability)| OpPayload::RemoveCapabilityReqByName { target, capability })
             .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Expose, _) => args
+            .get("target")
+            .cloned()
+            .map(|target| OpPayload::SetVisibilityByName {
+                target,
+                visibility: Visibility::Public,
+            })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Hide, _) => args
+            .get("target")
+            .cloned()
+            .map(|target| OpPayload::SetVisibilityByName {
+                target,
+                visibility: Visibility::Private,
+            })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Bind, _) => match (args.get("capability"), args.get("handler")) {
+            (Some(capability), Some(handler)) => OpPayload::AddBindingByName {
+                target: capability.clone(),
+                binding: Binding {
+                    name: capability.clone(),
+                    implementation: handler.clone(),
+                    profile: args.get("profile").cloned(),
+                },
+            },
+            _ => OpPayload::Noop,
+        },
+        (ChangeSetOp::Infer, _) => args
+            .get("target")
+            .cloned()
+            .map(|target| OpPayload::AddInferredFactByName {
+                target,
+                fact: InferredFact {
+                    kind: verb_suffix(verb, "infer"),
+                    value: inferred_value(args),
+                },
+            })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Derive, _) => args
+            .get("target")
+            .cloned()
+            .map(|target| OpPayload::AddDerivedImplByName {
+                target,
+                impl_name: verb_suffix(verb, "derive"),
+            })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Generate, _) => args
+            .get("target")
+            .cloned()
+            .map(|target| OpPayload::AddGeneratedArtifactByName {
+                target,
+                artifact: GeneratedArtifact {
+                    kind: verb_suffix(verb, "generate"),
+                    source: generated_source(args),
+                },
+            })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Assert, _) => args
+            .get("target")
+            .cloned()
+            .map(|target| OpPayload::AddAssertionByName {
+                target,
+                assertion: Assertion {
+                    kind: verb_suffix(verb, "assert"),
+                    value: assertion_value(args),
+                },
+            })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Lock, _) => workflow_payload(args, WorkflowState::Locked),
+        (ChangeSetOp::Refactor, _) => workflow_target(args).map_or(OpPayload::Noop, |target| {
+            OpPayload::SetWorkflowStateByName {
+                target,
+                state: WorkflowState::Refactoring,
+            }
+        }),
+        (ChangeSetOp::Migrate, _) => workflow_payload(args, WorkflowState::Migrating),
+        (ChangeSetOp::Approve, _) => workflow_payload(args, WorkflowState::Approved),
+        (ChangeSetOp::Reject, _) => workflow_payload(args, WorkflowState::Rejected),
+        (ChangeSetOp::Verify, _) => workflow_payload(args, WorkflowState::Verified),
         (ChangeSetOp::Deprecate, _) => target_and(args, "replacement")
             .map(|(target, value)| OpPayload::SetMetadataByName {
                 target,
@@ -626,11 +732,52 @@ fn materialize_payload(idx: usize, kind: &ChangeSetOp, verb: &str, args: &OpArgs
                 _ => OpPayload::Noop,
             }
         }
-        // These verbs need verifier/policy/runtime state or graph concepts that do
-        // not exist in SemanticGraph yet (public exports, handler bindings,
-        // inference products, locks, migrations, approvals, generated artifacts).
+        // Raw or malformed ops without enough graph identity remain no-ops.
         _ => OpPayload::Noop,
     }
+}
+
+fn verb_suffix(verb: &str, prefix: &str) -> String {
+    verb.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('_'))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(prefix)
+        .to_string()
+}
+
+fn inferred_value(args: &OpArgs) -> String {
+    args.get("type")
+        .or_else(|| args.get("effect"))
+        .or_else(|| args.get("value"))
+        .cloned()
+        .unwrap_or_else(|| "pending".to_string())
+}
+
+fn generated_source(args: &OpArgs) -> Option<String> {
+    args.get("from")
+        .or_else(|| args.get("language"))
+        .or_else(|| args.get("audience"))
+        .cloned()
+}
+
+fn assertion_value(args: &OpArgs) -> String {
+    args.get("hash")
+        .or_else(|| args.get("value"))
+        .cloned()
+        .unwrap_or_else(|| "true".to_string())
+}
+
+fn workflow_payload(args: &OpArgs, state: WorkflowState) -> OpPayload {
+    workflow_target(args).map_or(OpPayload::Noop, |target| {
+        OpPayload::SetWorkflowStateByName { target, state }
+    })
+}
+
+fn workflow_target(args: &OpArgs) -> Option<String> {
+    args.get("target")
+        .or_else(|| args.get("from"))
+        .or_else(|| args.get("scope"))
+        .cloned()
 }
 
 fn target_and(args: &OpArgs, key: &str) -> Option<(String, String)> {
@@ -736,7 +883,7 @@ fn compute_block_hash(op: &ChangeSetOp, idx: usize) -> BlockHash {
 mod tests {
     use super::*;
     use crate::parser::parse_changeset;
-    use ail_core::semantic_graph::{EdgeKind, NodeKind};
+    use ail_core::semantic_graph::{EdgeKind, NodeKind, Visibility, WorkflowState};
 
     fn minimal_change(op: &str) -> String {
         format!("change e2e base=0\nauthor tester\ndescription e2e\nop {op}\nend\n")
@@ -899,7 +1046,7 @@ end
     }
 
     #[test]
-    fn canonicalize_parsed_leaves_unsupported_workflow_ops_noop() {
+    fn canonicalize_parsed_materializes_semantic_graph_payloads() {
         let source = "\
 change e2e base=0
 author tester
@@ -916,7 +1063,7 @@ op refactor_inline target=fn.old_helper
 op migrate_api target=fn.checkout from=sig.v1 to=sig.v2
 op approve_inferred_boundary target=fn.checkout version=sig_123
 op reject_inferred_boundary target=fn.checkout version=sig_124
-op verify
+op verify target=fn.checkout
 end
 ";
         let canonical = canonicalize_parsed(parse_changeset(source).expect("fixture must parse"));
@@ -925,7 +1072,64 @@ end
             canonical
                 .ops
                 .iter()
-                .all(|op| matches!(op.payload, OpPayload::Noop))
+                .any(|op| matches!(op.payload, OpPayload::AddInferredFactByName { .. }))
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::AddBindingByName { .. }))
+        );
+        assert!(canonical.ops.iter().any(|op| matches!(
+            op.payload,
+            OpPayload::SetVisibilityByName {
+                visibility: Visibility::Public,
+                ..
+            }
+        )));
+        assert!(canonical.ops.iter().any(|op| matches!(
+            op.payload,
+            OpPayload::SetVisibilityByName {
+                visibility: Visibility::Private,
+                ..
+            }
+        )));
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::AddDerivedImplByName { .. }))
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::AddGeneratedArtifactByName { .. }))
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::AddAssertionByName { .. }))
+        );
+        for state in [
+            WorkflowState::Locked,
+            WorkflowState::Refactoring,
+            WorkflowState::Migrating,
+            WorkflowState::Approved,
+            WorkflowState::Rejected,
+            WorkflowState::Verified,
+        ] {
+            assert!(canonical.ops.iter().any(|op| matches!(
+                op.payload,
+                OpPayload::SetWorkflowStateByName { state: actual, .. } if actual == state
+            )));
+        }
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .all(|op| !matches!(op.payload, OpPayload::Noop))
         );
     }
 }

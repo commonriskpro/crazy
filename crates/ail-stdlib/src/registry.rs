@@ -208,6 +208,13 @@ impl StdlibRegistry {
                 interface_impls: None,
                 refinement_ref: None,
                 constraint_set: None,
+                visibility: None,
+                bindings: vec![],
+                inferred: vec![],
+                derived_impls: vec![],
+                generated_artifacts: vec![],
+                assertions: vec![],
+                workflow_state: None,
             })
             .collect()
     }

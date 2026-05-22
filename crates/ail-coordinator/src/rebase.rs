@@ -16,8 +16,8 @@
 //
 // # NodeRef extraction
 //
-// Ops are inspected via their `OpPayload` variant.  `Noop` and `Infer`/`Verify`
-// placeholders carry no `NodeRef` and are invisible to conflict detection.
+// Ops are inspected via their `OpPayload` variant.  `Noop` and name-based
+// payloads carry no `NodeRef` and are invisible to conflict detection.
 
 use std::collections::BTreeSet;
 
@@ -86,7 +86,14 @@ fn extract_node_refs(payload: &OpPayload, out: &mut BTreeSet<NodeRef>) {
         | OpPayload::AddContractByName { .. }
         | OpPayload::RemoveContractByName { .. }
         | OpPayload::AddCapabilityReqByName { .. }
-        | OpPayload::RemoveCapabilityReqByName { .. } => {
+        | OpPayload::RemoveCapabilityReqByName { .. }
+        | OpPayload::SetVisibilityByName { .. }
+        | OpPayload::AddBindingByName { .. }
+        | OpPayload::AddInferredFactByName { .. }
+        | OpPayload::AddDerivedImplByName { .. }
+        | OpPayload::AddGeneratedArtifactByName { .. }
+        | OpPayload::AddAssertionByName { .. }
+        | OpPayload::SetWorkflowStateByName { .. } => {
             // Name-based payloads are resolved against the live graph during
             // apply. StructuralDiff is NodeRef-based, so there is no stable
             // NodeRef to extract at canonicalization/rebase time.
