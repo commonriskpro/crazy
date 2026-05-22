@@ -171,6 +171,11 @@ pub(crate) struct HostState {
     /// phase without changing the `Store` type.
     pub(crate) handlers: Arc<Vec<Arc<dyn Handler + Send + Sync>>>,
     pub(crate) profile: Arc<RuntimeProfile>,
+    /// WASM module name from the capability manifest.
+    ///
+    /// Used in `dispatch_host_call` to enforce per-module grant checks
+    /// (`grants_capability(module, capability)`) and to annotate audit events.
+    pub(crate) module_name: String,
     /// Shared audit log — same `Arc<Mutex<_>>` as `RuntimeHost::audit_log`.
     /// Events appended by `dispatch_host_call` (WASM-side) are visible in
     /// `RuntimeHost::audit_log()` after `invoke` returns.
@@ -668,7 +673,7 @@ impl RuntimeHost {
     /// Dispatch a capability call to a registered handler.
     ///
     /// Steps:
-    /// 1. Check the active profile grants `capability`; deny if not.
+    /// 1. Check the active profile grants `capability` for the current module; deny if not.
     /// 2. Validate the input payload against the registered schema (if any).
     /// 3. Find the first handler whose `capabilities()` includes `capability`.
     /// 4. Dispatch to `handler.handle(capability, operation, payload)`.
@@ -680,21 +685,31 @@ impl RuntimeHost {
         payload: &[u8],
     ) -> HostResult<Vec<u8>> {
         let start = Instant::now();
+        let timestamp = unix_timestamp_micros();
 
         // Derive a child trace span if a context is active.
         let child_trace = self.current_trace_context.as_ref().map(|ctx| ctx.child());
 
-        // Step 1: grant check.
+        // Snapshot context fields used in audit events.
+        let module_name = self.current_module_name.clone();
+        let profile_name = self.current_profile.as_ref().map(|p| p.name().to_string());
+        let vr_hash = self
+            .current_profile
+            .as_ref()
+            .map(|p| p.verification_report_hash().to_string());
+        let trace_id = child_trace.as_ref().map(|tc| tc.trace_id.clone());
+        let input_hash = Some(blake3_hex_of(payload));
+
+        // Step 1: grant check (module-scoped per docs/runtime.md §Grants per profile).
+        let module_str = module_name.as_deref().unwrap_or("");
         let granted = self
             .current_profile
             .as_ref()
-            .map(|p| p.grants_capability(capability))
+            .map(|p| p.grants_capability(module_str, capability))
             .unwrap_or(false);
 
         if !granted {
-            let err = HostError {
-                message: format!("CapabilityDenied: {}", capability.as_str()),
-            };
+            let err = HostError::CapabilityDenied(capability.as_str().to_string());
             let duration_us = start.elapsed().as_micros() as u64;
             self.audit_log
                 .lock()
@@ -705,6 +720,14 @@ impl RuntimeHost {
                     handler_name: "none".to_string(),
                     succeeded: false,
                     duration_us,
+                    timestamp,
+                    profile: profile_name,
+                    module: module_name,
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
                     trace_context: child_trace,
                 });
             return Err(err);
@@ -713,13 +736,11 @@ impl RuntimeHost {
         // Step 2: schema/boundary validation (if a definition is registered).
         if let Some(def) = self.schema_registry.get(capability.as_str()) {
             if let Err(schema_err) = def.schema().input().validate(payload) {
-                let err = HostError {
-                    message: format!(
-                        "PayloadDecodeError: schema validation failed for `{}`: {}",
-                        capability.as_str(),
-                        schema_err.message
-                    ),
-                };
+                let err = HostError::PayloadDecodeError(format!(
+                    "schema validation failed for `{}`: {}",
+                    capability.as_str(),
+                    schema_err.message
+                ));
                 let duration_us = start.elapsed().as_micros() as u64;
                 self.audit_log
                     .lock()
@@ -730,6 +751,14 @@ impl RuntimeHost {
                         handler_name: "none".to_string(),
                         succeeded: false,
                         duration_us,
+                        timestamp,
+                        profile: profile_name,
+                        module: module_name,
+                        function: None,
+                        input_hash,
+                        output_hash: None,
+                        trace_id,
+                        verification_report_hash: vr_hash,
                         trace_context: child_trace,
                     });
                 return Err(err);
@@ -743,9 +772,7 @@ impl RuntimeHost {
             .find(|h| h.capabilities().contains(capability));
 
         let Some(handler) = handler else {
-            let err = HostError {
-                message: format!("HandlerNotBound: {}", capability.as_str()),
-            };
+            let err = HostError::HandlerNotBound(capability.as_str().to_string());
             let duration_us = start.elapsed().as_micros() as u64;
             self.audit_log
                 .lock()
@@ -756,6 +783,14 @@ impl RuntimeHost {
                     handler_name: "none".to_string(),
                     succeeded: false,
                     duration_us,
+                    timestamp,
+                    profile: profile_name,
+                    module: module_name,
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
                     trace_context: child_trace,
                 });
             return Err(err);
@@ -767,6 +802,10 @@ impl RuntimeHost {
         let result = handler.handle(capability, operation, payload);
         let duration_us = start.elapsed().as_micros() as u64;
         let succeeded = result.is_ok();
+        let output_hash = result
+            .as_ref()
+            .ok()
+            .map(|bytes| blake3_hex_of(bytes.as_slice()));
 
         // Step 5: audit.
         self.audit_log
@@ -778,6 +817,14 @@ impl RuntimeHost {
                 handler_name,
                 succeeded,
                 duration_us,
+                timestamp,
+                profile: profile_name,
+                module: module_name,
+                function: None,
+                input_hash,
+                output_hash,
+                trace_id,
+                verification_report_hash: vr_hash,
                 trace_context: child_trace,
             });
 
@@ -994,11 +1041,11 @@ impl RuntimeHost {
             ));
         }
 
-        // Stage 3 — Capability grant check.
+        // Stage 3 — Capability grant check (module-scoped).
         let denied: Vec<CapabilityId> = manifest
             .requires
             .iter()
-            .filter(|cap| !profile.grants_capability(cap))
+            .filter(|cap| !profile.grants_capability(&manifest.module, cap))
             .cloned()
             .collect();
         if !denied.is_empty() {
@@ -1008,7 +1055,7 @@ impl RuntimeHost {
         }
 
         // Stages 4+5 — Wasmtime validate + instantiate via linker.
-        let instance = self.instantiate_inner(wasm, profile)?;
+        let instance = self.instantiate_inner(wasm, profile, &manifest.module)?;
 
         // Stage 6 — Handler binding check (opt-in).
         if profile.require_handler_binding() {
@@ -1074,6 +1121,7 @@ impl RuntimeHost {
         &self,
         wasm: &[u8],
         profile: &RuntimeProfile,
+        module_name: &str,
     ) -> RuntimeResult<RuntimeInstance> {
         Module::validate(&self.engine, wasm).map_err(|e| {
             RuntimeError::PreflightFailed(PreflightFailure::WasmValidationError(e.to_string()))
@@ -1099,6 +1147,7 @@ impl RuntimeHost {
             HostState {
                 handlers: handlers_arc,
                 profile: Arc::new(profile.clone()),
+                module_name: module_name.to_string(),
                 audit_log: self.audit_log.clone(),
                 limiter: store_limits,
                 trace_context: None,
@@ -1179,6 +1228,18 @@ impl Default for RuntimeHost {
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
+/// Return the current Unix timestamp in microseconds.
+///
+/// Used to stamp [`AuditEvent::CapabilityCallExecuted`] events.
+/// Falls back to 0 if the system clock is before the Unix epoch (pathological).
+fn unix_timestamp_micros() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64
+}
+
 fn failure_parts(err: &RuntimeError) -> (Vec<CapabilityId>, PreflightFailure) {
     match err {
         RuntimeError::PreflightFailed(PreflightFailure::CapabilityDenied { denied }) => (
@@ -1258,10 +1319,10 @@ fn dispatch_host_call_write(
     let args_bytes = read_memory(caller, args_ptr, args_len.checked_mul(8)?)?;
     let cap = CapabilityId::new(capability);
 
-    // Grant check.
+    // Grant check (module-scoped).
     {
         let state = caller.data();
-        if !state.profile.grants_capability(&cap) {
+        if !state.profile.grants_capability(&state.module_name, &cap) {
             return None;
         }
     }
@@ -1309,13 +1370,22 @@ fn dispatch_host_call(
     let args_bytes = read_memory(caller, args_ptr, args_len.checked_mul(8)?)?;
     let cap = CapabilityId::new(capability);
     let start = Instant::now();
+    let timestamp = unix_timestamp_micros();
+    let input_hash = Some(blake3_hex_of(&args_bytes));
 
     // Derive a child span from the active trace context (if any).
     let child_trace = caller.data().trace_context.as_ref().map(|ctx| ctx.child());
 
+    // Snapshot context needed for audit events.
+    let module_name = caller.data().module_name.clone();
+    let profile_name = Some(caller.data().profile.name().to_string());
+    let vr_hash = Some(caller.data().profile.verification_report_hash().to_string());
+    let trace_id = child_trace.as_ref().map(|tc| tc.trace_id.clone());
+
     let handler = {
         let state = caller.data_mut();
-        if !state.profile.grants_capability(&cap) {
+        // Grant check (module-scoped).
+        if !state.profile.grants_capability(&state.module_name, &cap) {
             state
                 .audit_log
                 .lock()
@@ -1326,6 +1396,14 @@ fn dispatch_host_call(
                     handler_name: "none".to_string(),
                     succeeded: false,
                     duration_us: start.elapsed().as_micros() as u64,
+                    timestamp,
+                    profile: profile_name,
+                    module: Some(module_name),
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
                     trace_context: child_trace,
                 });
             return Some(-1);
@@ -1349,6 +1427,14 @@ fn dispatch_host_call(
                 handler_name: "none".to_string(),
                 succeeded: false,
                 duration_us: start.elapsed().as_micros() as u64,
+                timestamp,
+                profile: profile_name,
+                module: Some(module_name),
+                function: None,
+                input_hash,
+                output_hash: None,
+                trace_id,
+                verification_report_hash: vr_hash,
                 trace_context: child_trace,
             });
         return Some(-1);
@@ -1357,6 +1443,10 @@ fn dispatch_host_call(
     let handler_name = handler.name().to_string();
     let result = handler.handle(&cap, &operation, &args_bytes);
     let succeeded = result.is_ok();
+    let output_hash = result
+        .as_ref()
+        .ok()
+        .map(|bytes| blake3_hex_of(bytes.as_slice()));
     caller
         .data_mut()
         .audit_log
@@ -1368,6 +1458,14 @@ fn dispatch_host_call(
             handler_name,
             succeeded,
             duration_us: start.elapsed().as_micros() as u64,
+            timestamp,
+            profile: profile_name,
+            module: Some(module_name),
+            function: None,
+            input_hash,
+            output_hash,
+            trace_id,
+            verification_report_hash: vr_hash,
             trace_context: child_trace,
         });
 
