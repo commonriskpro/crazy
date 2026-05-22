@@ -60,6 +60,27 @@ const REQUIRED_TAGS: &[&str] = &[
     "has-review-policy",
 ];
 
+// ── BoundaryCheckerConfig ─────────────────────────────────────────────────
+
+/// Configuration for [`BoundaryChecker::check_with_config`].
+///
+/// # Expiry checking
+///
+/// When `reference_date` is `Some("YYYY-MM-DD")`, boundary tags of the form
+/// `"expires:YYYY-MM-DD"` are compared lexicographically against the reference
+/// date.  If `expires_date <= reference_date`, the entry is `Failed` with
+/// `E_BOUNDARY_EXPIRED_ASSUMPTION`.
+///
+/// When `reference_date` is `None` (the default), timestamp-based expiry is
+/// skipped entirely — preserving existing behavior.
+#[derive(Clone, Debug, Default)]
+pub struct BoundaryCheckerConfig {
+    /// Reference date in `"YYYY-MM-DD"` format for `expires:` tag comparison.
+    ///
+    /// When `None`, timestamp-based expiry checking is skipped.
+    pub reference_date: Option<String>,
+}
+
 // ── BoundaryChecker ───────────────────────────────────────────────────────
 
 /// Pure, stateless boundary/FFI trust checker.
@@ -72,7 +93,18 @@ impl BoundaryChecker {
     /// Walk `graph` and classify each boundary node's trust state.
     ///
     /// Non-boundary nodes are silently skipped.
+    ///
+    /// Calls `check_with_config` with a default `BoundaryCheckerConfig`
+    /// (no timestamp-based expiry checking).
     pub fn check(graph: &SemanticGraph) -> VerificationReport {
+        Self::check_with_config(graph, &BoundaryCheckerConfig::default())
+    }
+
+    /// Walk `graph` and classify each boundary node's trust state,
+    /// applying timestamp-based expiry checking from `config`.
+    ///
+    /// Non-boundary nodes are silently skipped.
+    pub fn check_with_config(graph: &SemanticGraph, config: &BoundaryCheckerConfig) -> VerificationReport {
         let mut entries = Vec::new();
         let mut diagnostics = Vec::new();
 
@@ -92,7 +124,7 @@ impl BoundaryChecker {
                         scope
                     )),
                 ),
-                Some(tm) => Self::classify_boundary(&tm.tags, &scope),
+                Some(tm) => Self::classify_boundary(&tm.tags, &scope, config),
             };
 
             // Emit diagnostics for blocking conditions
@@ -172,7 +204,48 @@ impl BoundaryChecker {
         }
     }
 
-    fn classify_boundary(tags: &[String], scope: &str) -> (VerificationState, Option<String>) {
+    fn classify_boundary(
+        tags: &[String],
+        scope: &str,
+        config: &BoundaryCheckerConfig,
+    ) -> (VerificationState, Option<String>) {
+        // AET-4 / AET-5 / AET-6: expires tag check BEFORE all other checks.
+        // Only runs when config.reference_date is Some (AET-3 / backward compat).
+        if let Some(ref ref_date) = config.reference_date {
+            for tag in tags {
+                if let Some(expires_str) = tag.strip_prefix("expires:") {
+                    // Validate format: YYYY-MM-DD (10 chars, digits + dashes at [4] and [7])
+                    let valid_format = expires_str.len() == 10
+                        && expires_str.chars().enumerate().all(|(i, c)| {
+                            if i == 4 || i == 7 {
+                                c == '-'
+                            } else {
+                                c.is_ascii_digit()
+                            }
+                        });
+                    if !valid_format {
+                        return (
+                            VerificationState::Unverified,
+                            Some(format!(
+                                "expires tag has invalid date format: {expires_str}"
+                            )),
+                        );
+                    }
+                    // ISO 8601 lexicographic comparison: same-day or past → Failed
+                    if expires_str <= ref_date.as_str() {
+                        return (
+                            VerificationState::Failed,
+                            Some(format!(
+                                "{E_BOUNDARY_EXPIRED_ASSUMPTION}: boundary '{scope}' \
+                                 assumption expired {expires_str} (reference: {ref_date})"
+                            )),
+                        );
+                    }
+                    // Future date → continues to normal classification
+                }
+            }
+        }
+
         // TASK-22: assumption lifecycle checks (before legacy checks)
         // Revoked or expired assumption → Failed
         if has_tag(tags, "has-assumption-expired") || has_tag(tags, "has-assumption-revoked") {
@@ -253,6 +326,124 @@ impl BoundaryChecker {
                 )),
             )
         }
+    }
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph, TrustMetadata};
+
+    use super::{BoundaryChecker, BoundaryCheckerConfig, E_BOUNDARY_EXPIRED_ASSUMPTION};
+    use crate::report::VerificationState;
+
+    fn boundary_graph(tags: Vec<&str>) -> SemanticGraph {
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Boundary, "test_boundary");
+        node.trust_metadata = Some(TrustMetadata {
+            level: "verified".to_string(),
+            tags: tags.into_iter().map(|s| s.to_string()).collect(),
+        });
+        SemanticGraph { nodes: vec![node], edges: vec![] }
+    }
+
+    // ── T-15 / T-16: expires tag ─────────────────────────────────────────
+
+    #[test]
+    fn boundary_expires_tag_past_date_fails() {
+        // expires:2025-01-01, reference 2026-01-01 → Failed
+        let graph = boundary_graph(vec![
+            "has-trust-level",
+            "has-contract",
+            "has-handler",
+            "has-owner",
+            "has-review-policy",
+            "expires:2025-01-01",
+        ]);
+        let config = BoundaryCheckerConfig { reference_date: Some("2026-01-01".to_string()) };
+        let report = BoundaryChecker::check_with_config(&graph, &config);
+        let entry = &report.entries[0];
+        assert_eq!(entry.state, VerificationState::Failed);
+        assert!(
+            entry.evidence.as_deref().unwrap_or("").contains(E_BOUNDARY_EXPIRED_ASSUMPTION),
+            "evidence must contain E_BOUNDARY_EXPIRED_ASSUMPTION"
+        );
+    }
+
+    #[test]
+    fn boundary_expires_tag_future_date_passes_through() {
+        // expires:2030-12-31, reference 2026-01-01 → continues to normal classification
+        let graph = boundary_graph(vec![
+            "has-trust-level",
+            "has-contract",
+            "has-handler",
+            "has-owner",
+            "has-review-policy",
+            "expires:2030-12-31",
+        ]);
+        let config = BoundaryCheckerConfig { reference_date: Some("2026-01-01".to_string()) };
+        let report = BoundaryChecker::check_with_config(&graph, &config);
+        let entry = &report.entries[0];
+        // All required tags present → Assumed (not Failed by expiry)
+        assert_eq!(entry.state, VerificationState::Assumed);
+    }
+
+    #[test]
+    fn boundary_expires_tag_same_day_fails() {
+        // expires:2026-05-22, reference 2026-05-22 (same day = expired) → Failed
+        let graph = boundary_graph(vec![
+            "has-trust-level",
+            "has-contract",
+            "has-handler",
+            "has-owner",
+            "has-review-policy",
+            "expires:2026-05-22",
+        ]);
+        let config = BoundaryCheckerConfig { reference_date: Some("2026-05-22".to_string()) };
+        let report = BoundaryChecker::check_with_config(&graph, &config);
+        assert_eq!(report.entries[0].state, VerificationState::Failed);
+    }
+
+    #[test]
+    fn boundary_expires_tag_malformed_unverified() {
+        // expires:not-a-date → Unverified
+        let graph = boundary_graph(vec!["has-trust-level", "expires:not-a-date"]);
+        let config = BoundaryCheckerConfig { reference_date: Some("2026-01-01".to_string()) };
+        let report = BoundaryChecker::check_with_config(&graph, &config);
+        assert_eq!(report.entries[0].state, VerificationState::Unverified);
+    }
+
+    #[test]
+    fn boundary_no_reference_date_skips_timestamp_check() {
+        // reference_date: None, tag "expires:2020-01-01" → behavior unchanged (no auto-expiry)
+        let graph = boundary_graph(vec![
+            "has-trust-level",
+            "has-contract",
+            "has-handler",
+            "has-owner",
+            "has-review-policy",
+            "expires:2020-01-01",
+        ]);
+        let config = BoundaryCheckerConfig { reference_date: None };
+        let report = BoundaryChecker::check_with_config(&graph, &config);
+        // Without reference_date, expires tag is ignored → all required tags → Assumed
+        assert_eq!(report.entries[0].state, VerificationState::Assumed);
+    }
+
+    #[test]
+    fn boundary_check_no_config_backward_compatible() {
+        // BoundaryChecker::check(graph) still works without config
+        let graph = boundary_graph(vec![
+            "has-trust-level",
+            "has-contract",
+            "has-handler",
+            "has-owner",
+            "has-review-policy",
+            "expires:2020-01-01", // would expire if config had reference_date
+        ]);
+        let report = BoundaryChecker::check(&graph);
+        // Without config, expires tag ignored → Assumed
+        assert_eq!(report.entries[0].state, VerificationState::Assumed);
     }
 }
 

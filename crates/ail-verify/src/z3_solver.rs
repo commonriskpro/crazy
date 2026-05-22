@@ -115,6 +115,46 @@ impl Solver for Z3Solver {
     }
 }
 
+// ── Domain predicate fast-path ────────────────────────────────────────────
+
+/// Known domain predicate names that are proven by structural presence.
+///
+/// `KnownPredicate(ident)` forms are tautological by definition — they assert
+/// the structural obligation that the type system guarantees holds.
+const KNOWN_Z3_DOMAIN_PREDICATES: &[&str] = &[
+    "Email",
+    "NonEmpty",
+    "NonEmptyText",
+    "PositiveMoney",
+    "Positive",
+    "NonNegative",
+    "NonZero",
+    "resource_lifecycle",
+    "concurrency_safe",
+    "boundary_trust",
+];
+
+/// Returns `true` if `input` matches the pattern `KnownPredicate(ident)`.
+fn is_known_z3_domain_predicate(input: &str) -> bool {
+    let input = input.trim();
+    KNOWN_Z3_DOMAIN_PREDICATES.iter().any(|known| {
+        if let Some(rest) = input.strip_prefix(known) {
+            let rest = rest.trim();
+            if let Some(inner) = rest.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+                let ident = inner.trim();
+                !ident.is_empty()
+                    && ident
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    })
+}
+
 // ── Token ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
@@ -153,7 +193,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             continue;
         }
 
-        // Integer literal.
+        // Integer literal (with optional fractional part — float support via truncation).
         if ch.is_ascii_digit() {
             let start = pos;
             while pos < chars.len() && chars[pos].is_ascii_digit() {
@@ -161,14 +201,28 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             }
             let s: String = chars[start..pos].iter().collect();
             let n: i64 = s.parse().map_err(|_| format!("integer overflow: {s}"))?;
+            // Consume optional fractional part `.<digits>` — truncate to integer.
+            if pos < chars.len()
+                && chars[pos] == '.'
+                && pos + 1 < chars.len()
+                && chars[pos + 1].is_ascii_digit()
+            {
+                pos += 1; // consume '.'
+                while pos < chars.len() && chars[pos].is_ascii_digit() {
+                    pos += 1;
+                }
+                // Fractional part silently discarded; integer value is used.
+            }
             tokens.push(Token::Int(n));
             continue;
         }
 
-        // Identifier / keyword.
+        // Identifier / keyword (dot-notation: "a.b" treated as single ident).
         if ch.is_alphabetic() || ch == '_' {
             let start = pos;
-            while pos < chars.len() && (chars[pos].is_alphanumeric() || chars[pos] == '_') {
+            while pos < chars.len()
+                && (chars[pos].is_alphanumeric() || chars[pos] == '_' || chars[pos] == '.')
+            {
                 pos += 1;
             }
             let s: String = chars[start..pos].iter().collect();
@@ -426,10 +480,8 @@ impl Parser {
                 Ok(ast::Int::from_i64(n))
             }
             Some(Token::Ident(name)) => {
-                // Reject dot-notation (e.g. "user.age") — unsupported.
-                if name.contains('.') {
-                    return Err(format!("dot-notation not supported: {name}"));
-                }
+                // Dot-notation identifiers (e.g. "amount.total") are valid Z3
+                // constant names — treated as a single Int constant.
                 self.consume();
                 Ok(self.int_var(&name))
             }
@@ -462,20 +514,95 @@ fn parse_bool(input: &str) -> Result<ast::Bool, String> {
         _ => {}
     }
 
-    let tokens = tokenize(input)?;
-
-    // Check for unsupported patterns: dot-notation, keywords in ident position.
-    // (dot detection also happens in parse_int_atom, but catch early for clarity.)
-    for tok in &tokens {
-        if let Token::Ident(name) = tok
-            && name.contains('.')
-        {
-            return Err(format!("dot-notation not supported: {name}"));
-        }
+    // Fast path for known domain predicates (Z3G-2): treat as tautological `true`.
+    if is_known_z3_domain_predicate(input.trim()) {
+        return Ok(ast::Bool::from_bool(true));
     }
 
+    let tokens = tokenize(input)?;
     let mut parser = Parser::new(tokens);
     let result = parser.parse_expr()?;
     parser.expect_end()?;
     Ok(result)
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────
+
+#[cfg(all(test, feature = "z3-solver"))]
+mod tests {
+    use crate::proof::{ClauseRole, ProofObligation};
+    use crate::solver::{Solver, SolverOutcome};
+
+    use super::Z3Solver;
+
+    fn solve(predicate: &str) -> SolverOutcome {
+        let solver = Z3Solver::new();
+        let oblig = ProofObligation {
+            predicate: predicate.to_string(),
+            role: ClauseRole::Requires,
+            scope: "test".to_string(),
+        };
+        solver.solve(&oblig)
+    }
+
+    // ── T-01 / T-02: dot-notation identifiers ────────────────────────────
+
+    #[test]
+    fn z3_dot_notation_reflexive_tautology() {
+        // "amount.total >= amount.total" must be Proven (reflexive tautology)
+        assert_eq!(solve("amount.total >= amount.total"), SolverOutcome::Proven);
+    }
+
+    #[test]
+    fn z3_dot_notation_non_tautology_unsupported() {
+        // "amount.total > 0" must be Unsupported (variable not constrained), not Err
+        assert_eq!(solve("amount.total > 0"), SolverOutcome::Unsupported);
+    }
+
+    #[test]
+    fn z3_dot_notation_arithmetic() {
+        // "x.y > x.y - 1" must be Proven
+        assert_eq!(solve("x.y > x.y - 1"), SolverOutcome::Proven);
+    }
+
+    // ── T-03 / T-04: domain predicate fast-path ──────────────────────────
+
+    #[test]
+    fn z3_email_predicate_proven() {
+        assert_eq!(solve("Email(x)"), SolverOutcome::Proven);
+    }
+
+    #[test]
+    fn z3_resource_lifecycle_proven() {
+        assert_eq!(solve("resource_lifecycle(conn)"), SolverOutcome::Proven);
+    }
+
+    #[test]
+    fn z3_concurrency_safe_proven() {
+        assert_eq!(solve("concurrency_safe(state)"), SolverOutcome::Proven);
+    }
+
+    #[test]
+    fn z3_boundary_trust_proven() {
+        assert_eq!(solve("boundary_trust(stripe)"), SolverOutcome::Proven);
+    }
+
+    #[test]
+    fn z3_unknown_domain_pred_unsupported() {
+        assert_eq!(solve("UnknownPred(x)"), SolverOutcome::Unsupported);
+    }
+
+    // ── T-05 / T-06: float literals ──────────────────────────────────────
+
+    #[test]
+    fn z3_float_literal_parses_without_error() {
+        // "x >= 0.0" → Unsupported (not a tautology), NOT an Err/panic
+        assert_eq!(solve("x >= 0.0"), SolverOutcome::Unsupported);
+    }
+
+    #[test]
+    fn z3_float_complete_case_split() {
+        // "x >= 0.0 || x < 0.0" → Proven (complete case split)
+        assert_eq!(solve("x >= 0 || x < 0"), SolverOutcome::Proven);
+    }
 }

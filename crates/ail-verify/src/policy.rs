@@ -74,6 +74,9 @@ pub const POLICY_WEAK_ASSUMPTION: &str = "POLICY_WEAK_ASSUMPTION";
 /// Policy violation: a public API was changed without explicit approval.
 pub const POLICY_PUBLIC_API_CHANGED: &str = "POLICY_PUBLIC_API_CHANGED";
 
+/// Policy violation: the fraction of non-proven entries exceeds the allowed ratio.
+pub const POLICY_PROOF_SUFFICIENCY: &str = "POLICY_PROOF_SUFFICIENCY";
+
 // ── ApprovalStrength ──────────────────────────────────────────────────────
 
 /// The strength of an approval record.
@@ -163,7 +166,7 @@ pub enum PolicyDecision {
 // ── PolicyRule ────────────────────────────────────────────────────────────
 
 /// A single policy rule to evaluate against a `VerificationReport`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PolicyRule {
     /// Block any `Unsafe` entry that lacks an explicit `ApprovalRecord`.
     NoUnsafe,
@@ -182,7 +185,17 @@ pub enum PolicyRule {
     ProfileGate(String),
     /// Block any public API change that lacks an explicit approval record.
     NoPublicApiChangesWithoutApproval,
+    /// Fail when the fraction of non-proven entries exceeds `max_assumed_ratio`.
+    ///
+    /// `max_assumed_ratio` ∈ [0.0, 1.0]: maximum allowed fraction of
+    /// (assumed + unverified + failed + unsafe) entries out of total entries.
+    ProofSufficiencyGate { max_assumed_ratio: f64 },
 }
+
+// `f64` is `PartialEq` but not `Eq` (NaN != NaN). For well-formed ratio
+// values (no NaN produced by this crate), equality is reflexive in practice.
+// The derive generates PartialEq; we manually assert the Eq contract here.
+impl Eq for PolicyRule {}
 
 // ── Context types (PolicyInput extensions) ────────────────────────────────
 
@@ -386,6 +399,9 @@ impl PolicyEngine {
             }
             PolicyRule::NoPublicApiChangesWithoutApproval => {
                 Self::eval_no_public_api_changes(input.public_api_changes, input.approvals)
+            }
+            PolicyRule::ProofSufficiencyGate { max_assumed_ratio } => {
+                Self::eval_proof_sufficiency(input.report, *max_assumed_ratio)
             }
         }
     }
@@ -714,12 +730,118 @@ impl PolicyEngine {
         }
     }
 
+    // ── ProofSufficiencyGate ──────────────────────────────────────────────
+
+    fn eval_proof_sufficiency(report: &VerificationReport, max_assumed_ratio: f64) -> PolicyDecision {
+        let counts = &report.summary_counts;
+        let total = counts.verified_count
+            + counts.runtime_checked_count
+            + counts.assumed_count
+            + counts.unverified_count
+            + counts.unsafe_count
+            + counts.failed_count;
+        if total == 0 {
+            return PolicyDecision::Passed;
+        }
+        let non_proven = total - counts.verified_count;
+        let ratio = non_proven as f64 / total as f64;
+        if ratio > max_assumed_ratio {
+            PolicyDecision::Failed(vec![PolicyViolation {
+                code: POLICY_PROOF_SUFFICIENCY.to_string(),
+                scope: "summary".to_string(),
+                message: format!(
+                    "proof sufficiency gate: {non_proven}/{total} ({:.1}%) entries non-proven, \
+                     exceeds max allowed ratio {:.1}%",
+                    ratio * 100.0,
+                    max_assumed_ratio * 100.0
+                ),
+            }])
+        } else {
+            PolicyDecision::Passed
+        }
+    }
+
     // ── Approval lookup ───────────────────────────────────────────────────
 
     /// Return `true` if `approvals` contains a record whose `scope` exactly
     /// matches `scope` (any strength).
     fn has_any_approval(scope: &str, approvals: &[ApprovalRecord]) -> bool {
         approvals.iter().any(|a| a.scope == scope)
+    }
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use crate::report::{SummaryCounts, VerificationReport};
+
+    use super::{
+        PolicyDecision, PolicyEngine, PolicyInput, PolicyRule, POLICY_PROOF_SUFFICIENCY,
+    };
+
+    fn report_with_counts(verified: usize, total: usize) -> VerificationReport {
+        let non_proven = total - verified;
+        VerificationReport {
+            summary_counts: SummaryCounts {
+                verified_count: verified,
+                runtime_checked_count: 0,
+                assumed_count: non_proven,
+                unverified_count: 0,
+                unsafe_count: 0,
+                failed_count: 0,
+            },
+            ..Default::default()
+        }
+    }
+
+    fn evaluate_sufficiency(report: &VerificationReport, max_ratio: f64) -> PolicyDecision {
+        let input = PolicyInput {
+            report,
+            rules: &[PolicyRule::ProofSufficiencyGate { max_assumed_ratio: max_ratio }],
+            approvals: &[],
+            structural_diff: None,
+            capability_grants: &[],
+            public_api_changes: &[],
+            package_trust_metadata: &[],
+        };
+        PolicyEngine::evaluate(&input)
+    }
+
+    // ── T-11 / T-12: ProofSufficiencyGate ────────────────────────────────
+
+    #[test]
+    fn proof_sufficiency_gate_fails_when_exceeded() {
+        // 8/10 non-proven (80%), gate at 0.5 → Failed
+        let report = report_with_counts(2, 10);
+        let decision = evaluate_sufficiency(&report, 0.5);
+        assert!(
+            matches!(&decision, PolicyDecision::Failed(v) if v.iter().any(|vi| vi.code == POLICY_PROOF_SUFFICIENCY)),
+            "expected Failed with POLICY_PROOF_SUFFICIENCY, got {decision:?}"
+        );
+    }
+
+    #[test]
+    fn proof_sufficiency_gate_passes_within_threshold() {
+        // 2/10 non-proven (20%), gate at 0.5 → Passed
+        let report = report_with_counts(8, 10);
+        let decision = evaluate_sufficiency(&report, 0.5);
+        assert_eq!(decision, PolicyDecision::Passed);
+    }
+
+    #[test]
+    fn proof_sufficiency_gate_empty_report_passes() {
+        let report = report_with_counts(0, 0);
+        let decision = evaluate_sufficiency(&report, 0.5);
+        assert_eq!(decision, PolicyDecision::Passed);
+    }
+
+    #[test]
+    fn proof_sufficiency_gate_zero_threshold_all_proven_passes() {
+        // All proven, gate at 0.0 → Passed (0/5 non-proven = 0.0 ratio)
+        let report = report_with_counts(5, 5);
+        let decision = evaluate_sufficiency(&report, 0.0);
+        assert_eq!(decision, PolicyDecision::Passed);
     }
 }
 
