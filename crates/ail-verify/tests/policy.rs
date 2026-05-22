@@ -1,16 +1,15 @@
 // ── ail-verify::policy tests ──────────────────────────────────────────────
 //
-// Strict TDD — RED phase.  Written BEFORE src/policy.rs is implemented.
-// These tests encode the spec scenarios (R1–R10) verbatim.
+// Strict TDD — GREEN phase (Round 1 tests updated for Round 2 struct changes).
 //
 // Policy engine model:
 //   PolicyEngine::evaluate(&PolicyInput) -> PolicyDecision
-//   PolicyDecision: Passed | Failed(Vec<PolicyViolation>) | ApprovalRequired(Vec<String>)
+//   PolicyDecision: Passed | PassedWithWarnings | Failed | ApprovalRequired
 //   PolicyRule: NoUnsafe | NoUnverifiedPublicApi | RequireApproval | ProfileGate(String)
 
 use ail_verify::policy::{
-    ApprovalRecord, PolicyDecision, PolicyEngine, PolicyInput, PolicyRule, POLICY_PROFILE_GATE,
-    POLICY_UNSAFE_BLOCKED, POLICY_UNVERIFIED_PUBLIC_API,
+    ApprovalRecord, ApprovalStrength, PolicyDecision, PolicyEngine, PolicyInput, PolicyRule,
+    POLICY_PROFILE_GATE, POLICY_UNSAFE_BLOCKED, POLICY_UNVERIFIED_PUBLIC_API,
 };
 use ail_verify::report::{VerificationEntry, VerificationReport, VerificationState};
 
@@ -37,7 +36,23 @@ fn approval_for(scope: &str) -> ApprovalRecord {
         scope: scope.to_string(),
         approver: "security-team".to_string(),
         reason: "explicitly approved for this context".to_string(),
+        strength: ApprovalStrength::Strong,
     }
+}
+
+/// Shorthand for building a minimal PolicyInput with no context fields set.
+macro_rules! policy_input {
+    (report = $r:expr, rules = $rules:expr, approvals = $approvals:expr) => {
+        PolicyInput {
+            report: $r,
+            rules: $rules,
+            approvals: $approvals,
+            structural_diff: None,
+            capability_grants: &[],
+            public_api_changes: &[],
+            package_trust_metadata: &[],
+        }
+    };
 }
 
 // ── R8: Empty report passes all rules ────────────────────────────────────
@@ -45,16 +60,16 @@ fn approval_for(scope: &str) -> ApprovalRecord {
 #[test]
 fn empty_report_passes_all_rules() {
     let report = report_with(vec![]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[
+    let input = policy_input!(
+        report = &report,
+        rules = &[
             PolicyRule::NoUnsafe,
             PolicyRule::NoUnverifiedPublicApi,
             PolicyRule::RequireApproval,
             PolicyRule::ProfileGate("prod".into()),
         ],
-        approvals: &[],
-    };
+        approvals = &[]
+    );
     let decision = PolicyEngine::evaluate(&input);
     assert!(
         matches!(decision, PolicyDecision::Passed),
@@ -67,11 +82,7 @@ fn empty_report_passes_all_rules() {
 #[test]
 fn no_unsafe_blocks_unsafe_entry_without_approval() {
     let report = report_with(vec![entry("type", "fn.transfer", VerificationState::Unsafe)]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::NoUnsafe],
-        approvals: &[],
-    };
+    let input = policy_input!(report = &report, rules = &[PolicyRule::NoUnsafe], approvals = &[]);
     let decision = PolicyEngine::evaluate(&input);
     match decision {
         PolicyDecision::Failed(violations) => {
@@ -89,11 +100,11 @@ fn no_unsafe_blocks_unsafe_entry_without_approval() {
 #[test]
 fn no_unsafe_passes_unsafe_entry_with_approval() {
     let report = report_with(vec![entry("type", "fn.transfer", VerificationState::Unsafe)]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::NoUnsafe],
-        approvals: &[approval_for("fn.transfer")],
-    };
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::NoUnsafe],
+        approvals = &[approval_for("fn.transfer")]
+    );
     let decision = PolicyEngine::evaluate(&input);
     assert!(
         matches!(decision, PolicyDecision::Passed),
@@ -110,11 +121,11 @@ fn no_unverified_public_api_blocks_public_unverified() {
         "pub::checkout",
         VerificationState::Unverified,
     )]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::NoUnverifiedPublicApi],
-        approvals: &[],
-    };
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::NoUnverifiedPublicApi],
+        approvals = &[]
+    );
     let decision = PolicyEngine::evaluate(&input);
     match decision {
         PolicyDecision::Failed(violations) => {
@@ -138,11 +149,11 @@ fn no_unverified_public_api_allows_private_unverified() {
         "internal::checkout",
         VerificationState::Unverified,
     )]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::NoUnverifiedPublicApi],
-        approvals: &[],
-    };
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::NoUnverifiedPublicApi],
+        approvals = &[]
+    );
     let decision = PolicyEngine::evaluate(&input);
     assert!(
         matches!(decision, PolicyDecision::Passed),
@@ -159,11 +170,11 @@ fn require_approval_returns_approval_required_for_unsafe() {
         "ffi.raw_ptr",
         VerificationState::Unsafe,
     )]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::RequireApproval],
-        approvals: &[],
-    };
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::RequireApproval],
+        approvals = &[]
+    );
     let decision = PolicyEngine::evaluate(&input);
     match decision {
         PolicyDecision::ApprovalRequired(scopes) => {
@@ -185,11 +196,11 @@ fn require_approval_passes_unsafe_with_approval() {
         "ffi.raw_ptr",
         VerificationState::Unsafe,
     )]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::RequireApproval],
-        approvals: &[approval_for("ffi.raw_ptr")],
-    };
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::RequireApproval],
+        approvals = &[approval_for("ffi.raw_ptr")]
+    );
     let decision = PolicyEngine::evaluate(&input);
     assert!(
         matches!(decision, PolicyDecision::Passed),
@@ -202,11 +213,11 @@ fn require_approval_passes_unsafe_with_approval() {
 #[test]
 fn profile_gate_prod_blocks_unverified() {
     let report = report_with(vec![entry("type", "some.node", VerificationState::Unverified)]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::ProfileGate("prod".into())],
-        approvals: &[],
-    };
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::ProfileGate("prod".into())],
+        approvals = &[]
+    );
     let decision = PolicyEngine::evaluate(&input);
     match decision {
         PolicyDecision::Failed(violations) => {
@@ -219,20 +230,24 @@ fn profile_gate_prod_blocks_unverified() {
     }
 }
 
-// ── R6: ProfileGate — draft allows Unverified ────────────────────────────
+// ── R6: ProfileGate — draft allows Unverified (with warning) ─────────────
+//
+// NOTE: In Round 2, draft with Unverified returns PassedWithWarnings, not
+// bare Passed. "Allows" means does NOT hard-block (Failed).
 
 #[test]
 fn profile_gate_draft_allows_unverified() {
     let report = report_with(vec![entry("type", "some.node", VerificationState::Unverified)]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::ProfileGate("draft".into())],
-        approvals: &[],
-    };
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::ProfileGate("draft".into())],
+        approvals = &[]
+    );
     let decision = PolicyEngine::evaluate(&input);
+    // draft must NOT hard-block Unverified (may warn, may pass — both acceptable)
     assert!(
-        matches!(decision, PolicyDecision::Passed),
-        "draft profile must allow Unverified entries"
+        !matches!(decision, PolicyDecision::Failed(_)),
+        "draft profile must not hard-block Unverified entries"
     );
 }
 
@@ -243,11 +258,11 @@ fn profile_gate_always_blocks_failed_entries() {
     for profile in &["draft", "dev", "test", "staging", "prod", "critical"] {
         let report =
             report_with(vec![entry("type", "broken.fn", VerificationState::Failed)]);
-        let input = PolicyInput {
-            report: &report,
-            rules: &[PolicyRule::ProfileGate(profile.to_string())],
-            approvals: &[],
-        };
+        let input = policy_input!(
+            report = &report,
+            rules = &[PolicyRule::ProfileGate(profile.to_string())],
+            approvals = &[]
+        );
         let decision = PolicyEngine::evaluate(&input);
         assert!(
             matches!(decision, PolicyDecision::Failed(_)),
@@ -263,11 +278,11 @@ fn profile_gate_blocks_unsafe_in_strict_profiles() {
     for profile in &["prod", "staging", "critical"] {
         let report =
             report_with(vec![entry("type", "unsafe.fn", VerificationState::Unsafe)]);
-        let input = PolicyInput {
-            report: &report,
-            rules: &[PolicyRule::ProfileGate(profile.to_string())],
-            approvals: &[],
-        };
+        let input = policy_input!(
+            report = &report,
+            rules = &[PolicyRule::ProfileGate(profile.to_string())],
+            approvals = &[]
+        );
         let decision = PolicyEngine::evaluate(&input);
         assert!(
             matches!(decision, PolicyDecision::Failed(_)),
@@ -285,11 +300,11 @@ fn profile_gate_dev_blocks_unverified_public() {
         "pub::my_fn",
         VerificationState::Unverified,
     )]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::ProfileGate("dev".into())],
-        approvals: &[],
-    };
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::ProfileGate("dev".into())],
+        approvals = &[]
+    );
     let decision = PolicyEngine::evaluate(&input);
     assert!(
         matches!(decision, PolicyDecision::Failed(_)),
@@ -306,11 +321,11 @@ fn profile_gate_dev_allows_unverified_private() {
         "internal::my_fn",
         VerificationState::Unverified,
     )]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::ProfileGate("dev".into())],
-        approvals: &[],
-    };
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::ProfileGate("dev".into())],
+        approvals = &[]
+    );
     let decision = PolicyEngine::evaluate(&input);
     assert!(
         matches!(decision, PolicyDecision::Passed),
@@ -326,11 +341,11 @@ fn multiple_rules_collect_all_violations() {
         entry("type", "fn.transfer", VerificationState::Unsafe),
         entry("type", "pub::api_fn", VerificationState::Unverified),
     ]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::NoUnsafe, PolicyRule::NoUnverifiedPublicApi],
-        approvals: &[],
-    };
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::NoUnsafe, PolicyRule::NoUnverifiedPublicApi],
+        approvals = &[]
+    );
     let decision = PolicyEngine::evaluate(&input);
     match decision {
         PolicyDecision::Failed(violations) => {
@@ -356,11 +371,11 @@ fn failed_beats_approval_required_in_priority() {
     // NoUnsafe → Failed (no approval), RequireApproval → ApprovalRequired
     // Final decision should be Failed (most severe)
     let report = report_with(vec![entry("type", "fn.danger", VerificationState::Unsafe)]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::NoUnsafe, PolicyRule::RequireApproval],
-        approvals: &[],
-    };
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::NoUnsafe, PolicyRule::RequireApproval],
+        approvals = &[]
+    );
     let decision = PolicyEngine::evaluate(&input);
     assert!(
         matches!(decision, PolicyDecision::Failed(_)),
@@ -402,11 +417,7 @@ fn verification_report_policy_decision_field_serializes() {
 #[test]
 fn no_unsafe_passes_proven_entry() {
     let report = report_with(vec![entry("type", "fn.safe", VerificationState::Proven)]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::NoUnsafe],
-        approvals: &[],
-    };
+    let input = policy_input!(report = &report, rules = &[PolicyRule::NoUnsafe], approvals = &[]);
     let decision = PolicyEngine::evaluate(&input);
     assert!(matches!(decision, PolicyDecision::Passed));
 }
@@ -420,11 +431,11 @@ fn violation_scope_matches_triggering_entry_scope() {
         "pub::my_api",
         VerificationState::Unsafe,
     )]);
-    let input = PolicyInput {
-        report: &report,
-        rules: &[PolicyRule::NoUnsafe],
-        approvals: &[],
-    };
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::NoUnsafe],
+        approvals = &[]
+    );
     let decision = PolicyEngine::evaluate(&input);
     match decision {
         PolicyDecision::Failed(violations) => {

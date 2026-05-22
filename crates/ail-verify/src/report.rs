@@ -22,7 +22,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::diagnostic::Diagnostic;
-use crate::policy::PolicyDecision;
+use crate::policy::{PolicyAudit, PolicyDecision};
+
+// Re-export PolicyAudit sub-types so callers can import from `report` module.
+pub use crate::policy::PolicyAuditEntry;
 
 // ── VerificationState ─────────────────────────────────────────────────────
 
@@ -117,6 +120,12 @@ pub struct VerificationReport {
     /// `Some(decision)` contains the result of `PolicyEngine::evaluate`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_decision: Option<PolicyDecision>,
+    /// Per-entry policy audit trail produced by `PolicyEngine::evaluate_with_audit`.
+    ///
+    /// Records the profile used, per-entry gate decisions, and approval scopes
+    /// consulted.  `None` means no audit was requested or stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_audit: Option<PolicyAudit>,
 }
 
 /// Aggregated counts of entries by verification state.
