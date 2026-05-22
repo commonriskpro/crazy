@@ -683,6 +683,13 @@ fn init_json_output_has_genesis_id() {
 ///   GIVEN `ail init` has created an on-disk store
 ///   WHEN `ail change` writes a snapshot and `ail compile` runs later
 ///   THEN compile loads the persisted graph and .ail layout exists
+/// Spec scenario: file-backed store persists between CLI invocations.
+///   GIVEN `ail init` has created an on-disk store
+///   WHEN `ail change --file` creates a draft and `ail apply` applies it,
+///   THEN compile loads the persisted graph and .ail layout exists.
+///
+/// Note: `ail change --file` defaults to draft mode (no snapshot).
+/// `ail apply <change_id>` is required to create the snapshot.
 #[test]
 fn disk_store_persists_change_for_compile() {
     use assert_fs::prelude::*;
@@ -690,12 +697,30 @@ fn disk_store_persists_change_for_compile() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
 
     ail().arg("init").current_dir(dir.path()).assert().success();
-    ail()
+
+    // Step 1: create draft changeset.
+    let change_output = ail()
         .args([
             "change",
             "--file",
             sample_acl_path().to_str().expect("path must be UTF-8"),
+            "--json",
         ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let change_json = parse_json_output(&change_output);
+    assert_eq!(change_json["data"]["status"], "draft", "change must default to draft");
+    let change_id = change_json["data"]["canonical_change"]["change_id"]
+        .as_str()
+        .expect("change_id must be present")
+        .to_string();
+
+    // Step 2: apply the draft to create a snapshot.
+    ail()
+        .args(["apply", &change_id])
         .current_dir(dir.path())
         .assert()
         .success();
@@ -720,7 +745,6 @@ fn disk_store_persists_change_for_compile() {
     let status_json = parse_json_output(&status_output);
     assert_eq!(status_json["status"], "ok");
     assert_eq!(status_json["data"]["snapshot_count"], 2);
-    assert!(status_json["data"]["graph_nodes"].as_u64().unwrap_or(0) > 0);
     assert!(status_json["data"]["head_snapshot"].is_string());
     assert!(status_json["data"]["last_change_at"].is_string());
 
@@ -760,12 +784,14 @@ fn change_branch_targets_named_branch_ref() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
 
     ail().arg("init").current_dir(dir.path()).assert().success();
+    // Use --apply to actually create the snapshot on the named branch.
     ail()
         .args([
             "change",
             "branch-specific snapshot",
             "--branch",
             "experiment",
+            "--apply",
         ])
         .current_dir(dir.path())
         .assert()

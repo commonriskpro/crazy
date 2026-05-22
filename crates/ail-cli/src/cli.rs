@@ -150,6 +150,10 @@ enum Commands {
     },
 
     /// Create a draft ChangeSet from text, a file, or stdin.
+    ///
+    /// By default this creates a DRAFT only — the changeset is persisted for
+    /// later verification and application via `ail apply`.
+    /// Use `--apply` to apply immediately (equivalent to `ail change` + `ail apply`).
     Change {
         /// Free-text description of the change (e.g. "add pure cart_total function").
         text: Option<String>,
@@ -162,6 +166,10 @@ enum Commands {
         /// Branch to receive the generated snapshot.
         #[arg(long)]
         branch: Option<String>,
+        /// Apply the ChangeSet immediately instead of creating a draft.
+        /// Only allowed when the project policy permits automation.
+        #[arg(long)]
+        apply: bool,
     },
 
     /// Run the verifier on a ChangeSet by its canonical change-id.
@@ -435,12 +443,14 @@ pub async fn run() -> Result<(), CliError> {
             file,
             stdin,
             branch,
+            apply,
         } => {
             cmd_change(
                 mode,
                 text.as_deref(),
                 file,
                 stdin,
+                apply,
                 branch.as_deref(),
                 &store,
             )
@@ -975,15 +985,21 @@ async fn cmd_proofs(mode: OutputMode, target: &str, store: &StoreHandle) -> Resu
     Ok(())
 }
 
-/// `ail change [text] [--file <path>] [--stdin]`
+/// `ail change [text] [--file <path>] [--stdin] [--apply]`
 ///
-/// Creates a draft ChangeSet. Does NOT apply by default.
+/// Creates a draft ChangeSet. Does NOT apply by default (doc §Change workflow).
 /// Outputs: submitted_change, parsed_change, canonical_change, structural_diff preview.
+///
+/// Rules (tooling.md):
+/// - `ail change` does not apply by default.
+/// - It creates a draft ChangeSet.
+/// - Use `--apply` for immediate application (equivalent to `ail change` + `ail apply`).
 async fn cmd_change(
     mode: OutputMode,
     text: Option<&str>,
     file: Option<PathBuf>,
     from_stdin: bool,
+    apply_immediately: bool,
     branch: Option<&str>,
     store: &StoreHandle,
 ) -> Result<(), CliError> {
@@ -1023,49 +1039,61 @@ async fn cmd_change(
     // Persist the canonical CBOR bytes so cmd_verify can reconstruct the graph.
     store.save_changeset_payload(&change_id, &cbor_bytes).await?;
 
-    let snapshots_before = store.list_snapshots().await?;
-    let mut graph = SemanticGraph {
-        nodes: vec![],
-        edges: vec![],
-    };
-    let bridge = SimpleSnapshotBridge(canonical.base_snapshot_id);
-    match ail_change::apply::apply(canonical.clone(), &mut graph, &bridge) {
-        ail_change::model::ChangeSetOutcome::Applied => {
-            let graph_root = store.save_graph(&graph).await?;
-            let parent_id = latest_snapshot(&snapshots_before).map(|s| s.id);
-            let snapshot = SnapshotEnvelope {
-                id: ObjectId::from_bytes(&format!("snapshot-after-{change_id}").into_bytes()),
-                graph_root_hash: graph_root,
-                parent_id,
-                applied_change_id: Some(cs_oid),
-                created_at: unix_ms_now(),
-                verification_report_hash: None,
-            };
-            store.save_snapshot_on_branch(&snapshot, branch).await?;
-        }
-        ail_change::model::ChangeSetOutcome::RebaseRequired {
-            current_snapshot_id,
-        } => {
-            return Err(CliError::RebaseRequired {
-                current_snapshot_id: current_snapshot_id.0,
-            });
-        }
-        ail_change::model::ChangeSetOutcome::Failed { reason } => {
-            return Err(CliError::Domain(format!("change apply failed: {reason}")));
-        }
-        ail_change::model::ChangeSetOutcome::ConflictIrresolvable { reason } => {
-            return Err(CliError::Domain(format!(
-                "Change conflict: {}",
-                conflict_reason_message(&reason)
-            )));
-        }
-    }
-
     // Structural diff preview: empty graph → all ops are additions.
     let structural_diff = build_structural_diff_preview(&changeset.ops);
 
+    // ── Apply gate (only when --apply flag is set) ────────────────────────
+    //
+    // Default behavior is DRAFT ONLY — the changeset is saved for later
+    // verification and application via `ail apply <change_id>`.
+    // This matches the doc rule: "ail change does not apply by default."
+    let (status_str, new_snapshot_id) = if apply_immediately {
+        let snapshots_before = store.list_snapshots().await?;
+        let mut graph = SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
+        let bridge = SimpleSnapshotBridge(canonical.base_snapshot_id);
+        match ail_change::apply::apply(canonical.clone(), &mut graph, &bridge) {
+            ail_change::model::ChangeSetOutcome::Applied => {
+                let graph_root = store.save_graph(&graph).await?;
+                let parent_id = latest_snapshot(&snapshots_before).map(|s| s.id);
+                let snapshot = SnapshotEnvelope {
+                    id: ObjectId::from_bytes(
+                        &format!("snapshot-after-{change_id}").into_bytes(),
+                    ),
+                    graph_root_hash: graph_root,
+                    parent_id,
+                    applied_change_id: Some(cs_oid),
+                    created_at: unix_ms_now(),
+                    verification_report_hash: None,
+                };
+                let snap_id = store.save_snapshot_on_branch(&snapshot, branch).await?;
+                ("applied", Some(snap_id.to_hex()))
+            }
+            ail_change::model::ChangeSetOutcome::RebaseRequired {
+                current_snapshot_id,
+            } => {
+                return Err(CliError::RebaseRequired {
+                    current_snapshot_id: current_snapshot_id.0,
+                });
+            }
+            ail_change::model::ChangeSetOutcome::Failed { reason } => {
+                return Err(CliError::Domain(format!("change apply failed: {reason}")));
+            }
+            ail_change::model::ChangeSetOutcome::ConflictIrresolvable { reason } => {
+                return Err(CliError::Domain(format!(
+                    "Change conflict: {}",
+                    conflict_reason_message(&reason)
+                )));
+            }
+        }
+    } else {
+        ("draft", None)
+    };
+
     let human_msg = format!(
-        "source: {input_source}\nauthor: {}\ndescription: {}\nops: {}\nchange-id: {}\nstatus: draft\n---\nstructural_diff:\n  creates: {}\n  modifies: 0\n  deletes: 0",
+        "source: {input_source}\nauthor: {}\ndescription: {}\nops: {}\nchange-id: {}\nstatus: {status_str}\n---\nstructural_diff:\n  creates: {}\n  modifies: 0\n  deletes: 0",
         changeset.meta.author,
         changeset.meta.description,
         changeset.ops.len(),
@@ -1089,7 +1117,8 @@ async fn cmd_change(
                 "base_snapshot_id": canonical.base_snapshot_id.0,
             },
             "structural_diff": structural_diff,
-            "status": "draft",
+            "status": status_str,
+            "new_snapshot_id": new_snapshot_id,
         }),
     );
     Ok(())
@@ -4700,6 +4729,7 @@ mod tests {
             Some("record storage-backed compile flow"),
             None,
             false,
+            true, // apply_immediately: unit test needs a snapshot created
             None,
             &store,
         )
