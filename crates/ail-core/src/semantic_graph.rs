@@ -173,6 +173,158 @@ pub struct TypeFacts {
     pub generics: Vec<String>,
 }
 
+// ── Generic parameter kinds ───────────────────────────────────────────────
+
+/// Classification of a generic parameter, as specified in docs/type-system.md.
+///
+/// The four kinds correspond to the four classes of generic parameters
+/// supported by the type system: type, effect, capability, and const.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GenericParamKind {
+    /// A classical type parameter (e.g., `T` in `List<T>`).
+    TypeParam,
+    /// An effect parameter (e.g., `e` in `fn map<T, U, e>(...) effects e`).
+    EffectParam,
+    /// A capability parameter (e.g., `cap` in `fn with_retry<T, E, cap>(...)`).
+    CapabilityParam,
+    /// A decidable/simple const parameter (e.g., `N` in `Vector<T, N>`).
+    ConstParam,
+}
+
+/// A typed generic parameter declaration on a function or type node.
+///
+/// Each entry names a generic parameter and classifies its kind.
+/// `required_constraints` lists interface names the parameter must satisfy
+/// (e.g., `["Eq", "Hashable"]` for a type param used in `Set<T>`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenericParamDecl {
+    /// Parameter name (e.g., `"T"`, `"e"`, `"N"`).
+    pub name: String,
+    /// Parameter kind.
+    pub kind: GenericParamKind,
+    /// Interface constraints required on this parameter.
+    ///
+    /// Examples: `["Eq"]`, `["Eq", "Hashable"]`, `["Ord"]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_constraints: Vec<String>,
+}
+
+// ── Function parameter declarations ──────────────────────────────────────
+
+/// A declared function parameter with its nominal type name.
+///
+/// Used to record the expected parameter types of a function node,
+/// enabling call-site nominal type enforcement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParamDecl {
+    /// Parameter name (e.g., `"id"`, `"value"`).
+    pub name: String,
+    /// Declared nominal type (e.g., `"UserId"`, `"OrderId"`, `"Int"`).
+    pub ty: String,
+}
+
+// ── Interface metadata ────────────────────────────────────────────────────
+
+/// An associated type binding in an interface implementation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssociatedTypeBinding {
+    /// Associated type name declared in the interface (e.g., `"Error"`).
+    pub name: String,
+    /// Concrete type bound at this implementation site (e.g., `"DbError"`).
+    pub ty: String,
+}
+
+/// Interface implementation metadata declared on a node.
+///
+/// Records that the owning node's type implements the named interface,
+/// with optional associated type bindings and an adapter flag for the
+/// orphan rule exception.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterfaceImplMeta {
+    /// Fully-qualified interface name (e.g., `"cap.payments.Chargeable"`).
+    pub interface: String,
+    /// Associated type bindings for this impl, in declaration order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub associated_types: Vec<AssociatedTypeBinding>,
+    /// Whether this implementation uses the adapter/newtype exception.
+    ///
+    /// When `true`, the orphan rule exception applies.
+    pub is_adapter: bool,
+}
+
+// ── Refinement types ──────────────────────────────────────────────────────
+
+/// Possible outcomes for a refinement proof obligation.
+///
+/// Mirrors the six verification states but restricted to refinement context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RefinementStatus {
+    /// Statically proven by the type checker or solver.
+    Proven,
+    /// Validated by a runtime check that is materialized at an explicit boundary.
+    RuntimeChecked,
+    /// Declared/assumed by the programmer without mechanical proof.
+    Assumed,
+    /// Not yet classified; outcome unknown.
+    Unverified,
+    /// The refinement is known to fail (violation detected).
+    Failed,
+}
+
+/// A refinement predicate attached to a type node.
+///
+/// The `status` field carries the pre-classified proof obligation outcome.
+/// `erased` records whether this refinement was downgraded to the base type
+/// at some boundary — erasure must always be explicit and tracked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefinementRef {
+    /// The base type being refined (e.g., `"Text"`, `"Int"`).
+    pub base_type: String,
+    /// The predicate expression (e.g., `"length_graphemes(value) > 0"`).
+    pub predicate: String,
+    /// Classification of the proof obligation.
+    pub status: RefinementStatus,
+    /// Whether this refinement was erased to the base type at a boundary.
+    ///
+    /// When `true`, an erasure entry is emitted in the verification report.
+    #[serde(default)]
+    pub erased: bool,
+}
+
+// ── Constraint set ────────────────────────────────────────────────────────
+
+/// Explicit constraint declarations on a type node.
+///
+/// Records whether this type implements `Eq`, `Ord`, and `Hashable`,
+/// plus any additional named constraints.  These are used by the type
+/// checker to enforce collection/operator constraint requirements.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConstraintSet {
+    /// Whether this type implements `Eq` (required for `==`, `Set<T>`, `Map<K,V>`).
+    pub has_eq: bool,
+    /// Whether this type implements `Ord` (required for `sort`, `min`, `max`).
+    pub has_ord: bool,
+    /// Whether this type implements `Hashable` (required for `Set<T>`, `Map<K,V>`).
+    pub has_hash: bool,
+    /// Additional named constraints (e.g., `["PartialOrd", "Display"]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extras: Vec<String>,
+}
+
+// ── Call-site type argument bindings ─────────────────────────────────────
+
+/// A binding from a generic parameter name to the concrete type at a call site.
+///
+/// Used on `GraphEdge` (kind `Calls`) to record which concrete type fills
+/// each generic type parameter at this invocation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeArgBinding {
+    /// Generic parameter name (e.g., `"T"`, `"K"`, `"V"`).
+    pub param: String,
+    /// Concrete type filling this parameter (e.g., `"UserId"`, `"Int"`).
+    pub ty: String,
+}
+
 /// Declared effect row for a `GraphNode`.
 ///
 /// Uses `Vec<String>` (no `HashMap`) for CBOR determinism.
@@ -255,6 +407,53 @@ pub struct GraphNode {
     /// pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_metadata: Option<TrustMetadata>,
+
+    // ── Type-system enforcement metadata (G24) ────────────────────────────
+    //
+    // All fields below are additive and optional.  Existing CBOR fixtures that
+    // omit them are unaffected — fields absent in the wire format deserialize
+    // as `None`.  The `GraphNode::new` constructor initialises all to `None`.
+
+    /// Typed generic parameter declarations for this node.
+    ///
+    /// Present on Function/Type nodes that declare generic parameters.
+    /// Carries kind information (`TypeParam`, `EffectParam`, etc.) and
+    /// any required interface constraints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generic_params: Option<Vec<GenericParamDecl>>,
+
+    /// Declared function parameters with their expected nominal types.
+    ///
+    /// Present on `Function` nodes.  Used by the type checker to enforce
+    /// nominal type compatibility at call sites.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<Vec<ParamDecl>>,
+
+    /// Declared return type of this function (nominal type name).
+    ///
+    /// Present on `Function` nodes with an explicit return type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_type: Option<String>,
+
+    /// Interface implementations declared by this node's type.
+    ///
+    /// Present on `Type` (or `Function`) nodes that implement interfaces.
+    /// Used for coherence/orphan-rule checking and Dyn<Interface> coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface_impls: Option<Vec<InterfaceImplMeta>>,
+
+    /// Refinement predicate for this type, with its proof-obligation status.
+    ///
+    /// Present on `Type` nodes that carry a refinement constraint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refinement_ref: Option<RefinementRef>,
+
+    /// Explicit constraint declarations (Eq/Ord/Hashable/extras).
+    ///
+    /// Present on `Type` nodes to record which constraints they satisfy.
+    /// Checked by the type checker when verifying generic instantiations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraint_set: Option<ConstraintSet>,
 }
 
 impl GraphNode {
@@ -293,6 +492,12 @@ impl GraphNode {
             provenance: None,
             schema: None,
             trust_metadata: None,
+            generic_params: None,
+            params: None,
+            return_type: None,
+            interface_impls: None,
+            refinement_ref: None,
+            constraint_set: None,
         }
     }
 }
@@ -300,6 +505,10 @@ impl GraphNode {
 // ── GraphEdge ─────────────────────────────────────────────────────────────
 
 /// A directed, typed edge between two `GraphNode`s.
+///
+/// The optional `call_args` and `type_arg_bindings` fields are populated
+/// only on `Calls` edges and are absent from the wire format otherwise,
+/// preserving backward CBOR compatibility.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphEdge {
     /// Source node.
@@ -308,6 +517,32 @@ pub struct GraphEdge {
     pub target: NodeRef,
     /// Semantic relationship.
     pub kind: EdgeKind,
+    /// Argument types at this call site, in parameter order.
+    ///
+    /// Present only on `Calls` edges when argument types are known.
+    /// Each string is the nominal type name of the corresponding argument.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_args: Option<Vec<String>>,
+    /// Generic type argument bindings at this call site.
+    ///
+    /// Present only on `Calls` edges where generic parameters are
+    /// instantiated with concrete types.  Used by the constraint checker
+    /// to verify that concrete types satisfy the callee's generic constraints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_arg_bindings: Option<Vec<TypeArgBinding>>,
+}
+
+impl GraphEdge {
+    /// Create a simple edge with no call-site metadata.
+    pub fn new(source: NodeRef, target: NodeRef, kind: EdgeKind) -> Self {
+        Self {
+            source,
+            target,
+            kind,
+            call_args: None,
+            type_arg_bindings: None,
+        }
+    }
 }
 
 // ── SemanticGraph ─────────────────────────────────────────────────────────
@@ -401,11 +636,7 @@ mod tests {
     }
 
     fn edge(source: u32, target: u32, kind: EdgeKind) -> GraphEdge {
-        GraphEdge {
-            source: NodeRef(source),
-            target: NodeRef(target),
-            kind,
-        }
+        GraphEdge::new(NodeRef(source), NodeRef(target), kind)
     }
 
     // ── valid_graph_passes_validation ─────────────────────────────────────
@@ -587,6 +818,245 @@ mod tests {
             NodeKind::Package,
             "Package kind must be preserved"
         );
+    }
+
+    // ── G24: generic_params_cbor_round_trip ───────────────────────────────
+    // Spec requirement 2 (Generics): GenericParamDecl with all kinds round-trips.
+    //   GIVEN a Function node with generic_params covering all four kinds
+    //   WHEN serialized to CBOR and deserialized
+    //   THEN all fields are preserved exactly
+    //
+    // RED: written before GenericParamDecl / GenericParamKind existed.
+    // GREEN: passes after Task 1 implementation.
+    #[test]
+    fn generic_params_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+
+        let codec = CborCodec;
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "traverse");
+        node.generic_params = Some(vec![
+            GenericParamDecl {
+                name: "T".into(),
+                kind: GenericParamKind::TypeParam,
+                required_constraints: vec![],
+            },
+            GenericParamDecl {
+                name: "e".into(),
+                kind: GenericParamKind::EffectParam,
+                required_constraints: vec![],
+            },
+            GenericParamDecl {
+                name: "cap".into(),
+                kind: GenericParamKind::CapabilityParam,
+                required_constraints: vec![],
+            },
+            GenericParamDecl {
+                name: "N".into(),
+                kind: GenericParamKind::ConstParam,
+                required_constraints: vec![],
+            },
+        ]);
+
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
+        let bytes = codec.encode(&graph).expect("encode must succeed");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode must succeed");
+        assert_eq!(decoded, graph, "graph with generic_params must survive CBOR round-trip");
+        assert_eq!(
+            decoded.nodes[0].generic_params.as_ref().unwrap().len(),
+            4,
+            "all four generic param declarations must be preserved"
+        );
+    }
+
+    // ── G24: params_and_return_type_cbor_round_trip ───────────────────────
+    // Spec requirement 1 (Nominal): Function params with explicit types round-trip.
+    //   GIVEN a Function node with declared params and return_type
+    //   WHEN serialized to CBOR and deserialized
+    //   THEN all param declarations are preserved
+    #[test]
+    fn params_and_return_type_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+
+        let codec = CborCodec;
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "load_user");
+        node.params = Some(vec![ParamDecl {
+            name: "id".into(),
+            ty: "UserId".into(),
+        }]);
+        node.return_type = Some("User".into());
+
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        assert_eq!(decoded, graph);
+        let params = decoded.nodes[0].params.as_ref().unwrap();
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].name, "id");
+        assert_eq!(params[0].ty, "UserId");
+        assert_eq!(decoded.nodes[0].return_type.as_deref(), Some("User"));
+    }
+
+    // ── G24: interface_impl_meta_cbor_round_trip ──────────────────────────
+    // Spec requirement 3 (Interfaces): InterfaceImplMeta with associated types.
+    //   GIVEN a Type node with interface_impls including associated type bindings
+    //   WHEN serialized to CBOR and deserialized
+    //   THEN all impl data is preserved
+    #[test]
+    fn interface_impl_meta_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+
+        let codec = CborCodec;
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "PostgresUserRepo");
+        node.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "cap.Repository<User>".into(),
+            associated_types: vec![AssociatedTypeBinding {
+                name: "Error".into(),
+                ty: "DbError".into(),
+            }],
+            is_adapter: false,
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        assert_eq!(decoded, graph);
+        let impls = decoded.nodes[0].interface_impls.as_ref().unwrap();
+        assert_eq!(impls.len(), 1);
+        assert_eq!(impls[0].interface, "cap.Repository<User>");
+        assert_eq!(impls[0].associated_types[0].ty, "DbError");
+        assert!(!impls[0].is_adapter);
+    }
+
+    // ── G24: refinement_ref_cbor_round_trip ──────────────────────────────
+    // Spec requirement 6 (Refinements): RefinementRef with status and erasure flag.
+    //   GIVEN a Type node with a refinement predicate and RuntimeChecked status
+    //   WHEN serialized to CBOR and deserialized
+    //   THEN all refinement fields are preserved
+    #[test]
+    fn refinement_ref_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+
+        let codec = CborCodec;
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "Email");
+        node.refinement_ref = Some(RefinementRef {
+            base_type: "Text".into(),
+            predicate: "matches_email(value)".into(),
+            status: RefinementStatus::RuntimeChecked,
+            erased: false,
+        });
+
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        assert_eq!(decoded, graph);
+        let rf = decoded.nodes[0].refinement_ref.as_ref().unwrap();
+        assert_eq!(rf.base_type, "Text");
+        assert_eq!(rf.status, RefinementStatus::RuntimeChecked);
+        assert!(!rf.erased);
+    }
+
+    // ── G24: constraint_set_cbor_round_trip ──────────────────────────────
+    // Spec requirement 5 (Eq/Ord/Hash): ConstraintSet with all flags.
+    //   GIVEN a Type node declaring Eq + Hash constraints
+    //   WHEN serialized to CBOR and deserialized
+    //   THEN constraint flags are preserved exactly
+    #[test]
+    fn constraint_set_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+
+        let codec = CborCodec;
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "UserId");
+        node.constraint_set = Some(ConstraintSet {
+            has_eq: true,
+            has_ord: false,
+            has_hash: true,
+            extras: vec!["Display".into()],
+        });
+
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        assert_eq!(decoded, graph);
+        let cs = decoded.nodes[0].constraint_set.as_ref().unwrap();
+        assert!(cs.has_eq);
+        assert!(!cs.has_ord);
+        assert!(cs.has_hash);
+        assert_eq!(cs.extras, ["Display"]);
+    }
+
+    // ── G24: call_edge_with_args_cbor_round_trip ──────────────────────────
+    // Spec requirement 1 (Nominal): Call edge with arg types and type bindings.
+    //   GIVEN a Calls edge with call_args and type_arg_bindings
+    //   WHEN serialized to CBOR and deserialized
+    //   THEN all call-site metadata is preserved
+    #[test]
+    fn call_edge_with_args_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+
+        let codec = CborCodec;
+        let graph = SemanticGraph {
+            nodes: vec![
+                node(0, NodeKind::Function, "caller"),
+                node(1, NodeKind::Function, "load_user"),
+            ],
+            edges: vec![GraphEdge {
+                source: NodeRef(0),
+                target: NodeRef(1),
+                kind: EdgeKind::Calls,
+                call_args: Some(vec!["OrderId".into()]),
+                type_arg_bindings: Some(vec![TypeArgBinding {
+                    param: "T".into(),
+                    ty: "UserId".into(),
+                }]),
+            }],
+        };
+
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        assert_eq!(decoded, graph);
+        let e = &decoded.edges[0];
+        assert_eq!(e.call_args.as_deref(), Some(["OrderId".to_string()].as_ref()));
+        assert_eq!(e.type_arg_bindings.as_ref().unwrap()[0].ty, "UserId");
+    }
+
+    // ── G24: TRIANGULATE – node_without_new_fields_unchanged ─────────────
+    // Backward compat: existing nodes without new fields round-trip unchanged.
+    //   GIVEN a node created with GraphNode::new (all new fields None)
+    //   WHEN serialized to CBOR and deserialized
+    //   THEN all new optional fields remain None (not None → default junk)
+    #[test]
+    fn node_without_new_fields_unchanged() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+
+        let codec = CborCodec;
+        let graph = SemanticGraph {
+            nodes: vec![node(0, NodeKind::Function, "legacy_fn")],
+            edges: vec![],
+        };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        let n = &decoded.nodes[0];
+        assert!(n.generic_params.is_none(), "generic_params must be None for legacy node");
+        assert!(n.params.is_none(), "params must be None for legacy node");
+        assert!(n.return_type.is_none(), "return_type must be None for legacy node");
+        assert!(n.interface_impls.is_none(), "interface_impls must be None for legacy node");
+        assert!(n.refinement_ref.is_none(), "refinement_ref must be None for legacy node");
+        assert!(n.constraint_set.is_none(), "constraint_set must be None for legacy node");
     }
 
     // ── TRIANGULATE: different_graphs_produce_different_bytes ────────────

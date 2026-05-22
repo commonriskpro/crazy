@@ -60,11 +60,7 @@ pub fn build_graph_self_model() -> SemanticGraph {
     // meta module --DependsOn--> each type node
 
     let edges = (1u32..=9)
-        .map(|i| GraphEdge {
-            source: NodeRef(0),
-            target: NodeRef(i),
-            kind: EdgeKind::DependsOn,
-        })
+        .map(|i| GraphEdge::new(NodeRef(0), NodeRef(i), EdgeKind::DependsOn))
         .collect();
 
     SemanticGraph { nodes, edges }

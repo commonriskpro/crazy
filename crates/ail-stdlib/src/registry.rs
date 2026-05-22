@@ -202,6 +202,12 @@ impl StdlibRegistry {
                 provenance: None,
                 schema: None,
                 trust_metadata: None,
+                generic_params: None,
+                params: None,
+                return_type: None,
+                interface_impls: None,
+                refinement_ref: None,
+                constraint_set: None,
             })
             .collect()
     }

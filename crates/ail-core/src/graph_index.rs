@@ -94,11 +94,7 @@ mod tests {
     }
 
     fn edge(source: u32, target: u32, kind: EdgeKind) -> GraphEdge {
-        GraphEdge {
-            source: NodeRef(source),
-            target: NodeRef(target),
-            kind,
-        }
+        GraphEdge::new(NodeRef(source), NodeRef(target), kind)
     }
 
     // ── Spec scenario: Forward adjacency for a calling node ───────────────

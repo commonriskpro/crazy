@@ -344,11 +344,7 @@ mod tests {
     }
 
     fn edge(source: u32, target: u32) -> GraphEdge {
-        GraphEdge {
-            source: NodeRef(source),
-            target: NodeRef(target),
-            kind: EdgeKind::Calls,
-        }
+        GraphEdge::new(NodeRef(source), NodeRef(target), EdgeKind::Calls)
     }
 
     fn two_node_graph() -> SemanticGraph {

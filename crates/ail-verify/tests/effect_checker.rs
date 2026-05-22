@@ -19,11 +19,7 @@ fn node(id: u32, kind: NodeKind, name: &str) -> GraphNode {
 }
 
 fn emits_edge(source: u32, target: u32) -> GraphEdge {
-    GraphEdge {
-        source: NodeRef(source),
-        target: NodeRef(target),
-        kind: EdgeKind::Emits,
-    }
+    GraphEdge::new(NodeRef(source), NodeRef(target), EdgeKind::Emits)
 }
 
 // ── Scenario R4: Pure node (no effects) → Proven ─────────────────────────

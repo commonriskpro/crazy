@@ -230,11 +230,7 @@ mod tests {
     fn edge_op(src: u32, tgt: u32) -> CanonicalOp {
         CanonicalOp {
             kind: ail_change::model::ChangeSetOp::Connect,
-            payload: OpPayload::AddEdge(GraphEdge {
-                source: NodeRef(src),
-                target: NodeRef(tgt),
-                kind: EdgeKind::Calls,
-            }),
+            payload: OpPayload::AddEdge(GraphEdge::new(NodeRef(src), NodeRef(tgt), EdgeKind::Calls)),
             block_hash: dummy_hash(),
             ..Default::default()
         }
