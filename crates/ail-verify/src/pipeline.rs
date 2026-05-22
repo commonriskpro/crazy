@@ -1070,12 +1070,29 @@ fn check_approval_records(approvals: &[ApprovalRecord]) -> Vec<VerificationEntry
         .collect()
 }
 
+/// Returns true if the body contains a `let ... in` pattern (valid ANF structure).
+fn has_let_in_pattern(body: &str) -> bool {
+    if let Some(let_pos) = body.find("let ") {
+        body[let_pos..].contains(" in ")
+    } else {
+        false
+    }
+}
+
 fn lower_anf(graph: &SemanticGraph) -> VerificationEntry {
-    let unsupported = graph
-        .nodes
-        .iter()
+    let unsupported = graph.nodes.iter()
         .filter_map(|node| node.body_expr.as_ref().map(|body| (node, body)))
-        .find(|(_, body)| body.contains(";") || body.contains("while "));
+        .find(|(_, body)| {
+            // Non-ANF: control flow keywords that are incompatible with ANF form
+            if body.contains("while ") || body.contains("for ") || body.contains("loop ") {
+                return true;
+            }
+            // Non-ANF: bare semicolons outside of a let...in context
+            if body.contains(';') && !has_let_in_pattern(body) {
+                return true;
+            }
+            false
+        });
     if let Some((node, body)) = unsupported {
         stage_entry(
             "19-lower-to-anf",
@@ -1093,19 +1110,60 @@ fn lower_anf(graph: &SemanticGraph) -> VerificationEntry {
     }
 }
 
+/// Scan `body` for `acquire(<ident>)` and `release(<ident>)` tokens.
+/// Returns per-identifier (first_acquire_pos, first_release_pos) pairs where a
+/// release appears before the corresponding acquire.
+fn find_ordering_violation(body: &str) -> Option<String> {
+    use std::collections::HashMap;
+
+    let mut acquires: HashMap<String, usize> = HashMap::new();
+    let mut releases: HashMap<String, usize> = HashMap::new();
+
+    // Walk the body scanning for acquire(<ident>) and release(<ident>)
+    let mut pos = 0;
+    while pos < body.len() {
+        for (keyword, map) in [("acquire(", &mut acquires), ("release(", &mut releases)] {
+            if body[pos..].starts_with(keyword) {
+                let inner_start = pos + keyword.len();
+                if let Some(close) = body[inner_start..].find(')') {
+                    let ident = body[inner_start..inner_start + close].trim().to_string();
+                    if !ident.is_empty() && ident.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                        map.entry(ident).or_insert(pos);
+                    }
+                }
+            }
+        }
+        pos += 1;
+    }
+
+    // Check: any release appearing before its corresponding acquire
+    for (ident, release_pos) in &releases {
+        if let Some(&acquire_pos) = acquires.get(ident) {
+            if *release_pos < acquire_pos {
+                return Some(ident.clone());
+            }
+        } else {
+            // release without matching acquire is also a violation
+            return Some(ident.clone());
+        }
+    }
+    None
+}
+
 fn check_anf_ordering(graph: &SemanticGraph) -> VerificationEntry {
     for node in &graph.nodes {
         let Some(body) = &node.body_expr else {
             continue;
         };
-        if let (Some(use_pos), Some(release_pos)) = (body.find("use("), body.find("release("))
-            && use_pos > release_pos
-        {
+        if let Some(ident) = find_ordering_violation(body) {
             return stage_entry(
                 "20-check-anf-effect-resource-ordering",
                 VerificationState::Failed,
                 node.name.clone(),
-                Some("E_ANF_RESOURCE_ORDER: use appears after release".into()),
+                Some(format!(
+                    "E_ANF_RESOURCE_ORDER: release('{}') appears before acquire('{}')",
+                    ident, ident
+                )),
             );
         }
     }

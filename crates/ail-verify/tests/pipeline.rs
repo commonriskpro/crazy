@@ -482,8 +482,9 @@ fn full_pipeline_checks_invariants_by_impact_edges() {
 
 #[test]
 fn full_pipeline_fails_anf_resource_use_after_release_order() {
+    // Updated to use acquire/release terminology (TASK-16)
     let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.bad_resource_order");
-    node.body_expr = Some("release(lock); use(lock)".into());
+    node.body_expr = Some("release(lock); acquire(lock)".into());
     let graph = SemanticGraph {
         nodes: vec![node],
         edges: vec![],
@@ -497,6 +498,114 @@ fn full_pipeline_fails_anf_resource_use_after_release_order() {
         entry.claim == "20-check-anf-effect-resource-ordering"
             && entry.state == ail_verify::report::VerificationState::Failed
     }));
+}
+
+// ── TASK-13: Stage 19 — ANF structural analysis ───────────────────────────
+
+#[test]
+fn stage19_let_in_body_is_proven() {
+    // "let x = f() in x + 1" is valid ANF → Proven
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.anf_let");
+    node.body_expr = Some("let x = f() in x + 1".into());
+    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run(&ctx);
+
+    let failed = report.entries.iter().any(|e| {
+        e.claim == "19-lower-to-anf" && e.state == ail_verify::report::VerificationState::Unverified
+    });
+    assert!(!failed, "let...in body must not produce Unverified in stage19");
+}
+
+#[test]
+fn stage19_semicolon_outside_let_is_unverified() {
+    // "a; b" has bare semicolon, not in let...in context → Unverified
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.bare_semi");
+    node.body_expr = Some("a; b".into());
+    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run(&ctx);
+
+    let entry = report.entries.iter().find(|e| {
+        e.claim == "19-lower-to-anf"
+            && e.scope == "fn.bare_semi"
+            && e.state == ail_verify::report::VerificationState::Unverified
+    });
+    assert!(entry.is_some(), "bare semicolon outside let...in must produce Unverified");
+}
+
+#[test]
+fn stage19_while_keyword_is_unverified() {
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.while_loop");
+    node.body_expr = Some("while true { do_something() }".into());
+    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run(&ctx);
+
+    let entry = report.entries.iter().find(|e| {
+        e.claim == "19-lower-to-anf"
+            && e.state == ail_verify::report::VerificationState::Unverified
+    });
+    assert!(entry.is_some(), "'while' keyword must produce Unverified");
+}
+
+#[test]
+fn stage19_no_body_is_proven() {
+    // Node with no body_expr → Proven (nothing to analyze)
+    let node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.no_body");
+    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run(&ctx);
+
+    let entry = report.entries.iter().find(|e| {
+        e.claim == "19-lower-to-anf" && e.state == ail_verify::report::VerificationState::Proven
+    });
+    assert!(entry.is_some(), "no body_expr must produce Proven for stage19");
+}
+
+// ── TASK-15: Stage 20 — acquire/release pair analysis ─────────────────────
+
+#[test]
+fn stage20_release_before_acquire_fails_with_e_anf_resource_order() {
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.bad_order");
+    node.body_expr = Some("release(db) acquire(db)".into());
+    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run(&ctx);
+
+    let entry = report.entries.iter().find(|e| {
+        e.claim == "20-check-anf-effect-resource-ordering"
+            && e.state == ail_verify::report::VerificationState::Failed
+            && e.evidence.as_deref().unwrap_or("").contains("E_ANF_RESOURCE_ORDER")
+    });
+    assert!(entry.is_some(), "release before acquire must produce Failed with E_ANF_RESOURCE_ORDER");
+}
+
+#[test]
+fn stage20_acquire_then_release_is_proven() {
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.good_order");
+    node.body_expr = Some("acquire(db) release(db)".into());
+    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run(&ctx);
+
+    let entry = report.entries.iter().find(|e| {
+        e.claim == "20-check-anf-effect-resource-ordering"
+            && e.state == ail_verify::report::VerificationState::Proven
+    });
+    assert!(entry.is_some(), "acquire before release must produce Proven");
 }
 
 #[test]
