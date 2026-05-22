@@ -43,9 +43,9 @@
 use ail_core::semantic_graph::EdgeKind;
 use ail_core::semantic_graph::{
     AssociatedTypeBinding, CapabilityReqs, ConstraintSet, ContractClauses, EffectRow,
-    GenericParamDecl, GenericParamKind, GraphEdge, GraphNode, InterfaceImplMeta, NodeKind, NodeRef,
-    ParamDecl, RefinementRef, RefinementStatus, RuntimeCheckMeta, SemanticGraph, TypeArgBinding,
-    TypeFacts,
+    GenericParamDecl, GenericParamKind, GraphEdge, GraphNode, InferredFact, InterfaceImplMeta,
+    NodeKind, NodeRef, ParamDecl, RefinementRef, RefinementStatus, RuntimeCheckMeta, SemanticGraph,
+    TypeArgBinding, TypeFacts,
 };
 use ail_verify::report::VerificationState;
 use ail_verify::type_checker::{
@@ -1741,5 +1741,208 @@ fn refinement_failed_emits_failed_entry() {
         state,
         Some(VerificationState::Failed),
         "Failed refinement must produce Failed entry"
+    );
+}
+
+// ── Task E1 (RED): PatchField validation subpass ──────────────────────────
+
+// S-E1a: Type node with valid PatchField<Text> return type → Proven.
+#[test]
+fn patch_field_with_non_empty_inner_type_is_proven() {
+    use ail_verify::type_checker::E_PATCHFIELD_EMPTY_INNER;
+
+    let mut node = type_node(0, "UpdateUsername");
+    node.return_type = Some("PatchField<Text>".into());
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    // The patchfield subpass must not produce a Failed entry for a valid PatchField.
+    let failed = report
+        .entries
+        .iter()
+        .any(|e| {
+            e.claim == "patchfield"
+                && e.state == VerificationState::Failed
+                && e.evidence
+                    .as_deref()
+                    .map(|ev| ev.contains(E_PATCHFIELD_EMPTY_INNER))
+                    .unwrap_or(false)
+        });
+    assert!(!failed, "PatchField<Text> must not emit E_PATCHFIELD_EMPTY_INNER");
+}
+
+// S-E1b: Type node with empty inner PatchField<> → Failed with E_PATCHFIELD_EMPTY_INNER.
+#[test]
+fn patch_field_with_empty_inner_type_fails() {
+    use ail_verify::type_checker::E_PATCHFIELD_EMPTY_INNER;
+
+    let mut node = type_node(0, "BadPatch");
+    node.return_type = Some("PatchField<>".into());
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let entry = report
+        .entries
+        .iter()
+        .find(|e| e.claim == "patchfield" && e.state == VerificationState::Failed);
+    assert!(
+        entry.is_some(),
+        "PatchField<> must produce a Failed patchfield entry"
+    );
+    assert!(
+        entry
+            .unwrap()
+            .evidence
+            .as_deref()
+            .map(|ev| ev.contains(E_PATCHFIELD_EMPTY_INNER))
+            .unwrap_or(false),
+        "evidence must contain E_PATCHFIELD_EMPTY_INNER"
+    );
+}
+
+// S-E1c: Nodes without PatchField return type are not affected.
+// Triangulation: no false positives.
+#[test]
+fn non_patchfield_return_type_is_not_checked() {
+    let mut node = fn_node(0, "load_user");
+    node.return_type = Some("Result<User, DbError>".into());
+    let report = TypeChecker::check(&graph_from(vec![node]));
+    let has_patchfield_entry = report.entries.iter().any(|e| e.claim == "patchfield");
+    assert!(!has_patchfield_entry, "non-PatchField node must not have patchfield entry");
+}
+
+// ── Task E3 (RED): PartialOrd validation subpass ──────────────────────────
+
+// S-E3a: Type node with has_partial_ord=true in partial-order context → Proven.
+#[test]
+fn type_with_partial_ord_in_partial_order_context_is_proven() {
+    let mut node = type_node(0, "Probability");
+    node.constraint_set = Some(ConstraintSet {
+        has_eq: true,
+        has_ord: false,
+        has_hash: false,
+        has_partial_ord: true,
+        extras: vec![],
+    });
+    // Mark as a partial-order context via extras.
+    node.return_type = Some("PartialOrd<Probability>".into());
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let proven = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "partial-ord" && e.state == VerificationState::Proven);
+    assert!(proven, "type with has_partial_ord=true must emit Proven partial-ord entry");
+}
+
+// S-E3b: Node requiring Ord but only has_partial_ord=true → informational entry.
+// Triangulation: partial ord without total ord emits a distinguishable entry.
+#[test]
+fn type_with_only_partial_ord_emits_informational_in_sorting_context() {
+    use ail_verify::type_checker::E_PARTIAL_ORD_REQUIRED;
+
+    let mut node = type_node(0, "FloatOrd");
+    node.constraint_set = Some(ConstraintSet {
+        has_eq: true,
+        has_ord: false,   // no total ord
+        has_hash: false,
+        has_partial_ord: true,
+        extras: vec![],
+    });
+    // A sorting context is signaled by extras containing "needs_ord".
+    node.return_type = Some("OrderedSet<FloatOrd>".into());
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    // Should emit an entry for partial-ord context (Unverified or informational).
+    let has_partial_ord_entry = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "partial-ord");
+    assert!(
+        has_partial_ord_entry,
+        "type with partial-ord-only in Ord context must emit a partial-ord entry; code: {E_PARTIAL_ORD_REQUIRED}"
+    );
+}
+
+// ── Task E5 (RED): boundary inference cross-check subpass ─────────────────
+
+// S-E5a: Function with matching boundary inferred_fact and return_type → Proven.
+#[test]
+fn boundary_inference_matching_return_type_is_proven() {
+    use ail_verify::type_checker::E_BOUNDARY_INFERENCE_MISMATCH;
+
+    let mut node = fn_node(0, "charge_order");
+    node.return_type = Some("Result<OrderId>".into());
+    node.inferred = vec![InferredFact {
+        kind: "boundary".into(),
+        value: "return:Result<OrderId>".into(),
+    }];
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let failed = report
+        .entries
+        .iter()
+        .any(|e| {
+            e.claim == "boundary-inference"
+                && e.state == VerificationState::Failed
+                && e.evidence
+                    .as_deref()
+                    .map(|ev| ev.contains(E_BOUNDARY_INFERENCE_MISMATCH))
+                    .unwrap_or(false)
+        });
+    assert!(
+        !failed,
+        "matching boundary inference must not produce E_BOUNDARY_INFERENCE_MISMATCH"
+    );
+    let proven = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "boundary-inference" && e.state == VerificationState::Proven);
+    assert!(proven, "matching boundary inference must produce Proven boundary-inference entry");
+}
+
+// S-E5b: Function with mismatching boundary inferred_fact → Failed with E_BOUNDARY_INFERENCE_MISMATCH.
+#[test]
+fn boundary_inference_mismatching_return_type_fails() {
+    use ail_verify::type_checker::E_BOUNDARY_INFERENCE_MISMATCH;
+
+    let mut node = fn_node(0, "charge_order");
+    node.return_type = Some("Result<PaymentReceipt>".into());
+    node.inferred = vec![InferredFact {
+        kind: "boundary".into(),
+        value: "return:Result<OrderId>".into(),
+    }];
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let entry = report
+        .entries
+        .iter()
+        .find(|e| e.claim == "boundary-inference" && e.state == VerificationState::Failed);
+    assert!(
+        entry.is_some(),
+        "boundary inference mismatch must produce Failed entry"
+    );
+    assert!(
+        entry
+            .unwrap()
+            .evidence
+            .as_deref()
+            .map(|ev| ev.contains(E_BOUNDARY_INFERENCE_MISMATCH))
+            .unwrap_or(false),
+        "evidence must contain E_BOUNDARY_INFERENCE_MISMATCH"
+    );
+}
+
+// S-E5c: Function with no inferred_facts → no boundary-inference entry.
+// Triangulation: absence of inferred facts means the subpass is skipped.
+#[test]
+fn function_with_no_inferred_facts_has_no_boundary_inference_entry() {
+    let node = fn_node(0, "pure_fn");
+    let report = TypeChecker::check(&graph_from(vec![node]));
+    let has_entry = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "boundary-inference");
+    assert!(
+        !has_entry,
+        "function with no inferred_facts must not have boundary-inference entry"
     );
 }
