@@ -31,7 +31,9 @@ pub mod tag;
 
 pub use approval::{
     ApprovalRecord, ApprovalRegistry, ApprovalStore, AssumptionRecord, AssumptionRegistry,
-    AssumptionStatus, AssumptionStore,
+    AssumptionStatus, AssumptionStore, ObjectBackedApprovalStore, ObjectBackedAssumptionStore,
+    VerificationGateResult, approval_is_valid, evaluate_verification_gate,
+    validate_assumption_boundary,
 };
 pub use backends::postgres::PostgresGraphStore;
 pub use branch::{Branch, BranchRegistry, BranchStore};

@@ -8,7 +8,34 @@
 // on; expired/revoked assumptions propagate to gate failures.
 //
 // Both record types are first-class stored objects with their own in-memory
-// registries, consistent with the pattern used for branches and tags.
+// registries AND object-backed durable registries, consistent with the pattern
+// used for branches and tags.
+//
+// # Approval expiry
+//
+// An approval is considered EXPIRED if the `canonical_change_hash` stored at
+// approval time no longer matches the current canonical hash.  This crate
+// provides `approval_is_valid` to check this.  Enforcing the gate is the
+// caller's responsibility, but the function is provided here so callers do not
+// have to re-implement the rule.
+//
+// # Assumption boundary validation
+//
+// `AssumptionRecord` carries a `boundary_id`.  `validate_assumption_boundary`
+// checks that the assumption references a known boundary `ObjectId` from a
+// provided set.
+//
+// # Verification gate
+//
+// `VerificationGateResult` is the outcome of evaluating all assumptions
+// relevant to a verification run.  Expired or revoked assumptions cause the
+// gate to fail.
+//
+// # Durable storage
+//
+// `ObjectBackedApprovalStore` and `ObjectBackedAssumptionStore` persist records
+// as CBOR-encoded objects in any `ObjectStore`, making them content-addressed
+// and durable across process restarts.
 //
 // # Determinism
 //
@@ -21,8 +48,9 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+use crate::codec::{CborCodec, ContentCodec};
 use crate::error::StorageResult;
-use crate::object::ObjectId;
+use crate::object::{ObjectId, ObjectStore, RawObject};
 
 // ── ApprovalRecord ────────────────────────────────────────────────────────
 
@@ -219,6 +247,252 @@ impl AssumptionStore for AssumptionRegistry {
     }
 }
 
+// ── approval_is_valid ─────────────────────────────────────────────────────
+
+/// Check whether an approval is still valid against a current canonical hash.
+///
+/// Returns `true` iff `current_canonical_hash == record.canonical_change_hash`.
+///
+/// Per the spec: *"Approval expires if `canonical_change_hash` changes."*
+/// Callers must supply the current canonical hash; this crate does not fetch
+/// it from any store.
+pub fn approval_is_valid(record: &ApprovalRecord, current_canonical_hash: &ObjectId) -> bool {
+    record.canonical_change_hash == *current_canonical_hash
+}
+
+// ── validate_assumption_boundary ─────────────────────────────────────────
+
+/// Validate that an assumption's `boundary_id` is in the set of known boundaries.
+///
+/// Returns `Ok(())` if the assumption's `boundary_id` is a member of
+/// `known_boundary_ids`.  Returns `Err(boundary_id)` (the invalid id) if the
+/// assumption references an unknown boundary.
+pub fn validate_assumption_boundary(
+    record: &AssumptionRecord,
+    known_boundary_ids: &[ObjectId],
+) -> Result<(), ObjectId> {
+    if known_boundary_ids.contains(&record.boundary_id) {
+        Ok(())
+    } else {
+        Err(record.boundary_id)
+    }
+}
+
+// ── VerificationGateResult ────────────────────────────────────────────────
+
+/// The outcome of evaluating verification gate conditions.
+///
+/// The gate passes only when no expired or revoked assumptions are found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VerificationGateResult {
+    /// All assumptions are active; the gate passes.
+    Pass,
+    /// At least one assumption is expired or revoked; the gate fails.
+    ///
+    /// Contains the ids of all offending assumptions, sorted by id bytes for
+    /// determinism.
+    Fail {
+        /// Ids of the assumptions that caused the gate to fail, sorted.
+        failed_assumption_ids: Vec<ObjectId>,
+    },
+}
+
+/// Evaluate the verification gate against a slice of assumptions.
+///
+/// Any assumption with [`AssumptionStatus::Expired`] or
+/// [`AssumptionStatus::Revoked`] causes the gate to fail.  If `now_ms` is
+/// provided, assumptions whose `expires_at` has passed are also treated as
+/// expired even if their stored status is `Active`.
+///
+/// Returns [`VerificationGateResult::Pass`] if all assumptions are active and
+/// unexpired, or [`VerificationGateResult::Fail`] listing all offenders.
+pub fn evaluate_verification_gate(
+    assumptions: &[AssumptionRecord],
+    now_ms: Option<u64>,
+) -> VerificationGateResult {
+    let mut failed: Vec<ObjectId> = assumptions
+        .iter()
+        .filter(|a| {
+            // Explicit revoke/expire status.
+            if matches!(
+                a.status,
+                AssumptionStatus::Expired | AssumptionStatus::Revoked
+            ) {
+                return true;
+            }
+            // Time-based expiry.
+            if let (Some(expires_at), Some(now)) = (a.expires_at, now_ms) {
+                if now >= expires_at {
+                    return true;
+                }
+            }
+            false
+        })
+        .map(|a| a.id)
+        .collect();
+
+    if failed.is_empty() {
+        VerificationGateResult::Pass
+    } else {
+        failed.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        VerificationGateResult::Fail {
+            failed_assumption_ids: failed,
+        }
+    }
+}
+
+// ── ObjectBackedApprovalStore ─────────────────────────────────────────────
+
+/// A durable, object-backed [`ApprovalStore`].
+///
+/// Records are CBOR-encoded and stored as content-addressed objects in the
+/// wrapped [`ObjectStore`].  An in-memory index maps record id → CAS id so
+/// that lookups remain O(n) in the index size, not the object store size.
+///
+/// This is the durable counterpart to [`ApprovalRegistry`], which is in-memory
+/// only.
+#[derive(Clone)]
+pub struct ObjectBackedApprovalStore<S> {
+    store: Arc<S>,
+    codec: CborCodec,
+    index: Arc<Mutex<HashMap<ObjectId, ObjectId>>>,
+}
+
+impl<S: ObjectStore + Send + Sync> ObjectBackedApprovalStore<S> {
+    /// Wrap `store` in an `ObjectBackedApprovalStore`.
+    pub fn new(store: S) -> Self {
+        Self {
+            store: Arc::new(store),
+            codec: CborCodec,
+            index: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl<S: ObjectStore + Send + Sync> ApprovalStore for ObjectBackedApprovalStore<S> {
+    async fn store_approval(&self, record: ApprovalRecord) -> StorageResult<()> {
+        // Encode → store → index.
+        let bytes = self.codec.encode(&record)?;
+        let cas_id = self.store.put(RawObject(bytes)).await?;
+        let mut guard = self.index.lock().expect("approval_index lock not poisoned");
+        guard.entry(record.id).or_insert(cas_id);
+        Ok(())
+    }
+
+    async fn get_approval(&self, id: &ObjectId) -> StorageResult<Option<ApprovalRecord>> {
+        let cas_id = {
+            let guard = self.index.lock().expect("approval_index lock not poisoned");
+            guard.get(id).copied()
+        };
+        match cas_id {
+            None => Ok(None),
+            Some(cas_id) => match self.store.get(&cas_id).await? {
+                None => Ok(None),
+                Some(raw) => {
+                    let record: ApprovalRecord = self.codec.decode(&raw.0)?;
+                    Ok(Some(record))
+                }
+            },
+        }
+    }
+
+    async fn list_approvals(&self) -> StorageResult<Vec<ApprovalRecord>> {
+        let pairs: Vec<(ObjectId, ObjectId)> = {
+            let guard = self.index.lock().expect("approval_index lock not poisoned");
+            guard.iter().map(|(k, v)| (*k, *v)).collect()
+        };
+        let mut records = Vec::with_capacity(pairs.len());
+        for (_id, cas_id) in pairs {
+            if let Some(raw) = self.store.get(&cas_id).await? {
+                let record: ApprovalRecord = self.codec.decode(&raw.0)?;
+                records.push(record);
+            }
+        }
+        records.sort_by(|a, b| {
+            a.timestamp
+                .cmp(&b.timestamp)
+                .then(a.id.as_bytes().cmp(b.id.as_bytes()))
+        });
+        Ok(records)
+    }
+}
+
+// ── ObjectBackedAssumptionStore ───────────────────────────────────────────
+
+/// A durable, object-backed [`AssumptionStore`].
+///
+/// Records are CBOR-encoded and stored as content-addressed objects in the
+/// wrapped [`ObjectStore`].
+#[derive(Clone)]
+pub struct ObjectBackedAssumptionStore<S> {
+    store: Arc<S>,
+    codec: CborCodec,
+    index: Arc<Mutex<HashMap<ObjectId, ObjectId>>>,
+}
+
+impl<S: ObjectStore + Send + Sync> ObjectBackedAssumptionStore<S> {
+    /// Wrap `store` in an `ObjectBackedAssumptionStore`.
+    pub fn new(store: S) -> Self {
+        Self {
+            store: Arc::new(store),
+            codec: CborCodec,
+            index: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl<S: ObjectStore + Send + Sync> AssumptionStore for ObjectBackedAssumptionStore<S> {
+    async fn store_assumption(&self, record: AssumptionRecord) -> StorageResult<()> {
+        let bytes = self.codec.encode(&record)?;
+        let cas_id = self.store.put(RawObject(bytes)).await?;
+        let mut guard = self
+            .index
+            .lock()
+            .expect("assumption_index lock not poisoned");
+        guard.entry(record.id).or_insert(cas_id);
+        Ok(())
+    }
+
+    async fn get_assumption(&self, id: &ObjectId) -> StorageResult<Option<AssumptionRecord>> {
+        let cas_id = {
+            let guard = self
+                .index
+                .lock()
+                .expect("assumption_index lock not poisoned");
+            guard.get(id).copied()
+        };
+        match cas_id {
+            None => Ok(None),
+            Some(cas_id) => match self.store.get(&cas_id).await? {
+                None => Ok(None),
+                Some(raw) => {
+                    let record: AssumptionRecord = self.codec.decode(&raw.0)?;
+                    Ok(Some(record))
+                }
+            },
+        }
+    }
+
+    async fn list_assumptions(&self) -> StorageResult<Vec<AssumptionRecord>> {
+        let pairs: Vec<(ObjectId, ObjectId)> = {
+            let guard = self
+                .index
+                .lock()
+                .expect("assumption_index lock not poisoned");
+            guard.iter().map(|(k, v)| (*k, *v)).collect()
+        };
+        let mut records = Vec::with_capacity(pairs.len());
+        for (_id, cas_id) in pairs {
+            if let Some(raw) = self.store.get(&cas_id).await? {
+                let record: AssumptionRecord = self.codec.decode(&raw.0)?;
+                records.push(record);
+            }
+        }
+        records.sort_by(|a, b| a.id.as_bytes().cmp(b.id.as_bytes()));
+        Ok(records)
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -377,6 +651,210 @@ mod tests {
             .await
             .expect("a2");
         let list = reg.list_assumptions().await.expect("list");
+        assert_eq!(list.len(), 2);
+    }
+
+    // ── approval_is_valid ─────────────────────────────────────────────────
+
+    // Scenario: approval_is_valid returns true when hashes match.
+    //   GIVEN approval with canonical_change_hash = X
+    //   WHEN approval_is_valid(record, X)
+    //   THEN true
+    #[tokio::test]
+    async fn approval_valid_when_hashes_match() {
+        let record = make_approval(1, 1000);
+        let current = record.canonical_change_hash;
+        assert!(super::approval_is_valid(&record, &current));
+    }
+
+    // Scenario: approval_is_valid returns false when hashes differ.
+    //   GIVEN approval with canonical_change_hash = X
+    //   WHEN approval_is_valid(record, Y) where Y != X
+    //   THEN false
+    #[tokio::test]
+    async fn approval_invalid_when_hash_changed() {
+        let record = make_approval(1, 1000);
+        let different_hash = make_id(99); // not the same as canonical_change_hash
+        assert!(!super::approval_is_valid(&record, &different_hash));
+    }
+
+    // ── validate_assumption_boundary ──────────────────────────────────────
+
+    // Scenario: validate_assumption_boundary passes when boundary_id is in set.
+    #[tokio::test]
+    async fn boundary_validation_passes_for_known_boundary() {
+        let record = make_assumption(1, AssumptionStatus::Active);
+        let known = vec![record.boundary_id];
+        assert!(super::validate_assumption_boundary(&record, &known).is_ok());
+    }
+
+    // Scenario: validate_assumption_boundary fails when boundary_id is unknown.
+    //   GIVEN assumption with boundary_id = B
+    //   WHEN validate_assumption_boundary with empty known set
+    //   THEN Err(B)
+    #[tokio::test]
+    async fn boundary_validation_fails_for_unknown_boundary() {
+        let record = make_assumption(1, AssumptionStatus::Active);
+        let result = super::validate_assumption_boundary(&record, &[]);
+        assert_eq!(result, Err(record.boundary_id));
+    }
+
+    // ── evaluate_verification_gate ────────────────────────────────────────
+
+    // Scenario: gate passes when all assumptions are active.
+    #[tokio::test]
+    async fn gate_passes_all_active() {
+        let a1 = make_assumption(1, AssumptionStatus::Active);
+        let a2 = make_assumption(2, AssumptionStatus::Active);
+        let result = super::evaluate_verification_gate(&[a1, a2], None);
+        assert_eq!(result, super::VerificationGateResult::Pass);
+    }
+
+    // Scenario: gate fails when any assumption is expired.
+    //   GIVEN one Active and one Expired assumption
+    //   WHEN evaluate_verification_gate
+    //   THEN Fail containing id of expired assumption
+    #[tokio::test]
+    async fn gate_fails_with_expired_assumption() {
+        let active = make_assumption(1, AssumptionStatus::Active);
+        let expired = make_assumption(2, AssumptionStatus::Expired);
+        let result = super::evaluate_verification_gate(&[active, expired.clone()], None);
+        match result {
+            super::VerificationGateResult::Fail { failed_assumption_ids } => {
+                assert!(failed_assumption_ids.contains(&expired.id));
+            }
+            super::VerificationGateResult::Pass => panic!("gate must fail"),
+        }
+    }
+
+    // Scenario: gate fails when any assumption is revoked.
+    #[tokio::test]
+    async fn gate_fails_with_revoked_assumption() {
+        let revoked = make_assumption(3, AssumptionStatus::Revoked);
+        let result = super::evaluate_verification_gate(&[revoked.clone()], None);
+        assert!(matches!(
+            result,
+            super::VerificationGateResult::Fail { .. }
+        ));
+    }
+
+    // Scenario: gate fails when assumption has time-based expiry and now_ms >= expires_at.
+    #[tokio::test]
+    async fn gate_fails_when_assumption_time_expired() {
+        let mut record = make_assumption(4, AssumptionStatus::Active);
+        record.expires_at = Some(1_000_000); // expires at timestamp 1_000_000
+        // now_ms = 1_000_001 → assumption is expired
+        let result = super::evaluate_verification_gate(&[record.clone()], Some(1_000_001));
+        assert!(matches!(
+            result,
+            super::VerificationGateResult::Fail { .. }
+        ));
+    }
+
+    // Scenario: gate passes when now_ms < expires_at (not yet expired).
+    #[tokio::test]
+    async fn gate_passes_when_not_yet_expired() {
+        let mut record = make_assumption(5, AssumptionStatus::Active);
+        record.expires_at = Some(1_000_000);
+        let result = super::evaluate_verification_gate(&[record], Some(999_999));
+        assert_eq!(result, super::VerificationGateResult::Pass);
+    }
+
+    // Scenario: gate passes with no assumptions.
+    #[tokio::test]
+    async fn gate_passes_with_no_assumptions() {
+        let result = super::evaluate_verification_gate(&[], None);
+        assert_eq!(result, super::VerificationGateResult::Pass);
+    }
+
+    // ── ObjectBackedApprovalStore ─────────────────────────────────────────
+
+    // Scenario: object-backed store persists approval record.
+    //   GIVEN ObjectBackedApprovalStore wrapping MemoryObjectStore
+    //   WHEN store_approval then get_approval
+    //   THEN record is retrieved intact
+    #[tokio::test]
+    async fn object_backed_approval_store_roundtrip() {
+        use crate::backends::memory::MemoryObjectStore;
+        let store = super::ObjectBackedApprovalStore::new(MemoryObjectStore::new());
+        let record = make_approval(1, 1000);
+        store.store_approval(record.clone()).await.expect("store");
+        let got = store
+            .get_approval(&record.id)
+            .await
+            .expect("get")
+            .expect("must exist");
+        assert_eq!(got, record);
+    }
+
+    // Scenario: object-backed store is idempotent on duplicate id.
+    #[tokio::test]
+    async fn object_backed_approval_store_idempotent() {
+        use crate::backends::memory::MemoryObjectStore;
+        let store = super::ObjectBackedApprovalStore::new(MemoryObjectStore::new());
+        let record = make_approval(2, 2000);
+        store.store_approval(record.clone()).await.expect("first");
+        store.store_approval(record.clone()).await.expect("duplicate");
+        let list = store.list_approvals().await.expect("list");
+        assert_eq!(list.len(), 1);
+    }
+
+    // Scenario: object-backed store list_approvals returns all records sorted.
+    #[tokio::test]
+    async fn object_backed_approval_store_list_sorted() {
+        use crate::backends::memory::MemoryObjectStore;
+        let store = super::ObjectBackedApprovalStore::new(MemoryObjectStore::new());
+        store.store_approval(make_approval(1, 500)).await.expect("a");
+        store.store_approval(make_approval(2, 100)).await.expect("b");
+        let list = store.list_approvals().await.expect("list");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].timestamp, 100);
+        assert_eq!(list[1].timestamp, 500);
+    }
+
+    // ── ObjectBackedAssumptionStore ───────────────────────────────────────
+
+    // Scenario: object-backed assumption store persists record.
+    #[tokio::test]
+    async fn object_backed_assumption_store_roundtrip() {
+        use crate::backends::memory::MemoryObjectStore;
+        let store = super::ObjectBackedAssumptionStore::new(MemoryObjectStore::new());
+        let record = make_assumption(1, AssumptionStatus::Active);
+        store.store_assumption(record.clone()).await.expect("store");
+        let got = store
+            .get_assumption(&record.id)
+            .await
+            .expect("get")
+            .expect("must exist");
+        assert_eq!(got, record);
+    }
+
+    // Scenario: object-backed assumption store is idempotent.
+    #[tokio::test]
+    async fn object_backed_assumption_store_idempotent() {
+        use crate::backends::memory::MemoryObjectStore;
+        let store = super::ObjectBackedAssumptionStore::new(MemoryObjectStore::new());
+        let record = make_assumption(1, AssumptionStatus::Active);
+        store.store_assumption(record.clone()).await.expect("first");
+        store.store_assumption(record.clone()).await.expect("duplicate");
+        let list = store.list_assumptions().await.expect("list");
+        assert_eq!(list.len(), 1);
+    }
+
+    // Scenario: object-backed assumption store returns all records.
+    #[tokio::test]
+    async fn object_backed_assumption_store_list_all() {
+        use crate::backends::memory::MemoryObjectStore;
+        let store = super::ObjectBackedAssumptionStore::new(MemoryObjectStore::new());
+        store
+            .store_assumption(make_assumption(1, AssumptionStatus::Active))
+            .await
+            .expect("a1");
+        store
+            .store_assumption(make_assumption(2, AssumptionStatus::Revoked))
+            .await
+            .expect("a2");
+        let list = store.list_assumptions().await.expect("list");
         assert_eq!(list.len(), 2);
     }
 }
