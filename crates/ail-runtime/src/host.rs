@@ -27,7 +27,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
-use wasmtime::{Engine, Linker, Module, Store};
+use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
 
 use ail_package::manifest::PackageManifest;
 use ail_package::trust::TrustLevel;
@@ -49,6 +49,9 @@ use crate::profile::{CapabilityId, RuntimeProfile};
 ///
 /// `Arc<Vec<Arc<dyn Handler + Send + Sync>>>` keeps the handlers alive and
 /// allows cheap cloning into `'static` Wasmtime closures.
+///
+/// `limiter` implements [`wasmtime::ResourceLimiter`] and enforces
+/// `max_memory_bytes` from the profile's [`ResourceLimits`].
 pub(crate) struct HostState {
     /// Handler registry shared with Wasmtime host-function closures.
     ///
@@ -58,6 +61,8 @@ pub(crate) struct HostState {
     /// phase without changing the `Store` type.
     #[allow(dead_code)]
     pub(crate) handlers: Arc<Vec<Arc<dyn Handler + Send + Sync>>>,
+    /// Resource limiter enforcing `max_memory_bytes`.
+    pub(crate) limiter: StoreLimits,
 }
 
 // ── RuntimeInstance ───────────────────────────────────────────────────────
@@ -126,8 +131,17 @@ impl RuntimeHost {
     /// A `Linker<HostState>` is constructed and the stub import
     /// `ail/host_call` is registered so that WASM modules declaring this
     /// import can instantiate without error.
+    ///
+    /// `consume_fuel` is enabled globally on the `Engine` so that per-store
+    /// fuel budgets set via [`Store::set_fuel`] are honoured.  When no
+    /// `max_fuel` is configured in a profile the store receives no initial
+    /// fuel call, meaning fuel tracking is active but the module runs without
+    /// a cap (the store starts with 0 fuel by default when consume_fuel is
+    /// enabled, so we must only call `set_fuel` when a limit is present).
     pub fn new() -> Self {
-        let engine = Engine::default();
+        let mut config = Config::new();
+        config.consume_fuel(true);
+        let engine = Engine::new(&config).expect("wasmtime Engine::new must succeed");
         let mut linker: Linker<HostState> = Linker::new(&engine);
 
         // Register stub import: module="ail", name="host_call".
@@ -366,7 +380,7 @@ impl RuntimeHost {
         }
 
         // Stages 4+5 — Wasmtime validate + instantiate via linker.
-        let instance = self.instantiate_inner(wasm)?;
+        let instance = self.instantiate_inner(wasm, profile.limits())?;
 
         // Stage 6 — Handler binding check (opt-in).
         if profile.require_handler_binding() {
@@ -422,7 +436,17 @@ impl RuntimeHost {
     /// WASM modules that declare `(import "ail" "host_call" ...)` to be
     /// satisfied at link time.  Existing test WASMs with no imports work
     /// identically — the Linker simply has no imports to satisfy.
-    fn instantiate_inner(&self, wasm: &[u8]) -> RuntimeResult<RuntimeInstance> {
+    ///
+    /// Resource limits from the profile are applied here:
+    /// - `max_fuel`: sets the fuel budget on the `Store`; modules that exhaust
+    ///   it trap with [`PreflightFailure::ResourceLimitExceeded`].
+    /// - `max_memory_bytes`: wires a [`StoreLimits`] resource limiter that
+    ///   denies memory growth beyond the configured byte cap.
+    fn instantiate_inner(
+        &self,
+        wasm: &[u8],
+        limits: &crate::profile::ResourceLimits,
+    ) -> RuntimeResult<RuntimeInstance> {
         Module::validate(&self.engine, wasm).map_err(|e| {
             RuntimeError::PreflightFailed(PreflightFailure::WasmValidationError(e.to_string()))
         })?;
@@ -431,24 +455,88 @@ impl RuntimeHost {
             RuntimeError::PreflightFailed(PreflightFailure::WasmValidationError(e.to_string()))
         })?;
 
+        // Build the StoreLimits for memory caps (no-op when None).
+        let store_limits: StoreLimits = match limits.max_memory_bytes {
+            Some(max_bytes) => StoreLimitsBuilder::new()
+                .memory_size(max_bytes as usize)
+                .trap_on_grow_failure(true)
+                .build(),
+            None => StoreLimitsBuilder::new().build(),
+        };
+
         let handlers_arc: Arc<Vec<Arc<dyn Handler + Send + Sync>>> =
             Arc::new(self.handlers.clone());
         let mut store = Store::new(
             &self.engine,
             HostState {
                 handlers: handlers_arc,
+                limiter: store_limits,
             },
         );
 
-        let instance = self.linker.instantiate(&mut store, &module).map_err(|e| {
-            RuntimeError::PreflightFailed(PreflightFailure::WasmValidationError(e.to_string()))
+        // Wire the resource limiter so Wasmtime consults it on memory growth.
+        store.limiter(|state| &mut state.limiter);
+
+        // Set the fuel budget.  When consume_fuel is enabled on the Engine
+        // every Store starts with 0 fuel — we must always initialise it.
+        // If no limit is configured, grant effectively-unlimited fuel.
+        let fuel = limits.max_fuel.unwrap_or(u64::MAX);
+        store.set_fuel(fuel).map_err(|e| {
+            RuntimeError::PreflightFailed(PreflightFailure::ResourceLimitExceeded {
+                reason: format!("failed to set fuel: {e}"),
+            })
         })?;
+
+        let instance = self
+            .linker
+            .instantiate(&mut store, &module)
+            .map_err(Self::classify_instantiate_error)?;
 
         Ok(RuntimeInstance {
             _module: module,
             store,
             instance,
         })
+    }
+
+    /// Classify a Wasmtime instantiation error into a [`RuntimeError`].
+    ///
+    /// Wasmtime traps (including fuel exhaustion and memory limit denials)
+    /// surface as `wasmtime::Error` (`anyhow::Error`) potentially wrapping a
+    /// [`wasmtime::Trap`].  We detect:
+    /// - `Trap::OutOfFuel` — fuel budget exhausted
+    /// - `Trap::MemoryOutOfBounds` — memory growth denied by `StoreLimits`
+    ///   (when `trap_on_grow_failure(true)` is set)
+    ///
+    /// Both are mapped to [`PreflightFailure::ResourceLimitExceeded`];
+    /// all other errors become [`PreflightFailure::WasmValidationError`].
+    fn classify_instantiate_error(e: wasmtime::Error) -> RuntimeError {
+        // Wasmtime wraps traps inside the anyhow::Error chain.  Walk the
+        // chain looking for resource-limit indicators.
+        //
+        // - Fuel exhaustion: `wasmtime::Trap::OutOfFuel` appears in the chain.
+        // - Memory growth denial: when `StoreLimitsBuilder::trap_on_grow_failure(true)`
+        //   is set, Wasmtime wraps the denial as a plain `String`-like error whose
+        //   display contains "forcing trap when growing memory to".  This string is
+        //   emitted by wasmtime internals and is stable across patch versions.
+        let mut source: Option<&(dyn std::error::Error + 'static)> = Some(e.as_ref());
+        while let Some(err) = source {
+            if err
+                .downcast_ref::<wasmtime::Trap>()
+                .is_some_and(|t| *t == wasmtime::Trap::OutOfFuel)
+            {
+                return RuntimeError::PreflightFailed(PreflightFailure::ResourceLimitExceeded {
+                    reason: "fuel limit exceeded".to_string(),
+                });
+            }
+            if err.to_string().contains("forcing trap when growing memory") {
+                return RuntimeError::PreflightFailed(PreflightFailure::ResourceLimitExceeded {
+                    reason: "memory growth denied by resource limiter".to_string(),
+                });
+            }
+            source = err.source();
+        }
+        RuntimeError::PreflightFailed(PreflightFailure::WasmValidationError(e.to_string()))
     }
 }
 
@@ -473,7 +561,8 @@ fn failure_parts(err: &RuntimeError) -> (Vec<CapabilityId>, PreflightFailure) {
             | PreflightFailure::UnsafePackageNotApproved { .. }
             | PreflightFailure::HashMismatch { .. }
             | PreflightFailure::WasmValidationError(_)
-            | PreflightFailure::HandlerNotBound { .. },
+            | PreflightFailure::HandlerNotBound { .. }
+            | PreflightFailure::ResourceLimitExceeded { .. },
         ) => {
             let failure = match err {
                 RuntimeError::PreflightFailed(f) => f.clone(),
