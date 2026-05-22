@@ -28,6 +28,7 @@
 use ail_core::semantic_graph::{CapabilityReqs, ContractClauses, EffectRow, NodeKind, TypeFacts};
 
 use crate::capability;
+use crate::exec::{FunctionImpl, stdlib_function_entries};
 use crate::registry::{StabilityTier, StdlibEntry, StdlibId, StdlibRegistry};
 
 fn module_entry(
@@ -975,6 +976,44 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         capability_reqs: None,
         contract_clauses: None,
     });
+
+    for function in stdlib_function_entries() {
+        if reg.entries.iter().any(|entry| entry.id.0 == function.id) {
+            continue;
+        }
+
+        let (effect_row, capability_reqs) = match function.implementation {
+            FunctionImpl::Pure(_) => (None, None),
+            FunctionImpl::Capability { capability, .. } => {
+                let caps = vec![capability.to_string()];
+                (
+                    Some(EffectRow {
+                        effects: caps.clone(),
+                    }),
+                    Some(CapabilityReqs { caps }),
+                )
+            }
+        };
+
+        reg.entries.push(StdlibEntry {
+            id: StdlibId(function.id.to_string()),
+            module_path: function.module.replace('.', "::"),
+            name: function.name.to_string(),
+            kind: NodeKind::Function,
+            stability: StabilityTier::Stable,
+            type_facts: Some(TypeFacts {
+                nominal: function.return_type.to_string(),
+                generics: function
+                    .params
+                    .iter()
+                    .map(|param| (*param).to_string())
+                    .collect(),
+            }),
+            effect_row,
+            capability_reqs,
+            contract_clauses: None,
+        });
+    }
 
     reg
 }
