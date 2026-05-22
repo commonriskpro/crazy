@@ -130,6 +130,85 @@ pub trait MutableGraphStore: GraphStore {
     fn delete_snapshot(&self, id: &ObjectId) -> impl Future<Output = StorageResult<()>> + Send;
 }
 
+// ── MutableObjectStore ────────────────────────────────────────────────────
+
+/// Extension of `ObjectStore` that supports enumeration and physical deletion
+/// of content-addressed objects.
+///
+/// `ObjectStore` is append-only by design; this trait adds the mutating
+/// operations required for GC without changing the base trait interface.
+pub trait MutableObjectStore: crate::object::ObjectStore {
+    /// Return all `ObjectId`s currently present in the store.
+    fn list_object_ids(&self) -> impl Future<Output = StorageResult<Vec<ObjectId>>> + Send;
+
+    /// Remove the object identified by `id` and return the number of bytes
+    /// freed.  Returns `None` if no object with that `id` was present
+    /// (idempotent).
+    fn delete_object(
+        &self,
+        id: &ObjectId,
+    ) -> impl Future<Output = StorageResult<Option<u64>>> + Send;
+}
+
+// ── ObjectGcReport ────────────────────────────────────────────────────────
+
+/// Summary of a physical object-level GC run.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ObjectGcReport {
+    /// Total number of CAS objects examined.
+    pub objects_examined: u64,
+    /// Number of unreachable objects deleted.
+    pub objects_deleted: u64,
+    /// Total bytes reclaimed by deleting unreachable objects.
+    pub bytes_freed: u64,
+}
+
+// ── run_gc ────────────────────────────────────────────────────────────────
+
+/// Physical garbage-collect unreachable CAS objects.
+///
+/// # Parameters
+/// - `store`     — a `MutableObjectStore` (list + delete).
+/// - `reachable` — the set of `ObjectId`s that must be kept (e.g. the
+///   `graph_root_hash` values of all retained snapshots).  Objects NOT in
+///   this set are considered unreachable and will be deleted.
+///
+/// # Returns
+/// An `ObjectGcReport` counting examined, deleted, and bytes freed.
+///
+/// # Design
+///
+/// The caller is responsible for computing `reachable` from the graph store
+/// (e.g. by calling `gc_unreferenced` first to identify retained snapshots
+/// and then collecting their `graph_root_hash` fields).  This separation keeps
+/// `run_gc` independent of the snapshot/graph layer and fully testable with a
+/// plain `MemoryObjectStore`.
+pub async fn run_gc<S>(
+    store: &S,
+    reachable: &BTreeSet<ObjectId>,
+) -> StorageResult<ObjectGcReport>
+where
+    S: MutableObjectStore + Send + Sync,
+{
+    let all_ids = store.list_object_ids().await?;
+    let mut report = ObjectGcReport {
+        objects_examined: all_ids.len() as u64,
+        objects_deleted: 0,
+        bytes_freed: 0,
+    };
+
+    for id in &all_ids {
+        if !reachable.contains(id) {
+            if let Some(bytes) = store.delete_object(id).await? {
+                report.objects_deleted += 1;
+                report.bytes_freed += bytes;
+            }
+        }
+    }
+
+    Ok(report)
+}
+
 // ── gc_unreferenced ───────────────────────────────────────────────────────
 
 /// Identify and remove snapshots that are not retained by `policy`.
@@ -275,5 +354,103 @@ impl<S: ObjectStore + Send + Sync> MutableGraphStore for ObjectBackedGraphStore<
     async fn delete_snapshot(&self, id: &ObjectId) -> StorageResult<()> {
         self.remove_snapshot_from_index(id);
         Ok(())
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod gc_tests {
+    use futures::executor::block_on;
+
+    use super::*;
+    use crate::backends::memory::MemoryObjectStore;
+    use crate::object::{ObjectStore, RawObject};
+
+    fn make_store_with_objects(payloads: &[&[u8]]) -> MemoryObjectStore {
+        let store = MemoryObjectStore::new();
+        block_on(async {
+            for payload in payloads {
+                store
+                    .put(RawObject(payload.to_vec()))
+                    .await
+                    .expect("put must succeed");
+            }
+        });
+        store
+    }
+
+    fn id_of(payload: &[u8]) -> ObjectId {
+        ObjectId::from_bytes(payload)
+    }
+
+    // Spec: unreachable objects are deleted; reachable objects survive.
+    #[test]
+    fn run_gc_deletes_unreachable_objects() {
+        let store = make_store_with_objects(&[b"keep-me", b"remove-me"]);
+        let keep_id = id_of(b"keep-me");
+        let reachable = BTreeSet::from([keep_id]);
+
+        let report = block_on(run_gc(&store, &reachable)).expect("run_gc must succeed");
+
+        assert_eq!(report.objects_examined, 2);
+        assert_eq!(report.objects_deleted, 1);
+        assert!(report.bytes_freed > 0, "bytes_freed must be positive");
+
+        // Reachable object still present; unreachable object gone.
+        block_on(async {
+            assert!(
+                store.exists(&keep_id).await.expect("exists"),
+                "reachable object must survive GC"
+            );
+            let remove_id = id_of(b"remove-me");
+            assert!(
+                !store.exists(&remove_id).await.expect("exists"),
+                "unreachable object must be deleted"
+            );
+        });
+    }
+
+    // Spec: all objects reachable → nothing deleted.
+    #[test]
+    fn run_gc_with_all_reachable_deletes_nothing() {
+        let store = make_store_with_objects(&[b"obj-a", b"obj-b"]);
+        let reachable = BTreeSet::from([id_of(b"obj-a"), id_of(b"obj-b")]);
+
+        let report = block_on(run_gc(&store, &reachable)).expect("run_gc");
+
+        assert_eq!(report.objects_examined, 2);
+        assert_eq!(report.objects_deleted, 0);
+        assert_eq!(report.bytes_freed, 0);
+    }
+
+    // Spec: empty store → empty report.
+    #[test]
+    fn run_gc_on_empty_store_returns_zero_counts() {
+        let store = MemoryObjectStore::new();
+        let reachable = BTreeSet::new();
+
+        let report = block_on(run_gc(&store, &reachable)).expect("run_gc");
+
+        assert_eq!(report.objects_examined, 0);
+        assert_eq!(report.objects_deleted, 0);
+        assert_eq!(report.bytes_freed, 0);
+    }
+
+    // Spec: bytes_freed matches the actual payload size of deleted objects.
+    #[test]
+    fn run_gc_bytes_freed_matches_payload_size() {
+        let payload = b"exactly-fourteen"; // 16 bytes
+        let store = make_store_with_objects(&[payload]);
+        let reachable = BTreeSet::new(); // nothing is reachable
+
+        let report = block_on(run_gc(&store, &reachable)).expect("run_gc");
+
+        assert_eq!(report.objects_deleted, 1);
+        assert_eq!(
+            report.bytes_freed,
+            payload.len() as u64,
+            "bytes_freed must equal the payload size"
+        );
     }
 }

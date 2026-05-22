@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::StorageResult;
 use crate::object::{ObjectId, ObjectStore, RawObject};
+use crate::retention::MutableObjectStore;
 
 /// An in-memory `ObjectStore` suitable for tests and ephemeral workloads.
 ///
@@ -40,5 +41,17 @@ impl ObjectStore for MemoryObjectStore {
     async fn exists(&self, id: &ObjectId) -> StorageResult<bool> {
         let guard = self.map.lock().expect("lock must not be poisoned");
         Ok(guard.contains_key(id))
+    }
+}
+
+impl MutableObjectStore for MemoryObjectStore {
+    async fn list_object_ids(&self) -> StorageResult<Vec<ObjectId>> {
+        let guard = self.map.lock().expect("lock must not be poisoned");
+        Ok(guard.keys().cloned().collect())
+    }
+
+    async fn delete_object(&self, id: &ObjectId) -> StorageResult<Option<u64>> {
+        let mut guard = self.map.lock().expect("lock must not be poisoned");
+        Ok(guard.remove(id).map(|obj| obj.0.len() as u64))
     }
 }
