@@ -1448,6 +1448,7 @@ async fn cmd_run(
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 
@@ -1589,6 +1590,7 @@ fn cmd_eval(mode: OutputMode, expression: &str) -> Result<(), CliError> {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
     let mut host = RuntimeHost::new();
@@ -3795,7 +3797,7 @@ impl RegistryClient for LocalRegistryClient {
             .map(|manifest| ail_package::SearchResult {
                 name: manifest.name.clone(),
                 latest_version: manifest.version.clone(),
-                description: manifest.provenance.clone(),
+                description: manifest.provenance.as_ref().and_then(|p| p.url.clone()),
             })
             .collect::<Vec<_>>();
         Ok(ail_package::SearchResponse {
@@ -4159,7 +4161,7 @@ async fn package_manifest_for_current_graph(
         imports: vec![],
         boundaries: vec![],
         license: None,
-        provenance: Some("local graph package".to_string()),
+        provenance: Some(ail_package::Provenance::from_url("local graph package")),
         verification_report: None,
         graph_schema: Some(1),
         core_ir_schema: Some(1),
@@ -4206,7 +4208,7 @@ fn default_memory_package_registry() -> Result<PackageRegistry, CliError> {
             imports: vec![],
             boundaries: vec![],
             license: None,
-            provenance: Some("built-in memory registry fixture".to_string()),
+            provenance: Some(ail_package::Provenance::from_url("built-in memory registry fixture")),
             verification_report: None,
             graph_schema: Some(1),
             core_ir_schema: Some(1),
@@ -4754,6 +4756,7 @@ mod tests {
             ResourceLimits {
                 max_memory_bytes: None,
                 max_fuel: None,
+                ..Default::default()
             },
         );
 

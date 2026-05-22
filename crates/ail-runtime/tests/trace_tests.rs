@@ -42,6 +42,7 @@ fn setup_host_with_cap(cap: &CapabilityId) -> RuntimeHost {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
     let handler = Arc::new(InMemoryHandler::new(
@@ -193,6 +194,7 @@ fn set_trace_context_on_instance_does_not_panic() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
     let mut host = RuntimeHost::new();

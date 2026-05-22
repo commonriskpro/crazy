@@ -218,9 +218,9 @@ impl Handler for RecordedHttp {
     ) -> HostResult<Vec<u8>> {
         match self.recordings.get(operation) {
             Some(resp) => Ok(resp.clone()),
-            None => Err(HostError {
-                message: format!("RecordedHttp: no recording for operation: {operation}"),
-            }),
+            None => Err(HostError::HandlerUnavailable(format!(
+                "RecordedHttp: no recording for operation: {operation}"
+            ))),
         }
     }
 }
@@ -293,11 +293,9 @@ impl Handler for InMemoryDb {
             store.insert(key.to_string(), payload.to_vec());
             Ok(vec![])
         } else {
-            Err(HostError {
-                message: format!(
-                    "InMemoryDb: unknown operation `{operation}`. Expected `read:<key>` or `write:<key>`"
-                ),
-            })
+            Err(HostError::Custom(format!(
+                "InMemoryDb: unknown operation `{operation}`. Expected `read:<key>` or `write:<key>`"
+            )))
         }
     }
 }
@@ -349,9 +347,9 @@ impl Handler for FakePayment {
         if self.succeed {
             Ok(self.response.clone())
         } else {
-            Err(HostError {
-                message: "PaymentDeclined: FakePayment configured to decline".to_string(),
-            })
+            Err(HostError::Custom(
+                "PaymentDeclined: FakePayment configured to decline".to_string(),
+            ))
         }
     }
 }
@@ -562,27 +560,23 @@ impl Handler for ReplayHandler {
                 if self.verify {
                     let actual_hash = blake3_hex(resp);
                     if &actual_hash != recorded_hash {
-                        return Err(HostError {
-                            message: format!(
-                                "ReplayHandler: hash mismatch for capability=`{}` \
-                                 operation=`{}`: recorded={} actual={}",
-                                capability.as_str(),
-                                operation,
-                                recorded_hash,
-                                actual_hash
-                            ),
-                        });
+                        return Err(HostError::ManifestMismatch(format!(
+                            "ReplayHandler: hash mismatch for capability=`{}` \
+                             operation=`{}`: recorded={} actual={}",
+                            capability.as_str(),
+                            operation,
+                            recorded_hash,
+                            actual_hash
+                        )));
                     }
                 }
                 Ok(resp.clone())
             }
-            None => Err(HostError {
-                message: format!(
-                    "ReplayHandler: no recording for capability=`{}` operation=`{}`",
-                    capability.as_str(),
-                    operation
-                ),
-            }),
+            None => Err(HostError::HandlerUnavailable(format!(
+                "ReplayHandler: no recording for capability=`{}` operation=`{}`",
+                capability.as_str(),
+                operation
+            ))),
         }
     }
 }

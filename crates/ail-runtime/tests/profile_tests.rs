@@ -23,6 +23,7 @@ fn profile_new_exposes_all_fields() {
     let limits = ResourceLimits {
         max_memory_bytes: Some(64 * 1024 * 1024),
         max_fuel: Some(1_000_000),
+        ..Default::default()
     };
 
     let profile = RuntimeProfile::new(
@@ -82,6 +83,7 @@ fn profile_with_empty_grants_is_constructible() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 
@@ -113,6 +115,7 @@ fn resource_limits_none_is_valid() {
     let limits = ResourceLimits {
         max_memory_bytes: None,
         max_fuel: None,
+        ..Default::default()
     };
     assert!(limits.max_memory_bytes.is_none());
     assert!(limits.max_fuel.is_none());
@@ -124,6 +127,7 @@ fn resource_limits_some_is_accessible() {
     let limits = ResourceLimits {
         max_memory_bytes: Some(1024),
         max_fuel: Some(500),
+        ..Default::default()
     };
     assert_eq!(limits.max_memory_bytes, Some(1024));
     assert_eq!(limits.max_fuel, Some(500));

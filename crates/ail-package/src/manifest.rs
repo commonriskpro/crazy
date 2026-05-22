@@ -28,6 +28,41 @@ use crate::surface::UnsafeSurfaceEntry;
 use crate::trust::TrustLevel;
 use crate::verification::PackageVerificationReport;
 
+// ── Provenance ────────────────────────────────────────────────────────────
+
+/// Structured provenance information linking a package to its upstream source
+/// and build pipeline.
+///
+/// Replaces the original `Option<String>` provenance field with typed metadata
+/// so callers can distinguish CI build URLs from source repository references.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Provenance {
+    /// CI run URL or source archive URI (e.g. `"https://ci.example.com/builds/42"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Source repository URL (e.g. `"https://github.com/org/repo"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_repository: Option<String>,
+    /// Git commit hash or source tree hash at build time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_hash: Option<String>,
+    /// CI build identifier (e.g. `"build-42"`, `"run-abc123"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
+}
+
+impl Provenance {
+    /// Construct a `Provenance` with only a URL set.
+    ///
+    /// Convenience constructor for the common case of a single CI/archive URL.
+    pub fn from_url(url: impl Into<String>) -> Self {
+        Provenance {
+            url: Some(url.into()),
+            ..Default::default()
+        }
+    }
+}
+
 // ── ArtifactHashEntry ─────────────────────────────────────────────────────
 
 /// One artifact hash in the reproducible-build metadata.
@@ -100,10 +135,9 @@ pub struct PackageDef {
     /// SPDX license identifier or expression (e.g., `"Apache-2.0"`, `"MIT OR Apache-2.0"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
-    /// Provenance URL or identifier linking to the upstream source or build
-    /// pipeline (e.g., a CI run URL or source archive URI).
+    /// Structured provenance linking to the upstream source and build pipeline.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provenance: Option<String>,
+    pub provenance: Option<Provenance>,
     /// Verification report summarizing the results of the package review.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification_report: Option<PackageVerificationReport>,
@@ -233,9 +267,9 @@ pub struct PackageManifest {
     /// SPDX license identifier or expression.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
-    /// Provenance URL or identifier.
+    /// Structured provenance linking to the upstream source and build pipeline.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provenance: Option<String>,
+    pub provenance: Option<Provenance>,
     /// Verification report summarizing the results of the package review.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification_report: Option<PackageVerificationReport>,
@@ -499,7 +533,7 @@ mod tests {
             }],
             boundaries: vec!["boundary.Stripe".to_string()],
             license: Some("Apache-2.0".to_string()),
-            provenance: Some("https://ci.example.com/builds/42".to_string()),
+            provenance: Some(Provenance::from_url("https://ci.example.com/builds/42")),
             verification_report: Some(PackageVerificationReport {
                 package: "payments.stripe".to_string(),
                 version: "1.2.0".to_string(),

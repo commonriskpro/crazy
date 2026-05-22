@@ -211,6 +211,7 @@ fn emit_report_includes_module_name_and_vr_hash() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 
@@ -248,6 +249,7 @@ fn emit_report_includes_audit_log_hash() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 

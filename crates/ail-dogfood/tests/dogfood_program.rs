@@ -125,6 +125,7 @@ fn run_zero_arg(anf: &AnfIr, export_name: &str) -> RuntimeValue {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
     let mut host = RuntimeHost::new();
@@ -319,6 +320,7 @@ end
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     )
     .with_handler_binding_required();

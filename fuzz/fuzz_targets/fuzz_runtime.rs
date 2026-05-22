@@ -28,6 +28,7 @@ fuzz_target!(|data: &[u8]| {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 

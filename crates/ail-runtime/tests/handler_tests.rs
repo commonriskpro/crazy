@@ -42,6 +42,7 @@ fn matching_profile(
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     )
 }
@@ -128,9 +129,8 @@ fn missing_handler_returns_handler_not_bound() {
 
     let err = result.unwrap_err();
     assert!(
-        err.message.contains("HandlerNotBound"),
-        "error message must mention HandlerNotBound, got: {}",
-        err.message
+        matches!(err, ail_runtime::abi::HostError::HandlerNotBound(_)),
+        "error must be HandlerNotBound, got: {err:?}"
     );
 
     // Audit: preflight passed + capability call failed
@@ -177,9 +177,8 @@ fn ungranted_capability_denied_at_dispatch() {
 
     let err = result.unwrap_err();
     assert!(
-        err.message.contains("CapabilityDenied"),
-        "error must mention CapabilityDenied, got: {}",
-        err.message
+        matches!(err, ail_runtime::abi::HostError::CapabilityDenied(_)),
+        "error must be CapabilityDenied, got: {err:?}"
     );
 
     // Audit: capability call event with succeeded=false

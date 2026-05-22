@@ -41,6 +41,7 @@ fn matching_profile(wasm: &[u8], manifest: &CapabilityManifest) -> RuntimeProfil
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     )
 }
@@ -297,6 +298,7 @@ fn explicit_grant_permits_capability_with_package_present() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     )
     .with_package_trust(TrustLevel::Unverified);

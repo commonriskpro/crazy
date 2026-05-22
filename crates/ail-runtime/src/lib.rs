@@ -65,7 +65,11 @@ pub use error::{PreflightFailure, RuntimeError, RuntimeResult};
 pub use handler::{ClockHandler, Handler, InMemoryHandler, LogHandler};
 pub use host::{CapabilityCallMode, RuntimeArg, RuntimeHost, RuntimeInstance, RuntimeValue, TraceContext};
 pub use manifest::{CapabilityManifest, blake3_hex_of};
-pub use profile::{CapabilityGrant, CapabilityId, ResourceLimits, RuntimeProfile};
+pub use profile::{
+    AuditConfig, CapabilityGrant, CapabilityId, CapabilityRevocationRegistry, CapabilityState,
+    InFlightPolicy, ProfilePolicy, RateLimit, ReplayConfig, ResourceLimits, RevocationRecord,
+    RuntimeProfile, SecretEntry,
+};
 pub use replay::{
     FakePayment, FixedClock, InMemoryDb, RecordedHttp, ReplayEngine, ReplayHandler,
     ReplayVerificationError, SeededRandom, TamperTestHandler,

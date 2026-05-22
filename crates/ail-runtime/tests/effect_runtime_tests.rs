@@ -96,6 +96,7 @@ fn profile_for(wasm: &[u8], manifest: &CapabilityManifest, cap: CapabilityId) ->
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     )
     .with_handler_binding_required()

@@ -71,6 +71,7 @@ fn instantiate(wasm: &[u8]) -> ail_runtime::RuntimeInstance {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
     let mut host = RuntimeHost::new();
@@ -100,6 +101,7 @@ fn instantiate_with_handler(
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
     let mut host = RuntimeHost::new().with_handler(handler);
@@ -466,6 +468,7 @@ fn host_call_write_denied_capability_returns_minus_one() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
     let mut host = RuntimeHost::new();

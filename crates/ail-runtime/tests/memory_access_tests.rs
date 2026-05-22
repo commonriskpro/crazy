@@ -63,6 +63,7 @@ fn instantiate(wasm: &[u8]) -> ail_runtime::RuntimeInstance {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
     let mut host = RuntimeHost::new();
