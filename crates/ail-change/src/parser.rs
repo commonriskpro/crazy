@@ -658,30 +658,64 @@ fn parse_op_or_directive(
 /// Parse a precondition line inside a `requires` section.
 ///
 /// Supported forms:
-/// - `assert_exists <node_id_u32>`
-/// - `assert_hash <node_id_u32> sig=<64-hex-chars>`
+/// - `assert_exists <node_id_u32>`           — numeric NodeRef (legacy)
+/// - `assert_exists <node_name>`             — named NodeRef (e.g. `type.Cart`)
+/// - `assert_hash <node_id_u32> sig=<hex>`  — numeric NodeRef hash check
+/// - `assert_hash <node_name> sig=<hex>`    — named NodeRef hash check
+/// - `assert_context <node_name> [hash=<hex>]` — context slice assertion
 fn parse_precondition_line(
     line: &str,
     line_num: usize,
     preconditions: &mut Vec<Precondition>,
 ) -> Result<(), String> {
     if let Some(rest) = line.strip_prefix("assert_exists ") {
-        let node_id = parse_node_ref(rest.trim(), line_num)?;
-        preconditions.push(Precondition::AssertExists(AssertExists { node_id }));
+        let id_str = rest.trim();
+        // Try numeric u32 first (legacy form), fall back to named NodeRef.
+        if let Ok(n) = id_str.parse::<u32>() {
+            preconditions.push(Precondition::AssertExists(AssertExists {
+                node_id: NodeRef(n),
+            }));
+        } else {
+            preconditions.push(Precondition::AssertExistsByName(id_str.to_string()));
+        }
     } else if let Some(rest) = line.strip_prefix("assert_hash ") {
-        // Expected format: `<node_id> sig=<hex>`
+        // Expected format: `<node_id_or_name> sig=<hex>`
         let mut parts = rest.splitn(2, ' ');
         let id_part = parts.next().unwrap_or("").trim();
         let kv_part = parts.next().unwrap_or("").trim();
 
-        let node_id = parse_node_ref(id_part, line_num)?;
         let hex = extract_kv_value(kv_part, "sig")
             .ok_or_else(|| format!("line {line_num}: assert_hash requires 'sig=<hex>' argument"))?;
         let expected_hash = decode_hex32(&hex, line_num)?;
-        preconditions.push(Precondition::AssertHash(AssertHash {
-            node_id,
-            expected_hash,
-        }));
+
+        // Try numeric u32 first (legacy form), fall back to named NodeRef.
+        if let Ok(n) = id_part.parse::<u32>() {
+            preconditions.push(Precondition::AssertHash(AssertHash {
+                node_id: NodeRef(n),
+                expected_hash,
+            }));
+        } else {
+            preconditions.push(Precondition::AssertHashByName {
+                name: id_part.to_string(),
+                expected_hash,
+            });
+        }
+    } else if let Some(rest) = line.strip_prefix("assert_context ") {
+        // Format: `assert_context <target_name> [hash=<hex_or_short>]`
+        let mut parts = rest.splitn(2, ' ');
+        let target_name = parts.next().unwrap_or("").trim().to_string();
+        let kv_part = parts.next().unwrap_or("").trim();
+        let context_hash = extract_kv_value(kv_part, "hash")
+            .or_else(|| extract_kv_value(kv_part, "context_hash"));
+        if target_name.is_empty() {
+            return Err(format!(
+                "line {line_num}: assert_context requires a target name"
+            ));
+        }
+        preconditions.push(Precondition::AssertContext {
+            target_name,
+            context_hash,
+        });
     } else {
         return Err(format!(
             "line {line_num}: unrecognised precondition: '{line}'"
@@ -809,12 +843,24 @@ pub fn parse_kv_args(args_str: &str) -> OpArgs {
 }
 
 fn bare_value_end(value: &str) -> usize {
-    let mut depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
     for (idx, ch) in value.char_indices() {
         match ch {
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            c if c.is_whitespace() && depth == 0 => return idx,
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            c if c.is_whitespace()
+                && paren_depth == 0
+                && brace_depth == 0
+                && bracket_depth == 0 =>
+            {
+                return idx;
+            }
             _ => {}
         }
     }
@@ -847,7 +893,11 @@ fn extract_kv_value(kv_str: &str, key: &str) -> Option<String> {
     None
 }
 
-/// Parse a `NodeRef` from a string containing a `u32`.
+/// Parse a numeric `NodeRef` from a string containing a `u32`.
+///
+/// Named NodeRefs (like `type.Cart`) are handled by the calling context
+/// which dispatches to `Precondition::AssertExistsByName` instead.
+#[allow(dead_code)]
 fn parse_node_ref(s: &str, line_num: usize) -> Result<NodeRef, String> {
     s.parse::<u32>()
         .map(NodeRef)
@@ -1196,6 +1246,181 @@ end
         assert_eq!(args.get("target").map(String::as_str), Some("fn.add"));
         assert_eq!(args.get("body").map(String::as_str), Some("add(x, y)"));
         assert_eq!(args.get("return").map(String::as_str), Some("Int"));
+    }
+
+    // ── Gap 3: Set/list kv grammar ────────────────────────────────────────
+
+    // Scenario: set literal value `{a,b}` is captured whole.
+    //   GIVEN `effects={database.read:Cart,payment.charge:PaymentProvider}`
+    //   WHEN parse_kv_args is called
+    //   THEN `effects` maps to the full set literal string
+    #[test]
+    fn parse_kv_args_set_literal_captured_whole() {
+        let args = parse_kv_args(
+            "target=fn.checkout effects={database.read:Cart,payment.charge:PaymentProvider}",
+        );
+        assert_eq!(
+            args.get("target").map(String::as_str),
+            Some("fn.checkout")
+        );
+        assert_eq!(
+            args.get("effects").map(String::as_str),
+            Some("{database.read:Cart,payment.charge:PaymentProvider}")
+        );
+    }
+
+    // Scenario: list literal value `[a,b]` is captured whole.
+    //   GIVEN `items=[one,two,three]`
+    //   WHEN parse_kv_args is called
+    //   THEN `items` maps to the full list literal string
+    #[test]
+    fn parse_kv_args_list_literal_captured_whole() {
+        let args = parse_kv_args("items=[one,two,three] other=value");
+        assert_eq!(
+            args.get("items").map(String::as_str),
+            Some("[one,two,three]")
+        );
+        assert_eq!(args.get("other").map(String::as_str), Some("value"));
+    }
+
+    // TRIANGULATE: nested set `{a,{b,c}}` is captured with inner braces intact.
+    #[test]
+    fn parse_kv_args_nested_set_literal_captured_whole() {
+        let args = parse_kv_args("val={a,{b,c}} key=x");
+        assert_eq!(
+            args.get("val").map(String::as_str),
+            Some("{a,{b,c}}")
+        );
+    }
+
+    // ── Gap 4: assert_context precondition ────────────────────────────────
+
+    // Scenario: `assert_context` with target and hash is parsed.
+    //   GIVEN `assert_context fn.checkout hash=abc123`
+    //   WHEN parsed
+    //   THEN preconditions contains AssertContext with target and context_hash
+    #[test]
+    fn parse_assert_context_with_hash() {
+        let src = "\
+change x
+author A
+base 0
+requires
+  assert_context fn.checkout hash=abc123
+end
+end
+";
+        let result = parse_changeset(src).expect("assert_context must parse");
+        assert_eq!(result.preconditions.len(), 1);
+        match &result.preconditions[0] {
+            crate::canonical::Precondition::AssertContext {
+                target_name,
+                context_hash,
+            } => {
+                assert_eq!(target_name, "fn.checkout");
+                assert_eq!(context_hash.as_deref(), Some("abc123"));
+            }
+            other => panic!("expected AssertContext, got {other:?}"),
+        }
+    }
+
+    // Scenario: `assert_context` without hash is parsed (target-only form).
+    #[test]
+    fn parse_assert_context_target_only() {
+        let src = "\
+change x
+author A
+base 0
+requires
+  assert_context type.Cart
+end
+end
+";
+        let result = parse_changeset(src).expect("assert_context target-only must parse");
+        match &result.preconditions[0] {
+            crate::canonical::Precondition::AssertContext {
+                target_name,
+                context_hash,
+            } => {
+                assert_eq!(target_name, "type.Cart");
+                assert!(context_hash.is_none());
+            }
+            other => panic!("expected AssertContext, got {other:?}"),
+        }
+    }
+
+    // ── Gap 5: Named NodeRefs in assert_exists / assert_hash ─────────────
+
+    // Scenario: `assert_exists type.Cart` is parsed as AssertExistsByName.
+    //   GIVEN `assert_exists type.Cart` inside a requires section
+    //   WHEN parsed
+    //   THEN preconditions contains AssertExistsByName("type.Cart")
+    #[test]
+    fn parse_assert_exists_named_node_ref() {
+        let src = "\
+change x
+author A
+base 0
+requires
+  assert_exists type.Cart
+  assert_exists fn.cart_total
+end
+end
+";
+        let result = parse_changeset(src).expect("named assert_exists must parse");
+        assert_eq!(result.preconditions.len(), 2);
+        match &result.preconditions[0] {
+            crate::canonical::Precondition::AssertExistsByName(name) => {
+                assert_eq!(name, "type.Cart");
+            }
+            other => panic!("expected AssertExistsByName, got {other:?}"),
+        }
+        match &result.preconditions[1] {
+            crate::canonical::Precondition::AssertExistsByName(name) => {
+                assert_eq!(name, "fn.cart_total");
+            }
+            other => panic!("expected AssertExistsByName, got {other:?}"),
+        }
+    }
+
+    // Scenario: `assert_hash fn.cart_total sig=<hex>` is parsed as AssertHashByName.
+    //   GIVEN `assert_hash fn.cart_total sig=<64-hex-chars>`
+    //   WHEN parsed
+    //   THEN preconditions contains AssertHashByName with the correct name and hash
+    #[test]
+    fn parse_assert_hash_named_node_ref() {
+        let hex = "b".repeat(64);
+        let src = format!(
+            "change x\nauthor A\nbase 0\nrequires\n  assert_hash fn.cart_total sig={hex}\nend\nend\n"
+        );
+        let result = parse_changeset(&src).expect("named assert_hash must parse");
+        assert_eq!(result.preconditions.len(), 1);
+        match &result.preconditions[0] {
+            crate::canonical::Precondition::AssertHashByName { name, expected_hash } => {
+                assert_eq!(name, "fn.cart_total");
+                assert_eq!(expected_hash.0, [0xbb_u8; 32]);
+            }
+            other => panic!("expected AssertHashByName, got {other:?}"),
+        }
+    }
+
+    // TRIANGULATE: numeric assert_exists still works (backward-compatible).
+    #[test]
+    fn parse_assert_exists_numeric_still_works() {
+        let src = "\
+change x
+author A
+base 0
+requires
+  assert_exists 42
+end
+end
+";
+        let result = parse_changeset(src).expect("numeric assert_exists must parse");
+        let crate::canonical::Precondition::AssertExists(ae) = &result.preconditions[0] else {
+            panic!("expected AssertExists, got {:?}", result.preconditions[0]);
+        };
+        assert_eq!(ae.node_id, NodeRef(42));
     }
 
     // Scenario: identity changeset (no ops) parses successfully.

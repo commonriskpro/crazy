@@ -132,6 +132,70 @@ fn evaluate_precondition(precondition: &Precondition, graph: &SemanticGraph) -> 
                 }
             }
         }
+        Precondition::AssertExistsByName(name) => {
+            let exists = graph.nodes.iter().any(|n| &n.name == name);
+            if exists {
+                None
+            } else {
+                Some(format!(
+                    "AssertExists failed: node '{name}' not found in graph"
+                ))
+            }
+        }
+        Precondition::AssertHashByName {
+            name,
+            expected_hash,
+        } => {
+            let node = graph.nodes.iter().find(|n| &n.name == name);
+            match node {
+                None => Some(format!(
+                    "AssertHash failed: node '{name}' not found in graph"
+                )),
+                Some(n) => {
+                    let computed = compute_node_hash(n);
+                    if &computed == expected_hash {
+                        None
+                    } else {
+                        Some(format!(
+                            "AssertHash failed: node '{name}' hash mismatch"
+                        ))
+                    }
+                }
+            }
+        }
+        Precondition::AssertContext {
+            target_name,
+            context_hash,
+        } => {
+            // Phase 1: verify the named node exists in the graph.
+            let node = graph.nodes.iter().find(|n| &n.name == target_name);
+            match node {
+                None => Some(format!(
+                    "AssertContext failed: node '{target_name}' not found in graph"
+                )),
+                Some(n) => {
+                    // Phase 2: when a context hash is provided, verify it matches.
+                    if let Some(expected_ctx_hash) = context_hash {
+                        let computed = compute_node_hash(n);
+                        let computed_hex: String = computed
+                            .0
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect();
+                        // Accept either the full 64-char hex or a prefix match
+                        // (callers may record a short prefix from `ail context`).
+                        if !computed_hex.starts_with(expected_ctx_hash.as_str())
+                            && computed_hex != *expected_ctx_hash
+                        {
+                            return Some(format!(
+                                "AssertContext failed: node '{target_name}' context hash mismatch"
+                            ));
+                        }
+                    }
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -596,5 +660,122 @@ end
         assert_eq!(function.assertions[0].kind, "hash");
         assert_eq!(function.assertions[0].value, "sig_123");
         assert_eq!(function.workflow_state, Some(WorkflowState::Verified));
+    }
+
+    // ── Gap 5: Named NodeRefs in preconditions ────────────────────────────
+
+    // Scenario: AssertExistsByName passes when the named node is in the graph.
+    //   GIVEN a graph containing fn.checkout
+    //   AND a changeset with `assert_exists fn.checkout` (named form)
+    //   WHEN apply is called
+    //   THEN ChangeSetOutcome::Applied
+    #[test]
+    fn apply_assert_exists_by_name_passes_when_node_present() {
+        let src = "\
+change x
+author tester
+base 0
+requires
+  assert_exists fn.checkout
+end
+op create_function id=fn.verify_target
+end
+";
+        let parsed = parse_changeset(src).expect("fixture must parse");
+        let canonical = canonicalize_parsed(parsed);
+
+        // Pre-populate the graph with fn.checkout.
+        let mut graph = SemanticGraph {
+            nodes: vec![ail_core::semantic_graph::GraphNode::new(
+                NodeRef(99),
+                ail_core::semantic_graph::NodeKind::Function,
+                "fn.checkout",
+            )],
+            edges: vec![],
+        };
+
+        let outcome = apply(canonical, &mut graph, &TestBridge);
+        assert_eq!(outcome, ChangeSetOutcome::Applied);
+    }
+
+    // Scenario: AssertExistsByName fails (rollback) when the named node is absent.
+    #[test]
+    fn apply_assert_exists_by_name_fails_when_node_absent() {
+        let src = "\
+change x
+author tester
+base 0
+requires
+  assert_exists fn.missing_node
+end
+end
+";
+        let parsed = parse_changeset(src).expect("fixture must parse");
+        let canonical = canonicalize_parsed(parsed);
+        let mut graph = SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
+
+        let outcome = apply(canonical, &mut graph, &TestBridge);
+        assert!(
+            matches!(outcome, ChangeSetOutcome::Failed { ref reason } if reason.contains("fn.missing_node")),
+            "expected Failed for missing named node, got {outcome:?}"
+        );
+    }
+
+    // ── Gap 4: assert_context precondition ────────────────────────────────
+
+    // Scenario: AssertContext passes when the named node exists and no hash is given.
+    #[test]
+    fn apply_assert_context_no_hash_passes_when_node_exists() {
+        let src = "\
+change x
+author tester
+base 0
+requires
+  assert_context type.Cart
+end
+end
+";
+        let parsed = parse_changeset(src).expect("fixture must parse");
+        let canonical = canonicalize_parsed(parsed);
+        let mut graph = SemanticGraph {
+            nodes: vec![ail_core::semantic_graph::GraphNode::new(
+                NodeRef(1),
+                ail_core::semantic_graph::NodeKind::Type,
+                "type.Cart",
+            )],
+            edges: vec![],
+        };
+
+        let outcome = apply(canonical, &mut graph, &TestBridge);
+        assert_eq!(outcome, ChangeSetOutcome::Applied);
+    }
+
+    // Scenario: AssertContext fails when the named node is absent.
+    #[test]
+    fn apply_assert_context_fails_when_node_absent() {
+        let src = "\
+change x
+author tester
+base 0
+requires
+  assert_context fn.nonexistent
+end
+end
+";
+        let parsed = parse_changeset(src).expect("fixture must parse");
+        let canonical = canonicalize_parsed(parsed);
+        let mut graph = SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
+
+        let outcome = apply(canonical, &mut graph, &TestBridge);
+        assert!(
+            matches!(outcome, ChangeSetOutcome::Failed { ref reason } if reason.contains("fn.nonexistent")),
+            "expected Failed for missing context target, got {outcome:?}"
+        );
     }
 }

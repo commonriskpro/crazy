@@ -232,10 +232,28 @@ impl Default for CanonicalOp {
 /// pre-apply graph clone (rollback).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Precondition {
-    /// The referenced node must exist in the graph.
+    /// The referenced node must exist in the graph (numeric NodeRef form).
     AssertExists(AssertExists),
-    /// The referenced node's canonical hash must match the expected value.
+    /// The referenced node's canonical hash must match the expected value (numeric form).
     AssertHash(AssertHash),
+    /// The named node (e.g. `type.Cart`) must exist in the graph.
+    AssertExistsByName(String),
+    /// The named node's canonical hash must match the expected value.
+    AssertHashByName {
+        /// Stable graph name of the node (e.g. `fn.cart_total`).
+        name: String,
+        /// Expected blake3 hash of the node's canonical encoding.
+        expected_hash: BlockHash,
+    },
+    /// A context slice hash assertion: verifies that the named node exists
+    /// and — when a context hash is supplied — that it matches the recorded
+    /// context slice hash (tool: `ail context <target>`).
+    AssertContext {
+        /// Stable graph name of the target (e.g. `fn.checkout`).
+        target_name: String,
+        /// Optional context hash returned by `ail context <target> --json`.
+        context_hash: Option<String>,
+    },
 }
 
 // ── CanonicalChangeSet ────────────────────────────────────────────────────
