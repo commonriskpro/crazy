@@ -78,6 +78,24 @@ pub struct MatchArm {
     pub body: CoreExpr,
 }
 
+// ── SelectClause ──────────────────────────────────────────────────────────
+
+/// One arm of a `CoreExpr::Select` expression.
+///
+/// Represents a channel-receive case; whichever channel becomes ready first
+/// wins and its `body` is evaluated with `binding` in scope.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectClause {
+    /// Channel expression to receive from.
+    ///
+    /// Must be atomic (a `Var`) after ANF lowering.
+    pub channel: Box<CoreExpr>,
+    /// Name to bind the received value to within `body`.
+    pub binding: String,
+    /// Body expression evaluated when this arm wins the race.
+    pub body: CoreExpr,
+}
+
 // ── CoreExpr ──────────────────────────────────────────────────────────────
 
 /// Pure expression primitives of the Semantic Core IR.
@@ -232,6 +250,70 @@ pub enum CoreExpr {
     ///
     /// `handle` is the variable holding the acquired resource (must be atomic).
     ResourceRelease { handle: Box<CoreExpr> },
+
+    // ── G23: missing concurrency and cell primitives ──────────────────────
+
+    /// Await a previously spawned task, blocking until it completes.
+    ///
+    /// `task` is the task handle expression; must be atomic in ANF.
+    /// Returns the task's result value.
+    TaskAwait { task: Box<CoreExpr> },
+
+    /// Cancel a previously spawned task.
+    ///
+    /// `task` is the task handle expression; must be atomic in ANF.
+    TaskCancel { task: Box<CoreExpr> },
+
+    /// A scoped task group — all tasks spawned inside the body are tracked
+    /// and awaited (or cancelled) before the scope exits.
+    ///
+    /// `body` is the expression body in which tasks may be spawned.
+    TaskGroup { body: Box<CoreExpr> },
+
+    /// Create a new channel with an optional bounded capacity.
+    ///
+    /// `capacity` is `None` for unbounded channels, or `Some(n)` for a
+    /// channel that blocks senders when `n` items are queued.
+    ChannelNew { capacity: Option<u64> },
+
+    /// Select over multiple channel-receive cases; the first ready wins.
+    ///
+    /// Corresponds to `docs/core-ir.md §12 — Select`.
+    /// `branches` must be non-empty; the winning arm's `body` is evaluated
+    /// with its `binding` in scope.
+    Select { branches: Vec<SelectClause> },
+
+    /// Time-bound execution — evaluates `body` but errors/cancels after
+    /// `duration` elapses.
+    ///
+    /// `duration` is the timeout value expression; must be atomic in ANF.
+    /// `body` is the expression whose completion is time-bounded.
+    Timeout {
+        duration: Box<CoreExpr>,
+        body: Box<CoreExpr>,
+    },
+
+    /// Create a new mutable cell initialised to `init`.
+    ///
+    /// Corresponds to `docs/core-ir.md §6 — CellNew<T>`.
+    /// `init` is the initial value expression.
+    CellNew { init: Box<CoreExpr> },
+
+    /// Read the current value of a cell.
+    ///
+    /// Corresponds to `docs/core-ir.md §6 — CellGet<T>`.
+    /// `cell` is the cell expression; must be atomic in ANF.
+    CellGet { cell: Box<CoreExpr> },
+
+    /// Write a new value to a cell.
+    ///
+    /// Corresponds to `docs/core-ir.md §6 — CellSet<T>`.
+    /// `cell` is the cell expression; must be atomic in ANF.
+    /// `value` is the new value expression; must be atomic in ANF.
+    CellSet {
+        cell: Box<CoreExpr>,
+        value: Box<CoreExpr>,
+    },
 
     /// Placeholder for nodes that have no expression body yet.
     ///
@@ -700,6 +782,105 @@ mod tests {
             LiteralValue::Text("hello".to_string())
         );
         assert_eq!(LiteralValue::Unit, LiteralValue::Unit);
+    }
+
+    // G23: all new concurrency + cell CoreExpr variants are constructible.
+    #[test]
+    fn all_new_concurrency_cell_core_expr_variants_are_constructible() {
+        let _task_await = CoreExpr::TaskAwait {
+            task: Box::new(CoreExpr::Var("task_handle".to_string())),
+        };
+        let _task_cancel = CoreExpr::TaskCancel {
+            task: Box::new(CoreExpr::Var("task_handle".to_string())),
+        };
+        let _task_group = CoreExpr::TaskGroup {
+            body: Box::new(CoreExpr::Literal(LiteralValue::Unit)),
+        };
+        let _channel_new_unbounded = CoreExpr::ChannelNew { capacity: None };
+        let _channel_new_bounded = CoreExpr::ChannelNew { capacity: Some(16) };
+        let _select = CoreExpr::Select {
+            branches: vec![SelectClause {
+                channel: Box::new(CoreExpr::Var("ch".to_string())),
+                binding: "msg".to_string(),
+                body: CoreExpr::Var("msg".to_string()),
+            }],
+        };
+        let _timeout = CoreExpr::Timeout {
+            duration: Box::new(CoreExpr::Var("dur_ms".to_string())),
+            body: Box::new(CoreExpr::Literal(LiteralValue::Unit)),
+        };
+        let _cell_new = CoreExpr::CellNew {
+            init: Box::new(CoreExpr::Literal(LiteralValue::Int(0))),
+        };
+        let _cell_get = CoreExpr::CellGet {
+            cell: Box::new(CoreExpr::Var("counter".to_string())),
+        };
+        let _cell_set = CoreExpr::CellSet {
+            cell: Box::new(CoreExpr::Var("counter".to_string())),
+            value: Box::new(CoreExpr::Literal(LiteralValue::Int(1))),
+        };
+        // All constructed without panic — test passes.
+    }
+
+    // TRIANGULATE: SelectClause is constructible and fields are accessible.
+    #[test]
+    fn select_clause_is_constructible_with_correct_fields() {
+        let clause = SelectClause {
+            channel: Box::new(CoreExpr::Var("inbox".to_string())),
+            binding: "item".to_string(),
+            body: CoreExpr::Var("item".to_string()),
+        };
+        assert_eq!(clause.binding, "item");
+        assert_eq!(*clause.channel, CoreExpr::Var("inbox".to_string()));
+        assert_eq!(clause.body, CoreExpr::Var("item".to_string()));
+    }
+
+    // G23: new concurrency variants round-trip through CBOR.
+    #[test]
+    fn new_concurrency_cell_variants_cbor_round_trip() {
+        let variants: Vec<CoreExpr> = vec![
+            CoreExpr::TaskAwait {
+                task: Box::new(CoreExpr::Var("t".to_string())),
+            },
+            CoreExpr::TaskCancel {
+                task: Box::new(CoreExpr::Var("t".to_string())),
+            },
+            CoreExpr::TaskGroup {
+                body: Box::new(CoreExpr::Literal(LiteralValue::Unit)),
+            },
+            CoreExpr::ChannelNew { capacity: None },
+            CoreExpr::ChannelNew { capacity: Some(8) },
+            CoreExpr::Select {
+                branches: vec![SelectClause {
+                    channel: Box::new(CoreExpr::Var("ch".to_string())),
+                    binding: "v".to_string(),
+                    body: CoreExpr::Var("v".to_string()),
+                }],
+            },
+            CoreExpr::Timeout {
+                duration: Box::new(CoreExpr::Var("d".to_string())),
+                body: Box::new(CoreExpr::Literal(LiteralValue::Unit)),
+            },
+            CoreExpr::CellNew {
+                init: Box::new(CoreExpr::Literal(LiteralValue::Int(0))),
+            },
+            CoreExpr::CellGet {
+                cell: Box::new(CoreExpr::Var("c".to_string())),
+            },
+            CoreExpr::CellSet {
+                cell: Box::new(CoreExpr::Var("c".to_string())),
+                value: Box::new(CoreExpr::Literal(LiteralValue::Int(42))),
+            },
+        ];
+        for expr in &variants {
+            let bytes = stable_cbor_bytes(expr).expect("encode must succeed");
+            let decoded: CoreExpr =
+                ciborium::from_reader(bytes.as_slice()).expect("decode must succeed");
+            assert_eq!(
+                &decoded, expr,
+                "CoreExpr::{expr:?} must survive CBOR round-trip"
+            );
+        }
     }
 
     // MatchArm is constructible and Eq.

@@ -29,10 +29,14 @@ pub mod wasm;
 #[cfg(test)]
 mod spike_v03;
 
-pub use anf::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, SourceMap, SourceMapEntry};
+pub use anf::{
+    ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, AnfMatchArm, AnfSelectClause, SourceMap,
+    SourceMapEntry,
+};
 pub use cache::{ArtifactCache, ArtifactEntry, MemoryArtifactCache};
 pub use core_ir::{
-    CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, MatchArm, StageHashes,
+    CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, MatchArm, SelectClause,
+    StageHashes,
 };
 pub use error::CompileError;
 pub use incremental::{DirtySet, NodeHashes, compile_incremental, compute_node_hashes};

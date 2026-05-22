@@ -37,6 +37,23 @@ use crate::core_ir::{LiteralValue, StageHashes};
 /// than the version they understand.
 pub const ANF_SCHEMA_VERSION: u32 = 1;
 
+// ── AnfSelectClause ───────────────────────────────────────────────────────
+
+/// One arm of an `AnfExpr::Select` expression (ANF form).
+///
+/// `channel` is an atomic variable name — guaranteed by the lowering pass.
+/// `binding` names the variable that receives the value from the winning channel.
+/// `body` is the ANF expression evaluated when this arm wins.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnfSelectClause {
+    /// Channel variable name — atomic, guaranteed by lowering.
+    pub channel: String,
+    /// Name to bind the received value to within `body`.
+    pub binding: String,
+    /// Body expression evaluated when this arm wins.
+    pub body: AnfExpr,
+}
+
 // ── AnfMatchArm ───────────────────────────────────────────────────────────
 
 /// One arm of an `AnfExpr::Match` expression.
@@ -232,6 +249,55 @@ pub enum AnfExpr {
     ///
     /// `handle` is an atomic variable name — guaranteed by lowering.
     ResourceRelease { handle: String },
+
+    // ── G23: missing concurrency and cell primitives ──────────────────────
+
+    /// Await a previously spawned task.
+    ///
+    /// `task` is an atomic variable name — guaranteed by lowering.
+    TaskAwait { task: String },
+
+    /// Cancel a previously spawned task.
+    ///
+    /// `task` is an atomic variable name — guaranteed by lowering.
+    TaskCancel { task: String },
+
+    /// A scoped task group — body may spawn tasks; all are awaited before exit.
+    ///
+    /// `body` is the ANF body expression for the group scope.
+    TaskGroup { body: Box<AnfExpr> },
+
+    /// Create a new channel (explicit ordering in ANF).
+    ///
+    /// `capacity` is `None` for unbounded, `Some(n)` for bounded.
+    ChannelNew { capacity: Option<u64> },
+
+    /// Select over multiple channel-receive cases; the first ready wins.
+    ///
+    /// `branches` must be non-empty; each clause has an atomic channel name,
+    /// a binding name, and a body expression.
+    Select { branches: Vec<AnfSelectClause> },
+
+    /// Time-bound execution (explicit ordering in ANF).
+    ///
+    /// `duration` is an atomic variable name — guaranteed by lowering.
+    /// `body` is the timed ANF expression.
+    Timeout { duration: String, body: Box<AnfExpr> },
+
+    /// Create a new mutable cell initialised to a value.
+    ///
+    /// `init` is an atomic variable name — guaranteed by lowering.
+    CellNew { init: String },
+
+    /// Read the current value of a cell.
+    ///
+    /// `cell` is an atomic variable name — guaranteed by lowering.
+    CellGet { cell: String },
+
+    /// Write a new value to a cell.
+    ///
+    /// `cell` and `value` are atomic variable names — guaranteed by lowering.
+    CellSet { cell: String, value: String },
 
     /// Placeholder for nodes that have no expression body yet, or for
     /// `CoreExpr::Placeholder` nodes.
@@ -454,6 +520,92 @@ mod tests {
             payload: Some(Box::new(AnfExpr::Var("x".to_string()))),
         };
         let _list = AnfExpr::ListNew(vec![AnfExpr::Literal(LiteralValue::Int(1))]);
+    }
+
+    // G23: AnfSelectClause is constructible with correct fields.
+    #[test]
+    fn anf_select_clause_is_constructible() {
+        let clause = AnfSelectClause {
+            channel: "inbox".to_string(),
+            binding: "msg".to_string(),
+            body: AnfExpr::Var("msg".to_string()),
+        };
+        assert_eq!(clause.channel, "inbox");
+        assert_eq!(clause.binding, "msg");
+        assert_eq!(clause.body, AnfExpr::Var("msg".to_string()));
+    }
+
+    // G23: all new concurrency + cell AnfExpr variants are constructible.
+    #[test]
+    fn all_new_concurrency_cell_anf_expr_variants_are_constructible() {
+        let _task_await = AnfExpr::TaskAwait { task: "t".to_string() };
+        let _task_cancel = AnfExpr::TaskCancel { task: "t".to_string() };
+        let _task_group = AnfExpr::TaskGroup {
+            body: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+        };
+        let _channel_new_unbounded = AnfExpr::ChannelNew { capacity: None };
+        let _channel_new_bounded = AnfExpr::ChannelNew { capacity: Some(32) };
+        let _select = AnfExpr::Select {
+            branches: vec![AnfSelectClause {
+                channel: "ch".to_string(),
+                binding: "v".to_string(),
+                body: AnfExpr::Var("v".to_string()),
+            }],
+        };
+        let _timeout = AnfExpr::Timeout {
+            duration: "dur".to_string(),
+            body: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+        };
+        let _cell_new = AnfExpr::CellNew { init: "zero".to_string() };
+        let _cell_get = AnfExpr::CellGet { cell: "c".to_string() };
+        let _cell_set = AnfExpr::CellSet { cell: "c".to_string(), value: "v".to_string() };
+        // All constructed without panic — test passes.
+    }
+
+    // TRIANGULATE: channel operands are atomic strings (not nested exprs).
+    #[test]
+    fn anf_task_await_task_is_atomic_string() {
+        let expr = AnfExpr::TaskAwait { task: "task_0".to_string() };
+        if let AnfExpr::TaskAwait { task } = expr {
+            assert_eq!(task, "task_0");
+        } else {
+            panic!("expected TaskAwait");
+        }
+    }
+
+    // G23: new concurrency + cell variants CBOR round-trip.
+    #[test]
+    fn new_concurrency_cell_anf_variants_cbor_round_trip() {
+        use crate::hash::stable_cbor_bytes;
+        let variants: Vec<AnfExpr> = vec![
+            AnfExpr::TaskAwait { task: "t".to_string() },
+            AnfExpr::TaskCancel { task: "t".to_string() },
+            AnfExpr::TaskGroup {
+                body: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+            },
+            AnfExpr::ChannelNew { capacity: None },
+            AnfExpr::ChannelNew { capacity: Some(4) },
+            AnfExpr::Select {
+                branches: vec![AnfSelectClause {
+                    channel: "ch".to_string(),
+                    binding: "v".to_string(),
+                    body: AnfExpr::Var("v".to_string()),
+                }],
+            },
+            AnfExpr::Timeout {
+                duration: "d".to_string(),
+                body: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+            },
+            AnfExpr::CellNew { init: "zero".to_string() },
+            AnfExpr::CellGet { cell: "c".to_string() },
+            AnfExpr::CellSet { cell: "c".to_string(), value: "v".to_string() },
+        ];
+        for expr in &variants {
+            let bytes = stable_cbor_bytes(expr).expect("encode must succeed");
+            let decoded: AnfExpr =
+                ciborium::from_reader(bytes.as_slice()).expect("decode must succeed");
+            assert_eq!(&decoded, expr, "AnfExpr must survive CBOR round-trip");
+        }
     }
 
     // G20: AnfMatchArm is constructible and has correct fields.
