@@ -500,6 +500,7 @@ fn storage_identity_fields_absent_preserves_wire_format() {
         generic_params: None,
         params: None,
         return_type: None,
+        body_expr: None,
         interface_impls: None,
         refinement_ref: None,
         constraint_set: None,

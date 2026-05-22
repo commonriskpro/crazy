@@ -79,6 +79,7 @@ fn extract_node_refs(payload: &OpPayload, out: &mut BTreeSet<NodeRef>) {
         | OpPayload::AddEdgeByName { .. }
         | OpPayload::RemoveEdgeByName { .. }
         | OpPayload::SetReturnByName { .. }
+        | OpPayload::SetBodyByName { .. }
         | OpPayload::SetMetadataByName { .. }
         | OpPayload::AddParamByName { .. }
         | OpPayload::AddEffectByName { .. }

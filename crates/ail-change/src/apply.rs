@@ -23,7 +23,7 @@
 
 use ail_core::semantic_graph::{
     CapabilityReqs, ContractClauses, EffectRow, GraphEdge, GraphNode, NodeRef, ParamDecl,
-    RuntimeCheckMeta, SemanticGraph, TrustMetadata,
+    SemanticGraph, TrustMetadata,
 };
 
 use crate::{
@@ -200,6 +200,11 @@ fn apply_payload(payload: &OpPayload, graph: &mut SemanticGraph) {
                 n.return_type = Some(ty.clone());
             }
         }
+        OpPayload::SetBodyByName { target, body } => {
+            if let Some(n) = node_by_name_mut(graph, target) {
+                n.body_expr = Some(body.clone());
+            }
+        }
         OpPayload::SetMetadataByName { target, key, value } => {
             if let Some(n) = node_by_name_mut(graph, target) {
                 set_node_metadata(n, key, value);
@@ -342,13 +347,7 @@ fn node_by_name_mut<'a>(graph: &'a mut SemanticGraph, name: &str) -> Option<&'a 
 fn set_node_metadata(node: &mut GraphNode, key: &str, value: &str) {
     match key {
         "return" | "type" => node.return_type = Some(value.to_string()),
-        "body" => {
-            let predicate = format!("body={value}");
-            node.runtime_checks = Some(vec![RuntimeCheckMeta {
-                hash: blake3::hash(predicate.as_bytes()).to_hex().to_string(),
-                predicate,
-            }]);
-        }
+        "body" => node.body_expr = Some(value.to_string()),
         _ => {
             let trust = node.trust_metadata.get_or_insert_with(|| TrustMetadata {
                 level: "metadata".to_string(),
@@ -415,6 +414,7 @@ op create_capability id=cap.payment.charge
 op create_function id=fn.checkout
 op add_param target=fn.checkout name=cart_id type=CartId
 op set_return target=fn.checkout type=OrderId
+op set_body target=fn.checkout body=add(x, y)
 op add_effect target=fn.checkout effect=payment.charge
 op add_contract target=fn.checkout kind=ensures rule=order_created
 op connect source=fn.checkout_v2 relation=uses target=cap.payment.charge
@@ -457,6 +457,7 @@ end
             .find(|node| node.name == "fn.checkout_v2")
             .expect("renamed function must exist");
         assert_eq!(function.return_type.as_deref(), Some("OrderId"));
+        assert_eq!(function.body_expr.as_deref(), Some("add(x, y)"));
         assert_eq!(
             function
                 .params

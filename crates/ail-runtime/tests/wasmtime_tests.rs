@@ -8,6 +8,12 @@
 //  - Failed preflight (hash mismatch) blocks Wasmtime invocation.
 //  - RuntimeHost::new() succeeds (engine initialization is infallible from caller's view).
 
+use ail_change::{
+    apply::{SnapshotBridge, apply},
+    canonical::canonicalize_parsed,
+    model::{ChangeSetOutcome, SnapshotId},
+    parser::parse_changeset,
+};
 use ail_compiler::{
     ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, LiteralValue, SourceMap, StageHashes,
     emit_wasm, lower_to_anf, lower_to_core_ir,
@@ -112,6 +118,46 @@ fn binary_i64_call(func: &str, left: i64, right: i64) -> AnfExpr {
             }),
         }),
     }
+}
+
+struct TestBridge;
+
+impl SnapshotBridge for TestBridge {
+    fn current_snapshot_id(&self) -> SnapshotId {
+        SnapshotId(0)
+    }
+}
+
+fn invoke_acl_export(acl: &str, export: &str) -> RuntimeValue {
+    let parsed = parse_changeset(acl).expect("ACL must parse");
+    let canonical = canonicalize_parsed(parsed);
+    let mut graph = SemanticGraph {
+        nodes: vec![],
+        edges: vec![],
+    };
+    assert_eq!(
+        apply(canonical, &mut graph, &TestBridge),
+        ChangeSetOutcome::Applied
+    );
+
+    let report = VerificationReport {
+        entries: vec![],
+        ..Default::default()
+    };
+    let core = lower_to_core_ir(&graph, &report).expect("lower_to_core_ir failed");
+    let anf = lower_to_anf(&core).expect("lower_to_anf failed");
+    let wasm = emit_wasm(&anf).expect("emit_wasm failed").wasm;
+    let manifest = CapabilityManifest {
+        module: "acl-expr-test".to_string(),
+        requires: vec![],
+    };
+    let profile = matching_profile(&wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("WASM must instantiate");
+
+    instance.invoke(export, &[]).expect("invoke must succeed")
 }
 
 // ── Scenario 1: Malformed WASM is rejected ────────────────────────────────
@@ -260,6 +306,25 @@ fn compiler_if_else_function_returns_taken_branch() {
     let value = instance.invoke("branch", &[]).expect("invoke must succeed");
 
     assert_eq!(value, RuntimeValue::I64(20));
+}
+
+#[test]
+fn acl_sum_of_squares_body_compiles_and_runs() {
+    let acl = "\
+change expr_bodies base=0
+author tester
+description expression bodies
+op create_function id=fn.sum_of_squares return=Int
+op add_param target=fn.sum_of_squares name=x type=Int
+op add_param target=fn.sum_of_squares name=y type=Int
+op set_body target=fn.sum_of_squares body=add(mul(x, x), mul(y, y))
+op create_function id=fn.main return=Int body=sum_of_squares(3, 4)
+end
+";
+
+    let value = invoke_acl_export(acl, "main");
+
+    assert_eq!(value, RuntimeValue::I64(25));
 }
 
 #[test]

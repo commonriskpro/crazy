@@ -131,6 +131,22 @@ pub enum CoreExpr {
     },
     /// A call to a named function or capability.
     Call { func: String, args: Vec<CoreExpr> },
+    /// Integer addition.
+    Add(Box<CoreExpr>, Box<CoreExpr>),
+    /// Integer subtraction.
+    Sub(Box<CoreExpr>, Box<CoreExpr>),
+    /// Integer multiplication.
+    Mul(Box<CoreExpr>, Box<CoreExpr>),
+    /// Signed integer division.
+    Div(Box<CoreExpr>, Box<CoreExpr>),
+    /// Signed integer remainder.
+    Mod(Box<CoreExpr>, Box<CoreExpr>),
+    /// Integer equality comparison.
+    Eq(Box<CoreExpr>, Box<CoreExpr>),
+    /// Signed integer less-than comparison.
+    Lt(Box<CoreExpr>, Box<CoreExpr>),
+    /// Signed integer greater-than comparison.
+    Gt(Box<CoreExpr>, Box<CoreExpr>),
     /// An anonymous pure or effectful function.
     Lambda {
         params: Vec<String>,

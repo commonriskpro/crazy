@@ -349,18 +349,16 @@ end
 }
 
 #[test]
-#[ignore = "ACL set_body stores body=@expr as metadata, not CoreExpr; ail run accepts module target only and invokes fn.answer-style exports by last path segment, so a real `ail init/change/compile/run fn.main` program cannot yet round-trip user-defined bodies end-to-end."]
+#[ignore = "CLI dogfood still needs a temp project flow for applying ACL, compiling, and running fn.main end-to-end."]
 fn full_cli_pipeline_runs_fn_main_from_applied_changeset() {
     // Dogfooding gap: this should eventually create a temp project, run
     // `ail init`, apply an ACL changeset defining fn.main, compile, and run
-    // `ail run fn.main`, asserting the computed result. Today the CLI can
-    // compile/run literal `value=<int>` graph nodes, but ACL expression bodies
-    // are not lowered into executable CoreExpr/ANF.
+    // `ail run fn.main`, asserting the computed result.
 }
 
 #[test]
-#[ignore = "ACL expression blocks are parsed and hashed but not lowered into executable CoreExpr, so text definitions like `fn.add(a, b) = a + b` cannot currently be compiled through parse_changeset -> apply -> lower_to_core_ir."]
+#[ignore = "ACL expression blocks are parsed and hashed but block refs like body=@expr.foo are not lowered into executable CoreExpr yet."]
 fn acl_text_function_bodies_compile_to_executable_wasm() {
     // Dogfooding gap: calculator/conditional bodies should move from block
-    // metadata into CoreExpr instead of requiring hand-authored ANF in tests.
+    // refs into CoreExpr instead of requiring inline `body=...` expressions.
 }

@@ -21,6 +21,7 @@ pub mod artifact_manifest;
 pub mod cache;
 pub mod core_ir;
 pub mod error;
+pub mod expr_parser;
 pub mod hash;
 pub mod incremental;
 pub mod lower;
@@ -41,6 +42,7 @@ pub use core_ir::{
     StageHashes,
 };
 pub use error::CompileError;
+pub use expr_parser::{ParseError, parse_expr};
 pub use incremental::{DirtySet, NodeHashes, compile_incremental, compute_node_hashes};
 pub use lower::{
     is_report_accepted, lower_core_expr_to_anf, lower_to_anf, lower_to_anf_with_graph,

@@ -33,6 +33,7 @@ use crate::core_ir::{
     CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, StageHashes,
 };
 use crate::error::CompileError;
+use crate::expr_parser::parse_expr;
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
 
 // ── is_report_accepted ────────────────────────────────────────────────────
@@ -101,6 +102,107 @@ fn atomize(
     name
 }
 
+fn atomize_local(
+    expr: &CoreExpr,
+    fresh: &mut u32,
+    source_ref: ail_core::semantic_graph::NodeRef,
+) -> (String, Option<(String, AnfExpr)>) {
+    if let CoreExpr::Var(name) = expr {
+        return (name.clone(), None);
+    }
+    let value = lower_core_expr_to_anf_local(expr, fresh, source_ref);
+    let name = format!("anf_{}", *fresh);
+    *fresh += 1;
+    (name.clone(), Some((name, value)))
+}
+
+fn wrap_local_bindings(mut bindings: Vec<(String, AnfExpr)>, body: AnfExpr) -> AnfExpr {
+    bindings.reverse();
+    bindings
+        .into_iter()
+        .fold(body, |body, (name, value)| AnfExpr::Let {
+            name,
+            value: Box::new(value),
+            body: Box::new(body),
+        })
+}
+
+fn lower_core_call_to_anf(
+    func: &str,
+    args: &[CoreExpr],
+    fresh: &mut u32,
+    source_ref: ail_core::semantic_graph::NodeRef,
+) -> AnfExpr {
+    let mut bindings = Vec::new();
+    let mut arg_names = Vec::with_capacity(args.len());
+    for arg in args {
+        let (name, binding) = atomize_local(arg, fresh, source_ref);
+        if let Some(binding) = binding {
+            bindings.push(binding);
+        }
+        arg_names.push(name);
+    }
+    wrap_local_bindings(
+        bindings,
+        AnfExpr::Call {
+            func: func.to_string(),
+            args: arg_names,
+        },
+    )
+}
+
+fn lower_core_binary_to_anf(
+    func: &str,
+    left: &CoreExpr,
+    right: &CoreExpr,
+    fresh: &mut u32,
+    source_ref: ail_core::semantic_graph::NodeRef,
+) -> AnfExpr {
+    lower_core_call_to_anf(func, &[left.clone(), right.clone()], fresh, source_ref)
+}
+
+fn lower_core_expr_to_anf_local(
+    expr: &CoreExpr,
+    fresh: &mut u32,
+    source_ref: ail_core::semantic_graph::NodeRef,
+) -> AnfExpr {
+    match expr {
+        CoreExpr::If { cond, then_, else_ } => {
+            let (cond_name, cond_binding) = atomize_local(cond, fresh, source_ref);
+            let if_expr = AnfExpr::If {
+                cond: cond_name,
+                then_branch: Box::new(lower_core_expr_to_anf_local(then_, fresh, source_ref)),
+                else_branch: Box::new(lower_core_expr_to_anf_local(else_, fresh, source_ref)),
+            };
+            if let Some(binding) = cond_binding {
+                wrap_local_bindings(vec![binding], if_expr)
+            } else {
+                if_expr
+            }
+        }
+        CoreExpr::Call { func, args } => lower_core_call_to_anf(func, args, fresh, source_ref),
+        CoreExpr::Add(left, right) => {
+            lower_core_binary_to_anf("add", left, right, fresh, source_ref)
+        }
+        CoreExpr::Sub(left, right) => {
+            lower_core_binary_to_anf("sub", left, right, fresh, source_ref)
+        }
+        CoreExpr::Mul(left, right) => {
+            lower_core_binary_to_anf("mul", left, right, fresh, source_ref)
+        }
+        CoreExpr::Div(left, right) => {
+            lower_core_binary_to_anf("div", left, right, fresh, source_ref)
+        }
+        CoreExpr::Mod(left, right) => {
+            lower_core_binary_to_anf("mod", left, right, fresh, source_ref)
+        }
+        CoreExpr::Eq(left, right) => lower_core_binary_to_anf("eq", left, right, fresh, source_ref),
+        CoreExpr::Lt(left, right) => lower_core_binary_to_anf("lt", left, right, fresh, source_ref),
+        CoreExpr::Gt(left, right) => lower_core_binary_to_anf("gt", left, right, fresh, source_ref),
+        _ => lower_core_expr_to_anf(expr, fresh, source_ref, &mut Vec::new()),
+    }
+}
+
 // ── lower_core_expr_to_anf ────────────────────────────────────────────────
 
 /// Recursively lower a `CoreExpr` to an `AnfExpr`.
@@ -155,6 +257,24 @@ pub fn lower_core_expr_to_anf(
                 args: atomic_args,
             }
         }
+        CoreExpr::Add(left, right) => {
+            lower_core_binary_to_anf("add", left, right, fresh, source_ref)
+        }
+        CoreExpr::Sub(left, right) => {
+            lower_core_binary_to_anf("sub", left, right, fresh, source_ref)
+        }
+        CoreExpr::Mul(left, right) => {
+            lower_core_binary_to_anf("mul", left, right, fresh, source_ref)
+        }
+        CoreExpr::Div(left, right) => {
+            lower_core_binary_to_anf("div", left, right, fresh, source_ref)
+        }
+        CoreExpr::Mod(left, right) => {
+            lower_core_binary_to_anf("mod", left, right, fresh, source_ref)
+        }
+        CoreExpr::Eq(left, right) => lower_core_binary_to_anf("eq", left, right, fresh, source_ref),
+        CoreExpr::Lt(left, right) => lower_core_binary_to_anf("lt", left, right, fresh, source_ref),
+        CoreExpr::Gt(left, right) => lower_core_binary_to_anf("gt", left, right, fresh, source_ref),
 
         // FieldGet: record expression must be atomic.
         CoreExpr::FieldGet { record, field } => {
@@ -496,19 +616,17 @@ pub fn lower_core_expr_to_anf(
 
 /// Lower one `CoreNode` into one or more `AnfBinding`s.
 ///
-/// If the node has a `CoreExpr` body, it is lowered via
-/// `lower_core_expr_to_anf`.  Any synthetic temporaries produced during
-/// flattening are pushed to `out` first (in emission order), then the node's
-/// own binding is appended.
+/// If the node has a `CoreExpr` body, inline temporaries are kept inside the
+/// node binding as local `let` expressions so executable function parameters do
+/// not accidentally become global synthetic bindings.
 ///
 /// Nodes without `expr` (modules, types, capabilities, etc.) get a default
 /// `AnfExpr::Literal(LiteralValue::Unit)`.
 ///
-/// Provenance (`source_ref`) is preserved verbatim on every emitted binding,
-/// including synthetic temporaries.
+/// Provenance (`source_ref`) is preserved verbatim on every emitted binding.
 fn map_core_node_to_anf(node: &CoreNode, fresh: &mut u32, out: &mut Vec<AnfBinding>) {
     let anf_expr = match &node.expr {
-        Some(core_expr) => lower_core_expr_to_anf(core_expr, fresh, node.source_ref, out),
+        Some(core_expr) => lower_core_expr_to_anf_local(core_expr, fresh, node.source_ref),
         None => AnfExpr::Literal(LiteralValue::Unit),
     };
     out.push(AnfBinding {
@@ -559,6 +677,22 @@ fn literal_expr_from_runtime_checks(
     Some(CoreExpr::Literal(LiteralValue::Int(value)))
 }
 
+fn expr_from_graph_node(
+    node: &ail_core::semantic_graph::GraphNode,
+) -> Result<Option<CoreExpr>, CompileError> {
+    if let Some(body) = &node.body_expr {
+        if body.trim_start().starts_with('@') {
+            return Ok(None);
+        }
+        return parse_expr(body)
+            .map(Some)
+            .map_err(|err| CompileError::InvalidGraph(format!("{} body: {err}", node.name)));
+    }
+    Ok(literal_expr_from_runtime_checks(
+        node.runtime_checks.as_ref(),
+    ))
+}
+
 // ── lower_to_core_ir ──────────────────────────────────────────────────────
 
 /// Lower a verified `SemanticGraph` into a `CoreIr`.
@@ -604,22 +738,28 @@ pub fn lower_to_core_ir(
 
     // Lower each source GraphNode to a CoreNode (1-to-1, in traversal order).
     // G2: populate `ty` from `GraphNode.type_facts.nominal` when present.
-    // `expr` is left `None` at this stage; expression bodies are deferred to
-    // the expression-lowering phase.
+    // Function `body_expr` strings are parsed into executable CoreExpr bodies;
+    // legacy literal runtime-check bodies are preserved as a fallback.
     let nodes: Vec<CoreNode> = graph
         .nodes
         .iter()
-        .map(|gn| CoreNode {
-            source_ref: gn.id,
-            kind: map_node_kind(gn.kind),
-            name: gn.name.clone(),
-            ty: gn
-                .type_facts
-                .as_ref()
-                .map(|tf| nominal_to_core_type(&tf.nominal)),
-            expr: literal_expr_from_runtime_checks(gn.runtime_checks.as_ref()),
+        .map(|gn| {
+            Ok(CoreNode {
+                source_ref: gn.id,
+                kind: map_node_kind(gn.kind),
+                name: gn.name.clone(),
+                ty: gn
+                    .type_facts
+                    .as_ref()
+                    .map(|tf| nominal_to_core_type(&tf.nominal)),
+                expr: if gn.kind == NodeKind::Function {
+                    expr_from_graph_node(gn)?
+                } else {
+                    None
+                },
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, CompileError>>()?;
 
     // Seal: core_ir_hash = blake3(graph_snapshot_hash || core_ir_bytes).
     let core_ir_bytes = stable_cbor_bytes(&nodes)?;
@@ -1099,6 +1239,26 @@ mod tests {
         assert_eq!(
             core.nodes[0].expr,
             Some(CoreExpr::Literal(LiteralValue::Int(42)))
+        );
+    }
+
+    #[test]
+    fn lower_to_core_ir_parses_function_body_expr() {
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.add");
+        node.body_expr = Some("add(x, y)".to_string());
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
+
+        let core = lower_to_core_ir(&graph, &proven_report()).unwrap();
+
+        assert_eq!(
+            core.nodes[0].expr,
+            Some(CoreExpr::Add(
+                Box::new(CoreExpr::Var("x".to_string())),
+                Box::new(CoreExpr::Var("y".to_string()))
+            ))
         );
     }
 

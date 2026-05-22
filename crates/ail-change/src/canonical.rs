@@ -126,6 +126,8 @@ pub enum OpPayload {
     },
     /// Set a function return type by stable graph name.
     SetReturnByName { target: String, ty: String },
+    /// Set a function expression body by stable graph name.
+    SetBodyByName { target: String, body: String },
     /// Set a supported scalar metadata field by stable graph name.
     SetMetadataByName {
         target: String,
@@ -564,11 +566,7 @@ fn materialize_payload(idx: usize, kind: &ChangeSetOp, verb: &str, args: &OpArgs
             .map(|(target, ty)| OpPayload::SetReturnByName { target, ty })
             .unwrap_or(OpPayload::Noop),
         (ChangeSetOp::Set, "set_body") => target_and(args, "body")
-            .map(|(target, value)| OpPayload::SetMetadataByName {
-                target,
-                key: "body".to_string(),
-                value,
-            })
+            .map(|(target, body)| OpPayload::SetBodyByName { target, body })
             .unwrap_or(OpPayload::Noop),
         (ChangeSetOp::Set, _) | (ChangeSetOp::Replace, _) => args
             .get("target")
@@ -843,6 +841,7 @@ fn type_node(idx: usize, id: &str) -> GraphNode {
 fn function_node(idx: usize, id: &str, args: &OpArgs) -> GraphNode {
     let mut node = GraphNode::new(NodeRef(idx as u32), NodeKind::Function, id);
     node.return_type = args.get("return").cloned();
+    node.body_expr = args.get("body").cloned();
     if let Some(value) = args.get("value") {
         let predicate = format!("literal:i64={value}");
         node.runtime_checks = Some(vec![RuntimeCheckMeta {
@@ -909,6 +908,23 @@ mod tests {
                         .map(|checks| checks[0].predicate.as_str()),
                     Some("literal:i64=42")
                 );
+            }
+            other => panic!("expected function CreateNode payload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn canonicalize_parsed_materializes_function_body_expr_on_create() {
+        let parsed = parse_changeset(&minimal_change(
+            "create_function id=fn.add return=Int body=add(x, y)",
+        ))
+        .expect("fixture must parse");
+
+        let canonical = canonicalize_parsed(parsed);
+
+        match &canonical.ops[0].payload {
+            OpPayload::CreateNode(node) => {
+                assert_eq!(node.body_expr.as_deref(), Some("add(x, y)"));
             }
             other => panic!("expected function CreateNode payload, got {other:?}"),
         }
@@ -1023,7 +1039,7 @@ end
             canonical
                 .ops
                 .iter()
-                .any(|op| matches!(op.payload, OpPayload::SetMetadataByName { .. }))
+                .any(|op| matches!(op.payload, OpPayload::SetBodyByName { .. }))
         );
         assert!(
             canonical

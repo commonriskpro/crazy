@@ -508,6 +508,12 @@ pub struct GraphNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_type: Option<String>,
 
+    /// ACL expression body text for a function node.
+    ///
+    /// Parsed by the compiler into `CoreExpr` during lowering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_expr: Option<String>,
+
     /// Interface implementations declared by this node's type.
     ///
     /// Present on `Type` (or `Function`) nodes that implement interfaces.
@@ -596,6 +602,7 @@ impl GraphNode {
             generic_params: None,
             params: None,
             return_type: None,
+            body_expr: None,
             interface_impls: None,
             refinement_ref: None,
             constraint_set: None,

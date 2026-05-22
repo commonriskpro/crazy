@@ -791,10 +791,9 @@ pub fn parse_kv_args(args_str: &str) -> OpArgs {
             let rest = remaining[end..].trim_start();
             (value, rest)
         } else {
-            // Bare word ends at the next whitespace.
-            let end = remaining
-                .find(|c: char| c.is_whitespace())
-                .unwrap_or(remaining.len());
+            // Bare values normally end at whitespace, but ACL expression bodies
+            // may contain spaces inside parenthesized calls: `body=add(x, y)`.
+            let end = bare_value_end(remaining);
             let value = remaining[..end].trim().to_string();
             let rest = remaining[end..].trim_start();
             (value, rest)
@@ -807,6 +806,19 @@ pub fn parse_kv_args(args_str: &str) -> OpArgs {
     }
 
     map
+}
+
+fn bare_value_end(value: &str) -> usize {
+    let mut depth = 0usize;
+    for (idx, ch) in value.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            c if c.is_whitespace() && depth == 0 => return idx,
+            _ => {}
+        }
+    }
+    value.len()
 }
 
 /// Extract the string content from a value token.
@@ -1175,6 +1187,15 @@ end
             Some("Int".to_string())
         );
         assert_eq!(extract_kv_value("target=fn.x", "missing"), None);
+    }
+
+    #[test]
+    fn parse_kv_args_keeps_parenthesized_body_with_spaces() {
+        let args = parse_kv_args("target=fn.add body=add(x, y) return=Int");
+
+        assert_eq!(args.get("target").map(String::as_str), Some("fn.add"));
+        assert_eq!(args.get("body").map(String::as_str), Some("add(x, y)"));
+        assert_eq!(args.get("return").map(String::as_str), Some("Int"));
     }
 
     // Scenario: identity changeset (no ops) parses successfully.
