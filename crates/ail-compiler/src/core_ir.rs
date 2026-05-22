@@ -40,6 +40,12 @@ pub enum CoreNodeKind {
     Boundary,
     /// Added in Phase 12 (packages-trust-model) — mirrors `NodeKind::Package`.
     Package,
+    /// Interface (typeclass) definition — mirrors `NodeKind::Interface`.
+    Interface,
+    /// Interface implementation — mirrors `NodeKind::Impl`.
+    Impl,
+    /// Effect alias definition — mirrors `NodeKind::EffectAlias`.
+    EffectAlias,
 }
 
 // ── LiteralValue ──────────────────────────────────────────────────────────

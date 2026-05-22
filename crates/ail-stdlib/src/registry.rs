@@ -216,6 +216,7 @@ impl StdlibRegistry {
                 generated_artifacts: vec![],
                 assertions: vec![],
                 workflow_state: None,
+                handler_meta: None,
             })
             .collect()
     }

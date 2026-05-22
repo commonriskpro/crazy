@@ -70,6 +70,9 @@ pub(crate) fn map_node_kind(kind: NodeKind) -> CoreNodeKind {
         NodeKind::Test => CoreNodeKind::Test,
         NodeKind::Boundary => CoreNodeKind::Boundary,
         NodeKind::Package => CoreNodeKind::Package,
+        NodeKind::Interface => CoreNodeKind::Interface,
+        NodeKind::Impl => CoreNodeKind::Impl,
+        NodeKind::EffectAlias => CoreNodeKind::EffectAlias,
     }
 }
 
