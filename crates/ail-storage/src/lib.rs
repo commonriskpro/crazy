@@ -11,18 +11,36 @@
 ///   `gc_unreferenced`, `compact_snapshots` (G18).
 /// - [`migration`] — Schema `Migration` trait, `MigrationCatalog`, `MigrationError`,
 ///   and `default_catalog()` (Phase 18 / PR3).
+/// - [`branch`]    — `Branch`, `BranchStore`, `BranchRegistry` (G28).
+/// - [`tag`]       — `Tag`, `ReleaseMetadata`, `TagStore`, `TagRegistry` (G28).
+/// - [`approval`]  — `ApprovalRecord`, `AssumptionRecord`, stores (G28).
+/// - [`export`]    — `ExportBundle`, `ExportScope`, `build_export_bundle` (G28).
+/// - [`integrity`] — `IntegrityReport`, `IntegrityIssue`, `verify_integrity` (G28).
+pub mod approval;
 pub mod backends;
+pub mod branch;
 pub mod codec;
 pub mod error;
+pub mod export;
 pub mod graph;
+pub mod integrity;
 pub mod migration;
 pub mod object;
 pub mod retention;
+pub mod tag;
 
+pub use approval::{
+    ApprovalRecord, ApprovalRegistry, ApprovalStore, AssumptionRecord, AssumptionRegistry,
+    AssumptionStatus, AssumptionStore,
+};
 pub use backends::postgres::PostgresGraphStore;
-pub use migration::{Migration, MigrationCatalog, MigrationError};
+pub use branch::{Branch, BranchRegistry, BranchStore};
+pub use export::{ExportBundle, ExportScope, build_export_bundle};
 pub use graph::{ChangeSetLogEntry, GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
+pub use integrity::{IntegrityIssue, IntegrityReport, verify_integrity};
+pub use migration::{Migration, MigrationCatalog, MigrationError, V0ToV1Migration, V1ToV2Migration, V2ToV3Migration};
 pub use retention::{
     CompactionReport, GcReport, MutableGraphStore, RetentionPolicy, compact_snapshots,
     gc_unreferenced,
 };
+pub use tag::{ReleaseMetadata, Tag, TagRegistry, TagStore};
