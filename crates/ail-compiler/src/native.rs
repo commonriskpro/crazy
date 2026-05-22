@@ -166,19 +166,84 @@ enum LowerResult {
     Terminated,
 }
 
+// ── NativeLabelKind ───────────────────────────────────────────────────────
+
+/// Kind of label pushed onto the label stack for Loop/Break/Continue resolution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeLabelKind {
+    LoopBreak,
+    LoopContinue,
+}
+
 // ── NativeCodegenCtx ──────────────────────────────────────────────────────
 
 /// Per-function compilation context for `lower_anf_expr_cranelift`.
 struct NativeCodegenCtx<'a> {
-    /// Maps ANF let-binding names to their Cranelift SSA `Value`.
-    locals: BTreeMap<&'a str, cranelift_codegen::ir::Value>,
+    /// Maps ANF let-binding names to their Cranelift SSA `Value` + type.
+    locals: BTreeMap<&'a str, (cranelift_codegen::ir::Value, cranelift_codegen::ir::types::Type)>,
+    /// Label stack for Loop/Break/Continue resolution.
+    labels: Vec<(NativeLabelKind, cranelift_codegen::ir::Block)>,
+    /// Record layout map: binding name → ordered field names.
+    record_layouts: BTreeMap<String, Vec<String>>,
+    /// Tag discriminant table: tag string → u32 id (first-encounter order).
+    variant_tags: BTreeMap<String, u32>,
+    next_variant_tag: u32,
 }
 
 impl<'a> NativeCodegenCtx<'a> {
     fn new() -> Self {
         Self {
             locals: BTreeMap::new(),
+            labels: Vec::new(),
+            record_layouts: BTreeMap::new(),
+            variant_tags: BTreeMap::new(),
+            next_variant_tag: 0,
         }
+    }
+
+    fn bind(&mut self, name: &'a str, val: cranelift_codegen::ir::Value,
+            ty: cranelift_codegen::ir::types::Type) {
+        self.locals.insert(name, (val, ty));
+    }
+
+    fn lookup(&self, name: &str) -> Option<(cranelift_codegen::ir::Value,
+                                             cranelift_codegen::ir::types::Type)> {
+        self.locals.get(name).copied()
+    }
+
+    fn field_offset(&self, record: &str, field: &str) -> i32 {
+        if let Some(fields) = self.record_layouts.get(record) {
+            for (i, f) in fields.iter().enumerate() {
+                if f == field {
+                    return (i * 8) as i32;
+                }
+            }
+        }
+        0
+    }
+
+    fn assign_tag(&mut self, tag: &str) -> u32 {
+        if let Some(&id) = self.variant_tags.get(tag) {
+            return id;
+        }
+        let id = self.next_variant_tag;
+        self.variant_tags.insert(tag.to_string(), id);
+        self.next_variant_tag += 1;
+        id
+    }
+
+    fn push_label(&mut self, kind: NativeLabelKind, block: cranelift_codegen::ir::Block) {
+        self.labels.push((kind, block));
+    }
+
+    fn pop_label(&mut self) {
+        self.labels.pop();
+    }
+
+    fn find_label(&self, kind: NativeLabelKind) -> Option<cranelift_codegen::ir::Block> {
+        self.labels.iter().rev()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, b)| *b)
     }
 }
 
@@ -221,6 +286,20 @@ fn infer_cranelift_return_type(
             => Some(types::I8),
             _ => None,
         },
+        AnfExpr::If { then_branch, .. } => infer_cranelift_return_type(then_branch),
+        AnfExpr::ShortCircuitAnd { .. } | AnfExpr::ShortCircuitOr { .. } => Some(types::I64),
+        AnfExpr::Seq(exprs) => exprs.last().and_then(infer_cranelift_return_type),
+        AnfExpr::Loop { body } => infer_cranelift_return_type(body),
+        AnfExpr::Break { value } => infer_cranelift_return_type(value),
+        AnfExpr::Match { arms, .. } => arms.first()
+            .and_then(|a| infer_cranelift_return_type(&a.body)),
+        AnfExpr::RecordNew { .. }
+        | AnfExpr::FieldGet { .. }
+        | AnfExpr::FieldUpdate { .. }
+        | AnfExpr::VariantNew { .. }
+        | AnfExpr::ListNew(_)
+        | AnfExpr::TupleNew(_)
+        | AnfExpr::EffectCall { .. } => Some(types::I64),
         _ => None,
     }
 }
@@ -271,8 +350,8 @@ fn lower_anf_expr_cranelift<'a>(
             }
         },
 
-        AnfExpr::Var(name) => match ctx.locals.get(name.as_str()).copied() {
-            Some(val) => LowerResult::Value(val),
+        AnfExpr::Var(name) => match ctx.lookup(name.as_str()) {
+            Some((val, _)) => LowerResult::Value(val),
             None => {
                 builder.ins().trap(TrapCode::user(1).unwrap());
                 LowerResult::Terminated
@@ -280,9 +359,18 @@ fn lower_anf_expr_cranelift<'a>(
         },
 
         AnfExpr::Let { name, value, body } => {
+            // Detect RecordNew to register layout before recursing into body.
+            if let AnfExpr::RecordNew { fields } = value.as_ref() {
+                ctx.record_layouts.insert(
+                    name.clone(),
+                    fields.iter().map(|(f, _)| f.clone()).collect(),
+                );
+            }
             match lower_anf_expr_cranelift(value, ctx, builder) {
                 LowerResult::Value(val) => {
-                    ctx.locals.insert(name.as_str(), val);
+                    let ty = infer_cranelift_return_type(value)
+                        .unwrap_or(cranelift_codegen::ir::types::I64);
+                    ctx.bind(name.as_str(), val, ty);
                     lower_anf_expr_cranelift(body, ctx, builder)
                 }
                 LowerResult::Unit => lower_anf_expr_cranelift(body, ctx, builder),
@@ -303,8 +391,8 @@ fn lower_anf_expr_cranelift<'a>(
                 | "i64.and" | "and"
                 | "i64.or" | "or"
                 if args.len() == 2 => {
-                    let lhs = ctx.locals.get(args[0].as_str()).copied();
-                    let rhs = ctx.locals.get(args[1].as_str()).copied();
+                    let lhs = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+                    let rhs = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
                     match (lhs, rhs) {
                         (Some(l), Some(r)) => {
                             let val = match func.as_str() {
@@ -333,8 +421,8 @@ fn lower_anf_expr_cranelift<'a>(
                 | "i64.gt_s" | ">" | "gt"
                 | "i64.ge_s" | ">=" | "ge"
                 if args.len() == 2 => {
-                    let lhs = ctx.locals.get(args[0].as_str()).copied();
-                    let rhs = ctx.locals.get(args[1].as_str()).copied();
+                    let lhs = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+                    let rhs = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
                     match (lhs, rhs) {
                         (Some(l), Some(r)) => {
                             let cc = match func.as_str() {
@@ -356,7 +444,7 @@ fn lower_anf_expr_cranelift<'a>(
                 }
                 // ── unary ops ─────────────────────────────────────────
                 "i64.neg" | "neg" | "negate" if args.len() == 1 => {
-                    match ctx.locals.get(args[0].as_str()).copied() {
+                    match ctx.lookup(args[0].as_str()).map(|(v, _)| v) {
                         Some(a) => LowerResult::Value(builder.ins().ineg(a)),
                         None => {
                             builder.ins().trap(TrapCode::user(1).unwrap());
@@ -365,7 +453,7 @@ fn lower_anf_expr_cranelift<'a>(
                     }
                 }
                 "i64.eqz" | "not" | "!" if args.len() == 1 => {
-                    match ctx.locals.get(args[0].as_str()).copied() {
+                    match ctx.lookup(args[0].as_str()).map(|(v, _)| v) {
                         Some(a) => LowerResult::Value(
                             builder.ins().icmp_imm(IntCC::Equal, a, 0)
                         ),
@@ -380,6 +468,123 @@ fn lower_anf_expr_cranelift<'a>(
                     LowerResult::Terminated
                 }
             }
+        }
+
+        // ── If ────────────────────────────────────────────────────────────
+        AnfExpr::If { cond, then_branch, else_branch } => {
+            let cond_val = match ctx.lookup(cond.as_str()) {
+                Some((v, _)) => v,
+                None => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    return LowerResult::Terminated;
+                }
+            };
+
+            let then_block = builder.create_block();
+            let else_block = builder.create_block();
+            let merge_block = builder.create_block();
+
+            let result_ty = infer_cranelift_return_type(then_branch);
+            if let Some(ty) = result_ty {
+                builder.append_block_param(merge_block, ty);
+            }
+
+            builder.ins().brif(cond_val, then_block, &[], else_block, &[]);
+
+            builder.switch_to_block(then_block);
+            builder.seal_block(then_block);
+            match lower_anf_expr_cranelift(then_branch, ctx, builder) {
+                LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
+                LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
+                LowerResult::Terminated => {}
+            }
+
+            builder.switch_to_block(else_block);
+            builder.seal_block(else_block);
+            match lower_anf_expr_cranelift(else_branch, ctx, builder) {
+                LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
+                LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
+                LowerResult::Terminated => {}
+            }
+
+            builder.switch_to_block(merge_block);
+            builder.seal_block(merge_block);
+            match result_ty {
+                Some(_) => LowerResult::Value(builder.block_params(merge_block)[0]),
+                None    => LowerResult::Unit,
+            }
+        }
+
+        // ── ShortCircuitAnd ───────────────────────────────────────────────
+        AnfExpr::ShortCircuitAnd { left, right } => {
+            let left_val = match ctx.lookup(left.as_str()) {
+                Some((v, _)) => v,
+                None => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    return LowerResult::Terminated;
+                }
+            };
+            let true_block  = builder.create_block();
+            let false_block = builder.create_block();
+            let merge_block = builder.create_block();
+            builder.append_block_param(merge_block, cranelift_codegen::ir::types::I64);
+
+            builder.ins().brif(left_val, true_block, &[], false_block, &[]);
+
+            // true branch: evaluate right
+            builder.switch_to_block(true_block);
+            builder.seal_block(true_block);
+            let right_val = match lower_anf_expr_cranelift(right, ctx, builder) {
+                LowerResult::Value(v) => v,
+                _ => builder.ins().iconst(cranelift_codegen::ir::types::I64, 0),
+            };
+            builder.ins().jump(merge_block, &[right_val]);
+
+            // false branch: short-circuit → 0
+            builder.switch_to_block(false_block);
+            builder.seal_block(false_block);
+            let zero = builder.ins().iconst(cranelift_codegen::ir::types::I64, 0);
+            builder.ins().jump(merge_block, &[zero]);
+
+            builder.switch_to_block(merge_block);
+            builder.seal_block(merge_block);
+            LowerResult::Value(builder.block_params(merge_block)[0])
+        }
+
+        // ── ShortCircuitOr ────────────────────────────────────────────────
+        AnfExpr::ShortCircuitOr { left, right } => {
+            let left_val = match ctx.lookup(left.as_str()) {
+                Some((v, _)) => v,
+                None => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    return LowerResult::Terminated;
+                }
+            };
+            let true_block  = builder.create_block();
+            let false_block = builder.create_block();
+            let merge_block = builder.create_block();
+            builder.append_block_param(merge_block, cranelift_codegen::ir::types::I64);
+
+            builder.ins().brif(left_val, true_block, &[], false_block, &[]);
+
+            // true branch: short-circuit → 1
+            builder.switch_to_block(true_block);
+            builder.seal_block(true_block);
+            let one = builder.ins().iconst(cranelift_codegen::ir::types::I64, 1);
+            builder.ins().jump(merge_block, &[one]);
+
+            // false branch: evaluate right
+            builder.switch_to_block(false_block);
+            builder.seal_block(false_block);
+            let right_val = match lower_anf_expr_cranelift(right, ctx, builder) {
+                LowerResult::Value(v) => v,
+                _ => builder.ins().iconst(cranelift_codegen::ir::types::I64, 0),
+            };
+            builder.ins().jump(merge_block, &[right_val]);
+
+            builder.switch_to_block(merge_block);
+            builder.seal_block(merge_block);
+            LowerResult::Value(builder.block_params(merge_block)[0])
         }
 
         _ => {
