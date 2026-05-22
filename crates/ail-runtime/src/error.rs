@@ -68,6 +68,15 @@ pub enum PreflightFailure {
         /// The capability that is granted but not handled.
         capability: CapabilityId,
     },
+
+    /// Execution was terminated because a resource limit was exceeded.
+    ///
+    /// Emitted when Wasmtime traps due to fuel exhaustion or memory growth
+    /// being denied by the `StoreLimits` resource limiter.
+    ResourceLimitExceeded {
+        /// Human-readable description of the limit that was hit.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for PreflightFailure {
@@ -107,6 +116,9 @@ impl std::fmt::Display for PreflightFailure {
                     "handler not bound: capability `{}` is granted but no handler is registered",
                     capability.as_str()
                 )
+            }
+            PreflightFailure::ResourceLimitExceeded { reason } => {
+                write!(f, "resource limit exceeded: {reason}")
             }
         }
     }
