@@ -1433,3 +1433,36 @@ fn report_stores_approvals_from_context() {
     assert_eq!(report.approvals.len(), 1);
     assert_eq!(report.approvals[0].scope, "fn.transfer");
 }
+
+// ── Scenario: canonical change hash added to artifact_hashes ─────────────
+// GIVEN a valid changeset text is provided to run_with_changeset
+// WHEN the pipeline completes
+// THEN report.artifact_hashes contains a "canonical_change" entry with a
+//      64-char hex hash
+#[test]
+fn canonical_change_hash_added_to_artifact_hashes() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "dev", &[]);
+
+    // A minimal valid changeset that can be parsed and canonicalized.
+    let changeset_text =
+        "change add-order base=0\nauthor tester\nop create_type id=Order\nend\n";
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset_text), None);
+
+    let canonical_hash_entry = report
+        .artifact_hashes
+        .iter()
+        .find(|h| h.artifact == "canonical_change");
+
+    assert!(
+        canonical_hash_entry.is_some(),
+        "artifact_hashes must contain a canonical_change entry"
+    );
+    let hash = &canonical_hash_entry.unwrap().hash;
+    assert_eq!(hash.len(), 64, "canonical_change hash must be 64 hex chars");
+    assert!(
+        hash.chars().all(|c| c.is_ascii_hexdigit()),
+        "canonical_change hash must be valid hex"
+    );
+}

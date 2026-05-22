@@ -408,6 +408,17 @@ impl VerificationPipeline {
 
         let mut artifact_hashes = Vec::new();
 
+        // ── Canonical change hash (doc §Artifact consistency) ────────────
+        // Add the canonical change hash to artifact_hashes so that the report
+        // can uniquely identify exactly which canonical changeset was verified.
+        if let Some(canonical_cs) = &canonical {
+            let hash = canonical_change_hash(canonical_cs);
+            artifact_hashes.push(crate::report::ArtifactHash {
+                artifact: "canonical_change".into(),
+                hash,
+            });
+        }
+
         // ── Stage 22: Codegen consistency ─────────────────────────────────
         pre_policy.entries.push(stage_entry(
             "22-codegen-consistency-check",
@@ -479,6 +490,19 @@ impl VerificationPipeline {
             ..pre_policy
         }
     }
+}
+
+/// Compute a BLAKE3 content hash for a `CanonicalChangeSet`.
+///
+/// The hash is computed over the JSON-serialized form of the canonical ops
+/// list.  This ties the verification report to exactly which change was
+/// verified, enabling artifact consistency checks (verification.md §Artifact
+/// consistency).
+fn canonical_change_hash(canonical: &CanonicalChangeSet) -> String {
+    // Serialize to canonical JSON for deterministic byte representation.
+    let json = serde_json::to_string(&canonical.ops).unwrap_or_default();
+    let hash = blake3::hash(json.as_bytes());
+    hash.to_hex().to_string()
 }
 
 /// Derive a stable, human-readable snapshot identifier from a `SemanticGraph`.
