@@ -1461,6 +1461,113 @@ mod tests {
         assert!(emit_native(&anf).is_ok(), "Loop{{Continue; Break}} must compile without panic");
     }
 
+    // ── TASK-E0: Match — RED ──────────────────────────────────────────────
+
+    #[test]
+    fn native_match_int_arm_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr, AnfMatchArm};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "x".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                body: Box::new(AnfExpr::Match {
+                    scrutinee: "x".to_string(),
+                    arms: vec![
+                        AnfMatchArm { pattern: "1".to_string(),
+                            body: AnfExpr::Literal(LiteralValue::Int(10)) },
+                        AnfMatchArm { pattern: "_".to_string(),
+                            body: AnfExpr::Literal(LiteralValue::Int(99)) },
+                    ],
+                }),
+            },
+        });
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        let art = emit_native(&anf).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "Match with i64 arm must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_match_wildcard_only_compiles() {
+        use crate::anf::{AnfBinding, AnfExpr, AnfMatchArm};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "x".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                body: Box::new(AnfExpr::Match {
+                    scrutinee: "x".to_string(),
+                    arms: vec![
+                        AnfMatchArm { pattern: "_".to_string(),
+                            body: AnfExpr::Literal(LiteralValue::Int(0)) },
+                    ],
+                }),
+            },
+        });
+        assert!(emit_native(&anf).is_ok(), "Match with wildcard only must compile");
+    }
+
+    #[test]
+    fn native_match_bool_arm() {
+        use crate::anf::{AnfBinding, AnfExpr, AnfMatchArm};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "b".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Bool(true))),
+                body: Box::new(AnfExpr::Match {
+                    scrutinee: "b".to_string(),
+                    arms: vec![
+                        AnfMatchArm { pattern: "true".to_string(),
+                            body: AnfExpr::Literal(LiteralValue::Int(1)) },
+                        AnfMatchArm { pattern: "false".to_string(),
+                            body: AnfExpr::Literal(LiteralValue::Int(0)) },
+                    ],
+                }),
+            },
+        });
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        let art = emit_native(&anf).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "Match with bool arms must produce different bytes than Placeholder");
+        assert_eq!(
+            infer_cranelift_return_type(&AnfExpr::Match {
+                scrutinee: "b".to_string(),
+                arms: vec![
+                    crate::anf::AnfMatchArm { pattern: "true".to_string(),
+                        body: AnfExpr::Literal(LiteralValue::Int(1)) },
+                ],
+            }),
+            Some(cranelift_codegen::ir::types::I64)
+        );
+    }
+
+    #[test]
+    fn native_match_empty_arms_compiles() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "x".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                body: Box::new(AnfExpr::Match {
+                    scrutinee: "x".to_string(),
+                    arms: vec![],
+                }),
+            },
+        });
+        assert!(emit_native(&anf).is_ok(), "Match with empty arms must compile (produces trap)");
+    }
+
     // ── TASK-C0: Seq, RuntimeCheck — RED ──────────────────────────────────
 
     #[test]
