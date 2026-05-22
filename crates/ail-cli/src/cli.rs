@@ -1555,6 +1555,8 @@ fn export_name_for_target(target: &str) -> String {
 fn runtime_value_to_string(value: &RuntimeValue) -> String {
     match value {
         RuntimeValue::I64(value) => value.to_string(),
+        RuntimeValue::I32(value) => value.to_string(),
+        RuntimeValue::F64(value) => value.to_string(),
         RuntimeValue::Unit => "()".to_string(),
     }
 }

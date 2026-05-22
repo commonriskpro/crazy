@@ -56,14 +56,18 @@ use crate::report::{CapabilityCallSummary, RuntimeReport, RuntimeReportStatus};
 use crate::schema::CapabilityDefinition;
 use crate::transaction::TransactionGroup;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeArg {
     I64(i64),
+    I32(i32),
+    F64(f64),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeValue {
     I64(i64),
+    I32(i32),
+    F64(f64),
     Unit,
 }
 
@@ -71,6 +75,8 @@ impl std::fmt::Display for RuntimeValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RuntimeValue::I64(v) => write!(f, "{v}"),
+            RuntimeValue::I32(v) => write!(f, "{v}"),
+            RuntimeValue::F64(v) => write!(f, "{v}"),
             RuntimeValue::Unit => write!(f, "()"),
         }
     }
@@ -145,12 +151,14 @@ impl RuntimeInstance {
                 args.len()
             )));
         }
-        if params
-            .iter()
-            .any(|ty| !matches!(ty, wasmtime::ValType::I64))
-        {
+        if params.iter().any(|ty| {
+            !matches!(
+                ty,
+                wasmtime::ValType::I64 | wasmtime::ValType::I32 | wasmtime::ValType::F64
+            )
+        }) {
             return Err(RuntimeError::EncodingError(format!(
-                "export `{export_name}` only supports i64 parameters"
+                "export `{export_name}` only supports i64/i32/f64 parameters"
             )));
         }
         let results = func_ty.results().collect::<Vec<_>>();
@@ -160,12 +168,14 @@ impl RuntimeInstance {
                 results.len()
             )));
         }
-        if results
-            .iter()
-            .any(|ty| !matches!(ty, wasmtime::ValType::I64))
-        {
+        if results.iter().any(|ty| {
+            !matches!(
+                ty,
+                wasmtime::ValType::I64 | wasmtime::ValType::I32 | wasmtime::ValType::F64
+            )
+        }) {
             return Err(RuntimeError::EncodingError(format!(
-                "export `{export_name}` only supports i64 results"
+                "export `{export_name}` only supports i64/i32/f64 results"
             )));
         }
 
@@ -187,6 +197,8 @@ impl RuntimeInstance {
         match wasm_results.as_slice() {
             [] => Ok(RuntimeValue::Unit),
             [Val::I64(value)] => Ok(RuntimeValue::I64(*value)),
+            [Val::I32(value)] => Ok(RuntimeValue::I32(*value)),
+            [Val::F64(bits)] => Ok(RuntimeValue::F64(f64::from_bits(*bits))),
             [value] => Err(RuntimeError::EncodingError(format!(
                 "export `{export_name}` returned unsupported value {value:?}"
             ))),
@@ -202,6 +214,8 @@ impl RuntimeInstance {
 fn runtime_arg_to_val(arg: &RuntimeArg) -> Val {
     match arg {
         RuntimeArg::I64(value) => Val::I64(*value),
+        RuntimeArg::I32(value) => Val::I32(*value),
+        RuntimeArg::F64(value) => Val::F64((*value).to_bits()),
     }
 }
 
