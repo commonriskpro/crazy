@@ -96,8 +96,9 @@ pub(crate) struct HostState {
     /// happens via `RuntimeHost::call_capability` on the host side.  The
     /// field is retained so full in-WASM dispatch can be wired in a future
     /// phase without changing the `Store` type.
-    #[allow(dead_code)]
     pub(crate) handlers: Arc<Vec<Arc<dyn Handler + Send + Sync>>>,
+    pub(crate) profile: Arc<RuntimeProfile>,
+    pub(crate) audit_log: AuditLog,
     /// Resource limiter enforcing `max_memory_bytes`.
     pub(crate) limiter: StoreLimits,
 }
@@ -141,6 +142,10 @@ impl RuntimeInstance {
         func.call(&mut self.store, ())
             .map(RuntimeValue::I64)
             .map_err(|e| RuntimeError::EncodingError(format!("invoke `{export_name}`: {e}")))
+    }
+
+    pub fn audit_log(&self) -> &AuditLog {
+        &self.store.data().audit_log
     }
 }
 
@@ -214,28 +219,32 @@ impl RuntimeHost {
         let engine = Engine::new(&config).expect("wasmtime Engine::new must succeed");
         let mut linker: Linker<HostState> = Linker::new(&engine);
 
-        // Register stub import: module="ail", name="host_call".
-        //
-        // Signature: (capability_ptr: i32, capability_len: i32,
-        //              op_ptr: i32,         op_len: i32,
-        //              payload_ptr: i32,    payload_len: i32) -> i32
-        //
-        // The stub returns 0 (success) without reading WASM memory.  Full
-        // memory-safe dispatch via `call_capability` is the host-side API;
-        // the linker function serves as the ABI boundary for WASM modules
-        // that declare the import.
+        // Register host import: module="ail", name="host_call".
+        // Signature: (cap_ptr: i32, cap_len: i32, op_ptr: i32, op_len: i32,
+        //             args_ptr: i32, args_len: i32) -> i64
         linker
             .func_wrap(
                 "ail",
                 "host_call",
-                |_caller: wasmtime::Caller<'_, HostState>,
-                 _cap_ptr: i32,
-                 _cap_len: i32,
-                 _op_ptr: i32,
-                 _op_len: i32,
-                 _payload_ptr: i32,
-                 _payload_len: i32|
-                 -> i32 { 0 },
+                |mut caller: wasmtime::Caller<'_, HostState>,
+                 cap_ptr: i32,
+                 cap_len: i32,
+                 op_ptr: i32,
+                 op_len: i32,
+                 args_ptr: i32,
+                 args_len: i32|
+                 -> i64 {
+                    dispatch_host_call(
+                        &mut caller,
+                        cap_ptr,
+                        cap_len,
+                        op_ptr,
+                        op_len,
+                        args_ptr,
+                        args_len,
+                    )
+                    .unwrap_or(-1)
+                },
             )
             .expect("ail/host_call registration must succeed");
 
@@ -638,7 +647,7 @@ impl RuntimeHost {
         }
 
         // Stages 4+5 — Wasmtime validate + instantiate via linker.
-        let instance = self.instantiate_inner(wasm, profile.limits())?;
+        let instance = self.instantiate_inner(wasm, profile)?;
 
         // Stage 6 — Handler binding check (opt-in).
         if profile.require_handler_binding() {
@@ -703,7 +712,7 @@ impl RuntimeHost {
     fn instantiate_inner(
         &self,
         wasm: &[u8],
-        limits: &crate::profile::ResourceLimits,
+        profile: &RuntimeProfile,
     ) -> RuntimeResult<RuntimeInstance> {
         Module::validate(&self.engine, wasm).map_err(|e| {
             RuntimeError::PreflightFailed(PreflightFailure::WasmValidationError(e.to_string()))
@@ -714,7 +723,7 @@ impl RuntimeHost {
         })?;
 
         // Build the StoreLimits for memory caps (no-op when None).
-        let store_limits: StoreLimits = match limits.max_memory_bytes {
+        let store_limits: StoreLimits = match profile.limits().max_memory_bytes {
             Some(max_bytes) => StoreLimitsBuilder::new()
                 .memory_size(max_bytes as usize)
                 .trap_on_grow_failure(true)
@@ -728,6 +737,8 @@ impl RuntimeHost {
             &self.engine,
             HostState {
                 handlers: handlers_arc,
+                profile: Arc::new(profile.clone()),
+                audit_log: self.audit_log.clone(),
                 limiter: store_limits,
             },
         );
@@ -738,7 +749,7 @@ impl RuntimeHost {
         // Set the fuel budget.  When consume_fuel is enabled on the Engine
         // every Store starts with 0 fuel — we must always initialise it.
         // If no limit is configured, grant effectively-unlimited fuel.
-        let fuel = limits.max_fuel.unwrap_or(u64::MAX);
+        let fuel = profile.limits().max_fuel.unwrap_or(u64::MAX);
         store.set_fuel(fuel).map_err(|e| {
             RuntimeError::PreflightFailed(PreflightFailure::ResourceLimitExceeded {
                 reason: format!("failed to set fuel: {e}"),
@@ -838,5 +849,92 @@ fn failure_parts(err: &RuntimeError) -> (Vec<CapabilityId>, PreflightFailure) {
                 "unexpected capability call failure in preflight".to_string(),
             ),
         ),
+    }
+}
+
+fn read_memory(
+    caller: &mut wasmtime::Caller<'_, HostState>,
+    ptr: i32,
+    len: i32,
+) -> Option<Vec<u8>> {
+    if ptr < 0 || len < 0 {
+        return None;
+    }
+    let memory = caller.get_export("memory")?.into_memory()?;
+    let mut bytes = vec![0; len as usize];
+    memory.read(caller, ptr as usize, &mut bytes).ok()?;
+    Some(bytes)
+}
+
+fn dispatch_host_call(
+    caller: &mut wasmtime::Caller<'_, HostState>,
+    cap_ptr: i32,
+    cap_len: i32,
+    op_ptr: i32,
+    op_len: i32,
+    args_ptr: i32,
+    args_len: i32,
+) -> Option<i64> {
+    let capability = String::from_utf8(read_memory(caller, cap_ptr, cap_len)?).ok()?;
+    let operation = String::from_utf8(read_memory(caller, op_ptr, op_len)?).ok()?;
+    let args_bytes = read_memory(caller, args_ptr, args_len.checked_mul(8)?)?;
+    let cap = CapabilityId::new(capability);
+    let start = Instant::now();
+
+    let handler = {
+        let state = caller.data_mut();
+        if !state.profile.grants_capability(&cap) {
+            state.audit_log.push(AuditEvent::CapabilityCallExecuted {
+                capability: cap,
+                operation,
+                handler_name: "none".to_string(),
+                succeeded: false,
+                duration_us: start.elapsed().as_micros() as u64,
+            });
+            return Some(-1);
+        }
+        state
+            .handlers
+            .iter()
+            .find(|h| h.capabilities().contains(&cap))
+            .cloned()
+    };
+
+    let Some(handler) = handler else {
+        caller
+            .data_mut()
+            .audit_log
+            .push(AuditEvent::CapabilityCallExecuted {
+                capability: cap,
+                operation,
+                handler_name: "none".to_string(),
+                succeeded: false,
+                duration_us: start.elapsed().as_micros() as u64,
+            });
+        return Some(-1);
+    };
+
+    let handler_name = handler.name().to_string();
+    let result = handler.handle(&cap, &operation, &args_bytes);
+    let succeeded = result.is_ok();
+    caller
+        .data_mut()
+        .audit_log
+        .push(AuditEvent::CapabilityCallExecuted {
+            capability: cap,
+            operation,
+            handler_name,
+            succeeded,
+            duration_us: start.elapsed().as_micros() as u64,
+        });
+
+    match result {
+        Ok(bytes) if bytes.len() >= 8 => {
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(&bytes[..8]);
+            Some(i64::from_le_bytes(buf))
+        }
+        Ok(_) => Some(0),
+        Err(_) => Some(-1),
     }
 }

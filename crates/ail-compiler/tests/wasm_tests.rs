@@ -393,6 +393,62 @@ fn anf_if_emits_real_wasm_if_else() {
 }
 
 #[test]
+fn effect_call_emits_host_call_import_and_call() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.main".to_string(),
+        expr: AnfExpr::Let {
+            name: "n".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(41))),
+            body: Box::new(AnfExpr::EffectCall {
+                capability: "test.counter".to_string(),
+                func: "inc".to_string(),
+                args: vec!["n".to_string()],
+            }),
+        },
+    };
+    let anf = sealed_anf(binding);
+    let artifact = emit_wasm(&anf).expect("emit_wasm failed");
+    wasmparser::validate(&artifact.wasm).expect("effect wasm must validate");
+
+    let mut saw_import = false;
+    let mut saw_host_call = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        match payload.expect("payload must parse") {
+            Payload::ImportSection(imports) => {
+                for import in imports {
+                    let import = import.expect("import must parse");
+                    let rendered = format!("{import:?}");
+                    if rendered.contains("ail") && rendered.contains("host_call") {
+                        saw_import = true;
+                    }
+                }
+            }
+            Payload::CodeSectionEntry(body) => {
+                let mut reader = body.get_operators_reader().expect("operators");
+                while !reader.eof() {
+                    if matches!(
+                        reader.read().expect("operator"),
+                        Operator::Call { function_index: 0 }
+                    ) {
+                        saw_host_call = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert!(saw_import, "expected ail/host_call import");
+    assert!(
+        saw_host_call,
+        "expected effect call to call imported function 0"
+    );
+}
+
+#[test]
 fn core_if_lowers_to_anf_if_and_emits_valid_wasm() {
     let core = CoreExpr::If {
         cond: Box::new(CoreExpr::Literal(LiteralValue::Bool(false))),

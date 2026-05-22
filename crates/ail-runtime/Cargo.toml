@@ -16,6 +16,7 @@ wasmtime    = { workspace = true }
 tracing     = { workspace = true, optional = true }
 
 [dev-dependencies]
+ail-change    = { workspace = true }
 ail-compiler  = { workspace = true }
 ail-core      = { workspace = true }
 ail-verify    = { workspace = true }

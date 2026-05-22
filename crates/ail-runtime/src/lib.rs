@@ -60,7 +60,7 @@ pub use ail_package::trust::TrustLevel;
 pub use abi::{HostCallId, HostError, HostResult};
 pub use audit::{AuditEvent, AuditLog};
 pub use error::{PreflightFailure, RuntimeError, RuntimeResult};
-pub use handler::{Handler, InMemoryHandler};
+pub use handler::{ClockHandler, Handler, InMemoryHandler, LogHandler};
 pub use host::{RuntimeArg, RuntimeHost, RuntimeInstance, RuntimeValue};
 pub use manifest::{CapabilityManifest, blake3_hex_of};
 pub use profile::{CapabilityGrant, CapabilityId, ResourceLimits, RuntimeProfile};

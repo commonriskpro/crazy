@@ -46,8 +46,9 @@ use std::collections::BTreeMap;
 
 use ail_core::semantic_graph::NodeRef;
 use wasm_encoder::{
-    BlockType, CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction,
-    Module, TypeSection, ValType,
+    BlockType, CodeSection, ConstExpr, DataSection, EntityType, ExportKind, ExportSection,
+    Function, FunctionSection, ImportSection, Instruction, MemorySection, MemoryType, Module,
+    TypeSection, ValType,
 };
 
 use crate::anf::{AnfExpr, AnfIr, SourceMap, SourceMapEntry};
@@ -121,6 +122,30 @@ fn build_type_section(signatures: &[WasmSignature]) -> Option<TypeSection> {
     Some(types)
 }
 
+fn build_type_section_with_host_call(signatures: &[WasmSignature]) -> TypeSection {
+    let mut types = TypeSection::new();
+    types.ty().function(
+        [
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+        ],
+        [ValType::I64],
+    );
+    for signature in signatures {
+        let params = vec![ValType::I64; signature.param_count];
+        if signature.result.is_some() {
+            types.ty().function(params, [ValType::I64]);
+        } else {
+            types.ty().function(params, []);
+        }
+    }
+    types
+}
+
 fn literal_type(lit: &LiteralValue) -> ValType {
     match lit {
         LiteralValue::Int(_) => ValType::I64,
@@ -176,8 +201,8 @@ fn infer_expr_type(expr: &AnfExpr, locals: &mut Vec<(String, ValType)>) -> Optio
         | AnfExpr::Lambda { .. }
         | AnfExpr::Seq(_) => Some(ValType::I32),
         AnfExpr::Call { .. } => Some(ValType::I64),
+        AnfExpr::EffectCall { .. } => Some(ValType::I64),
         AnfExpr::Placeholder
-        | AnfExpr::EffectCall { .. }
         | AnfExpr::Dispatch { .. }
         | AnfExpr::TaskSpawn { .. }
         | AnfExpr::TaskAwait { .. }
@@ -217,13 +242,16 @@ struct WasmSignature {
     result: Option<ValType>,
 }
 
-fn build_function_section(signatures: &[WasmSignature]) -> Option<FunctionSection> {
+fn build_function_section(
+    signatures: &[WasmSignature],
+    type_offset: u32,
+) -> Option<FunctionSection> {
     if signatures.is_empty() {
         return None;
     }
     let mut functions = FunctionSection::new();
     for (type_idx, _) in signatures.iter().enumerate() {
-        functions.function(type_idx as u32);
+        functions.function(type_offset + type_idx as u32);
     }
     Some(functions)
 }
@@ -242,23 +270,51 @@ fn export_name(binding_name: &str) -> String {
         .collect()
 }
 
-fn build_export_section(bindings: &[crate::anf::AnfBinding]) -> Option<ExportSection> {
+fn build_export_section(
+    bindings: &[crate::anf::AnfBinding],
+    function_offset: u32,
+) -> Option<ExportSection> {
     let mut exports = ExportSection::new();
     let mut count = 0usize;
     for (idx, binding) in bindings.iter().enumerate() {
         if binding_result(binding).is_some() {
-            exports.export(&export_name(&binding.name), ExportKind::Func, idx as u32);
+            exports.export(
+                &export_name(&binding.name),
+                ExportKind::Func,
+                function_offset + idx as u32,
+            );
             count += 1;
         }
     }
     (count > 0).then_some(exports)
 }
 
-fn function_index(bindings: &[crate::anf::AnfBinding]) -> BTreeMap<String, u32> {
+fn build_export_section_with_memory(
+    bindings: &[crate::anf::AnfBinding],
+    function_offset: u32,
+    export_memory: bool,
+) -> Option<ExportSection> {
+    let mut exports =
+        build_export_section(bindings, function_offset).unwrap_or_else(ExportSection::new);
+    let mut count = usize::from(export_memory);
+    if export_memory {
+        exports.export("memory", ExportKind::Memory, 0);
+    }
+    count += bindings
+        .iter()
+        .filter(|binding| binding_result(binding).is_some())
+        .count();
+    (count > 0).then_some(exports)
+}
+
+fn function_index(
+    bindings: &[crate::anf::AnfBinding],
+    function_offset: u32,
+) -> BTreeMap<String, u32> {
     let mut functions = BTreeMap::new();
     for (idx, binding) in bindings.iter().enumerate() {
-        functions.insert(binding.name.clone(), idx as u32);
-        functions.insert(export_name(&binding.name), idx as u32);
+        functions.insert(binding.name.clone(), function_offset + idx as u32);
+        functions.insert(export_name(&binding.name), function_offset + idx as u32);
     }
     functions
 }
@@ -363,10 +419,11 @@ struct WasmCodegenCtx<'a> {
     /// Counter for allocating fresh local indices.
     next_local: u32,
     local_types: Vec<ValType>,
+    effect_data: &'a EffectDataLayout,
 }
 
 impl<'a> WasmCodegenCtx<'a> {
-    fn new(params: Vec<&'a str>) -> Self {
+    fn new(params: Vec<&'a str>, effect_data: &'a EffectDataLayout) -> Self {
         let param_count = params.len() as u32;
         WasmCodegenCtx {
             locals: params
@@ -376,6 +433,7 @@ impl<'a> WasmCodegenCtx<'a> {
                 .collect(),
             next_local: param_count,
             local_types: Vec::new(),
+            effect_data,
         }
     }
 
@@ -407,6 +465,130 @@ impl<'a> WasmCodegenCtx<'a> {
             .collect();
         infer_expr_type(expr, &mut locals)
     }
+}
+
+#[derive(Clone, Debug, Default)]
+struct EffectDataLayout {
+    strings: BTreeMap<String, (i32, i32)>,
+    next_offset: i32,
+    args_offset: i32,
+    needs_host_call: bool,
+}
+
+impl EffectDataLayout {
+    fn for_bindings(bindings: &[crate::anf::AnfBinding]) -> Self {
+        let mut layout = Self::default();
+        for binding in bindings {
+            layout.collect_expr(&binding.expr);
+        }
+        if layout.needs_host_call {
+            layout.args_offset = layout.next_offset.max(1);
+        }
+        layout
+    }
+
+    fn collect_expr(&mut self, expr: &AnfExpr) {
+        match expr {
+            AnfExpr::EffectCall {
+                capability, func, ..
+            } => {
+                self.needs_host_call = true;
+                self.intern(capability);
+                self.intern(func);
+            }
+            AnfExpr::Let { value, body, .. } => {
+                self.collect_expr(value);
+                self.collect_expr(body);
+            }
+            AnfExpr::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.collect_expr(then_branch);
+                self.collect_expr(else_branch);
+            }
+            AnfExpr::Return(inner)
+            | AnfExpr::ShortCircuitAnd { right: inner, .. }
+            | AnfExpr::ShortCircuitOr { right: inner, .. }
+            | AnfExpr::FieldUpdate { value: inner, .. } => self.collect_expr(inner),
+            AnfExpr::Seq(exprs) | AnfExpr::TupleNew(exprs) | AnfExpr::ListNew(exprs) => {
+                for expr in exprs {
+                    self.collect_expr(expr);
+                }
+            }
+            AnfExpr::Match { arms, .. } => {
+                for arm in arms {
+                    self.collect_expr(&arm.body);
+                }
+            }
+            AnfExpr::Lambda { body, .. } => self.collect_expr(body),
+            AnfExpr::RecordNew { fields } => {
+                for (_, expr) in fields {
+                    self.collect_expr(expr);
+                }
+            }
+            AnfExpr::VariantNew { payload, .. } => {
+                if let Some(payload) = payload {
+                    self.collect_expr(payload);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn intern(&mut self, value: &str) {
+        if self.strings.contains_key(value) {
+            return;
+        }
+        let ptr = self.next_offset;
+        let len = value.len() as i32;
+        self.strings.insert(value.to_string(), (ptr, len));
+        self.next_offset += len.max(1);
+    }
+
+    fn string(&self, value: &str) -> (i32, i32) {
+        self.strings[value]
+    }
+}
+
+fn build_import_section(needs_host_call: bool) -> Option<ImportSection> {
+    if !needs_host_call {
+        return None;
+    }
+    let mut imports = ImportSection::new();
+    imports.import("ail", "host_call", EntityType::Function(0));
+    Some(imports)
+}
+
+fn build_memory_section(needs_host_call: bool) -> Option<MemorySection> {
+    if !needs_host_call {
+        return None;
+    }
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+    Some(memories)
+}
+
+fn build_data_section(layout: &EffectDataLayout) -> Option<DataSection> {
+    if !layout.needs_host_call {
+        return None;
+    }
+    let mut data = DataSection::new();
+    for (value, (ptr, _)) in &layout.strings {
+        data.active(
+            0,
+            &ConstExpr::i32_const(*ptr),
+            value.as_bytes().iter().copied(),
+        );
+    }
+    Some(data)
 }
 
 fn block_type(result_ty: Option<ValType>) -> BlockType {
@@ -674,6 +856,40 @@ fn emit_anf_expr<'a>(
             }
         }
 
+        AnfExpr::EffectCall {
+            capability,
+            func,
+            args,
+        } => {
+            for (idx, arg_name) in args.iter().enumerate() {
+                insns.push(Instruction::I32Const(
+                    ctx.effect_data.args_offset + (idx as i32 * 8),
+                ));
+                if let Some((local_idx, _)) = ctx.lookup(arg_name) {
+                    insns.push(Instruction::LocalGet(local_idx));
+                    insns.push(Instruction::I64Store(wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 3,
+                        memory_index: 0,
+                    }));
+                } else {
+                    insns.push(Instruction::Unreachable);
+                    return None;
+                }
+            }
+
+            let (cap_ptr, cap_len) = ctx.effect_data.string(capability);
+            let (op_ptr, op_len) = ctx.effect_data.string(func);
+            insns.push(Instruction::I32Const(cap_ptr));
+            insns.push(Instruction::I32Const(cap_len));
+            insns.push(Instruction::I32Const(op_ptr));
+            insns.push(Instruction::I32Const(op_len));
+            insns.push(Instruction::I32Const(ctx.effect_data.args_offset));
+            insns.push(Instruction::I32Const(args.len() as i32));
+            insns.push(Instruction::Call(0));
+            Some(ValType::I64)
+        }
+
         // ── FieldGet ──────────────────────────────────────────────────────
         AnfExpr::FieldGet { record, .. } => {
             if let Some((idx, ty)) = ctx.lookup(record) {
@@ -775,8 +991,7 @@ fn emit_anf_expr<'a>(
         // ── Effect/concurrent/resource variants ───────────────────────────
         // These are host-managed. The WASM body emits unreachable to signal
         // that the host runtime must intercept and dispatch.
-        AnfExpr::EffectCall { .. }
-        | AnfExpr::Dispatch { .. }
+        AnfExpr::Dispatch { .. }
         | AnfExpr::TaskSpawn { .. }
         | AnfExpr::TaskAwait { .. }
         | AnfExpr::TaskCancel { .. }
@@ -813,15 +1028,19 @@ fn emit_anf_expr<'a>(
 /// dropped before `end` so the function type remains `() -> ()`.
 ///
 /// Returns `None` when `bindings` is empty.
-fn build_code_section(bindings: &[crate::anf::AnfBinding]) -> Option<CodeSection> {
+fn build_code_section(
+    bindings: &[crate::anf::AnfBinding],
+    effect_data: &EffectDataLayout,
+    function_offset: u32,
+) -> Option<CodeSection> {
     if bindings.is_empty() {
         return None;
     }
     let mut codes = CodeSection::new();
-    let functions = function_index(bindings);
+    let functions = function_index(bindings, function_offset);
     for binding in bindings {
         let params = binding_params(binding);
-        let mut ctx = WasmCodegenCtx::new(params);
+        let mut ctx = WasmCodegenCtx::new(params, effect_data);
         let mut insns: Vec<Instruction<'_>> = Vec::new();
 
         let emitted_ty = emit_anf_expr(&binding.expr, &mut ctx, &functions, &mut insns);
@@ -937,20 +1156,37 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         .ok_or_else(|| CompileError::EncodingError("anf_ir_hash not sealed".to_string()))?;
 
     let signatures = binding_signatures(&anf.bindings);
+    let effect_data = EffectDataLayout::for_bindings(&anf.bindings);
+    let needs_host_call = effect_data.needs_host_call;
+    let type_offset = u32::from(needs_host_call);
+    let function_offset = u32::from(needs_host_call);
 
     // Assemble WASM module first so we can compute byte offsets.
     let mut module = Module::new();
-    if let Some(types) = build_type_section(&signatures) {
+    if needs_host_call {
+        module.section(&build_type_section_with_host_call(&signatures));
+    } else if let Some(types) = build_type_section(&signatures) {
         module.section(&types);
     }
-    if let Some(functions) = build_function_section(&signatures) {
+    if let Some(imports) = build_import_section(needs_host_call) {
+        module.section(&imports);
+    }
+    if let Some(functions) = build_function_section(&signatures, type_offset) {
         module.section(&functions);
     }
-    if let Some(exports) = build_export_section(&anf.bindings) {
+    if let Some(memory) = build_memory_section(needs_host_call) {
+        module.section(&memory);
+    }
+    if let Some(exports) =
+        build_export_section_with_memory(&anf.bindings, function_offset, needs_host_call)
+    {
         module.section(&exports);
     }
-    if let Some(codes) = build_code_section(&anf.bindings) {
+    if let Some(codes) = build_code_section(&anf.bindings, &effect_data, function_offset) {
         module.section(&codes);
+    }
+    if let Some(data) = build_data_section(&effect_data) {
+        module.section(&data);
     }
     let wasm = module.finish();
 
