@@ -41,7 +41,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
-use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
+use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
 
 use ail_package::manifest::PackageManifest;
 use ail_package::trust::TrustLevel;
@@ -130,22 +130,78 @@ impl RuntimeInstance {
         export_name: &str,
         args: &[RuntimeArg],
     ) -> RuntimeResult<RuntimeValue> {
-        if !args.is_empty() {
-            return Err(RuntimeError::EncodingError(
-                "only zero-arg exports are supported".to_string(),
-            ));
-        }
         let func = self
             .instance
-            .get_typed_func::<(), i64>(&mut self.store, export_name)
+            .get_func(&mut self.store, export_name)
+            .ok_or_else(|| {
+                RuntimeError::EncodingError(format!("export `{export_name}` not found"))
+            })?;
+        let func_ty = func.ty(&self.store);
+        let params = func_ty.params().collect::<Vec<_>>();
+        if params.len() != args.len() {
+            return Err(RuntimeError::EncodingError(format!(
+                "export `{export_name}` expects {} args, got {}",
+                params.len(),
+                args.len()
+            )));
+        }
+        if params
+            .iter()
+            .any(|ty| !matches!(ty, wasmtime::ValType::I64))
+        {
+            return Err(RuntimeError::EncodingError(format!(
+                "export `{export_name}` only supports i64 parameters"
+            )));
+        }
+        let results = func_ty.results().collect::<Vec<_>>();
+        if results.len() > 1 {
+            return Err(RuntimeError::EncodingError(format!(
+                "export `{export_name}` returned {} values; at most one is supported",
+                results.len()
+            )));
+        }
+        if results
+            .iter()
+            .any(|ty| !matches!(ty, wasmtime::ValType::I64))
+        {
+            return Err(RuntimeError::EncodingError(format!(
+                "export `{export_name}` only supports i64 results"
+            )));
+        }
+
+        let wasm_args = args.iter().map(runtime_arg_to_val).collect::<Vec<_>>();
+        let mut wasm_results = results
+            .iter()
+            .map(|ty| {
+                Val::default_for_ty(ty).ok_or_else(|| {
+                    RuntimeError::EncodingError(format!(
+                        "export `{export_name}` has unsupported result type {ty}"
+                    ))
+                })
+            })
+            .collect::<RuntimeResult<Vec<_>>>()?;
+
+        func.call(&mut self.store, &wasm_args, &mut wasm_results)
             .map_err(|e| RuntimeError::EncodingError(format!("export `{export_name}`: {e}")))?;
-        func.call(&mut self.store, ())
-            .map(RuntimeValue::I64)
-            .map_err(|e| RuntimeError::EncodingError(format!("invoke `{export_name}`: {e}")))
+
+        match wasm_results.as_slice() {
+            [] => Ok(RuntimeValue::Unit),
+            [Val::I64(value)] => Ok(RuntimeValue::I64(*value)),
+            [value] => Err(RuntimeError::EncodingError(format!(
+                "export `{export_name}` returned unsupported value {value:?}"
+            ))),
+            _ => unreachable!("multiple results rejected before invocation"),
+        }
     }
 
     pub fn audit_log(&self) -> &AuditLog {
         &self.store.data().audit_log
+    }
+}
+
+fn runtime_arg_to_val(arg: &RuntimeArg) -> Val {
+    match arg {
+        RuntimeArg::I64(value) => Val::I64(*value),
     }
 }
 

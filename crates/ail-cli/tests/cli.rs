@@ -175,9 +175,27 @@ fn run_function_prints_result() {
 }
 
 #[test]
+fn run_function_passes_i64_args() {
+    ail()
+        .args(["run", "fn.add", "20", "22"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("result: 42"));
+}
+
+#[test]
 fn eval_inline_add_prints_result_without_init() {
     ail()
         .args(["eval", "add(20, 22)"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("result: 42"));
+}
+
+#[test]
+fn eval_inline_double_prints_result_without_init() {
+    ail()
+        .args(["eval", "double(21)"])
         .assert()
         .success()
         .stdout(predicate::str::contains("result: 42"));
