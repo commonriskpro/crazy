@@ -47,7 +47,18 @@ fn help_exits_zero() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("context"));
+        .stdout(predicate::str::contains("context"))
+        .stdout(predicate::str::contains("Examples:"));
+}
+
+#[test]
+fn help_mentions_eval_command() {
+    ail()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("eval"))
+        .stdout(predicate::str::contains("ail eval \"add(20, 22)\""));
 }
 
 /// [PR2 baseline] Version flag — exits 0 and version string is present.
@@ -72,7 +83,7 @@ fn unknown_subcommand_lists_ten() {
         .failure()
         .code(2)
         .stderr(predicate::str::contains(
-            "Available subcommands: context, change, verify, apply, compile, run, \
+            "Available subcommands: context, change, verify, apply, compile, run, eval, \
              init, status, inspect, diff",
         ));
 }
@@ -161,6 +172,26 @@ fn run_function_prints_result() {
         .assert()
         .success()
         .stdout(predicate::str::contains("result: 42"));
+}
+
+#[test]
+fn eval_inline_add_prints_result_without_init() {
+    ail()
+        .args(["eval", "add(20, 22)"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("result: 42"));
+}
+
+#[test]
+fn eval_parse_error_is_human_readable() {
+    ail()
+        .args(["eval", "add(20)"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("Failed to parse expression"))
+        .stderr(predicate::str::contains("Debug").not());
 }
 
 /// Spec scenario: file and stdin produce the same change-id (deterministic hash).
@@ -642,7 +673,11 @@ fn disk_store_persists_change_for_compile() {
 
     ail().arg("init").current_dir(dir.path()).assert().success();
     ail()
-        .args(["change", "add persisted answer function"])
+        .args([
+            "change",
+            "--file",
+            sample_acl_path().to_str().expect("path must be UTF-8"),
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
@@ -667,6 +702,9 @@ fn disk_store_persists_change_for_compile() {
     let status_json = parse_json_output(&status_output);
     assert_eq!(status_json["status"], "ok");
     assert_eq!(status_json["data"]["snapshot_count"], 2);
+    assert!(status_json["data"]["graph_nodes"].as_u64().unwrap_or(0) > 0);
+    assert!(status_json["data"]["head_snapshot"].is_string());
+    assert!(status_json["data"]["last_change_at"].is_string());
 
     dir.child(".ail/HEAD").assert(predicate::path::exists());
     dir.child(".ail/refs/branches/main")

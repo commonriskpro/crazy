@@ -127,6 +127,25 @@ impl StoreHandle {
         }
     }
 
+    /// Load the current branch HEAD snapshot when the backend tracks one.
+    pub async fn head_snapshot(&self) -> StorageResult<Option<SnapshotEnvelope>> {
+        match self {
+            StoreHandle::File { ail_dir, .. } => {
+                let branch = current_branch(ail_dir)?;
+                let Some(id) = read_branch_ref(&branch_ref_path(ail_dir, &branch)?)? else {
+                    return Ok(None);
+                };
+                self.load_snapshot(&id).await
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Return true when the active backend is a persisted project store.
+    pub fn has_persistent_project(&self) -> bool {
+        matches!(self, StoreHandle::File { .. } | StoreHandle::Postgres(_))
+    }
+
     /// Store a semantic graph as a content-addressed object and return its root hash.
     pub async fn save_graph(&self, graph: &SemanticGraph) -> Result<ObjectId, CliError> {
         let mut bytes = Vec::new();
