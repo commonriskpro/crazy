@@ -4,7 +4,7 @@
 //   Generate → Simplify → Solve → Compose → Degrade
 
 use ail_core::semantic_graph::{ContractClauses, GraphNode, NodeKind, NodeRef, SemanticGraph};
-use ail_verify::proof::{ObligationState, ProofObligationPipeline};
+use ail_verify::proof::{semantic_implies, ObligationState, ProofObligationPipeline};
 use ail_verify::solver::SimpleSolver;
 
 fn graph_with_clauses(node_name: &str, requires: Vec<&str>, ensures: Vec<&str>) -> SemanticGraph {
@@ -155,4 +155,67 @@ fn obligation_result_carries_scope_name() {
     let results = ProofObligationPipeline::run(&graph, &solver);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].obligation.scope, "checkout_fn");
+}
+
+// ── TASK-25: Proof compose_check semantic implies ─────────────────────────
+
+#[test]
+fn semantic_implies_x_gt_0_required_x_gte_1_candidate_is_true() {
+    // "x >= 1" candidate implies "x > 0" required (integers: x>=1 → x>0)
+    assert!(semantic_implies("x > 0", "x >= 1"), "x>=1 must imply x>0");
+}
+
+#[test]
+fn semantic_implies_x_gte_0_required_x_gt_0_candidate_is_true() {
+    // "x > 0" candidate implies "x >= 0" required
+    assert!(semantic_implies("x >= 0", "x > 0"), "x>0 must imply x>=0");
+}
+
+#[test]
+fn semantic_implies_x_gt_5_required_x_gt_3_candidate_is_false() {
+    // "x > 3" does NOT imply "x > 5" (x could be 4)
+    assert!(!semantic_implies("x > 5", "x > 3"), "x>3 must not imply x>5");
+}
+
+#[test]
+fn semantic_implies_exact_string_match_is_true() {
+    assert!(semantic_implies("x > 0", "x > 0"), "exact match must be true");
+}
+
+#[test]
+fn semantic_implies_non_comparable_predicates_is_false() {
+    // Non-comparable predicates (no simple int comparison form) → false
+    assert!(!semantic_implies("amount > 0", "x > 0"), "different idents must not imply");
+    assert!(!semantic_implies("x > 0", "complex_predicate"), "non-comparable must not imply");
+}
+
+#[test]
+fn compose_check_upgrades_obligation_when_peer_ensures_semantically_implies() {
+    // GIVEN a function node with "x >= 1" in ensures
+    // AND a requires obligation "x > 0" (semantically implied by "x >= 1")
+    // WHEN the pipeline runs
+    // THEN the obligation is RuntimeChecked (compose step upgrades it)
+    let mut peer = GraphNode::new(NodeRef(0), NodeKind::Function, "peer_fn");
+    peer.contract_clauses = Some(ContractClauses {
+        requires: vec![],
+        ensures: vec!["x >= 1".into()],
+    });
+    let mut target = GraphNode::new(NodeRef(1), NodeKind::Function, "target_fn");
+    target.contract_clauses = Some(ContractClauses {
+        requires: vec!["x > 0".into()],
+        ensures: vec![],
+    });
+    let graph = SemanticGraph {
+        nodes: vec![peer, target],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let results = ProofObligationPipeline::run(&graph, &solver);
+    let target_result = results.iter().find(|r| r.obligation.scope == "target_fn");
+    assert!(target_result.is_some(), "must have obligation for target_fn");
+    assert_eq!(
+        target_result.unwrap().state,
+        ObligationState::RuntimeChecked,
+        "x>0 required must be RuntimeChecked when peer ensures x>=1"
+    );
 }
