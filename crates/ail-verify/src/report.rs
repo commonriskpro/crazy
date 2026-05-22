@@ -165,6 +165,15 @@ pub struct VerificationEntry {
     /// deserialize cleanly (absent → `false`).
     #[serde(default)]
     pub blocking: bool,
+    /// Ordered list of actionable repair suggestions for this entry.
+    ///
+    /// Mirrors the `repair_options` field documented for each verification
+    /// entry in `verification.md §Forma de cada entry`.
+    /// Empty if no automated repairs are available.
+    /// Uses `serde(default)` so older reports without this field still
+    /// deserialize cleanly (absent → `[]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repair_options: Vec<String>,
 }
 
 // ── ArtifactHash ─────────────────────────────────────────────────────────
@@ -358,6 +367,7 @@ mod tests {
             scope: "scope".into(),
             evidence: None,
             blocking: false,
+            repair_options: vec![],
         };
         assert!(!entry.blocking, "blocking must default to false for Proven");
     }
@@ -370,6 +380,7 @@ mod tests {
             scope: "scope".into(),
             evidence: Some("E_TEST".into()),
             blocking: true,
+            repair_options: vec![],
         };
         assert!(entry.blocking, "Failed entries must have blocking=true");
     }
@@ -382,6 +393,7 @@ mod tests {
             scope: "scope".into(),
             evidence: None,
             blocking: true,
+            repair_options: vec![],
         };
         assert!(entry.blocking, "Unsafe entries must have blocking=true");
     }
@@ -394,6 +406,7 @@ mod tests {
             scope: "s".into(),
             evidence: None,
             blocking: true,
+            repair_options: vec![],
         };
         let json = serde_json::to_string(&entry).expect("serialize");
         assert!(json.contains("blocking"), "blocking field must appear in JSON");
@@ -451,5 +464,59 @@ mod tests {
         let json = serde_json::to_string(&state).expect("serialize");
         let decoded: AssumptionState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, state);
+    }
+
+    // ── repair_options tests ──────────────────────────────────────────────
+
+    #[test]
+    fn verification_entry_repair_options_defaults_to_empty() {
+        let entry = VerificationEntry {
+            claim: "test".into(),
+            state: VerificationState::Failed,
+            scope: "s".into(),
+            evidence: None,
+            blocking: true,
+            repair_options: vec![],
+        };
+        assert!(entry.repair_options.is_empty());
+    }
+
+    #[test]
+    fn verification_entry_repair_options_serialized_when_non_empty() {
+        let entry = VerificationEntry {
+            claim: "test".into(),
+            state: VerificationState::Failed,
+            scope: "s".into(),
+            evidence: None,
+            blocking: true,
+            repair_options: vec!["add_guard".into(), "add_runtime_check".into()],
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(json.contains("repair_options"), "non-empty repair_options must appear in JSON");
+        assert!(json.contains("add_guard"));
+    }
+
+    #[test]
+    fn verification_entry_repair_options_absent_when_empty() {
+        let entry = VerificationEntry {
+            claim: "test".into(),
+            state: VerificationState::Proven,
+            scope: "s".into(),
+            evidence: None,
+            blocking: false,
+            repair_options: vec![],
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(
+            !json.contains("repair_options"),
+            "empty repair_options must be skipped in JSON output"
+        );
+    }
+
+    #[test]
+    fn verification_entry_repair_options_deserializes_without_field() {
+        let json = r#"{"claim":"c","state":"Proven","scope":"s"}"#;
+        let decoded: VerificationEntry = serde_json::from_str(json).expect("deserialize");
+        assert!(decoded.repair_options.is_empty(), "absent field must default to empty vec");
     }
 }

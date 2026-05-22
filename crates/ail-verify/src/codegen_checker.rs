@@ -98,6 +98,7 @@ impl CodegenChecker {
                 scope,
                 evidence,
                 blocking,
+                repair_options: vec![],
             });
         }
 
@@ -167,6 +168,7 @@ impl CodegenChecker {
                 scope,
                 evidence,
                 blocking,
+                repair_options: vec![],
             });
         }
 
@@ -181,6 +183,7 @@ impl CodegenChecker {
                     extra_cap
                 )),
                 blocking: true,
+                repair_options: vec![],
             });
         }
 

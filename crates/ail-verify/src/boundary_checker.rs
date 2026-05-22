@@ -191,6 +191,7 @@ impl BoundaryChecker {
                 scope,
                 evidence,
                 blocking,
+                repair_options: vec![],
             });
         }
 

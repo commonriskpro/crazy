@@ -136,6 +136,7 @@ impl ResourceChecker {
                 scope,
                 evidence,
                 blocking,
+                repair_options: vec![],
             });
         }
 

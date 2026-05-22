@@ -80,6 +80,7 @@ impl Checker {
             scope: scope.clone(),
             evidence: None,
             blocking: false,
+            repair_options: vec![],
         });
 
         // Emit E_TYPE_MISMATCH when the type is unverified (no facts declared).
@@ -102,6 +103,7 @@ impl Checker {
             scope: scope.clone(),
             evidence: None,
             blocking: false,
+            repair_options: vec![],
         });
 
         // ── Capability fact ───────────────────────────────────────────────
@@ -116,6 +118,7 @@ impl Checker {
             scope,
             evidence: None,
             blocking: false,
+            repair_options: vec![],
         });
     }
 }

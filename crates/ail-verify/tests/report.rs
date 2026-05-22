@@ -48,6 +48,7 @@ fn mixed_states_summary_is_failed() {
                 scope: "node_a".into(),
                 evidence: None,
                 blocking: false,
+                repair_options: vec![],
             },
             VerificationEntry {
                 claim: "effect".into(),
@@ -55,6 +56,7 @@ fn mixed_states_summary_is_failed() {
                 scope: "node_a".into(),
                 evidence: None,
                 blocking: false,
+                repair_options: vec![],
             },
             VerificationEntry {
                 claim: "cap".into(),
@@ -62,6 +64,7 @@ fn mixed_states_summary_is_failed() {
                 scope: "node_a".into(),
                 evidence: Some("failed invariant".into()),
                 blocking: true,
+                repair_options: vec![],
             },
         ],
         ..Default::default()
@@ -81,6 +84,7 @@ fn unsafe_beats_unverified_and_assumed() {
                 scope: "n1".into(),
                 evidence: None,
                 blocking: false,
+                repair_options: vec![],
             },
             VerificationEntry {
                 claim: "effect".into(),
@@ -88,6 +92,7 @@ fn unsafe_beats_unverified_and_assumed() {
                 scope: "n1".into(),
                 evidence: None,
                 blocking: false,
+                repair_options: vec![],
             },
             VerificationEntry {
                 claim: "boundary".into(),
@@ -95,6 +100,7 @@ fn unsafe_beats_unverified_and_assumed() {
                 scope: "n1".into(),
                 evidence: None,
                 blocking: true,
+                repair_options: vec![],
             },
         ],
         ..Default::default()
@@ -114,6 +120,7 @@ fn all_proven_summary_is_proven() {
                 scope: "node_a".into(),
                 evidence: None,
                 blocking: false,
+                repair_options: vec![],
             },
             VerificationEntry {
                 claim: "type_b".into(),
@@ -121,6 +128,7 @@ fn all_proven_summary_is_proven() {
                 scope: "node_b".into(),
                 evidence: None,
                 blocking: false,
+                repair_options: vec![],
             },
         ],
         ..Default::default()
@@ -152,6 +160,7 @@ fn runtime_checked_beats_proven_but_not_assumed() {
                 scope: "n".into(),
                 evidence: None,
                 blocking: false,
+                repair_options: vec![],
             },
             VerificationEntry {
                 claim: "b".into(),
@@ -159,6 +168,7 @@ fn runtime_checked_beats_proven_but_not_assumed() {
                 scope: "n".into(),
                 evidence: None,
                 blocking: false,
+                repair_options: vec![],
             },
         ],
         ..Default::default()
@@ -174,6 +184,7 @@ fn runtime_checked_beats_proven_but_not_assumed() {
                 scope: "n".into(),
                 evidence: None,
                 blocking: false,
+                repair_options: vec![],
             },
             VerificationEntry {
                 claim: "b".into(),
@@ -181,6 +192,7 @@ fn runtime_checked_beats_proven_but_not_assumed() {
                 scope: "n".into(),
                 evidence: None,
                 blocking: false,
+                repair_options: vec![],
             },
         ],
         ..Default::default()
@@ -201,6 +213,7 @@ fn evidence_none_is_absent_in_cbor_not_empty_string() {
         scope: "my_node".into(),
         evidence: None,
         blocking: false,
+        repair_options: vec![],
     };
 
     // Round-trip through CBOR
@@ -231,6 +244,7 @@ fn evidence_some_round_trips_via_cbor() {
         scope: "contract_node".into(),
         evidence: Some("contradiction found in nominal type".into()),
         blocking: true,
+        repair_options: vec![],
     };
 
     let mut buf = Vec::new();

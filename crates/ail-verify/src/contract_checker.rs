@@ -135,6 +135,7 @@ impl<'s> ContractChecker<'s> {
                 scope: scope.to_string(),
                 evidence: None,
                 blocking: true,
+                repair_options: vec![],
             };
         }
         let obligation = ProofObligation {
@@ -157,6 +158,7 @@ impl<'s> ContractChecker<'s> {
             scope: scope.to_string(),
             evidence,
             blocking,
+            repair_options: vec![],
         }
     }
 
@@ -173,6 +175,7 @@ impl<'s> ContractChecker<'s> {
                 scope: scope.to_string(),
                 evidence: None,
                 blocking: true,
+                repair_options: vec![],
             };
         }
 
@@ -201,6 +204,7 @@ impl<'s> ContractChecker<'s> {
             scope: scope.to_string(),
             evidence,
             blocking,
+            repair_options: vec![],
         }
     }
 }

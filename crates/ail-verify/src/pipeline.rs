@@ -529,6 +529,7 @@ fn stage_entry(
         scope: scope.into(),
         evidence,
         blocking,
+        repair_options: vec![],
     }
 }
 
