@@ -44,6 +44,7 @@
 
 pub mod abi;
 pub mod audit;
+pub mod codec;
 pub mod error;
 pub mod handler;
 pub mod host;
@@ -58,6 +59,7 @@ pub use ail_package::manifest::PackageManifest;
 pub use ail_package::trust::TrustLevel;
 
 pub use abi::{HostCallId, HostError, HostResult};
+pub use codec::{HandleId, HandleRegistry, StructuredValue, ValueDecoder, ValueLayout};
 pub use audit::{AuditEvent, AuditLog};
 pub use error::{PreflightFailure, RuntimeError, RuntimeResult};
 pub use handler::{ClockHandler, Handler, InMemoryHandler, LogHandler};
