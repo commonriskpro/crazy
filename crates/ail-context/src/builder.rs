@@ -1143,6 +1143,7 @@ mod tests {
             applied_change_id: None,
             created_at: 1_000,
             verification_report_hash: None,
+            ..Default::default()
         }
     }
 
@@ -1799,6 +1800,7 @@ mod tests {
             applied_change_id: None,
             created_at: 1_000,
             verification_report_hash: None,
+            ..Default::default()
         };
         let snap2 = SnapshotEnvelope {
             id: snap2_id,
@@ -1807,6 +1809,7 @@ mod tests {
             applied_change_id: None,
             created_at: 2_000,
             verification_report_hash: None,
+            ..Default::default()
         };
         let snap3 = SnapshotEnvelope {
             id: snap3_id,
@@ -1815,6 +1818,7 @@ mod tests {
             applied_change_id: None,
             created_at: 3_000,
             verification_report_hash: None,
+            ..Default::default()
         };
 
         let graph = SemanticGraph {

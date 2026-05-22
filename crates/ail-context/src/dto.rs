@@ -725,6 +725,7 @@ mod tests {
             applied_change_id: None,
             created_at: 42_000,
             verification_report_hash: None,
+            ..Default::default()
         }
     }
 

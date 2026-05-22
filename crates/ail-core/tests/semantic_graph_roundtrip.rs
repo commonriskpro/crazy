@@ -232,6 +232,7 @@ fn snapshot_envelope_uses_object_ids_not_node_refs() {
         applied_change_id: None,
         created_at: 1_716_300_000_000_u64,
         verification_report_hash: None,
+        ..Default::default()
     };
 
     // ── Part A: GraphStore path round-trip ────────────────────────────────

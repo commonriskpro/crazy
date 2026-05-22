@@ -35,6 +35,7 @@ fn stub_snapshot() -> SnapshotEnvelope {
         applied_change_id: None,
         created_at: 0,
         verification_report_hash: None,
+        ..Default::default()
     }
 }
 
