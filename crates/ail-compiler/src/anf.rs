@@ -28,6 +28,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::core_ir::{LiteralValue, StageHashes};
 
+// ── Schema version ────────────────────────────────────────────────────────
+
+/// Schema version for `AnfIr` serialization.
+///
+/// Incremented when the ANF IR schema changes in a backward-incompatible way.
+/// Consumers MUST reject `AnfIr` artifacts whose `schema_version` is higher
+/// than the version they understand.
+pub const ANF_SCHEMA_VERSION: u32 = 1;
+
+// ── AnfMatchArm ───────────────────────────────────────────────────────────
+
+/// One arm of an `AnfExpr::Match` expression.
+///
+/// `pattern` is a string pattern (e.g. `"Ok(x)"`, `"None"`, `"_"`), matching
+/// the same convention as `MatchArm` in `CoreExpr`.
+/// `body` is the ANF expression evaluated when the pattern matches.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnfMatchArm {
+    /// Pattern string (e.g. `"Ok(x)"`, `"None"`, `"_"`).
+    pub pattern: String,
+    /// Body expression evaluated when the pattern matches.
+    pub body: AnfExpr,
+}
+
 // ── AnfExpr ───────────────────────────────────────────────────────────────
 
 /// A-Normal Form expression — all intermediate values are let-bound.
@@ -81,9 +105,137 @@ pub enum AnfExpr {
     /// Used for sequential effect calls where the individual results are
     /// discarded (or each step produces a unit).
     Seq(Vec<AnfExpr>),
-    /// Placeholder for `CoreExpr` variants not yet lowered to ANF.
+
+    // ── G20: expression body variants ────────────────────────────────────
+
+    /// Pattern matching over a variant (or any scrutinee).
     ///
-    /// Represents unhandled variants (Match, Lambda, RecordNew, etc.).
+    /// `scrutinee` is an atomic variable name — guaranteed by the lowering
+    /// pass.  Each arm carries a pattern string and a body expression.
+    Match {
+        scrutinee: String,
+        arms: Vec<AnfMatchArm>,
+    },
+
+    /// An anonymous pure or effectful function.
+    ///
+    /// `params` are parameter names.  `body` is the ANF body expression,
+    /// which may itself be a `Let`-chain.
+    Lambda {
+        params: Vec<String>,
+        body: Box<AnfExpr>,
+    },
+
+    /// Construct a record value from named field expressions.
+    ///
+    /// Fields are in declaration order.  Field expressions may be any
+    /// `AnfExpr` (they are lowered recursively, not atomized).
+    RecordNew { fields: Vec<(String, AnfExpr)> },
+
+    /// Immutable field update — returns a new record with one field replaced.
+    ///
+    /// `record` is an atomic variable name — guaranteed by the lowering pass.
+    /// `value` is the replacement expression, lowered recursively.
+    FieldUpdate {
+        record: String,
+        field: String,
+        value: Box<AnfExpr>,
+    },
+
+    /// Construct a tuple from positional expressions.
+    ///
+    /// Elements may be any `AnfExpr` (lowered recursively).
+    TupleNew(Vec<AnfExpr>),
+
+    /// Construct a variant case, optionally carrying a payload.
+    ///
+    /// `payload` is lowered recursively if present.
+    VariantNew {
+        tag: String,
+        payload: Option<Box<AnfExpr>>,
+    },
+
+    /// Construct a list from element expressions.
+    ///
+    /// Elements may be any `AnfExpr` (lowered recursively).
+    ListNew(Vec<AnfExpr>),
+
+    // ── G20 R2: semantic effect / concurrency / runtime-check variants ────
+
+    /// Short-circuit AND lowered to conditional branching.
+    ///
+    /// Evaluates `left`; if false, result is false without evaluating `right`.
+    /// Both `left` and `right` are atomic variable names (guaranteed by lowering).
+    ShortCircuitAnd { left: String, right: Box<AnfExpr> },
+
+    /// Short-circuit OR lowered to conditional branching.
+    ///
+    /// Evaluates `left`; if true, result is true without evaluating `right`.
+    /// Both `left` and `right` are atomic variable names (guaranteed by lowering).
+    ShortCircuitOr { left: String, right: Box<AnfExpr> },
+
+    /// Effect-ordered capability call.
+    ///
+    /// `capability` and `func` identify the effect operation.
+    /// `args` are atomic variable names — guaranteed by lowering.
+    EffectCall {
+        capability: String,
+        func: String,
+        args: Vec<String>,
+    },
+
+    /// Dynamic dispatch through a handler/capability dispatch table.
+    ///
+    /// `handler` and `method` identify the dispatch target.
+    /// `args` are atomic variable names — guaranteed by lowering.
+    Dispatch {
+        handler: String,
+        method: String,
+        args: Vec<String>,
+    },
+
+    /// Spawn a concurrent task (explicit ordering in ANF).
+    ///
+    /// `func` is the task entry-point name.
+    /// `args` are atomic variable names — guaranteed by lowering.
+    TaskSpawn { func: String, args: Vec<String> },
+
+    /// Send a value on a channel (explicit ordering in ANF).
+    ///
+    /// `channel` is an atomic variable name.
+    /// `value` is an atomic variable name.
+    ChannelSend { channel: String, value: String },
+
+    /// Receive a value from a channel (explicit ordering in ANF).
+    ///
+    /// `channel` is an atomic variable name.
+    ChannelRecv { channel: String },
+
+    /// Runtime assertion — contract/boundary check preserved through lowering.
+    ///
+    /// `check_ref` identifies the proof obligation.
+    /// `cond` is an atomic variable name.
+    /// `msg` is the failure message.
+    RuntimeCheck {
+        check_ref: String,
+        cond: String,
+        msg: String,
+    },
+
+    /// Acquire a named resource — ordering is explicit in ANF.
+    ///
+    /// `resource` identifies the resource type.
+    /// `args` are atomic variable names — guaranteed by lowering.
+    ResourceAcquire { resource: String, args: Vec<String> },
+
+    /// Release a previously acquired resource handle.
+    ///
+    /// `handle` is an atomic variable name — guaranteed by lowering.
+    ResourceRelease { handle: String },
+
+    /// Placeholder for nodes that have no expression body yet, or for
+    /// `CoreExpr::Placeholder` nodes.
+    ///
     /// Backends treat this as a `trap`/`unreachable` stub.
     Placeholder,
 }
@@ -117,18 +269,113 @@ pub struct AnfBinding {
     pub expr: AnfExpr,
 }
 
+// ── SourceMapEntry ────────────────────────────────────────────────────────
+
+/// One entry in the semantic source map — maps an ANF node back to its
+/// origin in the semantic graph with full provenance.
+///
+/// Corresponds to the `semantic_source_map` fields in `docs/compiler.md §
+/// Semantic source maps`.
+///
+/// `wasm_offset` and `native_offset` are filled in by the backend stage;
+/// they are `None` in the ANF IR before backend emission.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceMapEntry {
+    /// ANF binding name this entry refers to.
+    pub binding_name: String,
+    /// The `NodeRef` this binding was lowered from — from the `SemanticGraph`.
+    pub node_id: NodeRef,
+    /// The `BlockRef` (block identity) in the semantic graph, if applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_ref: Option<String>,
+    /// The `ChangeSet` provenance identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_set: Option<String>,
+    /// The `ContractRef` for the contract that governs this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_ref: Option<String>,
+    /// The `EffectRef` for the effect associated with this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_ref: Option<String>,
+    /// The `ProofObligationRef` for the proof obligation at this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof_obligation_ref: Option<String>,
+    /// The `RuntimeCheckRef` for any runtime check inserted at this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_check_ref: Option<String>,
+    /// Byte offset in the emitted WASM binary (code section), if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wasm_offset: Option<u32>,
+    /// Byte offset in the emitted native binary (code section), if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_offset: Option<u64>,
+}
+
+/// Semantic source map for an `AnfIr`.
+///
+/// Maps ANF nodes back to their origin in the semantic graph.  Backends
+/// populate `wasm_offset` / `native_offset` as they emit code.
+///
+/// Preserved through every pipeline stage — SSA, WASM, native — per the
+/// compiler.md rules ("Every lowering preserves provenance/source maps").
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceMap {
+    /// One entry per ANF binding, in binding order.
+    pub entries: Vec<SourceMapEntry>,
+}
+
+impl SourceMap {
+    /// Build a `SourceMap` from an `AnfIr`'s bindings.
+    ///
+    /// Each binding contributes one entry with `node_id` set to
+    /// `binding.source_ref`.  All optional provenance fields are `None`
+    /// at ANF stage; backends fill in offsets later.
+    pub fn from_bindings(bindings: &[AnfBinding]) -> Self {
+        let entries = bindings
+            .iter()
+            .map(|b| SourceMapEntry {
+                binding_name: b.name.clone(),
+                node_id: b.source_ref,
+                block_ref: None,
+                change_set: None,
+                contract_ref: None,
+                effect_ref: None,
+                proof_obligation_ref: None,
+                runtime_check_ref: None,
+                wasm_offset: None,
+                native_offset: None,
+            })
+            .collect();
+        SourceMap { entries }
+    }
+}
+
 // ── AnfIr ─────────────────────────────────────────────────────────────────
 
 /// Output of the second pipeline stage: a flat list of ANF bindings with
 /// full provenance and an extended hash chain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnfIr {
+    /// Schema version for forward compatibility.
+    ///
+    /// Consumers MUST reject artifacts whose `schema_version` exceeds the
+    /// version they support.  Always set to `ANF_SCHEMA_VERSION` by
+    /// `lower_to_anf`.
+    pub schema_version: u32,
+
     /// ANF bindings in source traversal order.
     ///
     /// May contain more bindings than the originating `CoreIr.nodes` because
     /// the ANF flattening pass introduces synthetic let-bindings for nested
     /// sub-expressions.
     pub bindings: Vec<AnfBinding>,
+
+    /// Semantic source map — maps ANF bindings back to semantic graph nodes.
+    ///
+    /// Generated by `lower_to_anf`; backend stages fill in `wasm_offset` /
+    /// `native_offset` as they emit code.
+    pub source_map: SourceMap,
+
     /// Hash chain extended through the ANF stage.
     /// `stage_hashes.anf_ir_hash` is `Some(...)` after this stage completes.
     pub stage_hashes: StageHashes,
@@ -178,6 +425,205 @@ mod tests {
             AnfExpr::Literal(LiteralValue::Unit),
         ]);
         let _placeholder = AnfExpr::Placeholder;
+        // G20 variants
+        let _match = AnfExpr::Match {
+            scrutinee: "v".to_string(),
+            arms: vec![AnfMatchArm {
+                pattern: "Some(x)".to_string(),
+                body: AnfExpr::Var("x".to_string()),
+            }],
+        };
+        let _lambda = AnfExpr::Lambda {
+            params: vec!["x".to_string()],
+            body: Box::new(AnfExpr::Var("x".to_string())),
+        };
+        let _record = AnfExpr::RecordNew {
+            fields: vec![("amount".to_string(), AnfExpr::Literal(LiteralValue::Int(10)))],
+        };
+        let _field_update = AnfExpr::FieldUpdate {
+            record: "order".to_string(),
+            field: "status".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("Paid".to_string()))),
+        };
+        let _tuple = AnfExpr::TupleNew(vec![
+            AnfExpr::Var("a".to_string()),
+            AnfExpr::Var("b".to_string()),
+        ]);
+        let _variant = AnfExpr::VariantNew {
+            tag: "Ok".to_string(),
+            payload: Some(Box::new(AnfExpr::Var("x".to_string()))),
+        };
+        let _list = AnfExpr::ListNew(vec![AnfExpr::Literal(LiteralValue::Int(1))]);
+    }
+
+    // G20: AnfMatchArm is constructible and has correct fields.
+    #[test]
+    fn anf_match_arm_is_constructible() {
+        let arm = AnfMatchArm {
+            pattern: "None".to_string(),
+            body: AnfExpr::Literal(LiteralValue::Unit),
+        };
+        assert_eq!(arm.pattern, "None");
+        assert_eq!(arm.body, AnfExpr::Literal(LiteralValue::Unit));
+    }
+
+    // G20: AnfExpr::Match — scrutinee is a String (atomic name).
+    #[test]
+    fn anf_match_scrutinee_is_atomic_string() {
+        let expr = AnfExpr::Match {
+            scrutinee: "payment".to_string(),
+            arms: vec![AnfMatchArm {
+                pattern: "Ok(r)".to_string(),
+                body: AnfExpr::Var("r".to_string()),
+            }],
+        };
+        if let AnfExpr::Match { scrutinee, arms } = &expr {
+            assert_eq!(scrutinee, "payment");
+            assert_eq!(arms.len(), 1);
+            assert_eq!(arms[0].pattern, "Ok(r)");
+        } else {
+            panic!("expected Match variant");
+        }
+    }
+
+    // G20: AnfExpr::Match CBOR round-trip.
+    #[test]
+    fn anf_match_cbor_round_trip() {
+        let expr = AnfExpr::Match {
+            scrutinee: "result".to_string(),
+            arms: vec![
+                AnfMatchArm {
+                    pattern: "Ok(v)".to_string(),
+                    body: AnfExpr::Var("v".to_string()),
+                },
+                AnfMatchArm {
+                    pattern: "Err(e)".to_string(),
+                    body: AnfExpr::Var("e".to_string()),
+                },
+            ],
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::Match must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::Lambda — params and body are correct.
+    #[test]
+    fn anf_lambda_fields_are_correct() {
+        let expr = AnfExpr::Lambda {
+            params: vec!["x".to_string(), "y".to_string()],
+            body: Box::new(AnfExpr::Var("x".to_string())),
+        };
+        if let AnfExpr::Lambda { params, body } = &expr {
+            assert_eq!(params, &["x", "y"]);
+            assert_eq!(**body, AnfExpr::Var("x".to_string()));
+        } else {
+            panic!("expected Lambda variant");
+        }
+    }
+
+    // G20: AnfExpr::Lambda CBOR round-trip.
+    #[test]
+    fn anf_lambda_cbor_round_trip() {
+        let expr = AnfExpr::Lambda {
+            params: vec!["a".to_string()],
+            body: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::Lambda must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::RecordNew CBOR round-trip.
+    #[test]
+    fn anf_record_new_cbor_round_trip() {
+        let expr = AnfExpr::RecordNew {
+            fields: vec![
+                ("name".to_string(), AnfExpr::Literal(LiteralValue::Text("Alice".to_string()))),
+                ("age".to_string(), AnfExpr::Literal(LiteralValue::Int(30))),
+            ],
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::RecordNew must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::FieldUpdate — record is an atomic String.
+    #[test]
+    fn anf_field_update_record_is_atomic_string() {
+        let expr = AnfExpr::FieldUpdate {
+            record: "order".to_string(),
+            field: "status".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("Paid".to_string()))),
+        };
+        if let AnfExpr::FieldUpdate { record, field, .. } = &expr {
+            assert_eq!(record, "order");
+            assert_eq!(field, "status");
+        } else {
+            panic!("expected FieldUpdate variant");
+        }
+    }
+
+    // G20: AnfExpr::FieldUpdate CBOR round-trip.
+    #[test]
+    fn anf_field_update_cbor_round_trip() {
+        let expr = AnfExpr::FieldUpdate {
+            record: "rec".to_string(),
+            field: "x".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(99))),
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::FieldUpdate must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::TupleNew CBOR round-trip.
+    #[test]
+    fn anf_tuple_new_cbor_round_trip() {
+        let expr = AnfExpr::TupleNew(vec![
+            AnfExpr::Literal(LiteralValue::Int(1)),
+            AnfExpr::Literal(LiteralValue::Bool(false)),
+        ]);
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::TupleNew must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::VariantNew with payload CBOR round-trip.
+    #[test]
+    fn anf_variant_new_with_payload_cbor_round_trip() {
+        let expr = AnfExpr::VariantNew {
+            tag: "Some".to_string(),
+            payload: Some(Box::new(AnfExpr::Literal(LiteralValue::Int(42)))),
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::VariantNew with payload must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::VariantNew without payload CBOR round-trip.
+    #[test]
+    fn anf_variant_new_no_payload_cbor_round_trip() {
+        let expr = AnfExpr::VariantNew {
+            tag: "None".to_string(),
+            payload: None,
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::VariantNew without payload must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::ListNew CBOR round-trip.
+    #[test]
+    fn anf_list_new_cbor_round_trip() {
+        let expr = AnfExpr::ListNew(vec![
+            AnfExpr::Literal(LiteralValue::Int(1)),
+            AnfExpr::Literal(LiteralValue::Int(2)),
+            AnfExpr::Literal(LiteralValue::Int(3)),
+        ]);
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::ListNew must survive CBOR round-trip");
     }
 
     // If.cond is a String (atomic), not a nested AnfExpr.
@@ -250,19 +696,23 @@ mod tests {
     // Scenario: AnfIr is constructible with bindings and stage hashes.
     #[test]
     fn anf_ir_is_constructible() {
+        let bindings = vec![
+            AnfBinding {
+                source_ref: NodeRef(0),
+                name: "mod_root".to_string(),
+                expr: AnfExpr::Literal(LiteralValue::Unit),
+            },
+            AnfBinding {
+                source_ref: NodeRef(1),
+                name: "fn_main".to_string(),
+                expr: AnfExpr::Placeholder,
+            },
+        ];
+        let source_map = crate::anf::SourceMap::from_bindings(&bindings);
         let ir = AnfIr {
-            bindings: vec![
-                AnfBinding {
-                    source_ref: NodeRef(0),
-                    name: "mod_root".to_string(),
-                    expr: AnfExpr::Literal(LiteralValue::Unit),
-                },
-                AnfBinding {
-                    source_ref: NodeRef(1),
-                    name: "fn_main".to_string(),
-                    expr: AnfExpr::Placeholder,
-                },
-            ],
+            schema_version: crate::anf::ANF_SCHEMA_VERSION,
+            bindings,
+            source_map,
             stage_hashes: StageHashes {
                 graph_snapshot_hash: [0u8; 32],
                 verification_report_hash: [0u8; 32],

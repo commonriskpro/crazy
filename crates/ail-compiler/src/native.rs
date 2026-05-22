@@ -294,7 +294,9 @@ mod tests {
     #[test]
     fn emit_native_rejects_unsealed_anf_ir_hash() {
         let anf = AnfIr {
+            schema_version: crate::anf::ANF_SCHEMA_VERSION,
             bindings: vec![],
+            source_map: crate::anf::SourceMap { entries: vec![] },
             stage_hashes: StageHashes {
                 graph_snapshot_hash: [0u8; 32],
                 verification_report_hash: [0u8; 32],
