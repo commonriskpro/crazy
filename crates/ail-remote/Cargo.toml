@@ -3,14 +3,20 @@ name    = "ail-remote"
 version.workspace = true
 edition.workspace = true
 
+[features]
+crypto = ["dep:aes-gcm", "dep:argon2", "dep:x25519-dalek"]
+
 [dependencies]
 ail-change  = { workspace = true }
 ail-context = { workspace = true }
 ail-storage = { workspace = true }
-ciborium     = { workspace = true }
+aes-gcm       = { workspace = true, optional = true }
+argon2        = { workspace = true, optional = true }
+ciborium      = { workspace = true }
 ed25519-dalek = { workspace = true }
 rand          = { workspace = true }
 serde         = { workspace = true }
+x25519-dalek  = { workspace = true, optional = true }
 
 [dev-dependencies]
 ail-change  = { workspace = true }
