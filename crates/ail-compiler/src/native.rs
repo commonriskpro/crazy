@@ -44,7 +44,7 @@ use std::collections::BTreeMap;
 use ail_core::semantic_graph::NodeRef;
 use cranelift_codegen::{
     Context,
-    ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName},
+    ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, condcodes::IntCC},
     isa::CallConv,
     settings,
 };
@@ -202,7 +202,23 @@ fn infer_cranelift_return_type(
         AnfExpr::Let { body, .. } => infer_cranelift_return_type(body),
         AnfExpr::Return(inner) => infer_cranelift_return_type(inner),
         AnfExpr::Call { func, .. } => match func.as_str() {
-            "i64.add" | "i64.sub" | "i64.mul" => Some(types::I64),
+            "i64.add" | "+" | "add"
+            | "i64.sub" | "-" | "sub"
+            | "i64.mul" | "*" | "mul"
+            | "i64.div_s" | "/" | "div"
+            | "i64.rem_s" | "%" | "mod"
+            | "i64.and" | "and"
+            | "i64.or" | "or"
+            | "i64.neg" | "neg" | "negate"
+            => Some(types::I64),
+            "i64.eq" | "==" | "eq"
+            | "i64.ne" | "!=" | "ne"
+            | "i64.lt_s" | "<" | "lt"
+            | "i64.le_s" | "<=" | "le"
+            | "i64.gt_s" | ">" | "gt"
+            | "i64.ge_s" | ">=" | "ge"
+            | "i64.eqz" | "not" | "!"
+            => Some(types::I8),
             _ => None,
         },
         _ => None,
@@ -276,32 +292,95 @@ fn lower_anf_expr_cranelift<'a>(
 
         AnfExpr::Return(inner) => lower_anf_expr_cranelift(inner, ctx, builder),
 
-        AnfExpr::Call { func, args } => match func.as_str() {
-            "i64.add" | "i64.sub" | "i64.mul" if args.len() == 2 => {
-                let lhs = ctx.locals.get(args[0].as_str()).copied();
-                let rhs = ctx.locals.get(args[1].as_str()).copied();
-                match (lhs, rhs) {
-                    (Some(l), Some(r)) => {
-                        let val = if func == "i64.add" {
-                            builder.ins().iadd(l, r)
-                        } else if func == "i64.sub" {
-                            builder.ins().isub(l, r)
-                        } else {
-                            builder.ins().imul(l, r)
-                        };
-                        LowerResult::Value(val)
-                    }
-                    _ => {
-                        builder.ins().trap(TrapCode::user(1).unwrap());
-                        LowerResult::Terminated
+        AnfExpr::Call { func, args } => {
+            match func.as_str() {
+                // ── binary I64 arithmetic ──────────────────────────────
+                "i64.add" | "+" | "add"
+                | "i64.sub" | "-" | "sub"
+                | "i64.mul" | "*" | "mul"
+                | "i64.div_s" | "/" | "div"
+                | "i64.rem_s" | "%" | "mod"
+                | "i64.and" | "and"
+                | "i64.or" | "or"
+                if args.len() == 2 => {
+                    let lhs = ctx.locals.get(args[0].as_str()).copied();
+                    let rhs = ctx.locals.get(args[1].as_str()).copied();
+                    match (lhs, rhs) {
+                        (Some(l), Some(r)) => {
+                            let val = match func.as_str() {
+                                "i64.add" | "+" | "add" => builder.ins().iadd(l, r),
+                                "i64.sub" | "-" | "sub" => builder.ins().isub(l, r),
+                                "i64.mul" | "*" | "mul" => builder.ins().imul(l, r),
+                                "i64.div_s" | "/" | "div" => builder.ins().sdiv(l, r),
+                                "i64.rem_s" | "%" | "mod" => builder.ins().srem(l, r),
+                                "i64.and" | "and" => builder.ins().band(l, r),
+                                "i64.or" | "or"  => builder.ins().bor(l, r),
+                                _ => unreachable!(),
+                            };
+                            LowerResult::Value(val)
+                        }
+                        _ => {
+                            builder.ins().trap(TrapCode::user(1).unwrap());
+                            LowerResult::Terminated
+                        }
                     }
                 }
+                // ── binary comparisons → I8 ────────────────────────────
+                "i64.eq" | "==" | "eq"
+                | "i64.ne" | "!=" | "ne"
+                | "i64.lt_s" | "<" | "lt"
+                | "i64.le_s" | "<=" | "le"
+                | "i64.gt_s" | ">" | "gt"
+                | "i64.ge_s" | ">=" | "ge"
+                if args.len() == 2 => {
+                    let lhs = ctx.locals.get(args[0].as_str()).copied();
+                    let rhs = ctx.locals.get(args[1].as_str()).copied();
+                    match (lhs, rhs) {
+                        (Some(l), Some(r)) => {
+                            let cc = match func.as_str() {
+                                "i64.eq"  | "==" | "eq" => IntCC::Equal,
+                                "i64.ne"  | "!=" | "ne" => IntCC::NotEqual,
+                                "i64.lt_s"| "<"  | "lt" => IntCC::SignedLessThan,
+                                "i64.le_s"| "<=" | "le" => IntCC::SignedLessThanOrEqual,
+                                "i64.gt_s"| ">"  | "gt" => IntCC::SignedGreaterThan,
+                                "i64.ge_s"| ">=" | "ge" => IntCC::SignedGreaterThanOrEqual,
+                                _ => unreachable!(),
+                            };
+                            LowerResult::Value(builder.ins().icmp(cc, l, r))
+                        }
+                        _ => {
+                            builder.ins().trap(TrapCode::user(1).unwrap());
+                            LowerResult::Terminated
+                        }
+                    }
+                }
+                // ── unary ops ─────────────────────────────────────────
+                "i64.neg" | "neg" | "negate" if args.len() == 1 => {
+                    match ctx.locals.get(args[0].as_str()).copied() {
+                        Some(a) => LowerResult::Value(builder.ins().ineg(a)),
+                        None => {
+                            builder.ins().trap(TrapCode::user(1).unwrap());
+                            LowerResult::Terminated
+                        }
+                    }
+                }
+                "i64.eqz" | "not" | "!" if args.len() == 1 => {
+                    match ctx.locals.get(args[0].as_str()).copied() {
+                        Some(a) => LowerResult::Value(
+                            builder.ins().icmp_imm(IntCC::Equal, a, 0)
+                        ),
+                        None => {
+                            builder.ins().trap(TrapCode::user(1).unwrap());
+                            LowerResult::Terminated
+                        }
+                    }
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
             }
-            _ => {
-                builder.ins().trap(TrapCode::user(1).unwrap());
-                LowerResult::Terminated
-            }
-        },
+        }
 
         _ => {
             builder.ins().trap(TrapCode::user(1).unwrap());
@@ -638,6 +717,97 @@ mod tests {
             artifact.provenance.is_empty(),
             "empty AnfIr must produce empty provenance map"
         );
+    }
+
+    // ── TASK-A0: Extended arithmetic ops — RED ────────────────────────────
+    // These all currently hit the catch-all `_ =>` arm and emit trap,
+    // producing the same bytes as Placeholder.  They must fail until A1 lands.
+
+    fn anf_with_call2(func: &str, lhs: i64, rhs: i64) -> AnfIr {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "x".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(lhs))),
+                body: Box::new(AnfExpr::Let {
+                    name: "y".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(rhs))),
+                    body: Box::new(AnfExpr::Call {
+                        func: func.to_string(),
+                        args: vec!["x".to_string(), "y".to_string()],
+                    }),
+                }),
+            },
+        })
+    }
+
+    fn anf_with_call1(func: &str, operand: i64) -> AnfIr {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "x".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(operand))),
+                body: Box::new(AnfExpr::Call {
+                    func: func.to_string(),
+                    args: vec!["x".to_string()],
+                }),
+            },
+        })
+    }
+
+    fn placeholder_anf() -> AnfIr {
+        use crate::anf::{AnfBinding, AnfExpr};
+        anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Placeholder,
+        })
+    }
+
+    #[test]
+    fn native_div_differs_from_placeholder() {
+        let art = emit_native(&anf_with_call2("i64.div_s", 10, 2)).unwrap();
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "i64.div_s must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_rem_differs_from_placeholder() {
+        let art = emit_native(&anf_with_call2("i64.rem_s", 10, 3)).unwrap();
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "i64.rem_s must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_eq_differs_from_placeholder() {
+        let art = emit_native(&anf_with_call2("i64.eq", 5, 5)).unwrap();
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "i64.eq must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_neg_differs_from_placeholder() {
+        let art = emit_native(&anf_with_call1("i64.neg", 7)).unwrap();
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "i64.neg must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_eqz_differs_from_placeholder() {
+        let art = emit_native(&anf_with_call1("i64.eqz", 0)).unwrap();
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "i64.eqz must produce different bytes than Placeholder");
     }
 
     // ── TASK-B1: Native expression lowering tests (TDD RED) ───────────────
