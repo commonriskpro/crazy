@@ -235,6 +235,7 @@ dependencies = [
  "blake3",
  "ciborium",
  "serde",
+ "tokio",
  "tracing",
  "wasm-encoder 0.244.0",
  "wasmtime",

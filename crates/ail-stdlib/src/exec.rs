@@ -300,6 +300,27 @@ impl StdlibCapabilityDispatch for InMemoryCapabilityHost {
                 Ok(StdlibValue::Bytes(rng.random_bytes(count)))
             }
 
+            // ── io.seek ───────────────────────────────────────────────────
+            // Seek is a no-op in the in-memory host (no stateful file handles).
+            ("io.seek", "seek") => Ok(StdlibValue::Unit),
+
+            // ── network ───────────────────────────────────────────────────
+            // Network operations require a real network host; stubs return
+            // Unit so tests that only verify routing do not panic.
+            ("network.connect", "connect") => Ok(StdlibValue::Unit),
+            ("network.connect", "send") => Ok(StdlibValue::Int(0)),
+            ("network.connect", "receive") => Ok(StdlibValue::Bytes(vec![])),
+            ("network.bind", "listen") => Ok(StdlibValue::Unit),
+
+            // ── http ──────────────────────────────────────────────────────
+            ("http.call", "request") => Ok(StdlibValue::Unit),
+            ("http.serve", "serve") => Ok(StdlibValue::Unit),
+
+            // ── process ───────────────────────────────────────────────────
+            ("process.spawn", "spawn") => Ok(StdlibValue::Unit),
+            ("process.wait", "wait") => Ok(StdlibValue::Int(0)),
+            ("process.signal", "kill") => Ok(StdlibValue::Unit),
+
             _ => Err(StdlibExecError::CapabilityRequired {
                 capability: capability.to_string(),
                 operation: operation.to_string(),
@@ -881,6 +902,16 @@ pub fn stdlib_function_entries() -> Vec<FunctionEntry> {
             "file.read",
             "read",
         ),
+        // Convenience alias: read entire file contents as Bytes.
+        capability(
+            "std.fs.read_file",
+            "std.fs",
+            "read_file",
+            &["Path"],
+            "Bytes",
+            "file.read",
+            "read",
+        ),
         capability(
             "std.fs.write",
             "std.fs",
@@ -1065,6 +1096,22 @@ pub fn call_pure_stdlib(id: &str, args: &[StdlibValue]) -> Result<StdlibValue, S
     find_function_entry(id)
         .ok_or_else(|| StdlibExecError::UnknownFunction(id.to_string()))?
         .call(args)
+}
+
+/// Execute a stdlib function by ID, routing capability calls through `host`.
+///
+/// For pure functions the host is ignored.  For capability-backed functions
+/// the call is dispatched to `host.call(capability, operation, args)`.
+///
+/// Returns [`StdlibExecError::UnknownFunction`] when `id` is not registered.
+pub fn call_effectful_stdlib(
+    id: &str,
+    args: &[StdlibValue],
+    host: &dyn StdlibCapabilityDispatch,
+) -> Result<StdlibValue, StdlibExecError> {
+    find_function_entry(id)
+        .ok_or_else(|| StdlibExecError::UnknownFunction(id.to_string()))?
+        .call_with_host(args, Some(host))
 }
 
 fn pure(
