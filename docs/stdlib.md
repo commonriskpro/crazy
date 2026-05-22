@@ -1,5 +1,7 @@
 # Standard library shape
 
+<!-- Implementation Status: `ail-stdlib` contains modules matching the semantic-core shape; service capabilities/adapters remain package/runtime concerns. -->
+
 > Full extracted design. Related: [Type system](type-system.md), [Runtime](runtime.md), [Packages](packages.md).
 
 ## Standard library shape: propuesta completa
@@ -658,12 +660,16 @@ unsafe requires approval
 10. Stdlib remains framework-neutral.
 ```
 
-### Open design questions
+### Implementation Notes
 
-```txt
-1. How large v1 stdlib should be versus package ecosystem.
-2. Whether database capability belongs in stdlib core or separate official package.
-3. Exact crypto API surface and safe defaults.
-4. Whether async runtime primitives live in std.concurrent or std.runtime.
-5. How to version stdlib independently from language/Core IR.
-```
+The current `ail-stdlib` implementation resolves the original v1 questions this way:
+
+| Topic | Status |
+|-------|--------|
+| v1 size | Semantic-core modules are implemented broadly across `option`, `result`, `numeric`, `decimal`, `text`, `bytes`, collections, time, random, crypto, IO/network/process/env, concurrency/sync, diagnostics, verify, runtime, and capability. |
+| Database capability | Remains outside stdlib core as an official package/runtime capability direction. |
+| Crypto defaults | Modules exist for the documented defaults; production-grade API hardening remains future work. |
+| Async runtime placement | Concurrency primitives live in `concurrent`/`sync`; runtime-facing types live in `runtime`. |
+| Versioning | Workspace lockstep versioning is documented in `docs/release-policy.md`; independent stdlib versioning remains a future product concern. |
+
+Code references: `crates/ail-stdlib/src/*`, `docs/release-policy.md`.

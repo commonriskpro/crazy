@@ -1,5 +1,7 @@
 # Decisions and validation register
 
+<!-- Implementation Status: no unresolved design questions here; implementation gaps are tracked as validation-required items. -->
+
 This register records closed decisions and validation-required items. It replaces the open-questions format; nothing here is unresolved.
 
 Related: [Decision log](decision-log.md), [Risks](risks.md).
@@ -23,10 +25,10 @@ Related: [Decision log](decision-log.md), [Risks](risks.md).
 | Topic | Decision |
 |-------|----------|
 | Toolchain language | **Rust** |
-| Parser | **chumsky** or **lalrpop** — exact crate decided by implementation spike. |
+| Parser | **Hand-written parsers** for the current ACL and expression subsets. Earlier `chumsky`/`lalrpop` direction was reversed because the implemented grammar is deliberately small and line-oriented. Code: `crates/ail-change/src/parser.rs`, `crates/ail-compiler/src/expr_parser.rs`. |
 | ANF representation | ANF makes effect order structural; exact serialization format decided during implementation. |
 | SSA and backend | **Cranelift** for WASM v1. LLVM/native added later if needed. Custom SSA not required. |
-| WASM ABI layout | Defined per value kind (records, variants, `Result`, `Option`, handles); exact encoding finalized during implementation. |
+| WASM ABI layout | Current implementation uses an `ail/host_call` ABI with pointer/length fields and an `i64` result for effect dispatch; full record/variant/`Result`/`Option`/handle layout remains validation work. Code: `crates/ail-compiler/src/wasm.rs`, `crates/ail-runtime/src/host.rs`. |
 | Memory management | RC vs GC is a tracked validation item — see [Risks](risks.md). Decision deferred to implementation spike. |
 | Translation validation | Required for `prod`/`critical`; scope defined per profile in `docs/verification.md`. |
 
@@ -48,6 +50,7 @@ Related: [Decision log](decision-log.md), [Risks](risks.md).
 | Storage API | **Async-native GraphStore API**. Compiler consumes immutable snapshots and an in-memory/mmap compilation database — not repeated live DB queries. |
 | Storage model | **FoundationDB-compatible**: ordered keys, immutable snapshots, ChangeSet log, CAS blobs, transactionally updated indexes. |
 | Initial backend | **Postgres** (metadata + indexes) + **CAS object store / filesystem** (blobs). SQLite/libSQL is an optional simple/local backend only — not the primary architecture. FoundationDB is the aspirational production backend; a spike will determine whether operational cost justifies adoption over Postgres. |
+| Implemented file layout | Filesystem object store uses flat BLAKE3-hex filenames; Postgres uses `cas_objects` and `snapshots_index`. This is an implementation simplification of the conceptual graph-store directory layout. |
 | Hash algorithm | **BLAKE3** |
 | Canonical serialization | **Deterministic CBOR** for runtime payloads and storage objects. |
 | Distributed collaboration | Agents submit ChangeSets against base snapshots; a coordinator serializes authoritative commits; stale changes rebase and reverify. Distributed graph collaboration protocol is a tracked validation item. |
@@ -63,6 +66,7 @@ Related: [Decision log](decision-log.md), [Risks](risks.md).
 | Context slice signing | Signing is desirable for distributed agents; key management is a tracked validation item. |
 | Context budgets | Default budgets defined per model tier in `docs/context-server.md`. |
 | Audit context exposure | Safe exposure policy documented in `docs/context-server.md`. |
+| Transport shape | Current implementation is an in-process `ail-context` API, not a network transport server. The protocol shape remains server-compatible. Code: `crates/ail-context/src/lib.rs`. |
 
 ### Packages
 
@@ -120,3 +124,6 @@ See [Risks](risks.md) for the full risk register with mitigation and validation 
 | Distributed graph collaboration protocol | Multi-agent coordination breaks under concurrent ChangeSets |
 | Context-slice signing key management | Distributed agent trust cannot be established or maintained |
 | WASM memory management: RC vs GC | Memory strategy choice affects performance, correctness, and WASM ABI complexity |
+| Expression parser scope | Current parser only accepts the executable subset (`int`, `bool`, vars, calls, `if`, arithmetic/comparison helpers). Full grammar support is future implementation work. |
+| Native backend execution parity | Cranelift native backend currently emits trap stubs with provenance/manifests; full native expression lowering is future work. |
+| In-WASM host dispatch completeness | Effect calls execute through `ail/host_call`, but host-side dispatch still has intentionally simple payload/value handling. Rich typed boundary layout remains a validation item. |

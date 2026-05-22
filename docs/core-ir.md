@@ -1,5 +1,7 @@
 # Core IR and Semantic Graph
 
+<!-- Implementation Status: Core IR data structures cover many designed primitives; executable parsing/lowering currently supports a subset. -->
+
 > Full extracted design. Related: [Type system](type-system.md), [Compiler](compiler.md), [Verification](verification.md), [Storage](storage.md).
 
 ## Semantic Program Graph
@@ -1145,3 +1147,13 @@ En SSA, el orden de efectos tiende a ser metadata/análisis adicional.
 ```
 
 Para un lenguaje donde effects/capabilities son centrales, ANF es el mejor punto de control para verificación, resource lifecycle, contracts y debugging semántico. SSA sigue siendo útil, pero como artefacto bajo para optimización/codegen.
+
+## Implementation Notes
+
+The Rust Core IR in `crates/ail-compiler/src/core_ir.rs` includes serializable `CoreExpr` and `CoreType` variants for the major design primitives: literals, variables, let/if/match/call, arithmetic/comparison, lambdas, records, tuples, variants, lists, loops, short-circuit booleans, effect calls, dispatch, tasks, channels, runtime checks, resources, and cells.
+
+Current executable support is narrower than the full IR:
+
+- `expr_parser.rs` only parses the small expression subset needed by current tests.
+- `wasm.rs` emits real bodies for simple values/control flow and effect calls, but many semantic variants still lower to stubs/traps or opaque references.
+- Full memory/value layout for records, variants, `Result`, `Option`, handles, text, and bytes is still tracked as ABI validation work.

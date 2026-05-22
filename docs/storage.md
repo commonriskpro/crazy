@@ -1,5 +1,7 @@
 # Storage / versioning model
 
+<!-- Implementation Status: CAS, GraphStore, Postgres, tempfile filesystem store, retention, migrations, branch/tag/approval/export/integrity primitives exist. Conceptual directory layout is not the filesystem layout. -->
+
 > Full extracted design. Related: [AI Change Language](change-language.md), [Context Server](context-server.md), [Verification](verification.md).
 
 ## Storage / versioning model: propuesta completa
@@ -28,6 +30,8 @@ Files/text views = derived artifacts.
 ```
 
 ### Object store layout
+
+<!-- Implementation Status: conceptual layout. Current filesystem CAS stores flat `<blake3-hex>` files; Postgres stores `cas_objects` plus `snapshots_index`. -->
 
 Conceptual layout:
 
@@ -470,3 +474,14 @@ indexes match snapshot or are marked stale
 | Distributed collaboration | Agents submit ChangeSets against base snapshots; a coordinator serializes authoritative commits; stale changes rebase and reverify. Detailed protocol is a validation spike — see [Risks](risks.md) V-06. |
 | Default local retention | Configurable per project; defaults defined in retention policy examples above. |
 | Protected audit archive | External archival via export bundles; local pruning allowed by retention policy once audit obligations are satisfied. |
+
+### Implementation Notes
+
+Current storage keeps path/database layout deliberately simpler than the conceptual graph-store tree above:
+
+- `TempfileObjectStore` writes each object as a single file named by lower-hex `ObjectId`.
+- `PostgresObjectStore` writes raw CAS bytes to `cas_objects(id BYTEA PRIMARY KEY, data BYTEA NOT NULL)`.
+- `PostgresGraphStore` stores snapshots as CBOR CAS objects and records `envelope_id -> cas_id` in `snapshots_index` for listing.
+- Semantic meaning stays in CBOR objects and graph envelopes, not directory names.
+
+Code references: `crates/ail-storage/src/object.rs`, `crates/ail-storage/src/backends/tempfile.rs`, `crates/ail-storage/src/backends/postgres.rs`.

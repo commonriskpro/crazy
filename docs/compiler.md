@@ -1,5 +1,7 @@
 # Compiler pipeline
 
+<!-- Implementation Status: graph-to-Core-IR-to-ANF-to-WASM is implemented with hash chains and source maps; WASM value ABI and native body lowering remain incomplete. -->
+
 > Full extracted design. Related: [Core IR](core-ir.md), [Verification](verification.md), [Runtime](runtime.md), [Storage](storage.md).
 
 ## Artefacto ejecutable
@@ -500,10 +502,18 @@ Meaning: after optimization/codegen, validate output preserves ANF/Core semantic
 | Area | Decision |
 |------|----------|
 | Toolchain language | Rust |
-| Parser | chumsky or lalrpop — exact crate decided by implementation spike |
+| Parser | Hand-written ACL parser and hand-written expression parser for the current subset; previous `chumsky`/`lalrpop` placeholder is reversed. |
 | ANF serialization | Exact format decided during implementation; must be deterministic and schema-versioned |
 | SSA / backend | Cranelift for WASM v1. LLVM/native added later if needed. Custom SSA not required. |
 | WASM ABI layout | Exact encoding for records, variants, `Result`, `Option`, handles finalized during implementation |
 | Memory management | RC vs GC deferred to implementation spike — see [Risks](risks.md) V-08 |
 | Translation validation | Required for `prod`/`critical`; scope per profile. Cranelift source-map and capability-boundary preservation is a validation spike — see [Risks](risks.md) V-03 |
 | Native backend | Cranelift (Phase 17, implemented). `emit_native` produces ELF/Mach-O/COFF with provenance + capability manifest. Expression body lowering deferred to Phase 8+. |
+
+### Implementation Notes
+
+- `emit_wasm` now emits executable bodies for simple integer/bool/control-flow expressions and can dispatch `AnfExpr::EffectCall` through the host runtime.
+- Rich records, variants, `Result`, `Option`, handles, and general memory layout are not fully encoded yet; the current ABI is deliberately narrower.
+- `emit_native` closes the provenance/native-object validation spike but emits trap stubs, not executable native function bodies.
+
+Code references: `crates/ail-compiler/src/expr_parser.rs`, `core_ir.rs`, `anf.rs`, `wasm.rs`, `native.rs`.

@@ -1,5 +1,7 @@
 # Tooling / developer workflow
 
+<!-- Implementation Status: workspace and CLI skeleton exist; full command surface below is design target, not fully implemented CLI behavior. -->
+
 > Full extracted design. Related: [AI Change Language](change-language.md), [Context Server](context-server.md), [Verification](verification.md), [Runtime](runtime.md).
 
 ## Tooling / developer workflow: propuesta completa
@@ -560,12 +562,16 @@ ail run --profile dev module.cart
 10. Tooling makes hidden effects and risks impossible to ignore.
 ```
 
-### Open design questions
+### Implementation Notes
 
-```txt
-1. Final CLI name.
-2. Whether interactive shell is required for v1.
-3. How editor edits convert into ChangeSets.
-4. Default human approval UX.
-5. Whether local projects can disable graph storage for experiments.
-```
+The current implementation resolves the original tooling questions as follows:
+
+| Topic | Status |
+|-------|--------|
+| Final CLI name | `ail`. |
+| Interactive shell | Not required for the first full product release. No shell is implemented. |
+| Editor edits | Design direction is editor-generated ChangeSets; full editor integration is not implemented. |
+| Approval UX | Approval records and requirements exist in storage/change models; final human UX remains future work. |
+| Local experiments | Test/local object stores exist. Disabling graph storage entirely is not part of the implemented model. |
+
+Code references: `crates/ail-cli/src/main.rs`, `crates/ail-change/src/parser.rs`, `crates/ail-storage/src/approval.rs`.

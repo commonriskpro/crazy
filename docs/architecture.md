@@ -1,5 +1,7 @@
 # Architecture overview
 
+<!-- Implementation Status: core workspace implements the major architecture slices as milestones; some sections remain full-design intent rather than complete feature parity. -->
+
 > Full extracted design. Start here, then use [README](../README.md) for topic navigation.
 
 ## Original preface
@@ -160,3 +162,16 @@ Solo puede quedar sin implementar temporalmente.
 ## Implementación
 
 La implementación debe seguir el diseño de producto completo. Puede secuenciarse internamente por subsistemas, pero no debe presentarse como un MVP que recorta la visión o cambia la arquitectura.
+
+### Implementation Notes
+
+Current implementation preserves the architectural thesis: ChangeSets, Semantic Graph, verification reports, compiler pipeline, WASM runtime host, package trust, context slices, stdlib, remote bundles, and dogfood examples exist as Rust crates.
+
+Known deliberate deviations from the original shape:
+
+- Context Server is currently an in-process API, not a network server.
+- WASM ABI is intentionally narrow and i64-oriented for executable milestones.
+- Native backend proves Cranelift/provenance but emits trap stubs.
+- CLI workflow exists as crate/skeleton plus tests, not every command listed in tooling design.
+
+These deviations preserve the design direction while keeping implementation risk bounded.
