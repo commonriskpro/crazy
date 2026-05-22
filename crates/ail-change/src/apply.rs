@@ -21,7 +21,10 @@
 // 5. **Success**: all preconditions pass and all ops apply cleanly →
 //    `ChangeSetOutcome::Applied`.
 
-use ail_core::semantic_graph::SemanticGraph;
+use ail_core::semantic_graph::{
+    CapabilityReqs, ContractClauses, EffectRow, GraphEdge, GraphNode, NodeRef, ParamDecl,
+    RuntimeCheckMeta, SemanticGraph, TrustMetadata,
+};
 
 use crate::{
     canonical::{CanonicalChangeSet, OpPayload, Precondition},
@@ -153,8 +156,160 @@ fn apply_payload(payload: &OpPayload, graph: &mut SemanticGraph) {
                 n.name.clone_from(name);
             }
         }
+        OpPayload::RemoveNodeByName(name) => {
+            if let Some(node_id) = node_id_by_name(graph, name) {
+                graph.nodes.retain(|n| n.id != node_id);
+                graph
+                    .edges
+                    .retain(|e| e.source != node_id && e.target != node_id);
+            }
+        }
+        OpPayload::RenameNodeByName { target, name } => {
+            if let Some(n) = node_by_name_mut(graph, target) {
+                n.name.clone_from(name);
+            }
+        }
+        OpPayload::AddEdgeByName {
+            source,
+            target,
+            kind,
+        } => {
+            if let (Some(source), Some(target)) = (
+                node_id_by_name(graph, source),
+                node_id_by_name(graph, target),
+            ) {
+                graph.edges.push(GraphEdge::new(source, target, *kind));
+            }
+        }
+        OpPayload::RemoveEdgeByName {
+            source,
+            target,
+            kind,
+        } => {
+            if let (Some(source), Some(target)) = (
+                node_id_by_name(graph, source),
+                node_id_by_name(graph, target),
+            ) {
+                graph
+                    .edges
+                    .retain(|e| e.source != source || e.target != target || e.kind != *kind);
+            }
+        }
+        OpPayload::SetReturnByName { target, ty } => {
+            if let Some(n) = node_by_name_mut(graph, target) {
+                n.return_type = Some(ty.clone());
+            }
+        }
+        OpPayload::SetMetadataByName { target, key, value } => {
+            if let Some(n) = node_by_name_mut(graph, target) {
+                set_node_metadata(n, key, value);
+            }
+        }
+        OpPayload::AddParamByName { target, name, ty } => {
+            if let Some(n) = node_by_name_mut(graph, target) {
+                let params = n.params.get_or_insert_with(Vec::new);
+                if !params.iter().any(|param| param.name == *name) {
+                    params.push(ParamDecl {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                    });
+                }
+            }
+        }
+        OpPayload::AddEffectByName { target, effect } => {
+            if let Some(n) = node_by_name_mut(graph, target) {
+                let row = n
+                    .effect_row
+                    .get_or_insert_with(|| EffectRow { effects: vec![] });
+                if !row.effects.contains(effect) {
+                    row.effects.push(effect.clone());
+                }
+            }
+        }
+        OpPayload::RemoveEffectByName { target, effect } => {
+            if let Some(n) = node_by_name_mut(graph, target)
+                && let Some(row) = &mut n.effect_row
+            {
+                row.effects.retain(|existing| existing != effect);
+            }
+        }
+        OpPayload::AddContractByName { target, kind, rule } => {
+            if let Some(n) = node_by_name_mut(graph, target) {
+                let clauses = n.contract_clauses.get_or_insert_with(|| ContractClauses {
+                    requires: vec![],
+                    ensures: vec![],
+                });
+                if kind == "requires" {
+                    if !clauses.requires.contains(rule) {
+                        clauses.requires.push(rule.clone());
+                    }
+                } else if !clauses.ensures.contains(rule) {
+                    clauses.ensures.push(rule.clone());
+                }
+            }
+        }
+        OpPayload::RemoveContractByName { target, rule } => {
+            if let Some(n) = node_by_name_mut(graph, target)
+                && let Some(clauses) = &mut n.contract_clauses
+            {
+                clauses.requires.retain(|existing| existing != rule);
+                clauses.ensures.retain(|existing| existing != rule);
+            }
+        }
+        OpPayload::AddCapabilityReqByName { target, capability } => {
+            if let Some(n) = node_by_name_mut(graph, target) {
+                let reqs = n
+                    .capability_reqs
+                    .get_or_insert_with(|| CapabilityReqs { caps: vec![] });
+                if !reqs.caps.contains(capability) {
+                    reqs.caps.push(capability.clone());
+                }
+            }
+        }
+        OpPayload::RemoveCapabilityReqByName { target, capability } => {
+            if let Some(n) = node_by_name_mut(graph, target)
+                && let Some(reqs) = &mut n.capability_reqs
+            {
+                reqs.caps.retain(|existing| existing != capability);
+            }
+        }
         OpPayload::Noop => {
             // Intentional no-op: Infer/Verify and raw-ChangeSet-derived ops.
+        }
+    }
+}
+
+fn node_id_by_name(graph: &SemanticGraph, name: &str) -> Option<NodeRef> {
+    graph
+        .nodes
+        .iter()
+        .find(|node| node.name == name)
+        .map(|node| node.id)
+}
+
+fn node_by_name_mut<'a>(graph: &'a mut SemanticGraph, name: &str) -> Option<&'a mut GraphNode> {
+    graph.nodes.iter_mut().find(|node| node.name == name)
+}
+
+fn set_node_metadata(node: &mut GraphNode, key: &str, value: &str) {
+    match key {
+        "return" | "type" => node.return_type = Some(value.to_string()),
+        "body" => {
+            let predicate = format!("body={value}");
+            node.runtime_checks = Some(vec![RuntimeCheckMeta {
+                hash: blake3::hash(predicate.as_bytes()).to_hex().to_string(),
+                predicate,
+            }]);
+        }
+        _ => {
+            let trust = node.trust_metadata.get_or_insert_with(|| TrustMetadata {
+                level: "metadata".to_string(),
+                tags: vec![],
+            });
+            let tag = format!("{key}={value}");
+            if !trust.tags.contains(&tag) {
+                trust.tags.push(tag);
+            }
         }
     }
 }
@@ -198,5 +353,137 @@ mod tests {
         assert_eq!(graph.nodes.len(), 1);
         assert_eq!(graph.nodes[0].kind, NodeKind::Function);
         assert_eq!(graph.nodes[0].name, "fn.answer");
+    }
+
+    #[test]
+    fn apply_parsed_representable_ops_mutates_graph() {
+        let parsed = parse_changeset(
+            "\
+change e2e base=0
+author tester
+description e2e
+op create_module id=module.checkout
+op create_capability id=cap.payment.charge
+op create_function id=fn.checkout
+op add_param target=fn.checkout name=cart_id type=CartId
+op set_return target=fn.checkout type=OrderId
+op add_effect target=fn.checkout effect=payment.charge
+op add_contract target=fn.checkout kind=ensures rule=order_created
+op connect source=fn.checkout_v2 relation=uses target=cap.payment.charge
+op grant target=module.checkout capability=payment.charge
+op rename target=fn.checkout name=fn.checkout_v2
+op move target=fn.checkout_v2 to=module.checkout
+op deprecate target=fn.checkout_v2 replacement=fn.checkout_v3
+op annotate target=fn.checkout_v2 key=rationale value=idempotent
+end
+",
+        )
+        .expect("fixture must parse");
+        let canonical = canonicalize_parsed(parsed);
+        let mut graph = SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
+
+        let outcome = apply(canonical, &mut graph, &TestBridge);
+
+        assert_eq!(outcome, ChangeSetOutcome::Applied);
+        assert_eq!(graph.nodes.len(), 3);
+        assert_eq!(graph.edges.len(), 1);
+        let module = graph
+            .nodes
+            .iter()
+            .find(|node| node.name == "module.checkout")
+            .expect("module must exist");
+        assert_eq!(module.kind, NodeKind::Module);
+        assert_eq!(
+            module
+                .capability_reqs
+                .as_ref()
+                .map(|reqs| reqs.caps.as_slice()),
+            Some(["payment.charge".to_string()].as_slice())
+        );
+        let function = graph
+            .nodes
+            .iter()
+            .find(|node| node.name == "fn.checkout_v2")
+            .expect("renamed function must exist");
+        assert_eq!(function.return_type.as_deref(), Some("OrderId"));
+        assert_eq!(
+            function
+                .params
+                .as_ref()
+                .and_then(|params| params.first())
+                .map(|param| (param.name.as_str(), param.ty.as_str())),
+            Some(("cart_id", "CartId"))
+        );
+        assert_eq!(
+            function
+                .effect_row
+                .as_ref()
+                .map(|row| row.effects.as_slice()),
+            Some(["payment.charge".to_string()].as_slice())
+        );
+        assert_eq!(
+            function
+                .contract_clauses
+                .as_ref()
+                .map(|clauses| clauses.ensures.as_slice()),
+            Some(["order_created".to_string()].as_slice())
+        );
+        let tags = &function
+            .trust_metadata
+            .as_ref()
+            .expect("metadata tags must exist")
+            .tags;
+        assert!(tags.contains(&"module=module.checkout".to_string()));
+        assert!(tags.contains(&"deprecated_replacement=fn.checkout_v3".to_string()));
+        assert!(tags.contains(&"rationale=idempotent".to_string()));
+    }
+
+    #[test]
+    fn apply_parsed_remove_ops_mutate_graph() {
+        let parsed = parse_changeset(
+            "\
+change e2e base=0
+author tester
+description e2e
+op create_capability id=cap.payment.charge
+op create_function id=fn.checkout
+op add_effect target=fn.checkout effect=payment.charge
+op add_contract target=fn.checkout kind=ensures rule=order_created
+op connect source=fn.checkout relation=uses target=cap.payment.charge
+op remove_effect target=fn.checkout effect=payment.charge
+op remove_contract target=fn.checkout rule=order_created
+op disconnect source=fn.checkout relation=uses target=cap.payment.charge
+op delete target=cap.payment.charge
+end
+",
+        )
+        .expect("fixture must parse");
+        let canonical = canonicalize_parsed(parsed);
+        let mut graph = SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
+
+        let outcome = apply(canonical, &mut graph, &TestBridge);
+
+        assert_eq!(outcome, ChangeSetOutcome::Applied);
+        assert_eq!(graph.nodes.len(), 1);
+        assert_eq!(graph.nodes[0].name, "fn.checkout");
+        assert!(graph.edges.is_empty());
+        assert!(
+            graph.nodes[0]
+                .effect_row
+                .as_ref()
+                .is_none_or(|row| row.effects.is_empty())
+        );
+        assert!(
+            graph.nodes[0]
+                .contract_clauses
+                .as_ref()
+                .is_none_or(|clauses| clauses.requires.is_empty() && clauses.ensures.is_empty())
+        );
     }
 }

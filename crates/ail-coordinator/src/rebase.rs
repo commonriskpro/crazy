@@ -74,6 +74,23 @@ fn extract_node_refs(payload: &OpPayload, out: &mut BTreeSet<NodeRef>) {
             out.insert(edge.source);
             out.insert(edge.target);
         }
+        OpPayload::RemoveNodeByName(_)
+        | OpPayload::RenameNodeByName { .. }
+        | OpPayload::AddEdgeByName { .. }
+        | OpPayload::RemoveEdgeByName { .. }
+        | OpPayload::SetReturnByName { .. }
+        | OpPayload::SetMetadataByName { .. }
+        | OpPayload::AddParamByName { .. }
+        | OpPayload::AddEffectByName { .. }
+        | OpPayload::RemoveEffectByName { .. }
+        | OpPayload::AddContractByName { .. }
+        | OpPayload::RemoveContractByName { .. }
+        | OpPayload::AddCapabilityReqByName { .. }
+        | OpPayload::RemoveCapabilityReqByName { .. } => {
+            // Name-based payloads are resolved against the live graph during
+            // apply. StructuralDiff is NodeRef-based, so there is no stable
+            // NodeRef to extract at canonicalization/rebase time.
+        }
         OpPayload::Noop => {
             // No NodeRef to extract.
         }
@@ -230,7 +247,11 @@ mod tests {
     fn edge_op(src: u32, tgt: u32) -> CanonicalOp {
         CanonicalOp {
             kind: ail_change::model::ChangeSetOp::Connect,
-            payload: OpPayload::AddEdge(GraphEdge::new(NodeRef(src), NodeRef(tgt), EdgeKind::Calls)),
+            payload: OpPayload::AddEdge(GraphEdge::new(
+                NodeRef(src),
+                NodeRef(tgt),
+                EdgeKind::Calls,
+            )),
             block_hash: dummy_hash(),
             ..Default::default()
         }

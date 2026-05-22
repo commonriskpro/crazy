@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 
 use ail_core::semantic_graph::{
-    CapabilityReqs, GraphEdge, GraphNode, NodeKind, NodeRef, RuntimeCheckMeta, TypeFacts,
+    CapabilityReqs, EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, RuntimeCheckMeta, TypeFacts,
 };
 use serde::{Deserialize, Serialize};
 
@@ -107,6 +107,52 @@ pub enum OpPayload {
     RemoveNode(NodeRef),
     /// Rename a node (minimal Set semantics).
     SetNodeName { node_id: NodeRef, name: String },
+    /// Remove an existing node by stable graph name.
+    RemoveNodeByName(String),
+    /// Rename a node by stable graph name.
+    RenameNodeByName { target: String, name: String },
+    /// Add a directed edge after resolving endpoint names during apply.
+    AddEdgeByName {
+        source: String,
+        target: String,
+        kind: EdgeKind,
+    },
+    /// Remove a directed edge after resolving endpoint names during apply.
+    RemoveEdgeByName {
+        source: String,
+        target: String,
+        kind: EdgeKind,
+    },
+    /// Set a function return type by stable graph name.
+    SetReturnByName { target: String, ty: String },
+    /// Set a supported scalar metadata field by stable graph name.
+    SetMetadataByName {
+        target: String,
+        key: String,
+        value: String,
+    },
+    /// Add a function parameter by stable graph name.
+    AddParamByName {
+        target: String,
+        name: String,
+        ty: String,
+    },
+    /// Add an effect to a node's effect row by stable graph name.
+    AddEffectByName { target: String, effect: String },
+    /// Remove an effect from a node's effect row by stable graph name.
+    RemoveEffectByName { target: String, effect: String },
+    /// Add a contract clause to a node by stable graph name.
+    AddContractByName {
+        target: String,
+        kind: String,
+        rule: String,
+    },
+    /// Remove a contract clause from a node by stable graph name.
+    RemoveContractByName { target: String, rule: String },
+    /// Add a capability requirement to a node by stable graph name.
+    AddCapabilityReqByName { target: String, capability: String },
+    /// Remove a capability requirement from a node by stable graph name.
+    RemoveCapabilityReqByName { target: String, capability: String },
     /// No-op placeholder; used for Infer/Verify and raw-ChangeSet-derived ops.
     Noop,
 }
@@ -470,25 +516,172 @@ fn materialize_defaults(kind: &ChangeSetOp, verb: &str, args: &mut OpArgs) {
 }
 
 fn materialize_payload(idx: usize, kind: &ChangeSetOp, verb: &str, args: &OpArgs) -> OpPayload {
-    if kind != &ChangeSetOp::Create {
-        return OpPayload::Noop;
-    }
-
-    match verb {
-        "create_type" => args
+    match (kind, verb) {
+        (ChangeSetOp::Create, "create_module") => args
+            .get("id")
+            .map(|id| OpPayload::CreateNode(Box::new(module_node(idx, id))))
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Create, "create_type") => args
             .get("id")
             .map(|id| OpPayload::CreateNode(Box::new(type_node(idx, id))))
             .unwrap_or(OpPayload::Noop),
-        "create_function" => args
+        (ChangeSetOp::Create, "create_function") => args
             .get("id")
             .map(|id| OpPayload::CreateNode(Box::new(function_node(idx, id, args))))
             .unwrap_or(OpPayload::Noop),
-        "create_capability" => args
+        (ChangeSetOp::Create, "create_capability") => args
             .get("id")
             .map(|id| OpPayload::CreateNode(Box::new(capability_node(idx, id))))
             .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Set, "set_return") => target_and(args, "type")
+            .map(|(target, ty)| OpPayload::SetReturnByName { target, ty })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Set, "set_body") => target_and(args, "body")
+            .map(|(target, value)| OpPayload::SetMetadataByName {
+                target,
+                key: "body".to_string(),
+                value,
+            })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Set, _) | (ChangeSetOp::Replace, _) => args
+            .get("target")
+            .and_then(|target| metadata_arg(args).map(|(key, value)| (target.clone(), key, value)))
+            .map(|(target, key, value)| OpPayload::SetMetadataByName { target, key, value })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Add, "add_param") => {
+            match (args.get("target"), args.get("name"), args.get("type")) {
+                (Some(target), Some(name), Some(ty)) => OpPayload::AddParamByName {
+                    target: target.clone(),
+                    name: name.clone(),
+                    ty: ty.clone(),
+                },
+                _ => OpPayload::Noop,
+            }
+        }
+        (ChangeSetOp::Add, "add_effect") => target_and(args, "effect")
+            .map(|(target, effect)| OpPayload::AddEffectByName { target, effect })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Add, "add_contract") => {
+            match (args.get("target"), args.get("kind"), args.get("rule")) {
+                (Some(target), Some(kind), Some(rule)) => OpPayload::AddContractByName {
+                    target: target.clone(),
+                    kind: kind.clone(),
+                    rule: rule.clone(),
+                },
+                _ => OpPayload::Noop,
+            }
+        }
+        (ChangeSetOp::Remove, "remove_effect") => target_and(args, "effect")
+            .map(|(target, effect)| OpPayload::RemoveEffectByName { target, effect })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Remove, "remove_contract") => target_and(args, "rule")
+            .map(|(target, rule)| OpPayload::RemoveContractByName { target, rule })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Remove, verb) if verb.starts_with("remove_") => args
+            .get("target")
+            .cloned()
+            .map(OpPayload::RemoveNodeByName)
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Delete, _) => args
+            .get("target")
+            .cloned()
+            .map(OpPayload::RemoveNodeByName)
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Rename, _) => match (args.get("target"), args.get("name")) {
+            (Some(target), Some(name)) => OpPayload::RenameNodeByName {
+                target: target.clone(),
+                name: name.clone(),
+            },
+            _ => OpPayload::Noop,
+        },
+        (ChangeSetOp::Move, _) => target_and(args, "to")
+            .map(|(target, value)| OpPayload::SetMetadataByName {
+                target,
+                key: "module".to_string(),
+                value,
+            })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Connect, _) => edge_payload(args, false),
+        (ChangeSetOp::Disconnect, _) => edge_payload(args, true),
+        (ChangeSetOp::Grant, _) => target_and(args, "capability")
+            .map(|(target, capability)| OpPayload::AddCapabilityReqByName { target, capability })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Revoke, _) => target_and(args, "capability")
+            .map(|(target, capability)| OpPayload::RemoveCapabilityReqByName { target, capability })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Deprecate, _) => target_and(args, "replacement")
+            .map(|(target, value)| OpPayload::SetMetadataByName {
+                target,
+                key: "deprecated_replacement".to_string(),
+                value,
+            })
+            .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Annotate, _) => {
+            match (args.get("target"), args.get("key"), args.get("value")) {
+                (Some(target), Some(key), Some(value)) => OpPayload::SetMetadataByName {
+                    target: target.clone(),
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+                _ => OpPayload::Noop,
+            }
+        }
+        // These verbs need verifier/policy/runtime state or graph concepts that do
+        // not exist in SemanticGraph yet (public exports, handler bindings,
+        // inference products, locks, migrations, approvals, generated artifacts).
         _ => OpPayload::Noop,
     }
+}
+
+fn target_and(args: &OpArgs, key: &str) -> Option<(String, String)> {
+    Some((args.get("target")?.clone(), args.get(key)?.clone()))
+}
+
+fn metadata_arg(args: &OpArgs) -> Option<(String, String)> {
+    args.iter()
+        .find(|(key, _)| !matches!(key.as_str(), "target" | "source" | "id"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+}
+
+fn edge_payload(args: &OpArgs, remove: bool) -> OpPayload {
+    match (args.get("source"), args.get("target")) {
+        (Some(source), Some(target)) => {
+            let kind = args
+                .get("relation")
+                .map(|relation| edge_kind(relation))
+                .unwrap_or(EdgeKind::DependsOn);
+            if remove {
+                OpPayload::RemoveEdgeByName {
+                    source: source.clone(),
+                    target: target.clone(),
+                    kind,
+                }
+            } else {
+                OpPayload::AddEdgeByName {
+                    source: source.clone(),
+                    target: target.clone(),
+                    kind,
+                }
+            }
+        }
+        _ => OpPayload::Noop,
+    }
+}
+
+fn edge_kind(relation: &str) -> EdgeKind {
+    match relation {
+        "calls" => EdgeKind::Calls,
+        "reads" => EdgeKind::Reads,
+        "writes" => EdgeKind::Writes,
+        "emits" => EdgeKind::Emits,
+        "proves" => EdgeKind::Proves,
+        "breaks_if_changed" => EdgeKind::BreaksIfChanged,
+        _ => EdgeKind::DependsOn,
+    }
+}
+
+fn module_node(idx: usize, id: &str) -> GraphNode {
+    GraphNode::new(NodeRef(idx as u32), NodeKind::Module, id)
 }
 
 fn type_node(idx: usize, id: &str) -> GraphNode {
@@ -543,7 +736,7 @@ fn compute_block_hash(op: &ChangeSetOp, idx: usize) -> BlockHash {
 mod tests {
     use super::*;
     use crate::parser::parse_changeset;
-    use ail_core::semantic_graph::NodeKind;
+    use ail_core::semantic_graph::{EdgeKind, NodeKind};
 
     fn minimal_change(op: &str) -> String {
         format!("change e2e base=0\nauthor tester\ndescription e2e\nop {op}\nend\n")
@@ -592,5 +785,147 @@ mod tests {
             }
             other => panic!("expected type CreateNode payload, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn canonicalize_parsed_materializes_representable_op_payloads() {
+        let source = "\
+change e2e base=0
+author tester
+description e2e
+op create_module id=module.checkout
+op create_capability id=cap.payment.charge
+op create_function id=fn.checkout
+op add_param target=fn.checkout name=cart_id type=CartId
+op set_return target=fn.checkout type=OrderId
+op set_body target=fn.checkout body=@expr.checkout
+op add_effect target=fn.checkout effect=payment.charge
+op add_contract target=fn.checkout kind=ensures rule=order_created
+op connect source=fn.checkout relation=uses target=cap.payment.charge
+op disconnect source=fn.checkout relation=uses target=cap.payment.charge
+op grant target=module.checkout capability=payment.charge
+op revoke target=module.checkout capability=payment.charge
+op rename target=fn.checkout name=fn.checkout_v2
+op move target=fn.checkout_v2 to=module.checkout
+op deprecate target=fn.checkout_v2 replacement=fn.checkout_v3
+op annotate target=fn.checkout_v2 key=rationale value=idempotent
+op remove_effect target=fn.checkout_v2 effect=payment.charge
+op remove_contract target=fn.checkout_v2 rule=order_created
+op delete target=fn.checkout_v2
+end
+";
+        let canonical = canonicalize_parsed(parse_changeset(source).expect("fixture must parse"));
+
+        assert!(matches!(canonical.ops[0].payload, OpPayload::CreateNode(_)));
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::AddParamByName { .. }))
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::SetReturnByName { .. }))
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::AddEffectByName { .. }))
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::AddContractByName { .. }))
+        );
+        assert!(canonical.ops.iter().any(|op| matches!(
+            op.payload,
+            OpPayload::AddEdgeByName {
+                kind: EdgeKind::DependsOn,
+                ..
+            }
+        )));
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::RemoveEdgeByName { .. }))
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::AddCapabilityReqByName { .. }))
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::RemoveCapabilityReqByName { .. }))
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::RenameNodeByName { .. }))
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::SetMetadataByName { .. }))
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::RemoveEffectByName { .. }))
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::RemoveContractByName { .. }))
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::RemoveNodeByName(_)))
+        );
+    }
+
+    #[test]
+    fn canonicalize_parsed_leaves_unsupported_workflow_ops_noop() {
+        let source = "\
+change e2e base=0
+author tester
+description e2e
+op infer_boundary target=fn.checkout
+op bind_handler capability=payment.charge handler=handler.Stripe profile=prod
+op expose target=fn.checkout as=api.checkout
+op hide target=fn.internal
+op derive_eq target=type.Address mode=structural
+op generate_tests target=fn.checkout from=contracts
+op assert_exists target=fn.checkout
+op lock_behavior target=fn.checkout
+op refactor_inline target=fn.old_helper
+op migrate_api target=fn.checkout from=sig.v1 to=sig.v2
+op approve_inferred_boundary target=fn.checkout version=sig_123
+op reject_inferred_boundary target=fn.checkout version=sig_124
+op verify
+end
+";
+        let canonical = canonicalize_parsed(parse_changeset(source).expect("fixture must parse"));
+
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .all(|op| matches!(op.payload, OpPayload::Noop))
+        );
     }
 }
