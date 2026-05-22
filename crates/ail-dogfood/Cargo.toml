@@ -6,10 +6,13 @@ license.workspace = true
 
 [dependencies]
 ail-change  = { workspace = true }
+ail-compiler = { workspace = true }
 ail-context = { workspace = true }
 ail-core    = { workspace = true }
+ail-runtime = { workspace = true }
 ail-storage = { workspace = true }
 ail-stdlib  = { workspace = true }
+ail-verify  = { workspace = true }
 blake3      = { workspace = true }
 ciborium    = { workspace = true }
 serde       = { workspace = true }

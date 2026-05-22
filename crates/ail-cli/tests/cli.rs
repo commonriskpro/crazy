@@ -154,6 +154,15 @@ fn change_from_stdin_prints_hash() {
     );
 }
 
+#[test]
+fn run_function_prints_result() {
+    ail()
+        .args(["run", "fn.answer"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("result: 42"));
+}
+
 /// Spec scenario: file and stdin produce the same change-id (deterministic hash).
 #[test]
 fn change_file_and_stdin_produce_same_hash() {

@@ -165,10 +165,13 @@ name = "ail-dogfood"
 version = "0.1.0"
 dependencies = [
  "ail-change",
+ "ail-compiler",
  "ail-context",
  "ail-core",
+ "ail-runtime",
  "ail-stdlib",
  "ail-storage",
+ "ail-verify",
  "blake3",
  "ciborium",
  "futures",

@@ -67,6 +67,15 @@ pub enum RuntimeValue {
     Unit,
 }
 
+impl std::fmt::Display for RuntimeValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RuntimeValue::I64(v) => write!(f, "{v}"),
+            RuntimeValue::Unit => write!(f, "()"),
+        }
+    }
+}
+
 // ── HostState ─────────────────────────────────────────────────────────────
 
 /// Data carried in the Wasmtime `Store`.
