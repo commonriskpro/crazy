@@ -20,7 +20,8 @@ pub mod summary;
 pub use builder::ResponseBuilder;
 pub use dto::{
     CONTEXT_SCHEMA_V1, ContextQuery, ContextResponse, FreshnessStatus, IndexInfo, ProvenanceBlock,
-    QueryScope, RedactionPolicy, RedactionState, RepairOption, ResponseLimits, SnapshotSelector,
+    QueryBudget, QueryScope, RedactionPolicy, RedactionState, RepairOption, ResponseLimits,
+    SnapshotSelector,
 };
 pub use error::{
     ContextError, ContextResult, E_ACCESS_DENIED, E_BUDGET_EXCEEDED, E_CODEC, E_CONTEXT_STALE,

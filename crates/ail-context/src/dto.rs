@@ -178,12 +178,24 @@ pub struct RedactionPolicy {
 
 /// Identifies which `SnapshotEnvelope` to materialise.
 ///
-/// Only `ById` is supported by `StoreContextSource`; `InMemoryContextSource`
-/// also supports `ById` for test predictability.
+/// `ById` is always supported.  `Latest` is supported by both
+/// `InMemoryContextSource` (returns the snapshot with the highest
+/// `created_at`) and `StoreContextSource` (lists all snapshots and returns
+/// the most recent).
+///
+/// # Doc spec
+///
+/// ```txt
+/// context fn.checkout at latest
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SnapshotSelector {
     /// Look up a specific snapshot by its `SnapshotEnvelope.id`.
     ById(ObjectId),
+    /// Resolve to the most-recently created snapshot (highest `created_at`).
+    ///
+    /// Ties are broken deterministically by `ObjectId` byte order (highest wins).
+    Latest,
 }
 
 // ── QueryScope ────────────────────────────────────────────────────────────
@@ -199,12 +211,122 @@ pub enum QueryScope {
     Full,
 }
 
+// ── QueryBudget ───────────────────────────────────────────────────────────
+
+/// Fine-grained budget and scoping dimensions for a context query.
+///
+/// Replaces the single `budget: usize` byte limit with the full set of
+/// dimensions specified in the context-server protocol doc:
+///
+/// ```txt
+/// Budget fields:
+///   max_depth            — limit BFS traversal depth
+///   max_nodes            — limit total nodes returned
+///   max_tokens           — byte limit for the structured layer (primary budget)
+///   include_private      — whether to include private nodes
+///   include_transitive   — whether to include transitive relationships
+///   include_runtime_logs — whether to include runtime log data
+///   profile              — runtime profile for capability/handler queries
+/// ```
+///
+/// # Constructors
+///
+/// - `QueryBudget::bytes(n)` — set `max_tokens = n`, leave other fields as defaults.
+/// - `QueryBudget::default()` — `max_tokens = usize::MAX` (unlimited byte budget).
+///
+/// # Effective byte limit
+///
+/// `QueryBudget::effective_bytes()` returns `max_tokens` — the value used
+/// by `ResponseBuilder` as the byte limit for the structured layer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryBudget {
+    /// Maximum BFS traversal depth from the query target.
+    ///
+    /// `None` means unlimited depth. When set, BFS stops at this hop count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<usize>,
+    /// Maximum number of nodes to include in the structured layer.
+    ///
+    /// `None` means unlimited nodes (bounded only by `max_tokens`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_nodes: Option<usize>,
+    /// Maximum total bytes for the structured layer.
+    ///
+    /// `0` is invalid and will be rejected with `E_INVALID_BUDGET`.
+    /// This is the primary budget dimension and replaces the former
+    /// `budget: usize` field.
+    pub max_tokens: usize,
+    /// When `true`, private nodes are included in the response.
+    ///
+    /// Private nodes are those with `Visibility::Private` or no visibility
+    /// annotation.  Default is `false` (private nodes are omitted).
+    #[serde(default)]
+    pub include_private: bool,
+    /// When `true`, transitive relationships are followed during BFS.
+    ///
+    /// For `Callers`/`Callees` queries this overrides the per-variant
+    /// `transitive` flag.  Default is `true`.
+    #[serde(default = "default_true")]
+    pub include_transitive: bool,
+    /// When `true`, runtime log data is included in the response.
+    ///
+    /// Runtime logs can be large; default is `false` (logs omitted).
+    #[serde(default)]
+    pub include_runtime_logs: bool,
+    /// Runtime profile identifier for capability/handler/runtime queries.
+    ///
+    /// `None` means all profiles or the default profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for QueryBudget {
+    fn default() -> Self {
+        Self {
+            max_depth: None,
+            max_nodes: None,
+            max_tokens: usize::MAX,
+            include_private: false,
+            include_transitive: true,
+            include_runtime_logs: false,
+            profile: None,
+        }
+    }
+}
+
+impl QueryBudget {
+    /// Create a `QueryBudget` with `max_tokens = bytes` and all other fields
+    /// at their defaults.
+    ///
+    /// This is the recommended constructor for callers that only care about
+    /// the byte limit (equivalent to the former `budget: usize` usage).
+    pub fn bytes(bytes: usize) -> Self {
+        Self {
+            max_tokens: bytes,
+            ..Self::default()
+        }
+    }
+
+    /// The effective byte limit used by `ResponseBuilder`.
+    ///
+    /// Returns `max_tokens` — the primary budget dimension.
+    pub fn effective_bytes(&self) -> usize {
+        self.max_tokens
+    }
+}
+
 // ── ContextQuery ──────────────────────────────────────────────────────────
 
 /// Input contract for a context query.
 ///
-/// `budget` is a byte limit for the structured layer; zero is invalid and
-/// will be rejected with `ContextError::InvalidBudget`.
+/// `budget` is a `QueryBudget` that controls traversal depth, node count,
+/// byte limit, visibility, transitive inclusion, runtime logs, and profile.
+/// A zero `budget.max_tokens` is invalid and will be rejected with
+/// `ContextError::InvalidBudget`.
 ///
 /// # Query kinds
 ///
@@ -232,15 +354,15 @@ pub enum ContextQuery {
         target: NodeRef,
         /// Traversal scope from the target.
         scope: QueryScope,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Context spanning the whole graph.
     Graph {
         /// Traversal scope.
         scope: QueryScope,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Impact query: returns the set of nodes that depend on `target` and
     /// would require re-verification if `target` changed.
@@ -252,8 +374,8 @@ pub enum ContextQuery {
     Impact {
         /// The node whose change-impact is being assessed.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Callers query: returns nodes that call `target` via `EdgeKind::Calls`.
     ///
@@ -266,8 +388,8 @@ pub enum ContextQuery {
         /// Whether to include transitive callers (BFS) in addition to
         /// direct callers.
         transitive: bool,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Callees query: returns nodes that `target` calls via `EdgeKind::Calls`.
     ///
@@ -280,8 +402,8 @@ pub enum ContextQuery {
         /// Whether to include transitive callees (BFS) in addition to
         /// direct callees.
         transitive: bool,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Effects query: returns declared effects and capabilities for `target`.
     ///
@@ -291,8 +413,8 @@ pub enum ContextQuery {
     Effects {
         /// The node whose effects and capabilities are requested.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Contracts query: returns contract clauses (requires/ensures) for `target`.
     ///
@@ -301,8 +423,8 @@ pub enum ContextQuery {
     Contracts {
         /// The node whose contracts are requested.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// History query: returns the provenance chain for `target`.
     ///
@@ -313,8 +435,8 @@ pub enum ContextQuery {
     History {
         /// The node whose provenance chain is requested.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Proofs query: returns proof obligations and their current status for
     /// `target`.
@@ -326,8 +448,8 @@ pub enum ContextQuery {
     Proofs {
         /// The node whose proof obligations are requested.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Resources query: returns resource handles, ownership modes, and
     /// concurrency information for `target`.
@@ -338,8 +460,8 @@ pub enum ContextQuery {
     Resources {
         /// The node whose resource usage is requested.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Boundaries query: returns architectural boundary nodes and trust
     /// metadata for `target`.
@@ -351,8 +473,8 @@ pub enum ContextQuery {
     Boundaries {
         /// The node or module whose boundaries are requested.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Why query: returns a provenance trace explaining why a claim or edge
     /// exists for `target`.
@@ -365,8 +487,8 @@ pub enum ContextQuery {
     Why {
         /// The node whose existence/behaviour is being traced.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// RefactorContext query: returns prerequisites and risk analysis for
     /// safely refactoring `target`.
@@ -378,8 +500,8 @@ pub enum ContextQuery {
     RefactorContext {
         /// The node to be refactored.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Runtime query: returns runtime profile grants, limits, and audit
     /// availability for `target`.
@@ -393,8 +515,8 @@ pub enum ContextQuery {
         target: NodeRef,
         /// Runtime profile identifier (e.g., `"prod"`, `"dev"`, `"test"`).
         profile: String,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Diff query: returns structural differences between two snapshots or the
     /// nodes changed by a specific change reference.
@@ -407,8 +529,8 @@ pub enum ContextQuery {
         snapshot_a: Option<ObjectId>,
         /// Second snapshot reference (newer); `None` means the current snapshot.
         snapshot_b: Option<ObjectId>,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Risks query: returns risk annotations for `target` or a proposed change.
     ///
@@ -418,8 +540,8 @@ pub enum ContextQuery {
     Risks {
         /// The node or change whose risks are being assessed.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Todo query: returns outstanding obligations for `target` or a change.
     ///
@@ -428,8 +550,8 @@ pub enum ContextQuery {
     Todo {
         /// The node or change whose outstanding obligations are listed.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Capabilities query: returns granted capabilities for `target` in a profile.
     ///
@@ -440,8 +562,8 @@ pub enum ContextQuery {
         target: NodeRef,
         /// Runtime profile identifier (e.g., `"prod"`, `"dev"`, `"test"`).
         profile: String,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Handlers query: returns handler bindings for a capability in a profile.
     ///
@@ -452,8 +574,8 @@ pub enum ContextQuery {
         target: NodeRef,
         /// Runtime profile identifier (e.g., `"prod"`, `"dev"`, `"test"`).
         profile: String,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Concurrency query: returns task groups, channels, and shared state for `target`.
     ///
@@ -462,8 +584,8 @@ pub enum ContextQuery {
     Concurrency {
         /// The node or module whose concurrency information is requested.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Tasks query: returns async task groups and await/cancel status for `target`.
     ///
@@ -472,8 +594,8 @@ pub enum ContextQuery {
     Tasks {
         /// The node whose task groups are requested.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// Assumptions query: returns trust assumptions for `target` boundary.
     ///
@@ -482,8 +604,8 @@ pub enum ContextQuery {
     Assumptions {
         /// The node or boundary whose assumptions are listed.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// ExtractCandidates query: returns sub-expressions or sub-functions within
     /// `target` that are candidates for extraction (refactor support).
@@ -494,8 +616,8 @@ pub enum ContextQuery {
     ExtractCandidates {
         /// The node whose extractable sub-components are identified.
         target: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
     /// MoveSafety query: assesses whether `target` can be safely moved to `destination`.
     ///
@@ -506,13 +628,16 @@ pub enum ContextQuery {
         target: NodeRef,
         /// The destination scope/module `NodeRef`.
         destination: NodeRef,
-        /// Maximum total bytes for the structured layer (must be > 0).
-        budget: usize,
+        /// Budget and scoping dimensions (must have `max_tokens > 0`).
+        budget: QueryBudget,
     },
 }
 
 impl ContextQuery {
-    /// The byte budget for the structured layer.
+    /// The effective byte budget for the structured layer.
+    ///
+    /// Returns `budget.effective_bytes()` (`budget.max_tokens`) — the
+    /// primary dimension used by `ResponseBuilder` as the byte limit.
     pub fn budget(&self) -> usize {
         match self {
             ContextQuery::Node { budget, .. }
@@ -538,7 +663,37 @@ impl ContextQuery {
             | ContextQuery::Tasks { budget, .. }
             | ContextQuery::Assumptions { budget, .. }
             | ContextQuery::ExtractCandidates { budget, .. }
-            | ContextQuery::MoveSafety { budget, .. } => *budget,
+            | ContextQuery::MoveSafety { budget, .. } => budget.effective_bytes(),
+        }
+    }
+
+    /// Return a reference to the `QueryBudget` for the full budget dimensions.
+    pub fn query_budget(&self) -> &QueryBudget {
+        match self {
+            ContextQuery::Node { budget, .. }
+            | ContextQuery::Graph { budget, .. }
+            | ContextQuery::Impact { budget, .. }
+            | ContextQuery::Callers { budget, .. }
+            | ContextQuery::Callees { budget, .. }
+            | ContextQuery::Effects { budget, .. }
+            | ContextQuery::Contracts { budget, .. }
+            | ContextQuery::History { budget, .. }
+            | ContextQuery::Proofs { budget, .. }
+            | ContextQuery::Resources { budget, .. }
+            | ContextQuery::Boundaries { budget, .. }
+            | ContextQuery::Why { budget, .. }
+            | ContextQuery::RefactorContext { budget, .. }
+            | ContextQuery::Runtime { budget, .. }
+            | ContextQuery::Diff { budget, .. }
+            | ContextQuery::Risks { budget, .. }
+            | ContextQuery::Todo { budget, .. }
+            | ContextQuery::Capabilities { budget, .. }
+            | ContextQuery::Handlers { budget, .. }
+            | ContextQuery::Concurrency { budget, .. }
+            | ContextQuery::Tasks { budget, .. }
+            | ContextQuery::Assumptions { budget, .. }
+            | ContextQuery::ExtractCandidates { budget, .. }
+            | ContextQuery::MoveSafety { budget, .. } => budget,
         }
     }
 
@@ -742,7 +897,7 @@ mod tests {
         let codec = CborCodec;
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let query_bytes = codec.encode(&query).expect("encode query");
         let query_hash = *blake3::hash(&query_bytes).as_bytes();
@@ -784,7 +939,7 @@ mod tests {
         let query = ContextQuery::Node {
             target: NodeRef(5),
             scope: QueryScope::Full,
-            budget: 4096,
+            budget: QueryBudget::bytes(4096),
         };
         let bytes = codec.encode(&query).expect("encode must succeed");
         let decoded: ContextQuery = codec.decode(&bytes).expect("decode must succeed");
@@ -798,7 +953,7 @@ mod tests {
         let codec = CborCodec;
         let query = ContextQuery::Graph {
             scope: QueryScope::Local,
-            budget: 2048,
+            budget: QueryBudget::bytes(2048),
         };
         let bytes = codec.encode(&query).expect("encode must succeed");
         let decoded: ContextQuery = codec.decode(&bytes).expect("decode must succeed");
@@ -816,29 +971,29 @@ mod tests {
         let variants: Vec<ContextQuery> = vec![
             ContextQuery::Impact {
                 target: NodeRef(1),
-                budget: 1024,
+                budget: QueryBudget::bytes(1024),
             },
             ContextQuery::Callers {
                 target: NodeRef(2),
                 transitive: true,
-                budget: 512,
+                budget: QueryBudget::bytes(512),
             },
             ContextQuery::Callees {
                 target: NodeRef(3),
                 transitive: false,
-                budget: 256,
+                budget: QueryBudget::bytes(256),
             },
             ContextQuery::Effects {
                 target: NodeRef(4),
-                budget: 2048,
+                budget: QueryBudget::bytes(2048),
             },
             ContextQuery::Contracts {
                 target: NodeRef(5),
-                budget: 4096,
+                budget: QueryBudget::bytes(4096),
             },
             ContextQuery::History {
                 target: NodeRef(6),
-                budget: 8192,
+                budget: QueryBudget::bytes(8192),
             },
         ];
         for q in &variants {
@@ -855,20 +1010,20 @@ mod tests {
         let node_q = ContextQuery::Node {
             target: NodeRef(0),
             scope: QueryScope::Local,
-            budget: 1024,
+            budget: QueryBudget::bytes(1024),
         };
         let graph_q = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: 512,
+            budget: QueryBudget::bytes(512),
         };
         let impact_q = ContextQuery::Impact {
             target: NodeRef(0),
-            budget: 333,
+            budget: QueryBudget::bytes(333),
         };
         let callers_q = ContextQuery::Callers {
             target: NodeRef(0),
             transitive: false,
-            budget: 444,
+            budget: QueryBudget::bytes(444),
         };
         assert_eq!(node_q.budget(), 1024);
         assert_eq!(graph_q.budget(), 512);
@@ -883,15 +1038,15 @@ mod tests {
         let node_q = ContextQuery::Node {
             target: NodeRef(7),
             scope: QueryScope::Local,
-            budget: 1,
+            budget: QueryBudget::bytes(1),
         };
         let graph_q = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: 1,
+            budget: QueryBudget::bytes(1),
         };
         let impact_q = ContextQuery::Impact {
             target: NodeRef(9),
-            budget: 1,
+            budget: QueryBudget::bytes(1),
         };
         assert_eq!(node_q.target(), Some(NodeRef(7)));
         assert_eq!(graph_q.target(), None);
@@ -979,28 +1134,28 @@ mod tests {
         let variants: Vec<ContextQuery> = vec![
             ContextQuery::Proofs {
                 target: NodeRef(10),
-                budget: 1024,
+                budget: QueryBudget::bytes(1024),
             },
             ContextQuery::Resources {
                 target: NodeRef(11),
-                budget: 2048,
+                budget: QueryBudget::bytes(2048),
             },
             ContextQuery::Boundaries {
                 target: NodeRef(12),
-                budget: 4096,
+                budget: QueryBudget::bytes(4096),
             },
             ContextQuery::Why {
                 target: NodeRef(13),
-                budget: 512,
+                budget: QueryBudget::bytes(512),
             },
             ContextQuery::RefactorContext {
                 target: NodeRef(14),
-                budget: 8192,
+                budget: QueryBudget::bytes(8192),
             },
             ContextQuery::Runtime {
                 target: NodeRef(15),
                 profile: "prod".to_string(),
-                budget: 16384,
+                budget: QueryBudget::bytes(16384),
             },
         ];
         for q in &variants {
@@ -1017,7 +1172,7 @@ mod tests {
         assert_eq!(
             ContextQuery::Proofs {
                 target: NodeRef(0),
-                budget: 111
+                budget: QueryBudget::bytes(111)
             }
             .budget(),
             111
@@ -1025,7 +1180,7 @@ mod tests {
         assert_eq!(
             ContextQuery::Resources {
                 target: NodeRef(0),
-                budget: 222
+                budget: QueryBudget::bytes(222)
             }
             .budget(),
             222
@@ -1033,7 +1188,7 @@ mod tests {
         assert_eq!(
             ContextQuery::Boundaries {
                 target: NodeRef(0),
-                budget: 333
+                budget: QueryBudget::bytes(333)
             }
             .budget(),
             333
@@ -1041,7 +1196,7 @@ mod tests {
         assert_eq!(
             ContextQuery::Why {
                 target: NodeRef(0),
-                budget: 444
+                budget: QueryBudget::bytes(444)
             }
             .budget(),
             444
@@ -1049,7 +1204,7 @@ mod tests {
         assert_eq!(
             ContextQuery::RefactorContext {
                 target: NodeRef(0),
-                budget: 555
+                budget: QueryBudget::bytes(555)
             }
             .budget(),
             555
@@ -1058,7 +1213,7 @@ mod tests {
             ContextQuery::Runtime {
                 target: NodeRef(0),
                 profile: "dev".to_string(),
-                budget: 666
+                budget: QueryBudget::bytes(666)
             }
             .budget(),
             666
@@ -1072,7 +1227,7 @@ mod tests {
         assert_eq!(
             ContextQuery::Proofs {
                 target: NodeRef(10),
-                budget: 1
+                budget: QueryBudget::bytes(1)
             }
             .target(),
             Some(NodeRef(10))
@@ -1080,7 +1235,7 @@ mod tests {
         assert_eq!(
             ContextQuery::Resources {
                 target: NodeRef(11),
-                budget: 1
+                budget: QueryBudget::bytes(1)
             }
             .target(),
             Some(NodeRef(11))
@@ -1089,7 +1244,7 @@ mod tests {
             ContextQuery::Runtime {
                 target: NodeRef(15),
                 profile: "test".to_string(),
-                budget: 1
+                budget: QueryBudget::bytes(1)
             }
             .target(),
             Some(NodeRef(15))
