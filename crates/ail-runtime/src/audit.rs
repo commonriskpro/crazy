@@ -9,6 +9,7 @@
 //   - Events MAY include hash digests and denied capability names.
 
 use crate::error::PreflightFailure;
+use crate::host::TraceContext;
 use crate::profile::CapabilityId;
 
 // ── AuditEvent ────────────────────────────────────────────────────────────
@@ -54,6 +55,13 @@ pub enum AuditEvent {
         succeeded: bool,
         /// Wall-clock duration of the dispatch in microseconds.
         duration_us: u64,
+        /// Distributed trace correlation for this capability call.
+        ///
+        /// `Some` when a [`TraceContext`] was active at call time; the context
+        /// is a child span derived from the caller's span (same `trace_id`,
+        /// new `span_id`, `parent_span_id` == caller's `span_id`).
+        /// `None` when no trace context was set.
+        trace_context: Option<TraceContext>,
     },
 }
 

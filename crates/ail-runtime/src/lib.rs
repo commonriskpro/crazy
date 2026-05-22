@@ -63,7 +63,7 @@ pub use codec::{HandleId, HandleRegistry, StructuredValue, ValueDecoder, ValueLa
 pub use audit::{AuditEvent, AuditLog};
 pub use error::{PreflightFailure, RuntimeError, RuntimeResult};
 pub use handler::{ClockHandler, Handler, InMemoryHandler, LogHandler};
-pub use host::{CapabilityCallMode, RuntimeArg, RuntimeHost, RuntimeInstance, RuntimeValue};
+pub use host::{CapabilityCallMode, RuntimeArg, RuntimeHost, RuntimeInstance, RuntimeValue, TraceContext};
 pub use manifest::{CapabilityManifest, blake3_hex_of};
 pub use profile::{CapabilityGrant, CapabilityId, ResourceLimits, RuntimeProfile};
 pub use replay::{

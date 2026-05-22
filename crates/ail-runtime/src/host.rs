@@ -41,6 +41,52 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+// ── TraceContext ──────────────────────────────────────────────────────────
+
+/// Distributed trace correlation context.
+///
+/// Carries the W3C-compatible identifiers for a single logical trace span.
+/// When a [`TraceContext`] is active on a [`RuntimeHost`] or [`RuntimeInstance`],
+/// every capability call creates a **child span**: the child inherits
+/// `trace_id`, gets a fresh `span_id`, and records the parent's `span_id` in
+/// `parent_span_id`.  The child context is attached to the
+/// [`AuditEvent::CapabilityCallExecuted`] event for correlation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraceContext {
+    /// Globally unique identifier for the logical trace (e.g. W3C `traceparent` trace-id).
+    pub trace_id: String,
+    /// Unique identifier for this specific span within the trace.
+    pub span_id: String,
+    /// The `span_id` of the direct parent span, or `None` for root spans.
+    pub parent_span_id: Option<String>,
+}
+
+impl TraceContext {
+    /// Derive a child span from this context.
+    ///
+    /// The child inherits `trace_id`, gets a fresh monotonic `span_id`, and
+    /// sets `parent_span_id` to this span's `span_id`.
+    pub fn child(&self) -> TraceContext {
+        TraceContext {
+            trace_id: self.trace_id.clone(),
+            span_id: next_span_id(),
+            parent_span_id: Some(self.span_id.clone()),
+        }
+    }
+}
+
+/// Generate a unique span ID using a monotonic counter.
+///
+/// The IDs are process-unique and ordered.  They are not cryptographically
+/// random — use an external tracing library (e.g. `opentelemetry`) for
+/// production-grade IDs.
+fn next_span_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{id:016x}")
+}
+
 // ── CapabilityCallMode ────────────────────────────────────────────────────
 
 /// Dispatch mode for capability calls.
@@ -131,6 +177,12 @@ pub(crate) struct HostState {
     pub(crate) audit_log: Arc<Mutex<AuditLog>>,
     /// Resource limiter enforcing `max_memory_bytes`.
     pub(crate) limiter: StoreLimits,
+    /// Active distributed trace context for WASM-side capability calls.
+    ///
+    /// Set via [`RuntimeInstance::set_trace_context`].  When `Some`, every
+    /// call through `dispatch_host_call` creates a child span and attaches
+    /// it to the [`AuditEvent::CapabilityCallExecuted`] event.
+    pub(crate) trace_context: Option<TraceContext>,
 }
 
 // ── RuntimeInstance ───────────────────────────────────────────────────────
@@ -333,6 +385,26 @@ impl RuntimeInstance {
         tokio::task::block_in_place(|| self.invoke(&export_name, &args))
     }
 
+    /// Set the active distributed trace context for WASM-side capability calls.
+    ///
+    /// After calling this, every capability call dispatched through
+    /// `dispatch_host_call` (WASM import `ail/host_call`) will create a child
+    /// span derived from `ctx` and attach it to the `CapabilityCallExecuted`
+    /// audit event for distributed trace correlation.
+    ///
+    /// Call with a fresh [`TraceContext`] at the start of each WASM invocation
+    /// to correlate audit events with your tracing backend.
+    pub fn set_trace_context(&mut self, ctx: TraceContext) {
+        self.store.data_mut().trace_context = Some(ctx);
+    }
+
+    /// Return the currently active trace context, if any.
+    ///
+    /// Returns `None` if no context has been set via [`set_trace_context`].
+    pub fn trace_context(&self) -> Option<TraceContext> {
+        self.store.data().trace_context.clone()
+    }
+
     /// Return a snapshot of the audit log from the shared log.
     pub fn audit_log(&self) -> AuditLog {
         self.store
@@ -401,6 +473,11 @@ pub struct RuntimeHost {
     current_profile: Option<Arc<RuntimeProfile>>,
     /// Module name from the most recent capability manifest (used in reports).
     current_module_name: Option<String>,
+    /// Active distributed trace context for host-side capability calls.
+    ///
+    /// When `Some`, `call_capability` creates a child span derived from this
+    /// context and attaches it to the `CapabilityCallExecuted` audit event.
+    current_trace_context: Option<TraceContext>,
 }
 
 impl RuntimeHost {
@@ -493,6 +570,7 @@ impl RuntimeHost {
             schema_registry: HashMap::new(),
             current_profile: None,
             current_module_name: None,
+            current_trace_context: None,
         }
     }
 
@@ -517,6 +595,18 @@ impl RuntimeHost {
         self.schema_registry
             .insert(def.capability().as_str().to_string(), def);
         self
+    }
+
+    /// Set the active distributed trace context for host-side capability calls.
+    ///
+    /// When set, `call_capability` creates a **child span** derived from `ctx`
+    /// (same `trace_id`, new `span_id`, `parent_span_id` = `ctx.span_id`) and
+    /// attaches it to every `CapabilityCallExecuted` audit event.
+    ///
+    /// Call this before a logical execution unit (e.g. one WASM invocation)
+    /// to correlate all capability calls within that unit under the same trace.
+    pub fn set_trace_context(&mut self, ctx: TraceContext) {
+        self.current_trace_context = Some(ctx);
     }
 
     /// Return a snapshot of the accumulated audit log.
@@ -591,6 +681,9 @@ impl RuntimeHost {
     ) -> HostResult<Vec<u8>> {
         let start = Instant::now();
 
+        // Derive a child trace span if a context is active.
+        let child_trace = self.current_trace_context.as_ref().map(|ctx| ctx.child());
+
         // Step 1: grant check.
         let granted = self
             .current_profile
@@ -612,6 +705,7 @@ impl RuntimeHost {
                     handler_name: "none".to_string(),
                     succeeded: false,
                     duration_us,
+                    trace_context: child_trace,
                 });
             return Err(err);
         }
@@ -636,6 +730,7 @@ impl RuntimeHost {
                         handler_name: "none".to_string(),
                         succeeded: false,
                         duration_us,
+                        trace_context: child_trace,
                     });
                 return Err(err);
             }
@@ -661,6 +756,7 @@ impl RuntimeHost {
                     handler_name: "none".to_string(),
                     succeeded: false,
                     duration_us,
+                    trace_context: child_trace,
                 });
             return Err(err);
         };
@@ -682,6 +778,7 @@ impl RuntimeHost {
                 handler_name,
                 succeeded,
                 duration_us,
+                trace_context: child_trace,
             });
 
         result
@@ -1004,6 +1101,7 @@ impl RuntimeHost {
                 profile: Arc::new(profile.clone()),
                 audit_log: self.audit_log.clone(),
                 limiter: store_limits,
+                trace_context: None,
             },
         );
 
@@ -1212,6 +1310,9 @@ fn dispatch_host_call(
     let cap = CapabilityId::new(capability);
     let start = Instant::now();
 
+    // Derive a child span from the active trace context (if any).
+    let child_trace = caller.data().trace_context.as_ref().map(|ctx| ctx.child());
+
     let handler = {
         let state = caller.data_mut();
         if !state.profile.grants_capability(&cap) {
@@ -1225,6 +1326,7 @@ fn dispatch_host_call(
                     handler_name: "none".to_string(),
                     succeeded: false,
                     duration_us: start.elapsed().as_micros() as u64,
+                    trace_context: child_trace,
                 });
             return Some(-1);
         }
@@ -1247,6 +1349,7 @@ fn dispatch_host_call(
                 handler_name: "none".to_string(),
                 succeeded: false,
                 duration_us: start.elapsed().as_micros() as u64,
+                trace_context: child_trace,
             });
         return Some(-1);
     };
@@ -1265,6 +1368,7 @@ fn dispatch_host_call(
             handler_name,
             succeeded,
             duration_us: start.elapsed().as_micros() as u64,
+            trace_context: child_trace,
         });
 
     match result {
