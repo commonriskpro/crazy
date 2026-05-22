@@ -54,6 +54,7 @@ fn text_to_runtime_result_returns_42() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
     let mut host = RuntimeHost::new();

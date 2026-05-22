@@ -108,6 +108,7 @@ fn profile_granting(wasm: &[u8], manifest: &CapabilityManifest, cap: CapabilityI
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     )
 }
@@ -122,6 +123,7 @@ fn profile_no_grants(wasm: &[u8], manifest: &CapabilityManifest) -> RuntimeProfi
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     )
 }

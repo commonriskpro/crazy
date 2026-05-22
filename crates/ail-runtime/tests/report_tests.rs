@@ -95,6 +95,7 @@ fn build_minimal_profile(wasm: &[u8]) -> (CapabilityManifest, RuntimeProfile) {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
     (manifest, profile)
@@ -145,6 +146,7 @@ fn emit_report_with_capability_calls_summarizes_them() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 

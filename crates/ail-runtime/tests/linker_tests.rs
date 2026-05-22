@@ -77,6 +77,7 @@ fn matching_profile(
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     )
 }

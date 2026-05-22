@@ -154,6 +154,7 @@ fn fuel_limit_traps_infinite_loop_start() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: Some(100), // tiny budget — will exhaust immediately
+            ..Default::default()
         },
     );
 
@@ -182,6 +183,7 @@ fn fuel_limit_trap_appends_audit_event() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: Some(100),
+            ..Default::default()
         },
     );
 
@@ -210,6 +212,7 @@ fn module_within_fuel_budget_instantiates() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: Some(10_000_000), // generous — minimal module uses near-zero fuel
+            ..Default::default()
         },
     );
 
@@ -236,6 +239,7 @@ fn no_fuel_cap_allows_instantiation() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 
@@ -266,6 +270,7 @@ fn memory_limit_blocks_excessive_grow() {
             // page + 10-page grow the module requests.
             max_memory_bytes: Some(64 * 1024),
             max_fuel: None,
+            ..Default::default()
         },
     );
 
@@ -297,6 +302,7 @@ fn memory_cap_does_not_block_module_without_memory() {
         ResourceLimits {
             max_memory_bytes: Some(64 * 1024), // 64 KiB — tight but fine for a no-memory module
             max_fuel: None,
+            ..Default::default()
         },
     );
 

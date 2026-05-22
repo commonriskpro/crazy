@@ -91,6 +91,7 @@ fn matching_profile(wasm: &[u8], manifest: &CapabilityManifest) -> RuntimeProfil
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     )
 }

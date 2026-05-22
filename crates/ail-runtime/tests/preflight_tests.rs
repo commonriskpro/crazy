@@ -40,6 +40,7 @@ fn matching_profile(
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     )
 }
@@ -71,6 +72,7 @@ fn hash_mismatch_halts_before_grant_check() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 
@@ -233,6 +235,7 @@ fn manifest_hash_mismatch_fails() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 
@@ -275,6 +278,7 @@ fn audit_log_accumulates_across_calls() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 

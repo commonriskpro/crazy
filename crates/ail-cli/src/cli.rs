@@ -1448,6 +1448,7 @@ async fn cmd_run(
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 
@@ -1589,6 +1590,7 @@ fn cmd_eval(mode: OutputMode, expression: &str) -> Result<(), CliError> {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
     let mut host = RuntimeHost::new();
@@ -4754,6 +4756,7 @@ mod tests {
             ResourceLimits {
                 max_memory_bytes: None,
                 max_fuel: None,
+                ..Default::default()
             },
         );
 
