@@ -9,8 +9,9 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
-use crate::{crypto, encoding, json, text};
+use crate::{concurrent, crypto, encoding, json, numeric, text};
 
 /// Runtime value shape understood by the stdlib executable dispatch layer.
 #[derive(Clone, Debug)]
@@ -26,6 +27,9 @@ pub enum StdlibValue {
     Option(Option<Box<StdlibValue>>),
     Result(Result<Box<StdlibValue>, Box<StdlibValue>>),
     Function(fn(StdlibValue) -> Result<StdlibValue, StdlibExecError>),
+    /// A bounded channel handle. Arc ensures shared ownership across clones.
+    /// PartialEq is always false (reference identity semantics, like Function).
+    Channel(Arc<Mutex<concurrent::Channel<StdlibValue>>>),
 }
 
 impl PartialEq for StdlibValue {
@@ -42,6 +46,7 @@ impl PartialEq for StdlibValue {
             (Self::Option(a), Self::Option(b)) => a == b,
             (Self::Result(a), Self::Result(b)) => a == b,
             (Self::Function(_), Self::Function(_)) => false,
+            (Self::Channel(_), Self::Channel(_)) => false,
             _ => false,
         }
     }
@@ -122,6 +127,7 @@ pub struct InMemoryCapabilityHost {
     stdout: RefCell<Vec<u8>>,
     logs: RefCell<Vec<(String, String)>>,
     fixed_clock: Option<i64>,
+    monotonic_clock: Option<i64>,
     rng_seed: u64,
 }
 
@@ -133,6 +139,7 @@ impl InMemoryCapabilityHost {
             stdout: RefCell::new(Vec::new()),
             logs: RefCell::new(Vec::new()),
             fixed_clock: None,
+            monotonic_clock: None,
             rng_seed: 0,
         }
     }
@@ -154,6 +161,12 @@ impl InMemoryCapabilityHost {
 
     pub fn with_rng_seed(mut self, seed: u64) -> Self {
         self.rng_seed = seed;
+        self
+    }
+
+    /// Set a fixed return value for `clock.monotonic/now` (epoch_ms).
+    pub fn with_monotonic(mut self, epoch_ms: i64) -> Self {
+        self.monotonic_clock = Some(epoch_ms);
         self
     }
 
@@ -265,9 +278,27 @@ impl StdlibCapabilityDispatch for InMemoryCapabilityHost {
             ("trace.emit", "span") => Ok(StdlibValue::Text("span-0".to_string())),
             ("trace.emit", "event") => Ok(StdlibValue::Unit),
 
+            // ── clock.monotonic ───────────────────────────────────────────
+            ("clock.monotonic", "now") => Ok(StdlibValue::Int(
+                self.monotonic_clock.unwrap_or(0),
+            )),
+
             // ── random ────────────────────────────────────────────────────
             ("random.int", "next_int") => Ok(StdlibValue::Int(self.rng_seed as i64)),
             ("random.float", "next_float") => Ok(StdlibValue::Float(self.rng_seed as f64 / 1000.0)),
+            ("random.bytes", "generate") => {
+                let StdlibValue::Int(n) = args.first().ok_or(StdlibExecError::Arity {
+                    expected: 1,
+                    actual: 0,
+                })? else {
+                    return Err(StdlibExecError::Type { expected: "Int" });
+                };
+                let count = (*n).max(0) as usize;
+                let mut rng = crate::random::DeterministicRng::new(
+                    crate::random::Seed::new(self.rng_seed),
+                );
+                Ok(StdlibValue::Bytes(rng.random_bytes(count)))
+            }
 
             _ => Err(StdlibExecError::CapabilityRequired {
                 capability: capability.to_string(),
@@ -584,6 +615,174 @@ pub fn stdlib_function_entries() -> Vec<FunctionEntry> {
             &["Map"],
             "Text",
             json_stringify,
+        ),
+        pure(
+            "std.concurrent.channel_new",
+            "std.concurrent",
+            "channel_new",
+            &["Int"],
+            "Channel",
+            concurrent_channel_new,
+        ),
+        pure(
+            "std.concurrent.channel_send",
+            "std.concurrent",
+            "channel_send",
+            &["Channel", "T"],
+            "Result<Unit, Text>",
+            concurrent_channel_send,
+        ),
+        pure(
+            "std.concurrent.channel_recv",
+            "std.concurrent",
+            "channel_recv",
+            &["Channel"],
+            "Option<T>",
+            concurrent_channel_recv,
+        ),
+        pure(
+            "std.concurrent.channel_len",
+            "std.concurrent",
+            "channel_len",
+            &["Channel"],
+            "Int",
+            concurrent_channel_len,
+        ),
+        pure(
+            "std.text.length_graphemes",
+            "std.text",
+            "length_graphemes",
+            &["Text"],
+            "Int",
+            text_length_graphemes_exec,
+        ),
+        pure(
+            "std.time.duration_since",
+            "std.time",
+            "duration_since",
+            &["Int", "Int"],
+            "Int",
+            time_duration_since_exec,
+        ),
+        pure(
+            "std.time.add_duration",
+            "std.time",
+            "add_duration",
+            &["Int", "Int"],
+            "Int",
+            time_add_duration_exec,
+        ),
+        pure(
+            "std.time.instant_to_ms",
+            "std.time",
+            "instant_to_ms",
+            &["Int"],
+            "Int",
+            time_instant_to_ms_exec,
+        ),
+        pure(
+            "std.collections.list.map",
+            "std.collections",
+            "map",
+            &["List<T>", "Fn(T) -> U"],
+            "List<U>",
+            list_map_exec,
+        ),
+        pure(
+            "std.collections.list.filter",
+            "std.collections",
+            "filter",
+            &["List<T>", "Fn(T) -> Bool"],
+            "List<T>",
+            list_filter_exec,
+        ),
+        pure(
+            "std.collections.list.fold",
+            "std.collections",
+            "fold",
+            &["List<T>", "U", "Fn(List<[U, T]>) -> U"],
+            "U",
+            list_fold_exec,
+        ),
+        pure(
+            "std.collections.list.concat",
+            "std.collections",
+            "concat",
+            &["List<T>", "List<T>"],
+            "List<T>",
+            list_concat_exec,
+        ),
+        pure(
+            "std.iter.map",
+            "std.iter",
+            "map",
+            &["List<T>", "Fn(T) -> U"],
+            "List<U>",
+            iter_map_exec,
+        ),
+        pure(
+            "std.iter.filter",
+            "std.iter",
+            "filter",
+            &["List<T>", "Fn(T) -> Bool"],
+            "List<T>",
+            iter_filter_exec,
+        ),
+        pure(
+            "std.iter.fold",
+            "std.iter",
+            "fold",
+            &["List<T>", "U", "Fn(List<[U, T]>) -> U"],
+            "U",
+            iter_fold_exec,
+        ),
+        pure(
+            "std.iter.traverse",
+            "std.iter",
+            "traverse",
+            &["List<T>", "Fn(T) -> Result<U, E>"],
+            "Result<List<U>, E>",
+            iter_traverse_exec,
+        ),
+        pure(
+            "std.numeric.checked_add",
+            "std.numeric",
+            "checked_add",
+            &["Int", "Int"],
+            "Option<Int>",
+            numeric_checked_add,
+        ),
+        pure(
+            "std.numeric.checked_sub",
+            "std.numeric",
+            "checked_sub",
+            &["Int", "Int"],
+            "Option<Int>",
+            numeric_checked_sub,
+        ),
+        pure(
+            "std.numeric.checked_mul",
+            "std.numeric",
+            "checked_mul",
+            &["Int", "Int"],
+            "Option<Int>",
+            numeric_checked_mul,
+        ),
+        pure(
+            "std.numeric.wrapping_add",
+            "std.numeric",
+            "wrapping_add",
+            &["Int", "Int"],
+            "Int",
+            numeric_wrapping_add,
+        ),
+        pure(
+            "std.numeric.saturating_add",
+            "std.numeric",
+            "saturating_add",
+            &["Int", "Int"],
+            "Int",
+            numeric_saturating_add,
         ),
         pure(
             "std.numeric.narrow_to_i32",
@@ -1304,7 +1503,7 @@ fn stdlib_to_json(v: &StdlibValue) -> json::Json {
         StdlibValue::Option(Some(v)) => stdlib_to_json(v),
         StdlibValue::Result(Ok(v)) => stdlib_to_json(v),
         StdlibValue::Result(Err(e)) => stdlib_to_json(e),
-        StdlibValue::Function(_) => json::Json::Null,
+        StdlibValue::Function(_) | StdlibValue::Channel(_) => json::Json::Null,
     }
 }
 
@@ -1347,6 +1546,252 @@ fn numeric_narrow_to_u32(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExec
         )),
         _ => Err(StdlibExecError::Type { expected: "Int" }),
     }
+}
+
+// ── Concurrent channel adapters ───────────────────────────────────────────
+
+fn concurrent_channel_new(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::Int(capacity) = args[0] else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    let cap = capacity.max(0) as usize;
+    let channel = concurrent::Channel::new(cap);
+    Ok(StdlibValue::Channel(Arc::new(Mutex::new(channel))))
+}
+
+fn concurrent_channel_send(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::Channel(ref arc) = args[0] else {
+        return Err(StdlibExecError::Type { expected: "Channel" });
+    };
+    let value = args[1].clone();
+    let ch = arc.lock().unwrap();
+    match ch.send(value) {
+        Ok(()) => Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Unit)))),
+        Err(_) => Ok(StdlibValue::Result(Err(Box::new(StdlibValue::Text(
+            "channel full".to_string(),
+        ))))),
+    }
+}
+
+fn concurrent_channel_recv(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::Channel(ref arc) = args[0] else {
+        return Err(StdlibExecError::Type { expected: "Channel" });
+    };
+    let ch = arc.lock().unwrap();
+    Ok(StdlibValue::Option(ch.recv().map(Box::new)))
+}
+
+fn concurrent_channel_len(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::Channel(ref arc) = args[0] else {
+        return Err(StdlibExecError::Type { expected: "Channel" });
+    };
+    let ch = arc.lock().unwrap();
+    Ok(StdlibValue::Int(ch.len() as i64))
+}
+
+// ── Text grapheme adapter ─────────────────────────────────────────────────
+
+fn text_length_graphemes_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Text(s) => Ok(StdlibValue::Int(text::text_length_graphemes(s) as i64)),
+        _ => Err(StdlibExecError::Type { expected: "Text" }),
+    }
+}
+
+// ── Time pure adapters ────────────────────────────────────────────────────
+//
+// Instants are represented as Int(epoch_ms), consistent with clock.now.
+
+fn time_duration_since_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(later), StdlibValue::Int(earlier)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(later - earlier))
+}
+
+fn time_add_duration_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(instant), StdlibValue::Int(delta)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(instant + delta))
+}
+
+fn time_instant_to_ms_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Int(ms) => Ok(StdlibValue::Int(*ms)),
+        _ => Err(StdlibExecError::Type { expected: "Int" }),
+    }
+}
+
+// ── Collections list functional adapters ─────────────────────────────────
+//
+// list.map, list.filter, list.fold share identical semantics with the iter
+// variants; they delegate to the same shared helpers.
+
+fn list_map_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    iter_map_exec(args)
+}
+
+fn list_filter_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    iter_filter_exec(args)
+}
+
+fn list_fold_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    iter_fold_exec(args)
+}
+
+fn list_concat_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::List(a) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::List(b) = &args[1] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let mut result = a.clone();
+    result.extend_from_slice(b);
+    Ok(StdlibValue::List(result))
+}
+
+// ── Iter functional adapters ──────────────────────────────────────────────
+
+fn iter_map_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::Function(f) = args[1] else {
+        return Err(StdlibExecError::Type {
+            expected: "Function",
+        });
+    };
+    let mapped = items
+        .clone()
+        .into_iter()
+        .map(f)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(StdlibValue::List(mapped))
+}
+
+fn iter_filter_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::Function(f) = args[1] else {
+        return Err(StdlibExecError::Type {
+            expected: "Function",
+        });
+    };
+    let mut kept = Vec::new();
+    for item in items.clone() {
+        match f(item.clone())? {
+            StdlibValue::Bool(true) => kept.push(item),
+            StdlibValue::Bool(false) => {}
+            _ => return Err(StdlibExecError::Type { expected: "Bool" }),
+        }
+    }
+    Ok(StdlibValue::List(kept))
+}
+
+fn iter_fold_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::Function(f) = args[2] else {
+        return Err(StdlibExecError::Type {
+            expected: "Function",
+        });
+    };
+    let mut acc = args[1].clone();
+    for item in items.clone() {
+        // Binary encoding: fn receives List([acc, item])
+        let pair = StdlibValue::List(vec![acc, item]);
+        acc = f(pair)?;
+    }
+    Ok(acc)
+}
+
+fn iter_traverse_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::Function(f) = args[1] else {
+        return Err(StdlibExecError::Type {
+            expected: "Function",
+        });
+    };
+    let mut collected = Vec::new();
+    for item in items.clone() {
+        match f(item)? {
+            StdlibValue::Result(Ok(v)) => collected.push(*v),
+            StdlibValue::Result(Err(e)) => {
+                return Ok(StdlibValue::Result(Err(e)));
+            }
+            _ => return Err(StdlibExecError::Type { expected: "Result" }),
+        }
+    }
+    Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::List(
+        collected,
+    )))))
+}
+
+// ── Numeric overflow adapters ─────────────────────────────────────────────
+
+fn numeric_checked_add(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Option(
+        numeric::checked_add(*a, *b).map(|v| Box::new(StdlibValue::Int(v))),
+    ))
+}
+
+fn numeric_checked_sub(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Option(
+        numeric::checked_sub(*a, *b).map(|v| Box::new(StdlibValue::Int(v))),
+    ))
+}
+
+fn numeric_checked_mul(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Option(
+        numeric::checked_mul(*a, *b).map(|v| Box::new(StdlibValue::Int(v))),
+    ))
+}
+
+fn numeric_wrapping_add(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::wrapping_add(*a, *b)))
+}
+
+fn numeric_saturating_add(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::saturating_add(*a, *b)))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
