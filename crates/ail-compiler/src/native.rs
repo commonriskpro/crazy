@@ -52,7 +52,7 @@ use cranelift_codegen::{
     settings,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::{DataDescription, DataId, Linkage, Module};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
 
@@ -303,10 +303,16 @@ struct NativeCodegenCtx<'a> {
     data_ids: &'a [DataId],
     /// Layout describing which strings map to which data_ids index.
     data_layout: &'a NativeDataLayout,
+    /// Imported host_call FuncId if the program uses EffectCall.
+    host_call_id: Option<FuncId>,
 }
 
 impl<'a> NativeCodegenCtx<'a> {
-    fn new(data_ids: &'a [DataId], data_layout: &'a NativeDataLayout) -> Self {
+    fn new(
+        data_ids: &'a [DataId],
+        data_layout: &'a NativeDataLayout,
+        host_call_id: Option<FuncId>,
+    ) -> Self {
         Self {
             locals: BTreeMap::new(),
             labels: Vec::new(),
@@ -315,6 +321,7 @@ impl<'a> NativeCodegenCtx<'a> {
             next_variant_tag: 0,
             data_ids,
             data_layout,
+            host_call_id,
         }
     }
 
@@ -1074,6 +1081,51 @@ fn lower_anf_expr_cranelift(
             LowerResult::Value(ptr)
         }
 
+        // ── EffectCall ────────────────────────────────────────────────────
+        AnfExpr::EffectCall { capability, func, args } => {
+            let host_call_id = match ctx.host_call_id {
+                Some(id) => id,
+                None => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    return LowerResult::Terminated;
+                }
+            };
+
+            // Args buffer: store each arg as I64 in a stack slot.
+            let args_size = (args.len().max(1) * 8) as u32;
+            let args_slot = builder.create_sized_stack_slot(
+                StackSlotData::new(StackSlotKind::ExplicitSlot, args_size, 3)
+            );
+            for (idx, arg_name) in args.iter().enumerate() {
+                let arg_val = match ctx.lookup(arg_name.as_str()) {
+                    Some((v, _)) => v,
+                    None => builder.ins().iconst(types::I64, 0),
+                };
+                builder.ins().stack_store(arg_val, args_slot, (idx * 8) as i32);
+            }
+            let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
+
+            // Capability + func name pointers from data section.
+            let (cap_idx, cap_len) = ctx.data_layout.get(capability.as_str());
+            let (op_idx, op_len) = ctx.data_layout.get(func.as_str());
+            let cap_gv = module.declare_data_in_func(ctx.data_ids[cap_idx], &mut builder.func);
+            let op_gv  = module.declare_data_in_func(ctx.data_ids[op_idx], &mut builder.func);
+            let cap_ptr = builder.ins().symbol_value(types::I64, cap_gv);
+            let op_ptr  = builder.ins().symbol_value(types::I64, op_gv);
+
+            let host_call_ref = module.declare_func_in_func(host_call_id, &mut builder.func);
+            let call_args = [
+                cap_ptr,
+                builder.ins().iconst(types::I64, cap_len as i64),
+                op_ptr,
+                builder.ins().iconst(types::I64, op_len as i64),
+                args_ptr,
+                builder.ins().iconst(types::I64, args.len() as i64),
+            ];
+            let call = builder.ins().call(host_call_ref, &call_args);
+            LowerResult::Value(builder.inst_results(call)[0])
+        }
+
         _ => {
             builder.ins().trap(TrapCode::user(1).unwrap());
             LowerResult::Terminated
@@ -1099,6 +1151,7 @@ fn lower_binding(
     cumulative_offset: u64,
     data_ids: &[DataId],
     data_layout: &NativeDataLayout,
+    host_call_id: Option<FuncId>,
 ) -> Result<u64, CompileError> {
     // Infer return type from the expression before building the function.
     let ret_ty = infer_cranelift_return_type(expr);
@@ -1121,7 +1174,7 @@ fn lower_binding(
         builder.switch_to_block(block);
         builder.seal_block(block);
 
-        let mut codegen_ctx = NativeCodegenCtx::new(data_ids, data_layout);
+        let mut codegen_ctx = NativeCodegenCtx::new(data_ids, data_layout, host_call_id);
         match lower_anf_expr_cranelift(expr, &mut codegen_ctx, &mut builder, module) {
             LowerResult::Value(val) => {
                 builder.ins().return_(&[val]);
@@ -1195,6 +1248,24 @@ pub fn emit_native_with_profile(
     let data_layout = NativeDataLayout::for_bindings(&anf.bindings);
     let data_ids = data_layout.define_all(&mut module)?;
 
+    // If any binding uses EffectCall, declare the imported host_call function.
+    // Signature: (cap_ptr: I64, cap_len: I64, op_ptr: I64, op_len: I64,
+    //             args_ptr: I64, args_len: I64) -> I64
+    let host_call_id: Option<FuncId> = if data_layout.needs_host_call {
+        let mut sig = Signature::new(CallConv::SystemV);
+        for _ in 0..6 {
+            sig.params.push(AbiParam::new(cranelift_codegen::ir::types::I64));
+        }
+        sig.returns.push(AbiParam::new(cranelift_codegen::ir::types::I64));
+        let id = module
+            .declare_function("host_call", Linkage::Import, &sig)
+            .map_err(|e| CompileError::NativeEncodingError(
+                format!("declare_function(host_call): {e}")))?;
+        Some(id)
+    } else {
+        None
+    };
+
     // Lower each binding and accumulate provenance.
     let mut provenance: BTreeMap<NodeRef, u64> = BTreeMap::new();
     let mut native_offsets: Vec<u64> = Vec::with_capacity(anf.bindings.len());
@@ -1208,7 +1279,7 @@ pub fn emit_native_with_profile(
         // Lower the binding and get its compiled code size.
         let code_size = lower_binding(
             &mut module, &binding.name, &binding.expr, cumulative_offset,
-            &data_ids, &data_layout,
+            &data_ids, &data_layout, host_call_id,
         )?;
         cumulative_offset += code_size;
     }
