@@ -29,6 +29,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::namespace::PackageNamespace;
+
 // ── InterfaceImpl ─────────────────────────────────────────────────────────
 
 /// A declared implementation of `Interface<T>` by a package.
@@ -119,6 +121,78 @@ impl CoherenceChecker {
         // and check if the remainder starts with the implementor's namespace.
         let bare = symbol.splitn(2, '.').nth(1).unwrap_or(symbol);
         bare == implementor || bare.starts_with(&format!("{implementor}."))
+    }
+
+    /// Check whether `implementor` owns `symbol` in any of the registered namespaces.
+    ///
+    /// Returns `true` if any namespace that contains `symbol` is owned by `implementor`.
+    /// Returns `true` also when no namespace claims the symbol (open ownership).
+    fn owns_in_namespaces(implementor: &str, symbol: &str, namespaces: &[PackageNamespace]) -> bool {
+        let mut covered = false;
+        for ns in namespaces {
+            if ns.contains_symbol(symbol) {
+                covered = true;
+                if ns.owner == implementor {
+                    return true;
+                }
+            }
+        }
+        // If no namespace claims the symbol, ownership is open.
+        !covered
+    }
+
+    /// Validate `InterfaceImpl` records using precise namespace ownership.
+    ///
+    /// Unlike [`check`](Self::check), this uses `NamespaceOwnershipCheck`-style
+    /// lookup via `PackageNamespace::contains_symbol` for ownership detection
+    /// instead of the string-prefix heuristic.
+    ///
+    /// An impl passes the orphan check if:
+    /// - `is_adapter == true`, OR
+    /// - The implementor owns the interface namespace, OR
+    /// - The implementor owns the for_type namespace.
+    pub fn check_with_namespaces(
+        impls: &[InterfaceImpl],
+        namespaces: &[PackageNamespace],
+    ) -> Vec<CoherenceError> {
+        let mut errors = Vec::new();
+
+        // Pass 1: orphan rule using namespace ownership
+        for impl_ in impls {
+            if impl_.is_adapter {
+                continue;
+            }
+            let owns_interface =
+                Self::owns_in_namespaces(&impl_.implementor, &impl_.interface, namespaces);
+            let owns_type =
+                Self::owns_in_namespaces(&impl_.implementor, &impl_.for_type, namespaces);
+            if !owns_interface && !owns_type {
+                errors.push(CoherenceError::OrphanViolation {
+                    implementor: impl_.implementor.clone(),
+                    interface: impl_.interface.clone(),
+                    for_type: impl_.for_type.clone(),
+                });
+            }
+        }
+
+        // Pass 2: conflict detection — identical to check()
+        let non_adapter: Vec<&InterfaceImpl> = impls.iter().filter(|i| !i.is_adapter).collect();
+        for i in 0..non_adapter.len() {
+            for j in (i + 1)..non_adapter.len() {
+                let a = non_adapter[i];
+                let b = non_adapter[j];
+                if a.interface == b.interface && a.for_type == b.for_type {
+                    errors.push(CoherenceError::ConflictingImpl {
+                        implementor_a: a.implementor.clone(),
+                        implementor_b: b.implementor.clone(),
+                        interface: a.interface.clone(),
+                        for_type: a.for_type.clone(),
+                    });
+                }
+            }
+        }
+
+        errors
     }
 
     /// Validate a set of `InterfaceImpl` records for orphan violations and
@@ -320,5 +394,108 @@ mod tests {
     #[test]
     fn no_impls_produces_no_errors() {
         assert!(CoherenceChecker::check(&[]).is_empty());
+    }
+
+    // ── B9: check_with_namespaces ─────────────────────────────────────────
+
+    use crate::namespace::{NamespaceKind, PackageNamespace};
+
+    fn make_namespace(owner: &str, ns: &str, kind: NamespaceKind) -> PackageNamespace {
+        PackageNamespace {
+            owner: owner.to_string(),
+            namespace: ns.to_string(),
+            kind,
+        }
+    }
+
+    // Spec PKG-COH-1: orphan violation with precise namespace ownership
+    // (not prefix heuristic) — implementor owns neither interface nor type
+    #[test]
+    fn check_with_namespaces_detects_orphan_with_precise_ownership() {
+        // "other.pkg" implements Interface<T> where both the interface and type
+        // belong to namespaces owned by other packages.
+        let impls = vec![InterfaceImpl {
+            implementor: "other.pkg".to_string(),
+            interface: "cap.payments.stripe.Chargeable".to_string(),
+            for_type: "type.utils.core.Request".to_string(), // owned by utils.core
+            is_adapter: false,
+        }];
+        let namespaces = vec![
+            make_namespace("payments.stripe", "payments.stripe", NamespaceKind::Capability),
+            make_namespace("utils.core", "utils.core", NamespaceKind::Type),
+        ];
+        // "other.pkg" owns neither the interface namespace nor the type namespace
+        let errors = CoherenceChecker::check_with_namespaces(&impls, &namespaces);
+        assert!(
+            errors.iter().any(|e| matches!(e, CoherenceError::OrphanViolation { implementor, .. } if implementor == "other.pkg")),
+            "other.pkg owns neither interface nor type → orphan violation expected"
+        );
+    }
+
+    // Spec PKG-COH-1: adapter bypasses orphan rule
+    #[test]
+    fn check_with_namespaces_adapter_bypasses_orphan_rule() {
+        let impls = vec![InterfaceImpl {
+            implementor: "other.pkg".to_string(),
+            interface: "cap.payments.stripe.Chargeable".to_string(),
+            for_type: "type.other.pkg.SomeType".to_string(),
+            is_adapter: true, // adapter exemption
+        }];
+        let namespaces = vec![
+            make_namespace("payments.stripe", "payments.stripe", NamespaceKind::Capability),
+        ];
+        let errors = CoherenceChecker::check_with_namespaces(&impls, &namespaces);
+        assert!(
+            !errors.iter().any(|e| matches!(e, CoherenceError::OrphanViolation { .. })),
+            "adapter must bypass orphan rule in check_with_namespaces"
+        );
+    }
+
+    // Spec PKG-COH-1: conflicting impl from two non-owning packages
+    #[test]
+    fn check_with_namespaces_detects_conflicting_impl_from_two_non_owners() {
+        let impls = vec![
+            InterfaceImpl {
+                implementor: "pkg.x".to_string(),
+                interface: "cap.payments.Chargeable".to_string(),
+                for_type: "type.payments.Card".to_string(),
+                is_adapter: false,
+            },
+            InterfaceImpl {
+                implementor: "pkg.y".to_string(),
+                interface: "cap.payments.Chargeable".to_string(),
+                for_type: "type.payments.Card".to_string(),
+                is_adapter: false,
+            },
+        ];
+        // Neither pkg.x nor pkg.y owns payments namespace
+        let namespaces = vec![
+            make_namespace("payments", "payments", NamespaceKind::Capability),
+            make_namespace("payments", "payments", NamespaceKind::Type),
+        ];
+        let errors = CoherenceChecker::check_with_namespaces(&impls, &namespaces);
+        assert!(
+            errors.iter().any(|e| matches!(e, CoherenceError::ConflictingImpl { .. })),
+            "two non-owners implementing same Interface<T> must produce ConflictingImpl"
+        );
+    }
+
+    // TRIANGULATE: owner can implement without orphan error
+    #[test]
+    fn check_with_namespaces_owner_does_not_produce_orphan_error() {
+        let impls = vec![InterfaceImpl {
+            implementor: "payments.stripe".to_string(),
+            interface: "cap.payments.stripe.Chargeable".to_string(),
+            for_type: "type.utils.core.Request".to_string(),
+            is_adapter: false,
+        }];
+        let namespaces = vec![
+            make_namespace("payments.stripe", "payments.stripe", NamespaceKind::Capability),
+        ];
+        let errors = CoherenceChecker::check_with_namespaces(&impls, &namespaces);
+        assert!(
+            !errors.iter().any(|e| matches!(e, CoherenceError::OrphanViolation { .. })),
+            "interface owner must not produce orphan error"
+        );
     }
 }

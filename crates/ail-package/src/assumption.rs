@@ -140,6 +140,7 @@ impl AssumptionEnforcer {
     ) -> Vec<AssumptionEnforcementError> {
         assumptions
             .iter()
+            .filter(|a| a.is_active()) // only Active assumptions require approval
             .filter(|a| {
                 !approvals
                     .iter()
@@ -301,5 +302,99 @@ mod tests {
     fn enforcer_no_assumptions_no_errors() {
         let errors = AssumptionEnforcer::check("payments.stripe", &[], "project.checkout", &[]);
         assert!(errors.is_empty());
+    }
+
+    // ── B1: Active-state filter ────────────────────────────────────────────
+    // Spec PKG-ASSUME-1: Proposed assumption + no approval → no error
+    #[test]
+    fn proposed_assumption_without_approval_produces_no_error() {
+        let assumptions = vec![make_assumption(AssumptionState::Proposed)];
+        let errors = AssumptionEnforcer::check(
+            "payments.stripe",
+            &assumptions,
+            "project.checkout",
+            &[], // no approvals
+        );
+        assert!(
+            errors.is_empty(),
+            "Proposed assumption must not require approval"
+        );
+    }
+
+    // Spec PKG-ASSUME-1: Expired assumption + no approval → no error
+    #[test]
+    fn expired_assumption_without_approval_produces_no_error() {
+        let assumptions = vec![make_assumption(AssumptionState::Expired)];
+        let errors = AssumptionEnforcer::check(
+            "payments.stripe",
+            &assumptions,
+            "project.checkout",
+            &[],
+        );
+        assert!(
+            errors.is_empty(),
+            "Expired assumption must not require approval"
+        );
+    }
+
+    // TRIANGULATE: Revoked assumption + no approval → no error
+    #[test]
+    fn revoked_assumption_without_approval_produces_no_error() {
+        let assumptions = vec![make_assumption(AssumptionState::Revoked)];
+        let errors = AssumptionEnforcer::check(
+            "payments.stripe",
+            &assumptions,
+            "project.checkout",
+            &[],
+        );
+        assert!(
+            errors.is_empty(),
+            "Revoked assumption must not require approval"
+        );
+    }
+
+    // Spec PKG-ASSUME-1: Active assumption + no approval → error
+    // (confirms Active still enforced after filter)
+    #[test]
+    fn active_assumption_without_approval_still_produces_error() {
+        let assumptions = vec![make_assumption(AssumptionState::Active)];
+        let errors = AssumptionEnforcer::check(
+            "payments.stripe",
+            &assumptions,
+            "project.checkout",
+            &[],
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "Active assumption without approval must still be an error"
+        );
+    }
+
+    // TRIANGULATE: Mixed active + proposed — only active produces error
+    #[test]
+    fn mixed_assumptions_only_active_produces_error() {
+        let mut active = make_assumption(AssumptionState::Active);
+        active.id = "assume-active".to_string();
+        let mut proposed = make_assumption(AssumptionState::Proposed);
+        proposed.id = "assume-proposed".to_string();
+
+        let assumptions = vec![active, proposed];
+        let errors = AssumptionEnforcer::check(
+            "payments.stripe",
+            &assumptions,
+            "project.checkout",
+            &[],
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "only the Active assumption must produce an error"
+        );
+        assert!(
+            matches!(&errors[0], AssumptionEnforcementError::UnacceptedAssumption {
+                assumption_id, ..
+            } if assumption_id == "assume-active")
+        );
     }
 }

@@ -124,6 +124,15 @@ pub enum ResolverError {
         /// Human-readable reason (e.g., "graph_schema 1 < required 3").
         reason: String,
     },
+    /// Two dependency specs resolved the same package to incompatible versions.
+    ConflictingVersion {
+        /// Package name with conflicting resolved versions.
+        name: String,
+        /// First resolved version.
+        v1: String,
+        /// Second resolved version.
+        v2: String,
+    },
 }
 
 impl std::fmt::Display for ResolverError {
@@ -183,6 +192,12 @@ impl std::fmt::Display for ResolverError {
             }
             ResolverError::SchemaIncompatible { reason } => {
                 write!(f, "schema incompatible: {reason}")
+            }
+            ResolverError::ConflictingVersion { name, v1, v2 } => {
+                write!(
+                    f,
+                    "conflicting versions for '{name}': resolved to both '{v1}' and '{v2}'"
+                )
             }
         }
     }
@@ -364,6 +379,54 @@ impl DependencyResolver {
         }
 
         Ok(manifest)
+    }
+
+    /// Resolve multiple `DependencySpec`s against the registry.
+    ///
+    /// Calls [`resolve`](Self::resolve) for each spec, deduplicates by
+    /// `name + version`, and returns an error for version conflicts (same
+    /// package name resolved to two different versions).
+    ///
+    /// # Errors
+    ///
+    /// - Returns the first `ResolverError` from an individual `resolve()` call.
+    /// - Returns `ResolverError::ConflictingVersion` if two specs resolve the
+    ///   same package to different versions.  Diamond deps at the SAME version
+    ///   are allowed (deduplicated to one manifest).
+    pub fn resolve_all<'a>(
+        specs: &[DependencySpec],
+        registry: &'a PackageRegistry,
+        advisories: &[SecurityAdvisory],
+        yanks: &[YankRecord],
+    ) -> Result<Vec<&'a PackageManifest>, ResolverError> {
+        // Resolve each spec, collecting (name, version, manifest) triples.
+        // Use a BTreeMap to detect conflicts deterministically.
+        let mut resolved: std::collections::BTreeMap<String, (&'a PackageManifest, String)> =
+            std::collections::BTreeMap::new();
+
+        for spec in specs {
+            let manifest = Self::resolve(spec, registry, advisories, yanks)?;
+            match resolved.get(&manifest.name) {
+                Some((_, prev_version)) if *prev_version != manifest.version => {
+                    return Err(ResolverError::ConflictingVersion {
+                        name: manifest.name.clone(),
+                        v1: prev_version.clone(),
+                        v2: manifest.version.clone(),
+                    });
+                }
+                Some(_) => {
+                    // Same name + version already resolved — deduplicate silently.
+                }
+                None => {
+                    resolved.insert(
+                        manifest.name.clone(),
+                        (manifest, manifest.version.clone()),
+                    );
+                }
+            }
+        }
+
+        Ok(resolved.into_values().map(|(m, _)| m).collect())
     }
 }
 
@@ -801,6 +864,77 @@ mod tests {
         assert!(
             matches!(result, Err(ResolverError::HandlerConflict { handler }) if handler == "StripePayment"),
             "denied handler must produce HandlerConflict"
+        );
+    }
+
+    // ── B7: resolve_all ────────────────────────────────────────────────────
+
+    // Spec PKG-RES-1: two non-conflicting deps resolve to two manifests
+    #[test]
+    fn resolve_all_two_non_conflicting_deps() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg.a", "1.0.0", TrustLevel::Verified));
+        reg.register(make_manifest("pkg.b", "2.0.0", TrustLevel::Verified));
+
+        let specs = vec![
+            spec("pkg.a", "1.0.0", TrustLevel::Unverified),
+            spec("pkg.b", "2.0.0", TrustLevel::Unverified),
+        ];
+        let result = DependencyResolver::resolve_all(&specs, &reg, &[], &[]);
+        assert!(result.is_ok(), "non-conflicting deps must resolve");
+        let manifests = result.unwrap();
+        assert_eq!(manifests.len(), 2);
+    }
+
+    // Spec PKG-RES-1: one failing dep propagates error
+    #[test]
+    fn resolve_all_one_failing_dep_propagates_error() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg.a", "1.0.0", TrustLevel::Verified));
+        // pkg.b not in registry
+
+        let specs = vec![
+            spec("pkg.a", "1.0.0", TrustLevel::Unverified),
+            spec("pkg.b", "1.0.0", TrustLevel::Unverified),
+        ];
+        let result = DependencyResolver::resolve_all(&specs, &reg, &[], &[]);
+        assert!(
+            matches!(result, Err(ResolverError::NotFound { .. })),
+            "failing dep must propagate NotFound error"
+        );
+    }
+
+    // Spec PKG-RES-1: same package at same version → deduplicated to one manifest
+    #[test]
+    fn resolve_all_deduplicates_same_name_same_version() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("utils.core", "1.0.0", TrustLevel::Verified));
+
+        let specs = vec![
+            spec("utils.core", "1.0.0", TrustLevel::Unverified),
+            spec("utils.core", "1.0.0", TrustLevel::Unverified),
+        ];
+        let result = DependencyResolver::resolve_all(&specs, &reg, &[], &[]);
+        assert!(result.is_ok(), "same name+version must deduplicate");
+        let manifests = result.unwrap();
+        assert_eq!(manifests.len(), 1, "deduplicated to one manifest");
+    }
+
+    // Spec PKG-RES-1: same package at conflicting versions → ConflictingVersion error
+    #[test]
+    fn resolve_all_conflicting_versions_produces_error() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("utils.core", "1.0.0", TrustLevel::Verified));
+        reg.register(make_manifest("utils.core", "2.0.0", TrustLevel::Verified));
+
+        let specs = vec![
+            spec("utils.core", "1.0.0", TrustLevel::Unverified),
+            spec("utils.core", "2.0.0", TrustLevel::Unverified),
+        ];
+        let result = DependencyResolver::resolve_all(&specs, &reg, &[], &[]);
+        assert!(
+            matches!(result, Err(ResolverError::ConflictingVersion { ref name, .. }) if name == "utils.core"),
+            "conflicting versions must produce ConflictingVersion error"
         );
     }
 

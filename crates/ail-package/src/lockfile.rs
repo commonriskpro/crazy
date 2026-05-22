@@ -26,6 +26,8 @@ use blake3::Hasher;
 use ciborium::ser::into_writer;
 use serde::{Deserialize, Serialize};
 
+use crate::manifest::PackageManifest;
+use crate::resolver::DependencySpec;
 use crate::trust::TrustLevel;
 
 // ── LockfileEntry ─────────────────────────────────────────────────────────
@@ -116,6 +118,50 @@ impl Lockfile {
         let mut hasher = Hasher::new();
         hasher.update(&buf);
         Ok(hasher.finalize().to_hex().to_string())
+    }
+
+    /// Build a `Lockfile` from a set of resolved `(DependencySpec, PackageManifest)` pairs.
+    ///
+    /// Each resolution is pinned to the manifest's exact version.  The
+    /// `package_hash` is derived from `PackageManifest::blake3_hex()`; if
+    /// hashing fails the field is set to an empty string.
+    pub fn from_resolution(resolutions: Vec<(&DependencySpec, &PackageManifest)>) -> Self {
+        let entries = resolutions
+            .into_iter()
+            .map(|(_spec, manifest)| {
+                let package_hash = manifest.blake3_hex().unwrap_or_default();
+                LockfileEntry {
+                    name: manifest.name.clone(),
+                    version: manifest.version.clone(),
+                    package_hash,
+                    trust_level: manifest.trust_level,
+                    verification_report_hash: None,
+                    accepted_assumptions: vec![],
+                }
+            })
+            .collect();
+        Lockfile { entries }
+    }
+
+    /// Convert all lockfile entries back to exact-version `DependencySpec`s.
+    ///
+    /// The returned specs use `version_constraint = entry.version` (exact pin)
+    /// and `min_trust = TrustLevel::Unverified` (the caller can tighten this).
+    pub fn to_specs(&self) -> Vec<DependencySpec> {
+        self.entries
+            .iter()
+            .map(|entry| DependencySpec {
+                name: entry.name.clone(),
+                version_constraint: entry.version.clone(),
+                min_trust: TrustLevel::Unverified,
+                profile: None,
+                allowed_licenses: vec![],
+                denied_capabilities: vec![],
+                denied_handlers: vec![],
+                min_graph_schema: None,
+                min_core_ir_schema: None,
+            })
+            .collect()
     }
 
     /// Verify that all entries in this lockfile are present in the provided
@@ -303,5 +349,96 @@ mod tests {
     fn lockfile_get_returns_none_for_missing() {
         let lf = Lockfile::new();
         assert!(lf.get("unknown", "1.0.0").is_none());
+    }
+
+    // ── B5: Lockfile::from_resolution and to_specs ────────────────────────
+
+    use crate::manifest::{PackageDef, PackageManifest};
+    use crate::resolver::DependencySpec;
+
+    fn make_test_manifest(name: &str, version: &str) -> PackageManifest {
+        PackageManifest::from_def(PackageDef {
+            name: name.to_string(),
+            version: version.to_string(),
+            trust_level: TrustLevel::Verified,
+            required_capabilities: vec![],
+            exported_capabilities: vec![],
+            assumptions: vec![],
+            unsafe_surface: vec![],
+            artifact_hashes: vec![],
+            build_env_hash: None,
+            handlers: vec![],
+            contracts: vec![],
+            exports: vec![],
+            imports: vec![],
+            boundaries: vec![],
+            license: None,
+            provenance: None,
+            verification_report: None,
+            graph_schema: None,
+            core_ir_schema: None,
+        })
+    }
+
+    fn make_test_spec(name: &str, version: &str) -> DependencySpec {
+        DependencySpec {
+            name: name.to_string(),
+            version_constraint: version.to_string(),
+            min_trust: TrustLevel::Unverified,
+            profile: None,
+            allowed_licenses: vec![],
+            denied_capabilities: vec![],
+            denied_handlers: vec![],
+            min_graph_schema: None,
+            min_core_ir_schema: None,
+        }
+    }
+
+    // Spec PKG-LOCK-1: from_resolution() builds entry with pinned version
+    #[test]
+    fn from_resolution_builds_pinned_entry() {
+        let manifest = make_test_manifest("payments.stripe", "2.3.1");
+        let spec = make_test_spec("payments.stripe", "^2.0");
+        let lf = Lockfile::from_resolution(vec![(&spec, &manifest)]);
+
+        assert_eq!(lf.len(), 1);
+        let entry = lf.get("payments.stripe", "2.3.1").expect("entry must exist");
+        assert_eq!(entry.name, "payments.stripe");
+        assert_eq!(entry.version, "2.3.1", "version must be pinned from manifest");
+        assert_eq!(entry.trust_level, TrustLevel::Verified);
+    }
+
+    // Spec PKG-LOCK-1: to_specs() returns exact-version DependencySpecs
+    #[test]
+    fn to_specs_returns_exact_version_specs() {
+        let manifest = make_test_manifest("payments.stripe", "2.3.1");
+        let spec = make_test_spec("payments.stripe", "^2.0");
+        let lf = Lockfile::from_resolution(vec![(&spec, &manifest)]);
+
+        let specs = lf.to_specs();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "payments.stripe");
+        assert_eq!(
+            specs[0].version_constraint, "2.3.1",
+            "to_specs must pin exact version"
+        );
+        assert_eq!(specs[0].min_trust, TrustLevel::Unverified);
+    }
+
+    // Spec PKG-LOCK-1: multiple entries round-trip through from_resolution/to_specs
+    #[test]
+    fn from_resolution_multiple_entries() {
+        let m1 = make_test_manifest("pkg.a", "1.0.0");
+        let m2 = make_test_manifest("pkg.b", "2.5.0");
+        let s1 = make_test_spec("pkg.a", "^1.0");
+        let s2 = make_test_spec("pkg.b", ">=2.0");
+        let lf = Lockfile::from_resolution(vec![(&s1, &m1), (&s2, &m2)]);
+
+        assert_eq!(lf.len(), 2);
+        let specs = lf.to_specs();
+        assert_eq!(specs.len(), 2);
+        // Pinned exactly
+        assert!(specs.iter().any(|s| s.name == "pkg.a" && s.version_constraint == "1.0.0"));
+        assert!(specs.iter().any(|s| s.name == "pkg.b" && s.version_constraint == "2.5.0"));
     }
 }
