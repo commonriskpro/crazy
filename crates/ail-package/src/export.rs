@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::trust::TrustLevel;
+
 // ── ExportVisibility ──────────────────────────────────────────────────────
 
 /// Visibility tier of an exported symbol.
@@ -70,9 +72,9 @@ impl std::fmt::Display for ExportStability {
 /// A declared public export in a package manifest.
 ///
 /// Each export must enumerate its type signature, the effects it may trigger,
-/// the contracts it upholds, its visibility tier, and its stability promise.
-/// This information is used by the verifier and dependency resolver without
-/// requiring access to source code.
+/// the contracts it upholds, its visibility tier, its stability promise, and
+/// the per-export trust state — the trust level at which this export's
+/// verification evidence was accepted.
 ///
 /// See `docs/packages.md` §Exports for the full design.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +97,12 @@ pub struct ExportDeclaration {
     pub visibility: ExportVisibility,
     /// Stability promise for this export.
     pub stability: ExportStability,
+    /// Per-export trust state — the trust level at which verification evidence
+    /// for this specific export was accepted.
+    ///
+    /// `None` means the trust state inherits from the package trust level.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub trust_state: Option<TrustLevel>,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -111,6 +119,7 @@ mod tests {
             contracts: vec!["idempotent_by_key".to_string()],
             visibility: ExportVisibility::Public,
             stability: ExportStability::Stable,
+            trust_state: None,
         }
     }
 
@@ -150,6 +159,40 @@ mod tests {
         );
     }
 
+    // ── export_with_per_export_trust_state ───────────────────────────────
+    // Spec scenario: "Per-export trust state round-trips through CBOR"
+    //   GIVEN an ExportDeclaration with trust_state: Some(TrustLevel::Verified)
+    //   WHEN serialized and deserialized
+    //   THEN trust_state is preserved
+    #[test]
+    fn export_with_per_export_trust_state() {
+        use crate::trust::TrustLevel;
+        let export = ExportDeclaration {
+            name: "charge".to_string(),
+            signature: "Req -> Res".to_string(),
+            effects: vec![],
+            contracts: vec![],
+            visibility: ExportVisibility::Public,
+            stability: ExportStability::Stable,
+            trust_state: Some(TrustLevel::Verified),
+        };
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&export, &mut buf).expect("encode");
+        let decoded: ExportDeclaration = ciborium::de::from_reader(buf.as_slice()).expect("decode");
+        assert_eq!(decoded.trust_state, Some(TrustLevel::Verified));
+    }
+
+    // ── export_trust_state_none_omitted_in_cbor ───────────────────────────
+    // TRIANGULATE: None trust_state is omitted from CBOR (skip_serializing_if).
+    #[test]
+    fn export_trust_state_none_omitted() {
+        let export = sample_export(); // trust_state: None
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&export, &mut buf).expect("encode");
+        let decoded: ExportDeclaration = ciborium::de::from_reader(buf.as_slice()).expect("decode");
+        assert_eq!(decoded.trust_state, None);
+    }
+
     // ── pure_export_has_empty_effects ─────────────────────────────────────
     // TRIANGULATE: an export with no effects serializes and deserializes cleanly.
     #[test]
@@ -161,6 +204,7 @@ mod tests {
             contracts: vec![],
             visibility: ExportVisibility::Public,
             stability: ExportStability::Stable,
+            trust_state: None,
         };
 
         let mut buf = Vec::new();

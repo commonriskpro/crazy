@@ -191,6 +191,9 @@ dependencies = [
  "ail-core",
  "blake3",
  "ciborium",
+ "ed25519-dalek",
+ "rand 0.8.6",
+ "semver",
  "serde",
 ]
 

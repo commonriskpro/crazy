@@ -12,6 +12,7 @@
 // small (tens of entries) in practice.
 
 use crate::manifest::PackageManifest;
+use crate::yank::YankRecord;
 
 // ── PackageRegistry ───────────────────────────────────────────────────────
 
@@ -20,9 +21,14 @@ use crate::manifest::PackageManifest;
 /// Backed by a `Vec`; insertion order is preserved.  Use
 /// [`PackageRegistry::register`] to add manifests and
 /// [`PackageRegistry::lookup_by_name_version`] to query them.
+///
+/// Yanked packages remain in `manifests` (for old-build reproducibility)
+/// but are flagged via `yanked` records.  The dependency resolver checks
+/// `is_yanked` before allowing new resolution.
 #[derive(Clone, Debug, Default)]
 pub struct PackageRegistry {
     manifests: Vec<PackageManifest>,
+    yanked: Vec<YankRecord>,
 }
 
 impl PackageRegistry {
@@ -63,6 +69,36 @@ impl PackageRegistry {
     /// Return all registered manifests in insertion order.
     pub fn all(&self) -> &[PackageManifest] {
         &self.manifests
+    }
+
+    /// Record that a specific package version has been yanked.
+    ///
+    /// The manifest is NOT removed from the registry (old builds must remain
+    /// reproducible).  Callers should use [`PackageRegistry::is_yanked`] to
+    /// check before new resolutions.
+    pub fn yank(
+        &mut self,
+        name: impl Into<String>,
+        version: impl Into<String>,
+        reason: impl Into<String>,
+    ) {
+        self.yanked.push(YankRecord {
+            name: name.into(),
+            version: version.into(),
+            reason: reason.into(),
+        });
+    }
+
+    /// Return `true` if the given package version has been yanked.
+    pub fn is_yanked(&self, name: &str, version: &str) -> bool {
+        self.yanked
+            .iter()
+            .any(|y| y.name == name && y.version == version)
+    }
+
+    /// Return all yank records in insertion order.
+    pub fn yank_records(&self) -> &[YankRecord] {
+        &self.yanked
     }
 }
 
@@ -133,5 +169,79 @@ mod tests {
         reg.register(make_manifest("a", "1.0.0"));
         assert_eq!(reg.len(), 1);
         assert!(!reg.is_empty());
+    }
+
+    // ── yank_marks_package_as_yanked ─────────────────────────────────────
+    // Spec: REQ-YANK-2, REQ-YANK-3
+    //   GIVEN a registry with "pkg" v1.0.0 registered
+    //   WHEN yank("pkg", "1.0.0", reason) is called
+    //   THEN is_yanked("pkg", "1.0.0") returns true
+    #[test]
+    fn yank_marks_package_as_yanked() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg", "1.0.0"));
+        reg.yank("pkg", "1.0.0", "critical bug");
+        assert!(
+            reg.is_yanked("pkg", "1.0.0"),
+            "yanked package must report is_yanked=true"
+        );
+    }
+
+    // ── yank_does_not_remove_manifest ─────────────────────────────────────
+    // Spec: REQ-YANK-4 — yanked packages remain in registry
+    //   GIVEN a registry with "pkg" v1.0.0 yanked
+    //   WHEN lookup_by_name_version is called
+    //   THEN the manifest is still returned
+    #[test]
+    fn yank_does_not_remove_manifest() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg", "1.0.0"));
+        reg.yank("pkg", "1.0.0", "reason");
+        assert!(
+            reg.lookup_by_name_version("pkg", "1.0.0").is_some(),
+            "yanked package must remain in registry for reproducibility"
+        );
+    }
+
+    // ── is_yanked_returns_false_for_non_yanked_package ────────────────────
+    // TRIANGULATE: non-yanked package returns false
+    #[test]
+    fn is_yanked_returns_false_for_non_yanked_package() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg", "1.0.0"));
+        assert!(
+            !reg.is_yanked("pkg", "1.0.0"),
+            "non-yanked package must return is_yanked=false"
+        );
+    }
+
+    // ── yank_records_returns_all_yank_entries ─────────────────────────────
+    // Spec: REQ-YANK-5
+    #[test]
+    fn yank_records_returns_all_yank_entries() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("a", "1.0.0"));
+        reg.register(make_manifest("b", "2.0.0"));
+        reg.yank("a", "1.0.0", "reason-a");
+        reg.yank("b", "2.0.0", "reason-b");
+        let records = reg.yank_records();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].name, "a");
+        assert_eq!(records[1].name, "b");
+    }
+
+    // ── yank_different_version_does_not_affect_other_versions ─────────────
+    // TRIANGULATE: yanking v1.0.0 does not affect v2.0.0
+    #[test]
+    fn yank_different_version_does_not_affect_other_versions() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg", "1.0.0"));
+        reg.register(make_manifest("pkg", "2.0.0"));
+        reg.yank("pkg", "1.0.0", "reason");
+        assert!(reg.is_yanked("pkg", "1.0.0"));
+        assert!(
+            !reg.is_yanked("pkg", "2.0.0"),
+            "only yanked version is flagged"
+        );
     }
 }

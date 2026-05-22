@@ -1,12 +1,29 @@
 // ── ail-package::lockfile ─────────────────────────────────────────────────
 //
-// `LockfileEntry` — one resolved package in the dependency lock.
+// `LockfileEntry` and `Lockfile` — full lockfile workflow for reproducible
+// package resolution.
+//
+// # Design (docs/packages.md §Reproducibility)
+//
+// Lockfile records:
+//   name
+//   version
+//   package_hash
+//   trust_level
+//   verification_report_hash
+//   accepted_assumptions
+//
+// A `Lockfile` is an ordered collection of `LockfileEntry` records that
+// pins an exact resolved dependency graph.  It can be generated from a
+// resolver run and used to reproduce the same resolution deterministically.
 //
 // # Determinism contract
 //
 // All fields use deterministic types (String, Vec<String>, Option<String>).
 // CBOR serialization via `ciborium` is byte-deterministic for this layout.
 
+use blake3::Hasher;
+use ciborium::ser::into_writer;
 use serde::{Deserialize, Serialize};
 
 use crate::trust::TrustLevel;
@@ -36,6 +53,86 @@ pub struct LockfileEntry {
     ///
     /// Uses `Vec` (not `HashSet`) to maintain CBOR determinism.
     pub accepted_assumptions: Vec<String>,
+}
+
+// ── Lockfile ──────────────────────────────────────────────────────────────
+
+/// A resolved and pinned dependency graph — the full lockfile.
+///
+/// A `Lockfile` is an ordered collection of `LockfileEntry` records.
+/// It is produced by the dependency resolver after a successful resolution
+/// run and can be used to reproduce the same graph deterministically.
+///
+/// The lockfile itself is content-addressed via
+/// [`Lockfile::blake3_hex`] — hashing the canonical CBOR encoding of all
+/// entries in insertion order.
+///
+/// See `docs/packages.md` §Reproducibility.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lockfile {
+    /// Pinned package entries in resolution order.
+    pub entries: Vec<LockfileEntry>,
+}
+
+impl Lockfile {
+    /// Create an empty lockfile.
+    pub fn new() -> Self {
+        Lockfile::default()
+    }
+
+    /// Add a resolved entry to the lockfile.
+    pub fn add(&mut self, entry: LockfileEntry) {
+        self.entries.push(entry);
+    }
+
+    /// Return `true` if the lockfile contains no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Return the number of pinned packages.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Look up a pinned entry by package name and version.
+    pub fn get(&self, name: &str, version: &str) -> Option<&LockfileEntry> {
+        self.entries
+            .iter()
+            .find(|e| e.name == name && e.version == version)
+    }
+
+    /// Compute the BLAKE3 content hash of this lockfile as a hex-encoded string.
+    ///
+    /// The hash covers the canonical CBOR serialization of all entries in
+    /// insertion order, providing a stable fingerprint of the full resolved graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if CBOR serialization fails.
+    pub fn blake3_hex(&self) -> Result<String, String> {
+        let mut buf = Vec::new();
+        into_writer(self, &mut buf).map_err(|e| format!("CBOR serialization failed: {e}"))?;
+        let mut hasher = Hasher::new();
+        hasher.update(&buf);
+        Ok(hasher.finalize().to_hex().to_string())
+    }
+
+    /// Verify that all entries in this lockfile are present in the provided
+    /// slice of `(name, version, hash)` tuples — confirming integrity.
+    ///
+    /// Returns the names of any entries whose `package_hash` does not match.
+    pub fn verify_integrity<'a>(&'a self, actual: &[(&str, &str, &str)]) -> Vec<&'a str> {
+        self.entries
+            .iter()
+            .filter(|e| {
+                !actual
+                    .iter()
+                    .any(|(n, v, h)| *n == e.name && *v == e.version && *h == e.package_hash)
+            })
+            .map(|e| e.name.as_str())
+            .collect()
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -107,5 +204,104 @@ mod tests {
 
         assert_eq!(decoded.verification_report_hash, None);
         assert!(decoded.accepted_assumptions.is_empty());
+    }
+
+    // ── lockfile_add_and_get ──────────────────────────────────────────────
+    // Spec scenario: "Lockfile can store and retrieve entries"
+    //   GIVEN a Lockfile with one entry added
+    //   WHEN get() is called with the same name/version
+    //   THEN returns Some(&entry)
+    #[test]
+    fn lockfile_add_and_get() {
+        let mut lf = Lockfile::new();
+        assert!(lf.is_empty());
+
+        lf.add(sample_entry());
+
+        assert_eq!(lf.len(), 1);
+        let found = lf.get("payments.stripe", "2.3.1");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().package_hash, "a".repeat(64));
+    }
+
+    // ── lockfile_cbor_round_trip ──────────────────────────────────────────
+    // Spec scenario: "Lockfile round-trips through CBOR"
+    #[test]
+    fn lockfile_cbor_round_trip() {
+        let mut lf = Lockfile::new();
+        lf.add(sample_entry());
+        lf.add(LockfileEntry {
+            name: "utils.core".to_string(),
+            version: "1.0.0".to_string(),
+            package_hash: "c".repeat(64),
+            trust_level: TrustLevel::Verified,
+            verification_report_hash: None,
+            accepted_assumptions: vec![],
+        });
+
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&lf, &mut buf).expect("encode");
+        let decoded: Lockfile = ciborium::de::from_reader(buf.as_slice()).expect("decode");
+
+        assert_eq!(decoded, lf);
+    }
+
+    // ── lockfile_is_hash_bound ────────────────────────────────────────────
+    // Spec scenario: "Lockfile is content-addressed"
+    //   GIVEN a Lockfile with entries
+    //   WHEN blake3_hex() is called twice
+    //   THEN both calls return identical 64-char hex strings
+    #[test]
+    fn lockfile_is_hash_bound() {
+        let mut lf = Lockfile::new();
+        lf.add(sample_entry());
+        let h1 = lf.blake3_hex().expect("hash");
+        let h2 = lf.blake3_hex().expect("hash");
+        assert_eq!(h1.len(), 64);
+        assert_eq!(h1, h2);
+    }
+
+    // ── lockfile_hash_changes_with_entries ────────────────────────────────
+    // TRIANGULATE: adding an entry changes the lockfile hash
+    #[test]
+    fn lockfile_hash_changes_with_entries() {
+        let lf1 = Lockfile::new();
+        let mut lf2 = Lockfile::new();
+        lf2.add(sample_entry());
+        assert_ne!(lf1.blake3_hex().unwrap(), lf2.blake3_hex().unwrap());
+    }
+
+    // ── lockfile_verify_integrity_passes ─────────────────────────────────
+    // Spec scenario: "Lockfile integrity check passes when all hashes match"
+    #[test]
+    fn lockfile_verify_integrity_passes() {
+        let mut lf = Lockfile::new();
+        lf.add(sample_entry());
+
+        let hash = "a".repeat(64);
+        let actual = vec![("payments.stripe", "2.3.1", hash.as_str())];
+        let mismatches = lf.verify_integrity(&actual);
+        assert!(mismatches.is_empty(), "all hashes match — no mismatches");
+    }
+
+    // ── lockfile_verify_integrity_detects_mismatch ────────────────────────
+    // Spec scenario: "Integrity check detects hash mismatch"
+    #[test]
+    fn lockfile_verify_integrity_detects_mismatch() {
+        let mut lf = Lockfile::new();
+        lf.add(sample_entry());
+
+        let wrong_hash = "z".repeat(64);
+        let actual = vec![("payments.stripe", "2.3.1", wrong_hash.as_str())];
+        let mismatches = lf.verify_integrity(&actual);
+        assert_eq!(mismatches, vec!["payments.stripe"]);
+    }
+
+    // ── lockfile_get_returns_none_for_missing ─────────────────────────────
+    // TRIANGULATE: lookup of absent package returns None
+    #[test]
+    fn lockfile_get_returns_none_for_missing() {
+        let lf = Lockfile::new();
+        assert!(lf.get("unknown", "1.0.0").is_none());
     }
 }
