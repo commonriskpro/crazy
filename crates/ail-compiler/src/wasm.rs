@@ -57,6 +57,56 @@ use crate::core_ir::{LiteralValue, StageHashes};
 use crate::error::CompileError;
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
 
+// ── WasmTypeDescriptor ───────────────────────────────────────────────────
+
+/// Scalar WASM primitive types used in the type descriptor.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WasmScalarType {
+    I64,
+    F64,
+    I32,
+}
+
+/// Describes the return type of an exported WASM function for use by the
+/// runtime decoder when reconstructing a `StructuredValue` from linear memory.
+///
+/// Populated by `emit_wasm` into `WasmArtifact::export_types`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WasmTypeDescriptor {
+    Scalar(WasmScalarType),
+    Record { fields: Vec<String> },
+    Variant { tags: Vec<String> },
+    List(Box<WasmTypeDescriptor>),
+    Option(Box<WasmTypeDescriptor>),
+    Result {
+        ok: Box<WasmTypeDescriptor>,
+        err: Box<WasmTypeDescriptor>,
+    },
+    Handle,
+}
+
+/// Derive the `WasmTypeDescriptor` for an `AnfExpr` by recursively inspecting
+/// the expression tree.  Used to populate `WasmArtifact::export_types`.
+pub fn derive_wasm_type(expr: &AnfExpr) -> WasmTypeDescriptor {
+    match expr {
+        AnfExpr::RecordNew { fields } => WasmTypeDescriptor::Record {
+            fields: fields.iter().map(|(f, _)| f.clone()).collect(),
+        },
+        AnfExpr::VariantNew { tag, .. } => WasmTypeDescriptor::Variant {
+            tags: vec![tag.clone()],
+        },
+        AnfExpr::ListNew(_) | AnfExpr::TupleNew(_) => {
+            WasmTypeDescriptor::List(Box::new(WasmTypeDescriptor::Scalar(WasmScalarType::I64)))
+        }
+        AnfExpr::Let { body, .. } => derive_wasm_type(body),
+        AnfExpr::Literal(LiteralValue::Float(_)) => {
+            WasmTypeDescriptor::Scalar(WasmScalarType::F64)
+        }
+        AnfExpr::Literal(LiteralValue::Unit) => WasmTypeDescriptor::Scalar(WasmScalarType::I32),
+        _ => WasmTypeDescriptor::Scalar(WasmScalarType::I64),
+    }
+}
+
 // ── WasmArtifact ─────────────────────────────────────────────────────────
 
 /// Output of the third pipeline stage: a valid WASM binary with provenance
@@ -98,6 +148,11 @@ pub struct WasmArtifact {
     ///
     /// Callers write this to disk as the artifact metadata sidecar.
     pub artifact_manifest_json: Vec<u8>,
+    /// Maps each exported function name to its `WasmTypeDescriptor`.
+    ///
+    /// Populated by `emit_wasm` from the expression trees of exported bindings.
+    /// Used by the runtime's `invoke_typed` to decode structured return values.
+    pub export_types: BTreeMap<String, WasmTypeDescriptor>,
 }
 
 // ── build_type_section ────────────────────────────────────────────────────
@@ -113,10 +168,9 @@ fn build_type_section(signatures: &[WasmSignature]) -> Option<TypeSection> {
     let mut types = TypeSection::new();
     for signature in signatures {
         let params = vec![ValType::I64; signature.param_count];
-        if signature.result.is_some() {
-            types.ty().function(params, [ValType::I64]);
-        } else {
-            types.ty().function(params, []);
+        match signature.result {
+            Some(result_ty) => types.ty().function(params, [result_ty]),
+            None => types.ty().function(params, []),
         }
     }
     Some(types)
@@ -137,10 +191,9 @@ fn build_type_section_with_host_call(signatures: &[WasmSignature]) -> TypeSectio
     );
     for signature in signatures {
         let params = vec![ValType::I64; signature.param_count];
-        if signature.result.is_some() {
-            types.ty().function(params, [ValType::I64]);
-        } else {
-            types.ty().function(params, []);
+        match signature.result {
+            Some(result_ty) => types.ty().function(params, [result_ty]),
+            None => types.ty().function(params, []),
         }
     }
     types
@@ -235,7 +288,8 @@ fn binding_result(binding: &crate::anf::AnfBinding) -> Option<ValType> {
         .into_iter()
         .map(|name| (name.to_string(), ValType::I64))
         .collect();
-    infer_expr_type(&binding.expr, &mut locals).filter(|ty| *ty == ValType::I64)
+    infer_expr_type(&binding.expr, &mut locals)
+        .filter(|ty| matches!(ty, ValType::I64 | ValType::I32))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1596,6 +1650,16 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     let artifact_manifest_json = serde_json::to_vec(&artifact_manifest)
         .map_err(|e| CompileError::EncodingError(format!("artifact_manifest JSON encode: {e}")))?;
 
+    // Populate export_types: for each exported binding, derive its descriptor.
+    let mut export_types: BTreeMap<String, WasmTypeDescriptor> = BTreeMap::new();
+    for binding in &anf.bindings {
+        if binding_result(binding).is_some() {
+            let name = export_name(&binding.name);
+            let descriptor = derive_wasm_type(&binding.expr);
+            export_types.insert(name, descriptor);
+        }
+    }
+
     Ok(WasmArtifact {
         wasm,
         source_map,
@@ -1604,6 +1668,7 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         artifact_manifest,
         source_map_json,
         artifact_manifest_json,
+        export_types,
     })
 }
 
@@ -2345,6 +2410,210 @@ mod tests {
         assert!(
             !export_names.contains(&"guarded".to_string()),
             "RuntimeCheck-only function must not be exported (returns no value); exports: {export_names:?}"
+        );
+    }
+
+    // ── TASK-A1: WasmTypeDescriptor + derive_wasm_type tests (TDD RED) ──
+    // These tests reference types/functions that don't exist yet.
+
+    #[test]
+    fn wasm_type_record_has_field_names() {
+        let expr = AnfExpr::RecordNew {
+            fields: vec![
+                ("x".to_string(), AnfExpr::Literal(LiteralValue::Int(1))),
+                ("y".to_string(), AnfExpr::Literal(LiteralValue::Int(2))),
+            ],
+        };
+        let ty = derive_wasm_type(&expr);
+        assert_eq!(
+            ty,
+            WasmTypeDescriptor::Record {
+                fields: vec!["x".to_string(), "y".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn wasm_type_variant_has_tag() {
+        let expr = AnfExpr::VariantNew {
+            tag: "Ok".to_string(),
+            payload: Some(Box::new(AnfExpr::Literal(LiteralValue::Int(1)))),
+        };
+        let ty = derive_wasm_type(&expr);
+        assert_eq!(
+            ty,
+            WasmTypeDescriptor::Variant {
+                tags: vec!["Ok".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn wasm_type_int_literal_is_scalar_i64() {
+        let expr = AnfExpr::Literal(LiteralValue::Int(1));
+        let ty = derive_wasm_type(&expr);
+        assert_eq!(ty, WasmTypeDescriptor::Scalar(WasmScalarType::I64));
+    }
+
+    #[test]
+    fn wasm_type_let_body_propagates() {
+        let expr = AnfExpr::Let {
+            name: "r".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::RecordNew {
+                fields: vec![("a".to_string(), AnfExpr::Literal(LiteralValue::Int(1)))],
+            }),
+        };
+        let ty = derive_wasm_type(&expr);
+        assert_eq!(
+            ty,
+            WasmTypeDescriptor::Record {
+                fields: vec!["a".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn wasm_type_list_new_is_list() {
+        let expr = AnfExpr::ListNew(vec![AnfExpr::Literal(LiteralValue::Int(1))]);
+        let ty = derive_wasm_type(&expr);
+        assert_eq!(
+            ty,
+            WasmTypeDescriptor::List(Box::new(WasmTypeDescriptor::Scalar(WasmScalarType::I64)))
+        );
+    }
+
+    // ── TASK-A3: WasmArtifact.export_types tests (TDD RED) ───────────────
+
+    #[test]
+    fn emit_wasm_record_function_is_exported() {
+        use crate::anf::AnfBinding;
+        use wasmparser::{ExternalKind, Parser, Payload};
+
+        let anf = sealed_anf(vec![AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.make_pair".to_string(),
+            expr: AnfExpr::RecordNew {
+                fields: vec![
+                    ("x".to_string(), AnfExpr::Literal(LiteralValue::Int(1))),
+                    ("y".to_string(), AnfExpr::Literal(LiteralValue::Int(2))),
+                ],
+            },
+        }]);
+
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        // The function must be exported.
+        let mut found_export = false;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::ExportSection(exports) = payload.unwrap() {
+                for export in exports {
+                    let e = export.unwrap();
+                    if e.name == "make_pair" && e.kind == ExternalKind::Func {
+                        found_export = true;
+                    }
+                }
+            }
+        }
+        assert!(found_export, "RecordNew binding must be exported as 'make_pair'");
+
+        // export_types must contain Record descriptor for this binding.
+        assert!(
+            artifact.export_types.contains_key("make_pair"),
+            "export_types must contain 'make_pair'"
+        );
+        assert_eq!(
+            artifact.export_types["make_pair"],
+            WasmTypeDescriptor::Record {
+                fields: vec!["x".to_string(), "y".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn emit_wasm_export_types_has_scalar_for_int() {
+        use crate::anf::AnfBinding;
+
+        let anf = sealed_anf(vec![AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.answer".to_string(),
+            expr: AnfExpr::Literal(LiteralValue::Int(42)),
+        }]);
+
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        assert_eq!(
+            artifact.export_types.get("answer"),
+            Some(&WasmTypeDescriptor::Scalar(WasmScalarType::I64))
+        );
+    }
+
+    #[test]
+    fn emit_wasm_export_types_has_record_with_fields() {
+        use crate::anf::AnfBinding;
+
+        let anf = sealed_anf(vec![AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.rec".to_string(),
+            expr: AnfExpr::RecordNew {
+                fields: vec![
+                    ("a".to_string(), AnfExpr::Literal(LiteralValue::Int(10))),
+                    ("b".to_string(), AnfExpr::Literal(LiteralValue::Int(20))),
+                ],
+            },
+        }]);
+
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        assert_eq!(
+            artifact.export_types.get("rec"),
+            Some(&WasmTypeDescriptor::Record {
+                fields: vec!["a".to_string(), "b".to_string()]
+            })
+        );
+    }
+
+    #[test]
+    fn emit_wasm_variant_function_is_exported() {
+        use crate::anf::AnfBinding;
+        use wasmparser::{ExternalKind, Parser, Payload};
+
+        let anf = sealed_anf(vec![AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.make_variant".to_string(),
+            expr: AnfExpr::VariantNew {
+                tag: "Ok".to_string(),
+                payload: Some(Box::new(AnfExpr::Literal(LiteralValue::Int(5)))),
+            },
+        }]);
+
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let mut found_export = false;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::ExportSection(exports) = payload.unwrap() {
+                for export in exports {
+                    let e = export.unwrap();
+                    if e.name == "make_variant" && e.kind == ExternalKind::Func {
+                        found_export = true;
+                    }
+                }
+            }
+        }
+        assert!(found_export, "VariantNew binding must be exported");
+        assert!(
+            artifact.export_types.contains_key("make_variant"),
+            "export_types must contain 'make_variant'"
+        );
+        assert_eq!(
+            artifact.export_types["make_variant"],
+            WasmTypeDescriptor::Variant {
+                tags: vec!["Ok".to_string()]
+            }
         );
     }
 
