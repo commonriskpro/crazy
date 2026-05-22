@@ -45,6 +45,8 @@ fn graph_edge(source: u32, target: u32, kind: EdgeKind) -> GraphEdge {
 fn create_op(node: GraphNode) -> CanonicalOp {
     CanonicalOp {
         kind: ChangeSetOp::Create,
+        verb: "create".to_string(),
+        args: std::collections::BTreeMap::new(),
         payload: OpPayload::CreateNode(Box::new(node)),
         block_hash: BlockHash([1u8; 32]),
     }
@@ -53,6 +55,8 @@ fn create_op(node: GraphNode) -> CanonicalOp {
 fn connect_op(edge: GraphEdge) -> CanonicalOp {
     CanonicalOp {
         kind: ChangeSetOp::Connect,
+        verb: "connect".to_string(),
+        args: std::collections::BTreeMap::new(),
         payload: OpPayload::AddEdge(edge),
         block_hash: BlockHash([2u8; 32]),
     }
@@ -85,6 +89,7 @@ fn matching_base_snapshot_returns_applied_and_graph_reflects_ops() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(1),
+        acl_version: "1.0".to_string(),
         preconditions: vec![],
         ops: vec![
             create_op(graph_node(0, NodeKind::Module, "mod_a")),
@@ -118,6 +123,7 @@ fn matching_base_with_no_ops_returns_applied() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(5),
+        acl_version: "1.0".to_string(),
         preconditions: vec![],
         ops: vec![],
     };
@@ -139,6 +145,7 @@ fn stale_base_snapshot_returns_rebase_required_with_graph_unmodified() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(1), // stale: 1 ≠ 99
+        acl_version: "1.0".to_string(),
         preconditions: vec![],
         ops: vec![create_op(graph_node(
             0,
@@ -172,6 +179,7 @@ fn stale_base_zero_vs_nonzero_also_returns_rebase_required() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(1), // 1 ≠ 0
+        acl_version: "1.0".to_string(),
         preconditions: vec![],
         ops: vec![],
     };
@@ -198,6 +206,7 @@ fn mid_apply_op_failure_returns_failed_and_graph_is_rolled_back() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(1),
+        acl_version: "1.0".to_string(),
         preconditions: vec![],
         ops: vec![
             create_op(graph_node(1, NodeKind::Module, "mod_a")),
@@ -233,6 +242,7 @@ fn assert_exists_on_missing_node_triggers_failed_and_rollback() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(1),
+        acl_version: "1.0".to_string(),
         preconditions: vec![Precondition::AssertExists(AssertExists {
             node_id: NodeRef(99),
         })],
@@ -267,6 +277,7 @@ fn assert_exists_on_present_node_allows_apply_to_proceed() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(1),
+        acl_version: "1.0".to_string(),
         preconditions: vec![Precondition::AssertExists(AssertExists {
             node_id: NodeRef(0),
         })],
