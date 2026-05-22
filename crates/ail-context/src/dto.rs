@@ -13,6 +13,52 @@ use ail_storage::graph::SnapshotEnvelope;
 use ail_storage::object::ObjectId;
 use serde::{Deserialize, Serialize};
 
+// ── RepairOption ──────────────────────────────────────────────────────────
+
+/// A structured suggestion for recovering from a context error.
+///
+/// Mirrors the `repair_options` block in the context-server protocol doc.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepairOption {
+    /// Short identifier for the repair option (e.g., `"query_latest"`, `"narrow_scope"`).
+    pub option_id: String,
+    /// Human-readable description of the repair action.
+    pub description: String,
+    /// Suggested follow-up query in text form (e.g., `"context fn.checkout snapshot=latest"`).
+    pub suggested_query: Option<String>,
+}
+
+// ── IndexInfo ─────────────────────────────────────────────────────────────
+
+/// Metadata about a derived index used when building this response.
+///
+/// Each response lists index versions/hashes used so consumers can detect
+/// stale indexes without re-querying.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexInfo {
+    /// Index kind (e.g., `"call_graph"`, `"effect_graph"`, `"proof_obligation"`).
+    pub kind: String,
+    /// Content hash of the index at the time of this response.
+    pub hash: [u8; 32],
+    /// `true` when the index is behind the current snapshot.
+    pub stale: bool,
+}
+
+// ── ProvenanceBlock ───────────────────────────────────────────────────────
+
+/// Provenance information attached to every `ContextResponse`.
+///
+/// Mirrors the `provenance` block in the context-server protocol doc.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProvenanceBlock {
+    /// Sources consulted (e.g., `"semantic_graph"`, `"verification_reports"`, `"runtime_profiles"`).
+    pub sources: Vec<String>,
+    /// Derived indexes used, with their versions/hashes.
+    pub indexes: Vec<IndexInfo>,
+    /// Verification/audit report hashes incorporated into this response.
+    pub reports: Vec<[u8; 32]>,
+}
+
 // ── Schema constant ───────────────────────────────────────────────────────
 
 /// Schema version string for `ContextResponse`, stable for the lifetime of
@@ -35,6 +81,24 @@ pub enum FreshnessStatus {
     Stale,
     /// Freshness cannot be determined (e.g., index not available).
     Unknown,
+}
+
+// ── RedactionState ────────────────────────────────────────────────────────
+
+/// Explicit redaction state for a context response.
+///
+/// Mirrors the `redaction none | partial | restricted` field in the
+/// context-server protocol doc.  This replaces the old `redacted: bool` flag
+/// and carries richer semantic intent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RedactionState {
+    #[default]
+    /// No nodes were withheld; full structured content is present.
+    None,
+    /// One or more nodes were withheld; redacted fields are marked.
+    Partial,
+    /// The entire response is restricted; access requires approval.
+    Restricted,
 }
 
 // ── RedactionPolicy ───────────────────────────────────────────────────────
@@ -278,6 +342,119 @@ pub enum ContextQuery {
         /// Maximum total bytes for the structured layer (must be > 0).
         budget: usize,
     },
+    /// Diff query: returns structural differences between two snapshots or the
+    /// nodes changed by a specific change reference.
+    ///
+    /// When `snapshot_b` is `None`, returns nodes changed relative to the parent
+    /// of the current snapshot.  The `structured` slice contains affected nodes
+    /// sorted by `NodeRef`.
+    Diff {
+        /// First snapshot reference (older); `None` means the parent snapshot.
+        snapshot_a: Option<ObjectId>,
+        /// Second snapshot reference (newer); `None` means the current snapshot.
+        snapshot_b: Option<ObjectId>,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// Risks query: returns risk annotations for `target` or a proposed change.
+    ///
+    /// The response `structured` slice contains the target node plus nodes
+    /// reachable via `EdgeKind::BreaksIfChanged` (change-impact dependencies).
+    /// A `risk_level` string is attached to the summary.
+    Risks {
+        /// The node or change whose risks are being assessed.
+        target: NodeRef,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// Todo query: returns outstanding obligations for `target` or a change.
+    ///
+    /// The response `structured` slice contains nodes with unverified
+    /// proof obligations reachable from `target` via `EdgeKind::Proves`.
+    Todo {
+        /// The node or change whose outstanding obligations are listed.
+        target: NodeRef,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// Capabilities query: returns granted capabilities for `target` in a profile.
+    ///
+    /// The response `structured` slice contains the target node plus capability
+    /// nodes reachable via `EdgeKind::Emits` and `EdgeKind::DependsOn`.
+    Capabilities {
+        /// The node or module whose capabilities are requested.
+        target: NodeRef,
+        /// Runtime profile identifier (e.g., `"prod"`, `"dev"`, `"test"`).
+        profile: String,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// Handlers query: returns handler bindings for a capability in a profile.
+    ///
+    /// The response `structured` slice contains nodes bound as handlers for the
+    /// `target` capability via `EdgeKind::Calls` edges from boundary nodes.
+    Handlers {
+        /// The capability node whose handler bindings are requested.
+        target: NodeRef,
+        /// Runtime profile identifier (e.g., `"prod"`, `"dev"`, `"test"`).
+        profile: String,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// Concurrency query: returns task groups, channels, and shared state for `target`.
+    ///
+    /// The response `structured` slice contains the target node plus nodes
+    /// reachable via `EdgeKind::Reads`, `EdgeKind::Writes`, and `EdgeKind::Calls`.
+    Concurrency {
+        /// The node or module whose concurrency information is requested.
+        target: NodeRef,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// Tasks query: returns async task groups and await/cancel status for `target`.
+    ///
+    /// The response `structured` slice contains the target node plus async-task
+    /// nodes reachable via `EdgeKind::Calls` and `EdgeKind::Emits` edges.
+    Tasks {
+        /// The node whose task groups are requested.
+        target: NodeRef,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// Assumptions query: returns trust assumptions for `target` boundary.
+    ///
+    /// The response `structured` slice contains assumption nodes reachable from
+    /// `target` via any edge, filtered to nodes with trust metadata.
+    Assumptions {
+        /// The node or boundary whose assumptions are listed.
+        target: NodeRef,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// ExtractCandidates query: returns sub-expressions or sub-functions within
+    /// `target` that are candidates for extraction (refactor support).
+    ///
+    /// The response `structured` slice contains nodes reachable from `target`
+    /// via `EdgeKind::Calls` and `EdgeKind::DependsOn` that have no callers
+    /// outside `target` (i.e., safe to extract).
+    ExtractCandidates {
+        /// The node whose extractable sub-components are identified.
+        target: NodeRef,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// MoveSafety query: assesses whether `target` can be safely moved to `destination`.
+    ///
+    /// Returns callers, contracts, effects, and proof obligations that would be
+    /// affected.  The `destination` is a `NodeRef` for the target module/scope.
+    MoveSafety {
+        /// The node to be moved.
+        target: NodeRef,
+        /// The destination scope/module `NodeRef`.
+        destination: NodeRef,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
 }
 
 impl ContextQuery {
@@ -297,13 +474,23 @@ impl ContextQuery {
             | ContextQuery::Boundaries { budget, .. }
             | ContextQuery::Why { budget, .. }
             | ContextQuery::RefactorContext { budget, .. }
-            | ContextQuery::Runtime { budget, .. } => *budget,
+            | ContextQuery::Runtime { budget, .. }
+            | ContextQuery::Diff { budget, .. }
+            | ContextQuery::Risks { budget, .. }
+            | ContextQuery::Todo { budget, .. }
+            | ContextQuery::Capabilities { budget, .. }
+            | ContextQuery::Handlers { budget, .. }
+            | ContextQuery::Concurrency { budget, .. }
+            | ContextQuery::Tasks { budget, .. }
+            | ContextQuery::Assumptions { budget, .. }
+            | ContextQuery::ExtractCandidates { budget, .. }
+            | ContextQuery::MoveSafety { budget, .. } => *budget,
         }
     }
 
     /// Return the primary target `NodeRef`, if this query is node-scoped.
     ///
-    /// Returns `None` for `Graph` queries.
+    /// Returns `None` for `Graph` and `Diff` queries.
     pub fn target(&self) -> Option<NodeRef> {
         match self {
             ContextQuery::Node { target, .. }
@@ -318,8 +505,17 @@ impl ContextQuery {
             | ContextQuery::Boundaries { target, .. }
             | ContextQuery::Why { target, .. }
             | ContextQuery::RefactorContext { target, .. }
-            | ContextQuery::Runtime { target, .. } => Some(*target),
-            ContextQuery::Graph { .. } => None,
+            | ContextQuery::Runtime { target, .. }
+            | ContextQuery::Risks { target, .. }
+            | ContextQuery::Todo { target, .. }
+            | ContextQuery::Capabilities { target, .. }
+            | ContextQuery::Handlers { target, .. }
+            | ContextQuery::Concurrency { target, .. }
+            | ContextQuery::Tasks { target, .. }
+            | ContextQuery::Assumptions { target, .. }
+            | ContextQuery::ExtractCandidates { target, .. }
+            | ContextQuery::MoveSafety { target, .. } => Some(*target),
+            ContextQuery::Graph { .. } | ContextQuery::Diff { .. } => None,
         }
     }
 }
@@ -378,8 +574,25 @@ pub struct ContextResponse {
     pub summary: String,
     /// Unix milliseconds: equals `snapshot.created_at`.
     pub freshness: u64,
+    /// Unix milliseconds when this response was generated.
+    ///
+    /// Mirrors the `generated_at` field in the protocol doc.
+    /// Set to the current wall-clock time at response build time.
+    pub generated_at: u64,
     /// `true` when at least one node was withheld by the redaction policy.
+    ///
+    /// Legacy boolean kept for backward compatibility.  Prefer `redaction_state`.
     pub redacted: bool,
+    /// Explicit redaction state for this response.
+    ///
+    /// Mirrors `redaction none | partial | restricted` in the protocol doc.
+    #[serde(default, skip_serializing_if = "is_redaction_none")]
+    pub redaction_state: RedactionState,
+    /// The redaction policy applied to this response, if any.
+    ///
+    /// Populated when `redaction_state` is `Partial` or `Restricted`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redaction_policy: Option<RedactionPolicy>,
     /// `true` when the byte budget was exhausted before all matching nodes
     /// were included.
     ///
@@ -401,10 +614,28 @@ pub struct ContextResponse {
     /// `None` and may treat absence as fresh).
     #[serde(default, skip_serializing_if = "is_fresh")]
     pub freshness_status: FreshnessStatus,
+    /// Provenance block listing sources, index versions, and report hashes.
+    ///
+    /// Mirrors the `provenance` block in the protocol doc.
+    #[serde(default, skip_serializing_if = "is_provenance_empty")]
+    pub provenance: ProvenanceBlock,
+    /// Structured repair options when errors or staleness occurred.
+    ///
+    /// Empty for successful fresh responses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repair_options: Vec<RepairOption>,
 }
 
 fn is_fresh(s: &FreshnessStatus) -> bool {
     *s == FreshnessStatus::Fresh
+}
+
+fn is_redaction_none(s: &RedactionState) -> bool {
+    *s == RedactionState::None
+}
+
+fn is_provenance_empty(p: &ProvenanceBlock) -> bool {
+    p.sources.is_empty() && p.indexes.is_empty() && p.reports.is_empty()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -416,6 +647,8 @@ mod tests {
     use ail_storage::codec::{CborCodec, ContentCodec};
     use ail_storage::graph::SnapshotEnvelope;
     use ail_storage::object::ObjectId;
+    #[allow(unused_imports)]
+    use crate::dto::{ProvenanceBlock, RedactionState};
 
     fn make_snapshot() -> SnapshotEnvelope {
         let id = ObjectId::from_bytes(b"test-snap");
@@ -455,14 +688,19 @@ mod tests {
             query_hash,
             context_hash,
             freshness: snapshot.created_at,
+            generated_at: 0,
             snapshot,
             structured,
             summary: String::new(),
             redacted: false,
+            redaction_state: RedactionState::None,
+            redaction_policy: None,
             truncated: false,
             limits: make_limits(usize::MAX, bytes_used),
             history_entries: Vec::new(),
             freshness_status: FreshnessStatus::Fresh,
+            provenance: ProvenanceBlock::default(),
+            repair_options: Vec::new(),
         }
     }
 
