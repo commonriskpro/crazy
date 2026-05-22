@@ -25,13 +25,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use ail_core::semantic_graph::{EdgeKind, GraphNode, NodeRef, SemanticGraph};
+use ail_core::semantic_graph::{EdgeKind, GraphNode, NodeKind, NodeRef, SemanticGraph, Visibility, WorkflowState};
 use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::graph::SnapshotEnvelope;
 
 use crate::dto::{
-    CONTEXT_SCHEMA_V1, ContextQuery, ContextResponse, FreshnessStatus, ProvenanceBlock, QueryScope,
-    RedactionPolicy, RedactionState, RepairOption, ResponseLimits,
+    CONTEXT_SCHEMA_V1, ContextQuery, ContextResponse, FreshnessStatus, ImpactInfo, ProvenanceBlock,
+    QueryScope, RedactionPolicy, RedactionState, RefactorInfo, RepairOption, ResponseLimits,
 };
 use crate::error::{ContextError, ContextResult};
 use crate::summary::render_summary;
@@ -178,6 +178,22 @@ impl ResponseBuilder {
             })
             .collect();
 
+        // ── Step 3a: Compute query-specific info from pre-truncation set ──
+        // These info structs are derived from the full unredacted candidate
+        // set so they are accurate even when the structured layer is truncated.
+        let impact_info: Option<ImpactInfo> = match query {
+            ContextQuery::Impact { .. } => Some(compute_impact_info(&unredacted)),
+            _ => None,
+        };
+        let refactor_info: Option<RefactorInfo> = match query {
+            ContextQuery::RefactorContext { target, .. }
+            | ContextQuery::ExtractCandidates { target, .. }
+            | ContextQuery::MoveSafety { target, .. } => {
+                Some(compute_refactor_info(&unredacted, *target, graph))
+            }
+            _ => None,
+        };
+
         // ── Step 4: Apply byte budget ─────────────────────────────────────
         let mut structured: Vec<GraphNode> = Vec::new();
         let mut total_bytes: usize = 0;
@@ -304,6 +320,8 @@ impl ResponseBuilder {
             freshness_status,
             provenance,
             repair_options,
+            impact_info,
+            refactor_info,
         })
     }
 }
@@ -803,6 +821,136 @@ fn collect_candidates_with_history(
             all_nodes.dedup_by_key(|n| n.id);
             Ok((all_nodes, Vec::new()))
         }
+    }
+}
+
+// ── Impact and refactor info helpers ──────────────────────────────────────
+
+/// Compute `ImpactInfo` from the full (pre-truncation) set of affected nodes.
+///
+/// `affected` contains the nodes returned by the Impact query before budget
+/// truncation — this ensures the classification is always complete even if the
+/// structured layer was truncated.
+fn compute_impact_info(affected: &[GraphNode]) -> ImpactInfo {
+    let affected_tests: Vec<NodeRef> = affected
+        .iter()
+        .filter(|n| n.kind == NodeKind::Test)
+        .map(|n| n.id)
+        .collect();
+
+    let affected_capabilities: Vec<NodeRef> = affected
+        .iter()
+        .filter(|n| n.kind == NodeKind::Capability)
+        .map(|n| n.id)
+        .collect();
+
+    let affected_public_apis: Vec<NodeRef> = affected
+        .iter()
+        .filter(|n| matches!(n.visibility, Some(Visibility::Public)))
+        .map(|n| n.id)
+        .collect();
+
+    // Nodes that need re-verification after the change.
+    let required_reverification = affected
+        .iter()
+        .filter(|n| n.kind == NodeKind::Contract || n.kind == NodeKind::Invariant)
+        .count();
+
+    // Risk level derived from public API surface + verification obligation count.
+    let risk_count = affected_public_apis.len() + required_reverification;
+    let risk_level = match risk_count {
+        0 => "none",
+        1..=3 => "low",
+        4..=10 => "medium",
+        _ => "high",
+    }
+    .to_string();
+
+    ImpactInfo {
+        affected_tests,
+        affected_capabilities,
+        affected_public_apis,
+        required_reverification,
+        risk_level,
+    }
+}
+
+/// Compute `RefactorInfo` from the context nodes returned by a refactor query.
+///
+/// `structured` is the full (pre-truncation) node list.  `target` is the
+/// primary refactoring target.  `graph` provides edge access for caller
+/// and proof classification.
+fn compute_refactor_info(
+    structured: &[GraphNode],
+    target: NodeRef,
+    graph: &SemanticGraph,
+) -> RefactorInfo {
+    // Locked nodes constrain the refactoring.
+    let behavior_locks_needed: Vec<NodeRef> = structured
+        .iter()
+        .filter(|n| matches!(n.workflow_state, Some(WorkflowState::Locked)))
+        .map(|n| n.id)
+        .collect();
+
+    // Contract/Invariant nodes must be preserved.
+    let contracts_to_preserve: Vec<NodeRef> = structured
+        .iter()
+        .filter(|n| n.kind == NodeKind::Contract || n.kind == NodeKind::Invariant)
+        .map(|n| n.id)
+        .collect();
+
+    // Effect/EffectAlias nodes must be preserved.
+    let effects_to_preserve: Vec<NodeRef> = structured
+        .iter()
+        .filter(|n| n.kind == NodeKind::Effect || n.kind == NodeKind::EffectAlias)
+        .map(|n| n.id)
+        .collect();
+
+    // Callers: nodes that have a Calls edge pointing at `target`.
+    let callers_to_update: Vec<NodeRef> = structured
+        .iter()
+        .filter(|n| {
+            n.id != target
+                && graph
+                    .edges
+                    .iter()
+                    .any(|e| e.source == n.id && e.target == target && e.kind == EdgeKind::Calls)
+        })
+        .map(|n| n.id)
+        .collect();
+
+    // Proofs: nodes reachable from target via Proves edges.
+    let proofs_to_rerun: Vec<NodeRef> = structured
+        .iter()
+        .filter(|n| {
+            graph
+                .edges
+                .iter()
+                .any(|e| e.source == target && e.target == n.id && e.kind == EdgeKind::Proves)
+        })
+        .map(|n| n.id)
+        .collect();
+
+    // Possible conflicts: nodes with BreaksIfChanged edges in the context set.
+    let possible_conflicts: Vec<NodeRef> = structured
+        .iter()
+        .filter(|n| {
+            n.id != target
+                && graph.edges.iter().any(|e| {
+                    (e.source == n.id || e.target == n.id) && e.kind == EdgeKind::BreaksIfChanged
+                })
+        })
+        .map(|n| n.id)
+        .collect();
+
+    RefactorInfo {
+        behavior_locks_needed,
+        contracts_to_preserve,
+        effects_to_preserve,
+        callers_to_update,
+        proofs_to_rerun,
+        possible_conflicts,
+        suggested_refactor_ops: Vec::new(),
     }
 }
 
