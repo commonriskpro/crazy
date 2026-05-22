@@ -3,7 +3,9 @@
 // Strict TDD — tests for concurrency safety verification.
 // Spec: verification-pipeline/spec §2 (concurrency safety checker).
 
-use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph, TrustMetadata};
+use ail_core::semantic_graph::{
+    EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph, TrustMetadata,
+};
 use ail_verify::concurrency_checker::ConcurrencyChecker;
 use ail_verify::report::VerificationState;
 
@@ -14,6 +16,10 @@ fn conc_node(id: u32, name: &str, level: &str, tags: Vec<&str>) -> GraphNode {
         tags: tags.into_iter().map(String::from).collect(),
     });
     node
+}
+
+fn task_group_node(id: u32, name: &str, tags: Vec<&str>) -> GraphNode {
+    conc_node(id, name, "task-group", tags)
 }
 
 fn graph(nodes: Vec<GraphNode>) -> SemanticGraph {
@@ -212,4 +218,63 @@ fn summary_reflects_worst_concurrency_state() {
     ]);
     let report = ConcurrencyChecker::check(&g);
     assert_eq!(report.summary(), VerificationState::Failed);
+}
+
+// ── TASK-19: ConcurrencyChecker scope boundary analysis ───────────────────
+
+#[test]
+fn task_with_no_lifecycle_tags_and_no_parent_taskgroup_is_unverified_with_orphan_scope_evidence() {
+    // GIVEN a task node with no lifecycle tags and no SpawnedBy/ChildOf edge
+    // THEN Unverified with "potential orphan scope" in evidence
+    let g = graph(vec![conc_node(0, "bg_worker", "task", vec![])]);
+    let report = ConcurrencyChecker::check(&g);
+    let entry = report.entries.iter().find(|e| e.scope == "bg_worker");
+    assert!(entry.is_some());
+    assert_eq!(entry.unwrap().state, VerificationState::Unverified);
+    assert!(
+        entry.unwrap().evidence.as_deref().unwrap_or("").contains("potential orphan scope"),
+        "evidence must mention 'potential orphan scope'; got: {:?}",
+        entry.unwrap().evidence
+    );
+}
+
+#[test]
+fn task_with_spawned_by_edge_to_taskgroup_has_no_additional_scope_unverified() {
+    // GIVEN a task with SpawnedBy edge to a TaskGroup
+    // THEN Unverified for no lifecycle tag, but evidence does NOT mention "potential orphan scope"
+    let task = conc_node(0, "scoped_task", "task", vec![]);
+    let tg = task_group_node(1, "tg.workers", vec!["closed"]);
+    let g = SemanticGraph {
+        nodes: vec![task, tg],
+        edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::SpawnedBy)],
+    };
+    let report = ConcurrencyChecker::check(&g);
+    let entry = report.entries.iter().find(|e| e.scope == "scoped_task");
+    assert!(entry.is_some());
+    // Still Unverified (no lifecycle tag), but no orphan scope note
+    assert_eq!(entry.unwrap().state, VerificationState::Unverified);
+    assert!(
+        !entry.unwrap().evidence.as_deref().unwrap_or("").contains("potential orphan scope"),
+        "task with SpawnedBy must NOT have 'potential orphan scope' in evidence"
+    );
+}
+
+#[test]
+fn task_group_with_closes_edge_is_proven() {
+    // Existing behavior: task-group with "closed" tag → Proven
+    let g = graph(vec![task_group_node(0, "tg.api", vec!["closed"])]);
+    let report = ConcurrencyChecker::check(&g);
+    let entry = report.entries.iter().find(|e| e.scope == "tg.api");
+    assert!(entry.is_some());
+    assert_eq!(entry.unwrap().state, VerificationState::Proven);
+}
+
+#[test]
+fn task_group_without_closed_tag_is_failed() {
+    // Existing behavior: task-group without "closed" tag → Failed
+    let g = graph(vec![task_group_node(0, "tg.dangling", vec![])]);
+    let report = ConcurrencyChecker::check(&g);
+    let entry = report.entries.iter().find(|e| e.scope == "tg.dangling");
+    assert!(entry.is_some());
+    assert_eq!(entry.unwrap().state, VerificationState::Failed);
 }

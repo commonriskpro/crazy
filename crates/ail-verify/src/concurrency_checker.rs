@@ -47,7 +47,7 @@
 // | unbounded-concurrency without approval       | Unverified  |
 // | channel without close/transfer tag           | Unverified  |
 
-use ail_core::semantic_graph::SemanticGraph;
+use ail_core::semantic_graph::{EdgeKind, NodeKind, NodeRef, SemanticGraph};
 
 use crate::diagnostic::{Diagnostic, DiagnosticSeverity};
 use crate::report::{SummaryCounts, VerificationEntry, VerificationReport, VerificationState};
@@ -94,7 +94,7 @@ impl ConcurrencyChecker {
             let scope = node.name.clone();
             let claim = format!("concurrency-safety[{}]", tm.level);
 
-            let (state, evidence) = Self::classify(kind, tags, &scope);
+            let (state, evidence) = Self::classify(kind, tags, &scope, node.id, graph);
 
             // Emit diagnostics for blocking conditions
             match state {
@@ -156,6 +156,8 @@ impl ConcurrencyChecker {
         kind: ConcurrencyKind,
         tags: &[String],
         scope: &str,
+        node_id: NodeRef,
+        graph: &SemanticGraph,
     ) -> (VerificationState, Option<String>) {
         match kind {
             ConcurrencyKind::Task => {
@@ -174,14 +176,30 @@ impl ConcurrencyChecker {
                 {
                     return (VerificationState::Proven, None);
                 }
-                // No lifecycle tag — unverified
-                (
-                    VerificationState::Unverified,
-                    Some(format!(
+                // TASK-20: no lifecycle tag — check for SpawnedBy/ChildOf edge to TaskGroup
+                let has_parent_scope = graph.edges.iter().any(|e| {
+                    e.source == node_id
+                        && matches!(e.kind, EdgeKind::SpawnedBy | EdgeKind::ChildOf)
+                        && graph.nodes.iter().any(|n| {
+                            n.id == e.target
+                                && n.trust_metadata
+                                    .as_ref()
+                                    .map(|tm| tm.level.as_str() == "task-group")
+                                    .unwrap_or(false)
+                        })
+                });
+                let evidence = if has_parent_scope {
+                    format!(
                         "task '{}' has no lifecycle tag (awaited/cancelled/transferred); lifecycle unverified",
                         scope
-                    )),
-                )
+                    )
+                } else {
+                    format!(
+                        "task '{}' has no lifecycle tag and no parent TaskGroup scope edge; potential orphan scope",
+                        scope
+                    )
+                };
+                (VerificationState::Unverified, Some(evidence))
             }
 
             ConcurrencyKind::TaskGroup => {
