@@ -38,6 +38,67 @@ use crate::proof::ObligationLedgerEntry;
 // Re-export PolicyAudit sub-types so callers can import from `report` module.
 pub use crate::policy::PolicyAuditEntry;
 
+// ── AssumptionState ───────────────────────────────────────────────────────
+
+/// Lifecycle state of a documented assumption.
+///
+/// Every `Assumed` verification claim must be backed by an explicit
+/// `assumption` declaration that tracks its lifecycle.  The six states
+/// correspond to the `assumption lifecycle` section of `verification.md`:
+///
+/// ```text
+/// proposed → approved → active
+///                    ↘ expired
+///                    ↘ revoked
+///                    ↘ failed_review
+/// ```
+///
+/// # Policy implications (verification.md §Assumption lifecycle)
+///
+/// If an assumption reaches `Expired`, `Revoked`, or `FailedReview`, any
+/// `prod`/`critical` build that depends on it is blocked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AssumptionState {
+    /// The assumption has been proposed but not yet reviewed.
+    Proposed,
+    /// The assumption has been reviewed and approved.
+    Approved,
+    /// The assumption is currently active and in use.
+    Active,
+    /// The assumption has passed its expiry date or review window.
+    Expired,
+    /// The assumption has been explicitly revoked by an owner or reviewer.
+    Revoked,
+    /// The assumption failed a scheduled review cycle.
+    FailedReview,
+}
+
+impl AssumptionState {
+    /// Return `true` if this state is still considered valid for production use.
+    ///
+    /// `Proposed` and `Approved` are valid (not yet active but not expired).
+    /// `Active` is valid.  `Expired`, `Revoked`, `FailedReview` are invalid.
+    pub fn is_valid_for_prod(self) -> bool {
+        matches!(
+            self,
+            AssumptionState::Proposed | AssumptionState::Approved | AssumptionState::Active
+        )
+    }
+}
+
+impl std::fmt::Display for AssumptionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AssumptionState::Proposed => write!(f, "proposed"),
+            AssumptionState::Approved => write!(f, "approved"),
+            AssumptionState::Active => write!(f, "active"),
+            AssumptionState::Expired => write!(f, "expired"),
+            AssumptionState::Revoked => write!(f, "revoked"),
+            AssumptionState::FailedReview => write!(f, "failed_review"),
+        }
+    }
+}
+
 // ── VerificationState ─────────────────────────────────────────────────────
 
 /// The result of checking one claim in a `VerificationEntry`.
@@ -319,5 +380,48 @@ mod tests {
         let decoded: VerificationEntry =
             serde_json::from_str(json).expect("deserialize without blocking field");
         assert!(!decoded.blocking, "absent blocking field must default to false");
+    }
+
+    // ── AssumptionState tests ─────────────────────────────────────────────
+
+    #[test]
+    fn assumption_state_six_variants_constructible() {
+        let states = [
+            AssumptionState::Proposed,
+            AssumptionState::Approved,
+            AssumptionState::Active,
+            AssumptionState::Expired,
+            AssumptionState::Revoked,
+            AssumptionState::FailedReview,
+        ];
+        assert_eq!(states.len(), 6);
+    }
+
+    #[test]
+    fn assumption_state_is_valid_for_prod_lifecycle() {
+        assert!(AssumptionState::Proposed.is_valid_for_prod());
+        assert!(AssumptionState::Approved.is_valid_for_prod());
+        assert!(AssumptionState::Active.is_valid_for_prod());
+        assert!(!AssumptionState::Expired.is_valid_for_prod());
+        assert!(!AssumptionState::Revoked.is_valid_for_prod());
+        assert!(!AssumptionState::FailedReview.is_valid_for_prod());
+    }
+
+    #[test]
+    fn assumption_state_display_matches_doc_names() {
+        assert_eq!(AssumptionState::Proposed.to_string(), "proposed");
+        assert_eq!(AssumptionState::Approved.to_string(), "approved");
+        assert_eq!(AssumptionState::Active.to_string(), "active");
+        assert_eq!(AssumptionState::Expired.to_string(), "expired");
+        assert_eq!(AssumptionState::Revoked.to_string(), "revoked");
+        assert_eq!(AssumptionState::FailedReview.to_string(), "failed_review");
+    }
+
+    #[test]
+    fn assumption_state_roundtrips_json() {
+        let state = AssumptionState::FailedReview;
+        let json = serde_json::to_string(&state).expect("serialize");
+        let decoded: AssumptionState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, state);
     }
 }
