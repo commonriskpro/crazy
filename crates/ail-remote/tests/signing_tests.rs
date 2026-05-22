@@ -69,6 +69,8 @@ fn make_context_response(tag: &[u8]) -> ContextResponse {
         freshness_status: ail_context::FreshnessStatus::Fresh,
         provenance: ail_context::ProvenanceBlock::default(),
         repair_options: Vec::new(),
+        impact_info: None,
+        refactor_info: None,
     }
 }
 
