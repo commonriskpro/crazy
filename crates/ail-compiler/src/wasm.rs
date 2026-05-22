@@ -1146,8 +1146,13 @@ fn emit_anf_expr<'a>(
                 insns.push(Instruction::I32Const(
                     ctx.effect_data.args_offset + (idx as i32 * 8),
                 ));
-                if let Some((local_idx, _)) = ctx.lookup(arg_name) {
+                if let Some((local_idx, arg_ty)) = ctx.lookup(arg_name) {
                     insns.push(Instruction::LocalGet(local_idx));
+                    // Zero-extend I32 args to I64 before storing in the args buffer.
+                    // I64 args are already the right width and need no extension.
+                    if arg_ty == ValType::I32 {
+                        insns.push(Instruction::I64ExtendI32U);
+                    }
                     insns.push(Instruction::I64Store(wasm_encoder::MemArg {
                         offset: 0,
                         align: 3,
@@ -2089,6 +2094,112 @@ mod tests {
             }
         }
         values
+    }
+
+    // ── TASK-A7: EffectCall I32 arg zero-extension tests (TDD RED) ───────
+    // Spec scenarios C-4a, C-4b.
+
+    fn emit_effect_call_with_i32_arg_wasm() -> Vec<u8> {
+        use crate::anf::AnfBinding;
+        // Let "rec" = VariantNew (I32) in EffectCall { cap: "test", args: ["rec"] }
+        let binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.effect_call_i32".to_string(),
+            expr: AnfExpr::Let {
+                name: "rec".to_string(),
+                value: Box::new(AnfExpr::VariantNew {
+                    tag: "Tag".to_string(),
+                    payload: None,
+                }),
+                body: Box::new(AnfExpr::EffectCall {
+                    capability: "test.cap".to_string(),
+                    func: "op".to_string(),
+                    args: vec!["rec".to_string()],
+                }),
+            },
+        };
+        // Note: before A8 the WASM is invalid (I32 stored where I64 is needed).
+        // We emit without validation here so we can inspect the instructions.
+        emit_wasm(&sealed_anf(vec![binding])).expect("emit_wasm must succeed").wasm
+    }
+
+    // C-4a: I32 arg to EffectCall must be zero-extended (I64ExtendI32U emitted).
+    // Before A8: the WASM is either invalid OR missing I64ExtendI32U.
+    // After A8: WASM validates AND has I64ExtendI32U → I64Store sequence.
+    #[test]
+    fn effect_call_i32_arg_emits_i64_extend_before_store() {
+        use wasmparser::{Operator, Parser, Payload};
+
+        let wasm = emit_effect_call_with_i32_arg_wasm();
+
+        // First: assert the WASM is valid (after A8 this must pass).
+        wasmparser::validate(&wasm).expect("EffectCall with I32 arg must produce valid WASM");
+
+        let mut saw_extend = false;
+        let mut extend_before_store = false;
+
+        for payload in Parser::new(0).parse_all(&wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    match reader.read().unwrap() {
+                        Operator::I64ExtendI32U => {
+                            saw_extend = true;
+                        }
+                        Operator::I64Store { .. } if saw_extend => {
+                            extend_before_store = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(
+            extend_before_store,
+            "EffectCall with I32 arg must emit I64ExtendI32U before I64Store"
+        );
+    }
+
+    // C-4b: I64 arg to EffectCall must NOT emit I64ExtendI32U (already 64-bit).
+    #[test]
+    fn effect_call_i64_arg_does_not_emit_extend() {
+        use crate::anf::AnfBinding;
+        use wasmparser::{Operator, Parser, Payload};
+
+        // Let "n" = Int(42) (I64) in EffectCall { args: ["n"] }
+        let binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.effect_call_i64".to_string(),
+            expr: AnfExpr::Let {
+                name: "n".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
+                body: Box::new(AnfExpr::EffectCall {
+                    capability: "test.cap".to_string(),
+                    func: "op".to_string(),
+                    args: vec!["n".to_string()],
+                }),
+            },
+        };
+        let artifact = emit_wasm(&sealed_anf(vec![binding])).expect("emit_wasm");
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let mut extend_count = 0usize;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    if let Operator::I64ExtendI32U = reader.read().unwrap() {
+                        extend_count += 1;
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            extend_count, 0,
+            "EffectCall with I64 arg must NOT emit I64ExtendI32U (got {extend_count})"
+        );
     }
 
     // C-2a: Different tag names produce different discriminants.
