@@ -26,6 +26,12 @@ pub const E_ACCESS_DENIED: &str = "E_ACCESS_DENIED";
 pub const E_BUDGET_EXCEEDED: &str = "E_BUDGET_EXCEEDED";
 /// Stable code for `ContextError::IndexStale`: a derived index is behind the current snapshot.
 pub const E_INDEX_STALE: &str = "E_INDEX_STALE";
+/// Stable code for `ContextError::SnapshotNotFound`: requested snapshot id absent.
+pub const E_SNAPSHOT_NOT_FOUND: &str = "E_SNAPSHOT_NOT_FOUND";
+/// Stable code for `ContextError::RedactionRequired`: caller requires explicit policy to access.
+pub const E_REDACTION_REQUIRED: &str = "E_REDACTION_REQUIRED";
+/// Stable code for `ContextError::QueryAmbiguous`: query target matches multiple nodes.
+pub const E_QUERY_AMBIGUOUS: &str = "E_QUERY_AMBIGUOUS";
 
 // ── ContextError ──────────────────────────────────────────────────────────
 
@@ -53,6 +59,15 @@ pub enum ContextError {
     /// A derived index (call graph, effect graph, etc.) is behind the current
     /// snapshot; rebuild the index and retry (`E_INDEX_STALE`).
     IndexStale,
+    /// Requested snapshot id is not present in the backing store
+    /// (`E_SNAPSHOT_NOT_FOUND`).
+    SnapshotNotFound,
+    /// The caller must supply an explicit redaction policy to access this
+    /// context slice (`E_REDACTION_REQUIRED`).
+    RedactionRequired,
+    /// The query target pattern matches more than one node; narrow the query
+    /// (`E_QUERY_AMBIGUOUS`).
+    QueryAmbiguous,
 }
 
 impl fmt::Display for ContextError {
@@ -91,6 +106,24 @@ impl fmt::Display for ContextError {
                     f,
                     "{E_INDEX_STALE}: derived index is behind the current snapshot; \
                      rebuild the index and retry"
+                )
+            }
+            ContextError::SnapshotNotFound => {
+                write!(
+                    f,
+                    "{E_SNAPSHOT_NOT_FOUND}: requested snapshot id not found in store"
+                )
+            }
+            ContextError::RedactionRequired => {
+                write!(
+                    f,
+                    "{E_REDACTION_REQUIRED}: redaction policy required to access this context slice"
+                )
+            }
+            ContextError::QueryAmbiguous => {
+                write!(
+                    f,
+                    "{E_QUERY_AMBIGUOUS}: query target matches multiple nodes; narrow the query"
                 )
             }
         }
@@ -221,5 +254,54 @@ mod tests {
         assert_ne!(ContextError::IndexStale, ContextError::Stale);
         assert_ne!(ContextError::AccessDenied, ContextError::BudgetExceeded);
         assert_ne!(ContextError::BudgetExceeded, ContextError::IndexStale);
+    }
+
+    // ── snapshot_not_found_displays_with_error_code ───────────────────────
+    // Spec: E_SNAPSHOT_NOT_FOUND maps to ContextError::SnapshotNotFound.
+    //
+    // RED: SnapshotNotFound variant did not exist → compile error.
+    // GREEN: variant + Display arm makes it compile and pass.
+    #[test]
+    fn snapshot_not_found_displays_with_error_code() {
+        let err = ContextError::SnapshotNotFound;
+        let s = err.to_string();
+        assert!(
+            s.contains(E_SNAPSHOT_NOT_FOUND),
+            "Display for SnapshotNotFound must contain {E_SNAPSHOT_NOT_FOUND}, got: {s}"
+        );
+    }
+
+    // ── redaction_required_displays_with_error_code ───────────────────────
+    // Spec: E_REDACTION_REQUIRED maps to ContextError::RedactionRequired.
+    #[test]
+    fn redaction_required_displays_with_error_code() {
+        let err = ContextError::RedactionRequired;
+        let s = err.to_string();
+        assert!(
+            s.contains(E_REDACTION_REQUIRED),
+            "Display for RedactionRequired must contain {E_REDACTION_REQUIRED}, got: {s}"
+        );
+    }
+
+    // ── query_ambiguous_displays_with_error_code ──────────────────────────
+    // Spec: E_QUERY_AMBIGUOUS maps to ContextError::QueryAmbiguous.
+    #[test]
+    fn query_ambiguous_displays_with_error_code() {
+        let err = ContextError::QueryAmbiguous;
+        let s = err.to_string();
+        assert!(
+            s.contains(E_QUERY_AMBIGUOUS),
+            "Display for QueryAmbiguous must contain {E_QUERY_AMBIGUOUS}, got: {s}"
+        );
+    }
+
+    // ── TRIANGULATE: g27_new_variants_are_distinct ───────────────────────
+    #[test]
+    fn g27_new_variants_are_distinct() {
+        assert_ne!(ContextError::SnapshotNotFound, ContextError::Stale);
+        assert_ne!(ContextError::RedactionRequired, ContextError::AccessDenied);
+        assert_ne!(ContextError::QueryAmbiguous, ContextError::NodeNotFound);
+        assert_ne!(ContextError::SnapshotNotFound, ContextError::RedactionRequired);
+        assert_ne!(ContextError::RedactionRequired, ContextError::QueryAmbiguous);
     }
 }

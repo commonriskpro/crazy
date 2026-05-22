@@ -216,10 +216,13 @@ mod tests {
             query_hash,
             context_hash,
             freshness: snapshot.created_at,
+            generated_at: 0,
             snapshot,
             structured,
             summary: String::new(),
             redacted: false,
+            redaction_state: ail_context::RedactionState::None,
+            redaction_policy: None,
             truncated: false,
             limits: ResponseLimits {
                 budget_bytes: usize::MAX,
@@ -228,6 +231,9 @@ mod tests {
                 omitted_sections: Vec::new(),
             },
             history_entries: Vec::new(),
+            freshness_status: ail_context::FreshnessStatus::Fresh,
+            provenance: ail_context::ProvenanceBlock::default(),
+            repair_options: Vec::new(),
         }
     }
 
