@@ -4,12 +4,14 @@
 //
 // # Types
 //
-// - `ClauseRole`             — precondition or postcondition.
-// - `ProofObligation`        — predicate string tagged with its role.
-// - `ObligationState`        — resolved state of one obligation.
-// - `ObligationResult`       — obligation + resolved state.
-// - `ProofObligationPipeline`— five-stage pipeline: generate → simplify →
-//                              solve → compose → degrade.
+// - `ClauseRole`              — precondition or postcondition.
+// - `ProofObligation`         — predicate string tagged with its role.
+// - `ObligationState`         — resolved state of one obligation.
+// - `ObligationResult`        — obligation + resolved state.
+// - `ObligationAttempt`       — one resolution attempt in the ledger.
+// - `ObligationLedgerEntry`   — full first-class obligation ledger entry.
+// - `ProofObligationPipeline` — five-stage pipeline: generate → simplify →
+//                               solve → compose → degrade.
 //
 // # Pipeline stages
 //
@@ -20,6 +22,20 @@
 // 4. **Compose**  — if a node's ensures-proven peers cover the predicate,
 //    upgrade `Assumed` → `RuntimeChecked`.
 // 5. **Degrade**  — `Unsupported` solver outcomes → `Assumed` with reason.
+//
+// # G25 extensions (verification-pipeline)
+//
+// `ObligationLedgerEntry` wraps `ObligationResult` and adds:
+// - `id` — stable per-run identifier (sequential within one pipeline call)
+// - `source_stage` — which checker generated the obligation (e.g. "contract")
+// - `attempts` — ordered list of resolution steps taken
+// - `degradation_reason` — why the final state is lower-confidence, if applicable
+// - `repair_options` — suggested repairs, if any
+//
+// `ProofObligationPipeline::run_with_ledger` returns `Vec<ObligationLedgerEntry>`.
+// The original `run` method is preserved unchanged for backward compatibility.
+
+use serde::{Deserialize, Serialize};
 
 use ail_core::semantic_graph::SemanticGraph;
 
@@ -32,7 +48,7 @@ use crate::solver::{Solver, SolverOutcome};
 ///
 /// Exactly two variants are permitted — exhaustive matches elsewhere in the
 /// codebase will fail to compile if a variant is added, which is intentional.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClauseRole {
     /// A precondition: the caller is responsible for making this hold.
     Requires,
@@ -46,7 +62,7 @@ pub enum ClauseRole {
 ///
 /// `predicate` is the raw clause string as extracted from `ContractClauses`.
 /// `role` indicates whether it came from `requires` or `ensures`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofObligation {
     /// The raw predicate expression, e.g. `"x > 0"` or `"true"`.
     pub predicate: String,
@@ -62,7 +78,7 @@ pub struct ProofObligation {
 ///
 /// Mirrors the six-state model from `verification.md` but limited to the
 /// states that an obligation can reach through the proof pipeline.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ObligationState {
     /// Obligation is mechanically proven (tautology or literal `"true"`).
     Proven,
@@ -85,6 +101,68 @@ pub struct ObligationResult {
     pub state: ObligationState,
 }
 
+// ── ObligationAttempt ─────────────────────────────────────────────────────
+
+/// One resolution step attempted during proof obligation evaluation.
+///
+/// The proof pipeline may attempt multiple strategies in order
+/// (simplify → solver → compose → degrade).  Each step is recorded as
+/// an `ObligationAttempt` so that tooling can explain why an obligation
+/// ended in a given state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObligationAttempt {
+    /// The pipeline stage that made this attempt (e.g. `"simplify"`, `"solver"`,
+    /// `"compose"`, `"degrade"`).
+    pub stage: String,
+    /// The outcome of this attempt: `"proven"`, `"failed"`, `"unsupported"`,
+    /// `"assumed"`, `"composed"`, or `"degraded"`.
+    pub outcome: String,
+    /// Optional supporting evidence for this attempt (e.g. the degradation reason).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
+}
+
+// ── ObligationLedgerEntry ─────────────────────────────────────────────────
+
+/// A first-class proof obligation entry in the verification report's
+/// obligation ledger.
+///
+/// Extends `ObligationResult` with tracking fields introduced in G25
+/// (verification-pipeline):
+/// - `id` — unique identifier within one pipeline run (sequential string).
+/// - `source_stage` — which verification stage generated this obligation.
+/// - `attempts` — ordered list of resolution strategies attempted.
+/// - `degradation_reason` — human-readable explanation of state downgrade, if any.
+/// - `repair_options` — suggested fixes the toolchain or user can apply.
+///
+/// Implements `Serialize`/`Deserialize` so it can be stored in `VerificationReport`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObligationLedgerEntry {
+    /// Unique identifier within one pipeline run (e.g. `"po_1"`, `"po_2"`).
+    pub id: String,
+    /// The proof obligation this entry tracks.
+    pub obligation: ProofObligation,
+    /// The final resolved state after all pipeline stages.
+    pub state: ObligationState,
+    /// Which verification stage generated this obligation
+    /// (e.g. `"contract"`, `"resource"`, `"boundary"`, `"concurrency"`, `"policy"`).
+    pub source_stage: String,
+    /// Ordered list of resolution attempts made during the pipeline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempts: Vec<ObligationAttempt>,
+    /// Human-readable explanation of why the obligation was downgraded, if it was.
+    ///
+    /// `None` for `Proven` and `RuntimeChecked` obligations (no degradation).
+    /// `Some(_)` for `Assumed`, `Unverified`, and `Failed` obligations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degradation_reason: Option<String>,
+    /// Actionable repair suggestions.
+    ///
+    /// Empty if no automated repairs are available.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repair_options: Vec<String>,
+}
+
 // ── ProofObligationPipeline ───────────────────────────────────────────────
 
 /// Five-stage proof obligation pipeline.
@@ -98,6 +176,10 @@ impl ProofObligationPipeline {
     ///
     /// Returns one `ObligationResult` per contract clause found in the graph.
     /// Nodes without `contract_clauses` produce no results.
+    ///
+    /// This method is preserved unchanged for backward compatibility.
+    /// Use [`run_with_ledger`](Self::run_with_ledger) to get first-class
+    /// ledger entries with identity and attempt tracking.
     ///
     /// # Example
     ///
@@ -119,6 +201,30 @@ impl ProofObligationPipeline {
         obligations
             .into_iter()
             .map(|ob| Self::resolve(ob, graph, solver))
+            .collect()
+    }
+
+    /// Run the full pipeline and return first-class `ObligationLedgerEntry` items.
+    ///
+    /// Each entry carries identity (`id`), source stage, resolution attempts,
+    /// and a degradation reason if the obligation was downgraded.  The `id`
+    /// values are sequential strings (`"po_1"`, `"po_2"`, …) stable within
+    /// one call.
+    ///
+    /// Use this method when you need to store the obligation ledger in a
+    /// `VerificationReport` or explain obligation resolution to tooling.
+    pub fn run_with_ledger(
+        graph: &SemanticGraph,
+        solver: &dyn Solver,
+    ) -> Vec<ObligationLedgerEntry> {
+        let obligations = Self::generate(graph);
+        obligations
+            .into_iter()
+            .enumerate()
+            .map(|(idx, ob)| {
+                let id = format!("po_{}", idx + 1);
+                Self::resolve_to_ledger(id, ob, graph, solver)
+            })
             .collect()
     }
 
@@ -148,7 +254,7 @@ impl ProofObligationPipeline {
         obligations
     }
 
-    // ── Stages 2–5 for one obligation ────────────────────────────────────
+    // ── Stages 2–5 for one obligation (original path) ────────────────────
 
     fn resolve(
         obligation: ProofObligation,
@@ -209,6 +315,171 @@ impl ProofObligationPipeline {
                         state: ObligationState::Assumed(
                             "solver cannot evaluate predicate; accepted by policy".into(),
                         ),
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Stages 2–5 for one obligation (ledger path) ───────────────────────
+
+    fn resolve_to_ledger(
+        id: String,
+        obligation: ProofObligation,
+        graph: &SemanticGraph,
+        solver: &dyn Solver,
+    ) -> ObligationLedgerEntry {
+        let predicate = obligation.predicate.trim();
+        let mut attempts = Vec::new();
+
+        // Stage 2: Simplify
+        if predicate == "true" {
+            attempts.push(ObligationAttempt {
+                stage: "simplify".into(),
+                outcome: "proven".into(),
+                evidence: None,
+            });
+            return ObligationLedgerEntry {
+                id,
+                obligation,
+                state: ObligationState::Proven,
+                source_stage: "contract".into(),
+                attempts,
+                degradation_reason: None,
+                repair_options: vec![],
+            };
+        }
+        if predicate == "false" {
+            attempts.push(ObligationAttempt {
+                stage: "simplify".into(),
+                outcome: "failed".into(),
+                evidence: Some("literal false — obligation is trivially violated".into()),
+            });
+            return ObligationLedgerEntry {
+                id,
+                obligation,
+                state: ObligationState::Failed,
+                source_stage: "contract".into(),
+                attempts,
+                degradation_reason: Some("literal false clause".into()),
+                repair_options: vec![
+                    "remove or correct the false precondition".into(),
+                    "add a guard that makes the clause reachable only when satisfiable".into(),
+                ],
+            };
+        }
+
+        // Stage 3: Solve
+        let outcome = solver.solve(&obligation);
+
+        match outcome {
+            SolverOutcome::Proven => {
+                attempts.push(ObligationAttempt {
+                    stage: "solver".into(),
+                    outcome: "proven".into(),
+                    evidence: None,
+                });
+                ObligationLedgerEntry {
+                    id,
+                    obligation,
+                    state: ObligationState::Proven,
+                    source_stage: "contract".into(),
+                    attempts,
+                    degradation_reason: None,
+                    repair_options: vec![],
+                }
+            }
+            SolverOutcome::Assumed(reason) => {
+                attempts.push(ObligationAttempt {
+                    stage: "solver".into(),
+                    outcome: "assumed".into(),
+                    evidence: Some(reason.clone()),
+                });
+
+                // Stage 4: Compose
+                if Self::compose_check(predicate, graph) {
+                    attempts.push(ObligationAttempt {
+                        stage: "compose".into(),
+                        outcome: "composed".into(),
+                        evidence: Some(
+                            "peer node ensures clause covers this predicate".into(),
+                        ),
+                    });
+                    ObligationLedgerEntry {
+                        id,
+                        obligation,
+                        state: ObligationState::RuntimeChecked,
+                        source_stage: "contract".into(),
+                        attempts,
+                        degradation_reason: None,
+                        repair_options: vec![],
+                    }
+                } else {
+                    // Stage 5: Degrade
+                    attempts.push(ObligationAttempt {
+                        stage: "degrade".into(),
+                        outcome: "degraded".into(),
+                        evidence: Some(reason.clone()),
+                    });
+                    ObligationLedgerEntry {
+                        id,
+                        obligation,
+                        state: ObligationState::Assumed(reason.clone()),
+                        source_stage: "contract".into(),
+                        attempts,
+                        degradation_reason: Some(reason),
+                        repair_options: vec![
+                            "add a requires guard proven by the caller".into(),
+                            "add a runtime check at the call site".into(),
+                        ],
+                    }
+                }
+            }
+            SolverOutcome::Unsupported => {
+                attempts.push(ObligationAttempt {
+                    stage: "solver".into(),
+                    outcome: "unsupported".into(),
+                    evidence: Some("predicate not supported by SimpleSolver".into()),
+                });
+
+                // Stage 4: Compose
+                if Self::compose_check(predicate, graph) {
+                    attempts.push(ObligationAttempt {
+                        stage: "compose".into(),
+                        outcome: "composed".into(),
+                        evidence: Some(
+                            "peer node ensures clause covers this predicate".into(),
+                        ),
+                    });
+                    ObligationLedgerEntry {
+                        id,
+                        obligation,
+                        state: ObligationState::RuntimeChecked,
+                        source_stage: "contract".into(),
+                        attempts,
+                        degradation_reason: None,
+                        repair_options: vec![],
+                    }
+                } else {
+                    // Stage 5: Degrade — unsupported → Assumed
+                    let reason =
+                        "solver cannot evaluate predicate; accepted by policy".to_string();
+                    attempts.push(ObligationAttempt {
+                        stage: "degrade".into(),
+                        outcome: "degraded".into(),
+                        evidence: Some(reason.clone()),
+                    });
+                    ObligationLedgerEntry {
+                        id,
+                        obligation,
+                        state: ObligationState::Assumed(reason.clone()),
+                        source_stage: "contract".into(),
+                        attempts,
+                        degradation_reason: Some(reason),
+                        repair_options: vec![
+                            "add a requires guard proven by the caller".into(),
+                            "add a runtime check at the call site".into(),
+                        ],
                     }
                 }
             }

@@ -9,25 +9,41 @@
 // solver calls.  It does NOT wire into `ChangeSetOp::Verify` — that remains
 // a no-op placeholder.
 //
+// # G25 scope (verification-pipeline)
+//
+// Adds resource lifecycle, concurrency safety, boundary/FFI trust, and
+// codegen consistency checkers.  Wires them together via a canonical
+// `VerificationPipeline` facade.  Extends the proof obligation pipeline with
+// first-class ledger entries and degradation tracking.
+//
 // # Module layout
 //
-// - `report`  — `VerificationState`, `VerificationEntry`, `VerificationReport`
-//               (six-state enum + priority-based summary).
-// - `checker` — `Checker::check(&SemanticGraph) -> VerificationReport`
-//               (pure graph walker; no I/O, no mutation).
-// - `proof`   — `ClauseRole`, `ProofObligation`
-//               (proof obligation value types consumed by solvers).
-// - `solver`  — `SolverOutcome`, `Solver` trait, `SimpleSolver`
-//               (conservative literal-only solver; injectable via `&dyn Solver`).
+// - `report`             — `VerificationState`, `VerificationEntry`, `VerificationReport`,
+//                          `ArtifactHash`, `DegradationEvent` (six-state + priority summary).
+// - `checker`            — `Checker::check(&SemanticGraph) -> VerificationReport`
+//                          (pure graph walker; no I/O, no mutation).
+// - `proof`              — `ClauseRole`, `ProofObligation`, `ObligationLedgerEntry`
+//                          (proof obligation value types + ledger).
+// - `solver`             — `SolverOutcome`, `Solver` trait, `SimpleSolver`.
+// - `resource_checker`   — `ResourceChecker` (affine/linear/shared lifecycle).
+// - `concurrency_checker`— `ConcurrencyChecker` (task/channel/shared-state safety).
+// - `boundary_checker`   — `BoundaryChecker` (FFI/boundary trust enforcement).
+// - `codegen_checker`    — `CodegenChecker` (artifact hash + manifest consistency).
+// - `pipeline`           — `VerificationPipeline` (canonical ordered facade).
 
+pub mod boundary_checker;
 pub mod checker;
+pub mod codegen_checker;
+pub mod concurrency_checker;
 pub mod contract_checker;
 pub mod diagnostic;
 pub mod effect_checker;
 pub mod package_checker;
+pub mod pipeline;
 pub mod policy;
 pub mod proof;
 pub mod report;
+pub mod resource_checker;
 pub mod solver;
 pub mod type_checker;
 
@@ -42,3 +58,8 @@ pub use policy::{
     POLICY_PROFILE_GATE, POLICY_PUBLIC_API_CHANGED, POLICY_UNSAFE_BLOCKED,
     POLICY_UNVERIFIED_PUBLIC_API, POLICY_WEAK_ASSUMPTION,
 };
+pub use proof::{
+    ClauseRole, ObligationAttempt, ObligationLedgerEntry, ObligationState, ProofObligation,
+    ProofObligationPipeline,
+};
+pub use report::{ArtifactHash, DegradationEvent, VerificationEntry, VerificationReport, VerificationState};
