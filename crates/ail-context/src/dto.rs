@@ -13,6 +13,60 @@ use ail_storage::graph::SnapshotEnvelope;
 use ail_storage::object::ObjectId;
 use serde::{Deserialize, Serialize};
 
+// ── ImpactInfo ────────────────────────────────────────────────────────────
+
+/// Structured impact classification attached to `Impact` query responses.
+///
+/// Provides a breakdown of the affected-node set into semantic categories
+/// (tests, capabilities, public APIs) and a computed `risk_level` string so
+/// consumers can make risk-aware decisions without re-classifying every node.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ImpactInfo {
+    /// `NodeRef`s of nodes with `NodeKind::Test` in the affected set.
+    pub affected_tests: Vec<NodeRef>,
+    /// `NodeRef`s of nodes with `NodeKind::Capability` in the affected set.
+    pub affected_capabilities: Vec<NodeRef>,
+    /// `NodeRef`s of nodes with `Visibility::Public` in the affected set.
+    pub affected_public_apis: Vec<NodeRef>,
+    /// Count of Contract/Invariant nodes that need re-verification.
+    pub required_reverification: usize,
+    /// Overall risk classification: `"none"`, `"low"`, `"medium"`, or `"high"`.
+    ///
+    /// Derived from `affected_public_apis.len() + required_reverification`:
+    /// 0 → `"none"`, 1–3 → `"low"`, 4–10 → `"medium"`, >10 → `"high"`.
+    pub risk_level: String,
+}
+
+// ── RefactorInfo ──────────────────────────────────────────────────────────
+
+/// Structured refactoring support information for `RefactorContext`,
+/// `ExtractCandidates`, and `MoveSafety` query responses.
+///
+/// Provides a pre-classified breakdown of nodes that must be considered when
+/// performing a safe refactoring — what's locked, what must be preserved, and
+/// what must be updated.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RefactorInfo {
+    /// `NodeRef`s of nodes with `WorkflowState::Locked` in the context set.
+    ///
+    /// These represent behavior locks that constrain the refactoring.
+    pub behavior_locks_needed: Vec<NodeRef>,
+    /// `NodeRef`s of Contract/Invariant nodes that must be preserved.
+    pub contracts_to_preserve: Vec<NodeRef>,
+    /// `NodeRef`s of Effect/EffectAlias nodes that must be preserved.
+    pub effects_to_preserve: Vec<NodeRef>,
+    /// `NodeRef`s of nodes that call the refactoring target (must be updated).
+    pub callers_to_update: Vec<NodeRef>,
+    /// `NodeRef`s of proof nodes (via `Proves` edges) that need re-running.
+    pub proofs_to_rerun: Vec<NodeRef>,
+    /// `NodeRef`s of nodes that may conflict with this refactoring.
+    ///
+    /// Nodes with `BreaksIfChanged` edges in the context set.
+    pub possible_conflicts: Vec<NodeRef>,
+    /// Human-readable suggestions for performing the refactoring safely.
+    pub suggested_refactor_ops: Vec<String>,
+}
+
 // ── RepairOption ──────────────────────────────────────────────────────────
 
 /// A structured suggestion for recovering from a context error.
@@ -624,6 +678,18 @@ pub struct ContextResponse {
     /// Empty for successful fresh responses.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repair_options: Vec<RepairOption>,
+    /// Impact classification for `Impact` queries.
+    ///
+    /// `None` for all other query kinds.  Populated by `ResponseBuilder`
+    /// when building responses for `ContextQuery::Impact`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impact_info: Option<ImpactInfo>,
+    /// Refactoring support information for `RefactorContext`, `ExtractCandidates`,
+    /// and `MoveSafety` queries.
+    ///
+    /// `None` for all other query kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refactor_info: Option<RefactorInfo>,
 }
 
 fn is_fresh(s: &FreshnessStatus) -> bool {
@@ -701,6 +767,8 @@ mod tests {
             freshness_status: FreshnessStatus::Fresh,
             provenance: ProvenanceBlock::default(),
             repair_options: Vec::new(),
+            impact_info: None,
+            refactor_info: None,
         }
     }
 

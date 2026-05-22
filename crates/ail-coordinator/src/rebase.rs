@@ -19,10 +19,11 @@
 // Ops are inspected via their `OpPayload` variant.  `Noop` and name-based
 // payloads carry no `NodeRef` and are invisible to conflict detection.
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use ail_change::canonical::{CanonicalChangeSet, CanonicalOp, OpPayload};
-use ail_core::semantic_graph::NodeRef;
+use ail_core::semantic_graph::{GraphNode, NodeRef, SemanticGraph};
 use serde::{Deserialize, Serialize};
 
 use crate::conflict::ConflictReason;
@@ -192,6 +193,111 @@ pub fn classify_conflict(
     }
 }
 
+// ── MergeResult ───────────────────────────────────────────────────────────
+
+/// Outcome of a semantic graph merge operation.
+#[derive(Debug)]
+pub enum MergeResult {
+    /// The merge succeeded; the combined graph is returned.
+    ///
+    /// Only additive changes (nodes and edges present in `right` but absent in
+    /// `left`) are incorporated.  Nodes that already exist in `left` with
+    /// identical content are silently de-duplicated.
+    Merged(SemanticGraph),
+    /// A semantic conflict was detected for the given `NodeRef`.
+    ///
+    /// Both sides modified the node's semantic content (e.g., `return_type`,
+    /// `body_expr`, or `effect_row`) in incompatible ways.
+    Conflict {
+        /// Classification of why the merge cannot proceed.
+        reason: ConflictReason,
+        /// The `NodeRef` that triggered the conflict.
+        node_ref: NodeRef,
+    },
+}
+
+// ── semantic_merge ────────────────────────────────────────────────────────
+
+/// Attempt to semantically merge graph `right` into graph `left`.
+///
+/// # Algorithm
+///
+/// 1. Build a map of `left` nodes by `NodeRef`.
+/// 2. For each node in `right`:
+///    a. **Not in `left`** (new node) → add to merged result.
+///    b. **In `left`, identical** → skip (already present; dedup).
+///    c. **In `left`, different semantic fields** (`return_type`, `body_expr`,
+///       or `effect_row`) → return
+///       `MergeResult::Conflict { reason: ConflictReason::IncompatibleNodeModification, … }`.
+///    d. **In `left`, non-semantic fields differ** (e.g., provenance, schema)
+///       → treat as compatible; keep `left` version.
+/// 3. Add edges from `right` that are not present in `left`.
+/// 4. Return `MergeResult::Merged(combined)`.
+///
+/// # Additive-only guarantee
+///
+/// Only nodes and edges from `right` that do not conflict with `left` are
+/// incorporated.  The merged graph always contains all of `left` plus any
+/// non-conflicting additions from `right`.
+pub fn semantic_merge(left: &SemanticGraph, right: &SemanticGraph) -> MergeResult {
+    // Step 1: index left nodes by NodeRef.
+    let left_by_ref: BTreeMap<NodeRef, &GraphNode> =
+        left.nodes.iter().map(|n| (n.id, n)).collect();
+
+    let mut merged = left.clone();
+
+    // Step 2: process each right node.
+    for right_node in &right.nodes {
+        match left_by_ref.get(&right_node.id) {
+            None => {
+                // New node — additive addition.
+                merged.nodes.push(right_node.clone());
+            }
+            Some(left_node) => {
+                // Node exists in both — check semantic field conflicts.
+                if node_has_semantic_conflict(left_node, right_node) {
+                    return MergeResult::Conflict {
+                        reason: ConflictReason::IncompatibleNodeModification,
+                        node_ref: right_node.id,
+                    };
+                }
+                // Compatible (identical or only non-semantic fields differ) → keep left.
+            }
+        }
+    }
+
+    // Step 3: add edges from right that are absent in left.
+    let left_edges: BTreeSet<(NodeRef, NodeRef, String)> = left
+        .edges
+        .iter()
+        .map(|e| (e.source, e.target, format!("{:?}", e.kind)))
+        .collect();
+
+    for right_edge in &right.edges {
+        let key = (
+            right_edge.source,
+            right_edge.target,
+            format!("{:?}", right_edge.kind),
+        );
+        if !left_edges.contains(&key) {
+            merged.edges.push(right_edge.clone());
+        }
+    }
+
+    MergeResult::Merged(merged)
+}
+
+/// Returns `true` when `left` and `right` disagree on at least one semantic field.
+///
+/// Semantic fields are: `return_type`, `body_expr`, and `effect_row`.
+/// All other fields (provenance, schema, trust_metadata, …) are considered
+/// non-semantic for merge purposes and are ignored.
+fn node_has_semantic_conflict(left: &GraphNode, right: &GraphNode) -> bool {
+    left.return_type != right.return_type
+        || left.body_expr != right.body_expr
+        || left.effect_row != right.effect_row
+}
+
 // ── tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -200,7 +306,9 @@ mod tests {
         canonical::{CanonicalChangeSet, CanonicalMeta, CanonicalOp, OpPayload},
         model::{BlockHash, SnapshotId, Timestamp},
     };
-    use ail_core::semantic_graph::{EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef};
+    use ail_core::semantic_graph::{
+        CapabilityReqs, EdgeKind, EffectRow, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph,
+    };
 
     use super::*;
 
@@ -368,5 +476,154 @@ mod tests {
         };
         let diff = StructuralDiff::from_ops(&[noop]);
         assert!(diff.touched_nodes.is_empty());
+    }
+
+    // ── semantic_merge helpers ─────────────────────────────────────────────
+
+    fn simple_graph(nodes: Vec<GraphNode>, edges: Vec<GraphEdge>) -> SemanticGraph {
+        SemanticGraph { nodes, edges }
+    }
+
+    fn fn_node(id: u32, name: &str) -> GraphNode {
+        GraphNode::new(NodeRef(id), NodeKind::Function, name)
+    }
+
+    // ── semantic_merge: additive new nodes merge cleanly ─────────────────
+    //
+    // Spec: non-conflicting new nodes from right are added to the merge result.
+    //   GIVEN left has NodeRef(0) and right has NodeRef(1) (disjoint)
+    //   WHEN semantic_merge(left, right) is called
+    //   THEN MergeResult::Merged is returned containing both nodes
+    //
+    // RED: semantic_merge did not exist → compile error.
+    // GREEN: function added → returns Merged with both nodes.
+    #[test]
+    fn semantic_merge_additive_nodes_succeed() {
+        let left = simple_graph(vec![fn_node(0, "checkout")], vec![]);
+        let right = simple_graph(vec![fn_node(1, "payment")], vec![]);
+
+        match semantic_merge(&left, &right) {
+            MergeResult::Merged(merged) => {
+                let refs: Vec<u32> = merged.nodes.iter().map(|n| n.id.0).collect();
+                assert!(refs.contains(&0), "left node NodeRef(0) must survive; got: {refs:?}");
+                assert!(refs.contains(&1), "right node NodeRef(1) must be added; got: {refs:?}");
+                assert_eq!(merged.nodes.len(), 2, "merged graph must have exactly 2 nodes");
+            }
+            MergeResult::Conflict { reason, node_ref } => {
+                panic!("expected Merged, got Conflict({reason:?}, {node_ref:?})");
+            }
+        }
+    }
+
+    // ── semantic_merge: incompatible return_type triggers conflict ────────
+    //
+    // Spec: both agents modify the same node's return_type → IncompatibleNodeModification.
+    //   GIVEN left has NodeRef(0) with return_type = Some("Int")
+    //   AND right has NodeRef(0) with return_type = Some("String")
+    //   WHEN semantic_merge(left, right) is called
+    //   THEN MergeResult::Conflict { IncompatibleNodeModification, NodeRef(0) } is returned
+    //
+    // RED: IncompatibleNodeModification variant did not exist → compile error.
+    // GREEN: node_has_semantic_conflict detects the return_type mismatch.
+    #[test]
+    fn semantic_merge_return_type_conflict() {
+        let mut left_node = fn_node(0, "pay");
+        left_node.return_type = Some("Int".to_string());
+        let mut right_node = fn_node(0, "pay");
+        right_node.return_type = Some("String".to_string()); // incompatible!
+
+        let left = simple_graph(vec![left_node], vec![]);
+        let right = simple_graph(vec![right_node], vec![]);
+
+        match semantic_merge(&left, &right) {
+            MergeResult::Conflict { reason, node_ref } => {
+                assert_eq!(
+                    reason,
+                    ConflictReason::IncompatibleNodeModification,
+                    "reason must be IncompatibleNodeModification"
+                );
+                assert_eq!(node_ref, NodeRef(0), "conflicting NodeRef must be NodeRef(0)");
+            }
+            MergeResult::Merged(_) => {
+                panic!("expected Conflict for incompatible return_type, got Merged");
+            }
+        }
+    }
+
+    // ── TRIANGULATE: incompatible effect_row triggers conflict ───────────
+    //
+    // Different semantic field (effect_row) than the previous test — forces
+    // real conflict detection, not just return_type comparison.
+    #[test]
+    fn semantic_merge_effect_row_conflict() {
+        let mut left_node = fn_node(0, "transfer");
+        left_node.effect_row = Some(EffectRow {
+            effects: vec!["IO".to_string()],
+        });
+        let mut right_node = fn_node(0, "transfer");
+        right_node.effect_row = Some(EffectRow {
+            effects: vec!["IO".to_string(), "State".to_string()], // incompatible!
+        });
+
+        let left = simple_graph(vec![left_node], vec![]);
+        let right = simple_graph(vec![right_node], vec![]);
+
+        match semantic_merge(&left, &right) {
+            MergeResult::Conflict { reason, node_ref } => {
+                assert_eq!(reason, ConflictReason::IncompatibleNodeModification);
+                assert_eq!(node_ref, NodeRef(0));
+            }
+            MergeResult::Merged(_) => panic!("effect_row conflict must not produce Merged"),
+        }
+    }
+
+    // ── TRIANGULATE: identical nodes are de-duplicated cleanly ───────────
+    //
+    // If both sides have the exact same node, merge should succeed (not conflict).
+    #[test]
+    fn semantic_merge_identical_nodes_are_deduped() {
+        let node = fn_node(0, "checkout");
+        let left = simple_graph(vec![node.clone()], vec![]);
+        let right = simple_graph(vec![node], vec![]);
+
+        match semantic_merge(&left, &right) {
+            MergeResult::Merged(merged) => {
+                assert_eq!(
+                    merged.nodes.len(),
+                    1,
+                    "identical nodes must be de-duplicated; got: {} nodes",
+                    merged.nodes.len()
+                );
+            }
+            MergeResult::Conflict { .. } => panic!("identical nodes must not conflict"),
+        }
+    }
+
+    // ── additive edges are incorporated ──────────────────────────────────
+    //
+    // New edges from right (not in left) must appear in the merged result.
+    #[test]
+    fn semantic_merge_additive_edges_incorporated() {
+        let left = simple_graph(
+            vec![fn_node(0, "a"), fn_node(1, "b")],
+            vec![], // no edges in left
+        );
+        let right = simple_graph(
+            vec![fn_node(0, "a"), fn_node(1, "b")],
+            vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls)],
+        );
+
+        match semantic_merge(&left, &right) {
+            MergeResult::Merged(merged) => {
+                assert_eq!(
+                    merged.edges.len(),
+                    1,
+                    "new edge from right must be incorporated; got {} edges",
+                    merged.edges.len()
+                );
+                assert_eq!(merged.edges[0].kind, EdgeKind::Calls);
+            }
+            MergeResult::Conflict { .. } => panic!("additive edge merge must not conflict"),
+        }
     }
 }

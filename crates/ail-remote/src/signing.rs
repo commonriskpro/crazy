@@ -234,6 +234,8 @@ mod tests {
             freshness_status: ail_context::FreshnessStatus::Fresh,
             provenance: ail_context::ProvenanceBlock::default(),
             repair_options: Vec::new(),
+            impact_info: None,
+            refactor_info: None,
         }
     }
 

@@ -156,6 +156,13 @@ pub enum ConflictReason {
     PublicApiConflict,
     /// Both agents touched a graph invariant that cannot be composed.
     InvariantTouchedConcurrently,
+    /// Both agents modified the same node's semantic content (return_type, body,
+    /// or effect_row) in incompatible ways during a semantic merge.
+    ///
+    /// Unlike `SameNodeModifiedIncompatibly` (which is NodeRef-based at the op
+    /// level), this variant is emitted by the semantic merge layer when the
+    /// actual field values differ and cannot be auto-resolved.
+    IncompatibleNodeModification,
 }
 
 // ── ChangeSetOutcome ──────────────────────────────────────────────────────

@@ -849,6 +849,15 @@ pub fn lower_to_core_ir(
             CompileError::InvalidGraph(format!("duplicate NodeRef({})", r.0))
         }
         GraphValidationError::DanglingEdge { r#ref, .. } => CompileError::MissingNode(r#ref),
+        GraphValidationError::EffectRowNoEmitsEdge(r) => {
+            CompileError::InvalidGraph(format!("effect_row declared but no Emits edge on NodeRef({})", r.0))
+        }
+        GraphValidationError::CapabilityReqsMissingNode { owner_ref, cap_name } => {
+            CompileError::InvalidGraph(format!(
+                "capability '{}' required by NodeRef({}) has no matching Capability node",
+                cap_name, owner_ref.0
+            ))
+        }
     })?;
 
     // Hash the pipeline inputs (empty parent → blake3(content)).
