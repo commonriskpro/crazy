@@ -561,16 +561,17 @@ impl ProofObligationPipeline {
     // ── Stage 4: Compose ──────────────────────────────────────────────────
 
     /// Return `true` if any node in `graph` has an `ensures` clause whose
-    /// predicate text exactly matches `predicate`.
+    /// predicate text exactly matches `predicate` OR semantically implies it.
     ///
     /// Contract composition: if a called function *ensures* the same predicate
-    /// the current obligation requires, the obligation is covered without an
-    /// independent proof.
+    /// (or a stronger one) the current obligation requires, the obligation is
+    /// covered without an independent proof.
     fn compose_check(predicate: &str, graph: &SemanticGraph) -> bool {
         for node in &graph.nodes {
             if let Some(clauses) = &node.contract_clauses {
                 for ensures in &clauses.ensures {
-                    if ensures.trim() == predicate {
+                    let candidate = ensures.trim();
+                    if candidate == predicate || semantic_implies(predicate, candidate) {
                         return true;
                     }
                 }
@@ -578,4 +579,78 @@ impl ProofObligationPipeline {
         }
         false
     }
+}
+
+// ── Semantic implication for simple comparison predicates ─────────────────
+
+/// Parse a simple `<ident> <op> <int>` predicate into its components.
+///
+/// Returns `(ident, op, value)` if the pattern matches, otherwise `None`.
+/// Supported operators: `>=`, `<=`, `>`, `<`.
+fn parse_simple_cmp(s: &str) -> Option<(String, &'static str, i64)> {
+    let s = s.trim();
+    // Check longer operators first to avoid ambiguity (>= before >)
+    for op in &[">=", "<=", ">", "<"] {
+        if let Some(idx) = s.find(op) {
+            let ident = s[..idx].trim();
+            let val_str = s[idx + op.len()..].trim();
+            if ident.is_empty() {
+                continue;
+            }
+            if !ident.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                continue;
+            }
+            if let Ok(val) = val_str.parse::<i64>() {
+                return Some((ident.to_string(), op, val));
+            }
+        }
+    }
+    None
+}
+
+/// Convert a comparison operator + value to an inclusive lower bound.
+///
+/// `x > N` → lower bound is `N + 1` (integer semantics).
+/// `x >= N` → lower bound is `N`.
+/// Upper bound operators return `None`.
+fn to_lower_bound(op: &str, val: i64) -> Option<i64> {
+    match op {
+        ">" => Some(val.saturating_add(1)),
+        ">=" => Some(val),
+        _ => None,
+    }
+}
+
+/// Return `true` if `candidate` semantically implies `required` for simple
+/// integer comparison predicates of the form `<ident> <op> <int>`.
+///
+/// Semantic implication: candidate's lower bound ≥ required's lower bound.
+///
+/// # Examples
+///
+/// ```text
+/// semantic_implies("x > 0", "x >= 1")  // true:  x>=1 → x>0 (lb 1 ≥ lb 1)
+/// semantic_implies("x >= 0", "x > 0")  // true:  x>0  → x≥0 (lb 1 ≥ lb 0)
+/// semantic_implies("x > 5", "x > 3")   // false: x>3 does not imply x>5
+/// ```
+pub fn semantic_implies(required: &str, candidate: &str) -> bool {
+    if required.trim() == candidate.trim() {
+        return true;
+    }
+    let Some((r_ident, r_op, r_val)) = parse_simple_cmp(required) else {
+        return false;
+    };
+    let Some((c_ident, c_op, c_val)) = parse_simple_cmp(candidate) else {
+        return false;
+    };
+    if r_ident != c_ident {
+        return false;
+    }
+    let Some(r_lb) = to_lower_bound(r_op, r_val) else {
+        return false;
+    };
+    let Some(c_lb) = to_lower_bound(c_op, c_val) else {
+        return false;
+    };
+    c_lb >= r_lb
 }

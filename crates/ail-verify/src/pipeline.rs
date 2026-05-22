@@ -37,7 +37,7 @@
 // All stages are pure.  The pipeline produces identical output for identical
 // inputs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
 use ail_change::canonical::{CanonicalChangeSet, OpPayload, canonicalize_parsed};
 use ail_change::model::ChangeSetOp;
@@ -55,10 +55,10 @@ use crate::policy::{
     ApprovalRecord, CapabilityGrant, PackageTrustEntry, PolicyEngine, PolicyInput, PolicyRule,
     PublicApiChange, StructuralDiff,
 };
-use crate::proof::ProofObligationPipeline;
+use crate::proof::{ClauseRole, ProofObligation, ProofObligationPipeline};
 use crate::report::{DegradationEvent, VerificationEntry, VerificationReport, VerificationState};
 use crate::resource_checker::ResourceChecker;
-use crate::solver::Solver;
+use crate::solver::{Solver, SolverOutcome};
 use crate::type_checker::TypeChecker;
 
 // ── PipelineContext ───────────────────────────────────────────────────────
@@ -192,13 +192,14 @@ impl VerificationPipeline {
         }
 
         // ── Stage 3: Validate op schemas ──────────────────────────────────
-        all_entries.extend(validate_op_schemas(canonical.as_ref()));
+        all_entries
+            .extend(validate_op_schemas_with_graph(canonical.as_ref(), Some(ctx.graph)));
 
         // ── Stage 4: Resolve graph references ─────────────────────────────
         all_entries.extend(resolve_graph_references(canonical.as_ref(), ctx.graph));
 
         // ── Stage 5: Build semantic diff ──────────────────────────────────
-        all_entries.push(build_semantic_diff(base_graph, ctx.graph));
+        all_entries.extend(build_semantic_diff(base_graph, ctx.graph));
 
         // ── Stage 6: Lower affected graph to Core IR ──────────────────────
         all_entries.push(lower_core_ir(ctx.graph));
@@ -235,7 +236,7 @@ impl VerificationPipeline {
         ));
 
         // ── Stage 10: Check refinements ───────────────────────────────────
-        all_entries.extend(check_refinements(ctx.graph));
+        all_entries.extend(check_refinements(ctx.graph, ctx.solver));
 
         // ── Stage 11: Check contracts ─────────────────────────────────────
         all_entries.push(stage_entry(
@@ -470,15 +471,32 @@ fn stage_entry(
     scope: impl Into<String>,
     evidence: Option<String>,
 ) -> VerificationEntry {
+    let blocking = matches!(state, VerificationState::Failed | VerificationState::Unsafe);
     VerificationEntry {
         claim: claim.into(),
         state,
         scope: scope.into(),
         evidence,
+        blocking,
     }
 }
 
+/// Current schema version for op arg validation.
+const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+/// Known primitive type names for arg type validation.
+const KNOWN_PRIMITIVES: &[&str] = &[
+    "Int", "String", "Bool", "Float", "Decimal", "Money", "Email",
+];
+
 fn validate_op_schemas(canonical: Option<&CanonicalChangeSet>) -> Vec<VerificationEntry> {
+    validate_op_schemas_with_graph(canonical, None)
+}
+
+fn validate_op_schemas_with_graph(
+    canonical: Option<&CanonicalChangeSet>,
+    graph: Option<&SemanticGraph>,
+) -> Vec<VerificationEntry> {
     let Some(canonical) = canonical else {
         return vec![stage_entry(
             "03-validate-op-schemas",
@@ -497,34 +515,96 @@ fn validate_op_schemas(canonical: Option<&CanonicalChangeSet>) -> Vec<Verificati
         )];
     }
 
+    // Build graph node name set for type arg validation
+    let graph_names: BTreeSet<&str> = graph
+        .map(|g| g.nodes.iter().map(|n| n.name.as_str()).collect())
+        .unwrap_or_default();
+
     canonical
         .ops
         .iter()
         .enumerate()
-        .map(|(idx, op)| {
+        .flat_map(|(idx, op)| {
+            let scope = format!("op[{idx}]:{}", op.verb);
+            let mut entries = Vec::new();
+
+            // Required arg presence check (existing)
             let missing = required_args(&op.kind, &op.verb)
                 .iter()
                 .filter(|key| !op.args.contains_key(**key))
                 .copied()
                 .collect::<Vec<_>>();
-            if missing.is_empty() {
-                stage_entry(
-                    "03-validate-op-schemas",
-                    VerificationState::Proven,
-                    format!("op[{idx}]:{}", op.verb),
-                    None,
-                )
-            } else {
-                stage_entry(
+            if !missing.is_empty() {
+                entries.push(stage_entry(
                     "03-validate-op-schemas",
                     VerificationState::Failed,
-                    format!("op[{idx}]:{}", op.verb),
+                    scope.clone(),
                     Some(format!(
                         "E_OP_SCHEMA: missing required args: {}",
                         missing.join(", ")
                     )),
-                )
+                ));
+                return entries;
             }
+
+            // Version compatibility check (D2)
+            if let Some(version_str) = op.args.get("version") {
+                if let Ok(v) = version_str.parse::<u32>() {
+                    if v > CURRENT_SCHEMA_VERSION {
+                        entries.push(stage_entry(
+                            "03-validate-op-schemas",
+                            VerificationState::Failed,
+                            scope.clone(),
+                            Some(format!(
+                                "E_OP_VERSION_INCOMPATIBLE: op version {v} exceeds current schema version {CURRENT_SCHEMA_VERSION}"
+                            )),
+                        ));
+                        return entries;
+                    }
+                }
+            }
+
+            // Type arg validation (D2): must be a known primitive or graph node name
+            if let Some(type_arg) = op.args.get("type") {
+                let is_primitive = KNOWN_PRIMITIVES.contains(&type_arg.as_str());
+                let is_node = graph_names.contains(type_arg.as_str());
+                if !is_primitive && !is_node && !type_arg.is_empty() {
+                    entries.push(stage_entry(
+                        "03-validate-op-schemas",
+                        VerificationState::Failed,
+                        scope.clone(),
+                        Some(format!(
+                            "E_OP_ARG_TYPE_INVALID: type '{}' is not a known primitive or graph node name",
+                            type_arg
+                        )),
+                    ));
+                    return entries;
+                }
+            }
+
+            // Effect arg format validation (D2): must contain ':'
+            if let Some(effect_arg) = op.args.get("effect") {
+                if !effect_arg.contains(':') {
+                    entries.push(stage_entry(
+                        "03-validate-op-schemas",
+                        VerificationState::Failed,
+                        scope.clone(),
+                        Some(format!(
+                            "E_OP_ARG_EFFECT_MALFORMED: effect '{}' must follow 'name:Provider' pattern (missing ':')",
+                            effect_arg
+                        )),
+                    ));
+                    return entries;
+                }
+            }
+
+            entries.push(stage_entry(
+                "03-validate-op-schemas",
+                VerificationState::Proven,
+                scope,
+                None,
+            ));
+            entries
         })
         .collect()
 }
@@ -568,6 +648,11 @@ fn required_args(kind: &ChangeSetOp, verb: &str) -> &'static [&'static str] {
     }
 }
 
+/// Check if a string is a valid 64-character hexadecimal hash.
+fn is_valid_64char_hex(s: &str) -> bool {
+    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 fn resolve_graph_references(
     canonical: Option<&CanonicalChangeSet>,
     graph: &SemanticGraph,
@@ -588,6 +673,30 @@ fn resolve_graph_references(
 
     let mut entries = Vec::new();
     for (idx, op) in canonical.ops.iter().enumerate() {
+        // Stage 4 extension (D3): snapshot hash freshness check
+        for hash_key in ["base_hash", "snapshot_hash"] {
+            if let Some(hash_val) = op.args.get(hash_key) {
+                if !is_valid_64char_hex(hash_val) {
+                    entries.push(stage_entry(
+                        "04-resolve-graph-references",
+                        VerificationState::Failed,
+                        format!("op[{idx}].{hash_key}"),
+                        Some(format!(
+                            "E_STALE_CONTEXT: {} '{}' is not a valid 64-char hex snapshot hash",
+                            hash_key, hash_val
+                        )),
+                    ));
+                } else {
+                    entries.push(stage_entry(
+                        "04-resolve-graph-references",
+                        VerificationState::Proven,
+                        format!("op[{idx}].{hash_key}"),
+                        Some(format!("{hash_key} is a valid 64-char hex hash")),
+                    ));
+                }
+            }
+        }
+
         for key in ["target", "source", "from", "to", "capability", "handler"] {
             let Some(value) = op.args.get(key) else {
                 continue;
@@ -629,36 +738,86 @@ fn resolve_graph_references(
 fn build_semantic_diff(
     base_graph: Option<&SemanticGraph>,
     target_graph: &SemanticGraph,
-) -> VerificationEntry {
+) -> Vec<VerificationEntry> {
     let Some(base) = base_graph else {
-        return stage_entry(
+        return vec![stage_entry(
             "05-build-semantic-diff",
             VerificationState::Unverified,
             "semantic_diff",
             Some("base graph snapshot not provided".into()),
-        );
+        )];
     };
-    let base_names = base
-        .nodes
-        .iter()
-        .map(|n| n.name.as_str())
-        .collect::<BTreeSet<_>>();
-    let target_names = target_graph
-        .nodes
-        .iter()
-        .map(|n| n.name.as_str())
-        .collect::<BTreeSet<_>>();
-    let added = target_names.difference(&base_names).count();
-    let removed = base_names.difference(&target_names).count();
-    let edge_delta = target_graph.edges.len().abs_diff(base.edges.len());
-    stage_entry(
-        "05-build-semantic-diff",
-        VerificationState::Proven,
-        "semantic_diff",
-        Some(format!(
-            "added_nodes={added}; removed_nodes={removed}; edge_delta={edge_delta}"
-        )),
-    )
+
+    let base_names: BTreeSet<&str> = base.nodes.iter().map(|n| n.name.as_str()).collect();
+    let target_names: BTreeSet<&str> = target_graph.nodes.iter().map(|n| n.name.as_str()).collect();
+
+    let mut entries = Vec::new();
+
+    // Added nodes (in target but not in base) → Proven (addition is expected)
+    for added_name in target_names.difference(&base_names) {
+        entries.push(stage_entry(
+            "05-build-semantic-diff",
+            VerificationState::Proven,
+            added_name.to_string(),
+            Some(format!("node '{}' added in this changeset", added_name)),
+        ));
+    }
+
+    // Removed nodes (in base but not in target) → Unverified (removal may break refs)
+    for removed_name in base_names.difference(&target_names) {
+        // Check if the node had expose-relevant edges in the base graph (D4)
+        let had_expose = base.edges.iter().any(|edge| {
+            base.nodes
+                .iter()
+                .any(|n| n.name == *removed_name && n.id == edge.source)
+                && edge.kind == ail_core::semantic_graph::EdgeKind::DependsOn
+        });
+        let evidence = if had_expose {
+            format!(
+                "E_PUBLIC_API_CHANGED: node '{}' removed; had dependent edges",
+                removed_name
+            )
+        } else {
+            format!("node '{}' removed from graph; verify no references remain", removed_name)
+        };
+        entries.push(stage_entry(
+            "05-build-semantic-diff",
+            VerificationState::Unverified,
+            removed_name.to_string(),
+            Some(evidence),
+        ));
+    }
+
+    // Changed nodes (in both but with different type_facts or effect_row) → Unverified
+    for name in base_names.intersection(&target_names) {
+        let base_node = base.nodes.iter().find(|n| n.name == *name);
+        let target_node = target_graph.nodes.iter().find(|n| n.name == *name);
+        if let (Some(b), Some(t)) = (base_node, target_node) {
+            if b.type_facts != t.type_facts || b.effect_row != t.effect_row {
+                entries.push(stage_entry(
+                    "05-build-semantic-diff",
+                    VerificationState::Unverified,
+                    name.to_string(),
+                    Some(format!(
+                        "node '{}' type_facts or effect_row changed; verify compatibility",
+                        name
+                    )),
+                ));
+            }
+        }
+    }
+
+    // If no per-node changes, emit single Proven summary
+    if entries.is_empty() {
+        entries.push(stage_entry(
+            "05-build-semantic-diff",
+            VerificationState::Proven,
+            "semantic_diff",
+            Some("no structural changes detected".into()),
+        ));
+    }
+
+    entries
 }
 
 fn lower_core_ir(graph: &SemanticGraph) -> VerificationEntry {
@@ -680,7 +839,7 @@ fn lower_core_ir(graph: &SemanticGraph) -> VerificationEntry {
     }
 }
 
-fn check_refinements(graph: &SemanticGraph) -> Vec<VerificationEntry> {
+fn check_refinements(graph: &SemanticGraph, solver: &dyn Solver) -> Vec<VerificationEntry> {
     let mut entries = Vec::new();
     for node in &graph.nodes {
         let Some(refinement) = &node.refinement_ref else {
@@ -705,7 +864,18 @@ fn check_refinements(graph: &SemanticGraph) -> Vec<VerificationEntry> {
                 }
                 ail_core::semantic_graph::RefinementStatus::Assumed => VerificationState::Assumed,
                 ail_core::semantic_graph::RefinementStatus::Unverified => {
-                    VerificationState::Unverified
+                    // TASK-10: try solver for Unverified refinements
+                    let obligation = ProofObligation {
+                        predicate: refinement.predicate.clone(),
+                        role: ClauseRole::Requires,
+                        scope: node.name.clone(),
+                    };
+                    match solver.solve(&obligation) {
+                        SolverOutcome::Proven => VerificationState::Proven,
+                        SolverOutcome::Assumed(_) | SolverOutcome::Unsupported => {
+                            VerificationState::Assumed
+                        }
+                    }
                 }
                 ail_core::semantic_graph::RefinementStatus::Failed => VerificationState::Failed,
             }
@@ -735,13 +905,16 @@ fn check_invariants(
     base_graph: Option<&SemanticGraph>,
     target_graph: &SemanticGraph,
 ) -> Vec<VerificationEntry> {
-    let invariant_names = target_graph
+    use ail_core::semantic_graph::{EdgeKind, NodeKind, NodeRef};
+
+    let invariant_nodes: Vec<(NodeRef, String)> = target_graph
         .nodes
         .iter()
-        .filter(|node| node.kind == ail_core::semantic_graph::NodeKind::Invariant)
-        .map(|node| node.name.clone())
-        .collect::<Vec<_>>();
-    if invariant_names.is_empty() {
+        .filter(|node| node.kind == NodeKind::Invariant)
+        .map(|node| (node.id, node.name.clone()))
+        .collect();
+
+    if invariant_nodes.is_empty() {
         return vec![stage_entry(
             "12-check-invariants-via-impact-analysis",
             VerificationState::Proven,
@@ -749,32 +922,117 @@ fn check_invariants(
             Some("no invariant nodes present".into()),
         )];
     }
-    let changed = base_graph.map_or(true, |base| base != target_graph);
-    invariant_names
+
+    // No base graph → all invariants unverified (can't determine what changed)
+    let Some(base) = base_graph else {
+        return invariant_nodes
+            .into_iter()
+            .map(|(_, name)| {
+                stage_entry(
+                    "12-check-invariants-via-impact-analysis",
+                    VerificationState::Unverified,
+                    name,
+                    Some("no base graph snapshot provided; cannot assess impact".into()),
+                )
+            })
+            .collect();
+    };
+
+    // Compute changed node IDs: new nodes OR nodes with changed type_facts/effect_row
+    let base_by_name: std::collections::HashMap<&str, &ail_core::semantic_graph::GraphNode> =
+        base.nodes.iter().map(|n| (n.name.as_str(), n)).collect();
+    let changed_ids: BTreeSet<NodeRef> = target_graph
+        .nodes
+        .iter()
+        .filter(|tn| {
+            match base_by_name.get(tn.name.as_str()) {
+                None => true, // new node
+                Some(bn) => bn.type_facts != tn.type_facts || bn.effect_row != tn.effect_row,
+            }
+        })
+        .map(|n| n.id)
+        .collect();
+
+    // For each invariant, BFS across all edges (bidirectional) to find reachable nodes
+    invariant_nodes
         .into_iter()
-        .map(|name| {
-            let impacted = target_graph.edges.iter().any(|edge| {
-                edge.kind == ail_core::semantic_graph::EdgeKind::BreaksIfChanged
-                    && target_graph
-                        .nodes
-                        .iter()
-                        .any(|node| node.id == edge.target && node.name == name)
-            });
-            let state = if changed && !impacted {
-                VerificationState::Unverified
+        .map(|(inv_id, name)| {
+            if changed_ids.is_empty() {
+                return stage_entry(
+                    "12-check-invariants-via-impact-analysis",
+                    VerificationState::Proven,
+                    name,
+                    None,
+                );
+            }
+
+            // BFS from invariant node
+            let mut reachable: BTreeSet<NodeRef> = BTreeSet::new();
+            let mut queue: VecDeque<NodeRef> = VecDeque::new();
+            reachable.insert(inv_id);
+            queue.push_back(inv_id);
+            while let Some(cur) = queue.pop_front() {
+                for edge in &target_graph.edges {
+                    if edge.source == cur && !reachable.contains(&edge.target) {
+                        reachable.insert(edge.target);
+                        queue.push_back(edge.target);
+                    }
+                    if edge.target == cur && !reachable.contains(&edge.source) {
+                        reachable.insert(edge.source);
+                        queue.push_back(edge.source);
+                    }
+                }
+            }
+
+            // Find reachable changed nodes (excluding the invariant itself)
+            let reachable_changed: Vec<NodeRef> = changed_ids
+                .iter()
+                .filter(|&&id| id != inv_id && reachable.contains(&id))
+                .copied()
+                .collect();
+
+            if reachable_changed.is_empty() {
+                return stage_entry(
+                    "12-check-invariants-via-impact-analysis",
+                    VerificationState::Proven,
+                    name,
+                    None,
+                );
+            }
+
+            // Which changed nodes are covered by BreaksIfChanged edges to the invariant?
+            let covered: BTreeSet<NodeRef> = target_graph
+                .edges
+                .iter()
+                .filter(|e| e.kind == EdgeKind::BreaksIfChanged && e.target == inv_id)
+                .map(|e| e.source)
+                .collect();
+
+            let uncovered: Vec<&str> = reachable_changed
+                .iter()
+                .filter(|id| !covered.contains(id))
+                .filter_map(|id| target_graph.nodes.iter().find(|n| n.id == *id))
+                .map(|n| n.name.as_str())
+                .collect();
+
+            if uncovered.is_empty() {
+                stage_entry(
+                    "12-check-invariants-via-impact-analysis",
+                    VerificationState::Proven,
+                    name,
+                    None,
+                )
             } else {
-                VerificationState::Proven
-            };
-            stage_entry(
-                "12-check-invariants-via-impact-analysis",
-                state,
-                name,
-                if impacted {
-                    None
-                } else {
-                    Some("no BreaksIfChanged impact edge found".into())
-                },
-            )
+                stage_entry(
+                    "12-check-invariants-via-impact-analysis",
+                    VerificationState::Unverified,
+                    name,
+                    Some(format!(
+                        "invariant impacted by changes in: {}",
+                        uncovered.join(", ")
+                    )),
+                )
+            }
         })
         .collect()
 }
@@ -812,12 +1070,29 @@ fn check_approval_records(approvals: &[ApprovalRecord]) -> Vec<VerificationEntry
         .collect()
 }
 
+/// Returns true if the body contains a `let ... in` pattern (valid ANF structure).
+fn has_let_in_pattern(body: &str) -> bool {
+    if let Some(let_pos) = body.find("let ") {
+        body[let_pos..].contains(" in ")
+    } else {
+        false
+    }
+}
+
 fn lower_anf(graph: &SemanticGraph) -> VerificationEntry {
-    let unsupported = graph
-        .nodes
-        .iter()
+    let unsupported = graph.nodes.iter()
         .filter_map(|node| node.body_expr.as_ref().map(|body| (node, body)))
-        .find(|(_, body)| body.contains(";") || body.contains("while "));
+        .find(|(_, body)| {
+            // Non-ANF: control flow keywords that are incompatible with ANF form
+            if body.contains("while ") || body.contains("for ") || body.contains("loop ") {
+                return true;
+            }
+            // Non-ANF: bare semicolons outside of a let...in context
+            if body.contains(';') && !has_let_in_pattern(body) {
+                return true;
+            }
+            false
+        });
     if let Some((node, body)) = unsupported {
         stage_entry(
             "19-lower-to-anf",
@@ -835,19 +1110,60 @@ fn lower_anf(graph: &SemanticGraph) -> VerificationEntry {
     }
 }
 
+/// Scan `body` for `acquire(<ident>)` and `release(<ident>)` tokens.
+/// Returns per-identifier (first_acquire_pos, first_release_pos) pairs where a
+/// release appears before the corresponding acquire.
+fn find_ordering_violation(body: &str) -> Option<String> {
+    use std::collections::HashMap;
+
+    let mut acquires: HashMap<String, usize> = HashMap::new();
+    let mut releases: HashMap<String, usize> = HashMap::new();
+
+    // Walk the body scanning for acquire(<ident>) and release(<ident>)
+    let mut pos = 0;
+    while pos < body.len() {
+        for (keyword, map) in [("acquire(", &mut acquires), ("release(", &mut releases)] {
+            if body[pos..].starts_with(keyword) {
+                let inner_start = pos + keyword.len();
+                if let Some(close) = body[inner_start..].find(')') {
+                    let ident = body[inner_start..inner_start + close].trim().to_string();
+                    if !ident.is_empty() && ident.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                        map.entry(ident).or_insert(pos);
+                    }
+                }
+            }
+        }
+        pos += 1;
+    }
+
+    // Check: any release appearing before its corresponding acquire
+    for (ident, release_pos) in &releases {
+        if let Some(&acquire_pos) = acquires.get(ident) {
+            if *release_pos < acquire_pos {
+                return Some(ident.clone());
+            }
+        } else {
+            // release without matching acquire is also a violation
+            return Some(ident.clone());
+        }
+    }
+    None
+}
+
 fn check_anf_ordering(graph: &SemanticGraph) -> VerificationEntry {
     for node in &graph.nodes {
         let Some(body) = &node.body_expr else {
             continue;
         };
-        if let (Some(use_pos), Some(release_pos)) = (body.find("use("), body.find("release("))
-            && use_pos > release_pos
-        {
+        if let Some(ident) = find_ordering_violation(body) {
             return stage_entry(
                 "20-check-anf-effect-resource-ordering",
                 VerificationState::Failed,
                 node.name.clone(),
-                Some("E_ANF_RESOURCE_ORDER: use appears after release".into()),
+                Some(format!(
+                    "E_ANF_RESOURCE_ORDER: release('{}') appears before acquire('{}')",
+                    ident, ident
+                )),
             );
         }
     }

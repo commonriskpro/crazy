@@ -3,7 +3,9 @@
 // Strict TDD — tests for resource lifecycle verification.
 // Spec: verification-pipeline/spec §1 (resource lifecycle checker).
 
-use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph, TrustMetadata};
+use ail_core::semantic_graph::{
+    EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph, TrustMetadata,
+};
 use ail_verify::report::VerificationState;
 use ail_verify::resource_checker::ResourceChecker;
 
@@ -237,4 +239,73 @@ fn entry_claim_includes_resource_kind() {
     )]);
     let report = ResourceChecker::check(&g);
     assert!(report.entries[0].claim.contains("resource:affine"));
+}
+
+// ── TASK-17: ResourceChecker structural edge analysis ────────────────────
+
+#[test]
+fn linear_resource_with_no_lifecycle_tag_and_no_edge_is_unverified() {
+    // GIVEN a resource:linear node with no released tag AND no Consumes/Releases edge
+    // THEN state is Unverified
+    let g = graph(vec![resource_node(0, "lock", "resource:linear", vec![])]);
+    let report = ResourceChecker::check(&g);
+    assert_eq!(report.entries.len(), 1);
+    assert_eq!(report.entries[0].state, VerificationState::Unverified);
+    assert!(
+        report.entries[0].evidence.as_deref().unwrap_or("").contains("E_RESOURCE_NO_LIFECYCLE_EDGE"),
+        "evidence must reference E_RESOURCE_NO_LIFECYCLE_EDGE"
+    );
+}
+
+#[test]
+fn linear_resource_with_consumes_edge_is_proven() {
+    // GIVEN a resource:linear node with an outgoing Consumes edge (no released tag)
+    // THEN state is Proven (graph edge proves lifecycle)
+    let node = resource_node(0, "file_handle", "resource:linear", vec![]);
+    let consumer = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.close");
+    let g = SemanticGraph {
+        nodes: vec![node, consumer],
+        edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Consumes)],
+    };
+    let report = ResourceChecker::check(&g);
+    let entry = report.entries.iter().find(|e| e.scope == "file_handle");
+    assert!(entry.is_some(), "must have entry for file_handle");
+    assert_eq!(
+        entry.unwrap().state,
+        VerificationState::Proven,
+        "linear resource with Consumes edge must be Proven"
+    );
+}
+
+#[test]
+fn affine_resource_with_transaction_committed_is_proven() {
+    // Existing behavior: affine + transaction-committed → Proven (unchanged)
+    let g = graph(vec![resource_node(
+        0,
+        "tx",
+        "resource:affine",
+        vec!["transaction-committed"],
+    )]);
+    let report = ResourceChecker::check(&g);
+    assert_eq!(report.entries[0].state, VerificationState::Proven);
+}
+
+#[test]
+fn shared_resource_with_safe_capability_edge_is_proven() {
+    // GIVEN a resource:shared node with a SafeCapability edge (no safe-capability tag)
+    // THEN state is Proven
+    let node = resource_node(0, "shared_cache", "resource:shared", vec![]);
+    let cap = GraphNode::new(NodeRef(1), NodeKind::Capability, "cap.safe_access");
+    let g = SemanticGraph {
+        nodes: vec![node, cap],
+        edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::SafeCapability)],
+    };
+    let report = ResourceChecker::check(&g);
+    let entry = report.entries.iter().find(|e| e.scope == "shared_cache");
+    assert!(entry.is_some());
+    assert_eq!(
+        entry.unwrap().state,
+        VerificationState::Proven,
+        "shared resource with SafeCapability edge must be Proven"
+    );
 }

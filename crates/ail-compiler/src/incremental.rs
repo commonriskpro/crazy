@@ -594,6 +594,7 @@ mod tests {
                 state: VerificationState::Failed,
                 scope: "s".to_string(),
                 evidence: None,
+                blocking: true,
             }],
             ..Default::default()
         };

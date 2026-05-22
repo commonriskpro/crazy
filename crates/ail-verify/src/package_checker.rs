@@ -87,6 +87,7 @@ impl PackageTrustChecker {
                 evidence: Some(
                     "package has TrustLevel::Unsafe; explicit approval required".to_string(),
                 ),
+                blocking: true,
             };
         }
 
@@ -103,6 +104,7 @@ impl PackageTrustChecker {
                 state,
                 scope,
                 evidence: None,
+                blocking: false,
             }
         } else {
             // Below minimum — Unverified state, blocking.
@@ -113,6 +115,7 @@ impl PackageTrustChecker {
                 evidence: Some(format!(
                     "package trust level `{trust}` does not meet profile minimum `{min_trust}`"
                 )),
+                blocking: false,
             }
         }
     }

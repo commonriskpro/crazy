@@ -182,3 +182,44 @@ fn solver_outcome_has_three_variants() {
         };
     }
 }
+
+// ── TASK-23: SimpleSolver KnownRefinement normalization ───────────────────
+
+fn prove(predicate: &str) -> SolverOutcome {
+    let solver = SimpleSolver;
+    solver.solve(&ProofObligation {
+        predicate: predicate.into(),
+        role: ClauseRole::Requires,
+        scope: "test".into(),
+    })
+}
+
+#[test]
+fn known_refinement_positive_money_ident_is_proven() {
+    // "PositiveMoney(amount)" is a known refinement tautology → Proven
+    assert_eq!(prove("PositiveMoney(amount)"), SolverOutcome::Proven);
+}
+
+#[test]
+fn known_refinement_non_empty_text_ident_is_proven() {
+    assert_eq!(prove("NonEmptyText(description)"), SolverOutcome::Proven);
+}
+
+#[test]
+fn known_refinement_email_ident_is_proven() {
+    assert_eq!(prove("Email(recipient)"), SolverOutcome::Proven);
+}
+
+#[test]
+fn unknown_predicate_remains_unsupported() {
+    // Unknown predicates still return Unsupported (not affected by known refinements)
+    assert_eq!(prove("amount > 0"), SolverOutcome::Unsupported);
+    assert_eq!(prove("complex_predicate(x, y)"), SolverOutcome::Unsupported);
+}
+
+#[test]
+fn known_refinement_requires_single_identifier_argument() {
+    // Malformed pattern: no closing paren, or multiple args → Unsupported
+    assert_eq!(prove("PositiveMoney"), SolverOutcome::Unsupported);
+    assert_eq!(prove("PositiveMoney()"), SolverOutcome::Unsupported); // empty ident
+}

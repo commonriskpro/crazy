@@ -97,6 +97,13 @@ pub struct VerificationEntry {
     /// (not `null` or `""`) in CBOR output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+    /// Whether this entry blocks pipeline progression.
+    ///
+    /// `true` for `Failed` and `Unsafe` entries; `false` for all others.
+    /// Uses `serde(default)` so older reports without this field still
+    /// deserialize cleanly (absent → `false`).
+    #[serde(default)]
+    pub blocking: bool,
 }
 
 // ── ArtifactHash ─────────────────────────────────────────────────────────
@@ -243,5 +250,74 @@ impl VerificationReport {
             .map(|e| e.state)
             .max_by_key(|s| s.priority())
             .unwrap_or(VerificationState::Proven)
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TASK-01: RED — blocking field on VerificationEntry
+
+    #[test]
+    fn verification_entry_blocking_defaults_to_false() {
+        let entry = VerificationEntry {
+            claim: "test-claim".into(),
+            state: VerificationState::Proven,
+            scope: "scope".into(),
+            evidence: None,
+            blocking: false,
+        };
+        assert!(!entry.blocking, "blocking must default to false for Proven");
+    }
+
+    #[test]
+    fn verification_entry_blocking_true_for_failed() {
+        let entry = VerificationEntry {
+            claim: "test-claim".into(),
+            state: VerificationState::Failed,
+            scope: "scope".into(),
+            evidence: Some("E_TEST".into()),
+            blocking: true,
+        };
+        assert!(entry.blocking, "Failed entries must have blocking=true");
+    }
+
+    #[test]
+    fn verification_entry_blocking_true_for_unsafe() {
+        let entry = VerificationEntry {
+            claim: "test-claim".into(),
+            state: VerificationState::Unsafe,
+            scope: "scope".into(),
+            evidence: None,
+            blocking: true,
+        };
+        assert!(entry.blocking, "Unsafe entries must have blocking=true");
+    }
+
+    #[test]
+    fn verification_entry_blocking_serialization_roundtrip() {
+        let entry = VerificationEntry {
+            claim: "roundtrip".into(),
+            state: VerificationState::Failed,
+            scope: "s".into(),
+            evidence: None,
+            blocking: true,
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(json.contains("blocking"), "blocking field must appear in JSON");
+        let decoded: VerificationEntry = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.blocking, true);
+    }
+
+    #[test]
+    fn verification_entry_blocking_false_roundtrip_with_serde_default() {
+        // Simulate old JSON without blocking field — serde default must supply false
+        let json = r#"{"claim":"c","state":"Proven","scope":"s"}"#;
+        let decoded: VerificationEntry =
+            serde_json::from_str(json).expect("deserialize without blocking field");
+        assert!(!decoded.blocking, "absent blocking field must default to false");
     }
 }

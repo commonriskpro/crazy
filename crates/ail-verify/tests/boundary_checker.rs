@@ -196,3 +196,54 @@ fn entry_scope_matches_node_name() {
     let report = BoundaryChecker::check(&g);
     assert_eq!(report.entries[0].scope, "Stripe");
 }
+
+// ── TASK-21: BoundaryChecker assumption lifecycle ─────────────────────────
+
+#[test]
+fn boundary_with_has_assumption_expired_tag_is_failed() {
+    let g = graph(vec![boundary_node(0, "legacy_api", vec!["has-assumption-expired"])]);
+    let report = BoundaryChecker::check(&g);
+    assert_eq!(report.entries[0].state, VerificationState::Failed);
+    assert!(
+        report.entries[0].evidence.as_deref().unwrap_or("").contains("E_BOUNDARY_ASSUMPTION_REVOKED"),
+        "evidence must contain E_BOUNDARY_ASSUMPTION_REVOKED"
+    );
+}
+
+#[test]
+fn boundary_with_has_assumption_revoked_tag_is_failed() {
+    let g = graph(vec![boundary_node(0, "old_ffi", vec!["has-assumption-revoked"])]);
+    let report = BoundaryChecker::check(&g);
+    assert_eq!(report.entries[0].state, VerificationState::Failed);
+    assert!(
+        report.entries[0].evidence.as_deref().unwrap_or("").contains("E_BOUNDARY_ASSUMPTION_REVOKED")
+    );
+}
+
+#[test]
+fn boundary_with_has_assumption_proposed_only_is_unverified() {
+    // proposed but not approved/active → Unverified
+    let g = graph(vec![boundary_node(0, "pending_api", vec!["has-assumption-proposed"])]);
+    let report = BoundaryChecker::check(&g);
+    assert_eq!(report.entries[0].state, VerificationState::Unverified);
+}
+
+#[test]
+fn boundary_with_has_assumption_active_and_required_tags_is_assumed() {
+    // has-assumption-active + all required tags → Assumed (existing flow)
+    let mut tags = all_required_tags();
+    tags.push("has-assumption-active");
+    let g = graph(vec![boundary_node(0, "active_api", tags)]);
+    let report = BoundaryChecker::check(&g);
+    assert_eq!(report.entries[0].state, VerificationState::Assumed);
+}
+
+#[test]
+fn boundary_with_has_assumption_approved_and_required_tags_is_assumed() {
+    // has-assumption-approved + all required tags → Assumed
+    let mut tags = all_required_tags();
+    tags.push("has-assumption-approved");
+    let g = graph(vec![boundary_node(0, "approved_api", tags)]);
+    let report = BoundaryChecker::check(&g);
+    assert_eq!(report.entries[0].state, VerificationState::Assumed);
+}

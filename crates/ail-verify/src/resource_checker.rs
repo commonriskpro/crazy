@@ -44,7 +44,7 @@
 // | properly released/committed            | Proven   |
 // | shared + `safe-capability`             | Proven   |
 
-use ail_core::semantic_graph::SemanticGraph;
+use ail_core::semantic_graph::{EdgeKind, NodeRef, SemanticGraph};
 
 use crate::diagnostic::{Diagnostic, DiagnosticSeverity};
 use crate::report::{SummaryCounts, VerificationEntry, VerificationReport, VerificationState};
@@ -55,6 +55,7 @@ pub const E_USE_AFTER_RELEASE: &str = "E_USE_AFTER_RELEASE";
 pub const E_DOUBLE_RELEASE: &str = "E_DOUBLE_RELEASE";
 pub const E_LINEAR_NOT_CONSUMED: &str = "E_LINEAR_NOT_CONSUMED";
 pub const E_SHARED_WITHOUT_SAFE_CAPABILITY: &str = "E_SHARED_WITHOUT_SAFE_CAPABILITY";
+pub const E_RESOURCE_NO_LIFECYCLE_EDGE: &str = "E_RESOURCE_NO_LIFECYCLE_EDGE";
 
 // ── ResourceChecker ───────────────────────────────────────────────────────
 
@@ -89,7 +90,7 @@ impl ResourceChecker {
             let scope = node.name.clone();
             let claim = format!("resource-lifecycle[{}]", tm.level);
 
-            let (state, evidence) = Self::classify_resource(resource_kind, tags, &scope);
+            let (state, evidence) = Self::classify_resource(resource_kind, tags, &scope, node.id, graph);
 
             // Emit diagnostics for blocking violations
             match state {
@@ -127,11 +128,14 @@ impl ResourceChecker {
                 _ => {}
             }
 
+            let blocking =
+                matches!(state, VerificationState::Failed | VerificationState::Unsafe);
             entries.push(VerificationEntry {
                 claim,
                 state,
                 scope,
                 evidence,
+                blocking,
             });
         }
 
@@ -149,6 +153,8 @@ impl ResourceChecker {
         kind: ResourceKind,
         tags: &[String],
         scope: &str,
+        node_id: NodeRef,
+        graph: &SemanticGraph,
     ) -> (VerificationState, Option<String>) {
         // Violations take priority regardless of resource kind
         if has_tag(tags, "use-after-release") {
@@ -183,13 +189,20 @@ impl ResourceChecker {
                     );
                 }
                 if has_tag(tags, "released") {
+                    return (VerificationState::Proven, None);
+                }
+                // TASK-18: check for outgoing Consumes or Releases edges as proof of lifecycle
+                let has_lifecycle_edge = graph.edges.iter().any(|e| {
+                    e.source == node_id
+                        && matches!(e.kind, EdgeKind::Consumes | EdgeKind::Releases)
+                });
+                if has_lifecycle_edge {
                     (VerificationState::Proven, None)
                 } else {
-                    // No explicit release/consume tag — treat as unverified
                     (
                         VerificationState::Unverified,
                         Some(format!(
-                            "linear resource '{}' has no 'released' or 'never-consumed' tag; lifecycle is unverified",
+                            "{E_RESOURCE_NO_LIFECYCLE_EDGE}: linear resource '{}' has no 'released' tag and no Consumes/Releases edge; lifecycle is unverified",
                             scope
                         )),
                     )
@@ -217,14 +230,21 @@ impl ResourceChecker {
                 }
             }
             ResourceKind::Shared => {
-                // Shared resources require concurrency-safe capability.
+                // Shared resources require concurrency-safe capability (tag or edge).
                 if has_tag(tags, "safe-capability") {
+                    return (VerificationState::Proven, None);
+                }
+                // TASK-18: check for outgoing SafeCapability edge
+                let has_cap_edge = graph.edges.iter().any(|e| {
+                    e.source == node_id && e.kind == EdgeKind::SafeCapability
+                });
+                if has_cap_edge {
                     (VerificationState::Proven, None)
                 } else {
                     (
                         VerificationState::Unsafe,
                         Some(format!(
-                            "shared resource '{}' lacks 'safe-capability' tag; concurrent access is unsafe without it",
+                            "shared resource '{}' lacks 'safe-capability' tag and no SafeCapability edge; concurrent access is unsafe without it",
                             scope
                         )),
                     )

@@ -64,15 +64,22 @@ impl<'s> ContractChecker<'s> {
     ///
     /// Requires clauses are emitted before ensures clauses within each node.
     pub fn check(&self, graph: &SemanticGraph) -> VerificationReport {
+        use ail_core::semantic_graph::NodeKind;
         let mut entries = Vec::new();
         let mut diagnostics = Vec::new();
         for node in &graph.nodes {
             if let Some(clauses) = &node.contract_clauses {
                 let scope = node.name.clone();
+                let is_invariant = node.kind == NodeKind::Invariant;
 
                 // Requires first, then Ensures — declaration order preserved.
+                // Invariant nodes use "invariant-requires:" / "invariant-ensures:" claim prefixes.
                 for predicate in &clauses.requires {
-                    let entry = self.evaluate(predicate, ClauseRole::Requires, &scope);
+                    let entry = if is_invariant {
+                        self.evaluate_invariant(predicate, ClauseRole::Requires, &scope)
+                    } else {
+                        self.evaluate(predicate, ClauseRole::Requires, &scope)
+                    };
                     if entry.state == VerificationState::Failed {
                         diagnostics.push(
                             Diagnostic::error(E_CONTRACT_VIOLATED, node.id).with_evidence(format!(
@@ -83,7 +90,11 @@ impl<'s> ContractChecker<'s> {
                     entries.push(entry);
                 }
                 for predicate in &clauses.ensures {
-                    let entry = self.evaluate(predicate, ClauseRole::Ensures, &scope);
+                    let entry = if is_invariant {
+                        self.evaluate_invariant(predicate, ClauseRole::Ensures, &scope)
+                    } else {
+                        self.evaluate(predicate, ClauseRole::Ensures, &scope)
+                    };
                     if entry.state == VerificationState::Failed {
                         diagnostics.push(
                             Diagnostic::error(E_CONTRACT_VIOLATED, node.id).with_evidence(format!(
@@ -102,6 +113,53 @@ impl<'s> ContractChecker<'s> {
         }
     }
 
+    /// Evaluate one clause predicate for an invariant node.
+    ///
+    /// Same logic as `evaluate` but uses `"invariant-requires:"` /
+    /// `"invariant-ensures:"` claim prefixes to distinguish invariant obligations
+    /// from regular function contract clauses (REQ-13).
+    fn evaluate_invariant(
+        &self,
+        predicate: &str,
+        role: ClauseRole,
+        scope: &str,
+    ) -> VerificationEntry {
+        let prefix = match role {
+            ClauseRole::Requires => "invariant-requires:",
+            ClauseRole::Ensures => "invariant-ensures:",
+        };
+        if predicate.trim() == "false" {
+            return VerificationEntry {
+                claim: format!("{prefix} {predicate}"),
+                state: VerificationState::Failed,
+                scope: scope.to_string(),
+                evidence: None,
+                blocking: true,
+            };
+        }
+        let obligation = ProofObligation {
+            predicate: predicate.to_string(),
+            role,
+            scope: String::new(),
+        };
+        let (state, evidence) = match self.solver.solve(&obligation) {
+            SolverOutcome::Proven => (VerificationState::RuntimeChecked, None),
+            SolverOutcome::Unsupported => (
+                VerificationState::Assumed,
+                Some(format!("solver cannot evaluate invariant predicate: {predicate}")),
+            ),
+            SolverOutcome::Assumed(reason) => (VerificationState::Assumed, Some(reason)),
+        };
+        let blocking = matches!(state, VerificationState::Failed | VerificationState::Unsafe);
+        VerificationEntry {
+            claim: format!("{prefix} {predicate}"),
+            state,
+            scope: scope.to_string(),
+            evidence,
+            blocking,
+        }
+    }
+
     /// Evaluate one clause predicate and return the corresponding entry.
     ///
     /// Conservative literal check for `"false"` is applied first to avoid
@@ -114,6 +172,7 @@ impl<'s> ContractChecker<'s> {
                 state: VerificationState::Failed,
                 scope: scope.to_string(),
                 evidence: None,
+                blocking: true,
             };
         }
 
@@ -135,11 +194,13 @@ impl<'s> ContractChecker<'s> {
             SolverOutcome::Assumed(reason) => (VerificationState::Assumed, Some(reason)),
         };
 
+        let blocking = matches!(state, VerificationState::Failed | VerificationState::Unsafe);
         VerificationEntry {
             claim: format!("{}: {}", role_label(role), predicate),
             state,
             scope: scope.to_string(),
             evidence,
+            blocking,
         }
     }
 }

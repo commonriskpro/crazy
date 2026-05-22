@@ -79,6 +79,7 @@ impl Checker {
             state: type_state,
             scope: scope.clone(),
             evidence: None,
+            blocking: false,
         });
 
         // Emit E_TYPE_MISMATCH when the type is unverified (no facts declared).
@@ -100,6 +101,7 @@ impl Checker {
             state: effect_state,
             scope: scope.clone(),
             evidence: None,
+            blocking: false,
         });
 
         // ── Capability fact ───────────────────────────────────────────────
@@ -113,6 +115,7 @@ impl Checker {
             state: cap_state,
             scope,
             evidence: None,
+            blocking: false,
         });
     }
 }

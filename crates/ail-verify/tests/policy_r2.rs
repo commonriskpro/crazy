@@ -35,6 +35,7 @@ fn entry(claim: &str, scope: &str, state: VerificationState) -> VerificationEntr
         state,
         scope: scope.into(),
         evidence: None,
+        blocking: false,
     }
 }
 

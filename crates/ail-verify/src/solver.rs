@@ -61,10 +61,48 @@ pub trait Solver {
 /// identical input produces identical output (pure function, POS-7).
 pub struct SimpleSolver;
 
+/// Known refinement type names that form tautological predicates when applied
+/// to a single identifier: `KnownType(ident)` is Proven by definition.
+///
+/// These are domain-level refinement types where the refinement IS the type
+/// constraint — no additional proof is required.
+const KNOWN_REFINEMENT_TYPES: &[&str] = &[
+    "PositiveMoney",
+    "NonEmptyText",
+    "Email",
+    "NonEmpty",
+    "Positive",
+    "NonNegative",
+    "NonZero",
+];
+
+/// Returns `true` if `predicate` matches the pattern `KnownType(identifier)`.
+fn is_known_refinement_pattern(predicate: &str) -> bool {
+    let pred = predicate.trim();
+    KNOWN_REFINEMENT_TYPES.iter().any(|known| {
+        if let Some(rest) = pred.strip_prefix(known) {
+            let rest = rest.trim();
+            if let Some(inner) = rest.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+                let ident = inner.trim();
+                !ident.is_empty()
+                    && ident
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    })
+}
+
 impl Solver for SimpleSolver {
     fn solve(&self, obligation: &ProofObligation) -> SolverOutcome {
-        match obligation.predicate.trim() {
+        let pred = obligation.predicate.trim();
+        match pred {
             "true" => SolverOutcome::Proven,
+            _ if is_known_refinement_pattern(pred) => SolverOutcome::Proven,
             _ => SolverOutcome::Unsupported,
         }
     }

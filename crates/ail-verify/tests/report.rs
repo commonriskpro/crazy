@@ -47,18 +47,21 @@ fn mixed_states_summary_is_failed() {
                 state: VerificationState::Proven,
                 scope: "node_a".into(),
                 evidence: None,
+                blocking: false,
             },
             VerificationEntry {
                 claim: "effect".into(),
                 state: VerificationState::Assumed,
                 scope: "node_a".into(),
                 evidence: None,
+                blocking: false,
             },
             VerificationEntry {
                 claim: "cap".into(),
                 state: VerificationState::Failed,
                 scope: "node_a".into(),
                 evidence: Some("failed invariant".into()),
+                blocking: true,
             },
         ],
         ..Default::default()
@@ -77,18 +80,21 @@ fn unsafe_beats_unverified_and_assumed() {
                 state: VerificationState::Unverified,
                 scope: "n1".into(),
                 evidence: None,
+                blocking: false,
             },
             VerificationEntry {
                 claim: "effect".into(),
                 state: VerificationState::Assumed,
                 scope: "n1".into(),
                 evidence: None,
+                blocking: false,
             },
             VerificationEntry {
                 claim: "boundary".into(),
                 state: VerificationState::Unsafe,
                 scope: "n1".into(),
                 evidence: None,
+                blocking: true,
             },
         ],
         ..Default::default()
@@ -107,12 +113,14 @@ fn all_proven_summary_is_proven() {
                 state: VerificationState::Proven,
                 scope: "node_a".into(),
                 evidence: None,
+                blocking: false,
             },
             VerificationEntry {
                 claim: "type_b".into(),
                 state: VerificationState::Proven,
                 scope: "node_b".into(),
                 evidence: None,
+                blocking: false,
             },
         ],
         ..Default::default()
@@ -143,12 +151,14 @@ fn runtime_checked_beats_proven_but_not_assumed() {
                 state: VerificationState::Proven,
                 scope: "n".into(),
                 evidence: None,
+                blocking: false,
             },
             VerificationEntry {
                 claim: "b".into(),
                 state: VerificationState::RuntimeChecked,
                 scope: "n".into(),
                 evidence: None,
+                blocking: false,
             },
         ],
         ..Default::default()
@@ -163,12 +173,14 @@ fn runtime_checked_beats_proven_but_not_assumed() {
                 state: VerificationState::RuntimeChecked,
                 scope: "n".into(),
                 evidence: None,
+                blocking: false,
             },
             VerificationEntry {
                 claim: "b".into(),
                 state: VerificationState::Assumed,
                 scope: "n".into(),
                 evidence: None,
+                blocking: false,
             },
         ],
         ..Default::default()
@@ -188,6 +200,7 @@ fn evidence_none_is_absent_in_cbor_not_empty_string() {
         state: VerificationState::Proven,
         scope: "my_node".into(),
         evidence: None,
+        blocking: false,
     };
 
     // Round-trip through CBOR
@@ -217,6 +230,7 @@ fn evidence_some_round_trips_via_cbor() {
         state: VerificationState::Failed,
         scope: "contract_node".into(),
         evidence: Some("contradiction found in nominal type".into()),
+        blocking: true,
     };
 
     let mut buf = Vec::new();

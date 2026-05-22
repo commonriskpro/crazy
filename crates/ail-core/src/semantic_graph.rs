@@ -94,6 +94,16 @@ pub enum EdgeKind {
     Proves,
     /// Change-impact edge.
     BreaksIfChanged,
+    /// Resource consumption edge (node consumes a resource).
+    Consumes,
+    /// Resource release edge (node releases a resource).
+    Releases,
+    /// Task is spawned by a task group.
+    SpawnedBy,
+    /// Child-of relationship (structural containment).
+    ChildOf,
+    /// Safe concurrency capability edge.
+    SafeCapability,
 }
 
 // ── Storage identity value types ─────────────────────────────────────────
