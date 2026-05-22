@@ -1,37 +1,69 @@
 // ── ail-package::resolver ─────────────────────────────────────────────────
 //
-// Dependency resolution with trust, advisory, and yank checks.
+// Dependency resolution with trust, advisory, yank, semver, schema, profile,
+// capability/handler conflict, and license policy checks.
 //
-// # Design decisions
+// # Design (docs/packages.md §Dependency resolution)
 //
-// - `DependencyResolver` is a stateless unit struct.  All inputs (registry,
-//   advisories, yank records) are passed per-call.
-// - Version matching is exact-string for this implementation.  Semver range
-//   evaluation (`^1.2`, `>=1.0`) is an open design question (packages.md).
-// - Resolution order: NotFound → Yanked → Advisory → TrustViolation → Ok.
-//   This ensures the most informative error is returned when multiple issues
-//   exist simultaneously.
+// Resolver considers:
+//   version constraints (semver ranges)
+//   schema compatibility
+//   trust requirements
+//   profile policy
+//   capability conflicts
+//   handler conflicts
+//   license policy
+//
+// - `DependencyResolver` is a stateless unit struct.  All inputs are passed
+//   per-call.
+// - Resolution order: NotFound → Yanked → Advisory → TrustViolation →
+//   ProfilePolicy → LicensePolicy → CapabilityConflict → HandlerConflict → Ok.
+// - Version matching uses semver VersionReq for range constraints.
+
+use semver::{Version, VersionReq};
 
 use crate::advisory::SecurityAdvisory;
 use crate::manifest::PackageManifest;
+use crate::policy::DeploymentProfile;
+use crate::policy::TrustGate;
+use crate::policy::TrustGateVerdict;
 use crate::registry::PackageRegistry;
 use crate::trust::TrustLevel;
 use crate::yank::YankRecord;
 
 // ── DependencySpec ────────────────────────────────────────────────────────
 
-/// A declared dependency with version and trust constraints.
+/// A declared dependency with version constraint and trust/policy requirements.
 ///
-/// `version` is an exact version string for this implementation.
+/// `version_constraint` is a semver VersionReq string (e.g., `"^1.2"`,
+/// `">=1.0.0"`) or an exact version string (e.g., `"1.2.0"`).
 /// `min_trust` is the minimum `TrustLevel` required for resolution to succeed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DependencySpec {
     /// Package name (e.g., `"payments.stripe"`).
     pub name: String,
-    /// Required version string (exact match, e.g., `"1.2.0"`).
-    pub version: String,
+    /// SemVer constraint string (e.g., `"^1.2"`, `"1.2.0"`, `">=1.0.0 <2.0.0"`).
+    pub version_constraint: String,
     /// Minimum trust level required (e.g., `TrustLevel::Assumed`).
     pub min_trust: TrustLevel,
+    /// Deployment profile to apply trust gate checks.
+    pub profile: Option<DeploymentProfile>,
+    /// SPDX license expressions that are allowed (empty = any license allowed).
+    ///
+    /// If non-empty, the resolved package's license must appear in this list.
+    pub allowed_licenses: Vec<String>,
+    /// Capability IDs that are disallowed in resolved packages.
+    ///
+    /// If a resolved package requests any of these capabilities, resolution fails.
+    pub denied_capabilities: Vec<String>,
+    /// Handler names that conflict and cannot coexist.
+    ///
+    /// If a resolved package exports any of these handlers, resolution fails.
+    pub denied_handlers: Vec<String>,
+    /// Minimum graph schema version required for schema compatibility.
+    pub min_graph_schema: Option<u32>,
+    /// Minimum core IR schema version required for schema compatibility.
+    pub min_core_ir_schema: Option<u32>,
 }
 
 // ── ResolverError ─────────────────────────────────────────────────────────
@@ -43,8 +75,8 @@ pub enum ResolverError {
     NotFound {
         /// Package name that was not found.
         name: String,
-        /// Version that was not found.
-        version: String,
+        /// Constraint that produced no match.
+        version_constraint: String,
     },
     /// The package was yanked and cannot be used for new resolution.
     Yanked {
@@ -65,25 +97,92 @@ pub enum ResolverError {
         /// The minimum trust level required by the dependency spec.
         required: TrustLevel,
     },
+    /// The package is blocked by the profile-based trust gate.
+    ProfilePolicyViolation {
+        /// The deployment profile that blocked the package.
+        profile: DeploymentProfile,
+        /// The package trust level.
+        trust_level: TrustLevel,
+    },
+    /// The package's license is not in the allowed list.
+    LicenseViolation {
+        /// The package's actual license.
+        actual_license: Option<String>,
+    },
+    /// The package requests a capability that is disallowed.
+    CapabilityConflict {
+        /// The disallowed capability.
+        capability: String,
+    },
+    /// The package exports a handler that conflicts with policy.
+    HandlerConflict {
+        /// The conflicting handler name.
+        handler: String,
+    },
+    /// The package's schema version is incompatible.
+    SchemaIncompatible {
+        /// Human-readable reason (e.g., "graph_schema 1 < required 3").
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for ResolverError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ResolverError::NotFound { name, version } => {
-                write!(f, "package {name} {version} not found in registry")
+            ResolverError::NotFound {
+                name,
+                version_constraint,
+            } => {
+                write!(
+                    f,
+                    "package {name} matching '{version_constraint}' not found in registry"
+                )
             }
             ResolverError::Yanked { reason } => {
                 write!(f, "package is yanked: {reason}")
             }
             ResolverError::Advisory { id, severity } => {
-                write!(f, "security advisory {id} ({severity}) affects this package")
+                write!(
+                    f,
+                    "security advisory {id} ({severity}) affects this package"
+                )
             }
             ResolverError::TrustViolation { actual, required } => {
                 write!(
                     f,
                     "trust violation: package has trust {actual} but {required} is required"
                 )
+            }
+            ResolverError::ProfilePolicyViolation {
+                profile,
+                trust_level,
+            } => {
+                write!(
+                    f,
+                    "profile policy violation: {trust_level} package is denied in {profile} profile"
+                )
+            }
+            ResolverError::LicenseViolation { actual_license } => {
+                let lic = actual_license.as_deref().unwrap_or("<none>");
+                write!(
+                    f,
+                    "license violation: package license '{lic}' is not in the allowed list"
+                )
+            }
+            ResolverError::CapabilityConflict { capability } => {
+                write!(
+                    f,
+                    "capability conflict: package requests disallowed capability '{capability}'"
+                )
+            }
+            ResolverError::HandlerConflict { handler } => {
+                write!(
+                    f,
+                    "handler conflict: package exports disallowed handler '{handler}'"
+                )
+            }
+            ResolverError::SchemaIncompatible { reason } => {
+                write!(f, "schema incompatible: {reason}")
             }
         }
     }
@@ -93,42 +192,90 @@ impl std::error::Error for ResolverError {}
 
 // ── DependencyResolver ────────────────────────────────────────────────────
 
-/// Stateless dependency resolver that checks yanks, advisories, and trust.
+/// Stateless dependency resolver with full policy enforcement.
 pub struct DependencyResolver;
 
 impl DependencyResolver {
+    /// Resolve a `VersionReq` string against all manifests in the registry
+    /// for the named package, returning the best (highest) matching version.
+    fn find_best_match<'a>(
+        name: &str,
+        version_constraint: &str,
+        registry: &'a PackageRegistry,
+    ) -> Option<&'a PackageManifest> {
+        // Parse as VersionReq; fall back to exact match.
+        let req = VersionReq::parse(version_constraint).ok();
+
+        let mut best: Option<&PackageManifest> = None;
+        let mut best_ver: Option<Version> = None;
+
+        for m in registry.all() {
+            if m.name != name {
+                continue;
+            }
+            let Ok(ver) = Version::parse(&m.version) else {
+                // Not a valid semver — treat as exact match fallback.
+                if version_constraint == m.version {
+                    return Some(m);
+                }
+                continue;
+            };
+            let matches = match &req {
+                Some(r) => r.matches(&ver),
+                None => version_constraint == m.version,
+            };
+            if matches {
+                match &best_ver {
+                    None => {
+                        best = Some(m);
+                        best_ver = Some(ver);
+                    }
+                    Some(prev) if ver > *prev => {
+                        best = Some(m);
+                        best_ver = Some(ver);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        best
+    }
+
     /// Resolve a `DependencySpec` against the given registry, advisories, and
-    /// yank records.
+    /// yank records, enforcing the full policy chain from `docs/packages.md`.
     ///
     /// Resolution order:
-    /// 1. If no matching package is found → `ResolverError::NotFound`
-    /// 2. If the package is yanked → `ResolverError::Yanked`
-    /// 3. If a matching advisory exists → `ResolverError::Advisory`
-    /// 4. If trust level is insufficient → `ResolverError::TrustViolation`
-    /// 5. Otherwise → `Ok(&PackageManifest)`
+    /// 1. Semver lookup: find best matching manifest → `ResolverError::NotFound`
+    /// 2. Yank check → `ResolverError::Yanked`
+    /// 3. Advisory check → `ResolverError::Advisory`
+    /// 4. Trust level check → `ResolverError::TrustViolation`
+    /// 5. Profile trust gate → `ResolverError::ProfilePolicyViolation`
+    /// 6. Schema compatibility → `ResolverError::SchemaIncompatible`
+    /// 7. License policy → `ResolverError::LicenseViolation`
+    /// 8. Capability conflicts → `ResolverError::CapabilityConflict`
+    /// 9. Handler conflicts → `ResolverError::HandlerConflict`
+    /// 10. Otherwise → `Ok(&PackageManifest)`
     ///
     /// # Errors
     ///
-    /// Returns the first `ResolverError` encountered per the resolution order
-    /// above.
+    /// Returns the first `ResolverError` encountered per the resolution order.
     pub fn resolve<'a>(
         spec: &DependencySpec,
         registry: &'a PackageRegistry,
         advisories: &[SecurityAdvisory],
         yanks: &[YankRecord],
     ) -> Result<&'a PackageManifest, ResolverError> {
-        // Step 1: lookup
-        let manifest = registry
-            .lookup_by_name_version(&spec.name, &spec.version)
+        // Step 1: semver lookup — find best matching manifest
+        let manifest = Self::find_best_match(&spec.name, &spec.version_constraint, registry)
             .ok_or_else(|| ResolverError::NotFound {
                 name: spec.name.clone(),
-                version: spec.version.clone(),
+                version_constraint: spec.version_constraint.clone(),
             })?;
 
         // Step 2: yank check
         if let Some(yank) = yanks
             .iter()
-            .find(|y| y.name == spec.name && y.version == spec.version)
+            .find(|y| y.name == spec.name && y.version == manifest.version)
         {
             return Err(ResolverError::Yanked {
                 reason: yank.reason.clone(),
@@ -137,7 +284,7 @@ impl DependencyResolver {
 
         // Step 3: advisory check
         if let Some(adv) =
-            crate::advisory::AdvisoryChecker::first_match(&spec.name, &spec.version, advisories)
+            crate::advisory::AdvisoryChecker::first_match(&spec.name, &manifest.version, advisories)
         {
             return Err(ResolverError::Advisory {
                 id: adv.id.clone(),
@@ -145,12 +292,75 @@ impl DependencyResolver {
             });
         }
 
-        // Step 4: trust check
+        // Step 4: trust level check
         if !manifest.trust_level.satisfies(spec.min_trust) {
             return Err(ResolverError::TrustViolation {
                 actual: manifest.trust_level,
                 required: spec.min_trust,
             });
+        }
+
+        // Step 5: profile trust gate
+        if let Some(profile) = spec.profile {
+            if TrustGate::evaluate(manifest.trust_level, profile) == TrustGateVerdict::Deny {
+                return Err(ResolverError::ProfilePolicyViolation {
+                    profile,
+                    trust_level: manifest.trust_level,
+                });
+            }
+        }
+
+        // Step 6: schema compatibility
+        if let Some(min_graph) = spec.min_graph_schema {
+            let actual = manifest.graph_schema.unwrap_or(0);
+            if actual < min_graph {
+                return Err(ResolverError::SchemaIncompatible {
+                    reason: format!("graph_schema {} < required {}", actual, min_graph),
+                });
+            }
+        }
+        if let Some(min_ir) = spec.min_core_ir_schema {
+            let actual = manifest.core_ir_schema.unwrap_or(0);
+            if actual < min_ir {
+                return Err(ResolverError::SchemaIncompatible {
+                    reason: format!("core_ir_schema {} < required {}", actual, min_ir),
+                });
+            }
+        }
+
+        // Step 7: license policy
+        if !spec.allowed_licenses.is_empty() {
+            let ok = manifest
+                .license
+                .as_ref()
+                .is_some_and(|l| spec.allowed_licenses.iter().any(|a| a == l));
+            if !ok {
+                return Err(ResolverError::LicenseViolation {
+                    actual_license: manifest.license.clone(),
+                });
+            }
+        }
+
+        // Step 8: capability conflicts
+        for cap in &spec.denied_capabilities {
+            if manifest.required_capabilities.contains(cap) {
+                return Err(ResolverError::CapabilityConflict {
+                    capability: cap.clone(),
+                });
+            }
+        }
+
+        // Step 9: handler conflicts
+        for handler_name in &spec.denied_handlers {
+            if manifest
+                .handlers
+                .iter()
+                .any(|h| &h.handler_name == handler_name)
+            {
+                return Err(ResolverError::HandlerConflict {
+                    handler: handler_name.clone(),
+                });
+            }
         }
 
         Ok(manifest)
@@ -163,7 +373,9 @@ impl DependencyResolver {
 mod tests {
     use super::*;
     use crate::advisory::{AdvisorySeverity, SecurityAdvisory};
+    use crate::handler::HandlerExport;
     use crate::manifest::{PackageDef, PackageManifest};
+    use crate::policy::DeploymentProfile;
     use crate::registry::PackageRegistry;
     use crate::trust::TrustLevel;
     use crate::yank::YankRecord;
@@ -195,8 +407,14 @@ mod tests {
     fn spec(name: &str, version: &str, min_trust: TrustLevel) -> DependencySpec {
         DependencySpec {
             name: name.to_string(),
-            version: version.to_string(),
+            version_constraint: version.to_string(),
             min_trust,
+            profile: None,
+            allowed_licenses: vec![],
+            denied_capabilities: vec![],
+            denied_handlers: vec![],
+            min_graph_schema: None,
+            min_core_ir_schema: None,
         }
     }
 
@@ -208,7 +426,11 @@ mod tests {
     #[test]
     fn resolve_returns_manifest_for_valid_spec() {
         let mut reg = PackageRegistry::new();
-        reg.register(make_manifest("payments.stripe", "1.2.0", TrustLevel::Verified));
+        reg.register(make_manifest(
+            "payments.stripe",
+            "1.2.0",
+            TrustLevel::Verified,
+        ));
 
         let result = DependencyResolver::resolve(
             &spec("payments.stripe", "1.2.0", TrustLevel::Assumed),
@@ -235,12 +457,9 @@ mod tests {
             &[],
             &[],
         );
-        assert_eq!(
-            result,
-            Err(ResolverError::NotFound {
-                name: "unknown.pkg".to_string(),
-                version: "1.0.0".to_string(),
-            })
+        assert!(
+            matches!(result, Err(ResolverError::NotFound { .. })),
+            "absent package must return NotFound"
         );
     }
 
@@ -310,12 +529,8 @@ mod tests {
         let mut reg = PackageRegistry::new();
         reg.register(make_manifest("pkg", "2.0.0", TrustLevel::Unverified));
 
-        let result = DependencyResolver::resolve(
-            &spec("pkg", "2.0.0", TrustLevel::Assumed),
-            &reg,
-            &[],
-            &[],
-        );
+        let result =
+            DependencyResolver::resolve(&spec("pkg", "2.0.0", TrustLevel::Assumed), &reg, &[], &[]);
         assert_eq!(
             result,
             Err(ResolverError::TrustViolation {
@@ -356,6 +571,262 @@ mod tests {
         assert!(
             matches!(result, Err(ResolverError::Yanked { .. })),
             "Yanked must take precedence over Advisory"
+        );
+    }
+
+    // ── semver_range_resolves_best_matching_version ───────────────────────
+    // Spec scenario: "DependencySpec with ^1.2 resolves best available 1.x"
+    //   GIVEN registry with 1.2.0 and 1.5.0 (both Verified)
+    //   WHEN resolve called with constraint "^1.2"
+    //   THEN returns the highest matching version (1.5.0)
+    #[test]
+    fn semver_range_resolves_best_matching_version() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg", "1.2.0", TrustLevel::Verified));
+        reg.register(make_manifest("pkg", "1.5.0", TrustLevel::Verified));
+        reg.register(make_manifest("pkg", "2.0.0", TrustLevel::Verified));
+
+        let s = DependencySpec {
+            name: "pkg".to_string(),
+            version_constraint: "^1.2".to_string(),
+            min_trust: TrustLevel::Unverified,
+            profile: None,
+            allowed_licenses: vec![],
+            denied_capabilities: vec![],
+            denied_handlers: vec![],
+            min_graph_schema: None,
+            min_core_ir_schema: None,
+        };
+        let result = DependencyResolver::resolve(&s, &reg, &[], &[]);
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap().version,
+            "1.5.0",
+            "^1.2 must pick highest 1.x"
+        );
+    }
+
+    // ── profile_policy_blocks_unverified_in_prod ──────────────────────────
+    // Spec scenario: "Unverified package blocked in prod profile"
+    #[test]
+    fn profile_policy_blocks_unverified_in_prod() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg", "1.0.0", TrustLevel::Unverified));
+
+        let s = DependencySpec {
+            profile: Some(DeploymentProfile::Prod),
+            ..spec("pkg", "1.0.0", TrustLevel::Unverified)
+        };
+        let result = DependencyResolver::resolve(&s, &reg, &[], &[]);
+        assert!(
+            matches!(result, Err(ResolverError::ProfilePolicyViolation { .. })),
+            "unverified in prod must be ProfilePolicyViolation"
+        );
+    }
+
+    // ── schema_incompatibility_blocked ────────────────────────────────────
+    // Spec scenario: "Package with graph_schema 1 is blocked when >=3 required"
+    #[test]
+    fn schema_incompatibility_blocked() {
+        let mut def = PackageDef {
+            name: "pkg".to_string(),
+            version: "1.0.0".to_string(),
+            trust_level: TrustLevel::Verified,
+            required_capabilities: vec![],
+            exported_capabilities: vec![],
+            assumptions: vec![],
+            unsafe_surface: vec![],
+            artifact_hashes: vec![],
+            build_env_hash: None,
+            handlers: vec![],
+            contracts: vec![],
+            exports: vec![],
+            imports: vec![],
+            boundaries: vec![],
+            license: None,
+            provenance: None,
+            verification_report: None,
+            graph_schema: Some(1),
+            core_ir_schema: None,
+        };
+        let mut reg = PackageRegistry::new();
+        reg.register(PackageManifest::from_def(def.clone()));
+
+        let s = DependencySpec {
+            min_graph_schema: Some(3),
+            ..spec("pkg", "1.0.0", TrustLevel::Unverified)
+        };
+        let result = DependencyResolver::resolve(&s, &reg, &[], &[]);
+        assert!(
+            matches!(result, Err(ResolverError::SchemaIncompatible { .. })),
+            "graph_schema 1 < 3 must fail"
+        );
+
+        // Now with sufficient graph_schema
+        def.graph_schema = Some(3);
+        let mut reg2 = PackageRegistry::new();
+        reg2.register(PackageManifest::from_def(def));
+        let s2 = DependencySpec {
+            min_graph_schema: Some(3),
+            ..spec("pkg", "1.0.0", TrustLevel::Unverified)
+        };
+        assert!(DependencyResolver::resolve(&s2, &reg2, &[], &[]).is_ok());
+    }
+
+    // ── license_policy_blocks_disallowed_license ──────────────────────────
+    // Spec scenario: "Package with GPL license blocked when only MIT allowed"
+    #[test]
+    fn license_policy_blocks_disallowed_license() {
+        let mut def = PackageDef {
+            name: "pkg".to_string(),
+            version: "1.0.0".to_string(),
+            trust_level: TrustLevel::Verified,
+            required_capabilities: vec![],
+            exported_capabilities: vec![],
+            assumptions: vec![],
+            unsafe_surface: vec![],
+            artifact_hashes: vec![],
+            build_env_hash: None,
+            handlers: vec![],
+            contracts: vec![],
+            exports: vec![],
+            imports: vec![],
+            boundaries: vec![],
+            license: Some("GPL-3.0".to_string()),
+            provenance: None,
+            verification_report: None,
+            graph_schema: None,
+            core_ir_schema: None,
+        };
+        let mut reg = PackageRegistry::new();
+        reg.register(PackageManifest::from_def(def.clone()));
+
+        let s = DependencySpec {
+            allowed_licenses: vec!["MIT".to_string(), "Apache-2.0".to_string()],
+            ..spec("pkg", "1.0.0", TrustLevel::Unverified)
+        };
+        let result = DependencyResolver::resolve(&s, &reg, &[], &[]);
+        assert!(
+            matches!(result, Err(ResolverError::LicenseViolation { .. })),
+            "GPL-3.0 not in [MIT, Apache-2.0] must fail"
+        );
+
+        // MIT is allowed
+        def.license = Some("MIT".to_string());
+        let mut reg2 = PackageRegistry::new();
+        reg2.register(PackageManifest::from_def(def));
+        let s2 = DependencySpec {
+            allowed_licenses: vec!["MIT".to_string()],
+            ..spec("pkg", "1.0.0", TrustLevel::Unverified)
+        };
+        assert!(DependencyResolver::resolve(&s2, &reg2, &[], &[]).is_ok());
+    }
+
+    // ── capability_conflict_blocked ───────────────────────────────────────
+    // Spec scenario: "Package requesting denied capability is blocked"
+    #[test]
+    fn capability_conflict_blocked() {
+        let def = PackageDef {
+            name: "pkg".to_string(),
+            version: "1.0.0".to_string(),
+            trust_level: TrustLevel::Verified,
+            required_capabilities: vec!["file.write:LocalDisk".to_string()],
+            exported_capabilities: vec![],
+            assumptions: vec![],
+            unsafe_surface: vec![],
+            artifact_hashes: vec![],
+            build_env_hash: None,
+            handlers: vec![],
+            contracts: vec![],
+            exports: vec![],
+            imports: vec![],
+            boundaries: vec![],
+            license: None,
+            provenance: None,
+            verification_report: None,
+            graph_schema: None,
+            core_ir_schema: None,
+        };
+        let mut reg = PackageRegistry::new();
+        reg.register(PackageManifest::from_def(def));
+
+        let s = DependencySpec {
+            denied_capabilities: vec!["file.write:LocalDisk".to_string()],
+            ..spec("pkg", "1.0.0", TrustLevel::Unverified)
+        };
+        let result = DependencyResolver::resolve(&s, &reg, &[], &[]);
+        assert!(
+            matches!(result, Err(ResolverError::CapabilityConflict { capability }) if capability == "file.write:LocalDisk"),
+            "denied capability must produce CapabilityConflict"
+        );
+    }
+
+    // ── handler_conflict_blocked ──────────────────────────────────────────
+    // Spec scenario: "Package exporting denied handler is blocked"
+    #[test]
+    fn handler_conflict_blocked() {
+        let def = PackageDef {
+            name: "pkg".to_string(),
+            version: "1.0.0".to_string(),
+            trust_level: TrustLevel::Verified,
+            required_capabilities: vec![],
+            exported_capabilities: vec![],
+            assumptions: vec![],
+            unsafe_surface: vec![],
+            artifact_hashes: vec![],
+            build_env_hash: None,
+            handlers: vec![HandlerExport {
+                capability: "payment.charge:PaymentProvider".to_string(),
+                handler_name: "StripePayment".to_string(),
+                trust_level: TrustLevel::Verified,
+            }],
+            contracts: vec![],
+            exports: vec![],
+            imports: vec![],
+            boundaries: vec![],
+            license: None,
+            provenance: None,
+            verification_report: None,
+            graph_schema: None,
+            core_ir_schema: None,
+        };
+        let mut reg = PackageRegistry::new();
+        reg.register(PackageManifest::from_def(def));
+
+        let s = DependencySpec {
+            denied_handlers: vec!["StripePayment".to_string()],
+            ..spec("pkg", "1.0.0", TrustLevel::Unverified)
+        };
+        let result = DependencyResolver::resolve(&s, &reg, &[], &[]);
+        assert!(
+            matches!(result, Err(ResolverError::HandlerConflict { handler }) if handler == "StripePayment"),
+            "denied handler must produce HandlerConflict"
+        );
+    }
+
+    // ── advisory_range_constraint_matches ─────────────────────────────────
+    // Spec scenario: "Advisory with <1.2.3 blocks resolution of 1.0.0"
+    #[test]
+    fn advisory_range_constraint_blocks_resolution() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("stripe", "1.0.0", TrustLevel::Verified));
+        let advisories = vec![SecurityAdvisory {
+            id: "adv_range".to_string(),
+            package: "stripe".to_string(),
+            affected_constraint: "<1.2.3".to_string(),
+            severity: AdvisorySeverity::Critical,
+            reason: "bug".to_string(),
+        }];
+
+        let result = DependencyResolver::resolve(
+            &spec("stripe", "1.0.0", TrustLevel::Unverified),
+            &reg,
+            &advisories,
+            &[],
+        );
+        assert!(
+            matches!(result, Err(ResolverError::Advisory { id, .. }) if id == "adv_range"),
+            "<1.2.3 advisory must block 1.0.0"
         );
     }
 }

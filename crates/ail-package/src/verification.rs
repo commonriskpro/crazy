@@ -1,36 +1,74 @@
 // ── ail-package::verification ─────────────────────────────────────────────
 //
-// `PackageVerificationReport` — summary verification metrics for a package.
+// `PackageVerificationReport` — full verification evidence for a package
+// release, hash-bound and content-addressed.
 //
-// A verification report records how many exports were verified, how many
-// effects were declared, and how many contracts were formally proven.
-// It is hash-bound: the report itself is content-addressed and its hash
-// is stored in the `LockfileEntry.verification_report_hash` field.
+// # Design (docs/packages.md §Package verification report)
 //
-// See `docs/packages.md` §Package verification report for the full design.
+// Package release includes:
+//   package_verification_report
+//     package payments.stripe
+//     version 1.2.0
+//     exports_verified [...]
+//     effects_declared [...]
+//     assumptions [...]
+//     unsafe_surface [...]
+//     artifact_hashes [...]
+//   end
+//
+// The report is hash-bound: its BLAKE3 digest is stored in
+// `LockfileEntry.verification_report_hash`.
 
+use blake3::Hasher;
+use ciborium::ser::into_writer;
 use serde::{Deserialize, Serialize};
 
 // ── PackageVerificationReport ─────────────────────────────────────────────
 
-/// Summary verification metrics produced during a package release.
+/// Full verification evidence produced during a package release.
 ///
-/// A `PackageVerificationReport` records the counts of verified exports,
-/// declared effects, and proven contracts.  These counts let the verifier
-/// and dependency resolver quickly assess whether a package release meets
-/// the policy requirements for its declared `TrustLevel`.
+/// The report is content-addressed: [`PackageVerificationReport::blake3_hex`]
+/// returns a deterministic BLAKE3 digest of the canonical CBOR encoding.
 ///
 /// See `docs/packages.md` §Package verification report.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageVerificationReport {
-    /// Number of exported symbols for which verification evidence was
-    /// produced and accepted.
-    pub exports_verified: u32,
-    /// Number of effect tokens that are declared in the manifest and
-    /// present in verification evidence.
-    pub effects_declared: u32,
-    /// Number of contract IDs for which formal proofs were produced.
-    pub contracts_proven: u32,
+    /// Name of the package this report covers (e.g., `"payments.stripe"`).
+    pub package: String,
+    /// Version of the package this report covers (e.g., `"1.2.0"`).
+    pub version: String,
+    /// Names of exports for which verification evidence was accepted.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub exports_verified: Vec<String>,
+    /// Effect tokens that are declared and present in verification evidence.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub effects_declared: Vec<String>,
+    /// Assumption IDs included in the release.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub assumptions: Vec<String>,
+    /// Unsafe surface entries as name strings (e.g., `"fn.native_hash"`).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub unsafe_surface: Vec<String>,
+    /// BLAKE3 hex digests of release artifacts (role → hash strings).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub artifact_hashes: Vec<String>,
+}
+
+impl PackageVerificationReport {
+    /// Compute the BLAKE3 content hash of this report as a hex-encoded string.
+    ///
+    /// The hash covers the canonical CBOR serialization of the full report.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if CBOR serialization fails.
+    pub fn blake3_hex(&self) -> Result<String, String> {
+        let mut buf = Vec::new();
+        into_writer(self, &mut buf).map_err(|e| format!("CBOR serialization failed: {e}"))?;
+        let mut hasher = Hasher::new();
+        hasher.update(&buf);
+        Ok(hasher.finalize().to_hex().to_string())
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -41,9 +79,13 @@ mod tests {
 
     fn sample_report() -> PackageVerificationReport {
         PackageVerificationReport {
-            exports_verified: 5,
-            effects_declared: 3,
-            contracts_proven: 2,
+            package: "payments.stripe".to_string(),
+            version: "1.2.0".to_string(),
+            exports_verified: vec!["charge".to_string(), "refund".to_string()],
+            effects_declared: vec!["payment.charge:PaymentProvider".to_string()],
+            assumptions: vec!["stripe_idempotency".to_string()],
+            unsafe_surface: vec![],
+            artifact_hashes: vec!["a".repeat(64)],
         }
     }
 
@@ -83,14 +125,18 @@ mod tests {
         );
     }
 
-    // ── zero_counts_are_valid ─────────────────────────────────────────────
-    // TRIANGULATE: a report with all-zero counts is valid and round-trips.
+    // ── empty_report_is_valid ─────────────────────────────────────────────
+    // TRIANGULATE: a report with empty optional lists is valid and round-trips.
     #[test]
-    fn zero_counts_are_valid() {
+    fn empty_report_is_valid() {
         let report = PackageVerificationReport {
-            exports_verified: 0,
-            effects_declared: 0,
-            contracts_proven: 0,
+            package: "utils.core".to_string(),
+            version: "0.1.0".to_string(),
+            exports_verified: vec![],
+            effects_declared: vec![],
+            assumptions: vec![],
+            unsafe_surface: vec![],
+            artifact_hashes: vec![],
         };
 
         let mut buf = Vec::new();
@@ -98,8 +144,46 @@ mod tests {
         let decoded: PackageVerificationReport =
             ciborium::de::from_reader(buf.as_slice()).expect("decode");
 
-        assert_eq!(decoded.exports_verified, 0);
-        assert_eq!(decoded.effects_declared, 0);
-        assert_eq!(decoded.contracts_proven, 0);
+        assert!(decoded.exports_verified.is_empty());
+        assert!(decoded.effects_declared.is_empty());
+    }
+
+    // ── verification_report_is_hash_bound ────────────────────────────────
+    // Spec scenario: "Verification report is hash-bound"
+    //   GIVEN a PackageVerificationReport
+    //   WHEN blake3_hex() is called
+    //   THEN it returns a 64-char hex string deterministically
+    #[test]
+    fn verification_report_is_hash_bound() {
+        let r1 = sample_report();
+        let r2 = sample_report();
+        let h1 = r1.blake3_hex().expect("hash must succeed");
+        let h2 = r2.blake3_hex().expect("hash must succeed");
+        assert_eq!(h1.len(), 64);
+        assert_eq!(h1, h2, "same report must hash to same value");
+    }
+
+    // ── different_reports_produce_different_hashes ────────────────────────
+    // TRIANGULATE: mutating a field changes the hash
+    #[test]
+    fn different_reports_produce_different_hashes() {
+        let r1 = sample_report();
+        let mut r2 = sample_report();
+        r2.version = "2.0.0".to_string();
+        assert_ne!(
+            r1.blake3_hex().unwrap(),
+            r2.blake3_hex().unwrap(),
+            "different version must produce different hash"
+        );
+    }
+
+    // ── report_includes_package_and_version ───────────────────────────────
+    // Spec scenario: report fields match the doc example
+    #[test]
+    fn report_includes_package_and_version() {
+        let r = sample_report();
+        assert_eq!(r.package, "payments.stripe");
+        assert_eq!(r.version, "1.2.0");
+        assert!(r.exports_verified.contains(&"charge".to_string()));
     }
 }

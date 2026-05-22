@@ -71,6 +71,9 @@ mod tests {
         ciborium::ser::into_writer(&record, &mut buf1).expect("first encode");
         let mut buf2 = Vec::new();
         ciborium::ser::into_writer(&record, &mut buf2).expect("second encode");
-        assert_eq!(buf1, buf2, "identical inputs must produce identical CBOR bytes");
+        assert_eq!(
+            buf1, buf2,
+            "identical inputs must produce identical CBOR bytes"
+        );
     }
 }

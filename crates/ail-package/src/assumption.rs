@@ -67,6 +67,92 @@ impl PackageAssumption {
     }
 }
 
+// ── ApprovalRecord ────────────────────────────────────────────────────────
+
+/// An explicit acceptance record for a `PackageAssumption` by an importing project.
+///
+/// Consumer projects must explicitly accept or reject package assumptions.
+/// This record captures that acceptance, who approved it, and in which project.
+///
+/// # Example (from docs/packages.md)
+/// ```text
+/// approve_assumption stripe_idempotency for project.checkout by=security
+/// ```
+///
+/// See `docs/packages.md` §Assumptions and boundaries in packages.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalRecord {
+    /// ID of the assumption being accepted (matches `PackageAssumption::id`).
+    pub assumption_id: String,
+    /// Name of the importing project that accepts this assumption.
+    pub project: String,
+    /// Identity of the approver (e.g., a team, reviewer ID, or role).
+    pub approved_by: String,
+}
+
+// ── AssumptionEnforcer ────────────────────────────────────────────────────
+
+/// Enforces that all `Assumed` packages have their assumptions explicitly
+/// accepted by the consuming project.
+pub struct AssumptionEnforcer;
+
+/// Error returned by [`AssumptionEnforcer::check`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AssumptionEnforcementError {
+    /// An assumption from a package was not accepted by the consuming project.
+    UnacceptedAssumption {
+        /// The assumption ID that was not accepted.
+        assumption_id: String,
+        /// The package that shipped the assumption.
+        package: String,
+    },
+}
+
+impl std::fmt::Display for AssumptionEnforcementError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AssumptionEnforcementError::UnacceptedAssumption {
+                assumption_id,
+                package,
+            } => write!(
+                f,
+                "assumption '{assumption_id}' from package '{package}' \
+                 has not been explicitly accepted by the consuming project"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AssumptionEnforcementError {}
+
+impl AssumptionEnforcer {
+    /// Check that every assumption in `assumptions` has been accepted by
+    /// `project` via an `ApprovalRecord` in `approvals`.
+    ///
+    /// # Errors
+    ///
+    /// Returns one `AssumptionEnforcementError` per unaccepted assumption.
+    pub fn check(
+        package: &str,
+        assumptions: &[PackageAssumption],
+        project: &str,
+        approvals: &[ApprovalRecord],
+    ) -> Vec<AssumptionEnforcementError> {
+        assumptions
+            .iter()
+            .filter(|a| {
+                !approvals
+                    .iter()
+                    .any(|r| r.assumption_id == a.id && r.project == project)
+            })
+            .map(|a| AssumptionEnforcementError::UnacceptedAssumption {
+                assumption_id: a.id.clone(),
+                package: package.to_string(),
+            })
+            .collect()
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -117,5 +203,103 @@ mod tests {
                 "state {state:?} should not be active"
             );
         }
+    }
+
+    // ── approval_record_cbor_round_trip ───────────────────────────────────
+    // Spec scenario: "ApprovalRecord round-trips through CBOR"
+    //   GIVEN an ApprovalRecord with all fields set
+    //   WHEN serialized to CBOR and deserialized
+    //   THEN all fields are equal to the original
+    #[test]
+    fn approval_record_cbor_round_trip() {
+        let record = ApprovalRecord {
+            assumption_id: "stripe_idempotency".to_string(),
+            project: "project.checkout".to_string(),
+            approved_by: "security".to_string(),
+        };
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&record, &mut buf).expect("encode");
+        let decoded: ApprovalRecord = ciborium::de::from_reader(buf.as_slice()).expect("decode");
+        assert_eq!(decoded, record);
+    }
+
+    // ── enforcer_passes_when_all_assumptions_accepted ─────────────────────
+    // Spec scenario: "All assumptions accepted — enforcer returns no errors"
+    //   GIVEN a package with one assumption and an ApprovalRecord for it
+    //   WHEN AssumptionEnforcer::check is called
+    //   THEN returns empty Vec
+    #[test]
+    fn enforcer_passes_when_all_assumptions_accepted() {
+        let assumptions = vec![make_assumption(AssumptionState::Active)];
+        let approvals = vec![ApprovalRecord {
+            assumption_id: "assume-test".to_string(),
+            project: "project.checkout".to_string(),
+            approved_by: "security".to_string(),
+        }];
+        let errors = AssumptionEnforcer::check(
+            "payments.stripe",
+            &assumptions,
+            "project.checkout",
+            &approvals,
+        );
+        assert!(errors.is_empty(), "all accepted — no errors expected");
+    }
+
+    // ── enforcer_fails_for_unaccepted_assumption ──────────────────────────
+    // Spec scenario: "Unaccepted assumption — enforcer returns error"
+    //   GIVEN a package with an assumption and NO matching ApprovalRecord
+    //   WHEN AssumptionEnforcer::check is called
+    //   THEN returns one UnacceptedAssumption error
+    #[test]
+    fn enforcer_fails_for_unaccepted_assumption() {
+        let assumptions = vec![make_assumption(AssumptionState::Active)];
+        let errors = AssumptionEnforcer::check(
+            "payments.stripe",
+            &assumptions,
+            "project.checkout",
+            &[], // no approvals
+        );
+        assert_eq!(errors.len(), 1);
+        assert!(
+            matches!(
+                &errors[0],
+                AssumptionEnforcementError::UnacceptedAssumption {
+                    assumption_id,
+                    package,
+                } if assumption_id == "assume-test" && package == "payments.stripe"
+            ),
+            "expected UnacceptedAssumption for assume-test"
+        );
+    }
+
+    // ── enforcer_approval_for_different_project_does_not_count ───────────
+    // TRIANGULATE: approval for a different project does not satisfy the check
+    #[test]
+    fn enforcer_approval_for_different_project_does_not_count() {
+        let assumptions = vec![make_assumption(AssumptionState::Active)];
+        let approvals = vec![ApprovalRecord {
+            assumption_id: "assume-test".to_string(),
+            project: "project.other".to_string(), // different project
+            approved_by: "security".to_string(),
+        }];
+        let errors = AssumptionEnforcer::check(
+            "payments.stripe",
+            &assumptions,
+            "project.checkout",
+            &approvals,
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "approval for different project must not count"
+        );
+    }
+
+    // ── enforcer_no_assumptions_no_errors ─────────────────────────────────
+    // TRIANGULATE: package with no assumptions never errors
+    #[test]
+    fn enforcer_no_assumptions_no_errors() {
+        let errors = AssumptionEnforcer::check("payments.stripe", &[], "project.checkout", &[]);
+        assert!(errors.is_empty());
     }
 }

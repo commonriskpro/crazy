@@ -21,34 +21,61 @@
 
 pub mod advisory;
 pub mod assumption;
+pub mod coherence;
 pub mod export;
+pub mod generated_artifact;
 pub mod handler;
 pub mod import;
 pub mod lockfile;
 pub mod manifest;
+pub mod namespace;
+pub mod policy;
 pub mod registry;
+pub mod remote_registry;
 pub mod resolver;
 pub mod signing;
 pub mod surface;
 pub mod trust;
 pub mod verification;
+pub mod versioning;
 pub mod yank;
 
 // ── Public re-exports ─────────────────────────────────────────────────────
 
 pub use advisory::{AdvisoryChecker, AdvisorySeverity, SecurityAdvisory};
-pub use assumption::{AssumptionState, PackageAssumption};
+pub use assumption::{
+    ApprovalRecord, AssumptionEnforcementError, AssumptionEnforcer, AssumptionState,
+    PackageAssumption,
+};
+pub use coherence::{CoherenceChecker, CoherenceError, InterfaceImpl};
 pub use export::{ExportDeclaration, ExportStability, ExportVisibility};
+pub use generated_artifact::GeneratedArtifact;
 pub use handler::HandlerExport;
 pub use import::ImportDeclaration;
-pub use lockfile::LockfileEntry;
+pub use lockfile::{Lockfile, LockfileEntry};
 pub use manifest::{
     ArtifactHashEntry, PackageDef, PackageError, PackageManifest, PackageValidationError,
 };
+pub use namespace::{
+    ImportAlias, NamespaceKind, NamespaceOwnershipCheck, OwnershipError, PackageNamespace,
+};
+pub use policy::{
+    CapabilityPolicy, CapabilityPolicyEnforcer, CapabilityPolicyVerdict, CapabilityViolation,
+    DeploymentProfile, TrustGate, TrustGateVerdict,
+};
 pub use registry::PackageRegistry;
+pub use remote_registry::{
+    FetchRequest, FetchResponse, InMemoryError, InMemoryRegistryClient, PublishRequest,
+    PublishResponse, RegistryClient, SearchRequest, SearchResponse, SearchResult, VerifyOutcome,
+    VerifyRequest, VerifyResponse, publish_signed,
+};
 pub use resolver::{DependencyResolver, DependencySpec, ResolverError};
 pub use signing::{PackageKeypair, PackageSignature, SignedPackage, SigningError};
 pub use surface::UnsafeSurfaceEntry;
 pub use trust::TrustLevel;
 pub use verification::PackageVerificationReport;
+pub use versioning::{
+    CompatibilityClass, CompatibilityEngine, CompatibilityError, MigrationRecord, MigrationStep,
+    PackageVersioning,
+};
 pub use yank::YankRecord;

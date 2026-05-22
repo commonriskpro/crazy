@@ -490,6 +490,7 @@ mod tests {
                 contracts: vec!["idempotent_by_key".to_string()],
                 visibility: ExportVisibility::Public,
                 stability: ExportStability::Stable,
+                trust_state: None,
             }],
             imports: vec![ImportDeclaration {
                 source_package: "utils.core".to_string(),
@@ -500,9 +501,13 @@ mod tests {
             license: Some("Apache-2.0".to_string()),
             provenance: Some("https://ci.example.com/builds/42".to_string()),
             verification_report: Some(PackageVerificationReport {
-                exports_verified: 1,
-                effects_declared: 1,
-                contracts_proven: 1,
+                package: "payments.stripe".to_string(),
+                version: "1.2.0".to_string(),
+                exports_verified: vec!["charge".to_string()],
+                effects_declared: vec!["payment.charge:PaymentProvider".to_string()],
+                assumptions: vec![],
+                unsafe_surface: vec![],
+                artifact_hashes: vec![],
             }),
             graph_schema: Some(3),
             core_ir_schema: Some(2),
@@ -562,6 +567,7 @@ mod tests {
             contracts: vec![],
             visibility: ExportVisibility::Public,
             stability: ExportStability::Stable,
+            trust_state: None,
         });
         let m = PackageManifest::from_def(def);
         assert_eq!(m.validate(), Err(PackageValidationError::ExportNameEmpty));
@@ -640,6 +646,7 @@ mod tests {
             contracts: vec![],
             visibility: ExportVisibility::Public,
             stability: ExportStability::Stable,
+            trust_state: None,
         });
         def.handlers.push(HandlerExport {
             capability: "payment.charge".to_string(),

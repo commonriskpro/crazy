@@ -67,6 +67,7 @@ aes-gcm         = "0.10"
 argon2          = "0.5"
 blake3          = "1.5"
 ciborium        = "0.2"
+semver          = { version = "1", features = ["serde"] }
 ed25519-dalek   = { version = "2", features = ["rand_core"] }
 rand            = "0.8"
 x25519-dalek    = { version = "2", features = ["static_secrets"] }

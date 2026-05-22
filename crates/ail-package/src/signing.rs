@@ -124,6 +124,117 @@ impl SignedPackage {
     }
 }
 
+// ── TransparencyLogEntry ──────────────────────────────────────────────────
+
+/// A Sigstore-style transparency log entry for a signed package.
+///
+/// The transparency log provides a tamper-evident record of every publication
+/// event.  Each entry binds a `SignedPackage` to a sequence number, enabling
+/// third parties to detect equivocation (two different packages published under
+/// the same name/version) and ensure append-only audit trails.
+///
+/// # Design (docs/packages.md §Open design questions — registry signing model)
+///
+/// This implements the Sigstore transparency-log concept: every publication
+/// records a `log_id` (globally unique), a `sequence` number (monotonically
+/// increasing per registry), and the BLAKE3 digest of the signed package.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransparencyLogEntry {
+    /// Globally unique log entry identifier (e.g., a UUID or registry-assigned ID).
+    pub log_id: String,
+    /// Monotonically increasing sequence number within this registry.
+    pub sequence: u64,
+    /// Name of the published package.
+    pub package_name: String,
+    /// Version of the published package.
+    pub package_version: String,
+    /// BLAKE3 hex digest of the `SignedPackage` CBOR bytes.
+    pub signed_package_hash: String,
+    /// Ed25519 public key of the publisher (32 raw bytes, hex-encoded).
+    pub publisher_key_hex: String,
+}
+
+// ── TransparencyLog ───────────────────────────────────────────────────────
+
+/// An append-only transparency log of signed package publications.
+///
+/// Maintains a monotonically increasing sequence counter.  Each call to
+/// [`TransparencyLog::append`] verifies the `SignedPackage` signature before
+/// recording the entry.
+#[derive(Clone, Debug, Default)]
+pub struct TransparencyLog {
+    entries: Vec<TransparencyLogEntry>,
+    next_sequence: u64,
+}
+
+impl TransparencyLog {
+    /// Create a new empty transparency log.
+    pub fn new() -> Self {
+        TransparencyLog::default()
+    }
+
+    /// Append a `SignedPackage` to the log after verifying its signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SigningError` if signature verification fails or if CBOR
+    /// serialization of the signed package fails (for hashing).
+    pub fn append(
+        &mut self,
+        log_id: impl Into<String>,
+        signed: &SignedPackage,
+    ) -> Result<&TransparencyLogEntry, SigningError> {
+        // Verify signature before accepting into the log.
+        signed.verify()?;
+
+        // Hash the signed package CBOR bytes.
+        let mut cbor_buf = Vec::new();
+        ciborium::ser::into_writer(signed, &mut cbor_buf)
+            .map_err(|e| SigningError::HashError(format!("CBOR error: {e}")))?;
+        let signed_package_hash = {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&cbor_buf);
+            hasher.finalize().to_hex().to_string()
+        };
+
+        let publisher_key_hex = hex::encode_bytes(&signed.sig.signer);
+
+        let entry = TransparencyLogEntry {
+            log_id: log_id.into(),
+            sequence: self.next_sequence,
+            package_name: signed.manifest.name.clone(),
+            package_version: signed.manifest.version.clone(),
+            signed_package_hash,
+            publisher_key_hex,
+        };
+        self.next_sequence += 1;
+        self.entries.push(entry);
+        Ok(self.entries.last().expect("just pushed"))
+    }
+
+    /// Return all log entries in sequence order.
+    pub fn entries(&self) -> &[TransparencyLogEntry] {
+        &self.entries
+    }
+
+    /// Return `true` if no entries have been recorded.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Return the number of entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+/// Encode bytes as a lower-case hex string.
+mod hex {
+    pub fn encode_bytes(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+}
+
 // ── PackageKeypair ────────────────────────────────────────────────────────
 
 /// An Ed25519 signing keypair used to sign `PackageManifest` values.
@@ -225,7 +336,10 @@ mod tests {
         let decoded: SignedPackage =
             ciborium::de::from_reader(buf.as_slice()).expect("CBOR deserialize must succeed");
 
-        assert_eq!(decoded, signed, "round-tripped SignedPackage must equal original");
+        assert_eq!(
+            decoded, signed,
+            "round-tripped SignedPackage must equal original"
+        );
     }
 
     // ── RED: sign_verify_roundtrip ────────────────────────────────────────
@@ -238,7 +352,9 @@ mod tests {
         let kp = generate_keypair();
         let manifest = minimal_manifest();
         let signed = kp.sign_manifest(manifest).expect("sign must succeed");
-        signed.verify().expect("valid signature must verify successfully");
+        signed
+            .verify()
+            .expect("valid signature must verify successfully");
     }
 
     // ── RED: wrong_key_rejects_signature ─────────────────────────────────
@@ -295,5 +411,113 @@ mod tests {
             kp.public_key(),
             "embedded signer must equal keypair public key"
         );
+    }
+
+    // ── transparency_log_append_verified_entry ────────────────────────────
+    // Spec scenario: "Transparency log records a verified publication"
+    //   GIVEN a valid SignedPackage
+    //   WHEN append() is called on a TransparencyLog
+    //   THEN the entry is recorded with correct sequence, name, and version
+    #[test]
+    fn transparency_log_append_verified_entry() {
+        let kp = generate_keypair();
+        let manifest = minimal_manifest();
+        let signed = kp.sign_manifest(manifest).expect("sign");
+
+        let mut log = TransparencyLog::new();
+        assert!(log.is_empty());
+
+        let entry = log
+            .append("entry-001", &signed)
+            .expect("append must succeed");
+        assert_eq!(entry.sequence, 0);
+        assert_eq!(entry.package_name, "test.pkg");
+        assert_eq!(entry.package_version, "1.0.0");
+        assert_eq!(entry.log_id, "entry-001");
+        assert_eq!(entry.signed_package_hash.len(), 64);
+        assert_eq!(log.len(), 1);
+    }
+
+    // ── transparency_log_sequence_is_monotonic ────────────────────────────
+    // TRIANGULATE: sequence numbers are monotonically increasing
+    #[test]
+    fn transparency_log_sequence_is_monotonic() {
+        let kp = generate_keypair();
+        let m1 = minimal_manifest();
+        let m2 = {
+            let mut def = crate::manifest::PackageDef {
+                name: "test.pkg".to_string(),
+                version: "2.0.0".to_string(),
+                trust_level: crate::trust::TrustLevel::Verified,
+                required_capabilities: vec![],
+                exported_capabilities: vec![],
+                assumptions: vec![],
+                unsafe_surface: vec![],
+                artifact_hashes: vec![],
+                build_env_hash: None,
+                handlers: vec![],
+                contracts: vec![],
+                exports: vec![],
+                imports: vec![],
+                boundaries: vec![],
+                license: None,
+                provenance: None,
+                verification_report: None,
+                graph_schema: None,
+                core_ir_schema: None,
+            };
+            def.version = "2.0.0".to_string();
+            crate::manifest::PackageManifest::from_def(def)
+        };
+        let s1 = kp.sign_manifest(m1).expect("sign");
+        let s2 = kp.sign_manifest(m2).expect("sign");
+
+        let mut log = TransparencyLog::new();
+        let e1 = log.append("a", &s1).expect("append 1");
+        assert_eq!(e1.sequence, 0);
+        let e2 = log.append("b", &s2).expect("append 2");
+        assert_eq!(e2.sequence, 1);
+        assert_eq!(log.len(), 2);
+    }
+
+    // ── transparency_log_rejects_tampered_package ─────────────────────────
+    // Spec scenario: "Transparency log rejects packages with invalid signatures"
+    //   GIVEN a SignedPackage with a tampered manifest
+    //   WHEN append() is called
+    //   THEN returns Err(SigningError::SignatureInvalid)
+    #[test]
+    fn transparency_log_rejects_tampered_package() {
+        let kp = generate_keypair();
+        let manifest = minimal_manifest();
+        let mut signed = kp.sign_manifest(manifest).expect("sign");
+        signed.manifest.version = "9.9.9".to_string(); // tamper
+
+        let mut log = TransparencyLog::new();
+        let result = log.append("tampered", &signed);
+        assert!(
+            matches!(result, Err(SigningError::SignatureInvalid)),
+            "tampered package must be rejected by transparency log"
+        );
+        assert!(log.is_empty(), "failed append must not add entry");
+    }
+
+    // ── transparency_log_entry_cbor_round_trip ────────────────────────────
+    // TRIANGULATE: TransparencyLogEntry is CBOR-serializable
+    #[test]
+    fn transparency_log_entry_cbor_round_trip() {
+        use super::TransparencyLogEntry;
+        let entry = TransparencyLogEntry {
+            log_id: "log-001".to_string(),
+            sequence: 42,
+            package_name: "payments.stripe".to_string(),
+            package_version: "1.2.0".to_string(),
+            signed_package_hash: "a".repeat(64),
+            publisher_key_hex: "b".repeat(64),
+        };
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&entry, &mut buf).expect("encode");
+        let decoded: TransparencyLogEntry =
+            ciborium::de::from_reader(buf.as_slice()).expect("decode");
+        assert_eq!(decoded, entry);
     }
 }

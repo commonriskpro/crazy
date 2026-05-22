@@ -6,9 +6,18 @@
 //
 // - `AdvisoryChecker` is a stateless unit struct; all methods take a slice
 //   of `SecurityAdvisory` so the caller owns the advisory store.
-// - Version constraint matching is exact-string for now (semver ranges are
-//   future work documented in the open design questions in packages.md).
+// - Version constraint matching supports semver range expressions as defined
+//   in `docs/packages.md` §Revocation and advisories:
+//     - Bare version string (e.g., `"1.0.0"`) → exact match
+//     - `<VERSION`  → versions strictly less than VERSION
+//     - `<=VERSION` → versions less than or equal to VERSION
+//     - `>VERSION`  → versions strictly greater than VERSION
+//     - `>=VERSION` → versions greater than or equal to VERSION
+//     - `^VERSION`  → semver caret ranges (compatible with)
+//     - `~VERSION`  → semver tilde ranges (approximately equal)
+// - Constraint parsing falls back to exact-string match when unparseable.
 
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
 // ── AdvisorySeverity ──────────────────────────────────────────────────────
@@ -72,21 +81,42 @@ pub struct SecurityAdvisory {
 pub struct AdvisoryChecker;
 
 impl AdvisoryChecker {
+    /// Test whether `version` matches `constraint`.
+    ///
+    /// Constraint evaluation order:
+    /// 1. Try to parse as a `semver::VersionReq` (handles `<`, `<=`, `>`,
+    ///    `>=`, `^`, `~`, and compound ranges).
+    /// 2. Fall back to exact-string equality for bare unversioned strings.
+    fn version_matches(version: &str, constraint: &str) -> bool {
+        // Attempt semver VersionReq parse.  If the constraint is a bare
+        // version (no operator), VersionReq parses it as `^version` (caret),
+        // so we pre-check for an exact match first.
+        if !constraint.starts_with(['<', '>', '^', '~', '=', '*']) {
+            // Bare version string — exact match only.
+            return constraint == version;
+        }
+
+        let Ok(ver) = Version::parse(version) else {
+            // Package version is not a valid semver — fall back to exact match.
+            return constraint == version;
+        };
+
+        match VersionReq::parse(constraint) {
+            Ok(req) => req.matches(&ver),
+            // Unparseable constraint — fall back to exact match.
+            Err(_) => constraint == version,
+        }
+    }
+
     /// Return `true` if any advisory in `advisories` matches the given
     /// `name` and `version`.
     ///
-    /// Matching rules (current implementation):
-    /// 1. `advisory.package == name` (exact match)
-    /// 2. `advisory.affected_constraint == version` (exact match)
-    ///
-    /// # Note
-    ///
-    /// Semver range evaluation (e.g., `<1.2.3`) is an open design question
-    /// listed in `docs/packages.md` and is not implemented in this version.
+    /// Constraint matching supports semver range expressions (e.g., `<1.2.3`).
+    /// See module-level docs for the full syntax.
     pub fn is_affected(name: &str, version: &str, advisories: &[SecurityAdvisory]) -> bool {
-        advisories
-            .iter()
-            .any(|adv| adv.package == name && adv.affected_constraint == version)
+        advisories.iter().any(|adv| {
+            adv.package == name && Self::version_matches(version, &adv.affected_constraint)
+        })
     }
 
     /// Return the first advisory in `advisories` that matches `name` and `version`,
@@ -96,9 +126,9 @@ impl AdvisoryChecker {
         version: &str,
         advisories: &'a [SecurityAdvisory],
     ) -> Option<&'a SecurityAdvisory> {
-        advisories
-            .iter()
-            .find(|adv| adv.package == name && adv.affected_constraint == version)
+        advisories.iter().find(|adv| {
+            adv.package == name && Self::version_matches(version, &adv.affected_constraint)
+        })
     }
 }
 
@@ -213,5 +243,125 @@ mod tests {
         assert_eq!(AdvisorySeverity::Medium.to_string(), "medium");
         assert_eq!(AdvisorySeverity::High.to_string(), "high");
         assert_eq!(AdvisorySeverity::Critical.to_string(), "critical");
+    }
+
+    // ── semver_lt_constraint_matches_older_versions ───────────────────────
+    // Spec scenario: "Advisory with <1.2.3 matches versions strictly less than 1.2.3"
+    //   GIVEN advisory with affected_constraint: "<1.2.3"
+    //   WHEN is_affected("stripe", "1.0.0", ..) is called
+    //   THEN returns true
+    //   WHEN is_affected("stripe", "1.2.3", ..) is called
+    //   THEN returns false (1.2.3 is not strictly less than 1.2.3)
+    #[test]
+    fn semver_lt_constraint_matches_older_versions() {
+        let advisory = SecurityAdvisory {
+            id: "adv_range".to_string(),
+            package: "payments.stripe".to_string(),
+            affected_constraint: "<1.2.3".to_string(),
+            severity: AdvisorySeverity::Critical,
+            reason: "idempotency bug".to_string(),
+        };
+        let advisories = vec![advisory];
+
+        assert!(
+            AdvisoryChecker::is_affected("payments.stripe", "1.0.0", &advisories),
+            "1.0.0 < 1.2.3 — should be affected"
+        );
+        assert!(
+            AdvisoryChecker::is_affected("payments.stripe", "1.2.2", &advisories),
+            "1.2.2 < 1.2.3 — should be affected"
+        );
+        assert!(
+            !AdvisoryChecker::is_affected("payments.stripe", "1.2.3", &advisories),
+            "1.2.3 is NOT < 1.2.3 — should not be affected"
+        );
+        assert!(
+            !AdvisoryChecker::is_affected("payments.stripe", "2.0.0", &advisories),
+            "2.0.0 is NOT < 1.2.3 — should not be affected"
+        );
+    }
+
+    // ── semver_gte_constraint_matches_newer_versions ──────────────────────
+    // Spec scenario: Advisory with >=1.0.0 matches versions at or above 1.0.0
+    #[test]
+    fn semver_gte_constraint_matches_newer_versions() {
+        let advisory = SecurityAdvisory {
+            id: "adv_gte".to_string(),
+            package: "utils.core".to_string(),
+            affected_constraint: ">=1.0.0".to_string(),
+            severity: AdvisorySeverity::High,
+            reason: "regression".to_string(),
+        };
+        let advisories = vec![advisory];
+
+        assert!(AdvisoryChecker::is_affected(
+            "utils.core",
+            "1.0.0",
+            &advisories
+        ));
+        assert!(AdvisoryChecker::is_affected(
+            "utils.core",
+            "2.5.0",
+            &advisories
+        ));
+        assert!(!AdvisoryChecker::is_affected(
+            "utils.core",
+            "0.9.9",
+            &advisories
+        ));
+    }
+
+    // ── semver_caret_constraint_matches_compatible_versions ───────────────
+    // Spec scenario: Advisory with ^1.0.0 matches 1.x.x but not 2.x.x
+    #[test]
+    fn semver_caret_constraint_matches_compatible_versions() {
+        let advisory = SecurityAdvisory {
+            id: "adv_caret".to_string(),
+            package: "lib.auth".to_string(),
+            affected_constraint: "^1.0.0".to_string(),
+            severity: AdvisorySeverity::Medium,
+            reason: "auth bypass".to_string(),
+        };
+        let advisories = vec![advisory];
+
+        assert!(AdvisoryChecker::is_affected(
+            "lib.auth",
+            "1.0.0",
+            &advisories
+        ));
+        assert!(AdvisoryChecker::is_affected(
+            "lib.auth",
+            "1.9.9",
+            &advisories
+        ));
+        assert!(!AdvisoryChecker::is_affected(
+            "lib.auth",
+            "2.0.0",
+            &advisories
+        ));
+    }
+
+    // ── exact_string_still_works ──────────────────────────────────────────
+    // TRIANGULATE: bare version (no operator) still does exact-match only
+    #[test]
+    fn exact_string_still_works() {
+        let advisory = SecurityAdvisory {
+            id: "adv_exact".to_string(),
+            package: "payments.stripe".to_string(),
+            affected_constraint: "1.0.0".to_string(),
+            severity: AdvisorySeverity::Low,
+            reason: "minor".to_string(),
+        };
+        let advisories = vec![advisory];
+        assert!(AdvisoryChecker::is_affected(
+            "payments.stripe",
+            "1.0.0",
+            &advisories
+        ));
+        assert!(!AdvisoryChecker::is_affected(
+            "payments.stripe",
+            "1.0.1",
+            &advisories
+        ));
     }
 }

@@ -76,7 +76,12 @@ impl PackageRegistry {
     /// The manifest is NOT removed from the registry (old builds must remain
     /// reproducible).  Callers should use [`PackageRegistry::is_yanked`] to
     /// check before new resolutions.
-    pub fn yank(&mut self, name: impl Into<String>, version: impl Into<String>, reason: impl Into<String>) {
+    pub fn yank(
+        &mut self,
+        name: impl Into<String>,
+        version: impl Into<String>,
+        reason: impl Into<String>,
+    ) {
         self.yanked.push(YankRecord {
             name: name.into(),
             version: version.into(),
@@ -176,7 +181,10 @@ mod tests {
         let mut reg = PackageRegistry::new();
         reg.register(make_manifest("pkg", "1.0.0"));
         reg.yank("pkg", "1.0.0", "critical bug");
-        assert!(reg.is_yanked("pkg", "1.0.0"), "yanked package must report is_yanked=true");
+        assert!(
+            reg.is_yanked("pkg", "1.0.0"),
+            "yanked package must report is_yanked=true"
+        );
     }
 
     // ── yank_does_not_remove_manifest ─────────────────────────────────────
@@ -201,7 +209,10 @@ mod tests {
     fn is_yanked_returns_false_for_non_yanked_package() {
         let mut reg = PackageRegistry::new();
         reg.register(make_manifest("pkg", "1.0.0"));
-        assert!(!reg.is_yanked("pkg", "1.0.0"), "non-yanked package must return is_yanked=false");
+        assert!(
+            !reg.is_yanked("pkg", "1.0.0"),
+            "non-yanked package must return is_yanked=false"
+        );
     }
 
     // ── yank_records_returns_all_yank_entries ─────────────────────────────
@@ -228,6 +239,9 @@ mod tests {
         reg.register(make_manifest("pkg", "2.0.0"));
         reg.yank("pkg", "1.0.0", "reason");
         assert!(reg.is_yanked("pkg", "1.0.0"));
-        assert!(!reg.is_yanked("pkg", "2.0.0"), "only yanked version is flagged");
+        assert!(
+            !reg.is_yanked("pkg", "2.0.0"),
+            "only yanked version is flagged"
+        );
     }
 }
