@@ -958,6 +958,365 @@ fn type_checker_report_flows_into_policy_engine() {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// G24 ROUND-2 TESTS — Boundary materialization, Null policy, Float policy,
+// Deeper associated-type validation
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Subpass 8: Boundary materialization ──────────────────────────────────
+
+// Spec requirement (Inference and materialization):
+//   "Boundaries must have resolved signatures in the canonical graph."
+//   A Function node that declares params but omits return_type is not yet
+//   fully materialized — emit an Unverified "boundary-materialization" entry.
+//
+// GIVEN a Function node with params set and return_type = None
+// THEN a "boundary-materialization" entry with Unverified state is emitted
+#[test]
+fn fn_with_params_but_no_return_type_emits_unverified_boundary() {
+    use ail_verify::type_checker::E_BOUNDARY_NOT_MATERIALIZED;
+
+    let mut node = fn_node(0, "checkout");
+    node.params = Some(vec![ParamDecl {
+        name: "cartId".into(),
+        ty: "CartId".into(),
+    }]);
+    // return_type intentionally absent
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let boundary_entries: Vec<_> = report
+        .entries
+        .iter()
+        .filter(|e| e.claim == "boundary-materialization")
+        .collect();
+    assert!(
+        !boundary_entries.is_empty(),
+        "expected 'boundary-materialization' entry for fn with params but no return_type"
+    );
+    let unverified = boundary_entries
+        .iter()
+        .any(|e| e.state == VerificationState::Unverified);
+    assert!(unverified, "missing return_type must produce Unverified boundary-materialization");
+    let has_code = boundary_entries.iter().any(|e| {
+        e.evidence
+            .as_deref()
+            .map(|ev| ev.contains(E_BOUNDARY_NOT_MATERIALIZED))
+            .unwrap_or(false)
+    });
+    assert!(has_code, "evidence must contain {E_BOUNDARY_NOT_MATERIALIZED}");
+}
+
+// TRIANGULATE: Function with both params and return_type → Proven boundary
+#[test]
+fn fn_with_params_and_return_type_emits_proven_boundary() {
+    let mut node = fn_node(0, "load_user");
+    node.params = Some(vec![ParamDecl {
+        name: "id".into(),
+        ty: "UserId".into(),
+    }]);
+    node.return_type = Some("User".into());
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let proven = report
+        .entries
+        .iter()
+        .filter(|e| e.claim == "boundary-materialization")
+        .any(|e| e.state == VerificationState::Proven);
+    assert!(proven, "fn with params and return_type must emit Proven boundary-materialization");
+}
+
+// TRIANGULATE: Function with no params skips boundary check (no entry)
+#[test]
+fn fn_with_no_params_skips_boundary_check() {
+    let node = fn_node(0, "pure_fn");
+    // no params, no return_type
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let boundary_entries: Vec<_> = report
+        .entries
+        .iter()
+        .filter(|e| e.claim == "boundary-materialization")
+        .collect();
+    assert!(
+        boundary_entries.is_empty(),
+        "fn with no params must not emit boundary-materialization entries"
+    );
+}
+
+// ── Subpass 9: Null/absence policy ────────────────────────────────────────
+
+// Spec requirement (Absence, failure, and partial updates):
+//   "No null/nil/undefined in Core IR."
+//   If a node's return_type is "null", "nil", "undefined", or "void",
+//   fail with E_NULL_IN_CORE_IR.
+//
+// GIVEN a Function node with return_type = "null"
+// THEN a "null-policy" entry with state Failed is emitted
+#[test]
+fn return_type_null_fails_null_policy() {
+    use ail_verify::type_checker::E_NULL_IN_CORE_IR;
+
+    let mut node = fn_node(0, "bad_fn");
+    node.params = Some(vec![]);
+    node.return_type = Some("null".into());
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let failed = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "null-policy" && e.state == VerificationState::Failed);
+    assert!(failed, "return_type 'null' must fail null-policy check");
+
+    let has_code = report
+        .entries
+        .iter()
+        .filter(|e| e.claim == "null-policy")
+        .any(|e| {
+            e.evidence
+                .as_deref()
+                .map(|ev| ev.contains(E_NULL_IN_CORE_IR))
+                .unwrap_or(false)
+        });
+    assert!(has_code, "evidence must contain {E_NULL_IN_CORE_IR}");
+}
+
+// TRIANGULATE: return_type = "nil" also fails
+#[test]
+fn return_type_nil_fails_null_policy() {
+    use ail_verify::type_checker::E_NULL_IN_CORE_IR;
+
+    let mut node = fn_node(0, "legacy_nil_fn");
+    node.params = Some(vec![]);
+    node.return_type = Some("nil".into());
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let failed = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "null-policy" && e.state == VerificationState::Failed);
+    assert!(failed, "return_type 'nil' must fail null-policy check");
+}
+
+// TRIANGULATE: return_type = "Option<Text>" does NOT fail null-policy
+#[test]
+fn return_type_option_passes_null_policy() {
+    let mut node = fn_node(0, "good_fn");
+    node.params = Some(vec![]);
+    node.return_type = Some("Option<Text>".into());
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let failed = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "null-policy" && e.state == VerificationState::Failed);
+    assert!(!failed, "return_type 'Option<Text>' must NOT fail null-policy check");
+}
+
+// ── Subpass 10: Float equality/ordering policy ────────────────────────────
+
+// Spec requirement (Equality and ordering):
+//   "Float equality requires explicit approximate/bitwise/domain comparator."
+//   "Float has no default Ord."
+//   If a Type node with nominal "Float" has has_eq=true, that is a violation
+//   of the no-implicit-equality rule.
+//
+// GIVEN a Type node with type_facts.nominal = "Float" and has_eq = true
+// THEN a "float-policy" entry with state Failed is emitted (E_FLOAT_EQ_IMPLICIT)
+#[test]
+fn float_type_with_eq_fails_float_policy() {
+    use ail_verify::type_checker::E_FLOAT_EQ_IMPLICIT;
+
+    let mut node = type_node(0, "FloatVal");
+    node.type_facts = Some(TypeFacts {
+        nominal: "Float".into(),
+        generics: vec![],
+    });
+    node.constraint_set = Some(ConstraintSet {
+        has_eq: true,  // implicit equality on Float — violation
+        has_ord: false,
+        has_hash: false,
+        extras: vec![],
+    });
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let failed = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "float-policy" && e.state == VerificationState::Failed);
+    assert!(failed, "Float type with has_eq=true must fail float-policy");
+
+    let has_code = report
+        .entries
+        .iter()
+        .filter(|e| e.claim == "float-policy")
+        .any(|e| {
+            e.evidence
+                .as_deref()
+                .map(|ev| ev.contains(E_FLOAT_EQ_IMPLICIT))
+                .unwrap_or(false)
+        });
+    assert!(has_code, "evidence must contain {E_FLOAT_EQ_IMPLICIT}");
+}
+
+// TRIANGULATE: Float type with has_ord=true also fails (no default Ord for Float)
+#[test]
+fn float_type_with_ord_fails_float_policy() {
+    use ail_verify::type_checker::E_FLOAT_ORD_IMPLICIT;
+
+    let mut node = type_node(0, "FloatVal");
+    node.type_facts = Some(TypeFacts {
+        nominal: "Float".into(),
+        generics: vec![],
+    });
+    node.constraint_set = Some(ConstraintSet {
+        has_eq: false,
+        has_ord: true,  // implicit Ord on Float — violation
+        has_hash: false,
+        extras: vec![],
+    });
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let failed = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "float-policy" && e.state == VerificationState::Failed);
+    assert!(failed, "Float type with has_ord=true must fail float-policy");
+
+    let has_code = report
+        .entries
+        .iter()
+        .filter(|e| e.claim == "float-policy")
+        .any(|e| {
+            e.evidence
+                .as_deref()
+                .map(|ev| ev.contains(E_FLOAT_ORD_IMPLICIT))
+                .unwrap_or(false)
+        });
+    assert!(has_code, "evidence must contain {E_FLOAT_ORD_IMPLICIT}");
+}
+
+// TRIANGULATE: Float type with has_eq=false and has_ord=false passes
+#[test]
+fn float_type_without_eq_ord_passes_float_policy() {
+    let mut node = type_node(0, "FloatVal");
+    node.type_facts = Some(TypeFacts {
+        nominal: "Float".into(),
+        generics: vec![],
+    });
+    node.constraint_set = Some(ConstraintSet {
+        has_eq: false,
+        has_ord: false,
+        has_hash: false,
+        extras: vec![],
+    });
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let failed = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "float-policy" && e.state == VerificationState::Failed);
+    assert!(!failed, "Float type with no eq/ord must not fail float-policy");
+}
+
+// TRIANGULATE: NonNaNFloat (non-Float nominal) is exempt from float-policy
+#[test]
+fn non_nan_float_refinement_is_exempt_from_float_policy() {
+    let mut node = type_node(0, "NonNaNFloat");
+    node.type_facts = Some(TypeFacts {
+        nominal: "NonNaNFloat".into(), // NOT "Float" — it's a refinement
+        generics: vec![],
+    });
+    node.constraint_set = Some(ConstraintSet {
+        has_eq: false,
+        has_ord: true,  // OK — NonNaNFloat can have Ord
+        has_hash: false,
+        extras: vec![],
+    });
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let failed = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "float-policy" && e.state == VerificationState::Failed);
+    assert!(!failed, "NonNaNFloat (non-Float nominal) must not fail float-policy");
+}
+
+// ── Improved Subpass 5: Associated type binding with empty ty ─────────────
+
+// Spec requirement (Interface system, Associated types):
+//   "Associated types must be explicit in the IR and appear in the semantic context."
+//   An impl where the binding's ty is empty is semantically invalid — the
+//   concrete type was not resolved.
+//
+// GIVEN an interface_impl with an associated type binding where ty = ""
+// THEN a "coherence" entry with state Failed and E_ASSOC_TYPE_EMPTY_BINDING is emitted
+#[test]
+fn associated_type_binding_with_empty_ty_fails_coherence() {
+    use ail_verify::type_checker::E_ASSOC_TYPE_EMPTY_BINDING;
+
+    let mut node = type_node(0, "BadRepo");
+    node.interface_impls = Some(vec![InterfaceImplMeta {
+        interface: "cap.Repository".into(),
+        associated_types: vec![AssociatedTypeBinding {
+            name: "Error".into(),
+            ty: "".into(),  // empty ty — concrete type not resolved
+        }],
+        is_adapter: false,
+    }]);
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let failed = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "coherence" && e.state == VerificationState::Failed);
+    assert!(failed, "empty associated type binding ty must fail coherence");
+
+    let has_code = report
+        .entries
+        .iter()
+        .filter(|e| e.claim == "coherence")
+        .any(|e| {
+            e.evidence
+                .as_deref()
+                .map(|ev| ev.contains(E_ASSOC_TYPE_EMPTY_BINDING))
+                .unwrap_or(false)
+        });
+    assert!(has_code, "evidence must contain {E_ASSOC_TYPE_EMPTY_BINDING}");
+}
+
+// TRIANGULATE: binding with both name and ty present passes
+#[test]
+fn associated_type_binding_with_valid_ty_passes() {
+    let mut node = type_node(0, "GoodRepo");
+    node.interface_impls = Some(vec![InterfaceImplMeta {
+        interface: "cap.Repository".into(),
+        associated_types: vec![AssociatedTypeBinding {
+            name: "Error".into(),
+            ty: "DbError".into(),  // valid concrete type
+        }],
+        is_adapter: false,
+    }]);
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let failed = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "coherence" && e.state == VerificationState::Failed);
+    assert!(!failed, "binding with valid name and ty must not fail coherence");
+}
+
 // TRIANGULATE: all-Proven report flows to PolicyEngine as Accept
 #[test]
 fn all_proven_report_is_accepted_by_policy_engine() {

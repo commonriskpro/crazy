@@ -2,9 +2,9 @@
 //
 // Full type-system enforcement pass for the verification pipeline (step 7).
 //
-// # Scope (G24 — full enforcement)
+// # Scope (G24 round 2 — deeper enforcement)
 //
-// `TypeChecker::check` walks a `&SemanticGraph` and runs seven ordered subpasses:
+// `TypeChecker::check` walks a `&SemanticGraph` and runs ten ordered subpasses:
 //
 // 1. **Nominal presence** (backward-compat with pre-G24 graphs):
 //    - Function/Type nodes with non-empty `TypeFacts.nominal` + valid generics → Proven
@@ -44,6 +44,21 @@
 //    - Generic functions with `required_constraints` on type params, validated
 //      at call sites via `type_arg_bindings`.
 //    - Claim "constraint-check".
+//
+// 8. **Boundary/inference materialization**:
+//    - For each Function node with declared `params` and no `return_type`:
+//      emit Unverified (E_BOUNDARY_NOT_MATERIALIZED, claim "boundary-materialization").
+//    - Both present → Proven.
+//
+// 9. **Null/absence policy**:
+//    - If any node's `return_type` equals "null", "nil", "undefined", or "void"
+//      (case-insensitive) → Failed (E_NULL_IN_CORE_IR, claim "null-policy").
+//
+// 10. **Float equality/ordering policy**:
+//    - If a Type node's `type_facts.nominal == "Float"` AND has_eq=true
+//      → Failed (E_FLOAT_EQ_IMPLICIT, claim "float-policy").
+//    - If nominal == "Float" AND has_ord=true
+//      → Failed (E_FLOAT_ORD_IMPLICIT, claim "float-policy").
 //
 // 7. **Refinement proof obligations**:
 //    - For each node with `refinement_ref`: emit a "refinement" entry with
@@ -97,6 +112,16 @@ pub const E_MISSING_ORD: &str = "E_MISSING_ORD";
 pub const E_REFINEMENT_ERASURE: &str = "E_REFINEMENT_ERASURE";
 /// ConstParam name contains a complex/undecidable expression.
 pub const E_CONST_PARAM_UNDECIDABLE: &str = "E_CONST_PARAM_UNDECIDABLE";
+/// Function has declared params but no return_type — boundary not yet materialized.
+pub const E_BOUNDARY_NOT_MATERIALIZED: &str = "E_BOUNDARY_NOT_MATERIALIZED";
+/// Return type contains null/nil/undefined/void — prohibited in Core IR.
+pub const E_NULL_IN_CORE_IR: &str = "E_NULL_IN_CORE_IR";
+/// Float type has implicit equality (has_eq=true) without explicit comparator policy.
+pub const E_FLOAT_EQ_IMPLICIT: &str = "E_FLOAT_EQ_IMPLICIT";
+/// Float type has implicit ordering (has_ord=true) — Float has no default Ord.
+pub const E_FLOAT_ORD_IMPLICIT: &str = "E_FLOAT_ORD_IMPLICIT";
+/// Associated type binding has empty concrete type (ty field is empty).
+pub const E_ASSOC_TYPE_EMPTY_BINDING: &str = "E_ASSOC_TYPE_EMPTY_BINDING";
 
 // ── Collection constraint table ───────────────────────────────────────────
 
@@ -181,6 +206,15 @@ impl TypeChecker {
 
         // Subpass 7 — refinement proof obligations.
         Self::check_refinements(graph, &mut entries);
+
+        // Subpass 8 — boundary/inference materialization.
+        Self::check_boundary_materialization(graph, &mut entries);
+
+        // Subpass 9 — null/absence policy.
+        Self::check_null_policy(graph, &mut entries);
+
+        // Subpass 10 — float equality/ordering policy.
+        Self::check_float_policy(graph, &mut entries);
 
         let summary_counts = build_summary_counts(&entries);
         VerificationReport {
@@ -459,7 +493,7 @@ impl TypeChecker {
             // Check for duplicate non-adapter implementations of the same interface.
             let mut seen_non_adapter: BTreeMap<&str, usize> = BTreeMap::new();
             for (idx, impl_) in impls.iter().enumerate() {
-                // Check associated type bindings for empty names.
+                // Check associated type bindings for empty names or empty concrete types.
                 for at in &impl_.associated_types {
                     if at.name.is_empty() {
                         entries.push(VerificationEntry {
@@ -470,6 +504,19 @@ impl TypeChecker {
                                 "{E_ASSOC_TYPE_MISMATCH}: associated type binding \
                                  has empty name in impl of '{}' on '{}'",
                                 impl_.interface, node.name
+                            )),
+                        });
+                    }
+                    if at.ty.is_empty() {
+                        entries.push(VerificationEntry {
+                            claim: "coherence".into(),
+                            state: VerificationState::Failed,
+                            scope: node.name.clone(),
+                            evidence: Some(format!(
+                                "{E_ASSOC_TYPE_EMPTY_BINDING}: associated type binding '{}' \
+                                 has no concrete type in impl of '{}' on '{}'; \
+                                 associated types must be explicit in the IR",
+                                at.name, impl_.interface, node.name
                             )),
                         });
                     }
@@ -641,6 +688,139 @@ impl TypeChecker {
                 scope: scope.to_string(),
                 evidence: Some(evidence_parts.join("; ")),
             });
+        }
+    }
+
+    // ── Subpass 8: Boundary/inference materialization ─────────────────────
+
+    /// Check that Function nodes with declared params also declare a return type.
+    ///
+    /// The canonical Semantic Graph must store fully resolved signatures for
+    /// all public boundaries.  A function with declared params but no return
+    /// type has an incomplete boundary — it has not been materialized yet.
+    ///
+    /// - `params` present and non-empty + `return_type` absent → Unverified (E_BOUNDARY_NOT_MATERIALIZED)
+    /// - `params` present and `return_type` present → Proven ("boundary-materialization")
+    /// - No `params` → skipped (no boundary-materialization entry)
+    fn check_boundary_materialization(graph: &SemanticGraph, entries: &mut Vec<VerificationEntry>) {
+        for node in &graph.nodes {
+            if node.kind != NodeKind::Function {
+                continue;
+            }
+            let Some(params) = &node.params else {
+                continue; // no params declared — skip
+            };
+            if params.is_empty() {
+                continue; // empty params list — skip
+            }
+            let scope = node.name.clone();
+            if node.return_type.is_none() {
+                entries.push(VerificationEntry {
+                    claim: "boundary-materialization".into(),
+                    state: VerificationState::Unverified,
+                    scope,
+                    evidence: Some(format!(
+                        "{E_BOUNDARY_NOT_MATERIALIZED}: function '{}' declares params \
+                         but has no return_type; boundary signature is not fully materialized \
+                         in the canonical graph",
+                        node.name
+                    )),
+                });
+            } else {
+                entries.push(VerificationEntry {
+                    claim: "boundary-materialization".into(),
+                    state: VerificationState::Proven,
+                    scope,
+                    evidence: None,
+                });
+            }
+        }
+    }
+
+    // ── Subpass 9: Null/absence policy ────────────────────────────────────
+
+    /// Enforce the null/absence policy from docs/type-system.md:
+    /// "No null/nil/undefined in Core IR."
+    ///
+    /// If any node's `return_type` is literally "null", "nil", "undefined",
+    /// or "void" (case-insensitive), fail with E_NULL_IN_CORE_IR.
+    ///
+    /// Domain absence must be modeled with `Option<T>`, failures with
+    /// `Result<T, E>`, and partial updates with `PatchField<T>`.
+    fn check_null_policy(graph: &SemanticGraph, entries: &mut Vec<VerificationEntry>) {
+        const NULL_WORDS: &[&str] = &["null", "nil", "undefined", "void"];
+        for node in &graph.nodes {
+            let Some(return_type) = &node.return_type else {
+                continue;
+            };
+            let lower = return_type.to_lowercase();
+            if NULL_WORDS.iter().any(|&w| lower == w) {
+                entries.push(VerificationEntry {
+                    claim: "null-policy".into(),
+                    state: VerificationState::Failed,
+                    scope: node.name.clone(),
+                    evidence: Some(format!(
+                        "{E_NULL_IN_CORE_IR}: return_type '{}' of '{}' is a null/nil sentinel; \
+                         Core IR prohibits null — use Option<T>, Result<T,E>, or PatchField<T>",
+                        return_type, node.name
+                    )),
+                });
+            }
+        }
+    }
+
+    // ── Subpass 10: Float equality/ordering policy ─────────────────────────
+
+    /// Enforce Float-specific equality and ordering rules from docs/type-system.md:
+    ///
+    /// - "Float equality requires explicit approximate/bitwise/domain comparator."
+    /// - "Float has no default Ord."
+    ///
+    /// A Type node whose `type_facts.nominal == "Float"` (the raw Float primitive,
+    /// not a refinement like NonNaNFloat) must NOT declare `has_eq = true` or
+    /// `has_ord = true` in its constraint_set.
+    ///
+    /// Refinements of Float (e.g., `NonNaNFloat` with nominal "NonNaNFloat") are
+    /// exempt — they may define explicit comparison semantics.
+    fn check_float_policy(graph: &SemanticGraph, entries: &mut Vec<VerificationEntry>) {
+        for node in &graph.nodes {
+            let Some(tf) = &node.type_facts else {
+                continue;
+            };
+            // Only apply to nodes whose nominal IS exactly "Float".
+            if tf.nominal != "Float" {
+                continue;
+            }
+            let Some(cs) = &node.constraint_set else {
+                continue; // no constraints declared — nothing to check
+            };
+            let scope = node.name.clone();
+            if cs.has_eq {
+                entries.push(VerificationEntry {
+                    claim: "float-policy".into(),
+                    state: VerificationState::Failed,
+                    scope: scope.clone(),
+                    evidence: Some(format!(
+                        "{E_FLOAT_EQ_IMPLICIT}: Float type '{}' declares has_eq=true; \
+                         Float equality must be explicit (approximately_equal, bitwise_equal, \
+                         or a domain-specific comparator) — not implicit `==`",
+                        node.name
+                    )),
+                });
+            }
+            if cs.has_ord {
+                entries.push(VerificationEntry {
+                    claim: "float-policy".into(),
+                    state: VerificationState::Failed,
+                    scope,
+                    evidence: Some(format!(
+                        "{E_FLOAT_ORD_IMPLICIT}: Float type '{}' declares has_ord=true; \
+                         Float has no default total order (NaN breaks totality) — \
+                         use NonNaNFloat or an explicit comparator/wrapper instead",
+                        node.name
+                    )),
+                });
+            }
         }
     }
 
