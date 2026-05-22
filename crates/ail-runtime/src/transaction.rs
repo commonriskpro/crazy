@@ -13,10 +13,12 @@
 //   - non-transactional external effects must be marked as such
 //   - compensation actions must be explicit when needed
 //
+//   Example non-transactional:
+//     payment.charge is non_rollbackable
+//     requires idempotency + compensation/refund policy
+//
 // `TransactionGroup` tracks a named set of capability calls with their
-// rollback policies.  It exposes `commit()` and `rollback()` — rollback
-// returns the list of non-rollbackable capabilities so the caller can
-// apply compensation logic explicitly.
+// rollback and compensation policies.
 
 use crate::profile::CapabilityId;
 
@@ -44,6 +46,52 @@ impl TransactionPolicy {
     }
 }
 
+// ── CompensationPolicy ────────────────────────────────────────────────────
+
+/// Explicit compensation/idempotency policy for non-rollbackable capabilities.
+///
+/// Per runtime.md §"Transactions and rollback":
+/// > compensation actions must be explicit when needed
+///
+/// When a `NonRollbackable` capability has been invoked and the transaction
+/// needs to be undone, the caller must execute the declared compensation
+/// action (e.g. issue a refund, replay the idempotent call, etc.).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompensationPolicy {
+    /// No compensation required (used for `Transactional` capabilities).
+    None,
+
+    /// An explicit refund/undo must be issued via `refund_capability`.
+    ///
+    /// Example: `payment.charge` → `payment.refund`
+    ExplicitRefund {
+        /// The capability to invoke to undo the original call.
+        refund_capability: CapabilityId,
+    },
+
+    /// The original call is idempotent and can be retried with the same key.
+    ///
+    /// Example: an event-emission that deduplicates on `idempotency_key`.
+    IdempotentRetry {
+        /// Key that ensures retried calls produce the same outcome.
+        idempotency_key: String,
+    },
+}
+
+// ── CompensationRequired ─────────────────────────────────────────────────
+
+/// The compensation information for one non-rollbackable capability entry.
+///
+/// Returned by [`TransactionGroup::rollback_with_compensation`] so callers
+/// know which capabilities require explicit compensation actions.
+#[derive(Clone, Debug)]
+pub struct CompensationRequired {
+    /// The capability that cannot be rolled back automatically.
+    pub capability: CapabilityId,
+    /// The declared compensation/idempotency policy for this capability.
+    pub compensation: CompensationPolicy,
+}
+
 // ── TransactionStatus ─────────────────────────────────────────────────────
 
 /// Lifecycle status of a [`TransactionGroup`].
@@ -59,13 +107,16 @@ pub enum TransactionStatus {
 
 // ── TransactionEntry ──────────────────────────────────────────────────────
 
-/// One capability in a [`TransactionGroup`], with its rollback policy.
+/// One capability in a [`TransactionGroup`], with its rollback and compensation
+/// policies.
 #[derive(Clone, Debug)]
 pub struct TransactionEntry {
     /// The capability being tracked.
     capability: CapabilityId,
     /// Whether this capability supports rollback.
     policy: TransactionPolicy,
+    /// Compensation/idempotency policy (for `NonRollbackable` capabilities).
+    compensation: CompensationPolicy,
 }
 
 impl TransactionEntry {
@@ -78,25 +129,37 @@ impl TransactionEntry {
     pub fn policy(&self) -> &TransactionPolicy {
         &self.policy
     }
+
+    /// The compensation/idempotency policy for this entry.
+    ///
+    /// For `Transactional` capabilities this is always [`CompensationPolicy::None`].
+    pub fn compensation(&self) -> &CompensationPolicy {
+        &self.compensation
+    }
 }
 
 // ── TransactionGroup ─────────────────────────────────────────────────────
 
 /// A named group of capability calls with transactional semantics.
 ///
-/// Groups track which capabilities were called and their rollback policies.
-/// `commit()` and `rollback()` are idempotent state transitions.
+/// Groups track which capabilities were called and their rollback/compensation
+/// policies.  `commit()` and `rollback()` are idempotent state transitions.
 ///
 /// On `rollback()`:
 /// - The group transitions to [`TransactionStatus::RolledBack`].
 /// - Returns the list of [`CapabilityId`]s that are `NonRollbackable` — the
 ///   caller must apply explicit compensation (e.g. issue a refund).
 ///
+/// Use [`add_with_compensation`](TransactionGroup::add_with_compensation) to
+/// attach explicit [`CompensationPolicy`] to non-rollbackable entries.
+/// Use [`rollback_with_compensation`](TransactionGroup::rollback_with_compensation)
+/// to roll back and receive the full [`CompensationRequired`] details.
+///
 /// # Example
 ///
 /// ```rust
 /// use ail_runtime::profile::CapabilityId;
-/// use ail_runtime::transaction::{TransactionGroup, TransactionPolicy};
+/// use ail_runtime::transaction::{CompensationPolicy, TransactionGroup, TransactionPolicy};
 ///
 /// let mut g = TransactionGroup::new("checkout_tx");
 /// g.add(CapabilityId::new("database.write:Order"), TransactionPolicy::Transactional);
@@ -137,8 +200,31 @@ impl TransactionGroup {
     }
 
     /// Add a capability with the given rollback policy to this group.
+    ///
+    /// Compensation defaults to [`CompensationPolicy::None`].
     pub fn add(&mut self, capability: CapabilityId, policy: TransactionPolicy) {
-        self.entries.push(TransactionEntry { capability, policy });
+        self.entries.push(TransactionEntry {
+            capability,
+            policy,
+            compensation: CompensationPolicy::None,
+        });
+    }
+
+    /// Add a capability with explicit rollback **and** compensation policies.
+    ///
+    /// Use this for `NonRollbackable` capabilities that require an explicit
+    /// compensation action (refund, idempotent retry, etc.) on rollback.
+    pub fn add_with_compensation(
+        &mut self,
+        capability: CapabilityId,
+        policy: TransactionPolicy,
+        compensation: CompensationPolicy,
+    ) {
+        self.entries.push(TransactionEntry {
+            capability,
+            policy,
+            compensation,
+        });
     }
 
     /// Commit the transaction group.
@@ -166,6 +252,28 @@ impl TransactionGroup {
             .iter()
             .filter(|e| e.policy == TransactionPolicy::NonRollbackable)
             .map(|e| e.capability.clone())
+            .collect()
+    }
+
+    /// Roll back the transaction group, returning full compensation details.
+    ///
+    /// Transitions status from `Pending` → `RolledBack`.
+    /// Returns [`CompensationRequired`] entries for each `NonRollbackable`
+    /// capability in the group so callers can apply explicit compensation.
+    ///
+    /// No-op (returns empty vec) if already committed or rolled back.
+    pub fn rollback_with_compensation(&mut self) -> Vec<CompensationRequired> {
+        if self.status != TransactionStatus::Pending {
+            return vec![];
+        }
+        self.status = TransactionStatus::RolledBack;
+        self.entries
+            .iter()
+            .filter(|e| e.policy == TransactionPolicy::NonRollbackable)
+            .map(|e| CompensationRequired {
+                capability: e.capability.clone(),
+                compensation: e.compensation.clone(),
+            })
             .collect()
     }
 }

@@ -9,9 +9,35 @@
 //     errors PaymentProviderUnavailable | PaymentDeclined
 //   }
 //
-// `CapabilitySchema` composes the three sub-schemas.  The runtime uses these
-// descriptors for boundary validation; they are not yet enforced at WASM call
-// sites (that requires a full compiler/ABI integration — tracked separately).
+// `CapabilitySchema` composes the three sub-schemas and validates payloads
+// at the capability boundary.
+//
+// `CapabilityDefinition` binds a schema to a capability ID so the runtime
+// host can enforce schemas at call sites.
+//
+// Validation protocol (simple key-presence format):
+//   Payloads are parsed as comma-separated `key=value` pairs.
+//   Schema validation checks that every declared field name is present as a
+//   key.  This is the minimal boundary protocol for this implementation;
+//   a full CBOR/JSON schema validation can replace it without changing the
+//   `validate()` signature.
+
+use crate::profile::CapabilityId;
+
+// ── SchemaValidationError ─────────────────────────────────────────────────
+
+/// Error returned when payload boundary validation fails.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchemaValidationError {
+    /// Human-readable description of the validation failure.
+    pub message: String,
+}
+
+impl std::fmt::Display for SchemaValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
 
 // ── SchemaField ───────────────────────────────────────────────────────────
 
@@ -47,6 +73,49 @@ impl SchemaField {
     }
 }
 
+// ── payload validation helper ─────────────────────────────────────────────
+
+/// Parse a `key=value,...` encoded payload and return the set of key names.
+///
+/// This is the minimal boundary protocol: a comma-separated list of
+/// `key=value` pairs.  Empty payloads and empty schemas are always valid.
+fn parse_keys(payload: &[u8]) -> std::collections::HashSet<String> {
+    let s = String::from_utf8_lossy(payload);
+    s.split(',')
+        .filter_map(|pair| {
+            let pair = pair.trim();
+            if pair.is_empty() {
+                None
+            } else {
+                let key = pair.split('=').next().unwrap_or("").trim().to_string();
+                if key.is_empty() { None } else { Some(key) }
+            }
+        })
+        .collect()
+}
+
+/// Validate that all `required_fields` are present as keys in `payload`.
+fn validate_fields(
+    payload: &[u8],
+    required_fields: &[SchemaField],
+) -> Result<(), SchemaValidationError> {
+    if required_fields.is_empty() {
+        return Ok(());
+    }
+    let keys = parse_keys(payload);
+    for field in required_fields {
+        if !keys.contains(field.name()) {
+            return Err(SchemaValidationError {
+                message: format!(
+                    "PayloadDecodeError: missing required field `{}`",
+                    field.name()
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 // ── CapabilityInputSchema ─────────────────────────────────────────────────
 
 /// Describes the input payload of a capability call.
@@ -67,6 +136,18 @@ impl CapabilityInputSchema {
     /// Ordered list of input fields.
     pub fn fields(&self) -> &[SchemaField] {
         &self.fields
+    }
+
+    /// Validate that `payload` contains all required input fields.
+    ///
+    /// An empty schema accepts any payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchemaValidationError`] if a required field is absent from
+    /// the payload.
+    pub fn validate(&self, payload: &[u8]) -> Result<(), SchemaValidationError> {
+        validate_fields(payload, &self.fields)
     }
 }
 
@@ -89,6 +170,13 @@ impl CapabilityOutputSchema {
     /// Ordered list of output fields.
     pub fn fields(&self) -> &[SchemaField] {
         &self.fields
+    }
+
+    /// Validate that `response` contains all declared output fields.
+    ///
+    /// An empty schema accepts any response.
+    pub fn validate(&self, response: &[u8]) -> Result<(), SchemaValidationError> {
+        validate_fields(response, &self.fields)
     }
 }
 
@@ -172,5 +260,59 @@ impl CapabilitySchema {
     /// Error variants schema.
     pub fn errors(&self) -> &CapabilityErrorSchema {
         &self.errors
+    }
+}
+
+// ── CapabilityDefinition ──────────────────────────────────────────────────
+
+/// A capability ID bound to its typed schema.
+///
+/// `CapabilityDefinition` attaches a [`CapabilitySchema`] to a
+/// [`CapabilityId`] so the runtime host can look up and enforce schemas when
+/// `call_capability` is invoked.
+///
+/// Per runtime.md §"Payload schemas":
+/// > Todo payload de capability tiene schema explícito.
+/// > El host valida boundary encoding/decoding con el Boundary Protocol.
+///
+/// # Example
+///
+/// ```rust
+/// use ail_runtime::schema::{
+///     CapabilityDefinition, CapabilityErrorSchema, CapabilityInputSchema,
+///     CapabilityOutputSchema, CapabilitySchema, SchemaField,
+/// };
+/// use ail_runtime::profile::CapabilityId;
+///
+/// let def = CapabilityDefinition::new(
+///     CapabilityId::new("payment.charge:PaymentProvider"),
+///     CapabilitySchema::new(
+///         CapabilityInputSchema::new(vec![SchemaField::new("amount_cents", "u64")]),
+///         CapabilityOutputSchema::new(vec![SchemaField::new("receipt_id", "String")]),
+///         CapabilityErrorSchema::new(vec!["PaymentDeclined".to_string()]),
+///     ),
+/// );
+/// assert_eq!(def.capability().as_str(), "payment.charge:PaymentProvider");
+/// ```
+#[derive(Clone, Debug)]
+pub struct CapabilityDefinition {
+    capability: CapabilityId,
+    schema: CapabilitySchema,
+}
+
+impl CapabilityDefinition {
+    /// Bind `capability` to its `schema`.
+    pub fn new(capability: CapabilityId, schema: CapabilitySchema) -> Self {
+        CapabilityDefinition { capability, schema }
+    }
+
+    /// The capability this definition describes.
+    pub fn capability(&self) -> &CapabilityId {
+        &self.capability
+    }
+
+    /// The typed schema for this capability.
+    pub fn schema(&self) -> &CapabilitySchema {
+        &self.schema
     }
 }

@@ -14,6 +14,10 @@
 //
 // All handlers implement the `Handler` trait and declare their capabilities
 // so they can be registered with a `RuntimeHost`.
+//
+// `ReplayEngine` records responses AND their BLAKE3 output hashes.
+// `into_verifying_handler()` produces a handler that replays AND verifies.
+// `verify(cap, op, actual)` compares actual bytes against the recorded hash.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -22,6 +26,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::abi::{HostError, HostResult};
 use crate::handler::Handler;
 use crate::profile::CapabilityId;
+
+// ── ReplayVerificationError ───────────────────────────────────────────────
+
+/// Error returned when replay output-hash verification fails.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayVerificationError {
+    /// Human-readable description of the verification failure.
+    pub message: String,
+}
+
+impl std::fmt::Display for ReplayVerificationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
 
 // ── FixedClock ────────────────────────────────────────────────────────────
 
@@ -337,16 +356,28 @@ impl Handler for FakePayment {
     }
 }
 
+// ── hash helper ───────────────────────────────────────────────────────────
+
+/// Compute a BLAKE3 hex digest of `data`.
+///
+/// Used both to record output hashes and to verify replayed outputs.
+fn blake3_hex(data: &[u8]) -> String {
+    let hash = blake3::hash(data);
+    hash.to_hex().to_string()
+}
+
 // ── ReplayEngine ──────────────────────────────────────────────────────────
 
-/// Records capability call responses and produces a handler that replays them.
+/// Records capability call responses (with output hashes) and produces
+/// handlers that replay or verify them.
 ///
 /// ## Usage
 ///
 /// 1. Record responses during a "capture" run (or pre-configure them).
-/// 2. Call `into_handler()` to convert the engine into a `Handler` that
-///    replays the recorded responses.
-/// 3. Register the handler with a `RuntimeHost` in replay/test mode.
+/// 2. Call `into_handler()` to get a `Handler` that replays without verification.
+/// 3. Call `into_verifying_handler()` to get a `Handler` that replays AND
+///    checks that each response matches its recorded BLAKE3 output hash.
+/// 4. Call `verify(cap, op, actual)` to check one response against its hash.
 ///
 /// # Example
 ///
@@ -364,7 +395,8 @@ impl Handler for FakePayment {
 /// assert_eq!(result, b"cart-data");
 /// ```
 pub struct ReplayEngine {
-    recordings: Vec<(CapabilityId, String, Vec<u8>)>,
+    /// (cap_str, operation) → (response, output_hash)
+    recordings: Vec<(CapabilityId, String, Vec<u8>, String)>,
 }
 
 impl ReplayEngine {
@@ -375,7 +407,7 @@ impl ReplayEngine {
         }
     }
 
-    /// Record a capability response.
+    /// Record a capability response AND compute its BLAKE3 output hash.
     ///
     /// `capability` — the capability being called.
     /// `operation` — the operation string.
@@ -386,39 +418,103 @@ impl ReplayEngine {
         operation: impl Into<String>,
         response: Vec<u8>,
     ) {
+        let hash = blake3_hex(&response);
         self.recordings
-            .push((capability, operation.into(), response));
+            .push((capability, operation.into(), response, hash));
     }
 
-    /// Consume the engine and produce a [`Handler`] that replays recordings.
-    pub fn into_handler(self) -> ReplayHandler {
-        let map: HashMap<(String, String), Vec<u8>> = self
-            .recordings
-            .into_iter()
-            .map(|(cap, op, resp)| ((cap.as_str().to_string(), op), resp))
-            .collect();
+    /// Compute a BLAKE3 hex digest of `data`.
+    ///
+    /// Public so tests can verify hash consistency.
+    pub fn hash_of(data: &[u8]) -> String {
+        blake3_hex(data)
+    }
 
-        // Collect unique capabilities declared.
+    /// Return the recorded BLAKE3 output hash for `(capability, operation)`,
+    /// or `None` if no recording exists for that pair.
+    pub fn recorded_hash(&self, capability: &CapabilityId, operation: &str) -> Option<String> {
+        self.recordings
+            .iter()
+            .find(|(cap, op, _, _)| cap == capability && op == operation)
+            .map(|(_, _, _, hash)| hash.clone())
+    }
+
+    /// Verify that `actual_response` matches the recorded output hash for
+    /// `(capability, operation)`.
+    ///
+    /// # Errors
+    ///
+    /// - [`ReplayVerificationError`] if no recording exists for the pair.
+    /// - [`ReplayVerificationError`] if the BLAKE3 hash of `actual_response`
+    ///   differs from the recorded hash.
+    pub fn verify(
+        &self,
+        capability: &CapabilityId,
+        operation: &str,
+        actual_response: &[u8],
+    ) -> Result<(), ReplayVerificationError> {
+        let recorded_hash = self
+            .recorded_hash(capability, operation)
+            .ok_or_else(|| ReplayVerificationError {
+                message: format!(
+                    "replay: no recording for capability=`{}` operation=`{}`",
+                    capability.as_str(),
+                    operation
+                ),
+            })?;
+
+        let actual_hash = blake3_hex(actual_response);
+        if actual_hash != recorded_hash {
+            return Err(ReplayVerificationError {
+                message: format!(
+                    "replay hash mismatch for capability=`{}` operation=`{}`: \
+                     recorded={} actual={}",
+                    capability.as_str(),
+                    operation,
+                    recorded_hash,
+                    actual_hash
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// Consume the engine and produce a [`Handler`] that replays recordings
+    /// without hash verification.
+    pub fn into_handler(self) -> ReplayHandler {
+        self.build_handler(false)
+    }
+
+    /// Consume the engine and produce a [`Handler`] that replays recordings
+    /// AND verifies each response against its recorded BLAKE3 output hash.
+    ///
+    /// If the response bytes do not match the recorded hash, the handler
+    /// returns a `HostError` instead of the response.
+    pub fn into_verifying_handler(self) -> ReplayHandler {
+        self.build_handler(true)
+    }
+
+    fn build_handler(self, verify: bool) -> ReplayHandler {
+        let mut map: HashMap<(String, String), (Vec<u8>, String)> = HashMap::new();
         let mut seen = std::collections::HashSet::new();
-        let caps: Vec<CapabilityId> = {
-            let mut v = Vec::new();
-            // We need the original cap IDs — rebuild from map keys.
-            for (cap_str, _) in map.keys() {
-                if seen.insert(cap_str.clone()) {
-                    v.push(CapabilityId::new(cap_str.clone()));
-                }
+        let mut caps = Vec::new();
+
+        for (cap, op, resp, hash) in self.recordings {
+            let cap_str = cap.as_str().to_string();
+            if seen.insert(cap_str.clone()) {
+                caps.push(CapabilityId::new(cap_str.clone()));
             }
-            // Always include a generic replay capability so the handler can
-            // be registered even when no recordings exist.
-            if v.is_empty() {
-                v.push(CapabilityId::new("replay.unregistered"));
-            }
-            v
-        };
+            map.insert((cap_str, op), (resp, hash));
+        }
+
+        if caps.is_empty() {
+            caps.push(CapabilityId::new("replay.unregistered"));
+        }
 
         ReplayHandler {
             map: Arc::new(map),
             caps,
+            verify,
         }
     }
 }
@@ -429,14 +525,20 @@ impl Default for ReplayEngine {
     }
 }
 
-// ── ReplayHandler (internal) ──────────────────────────────────────────────
+// ── ReplayHandler ─────────────────────────────────────────────────────────
 
-/// Handler produced by [`ReplayEngine::into_handler`].
+/// Handler produced by [`ReplayEngine::into_handler`] or
+/// [`ReplayEngine::into_verifying_handler`].
 ///
 /// Replays pre-recorded capability responses deterministically.
+/// When `verify = true`, each replayed response is checked against its
+/// recorded BLAKE3 output hash and a `HostError` is returned on mismatch.
 pub struct ReplayHandler {
-    map: Arc<HashMap<(String, String), Vec<u8>>>,
+    /// (cap_str, operation) → (response, recorded_hash)
+    map: Arc<HashMap<(String, String), (Vec<u8>, String)>>,
     caps: Vec<CapabilityId>,
+    /// When `true`, responses are verified against their recorded hashes.
+    verify: bool,
 }
 
 impl Handler for ReplayHandler {
@@ -456,7 +558,24 @@ impl Handler for ReplayHandler {
     ) -> HostResult<Vec<u8>> {
         let key = (capability.as_str().to_string(), operation.to_string());
         match self.map.get(&key) {
-            Some(resp) => Ok(resp.clone()),
+            Some((resp, recorded_hash)) => {
+                if self.verify {
+                    let actual_hash = blake3_hex(resp);
+                    if &actual_hash != recorded_hash {
+                        return Err(HostError {
+                            message: format!(
+                                "ReplayHandler: hash mismatch for capability=`{}` \
+                                 operation=`{}`: recorded={} actual={}",
+                                capability.as_str(),
+                                operation,
+                                recorded_hash,
+                                actual_hash
+                            ),
+                        });
+                    }
+                }
+                Ok(resp.clone())
+            }
             None => Err(HostError {
                 message: format!(
                     "ReplayHandler: no recording for capability=`{}` operation=`{}`",
@@ -465,5 +584,46 @@ impl Handler for ReplayHandler {
                 ),
             }),
         }
+    }
+}
+
+// ── TamperTestHandler ─────────────────────────────────────────────────────
+
+/// Test helper that returns responses different from recorded ones.
+///
+/// Used in tests to prove that replay hash verification detects tampering.
+/// Not intended for production use.
+pub struct TamperTestHandler {
+    caps: Vec<CapabilityId>,
+    tampered_response: Vec<u8>,
+}
+
+impl TamperTestHandler {
+    /// Create a handler that always returns `tampered_response` regardless
+    /// of capability or operation.
+    pub fn new(caps: Vec<CapabilityId>, tampered_response: Vec<u8>) -> Self {
+        TamperTestHandler {
+            caps,
+            tampered_response,
+        }
+    }
+}
+
+impl Handler for TamperTestHandler {
+    fn name(&self) -> &str {
+        "TamperTestHandler"
+    }
+
+    fn capabilities(&self) -> &[CapabilityId] {
+        &self.caps
+    }
+
+    fn handle(
+        &self,
+        _capability: &CapabilityId,
+        _operation: &str,
+        _payload: &[u8],
+    ) -> HostResult<Vec<u8>> {
+        Ok(self.tampered_response.clone())
     }
 }

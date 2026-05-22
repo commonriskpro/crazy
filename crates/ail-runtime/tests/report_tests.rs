@@ -38,6 +38,7 @@ fn report_carries_id_profile_hash_status() {
     let report = RuntimeReport::new(
         "rep-001".to_string(),
         "prod".to_string(),
+        "module.test".to_string(),
         "abc123".to_string(),
         RuntimeReportStatus::Completed,
     );
@@ -52,6 +53,7 @@ fn report_capability_summaries_are_empty_by_default() {
     let report = RuntimeReport::new(
         "rep-002".to_string(),
         "test".to_string(),
+        "module.test".to_string(),
         "def456".to_string(),
         RuntimeReportStatus::Completed,
     );
