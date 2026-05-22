@@ -370,12 +370,14 @@ pub async fn run() -> Result<(), CliError> {
             yes,
             policy,
         } => cmd_apply(mode, &change_id, yes, policy.as_deref(), &store).await,
-        Commands::Compile { profile, target } => cmd_compile(mode, &profile, &target),
+        Commands::Compile { profile, target } => {
+            cmd_compile(mode, &profile, &target, &store).await
+        }
         Commands::Run {
             profile,
             module,
             replay,
-        } => cmd_run(mode, &profile, module.as_deref(), replay.as_deref()),
+        } => cmd_run(mode, &profile, module.as_deref(), replay.as_deref(), &store).await,
         Commands::Init => cmd_init(mode, &store).await,
         Commands::Status => cmd_status(mode, &store).await,
         Commands::Inspect { kind, id } => cmd_inspect(mode, &kind, &id, &store).await,
@@ -668,6 +670,38 @@ async fn cmd_change(
     };
     store.append_changeset_log(&entry).await?;
 
+    let snapshots_before = store.list_snapshots().await?;
+    let mut graph = load_current_graph_for_cli(store).await?;
+    let bridge = SimpleSnapshotBridge(SnapshotId(snapshots_before.len() as u64));
+    match ail_change::apply::apply(canonical.clone(), &mut graph, &bridge) {
+        ail_change::model::ChangeSetOutcome::Applied => {
+            let graph_root = store.save_graph(&graph).await?;
+            let parent_id = latest_snapshot(&snapshots_before).map(|s| s.id);
+            let snapshot = SnapshotEnvelope {
+                id: ObjectId::from_bytes(&format!("snapshot-after-{change_id}").into_bytes()),
+                graph_root_hash: graph_root,
+                parent_id,
+                applied_change_id: Some(cs_oid),
+                created_at: unix_ms_now(),
+                verification_report_hash: None,
+            };
+            store.save_snapshot(&snapshot).await?;
+        }
+        ail_change::model::ChangeSetOutcome::RebaseRequired {
+            current_snapshot_id,
+        } => {
+            return Err(CliError::RebaseRequired {
+                current_snapshot_id: current_snapshot_id.0,
+            });
+        }
+        ail_change::model::ChangeSetOutcome::Failed { reason } => {
+            return Err(CliError::Domain(format!("change apply failed: {reason}")));
+        }
+        ail_change::model::ChangeSetOutcome::ConflictIrresolvable { reason } => {
+            return Err(CliError::Domain(format!("change conflict: {reason:?}")));
+        }
+    }
+
     // Structural diff preview: empty graph → all ops are additions.
     let structural_diff = build_structural_diff_preview(&changeset.ops);
 
@@ -918,8 +952,13 @@ async fn cmd_apply(
 /// Rules:
 /// - draft/dev/test artifacts are profile-bound
 /// - prod runtime rejects non-prod artifacts
-fn cmd_compile(mode: OutputMode, profile: &str, target: &str) -> Result<(), CliError> {
-    let graph = current_graph_for_cli()?;
+async fn cmd_compile(
+    mode: OutputMode,
+    profile: &str,
+    target: &str,
+    store: &StoreHandle,
+) -> Result<(), CliError> {
+    let graph = load_current_graph_for_cli(store).await?;
     let report = accepted_compile_report();
 
     let core = lower_to_core_ir(&graph, &report)
@@ -993,13 +1032,14 @@ fn cmd_compile(mode: OutputMode, profile: &str, target: &str) -> Result<(), CliE
 ///
 /// Outputs: runtime_report, audit log reference, capability call summary,
 ///          runtime check results.
-fn cmd_run(
+async fn cmd_run(
     mode: OutputMode,
     profile: &str,
     module: Option<&str>,
     replay: Option<&str>,
+    store: &StoreHandle,
 ) -> Result<(), CliError> {
-    let graph = current_graph_for_cli()?;
+    let graph = load_current_graph_for_cli(store).await?;
     // Use an accepted (empty/Proven) report for the e2e pipeline.
     // A full verify pass would reject the graph because the type checker
     // flags newly-materialised nodes as Unverified — expected at this stage.
@@ -1114,6 +1154,22 @@ fn current_graph_for_cli() -> Result<SemanticGraph, CliError> {
     }
 }
 
+async fn load_current_graph_for_cli(store: &StoreHandle) -> Result<SemanticGraph, CliError> {
+    let snapshots = store.list_snapshots().await?;
+    let Some(snapshot) = latest_snapshot(&snapshots) else {
+        return current_graph_for_cli();
+    };
+
+    match store.load_graph(&snapshot.graph_root_hash).await? {
+        Some(graph) => Ok(graph),
+        None => current_graph_for_cli(),
+    }
+}
+
+fn latest_snapshot(snapshots: &[SnapshotEnvelope]) -> Option<&SnapshotEnvelope> {
+    snapshots.iter().max_by_key(|snapshot| snapshot.created_at)
+}
+
 fn accepted_compile_report() -> VerificationReport {
     VerificationReport {
         entries: vec![],
@@ -1202,9 +1258,15 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError>
     // Persist genesis snapshot (idempotent).
     let existing = store.list_snapshots().await?;
     let genesis_id = if existing.is_empty() {
+        let graph_root_hash = store
+            .save_graph(&SemanticGraph {
+                nodes: vec![],
+                edges: vec![],
+            })
+            .await?;
         let genesis = SnapshotEnvelope {
             id: ObjectId::from_bytes(b"genesis"),
-            graph_root_hash: ObjectId::from_bytes(b"empty-root"),
+            graph_root_hash,
             parent_id: None,
             applied_change_id: None,
             created_at: unix_ms_now(),
@@ -1251,22 +1313,26 @@ async fn cmd_status(mode: OutputMode, store: &StoreHandle) -> Result<(), CliErro
     let snapshots = store.list_snapshots().await?;
 
     // Compute status fields.
-    let (snap_hex, branch, pending_changes, verification_state) = if snapshots.is_empty() {
+    let (snap_hex, graph_root_hex, branch, pending_changes, verification_state) = if snapshots
+        .is_empty()
+    {
         (
+            "(none)".to_string(),
             "(none)".to_string(),
             "main".to_string(),
             0usize,
             "unverified",
         )
     } else {
-        let current = snapshots.last().expect("non-empty");
+        let current = latest_snapshot(&snapshots).expect("non-empty");
         let snap_hex = current.id.to_hex();
+        let graph_root_hex = current.graph_root_hash.to_hex();
         let ver_state = if current.verification_report_hash.is_some() {
             "verified"
         } else {
             "unverified"
         };
-        (snap_hex, "main".to_string(), 0, ver_state)
+        (snap_hex, graph_root_hex, "main".to_string(), 0, ver_state)
     };
 
     // Derived status fields.
@@ -1275,14 +1341,16 @@ async fn cmd_status(mode: OutputMode, store: &StoreHandle) -> Result<(), CliErro
     let package_advisories = 0usize;
 
     let human_msg = format!(
-        "snapshot: {snap_hex}\nbranch: {branch}\npending changes: {pending_changes}\nverification: {verification_state}\nstale indexes: {stale_indexes}\nruntime profile: {runtime_profile_status}\npackage advisories: {package_advisories}"
+        "snapshot: {snap_hex}\ngraph_root: {graph_root_hex}\nbranch: {branch}\npending changes: {pending_changes}\nverification: {verification_state}\nstale indexes: {stale_indexes}\nruntime profile: {runtime_profile_status}\npackage advisories: {package_advisories}"
     );
     print_response(
         mode,
         &human_msg,
         json!({
             "snapshot_id": snap_hex,
+            "graph_root_hash": graph_root_hex,
             "branch": branch,
+            "snapshot_count": snapshots.len(),
             "pending_changes": pending_changes,
             "verification_state": verification_state,
             "stale_indexes": stale_indexes,
@@ -2341,9 +2409,11 @@ mod tests {
     }
 
     // Scenario: cmd_compile succeeds with an empty graph (exit 0).
-    #[test]
-    fn cmd_compile_succeeds() {
-        let result = cmd_compile(OutputMode::Human, "dev", "wasm");
+    #[tokio::test]
+    async fn cmd_compile_succeeds() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let result = cmd_compile(OutputMode::Human, "dev", "wasm", &store).await;
         assert!(result.is_ok(), "cmd_compile must succeed; got: {result:?}");
     }
 
@@ -2358,30 +2428,39 @@ mod tests {
     }
 
     // Scenario: cmd_compile with native target succeeds.
-    #[test]
-    fn cmd_compile_native_target_succeeds() {
-        let result = cmd_compile(OutputMode::Human, "prod", "native");
+    #[tokio::test]
+    async fn cmd_compile_native_target_succeeds() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let result = cmd_compile(OutputMode::Human, "prod", "native", &store).await;
         assert!(result.is_ok(), "cmd_compile native must succeed; got: {result:?}");
     }
 
     // Scenario: cmd_run succeeds when preflight passes (exit 0).
-    #[test]
-    fn cmd_run_succeeds() {
-        let result = cmd_run(OutputMode::Human, "dev", None, None);
+    #[tokio::test]
+    async fn cmd_run_succeeds() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let result = cmd_run(OutputMode::Human, "dev", None, None, &store).await;
         assert!(result.is_ok(), "cmd_run must succeed; got: {result:?}");
     }
 
     // Scenario: cmd_run with module succeeds.
-    #[test]
-    fn cmd_run_with_module_succeeds() {
-        let result = cmd_run(OutputMode::Human, "dev", Some("module.checkout"), None);
+    #[tokio::test]
+    async fn cmd_run_with_module_succeeds() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let result = cmd_run(OutputMode::Human, "dev", Some("module.checkout"), None, &store)
+            .await;
         assert!(result.is_ok(), "cmd_run with module must succeed; got: {result:?}");
     }
 
     // Scenario: cmd_run with replay succeeds.
-    #[test]
-    fn cmd_run_with_replay_succeeds() {
-        let result = cmd_run(OutputMode::Human, "test", None, Some("trace_123"));
+    #[tokio::test]
+    async fn cmd_run_with_replay_succeeds() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let result = cmd_run(OutputMode::Human, "test", None, Some("trace_123"), &store).await;
         assert!(result.is_ok(), "cmd_run with replay must succeed; got: {result:?}");
     }
 
@@ -2463,6 +2542,35 @@ mod tests {
         let id = "b".repeat(64);
         let result = cmd_apply(OutputMode::Human, &id, false, None, &store).await;
         assert!(result.is_ok(), "cmd_apply must succeed; got: {result:?}");
+    }
+
+    // Scenario: change creates a graph snapshot that compile can load.
+    #[tokio::test]
+    async fn cmd_change_snapshot_load_compile_flow() {
+        use crate::store::memory_store;
+        let store = memory_store();
+
+        let change = cmd_change(
+            OutputMode::Human,
+            Some("record storage-backed compile flow"),
+            None,
+            false,
+            &store,
+        )
+        .await;
+        assert!(change.is_ok(), "cmd_change must apply; got: {change:?}");
+
+        let snapshots = store.list_snapshots().await.expect("list snapshots");
+        let snapshot = latest_snapshot(&snapshots).expect("change must create a snapshot");
+        let graph = store
+            .load_graph(&snapshot.graph_root_hash)
+            .await
+            .expect("load graph")
+            .expect("graph root must exist");
+        assert!(graph.validate().is_ok(), "stored graph must validate");
+
+        let compile = cmd_compile(OutputMode::Human, "dev", "wasm", &store).await;
+        assert!(compile.is_ok(), "compile must load stored graph; got: {compile:?}");
     }
 
     // Scenario: cmd_apply rejects invalid change-id.
