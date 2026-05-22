@@ -847,23 +847,11 @@ fn checker_report_flows_through_policy_engine() {
     use ail_verify::checker::Checker;
 
     // Build a minimal graph with one proven node
-    let node = GraphNode {
-        id: NodeRef(1),
-        kind: NodeKind::Function,
-        name: "fn.safe".to_string(),
-        type_facts: Some(TypeFacts {
-            nominal: "Int".to_string(),
-            generics: vec![],
-        }),
-        effect_row: None,
-        capability_reqs: None,
-        contract_clauses: None,
-        runtime_checks: None,
-        content_hash: None,
-        provenance: None,
-        schema: None,
-        trust_metadata: None,
-    };
+    let mut node = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.safe");
+    node.type_facts = Some(TypeFacts {
+        nominal: "Int".to_string(),
+        generics: vec![],
+    });
     let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
     let report = Checker::check(&graph);
 
@@ -893,27 +881,17 @@ fn checker_report_with_all_proven_passes_prod_policy() {
     use ail_verify::checker::Checker;
 
     // Graph node with all three fact dimensions populated → all Proven/Assumed
-    let node = GraphNode {
-        id: NodeRef(1),
-        kind: NodeKind::Function,
-        name: "fn.checkout".to_string(),
-        type_facts: Some(TypeFacts {
-            nominal: "Unit".to_string(),
-            generics: vec![],
-        }),
-        effect_row: Some(EffectRow {
-            effects: vec!["database.write".to_string()],
-        }),
-        capability_reqs: Some(CapabilityReqs {
-            caps: vec!["database.write:Order".to_string()],
-        }),
-        contract_clauses: None,
-        runtime_checks: None,
-        content_hash: None,
-        provenance: None,
-        schema: None,
-        trust_metadata: None,
-    };
+    let mut node = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.checkout");
+    node.type_facts = Some(TypeFacts {
+        nominal: "Unit".to_string(),
+        generics: vec![],
+    });
+    node.effect_row = Some(EffectRow {
+        effects: vec!["database.write".to_string()],
+    });
+    node.capability_reqs = Some(CapabilityReqs {
+        caps: vec!["database.write:Order".to_string()],
+    });
     let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
     let report = Checker::check(&graph);
 

@@ -35,11 +35,7 @@ fn graph_node(id: u32, kind: NodeKind, name: &str) -> GraphNode {
 }
 
 fn graph_edge(source: u32, target: u32, kind: EdgeKind) -> GraphEdge {
-    GraphEdge {
-        source: NodeRef(source),
-        target: NodeRef(target),
-        kind,
-    }
+    GraphEdge::new(NodeRef(source), NodeRef(target), kind)
 }
 
 fn create_op(node: GraphNode) -> CanonicalOp {

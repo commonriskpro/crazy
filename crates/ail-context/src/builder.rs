@@ -2004,21 +2004,9 @@ mod tests {
                 GraphNode::new(NodeRef(4), NodeKind::Module, "unrelated"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::Calls, // A calls B → A is a caller
-                },
-                GraphEdge {
-                    source: NodeRef(1),
-                    target: NodeRef(2),
-                    kind: EdgeKind::Proves, // B proves C → C is a proof
-                },
-                GraphEdge {
-                    source: NodeRef(1),
-                    target: NodeRef(3),
-                    kind: EdgeKind::Emits, // B emits D → D is an effect
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),   // A calls B → A is a caller
+                GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Proves),  // B proves C → C is a proof
+                GraphEdge::new(NodeRef(1), NodeRef(3), EdgeKind::Emits),   // B emits D → D is an effect
             ],
         };
         let snapshot = make_snapshot();
@@ -2291,11 +2279,7 @@ mod tests {
             edges: vec![
                 GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Emits),
                 GraphEdge::new(NodeRef(0), NodeRef(2), EdgeKind::DependsOn),
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(3),
-                    kind: EdgeKind::Calls, // excluded
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(3), EdgeKind::Calls), // excluded
             ],
         };
         let snapshot = make_snapshot();
