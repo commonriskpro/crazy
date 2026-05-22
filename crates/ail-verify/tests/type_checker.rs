@@ -240,6 +240,8 @@ fn generic_call_missing_binding_fails_arity_validation() {
             param: "K".into(),
             ty: "Text".into(),
         }]),
+        effect_arg_bindings: None,
+        capability_arg_bindings: None,
     };
 
     let report = TypeChecker::check(&graph_with_edges(vec![caller, callee], vec![edge]));
@@ -309,6 +311,8 @@ fn structural_type_and_dyn_interface_fail_when_unavailable() {
         kind: EdgeKind::Calls,
         call_args: Some(vec!["User".into(), "PaymentService".into()]),
         type_arg_bindings: None,
+        effect_arg_bindings: None,
+        capability_arg_bindings: None,
     };
 
     let report = TypeChecker::check(&graph_with_edges(
@@ -421,6 +425,8 @@ fn nominal_mismatch_at_call_site_fails() {
         kind: EdgeKind::Calls,
         call_args: Some(vec!["OrderId".into()]),
         type_arg_bindings: None,
+        effect_arg_bindings: None,
+        capability_arg_bindings: None,
     };
 
     let report = graph_with_edges(vec![caller, callee], vec![calls_edge]);
@@ -469,6 +475,8 @@ fn nominal_match_at_call_site_passes() {
         kind: EdgeKind::Calls,
         call_args: Some(vec!["UserId".into()]),
         type_arg_bindings: None,
+        effect_arg_bindings: None,
+        capability_arg_bindings: None,
     };
 
     let report = TypeChecker::check(&graph_with_edges(vec![caller, callee], vec![calls_edge]));
@@ -502,6 +510,8 @@ fn nominal_alias_does_not_auto_match() {
         kind: EdgeKind::Calls,
         call_args: Some(vec!["OrderId".into()]),
         type_arg_bindings: None,
+        effect_arg_bindings: None,
+        capability_arg_bindings: None,
     };
     let report = TypeChecker::check(&graph_with_edges(vec![caller, callee], vec![edge]));
     let failed = report
@@ -663,6 +673,8 @@ fn parameterized_type_arg_coercion_fails() {
         kind: EdgeKind::Calls,
         call_args: Some(vec!["List<Dog>".into()]),
         type_arg_bindings: None,
+        effect_arg_bindings: None,
+        capability_arg_bindings: None,
     };
     let report = TypeChecker::check(&graph_with_edges(vec![caller, callee], vec![edge]));
 
@@ -703,6 +715,8 @@ fn matching_parameterized_type_passes_variance() {
         kind: EdgeKind::Calls,
         call_args: Some(vec!["List<Animal>".into()]),
         type_arg_bindings: None,
+        effect_arg_bindings: None,
+        capability_arg_bindings: None,
     };
     let report = TypeChecker::check(&graph_with_edges(vec![caller, callee], vec![edge]));
 
@@ -958,6 +972,8 @@ fn generic_fn_missing_eq_constraint_fails() {
             param: "T".into(),
             ty: "NoEqType".into(),
         }]),
+        effect_arg_bindings: None,
+        capability_arg_bindings: None,
     };
 
     let report = TypeChecker::check(&graph_with_edges(
@@ -1019,6 +1035,8 @@ fn generic_fn_eq_constraint_satisfied_passes() {
             param: "T".into(),
             ty: "EqType".into(),
         }]),
+        effect_arg_bindings: None,
+        capability_arg_bindings: None,
     };
 
     let report = TypeChecker::check(&graph_with_edges(
@@ -1126,6 +1144,8 @@ fn type_checker_report_flows_into_policy_engine() {
         kind: EdgeKind::Calls,
         call_args: Some(vec!["TypeB".into()]), // wrong type
         type_arg_bindings: None,
+        effect_arg_bindings: None,
+        capability_arg_bindings: None,
     };
 
     let report = TypeChecker::check(&graph_with_edges(vec![caller, callee], vec![mismatch_edge]));
