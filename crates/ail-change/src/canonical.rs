@@ -134,6 +134,18 @@ pub struct CanonicalOp {
     pub block_hash: BlockHash,
 }
 
+impl Default for CanonicalOp {
+    fn default() -> Self {
+        Self {
+            kind: ChangeSetOp::Infer,
+            verb: String::new(),
+            args: BTreeMap::new(),
+            payload: OpPayload::Noop,
+            block_hash: BlockHash([0u8; 32]),
+        }
+    }
+}
+
 // ── Precondition ──────────────────────────────────────────────────────────
 
 /// A precondition evaluated before ops are applied.
@@ -187,6 +199,27 @@ pub struct CanonicalChangeSet {
     /// Verify directives (short form and block form lines combined).
     #[serde(default)]
     pub verify: Vec<String>,
+}
+
+impl Default for CanonicalChangeSet {
+    fn default() -> Self {
+        Self {
+            meta: CanonicalMeta {
+                author: String::new(),
+                description: String::new(),
+                timestamp: Timestamp(0),
+            },
+            base_snapshot_id: SnapshotId(0),
+            acl_version: default_acl_version(),
+            preconditions: Vec::new(),
+            ops: Vec::new(),
+            expect: None,
+            approval: None,
+            composition: ChangeComposition::default(),
+            blocks: Vec::new(),
+            verify: Vec::new(),
+        }
+    }
 }
 
 fn default_acl_version() -> String {

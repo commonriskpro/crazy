@@ -202,6 +202,7 @@ mod tests {
                 "fn",
             ))),
             block_hash: dummy_hash(),
+            ..Default::default()
         }
     }
 
@@ -210,6 +211,7 @@ mod tests {
             kind: ail_change::model::ChangeSetOp::Remove,
             payload: OpPayload::RemoveNode(NodeRef(node_ref)),
             block_hash: dummy_hash(),
+            ..Default::default()
         }
     }
 
@@ -221,6 +223,7 @@ mod tests {
                 name: "new_name".into(),
             },
             block_hash: dummy_hash(),
+            ..Default::default()
         }
     }
 
@@ -233,6 +236,7 @@ mod tests {
                 kind: EdgeKind::Calls,
             }),
             block_hash: dummy_hash(),
+            ..Default::default()
         }
     }
 
@@ -242,6 +246,7 @@ mod tests {
             base_snapshot_id: SnapshotId(base),
             preconditions: vec![],
             ops,
+            ..Default::default()
         }
     }
 
@@ -334,6 +339,7 @@ mod tests {
             kind: ail_change::model::ChangeSetOp::Infer,
             payload: OpPayload::Noop,
             block_hash: dummy_hash(),
+            ..Default::default()
         };
         let diff = StructuralDiff::from_ops(&[noop]);
         assert!(diff.touched_nodes.is_empty());

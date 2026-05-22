@@ -54,6 +54,7 @@ fn create_node_op(node_ref: u32, name: &str) -> CanonicalOp {
             name,
         ))),
         block_hash: dummy_hash(),
+        ..Default::default()
     }
 }
 
@@ -62,6 +63,7 @@ fn remove_node_op(node_ref: u32) -> CanonicalOp {
         kind: ChangeSetOp::Remove,
         payload: OpPayload::RemoveNode(NodeRef(node_ref)),
         block_hash: dummy_hash(),
+        ..Default::default()
     }
 }
 
@@ -73,6 +75,7 @@ fn rename_node_op(node_ref: u32, new_name: &str) -> CanonicalOp {
             name: new_name.into(),
         },
         block_hash: dummy_hash(),
+        ..Default::default()
     }
 }
 
@@ -82,6 +85,7 @@ fn cs(base: u64, author: &str, ops: Vec<CanonicalOp>) -> CanonicalChangeSet {
         base_snapshot_id: SnapshotId(base),
         preconditions: vec![],
         ops,
+        ..Default::default()
     }
 }
 

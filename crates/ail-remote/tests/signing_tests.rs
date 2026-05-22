@@ -76,6 +76,7 @@ fn make_changeset(base: u64) -> CanonicalChangeSet {
         base_snapshot_id: SnapshotId(base),
         preconditions: vec![],
         ops: vec![],
+        ..Default::default()
     }
 }
 

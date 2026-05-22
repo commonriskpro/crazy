@@ -348,6 +348,7 @@ async fn cmd_apply(mode: OutputMode, change_id: &str, store: &StoreHandle) -> Re
         base_snapshot_id: current_snapshot_id,
         preconditions: vec![],
         ops: vec![],
+        ..Default::default()
     };
 
     let outcome = apply_changeset(canonical, &mut graph, &bridge);
@@ -946,6 +947,7 @@ mod tests {
             base_snapshot_id: SnapshotId(0),
             preconditions: vec![],
             ops: vec![],
+            ..Default::default()
         };
 
         let outcome = apply_changeset(canonical, &mut graph, &bridge);

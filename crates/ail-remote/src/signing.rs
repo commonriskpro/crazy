@@ -241,6 +241,7 @@ mod tests {
             base_snapshot_id: SnapshotId(0),
             preconditions: vec![],
             ops: vec![],
+            ..Default::default()
         }
     }
 
@@ -318,6 +319,7 @@ mod tests {
             kind: ChangeSetOp::Create,
             payload: OpPayload::Noop,
             block_hash: BlockHash([0u8; 32]),
+            ..Default::default()
         });
         let result = rcs.verify_signature();
         assert_eq!(

@@ -49,6 +49,7 @@ fn create_node_op(node_ref: u32, name: &str) -> CanonicalOp {
             name,
         ))),
         block_hash: dummy_hash(),
+        ..Default::default()
     }
 }
 
@@ -58,6 +59,7 @@ fn cs(base: u64, author: &str, ops: Vec<CanonicalOp>) -> CanonicalChangeSet {
         base_snapshot_id: SnapshotId(base),
         preconditions: vec![],
         ops,
+        ..Default::default()
     }
 }
 
