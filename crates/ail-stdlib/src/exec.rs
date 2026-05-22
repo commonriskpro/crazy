@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use crate::{crypto, encoding, json, text};
+use crate::{concurrent, crypto, encoding, json, numeric, text};
 
 /// Runtime value shape understood by the stdlib executable dispatch layer.
 #[derive(Clone, Debug)]
@@ -584,6 +584,110 @@ pub fn stdlib_function_entries() -> Vec<FunctionEntry> {
             &["Map"],
             "Text",
             json_stringify,
+        ),
+        pure(
+            "std.collections.list.map",
+            "std.collections",
+            "map",
+            &["List<T>", "Fn(T) -> U"],
+            "List<U>",
+            list_map_exec,
+        ),
+        pure(
+            "std.collections.list.filter",
+            "std.collections",
+            "filter",
+            &["List<T>", "Fn(T) -> Bool"],
+            "List<T>",
+            list_filter_exec,
+        ),
+        pure(
+            "std.collections.list.fold",
+            "std.collections",
+            "fold",
+            &["List<T>", "U", "Fn(List<[U, T]>) -> U"],
+            "U",
+            list_fold_exec,
+        ),
+        pure(
+            "std.collections.list.concat",
+            "std.collections",
+            "concat",
+            &["List<T>", "List<T>"],
+            "List<T>",
+            list_concat_exec,
+        ),
+        pure(
+            "std.iter.map",
+            "std.iter",
+            "map",
+            &["List<T>", "Fn(T) -> U"],
+            "List<U>",
+            iter_map_exec,
+        ),
+        pure(
+            "std.iter.filter",
+            "std.iter",
+            "filter",
+            &["List<T>", "Fn(T) -> Bool"],
+            "List<T>",
+            iter_filter_exec,
+        ),
+        pure(
+            "std.iter.fold",
+            "std.iter",
+            "fold",
+            &["List<T>", "U", "Fn(List<[U, T]>) -> U"],
+            "U",
+            iter_fold_exec,
+        ),
+        pure(
+            "std.iter.traverse",
+            "std.iter",
+            "traverse",
+            &["List<T>", "Fn(T) -> Result<U, E>"],
+            "Result<List<U>, E>",
+            iter_traverse_exec,
+        ),
+        pure(
+            "std.numeric.checked_add",
+            "std.numeric",
+            "checked_add",
+            &["Int", "Int"],
+            "Option<Int>",
+            numeric_checked_add,
+        ),
+        pure(
+            "std.numeric.checked_sub",
+            "std.numeric",
+            "checked_sub",
+            &["Int", "Int"],
+            "Option<Int>",
+            numeric_checked_sub,
+        ),
+        pure(
+            "std.numeric.checked_mul",
+            "std.numeric",
+            "checked_mul",
+            &["Int", "Int"],
+            "Option<Int>",
+            numeric_checked_mul,
+        ),
+        pure(
+            "std.numeric.wrapping_add",
+            "std.numeric",
+            "wrapping_add",
+            &["Int", "Int"],
+            "Int",
+            numeric_wrapping_add,
+        ),
+        pure(
+            "std.numeric.saturating_add",
+            "std.numeric",
+            "saturating_add",
+            &["Int", "Int"],
+            "Int",
+            numeric_saturating_add,
         ),
         pure(
             "std.numeric.narrow_to_i32",
@@ -1347,6 +1451,169 @@ fn numeric_narrow_to_u32(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExec
         )),
         _ => Err(StdlibExecError::Type { expected: "Int" }),
     }
+}
+
+// ── Collections list functional adapters ─────────────────────────────────
+//
+// list.map, list.filter, list.fold share identical semantics with the iter
+// variants; they delegate to the same shared helpers.
+
+fn list_map_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    iter_map_exec(args)
+}
+
+fn list_filter_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    iter_filter_exec(args)
+}
+
+fn list_fold_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    iter_fold_exec(args)
+}
+
+fn list_concat_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::List(a) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::List(b) = &args[1] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let mut result = a.clone();
+    result.extend_from_slice(b);
+    Ok(StdlibValue::List(result))
+}
+
+// ── Iter functional adapters ──────────────────────────────────────────────
+
+fn iter_map_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::Function(f) = args[1] else {
+        return Err(StdlibExecError::Type {
+            expected: "Function",
+        });
+    };
+    let mapped = items
+        .clone()
+        .into_iter()
+        .map(f)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(StdlibValue::List(mapped))
+}
+
+fn iter_filter_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::Function(f) = args[1] else {
+        return Err(StdlibExecError::Type {
+            expected: "Function",
+        });
+    };
+    let mut kept = Vec::new();
+    for item in items.clone() {
+        match f(item.clone())? {
+            StdlibValue::Bool(true) => kept.push(item),
+            StdlibValue::Bool(false) => {}
+            _ => return Err(StdlibExecError::Type { expected: "Bool" }),
+        }
+    }
+    Ok(StdlibValue::List(kept))
+}
+
+fn iter_fold_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::Function(f) = args[2] else {
+        return Err(StdlibExecError::Type {
+            expected: "Function",
+        });
+    };
+    let mut acc = args[1].clone();
+    for item in items.clone() {
+        // Binary encoding: fn receives List([acc, item])
+        let pair = StdlibValue::List(vec![acc, item]);
+        acc = f(pair)?;
+    }
+    Ok(acc)
+}
+
+fn iter_traverse_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::Function(f) = args[1] else {
+        return Err(StdlibExecError::Type {
+            expected: "Function",
+        });
+    };
+    let mut collected = Vec::new();
+    for item in items.clone() {
+        match f(item)? {
+            StdlibValue::Result(Ok(v)) => collected.push(*v),
+            StdlibValue::Result(Err(e)) => {
+                return Ok(StdlibValue::Result(Err(e)));
+            }
+            _ => return Err(StdlibExecError::Type { expected: "Result" }),
+        }
+    }
+    Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::List(
+        collected,
+    )))))
+}
+
+// ── Numeric overflow adapters ─────────────────────────────────────────────
+
+fn numeric_checked_add(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Option(
+        numeric::checked_add(*a, *b).map(|v| Box::new(StdlibValue::Int(v))),
+    ))
+}
+
+fn numeric_checked_sub(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Option(
+        numeric::checked_sub(*a, *b).map(|v| Box::new(StdlibValue::Int(v))),
+    ))
+}
+
+fn numeric_checked_mul(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Option(
+        numeric::checked_mul(*a, *b).map(|v| Box::new(StdlibValue::Int(v))),
+    ))
+}
+
+fn numeric_wrapping_add(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::wrapping_add(*a, *b)))
+}
+
+fn numeric_saturating_add(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::saturating_add(*a, *b)))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
