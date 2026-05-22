@@ -43,7 +43,11 @@ fn meta(author: &str) -> CanonicalMeta {
 fn create_node_op(node_ref: u32, name: &str) -> CanonicalOp {
     CanonicalOp {
         kind: ChangeSetOp::Create,
-        payload: OpPayload::CreateNode(GraphNode::new(NodeRef(node_ref), NodeKind::Function, name)),
+        payload: OpPayload::CreateNode(Box::new(GraphNode::new(
+            NodeRef(node_ref),
+            NodeKind::Function,
+            name,
+        ))),
         block_hash: dummy_hash(),
     }
 }

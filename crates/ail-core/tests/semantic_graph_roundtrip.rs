@@ -20,7 +20,10 @@
 //   graph-storage-roundtrip — "NodeRef absent from storage record"
 //   graph-storage-roundtrip — "Graph snapshot path via ObjectBackedGraphStore"
 
-use ail_core::semantic_graph::{EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph};
+use ail_core::semantic_graph::{
+    ContentHash, EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, Provenance, SchemaRef,
+    SemanticGraph, TrustMetadata,
+};
 use ail_storage::{
     GraphStore, ObjectBackedGraphStore, SnapshotEnvelope,
     backends::memory::MemoryObjectStore,
@@ -413,5 +416,167 @@ fn node_ref_and_object_id_are_distinct_types() {
         object_id.as_bytes(),
         &[0u8; 32],
         "ObjectId must be a real BLAKE3 hash, not all-zero — confirms it is not NodeRef(42)"
+    );
+}
+
+// ── storage_identity_fields_cbor_round_trip ───────────────────────────────
+// Spec scenario (G15): "GraphNode with all storage identity fields round-trips"
+//   GIVEN a GraphNode with content_hash, provenance, schema, trust_metadata set
+//   WHEN serialized to CBOR and deserialized
+//   THEN all four fields are preserved byte-for-byte
+#[test]
+fn storage_identity_fields_cbor_round_trip() {
+    let codec = CborCodec;
+
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn_checkout");
+    node.content_hash = Some(ContentHash {
+        hex: "abc123def456".to_string(),
+    });
+    node.provenance = Some(Provenance {
+        change_id: "change.add_checkout".to_string(),
+    });
+    node.schema = Some(SchemaRef {
+        version: "core_ir/2".to_string(),
+    });
+    node.trust_metadata = Some(TrustMetadata {
+        level: "verified".to_string(),
+        tags: vec!["signed".to_string(), "reviewed".to_string()],
+    });
+
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+
+    let bytes = codec.encode(&graph).expect("encode must succeed");
+    let decoded: SemanticGraph = codec.decode(&bytes).expect("decode must succeed");
+
+    assert_eq!(
+        decoded, graph,
+        "graph with storage identity fields must survive CBOR round-trip"
+    );
+
+    let decoded_node = &decoded.nodes[0];
+    assert_eq!(
+        decoded_node
+            .trust_metadata
+            .as_ref()
+            .map(|t| t.tags.as_slice()),
+        Some(["signed".to_string(), "reviewed".to_string()].as_slice()),
+        "trust_metadata tags must be preserved in order"
+    );
+    assert_eq!(
+        decoded_node
+            .provenance
+            .as_ref()
+            .map(|p| p.change_id.as_str()),
+        Some("change.add_checkout"),
+        "provenance must be preserved"
+    );
+    assert_eq!(
+        decoded_node.schema.as_ref().map(|s| s.version.as_str()),
+        Some("core_ir/2"),
+        "schema must be preserved"
+    );
+    assert_eq!(
+        decoded_node
+            .trust_metadata
+            .as_ref()
+            .map(|t| t.level.as_str()),
+        Some("verified"),
+        "trust_metadata level must be preserved"
+    );
+    let expected_tags: &[String] = &["signed".to_string(), "reviewed".to_string()];
+    assert_eq!(
+        decoded_node
+            .trust_metadata
+            .as_ref()
+            .map(|t| t.tags.as_slice()),
+        Some(expected_tags),
+        "trust_metadata tags must be preserved in order"
+    );
+}
+
+// ── storage_identity_fields_absent_preserves_wire_format ─────────────────
+// Spec scenario (G15): "GraphNode without storage identity fields is backward-compatible"
+//   GIVEN a GraphNode built with GraphNode::new (all storage identity fields None)
+//   WHEN serialized to CBOR
+//   THEN the CBOR bytes are identical to a node built without the new fields
+//   (verifies skip_serializing_if = "Option::is_none" is effective)
+#[test]
+fn storage_identity_fields_absent_preserves_wire_format() {
+    let codec = CborCodec;
+
+    // Node built via constructor — all storage identity fields None.
+    let node_via_new = GraphNode::new(NodeRef(0), NodeKind::Module, "root");
+
+    // Node built via struct literal with all fields explicit.
+    let node_via_literal = GraphNode {
+        id: NodeRef(0),
+        kind: NodeKind::Module,
+        name: "root".to_string(),
+        type_facts: None,
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+        runtime_checks: None,
+        content_hash: None,
+        provenance: None,
+        schema: None,
+        trust_metadata: None,
+    };
+
+    let graph_new = SemanticGraph {
+        nodes: vec![node_via_new],
+        edges: vec![],
+    };
+    let graph_literal = SemanticGraph {
+        nodes: vec![node_via_literal],
+        edges: vec![],
+    };
+
+    let bytes_new = codec.encode(&graph_new).expect("encode new must succeed");
+    let bytes_literal = codec
+        .encode(&graph_literal)
+        .expect("encode literal must succeed");
+
+    assert_eq!(
+        bytes_new, bytes_literal,
+        "GraphNode::new and struct literal with all-None fields must produce identical CBOR"
+    );
+}
+
+// ── storage_identity_fields_partial_round_trip ────────────────────────────
+// TRIANGULATE (G15): only some identity fields set — others remain None.
+//   GIVEN a GraphNode with only content_hash set (provenance/schema/trust None)
+//   WHEN serialized and deserialized
+//   THEN content_hash is preserved and the others are still None
+#[test]
+fn storage_identity_fields_partial_round_trip() {
+    let codec = CborCodec;
+
+    let mut node = GraphNode::new(NodeRef(7), NodeKind::Type, "MyType");
+    node.content_hash = Some(ContentHash {
+        hex: "deadbeef".to_string(),
+    });
+
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+
+    let bytes = codec.encode(&graph).expect("encode must succeed");
+    let decoded: SemanticGraph = codec.decode(&bytes).expect("decode must succeed");
+
+    let n = &decoded.nodes[0];
+    assert_eq!(
+        n.content_hash.as_ref().map(|h| h.hex.as_str()),
+        Some("deadbeef")
+    );
+    assert!(n.provenance.is_none(), "provenance must remain None");
+    assert!(n.schema.is_none(), "schema must remain None");
+    assert!(
+        n.trust_metadata.is_none(),
+        "trust_metadata must remain None"
     );
 }
