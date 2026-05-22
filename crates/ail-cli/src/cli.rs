@@ -62,8 +62,8 @@ use ail_compiler::{
 };
 use ail_context::{
     AuthSession, ContextQuery, ContextRequest, ContextServer, ContextServerConfig,
-    DerivedIndexCache, FieldRedactionRule, InMemoryContextSource, QueryScope, SnapshotSelector,
-    TrustLevel as ContextTrustLevel,
+    DerivedIndexCache, FieldRedactionRule, InMemoryContextSource, QueryBudget, QueryScope,
+    SnapshotSelector, TrustLevel as ContextTrustLevel,
 };
 use ail_core::semantic_graph::{GraphEdge, GraphNode, NodeKind};
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
@@ -709,6 +709,7 @@ fn synthetic_context_snapshot(graph: &SemanticGraph) -> Result<SnapshotEnvelope,
         applied_change_id: None,
         created_at: unix_ms_now(),
         verification_report_hash: None,
+        ..Default::default()
     })
 }
 
@@ -718,7 +719,7 @@ async fn parse_context_query_for_cli(
     store: &StoreHandle,
 ) -> Result<ContextQuery, CliError> {
     let graph = load_current_graph_for_cli(store).await?;
-    let budget = usize::MAX;
+    let budget = QueryBudget::default();
     let target = || -> Result<NodeRef, CliError> {
         let raw = args.first().map(String::as_str).unwrap_or("0");
         node_ref_for_cli_target(raw, &graph)
@@ -1040,6 +1041,7 @@ async fn cmd_change(
                 applied_change_id: Some(cs_oid),
                 created_at: unix_ms_now(),
                 verification_report_hash: None,
+                ..Default::default()
             };
             store.save_snapshot_on_branch(&snapshot, branch).await?;
         }
@@ -1291,6 +1293,7 @@ async fn cmd_apply(
                 applied_change_id: Some(change_oid),
                 created_at: unix_ms_now(),
                 verification_report_hash: None,
+                ..Default::default()
             };
             let new_id = store.save_snapshot(&new_envelope).await?;
             let new_id_hex = new_id.to_hex();
@@ -1925,6 +1928,7 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle, branch: &str) -> Result
             applied_change_id: None,
             created_at: unix_ms_now(),
             verification_report_hash: None,
+            ..Default::default()
         };
         active_store.save_snapshot(&genesis).await?
     } else {
@@ -2555,6 +2559,7 @@ async fn cmd_rollback(
                 applied_change_id: None,
                 created_at: unix_ms_now(),
                 verification_report_hash: None,
+                ..Default::default()
             };
             let new_id = store.save_snapshot(&new_envelope).await?;
             let new_id_hex = new_id.to_hex();
@@ -2605,6 +2610,7 @@ async fn cmd_rollback(
                 applied_change_id: None,
                 created_at: unix_ms_now(),
                 verification_report_hash: None,
+                ..Default::default()
             };
             let new_id = store.save_snapshot(&new_envelope).await?;
             let new_id_hex = new_id.to_hex();
@@ -2696,6 +2702,7 @@ async fn cmd_rebase(
         applied_change_id: None,
         created_at: unix_ms_now(),
         verification_report_hash: None,
+        ..Default::default()
     };
     let new_id = store.save_snapshot(&new_envelope).await?;
     let repair_options: Vec<Value> = vec![];
@@ -2788,6 +2795,7 @@ async fn cmd_merge(
         applied_change_id: None,
         created_at: unix_ms_now(),
         verification_report_hash: None,
+        ..Default::default()
     };
     let new_id = store.save_snapshot(&new_envelope).await?;
     let new_id_hex = new_id.to_hex();
@@ -4898,6 +4906,7 @@ end
             applied_change_id: None,
             created_at: unix_ms_now(),
             verification_report_hash: None,
+            ..Default::default()
         };
         store.save_snapshot(&snap).await.expect("save snapshot");
 
@@ -4946,6 +4955,7 @@ end
             applied_change_id: None,
             created_at: unix_ms_now(),
             verification_report_hash: None,
+            ..Default::default()
         };
         store.save_snapshot(&snap).await.expect("save snapshot");
 

@@ -105,6 +105,7 @@ pub fn make_snapshot_envelope(label: &str) -> ail_storage::graph::SnapshotEnvelo
         applied_change_id: None,
         created_at: 0,
         verification_report_hash: None,
+        ..Default::default()
     }
 }
 

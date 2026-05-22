@@ -46,6 +46,7 @@ fn snapshot_with_parent() -> SnapshotEnvelope {
         applied_change_id: Some(oid("change-1")),
         created_at: 1_700_000_000_000_u64,
         verification_report_hash: None,
+        ..Default::default()
     }
 }
 
@@ -105,6 +106,7 @@ fn genesis_no_parent() {
         applied_change_id: None,
         created_at: 0_u64,
         verification_report_hash: None,
+        ..Default::default()
     };
 
     let returned_id = block_on(graph_store.save_snapshot(&snap)).expect("save must succeed");
@@ -178,6 +180,7 @@ fn save_then_load() {
         applied_change_id: None,
         created_at: 42_000_u64,
         verification_report_hash: None,
+        ..Default::default()
     };
 
     let returned_id = block_on(graph_store.save_snapshot(&snap)).expect("save must succeed");
@@ -216,6 +219,7 @@ fn save_then_load_by_envelope_id() {
         applied_change_id: Some(oid("direct-change")),
         created_at: 99_000_u64,
         verification_report_hash: None,
+        ..Default::default()
     };
 
     block_on(graph_store.save_snapshot(&snap)).expect("save must succeed");
@@ -281,6 +285,7 @@ fn snapshot_envelope_encoding_is_deterministic() {
         applied_change_id: Some(oid("hashmap-check-change")),
         created_at: 1_234_567_890_u64,
         verification_report_hash: None,
+        ..Default::default()
     };
     let bytes1 = codec.encode(&snap).expect("first encode must succeed");
     let bytes2 = codec.encode(&snap).expect("second encode must succeed");
@@ -305,6 +310,7 @@ fn verification_report_hash_round_trip() {
         applied_change_id: None,
         created_at: 1_000,
         verification_report_hash: Some([42u8; 32]),
+        ..Default::default()
     };
 
     block_on(graph_store.save_snapshot(&snap)).expect("save must succeed");
@@ -337,6 +343,7 @@ fn verification_report_hash_none_omitted_from_cbor() {
         applied_change_id: None,
         created_at: 500,
         verification_report_hash: None,
+        ..Default::default()
     };
     let some_snap = SnapshotEnvelope {
         verification_report_hash: Some([1u8; 32]),

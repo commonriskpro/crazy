@@ -65,6 +65,7 @@ fn snapshot(
         applied_change_id: change.map(oid),
         created_at,
         verification_report_hash: None,
+        ..Default::default()
     }
 }
 

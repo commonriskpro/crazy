@@ -110,6 +110,24 @@ impl ContextSource for InMemoryContextSource {
                     .expect("snapshots lock must not be poisoned");
                 guard.get(id).cloned().ok_or(ContextError::Stale)
             }
+            SnapshotSelector::Latest => {
+                // Return the snapshot with the highest `created_at`.
+                // Ties are broken by ObjectId byte order (highest wins) for
+                // full determinism.
+                let guard = self
+                    .snapshots
+                    .lock()
+                    .expect("snapshots lock must not be poisoned");
+                guard
+                    .values()
+                    .max_by(|a, b| {
+                        a.created_at
+                            .cmp(&b.created_at)
+                            .then_with(|| a.id.as_bytes().cmp(b.id.as_bytes()))
+                    })
+                    .cloned()
+                    .ok_or(ContextError::Stale)
+            }
         }
     }
 
@@ -163,6 +181,23 @@ where
                 .await
                 .map_err(|e| ContextError::Codec(e.to_string()))?
                 .ok_or(ContextError::Stale),
+            SnapshotSelector::Latest => {
+                // List all snapshots and return the one with the highest
+                // `created_at`.  Ties are broken by ObjectId byte order.
+                let snapshots = self
+                    .graph_store
+                    .list_snapshots()
+                    .await
+                    .map_err(|e| ContextError::Codec(e.to_string()))?;
+                snapshots
+                    .into_iter()
+                    .max_by(|a, b| {
+                        a.created_at
+                            .cmp(&b.created_at)
+                            .then_with(|| a.id.as_bytes().cmp(b.id.as_bytes()))
+                    })
+                    .ok_or(ContextError::Stale)
+            }
         }
     }
 
@@ -200,6 +235,7 @@ mod tests {
             applied_change_id: None,
             created_at: 0,
             verification_report_hash: None,
+            ..Default::default()
         }
     }
 
@@ -271,6 +307,62 @@ mod tests {
         assert!(
             matches!(result, Err(ContextError::Stale)),
             "missing graph root hash must return Err(Stale), got: {result:?}"
+        );
+    }
+
+    // ── in_memory_resolve_latest_returns_most_recent ──────────────────────
+    // Spec scenario: "context fn.checkout at latest"
+    //   GIVEN two snapshots with different created_at values
+    //   WHEN resolve_snapshot(Latest) is called
+    //   THEN the snapshot with the higher created_at is returned
+    #[test]
+    fn in_memory_resolve_latest_returns_most_recent() {
+        let older = {
+            let id = ObjectId::from_bytes(b"older-snap");
+            SnapshotEnvelope {
+                id,
+                graph_root_hash: id,
+                parent_id: None,
+                applied_change_id: None,
+                created_at: 1_000,
+                verification_report_hash: None,
+                ..Default::default()
+            }
+        };
+        let newer = {
+            let id = ObjectId::from_bytes(b"newer-snap");
+            SnapshotEnvelope {
+                id,
+                graph_root_hash: id,
+                parent_id: None,
+                applied_change_id: None,
+                created_at: 2_000,
+                verification_report_hash: None,
+                ..Default::default()
+            }
+        };
+
+        let source = InMemoryContextSource::new();
+        source.insert_snapshot(older.clone());
+        source.insert_snapshot(newer.clone());
+
+        let result = block_on(source.resolve_snapshot(&SnapshotSelector::Latest));
+        assert_eq!(
+            result.unwrap().id,
+            newer.id,
+            "Latest must return the snapshot with the highest created_at"
+        );
+    }
+
+    // ── in_memory_resolve_latest_empty_returns_stale ──────────────────────
+    // Spec: Latest on an empty source must return E_CONTEXT_STALE.
+    #[test]
+    fn in_memory_resolve_latest_empty_returns_stale() {
+        let source = InMemoryContextSource::new();
+        let result = block_on(source.resolve_snapshot(&SnapshotSelector::Latest));
+        assert!(
+            matches!(result, Err(ContextError::Stale)),
+            "Latest on empty source must return Stale"
         );
     }
 

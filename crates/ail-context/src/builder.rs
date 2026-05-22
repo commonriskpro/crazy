@@ -31,7 +31,8 @@ use ail_storage::graph::SnapshotEnvelope;
 
 use crate::dto::{
     CONTEXT_SCHEMA_V1, ContextQuery, ContextResponse, FreshnessStatus, ImpactInfo, ProvenanceBlock,
-    QueryScope, RedactionPolicy, RedactionState, RefactorInfo, RepairOption, ResponseLimits,
+    QueryScope, RedactionPolicy, RedactionState, RefactorInfo, RepairOption,
+    ResponseLimits,
 };
 use crate::error::{ContextError, ContextResult};
 use crate::summary::render_summary;
@@ -387,7 +388,9 @@ fn collect_candidates_with_history(
         }
 
         // ── Callers ───────────────────────────────────────────────────────
-        // Returns nodes that call `target` via EdgeKind::Calls (reverse BFS).
+        // Returns nodes that call `target` via static Calls OR dynamic DynCalls
+        // (reverse BFS).  Both edge kinds are traversed so that callers via
+        // `Dyn<Interface>` dynamic dispatch are included alongside direct callers.
         ContextQuery::Callers {
             target, transitive, ..
         } => {
@@ -395,15 +398,17 @@ fn collect_candidates_with_history(
                 return Err(ContextError::NodeNotFound);
             }
             let callers = if *transitive {
-                reverse_bfs(graph, &node_map, *target, &[EdgeKind::Calls])
+                reverse_bfs(graph, &node_map, *target, &[EdgeKind::Calls, EdgeKind::DynCalls])
             } else {
-                direct_reverse(graph, &node_map, *target, &[EdgeKind::Calls])
+                direct_reverse(graph, &node_map, *target, &[EdgeKind::Calls, EdgeKind::DynCalls])
             };
             Ok((callers, Vec::new()))
         }
 
         // ── Callees ───────────────────────────────────────────────────────
-        // Returns nodes that `target` calls via EdgeKind::Calls (forward BFS).
+        // Returns nodes that `target` calls via static Calls OR dynamic DynCalls
+        // (forward BFS).  Both edge kinds are traversed to distinguish dynamic
+        // dispatch callees (`Dyn<Interface>`) from direct callees.
         ContextQuery::Callees {
             target, transitive, ..
         } => {
@@ -411,9 +416,9 @@ fn collect_candidates_with_history(
                 return Err(ContextError::NodeNotFound);
             }
             let callees = if *transitive {
-                bfs_filtered(graph, &node_map, *target, &[EdgeKind::Calls])
+                bfs_filtered(graph, &node_map, *target, &[EdgeKind::Calls, EdgeKind::DynCalls])
             } else {
-                direct_forward(graph, &node_map, *target, &[EdgeKind::Calls])
+                direct_forward(graph, &node_map, *target, &[EdgeKind::Calls, EdgeKind::DynCalls])
             };
             Ok((callees, Vec::new()))
         }
@@ -564,8 +569,9 @@ fn collect_candidates_with_history(
                 .ok_or(ContextError::NodeNotFound)?
                 .clone();
 
-            // Callers (nodes to update after refactor) — reverse BFS.
-            let callers = reverse_bfs(graph, &node_map, *target, &[EdgeKind::Calls]);
+            // Callers (nodes to update after refactor) — reverse BFS over both
+            // static Calls and dynamic DynCalls edges.
+            let callers = reverse_bfs(graph, &node_map, *target, &[EdgeKind::Calls, EdgeKind::DynCalls]);
             // Proofs to rerun.
             let proves = bfs_filtered(graph, &node_map, *target, &[EdgeKind::Proves]);
             // Effects to preserve.
@@ -700,7 +706,7 @@ fn collect_candidates_with_history(
                 graph,
                 &node_map,
                 *target,
-                &[EdgeKind::Reads, EdgeKind::Writes, EdgeKind::Calls],
+                &[EdgeKind::Reads, EdgeKind::Writes, EdgeKind::Calls, EdgeKind::DynCalls],
             );
             conc_nodes.insert(0, target_node);
             conc_nodes.dedup_by_key(|n| n.id);
@@ -1126,6 +1132,7 @@ fn build_history_chain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dto::QueryBudget;
     use ail_core::semantic_graph::{
         EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph,
     };
@@ -1143,6 +1150,7 @@ mod tests {
             applied_change_id: None,
             created_at: 1_000,
             verification_report_hash: None,
+            ..Default::default()
         }
     }
 
@@ -1176,7 +1184,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: 0,
+            budget: QueryBudget::bytes(0),
         };
         let result = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions());
         assert_eq!(
@@ -1195,7 +1203,7 @@ mod tests {
         let query = ContextQuery::Node {
             target: NodeRef(0),
             scope: QueryScope::Local,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("build must succeed");
@@ -1219,7 +1227,7 @@ mod tests {
         let query = ContextQuery::Node {
             target: NodeRef(0),
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("build must succeed");
@@ -1241,7 +1249,7 @@ mod tests {
         let query = ContextQuery::Node {
             target: NodeRef(99),
             scope: QueryScope::Local,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let result = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions());
         assert_eq!(
@@ -1259,7 +1267,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp_a = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("first build");
@@ -1288,7 +1296,7 @@ mod tests {
         };
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
 
         let resp_a =
@@ -1311,7 +1319,7 @@ mod tests {
         // budget = 1 byte: definitely smaller than any CBOR-encoded node
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: 1,
+            budget: QueryBudget::bytes(1),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("build must succeed even with tiny budget");
@@ -1329,7 +1337,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let mut redacted_refs = BTreeSet::new();
         redacted_refs.insert(NodeRef(1)); // redact the middle node
@@ -1356,7 +1364,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("build must succeed");
@@ -1378,7 +1386,7 @@ mod tests {
         let snapshot = make_snapshot(); // created_at = 1_000
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("build must succeed");
@@ -1397,7 +1405,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("build must succeed");
@@ -1417,7 +1425,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Graph {
             scope: QueryScope::Local,
-            budget: 1024,
+            budget: QueryBudget::bytes(1024),
         };
         let resp_a = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("first build");
@@ -1437,11 +1445,11 @@ mod tests {
         let snapshot = make_snapshot();
         let q1 = ContextQuery::Graph {
             scope: QueryScope::Local,
-            budget: 1024,
+            budget: QueryBudget::bytes(1024),
         };
         let q2 = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: 1024,
+            budget: QueryBudget::bytes(1024),
         };
         let resp1 = ResponseBuilder::build(&q1, &graph, &snapshot, &no_redactions()).unwrap();
         let resp2 = ResponseBuilder::build(&q2, &graph, &snapshot, &no_redactions()).unwrap();
@@ -1459,7 +1467,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("build must succeed");
@@ -1493,7 +1501,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Impact {
             target: NodeRef(1),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("impact build must succeed");
@@ -1514,7 +1522,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Impact {
             target: NodeRef(99),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let result = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions());
         assert_eq!(result, Err(ContextError::NodeNotFound));
@@ -1542,7 +1550,7 @@ mod tests {
         let query = ContextQuery::Callers {
             target: NodeRef(2), // C
             transitive: false,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions()).unwrap();
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
@@ -1568,7 +1576,7 @@ mod tests {
         let query = ContextQuery::Callers {
             target: NodeRef(2), // C
             transitive: true,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions()).unwrap();
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
@@ -1593,7 +1601,7 @@ mod tests {
             &ContextQuery::Callers {
                 target: NodeRef(99),
                 transitive: false,
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -1624,7 +1632,7 @@ mod tests {
         let query = ContextQuery::Callees {
             target: NodeRef(0), // A
             transitive: false,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions()).unwrap();
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
@@ -1650,7 +1658,7 @@ mod tests {
         let query = ContextQuery::Callees {
             target: NodeRef(0), // A
             transitive: true,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions()).unwrap();
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
@@ -1674,13 +1682,72 @@ mod tests {
             &ContextQuery::Callees {
                 target: NodeRef(99),
                 transitive: false,
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
             &no_redactions(),
         );
         assert_eq!(result, Err(ContextError::NodeNotFound));
+    }
+
+    // ── dyn_calls_included_in_callers_and_callees ─────────────────────────
+    // Spec: Callers/Callees queries must include DynCalls edges alongside
+    // static Calls edges, so that dynamic dispatch via `Dyn<Interface>` is
+    // visible in caller/callee results.
+    //
+    // Graph:
+    //   A --Calls-->    B  (static)
+    //   A --DynCalls--> C  (dynamic dispatch)
+    //
+    // Callees(A, transitive=false) = {B, C}
+    // Callers(B, transitive=false) = {A}
+    // Callers(C, transitive=false) = {A}
+    #[test]
+    fn dyn_calls_included_in_callers_and_callees() {
+        let graph = SemanticGraph {
+            nodes: vec![
+                GraphNode::new(NodeRef(0), NodeKind::Function, "A"),
+                GraphNode::new(NodeRef(1), NodeKind::Function, "B"),
+                GraphNode::new(NodeRef(2), NodeKind::Function, "C_dyn"),
+            ],
+            edges: vec![
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),
+                GraphEdge::new(NodeRef(0), NodeRef(2), EdgeKind::DynCalls),
+            ],
+        };
+        let snapshot = make_snapshot();
+
+        // Callees(A) must include both B (static) and C (dynamic).
+        let callees_resp = ResponseBuilder::build(
+            &ContextQuery::Callees {
+                target: NodeRef(0),
+                transitive: false,
+                budget: QueryBudget::default(),
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
+        )
+        .expect("callees must succeed");
+        let callee_ids: Vec<u32> = callees_resp.structured.iter().map(|n| n.id.0).collect();
+        assert!(callee_ids.contains(&1), "static callee B must appear; got: {callee_ids:?}");
+        assert!(callee_ids.contains(&2), "dynamic callee C must appear; got: {callee_ids:?}");
+
+        // Callers(C) must include A (via DynCalls).
+        let callers_resp = ResponseBuilder::build(
+            &ContextQuery::Callers {
+                target: NodeRef(2),
+                transitive: false,
+                budget: QueryBudget::default(),
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
+        )
+        .expect("callers must succeed");
+        let caller_ids: Vec<u32> = callers_resp.structured.iter().map(|n| n.id.0).collect();
+        assert!(caller_ids.contains(&0), "A must appear as dynamic caller of C; got: {caller_ids:?}");
     }
 
     // ── effects_query_returns_target_and_emits ────────────────────────────
@@ -1694,7 +1761,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Effects {
             target: NodeRef(1),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions()).unwrap();
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
@@ -1720,7 +1787,7 @@ mod tests {
         let result = ResponseBuilder::build(
             &ContextQuery::Effects {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -1749,7 +1816,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Contracts {
             target: NodeRef(1),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions()).unwrap();
         assert_eq!(
@@ -1772,7 +1839,7 @@ mod tests {
         let result = ResponseBuilder::build(
             &ContextQuery::Contracts {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -1799,6 +1866,7 @@ mod tests {
             applied_change_id: None,
             created_at: 1_000,
             verification_report_hash: None,
+            ..Default::default()
         };
         let snap2 = SnapshotEnvelope {
             id: snap2_id,
@@ -1807,6 +1875,7 @@ mod tests {
             applied_change_id: None,
             created_at: 2_000,
             verification_report_hash: None,
+            ..Default::default()
         };
         let snap3 = SnapshotEnvelope {
             id: snap3_id,
@@ -1815,6 +1884,7 @@ mod tests {
             applied_change_id: None,
             created_at: 3_000,
             verification_report_hash: None,
+            ..Default::default()
         };
 
         let graph = SemanticGraph {
@@ -1823,7 +1893,7 @@ mod tests {
         };
         let query = ContextQuery::History {
             target: NodeRef(0),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let all_snapshots = vec![genesis.clone(), snap2.clone()];
         let resp = ResponseBuilder::build_with_history(
@@ -1859,7 +1929,7 @@ mod tests {
         let snapshot = make_snapshot(); // no parent_id
         let query = ContextQuery::History {
             target: NodeRef(0),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp =
             ResponseBuilder::build_with_history(&query, &graph, &snapshot, &no_redactions(), &[])
@@ -1879,7 +1949,7 @@ mod tests {
         let result = ResponseBuilder::build_with_history(
             &ContextQuery::History {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -1910,7 +1980,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Proofs {
             target: NodeRef(0),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("proofs build must succeed");
@@ -1937,7 +2007,7 @@ mod tests {
         let result = ResponseBuilder::build(
             &ContextQuery::Proofs {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -1971,7 +2041,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Resources {
             target: NodeRef(0),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("resources build must succeed");
@@ -1993,7 +2063,7 @@ mod tests {
         let result = ResponseBuilder::build(
             &ContextQuery::Resources {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2029,7 +2099,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Boundaries {
             target: NodeRef(0),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("boundaries build must succeed");
@@ -2056,7 +2126,7 @@ mod tests {
         let result = ResponseBuilder::build(
             &ContextQuery::Boundaries {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2091,7 +2161,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Why {
             target: NodeRef(0),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp =
             ResponseBuilder::build_with_history(&query, &graph, &snapshot, &no_redactions(), &[])
@@ -2124,7 +2194,7 @@ mod tests {
         let result = ResponseBuilder::build(
             &ContextQuery::Why {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2162,7 +2232,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::RefactorContext {
             target: NodeRef(1), // B
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("refactor_context build must succeed");
@@ -2182,7 +2252,7 @@ mod tests {
         let result = ResponseBuilder::build(
             &ContextQuery::RefactorContext {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2218,7 +2288,7 @@ mod tests {
         let query = ContextQuery::Runtime {
             target: NodeRef(0),
             profile: "prod".to_string(),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("runtime build must succeed");
@@ -2246,7 +2316,7 @@ mod tests {
             &ContextQuery::Runtime {
                 target: NodeRef(99),
                 profile: "prod".to_string(),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2266,7 +2336,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("build must succeed");
@@ -2290,7 +2360,7 @@ mod tests {
         let query = ContextQuery::Diff {
             snapshot_a: None,
             snapshot_b: None,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("diff build must succeed");
@@ -2311,7 +2381,7 @@ mod tests {
             &ContextQuery::Diff {
                 snapshot_a: None,
                 snapshot_b: None,
-                budget: 0,
+                budget: QueryBudget::bytes(0),
             },
             &graph,
             &snapshot,
@@ -2341,7 +2411,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Risks {
             target: NodeRef(0),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("risks build must succeed");
@@ -2365,7 +2435,7 @@ mod tests {
         let result = ResponseBuilder::build(
             &ContextQuery::Risks {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2392,7 +2462,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Todo {
             target: NodeRef(0),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("todo build must succeed");
@@ -2413,7 +2483,7 @@ mod tests {
         let result = ResponseBuilder::build(
             &ContextQuery::Todo {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2447,7 +2517,7 @@ mod tests {
         let query = ContextQuery::Capabilities {
             target: NodeRef(0),
             profile: "prod".to_string(),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("capabilities build must succeed");
@@ -2470,7 +2540,7 @@ mod tests {
             &ContextQuery::Capabilities {
                 target: NodeRef(99),
                 profile: "prod".to_string(),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2502,7 +2572,7 @@ mod tests {
         let query = ContextQuery::Handlers {
             target: NodeRef(0),
             profile: "prod".to_string(),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("handlers build must succeed");
@@ -2531,7 +2601,7 @@ mod tests {
             &ContextQuery::Handlers {
                 target: NodeRef(99),
                 profile: "prod".to_string(),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2564,7 +2634,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Concurrency {
             target: NodeRef(0),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("concurrency build must succeed");
@@ -2584,7 +2654,7 @@ mod tests {
         let result = ResponseBuilder::build(
             &ContextQuery::Concurrency {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2617,7 +2687,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Tasks {
             target: NodeRef(0),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("tasks build must succeed");
@@ -2639,7 +2709,7 @@ mod tests {
         let result = ResponseBuilder::build(
             &ContextQuery::Tasks {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2670,7 +2740,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Assumptions {
             target: NodeRef(0),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("assumptions build must succeed");
@@ -2694,7 +2764,7 @@ mod tests {
         let result = ResponseBuilder::build(
             &ContextQuery::Assumptions {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2722,7 +2792,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::ExtractCandidates {
             target: NodeRef(0),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("extract_candidates build must succeed");
@@ -2756,7 +2826,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::ExtractCandidates {
             target: NodeRef(0),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("extract_candidates build must succeed");
@@ -2776,7 +2846,7 @@ mod tests {
         let result = ResponseBuilder::build(
             &ContextQuery::ExtractCandidates {
                 target: NodeRef(99),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2811,7 +2881,7 @@ mod tests {
         let query = ContextQuery::MoveSafety {
             target: NodeRef(1),
             destination: NodeRef(4),
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("move_safety build must succeed");
@@ -2835,7 +2905,7 @@ mod tests {
             &ContextQuery::MoveSafety {
                 target: NodeRef(99),
                 destination: NodeRef(0),
-                budget: usize::MAX,
+                budget: QueryBudget::default(),
             },
             &graph,
             &snapshot,
@@ -2857,7 +2927,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let opts = BuildOptions {
             generated_at: 99_000,
@@ -2882,7 +2952,7 @@ mod tests {
         let other_id = ObjectId::from_bytes(b"other-snap");
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let opts = BuildOptions {
             latest_snapshot_id: Some(&other_id),
@@ -2909,7 +2979,7 @@ mod tests {
         let snap_id = snapshot.id;
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let opts = BuildOptions {
             latest_snapshot_id: Some(&snap_id),
@@ -2935,7 +3005,7 @@ mod tests {
         let other_id = ObjectId::from_bytes(b"newer-snap");
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let opts = BuildOptions {
             latest_snapshot_id: Some(&other_id),
@@ -2961,7 +3031,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: 1,
+            budget: QueryBudget::bytes(1),
         }; // too small
         let opts = BuildOptions {
             authorized: true,
@@ -2990,7 +3060,7 @@ mod tests {
         let query = ContextQuery::Node {
             target: NodeRef(0),
             scope: QueryScope::Local,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let opts = BuildOptions {
             authorized: false,
@@ -3015,7 +3085,7 @@ mod tests {
         redacted.insert(NodeRef(0));
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let opts = BuildOptions {
             authorized: true,
@@ -3047,7 +3117,7 @@ mod tests {
         };
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let opts = BuildOptions {
             authorized: true,
@@ -3083,7 +3153,7 @@ mod tests {
         };
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let opts = BuildOptions {
             authorized: true,
@@ -3108,7 +3178,7 @@ mod tests {
         let snapshot = make_snapshot();
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let opts = BuildOptions {
             authorized: true,
@@ -3138,7 +3208,7 @@ mod tests {
         ];
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let opts = BuildOptions {
             authorized: true,
@@ -3171,7 +3241,7 @@ mod tests {
         }];
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let opts = BuildOptions {
             authorized: true,
@@ -3202,7 +3272,7 @@ mod tests {
         }];
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let opts = BuildOptions {
             authorized: true,
@@ -3230,46 +3300,46 @@ mod tests {
             ContextQuery::Diff {
                 snapshot_a: None,
                 snapshot_b: None,
-                budget: 1024,
+                budget: QueryBudget::bytes(1024),
             },
             ContextQuery::Risks {
                 target: NodeRef(1),
-                budget: 512,
+                budget: QueryBudget::bytes(512),
             },
             ContextQuery::Todo {
                 target: NodeRef(2),
-                budget: 256,
+                budget: QueryBudget::bytes(256),
             },
             ContextQuery::Capabilities {
                 target: NodeRef(3),
                 profile: "prod".to_string(),
-                budget: 2048,
+                budget: QueryBudget::bytes(2048),
             },
             ContextQuery::Handlers {
                 target: NodeRef(4),
                 profile: "dev".to_string(),
-                budget: 4096,
+                budget: QueryBudget::bytes(4096),
             },
             ContextQuery::Concurrency {
                 target: NodeRef(5),
-                budget: 512,
+                budget: QueryBudget::bytes(512),
             },
             ContextQuery::Tasks {
                 target: NodeRef(6),
-                budget: 1024,
+                budget: QueryBudget::bytes(1024),
             },
             ContextQuery::Assumptions {
                 target: NodeRef(7),
-                budget: 2048,
+                budget: QueryBudget::bytes(2048),
             },
             ContextQuery::ExtractCandidates {
                 target: NodeRef(8),
-                budget: 4096,
+                budget: QueryBudget::bytes(4096),
             },
             ContextQuery::MoveSafety {
                 target: NodeRef(9),
                 destination: NodeRef(10),
-                budget: 8192,
+                budget: QueryBudget::bytes(8192),
             },
         ];
         for q in &variants {
@@ -3342,16 +3412,14 @@ mod tests {
     // ContextResponse with all new R2 fields must survive CBOR roundtrip.
     #[test]
     fn r2_full_response_cbor_roundtrip() {
-        use crate::dto::{
-            FreshnessStatus, IndexInfo, ProvenanceBlock, RedactionState, RepairOption,
-        };
+        use crate::dto::{FreshnessStatus, IndexInfo};
         use ail_storage::codec::{CborCodec, ContentCodec};
         let codec = CborCodec;
         let graph = make_graph();
         let snapshot = make_snapshot();
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let other_id = ObjectId::from_bytes(b"other");
         let sources = vec!["semantic_graph".to_string()];

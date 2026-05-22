@@ -761,6 +761,7 @@ mod tests {
             applied_change_id: None,
             created_at: 42,
             verification_report_hash: None,
+            ..Default::default()
         };
 
         store
@@ -804,6 +805,7 @@ mod tests {
             applied_change_id: None,
             created_at: id_seed.len() as u64,
             verification_report_hash: None,
+            ..Default::default()
         }
     }
 

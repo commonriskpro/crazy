@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 
 use ail_context::source::ContextSource;
 use ail_context::{
-    ContextError, ContextQuery, ContextResponse, InMemoryContextSource, QueryScope,
+    ContextError, ContextQuery, ContextResponse, InMemoryContextSource, QueryBudget, QueryScope,
     ResponseBuilder, SnapshotSelector, StoreContextSource,
 };
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef};
@@ -119,7 +119,7 @@ fn in_memory_source_node_query_happy_path() {
         let query = ContextQuery::Node {
             target: NodeRef(0),
             scope: QueryScope::Local,
-            budget: usize::MAX,
+            budget: QueryBudget::default(),
         };
         let resp = ResponseBuilder::build(&query, &loaded_graph, &resolved_snap, &no_redactions())
             .expect("build must succeed for valid node query");
@@ -155,7 +155,7 @@ fn zero_budget_query_returns_invalid_budget() {
     let query = ContextQuery::Node {
         target: NodeRef(0),
         scope: QueryScope::Local,
-        budget: 0,
+        budget: QueryBudget::bytes(0),
     };
     let result = ResponseBuilder::build(&query, &graph, &snap, &no_redactions());
     assert_eq!(
@@ -221,7 +221,7 @@ fn node_query_for_absent_ref_returns_node_not_found() {
     let query = ContextQuery::Node {
         target: NodeRef(999),
         scope: QueryScope::Local,
-        budget: usize::MAX,
+        budget: QueryBudget::default(),
     };
     let result = ResponseBuilder::build(&query, &graph, &snap, &no_redactions());
     assert_eq!(
@@ -248,7 +248,7 @@ fn context_hash_is_stable_for_identical_structured() {
     let snap = make_snapshot_envelope("hash-stable");
     let query = ContextQuery::Graph {
         scope: QueryScope::Full,
-        budget: usize::MAX,
+        budget: QueryBudget::default(),
     };
 
     let resp_a = ResponseBuilder::build(&query, &graph, &snap, &no_redactions())
@@ -269,7 +269,7 @@ fn distinct_structured_layers_produce_distinct_hashes() {
     let snap = make_snapshot_envelope("hash-distinct");
     let query = ContextQuery::Graph {
         scope: QueryScope::Full,
-        budget: usize::MAX,
+        budget: QueryBudget::default(),
     };
 
     let graph_a = SemanticGraph {
@@ -310,7 +310,7 @@ fn budget_exceeded_sets_truncated_and_limits_structured() {
     // budget = 1 byte: too small for any CBOR-encoded node
     let query = ContextQuery::Graph {
         scope: QueryScope::Full,
-        budget: 1,
+        budget: QueryBudget::bytes(1),
     };
     let resp = ResponseBuilder::build(&query, &graph, &snap, &no_redactions())
         .expect("build must succeed even with tiny budget");
@@ -333,7 +333,7 @@ fn redacted_node_is_absent_from_structured_and_flag_is_set() {
     let snap = make_snapshot_envelope("redaction");
     let query = ContextQuery::Graph {
         scope: QueryScope::Full,
-        budget: usize::MAX,
+        budget: QueryBudget::default(),
     };
     let mut redacted_refs = BTreeSet::new();
     redacted_refs.insert(NodeRef(1)); // redact the middle node
@@ -371,7 +371,7 @@ fn cbor_encode_decode_reencode_produces_identical_bytes() {
     let snap = make_snapshot_envelope("cbor-det");
     let query = ContextQuery::Graph {
         scope: QueryScope::Full,
-        budget: usize::MAX,
+        budget: QueryBudget::default(),
     };
     let resp = ResponseBuilder::build(&query, &graph, &snap, &no_redactions())
         .expect("build must succeed");

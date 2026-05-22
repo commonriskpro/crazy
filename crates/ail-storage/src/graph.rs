@@ -48,7 +48,7 @@ use crate::object::{ObjectId, ObjectStore, RawObject};
 /// `verification_report_hash` is the BLAKE3 hash of the verification report
 /// associated with this snapshot, or `None` when no report has been produced
 /// (e.g. genesis snapshots or snapshots that pre-date the verification pipeline).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotEnvelope {
     /// Envelope identity: the `ObjectId` assigned by the caller (not the CAS
     /// id of the encoded bytes).  `GraphStore::load_snapshot` looks up by
@@ -69,6 +69,26 @@ pub struct SnapshotEnvelope {
     /// when `Some` to keep the CBOR representation backward-compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification_report_hash: Option<[u8; 32]>,
+    /// `ObjectId`s of approval and audit records associated with this snapshot
+    /// or preserved from collapsed snapshots during compaction.
+    ///
+    /// For non-compacted snapshots this is typically empty — approval records
+    /// are stored separately in the approval layer and linked here during
+    /// compaction so they survive the covering-snapshot boundary.
+    ///
+    /// Serialized only when non-empty for backward compatibility.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audit_record_ids: Vec<ObjectId>,
+    /// `ObjectId`s of schema migration metadata records associated with this
+    /// snapshot or preserved from collapsed snapshots during compaction.
+    ///
+    /// Migration reports (recording equivalence proofs after schema changes)
+    /// are attached here so that compacted snapshots remain migration-history
+    /// traceable without walking the full parent chain.
+    ///
+    /// Serialized only when non-empty for backward compatibility.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub migration_metadata_ids: Vec<ObjectId>,
 }
 
 // ── ChangeSetLogEntry ─────────────────────────────────────────────────────
@@ -269,6 +289,8 @@ mod tests {
             applied_change_id: None,
             created_at: 0,
             verification_report_hash: None,
+            audit_record_ids: Vec::new(),
+            migration_metadata_ids: Vec::new(),
         }
     }
 

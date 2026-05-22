@@ -16,10 +16,15 @@
 /// - [`approval`]  — `ApprovalRecord`, `AssumptionRecord`, stores (G28).
 /// - [`export`]    — `ExportBundle`, `ExportScope`, `build_export_bundle` (G28).
 /// - [`integrity`] — `IntegrityReport`, `IntegrityIssue`, `verify_integrity` (G28).
+/// - [`tombstone`] — `Tombstone`, `TombstoneStore`, `ObjectBackedTombstoneStore`
+///   for logical-delete records (Track B Gap 1).
+/// - [`diff`]      — `StructuralDiff`, `StructuralDiffStore`,
+///   `ObjectBackedStructuralDiffStore` (Track B Gap 3).
 pub mod approval;
 pub mod backends;
 pub mod branch;
 pub mod codec;
+pub mod diff;
 pub mod error;
 pub mod export;
 pub mod graph;
@@ -28,6 +33,7 @@ pub mod migration;
 pub mod object;
 pub mod retention;
 pub mod tag;
+pub mod tombstone;
 
 pub use approval::{
     ApprovalRecord, ApprovalRegistry, ApprovalStore, AssumptionRecord, AssumptionRegistry,
@@ -49,3 +55,5 @@ pub use retention::{
     gc_unreferenced,
 };
 pub use tag::{ReleaseMetadata, Tag, TagRegistry, TagStore};
+pub use tombstone::{ObjectBackedTombstoneStore, Tombstone, TombstoneStore};
+pub use diff::{ObjectBackedStructuralDiffStore, StructuralDiff, StructuralDiffStore};

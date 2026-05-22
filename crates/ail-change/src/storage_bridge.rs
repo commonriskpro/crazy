@@ -214,6 +214,7 @@ mod tests {
             applied_change_id: None,
             created_at: 0,
             verification_report_hash: None,
+            ..Default::default()
         };
 
         let returned_id =

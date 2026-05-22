@@ -361,7 +361,7 @@ mod tests {
     use ail_storage::graph::SnapshotEnvelope;
     use futures::executor::block_on;
 
-    use crate::QueryScope;
+    use crate::{QueryBudget, QueryScope};
     use crate::source::InMemoryContextSource;
 
     fn snapshot() -> SnapshotEnvelope {
@@ -373,6 +373,7 @@ mod tests {
             applied_change_id: None,
             created_at: 1,
             verification_report_hash: None,
+            ..Default::default()
         }
     }
 
@@ -442,7 +443,7 @@ mod tests {
                 .query(
                     &ContextQuery::Graph {
                         scope: QueryScope::Full,
-                        budget: usize::MAX,
+                        budget: QueryBudget::default(),
                     },
                     &SnapshotSelector::ById(snapshot.id),
                     None,

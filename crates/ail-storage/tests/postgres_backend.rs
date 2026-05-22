@@ -184,6 +184,7 @@ async fn postgres_graph_store_roundtrip() {
         applied_change_id: Some(oid("postgres-graph-change")),
         created_at: 1_700_000_000_000_u64,
         verification_report_hash: None,
+        ..Default::default()
     };
 
     let returned_id = graph.save_snapshot(&snap).await.expect("save must succeed");
