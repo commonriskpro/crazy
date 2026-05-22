@@ -1006,6 +1006,7 @@ mod tests {
                 state,
                 scope: "s".to_string(),
                 evidence: None,
+                blocking: matches!(state, VerificationState::Failed | VerificationState::Unsafe),
             }],
             ..Default::default()
         }

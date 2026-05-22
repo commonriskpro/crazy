@@ -530,3 +530,279 @@ fn full_pipeline_validates_manifest_capabilities() {
             && entry.state == ail_verify::report::VerificationState::Proven
     }));
 }
+
+// ── TASK-03: Stage 3 — op schema version + arg type validation tests ───────
+
+#[test]
+fn stage3_op_with_version_999_fails_with_version_incompatible() {
+    // Op carries version=999 which exceeds CURRENT_SCHEMA_VERSION=1
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.foo");
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+    // set_return with version=999 arg
+    let changeset =
+        "change test base=0\nauthor tester\nop set_return target=fn.foo type=Int version=999\nend\n";
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), None);
+
+    let failed = report.entries.iter().any(|e| {
+        e.claim == "03-validate-op-schemas"
+            && e.state == ail_verify::report::VerificationState::Failed
+            && e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_OP_VERSION_INCOMPATIBLE")
+    });
+    assert!(failed, "version=999 must produce E_OP_VERSION_INCOMPATIBLE Failed entry");
+}
+
+#[test]
+fn stage3_op_with_unknown_type_fails_with_arg_type_invalid() {
+    // type=UnknownType999 is not a known primitive and not in the graph
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+    let changeset =
+        "change test base=0\nauthor tester\nop set_return target=fn.x type=UnknownType999\nend\n";
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), None);
+
+    let failed = report.entries.iter().any(|e| {
+        e.claim == "03-validate-op-schemas"
+            && e.state == ail_verify::report::VerificationState::Failed
+            && e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_OP_ARG_TYPE_INVALID")
+    });
+    assert!(failed, "unknown type must produce E_OP_ARG_TYPE_INVALID Failed entry");
+}
+
+#[test]
+fn stage3_op_with_effect_without_colon_fails_with_effect_malformed() {
+    // effect=nodot has no colon separator → malformed
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.foo");
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+    let changeset =
+        "change test base=0\nauthor tester\nop add_effect target=fn.foo effect=nodot\nend\n";
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), None);
+
+    let failed = report.entries.iter().any(|e| {
+        e.claim == "03-validate-op-schemas"
+            && e.state == ail_verify::report::VerificationState::Failed
+            && e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_OP_ARG_EFFECT_MALFORMED")
+    });
+    assert!(
+        failed,
+        "effect without colon must produce E_OP_ARG_EFFECT_MALFORMED Failed entry"
+    );
+}
+
+#[test]
+fn stage3_op_with_version_1_is_proven() {
+    // version=1 is valid (CURRENT_SCHEMA_VERSION)
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.foo");
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+    let changeset =
+        "change test base=0\nauthor tester\nop set_return target=fn.foo type=Int version=1\nend\n";
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), None);
+
+    // Should not have E_OP_VERSION_INCOMPATIBLE for this op
+    let version_failed = report.entries.iter().any(|e| {
+        e.claim == "03-validate-op-schemas"
+            && e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_OP_VERSION_INCOMPATIBLE")
+    });
+    assert!(!version_failed, "version=1 must NOT produce E_OP_VERSION_INCOMPATIBLE");
+}
+
+// ── TASK-05: Stage 4 — snapshot hash freshness tests ─────────────────────
+
+#[test]
+fn stage4_empty_base_hash_fails_with_stale_context() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+    let changeset =
+        "change test base=0\nauthor tester\nop annotate target=snapshot base_hash=\nend\n";
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), None);
+
+    let failed = report.entries.iter().any(|e| {
+        e.state == ail_verify::report::VerificationState::Failed
+            && e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_STALE_CONTEXT")
+    });
+    assert!(failed, "empty base_hash must produce E_STALE_CONTEXT Failed entry");
+}
+
+#[test]
+fn stage4_short_base_hash_fails_with_stale_context() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+    // 8-char hex (not 64)
+    let changeset =
+        "change test base=0\nauthor tester\nop annotate target=snapshot base_hash=abcdef12\nend\n";
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), None);
+
+    let failed = report.entries.iter().any(|e| {
+        e.state == ail_verify::report::VerificationState::Failed
+            && e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_STALE_CONTEXT")
+    });
+    assert!(failed, "short base_hash must produce E_STALE_CONTEXT Failed entry");
+}
+
+#[test]
+fn stage4_valid_64char_hex_base_hash_is_proven() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+    let hash = "a".repeat(64);
+    let changeset = format!(
+        "change test base=0\nauthor tester\nop annotate target=snapshot base_hash={hash}\nend\n"
+    );
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset.as_str()), None);
+
+    let stale = report.entries.iter().any(|e| {
+        e.evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("E_STALE_CONTEXT")
+    });
+    assert!(!stale, "valid 64-char hex base_hash must NOT produce E_STALE_CONTEXT");
+}
+
+#[test]
+fn stage4_op_without_base_hash_has_no_stale_check() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+    let changeset =
+        "change test base=0\nauthor tester\nop create_function id=fn.x\nend\n";
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), None);
+
+    let stale = report.entries.iter().any(|e| {
+        e.evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("E_STALE_CONTEXT")
+    });
+    assert!(!stale, "op without base_hash must not trigger stale check");
+}
+
+// ── TASK-07: Stage 5 — structural diff per-node entries ──────────────────
+
+#[test]
+fn stage5_added_node_produces_proven_entry_with_node_name_scope() {
+    // base has no nodes, target has one → added node
+    let base = empty_graph();
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.added");
+    let target = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&target, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, None, Some(&base));
+
+    let added_entry = report.entries.iter().find(|e| {
+        e.claim == "05-build-semantic-diff"
+            && e.scope == "fn.added"
+            && e.state == ail_verify::report::VerificationState::Proven
+    });
+    assert!(
+        added_entry.is_some(),
+        "added node must produce Proven entry scoped to node name; entries: {:?}",
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim == "05-build-semantic-diff")
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn stage5_removed_node_produces_unverified_entry_with_node_name_scope() {
+    // base has one node, target has none → removed
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.removed");
+    let base = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let target = empty_graph();
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&target, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, None, Some(&base));
+
+    let removed_entry = report.entries.iter().find(|e| {
+        e.claim == "05-build-semantic-diff"
+            && e.scope == "fn.removed"
+            && e.state == ail_verify::report::VerificationState::Unverified
+    });
+    assert!(
+        removed_entry.is_some(),
+        "removed node must produce Unverified entry scoped to node name; entries: {:?}",
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim == "05-build-semantic-diff")
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn stage5_no_base_graph_produces_single_unverified_entry() {
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.x");
+    let target = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&target, &solver, "test", &[]);
+
+    // No base graph → existing behavior: single Unverified entry
+    let report = VerificationPipeline::run_with_changeset(&ctx, None, None);
+
+    let diff_entries: Vec<_> = report
+        .entries
+        .iter()
+        .filter(|e| e.claim == "05-build-semantic-diff")
+        .collect();
+    assert_eq!(diff_entries.len(), 1, "no base → exactly 1 diff entry");
+    assert_eq!(
+        diff_entries[0].state,
+        ail_verify::report::VerificationState::Unverified
+    );
+}
