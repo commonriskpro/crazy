@@ -15,6 +15,19 @@
 // Exactly one AuditEvent is appended per `validate_and_instantiate` call.
 // One AuditEvent::CapabilityCallExecuted is appended per `call_capability` call.
 //
+// Schema enforcement (G29 R2):
+//   When a CapabilityDefinition is registered via `with_capability_definition`,
+//   `call_capability` validates the input payload against the declared
+//   CapabilityInputSchema before dispatching to the handler.
+//   Calls for capabilities without a registered schema pass through unchanged.
+//
+// Transaction rollback integration (G29 R2):
+//   `execute_with_rollback(tx, closure)` runs the closure with a `&mut RuntimeHost`.
+//   On closure success, it commits the TransactionGroup.
+//   On closure failure, it rolls back the TransactionGroup.
+//   `execute_with_rollback_detail` additionally returns the non-rollbackable
+//   capability IDs on failure.
+//
 // Wasmtime Linker:
 //   A `Linker<HostState>` is constructed once at `RuntimeHost::new` and
 //   registers the stub import `ail/host_call`.  `Store<HostState>` carries
@@ -23,6 +36,7 @@
 //   `HostState` — all existing tests are unaffected because the Linker
 //   satisfies WASM modules that have no host imports (existing test WASMs).
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
@@ -38,6 +52,9 @@ use crate::error::{PreflightFailure, RuntimeError, RuntimeResult};
 use crate::handler::Handler;
 use crate::manifest::{CapabilityManifest, blake3_hex_of};
 use crate::profile::{CapabilityId, RuntimeProfile};
+use crate::report::{CapabilityCallSummary, RuntimeReport, RuntimeReportStatus};
+use crate::schema::CapabilityDefinition;
+use crate::transaction::TransactionGroup;
 
 // ── HostState ─────────────────────────────────────────────────────────────
 
@@ -99,8 +116,9 @@ impl fmt::Debug for RuntimeInstance {
 /// Capability-gated Wasmtime host.
 ///
 /// Owns a single `Engine`, a `Linker<HostState>` (with the `ail/host_call`
-/// stub registered), an in-memory `AuditLog`, and a pluggable list of
-/// [`Handler`]s.
+/// stub registered), an in-memory `AuditLog`, a pluggable list of
+/// [`Handler`]s, and a schema registry of [`CapabilityDefinition`]s for
+/// boundary validation.
 ///
 /// # Handler dispatch
 ///
@@ -108,21 +126,34 @@ impl fmt::Debug for RuntimeInstance {
 /// [`capabilities()`](Handler::capabilities) list contains the requested
 /// [`CapabilityId`] is used.
 ///
+/// # Schema enforcement
+///
+/// When a [`CapabilityDefinition`] is registered via [`with_capability_definition`],
+/// [`call_capability`] validates the input payload against the declared
+/// `CapabilityInputSchema` before dispatching.  Capabilities without a
+/// registered schema are not validated (pass-through).
+///
 /// # Preflight
 ///
 /// All preflight checks are evaluated inside [`validate_and_instantiate`]
 /// before Wasmtime instantiation.  After a successful preflight the
 /// profile is stored so `call_capability` can enforce grant checks.
 ///
+/// [`with_capability_definition`]: RuntimeHost::with_capability_definition
+/// [`call_capability`]: RuntimeHost::call_capability
 /// [`validate_and_instantiate`]: RuntimeHost::validate_and_instantiate
 pub struct RuntimeHost {
     engine: Engine,
     linker: Linker<HostState>,
     audit_log: AuditLog,
     handlers: Vec<Arc<dyn Handler + Send + Sync>>,
+    /// Schema registry: capability ID string → CapabilityDefinition.
+    schema_registry: HashMap<String, CapabilityDefinition>,
     /// Stored after a successful `validate_and_instantiate`; used by
     /// `call_capability` to enforce grant checks.
     current_profile: Option<Arc<RuntimeProfile>>,
+    /// Module name from the most recent capability manifest (used in reports).
+    current_module_name: Option<String>,
 }
 
 impl RuntimeHost {
@@ -174,7 +205,9 @@ impl RuntimeHost {
             linker,
             audit_log: AuditLog::new(),
             handlers: Vec::new(),
+            schema_registry: HashMap::new(),
             current_profile: None,
+            current_module_name: None,
         }
     }
 
@@ -184,6 +217,20 @@ impl RuntimeHost {
     /// overlapping capability sets are permitted; only the first match is used.
     pub fn with_handler(mut self, handler: Arc<dyn Handler + Send + Sync>) -> Self {
         self.handlers.push(handler);
+        self
+    }
+
+    /// Register a [`CapabilityDefinition`] for runtime boundary validation.
+    ///
+    /// When `call_capability` is invoked for a capability with a registered
+    /// definition, the input payload is validated against the definition's
+    /// `CapabilityInputSchema` before dispatch.
+    ///
+    /// Capabilities without a registered definition pass through without
+    /// schema validation.
+    pub fn with_capability_definition(mut self, def: CapabilityDefinition) -> Self {
+        self.schema_registry
+            .insert(def.capability().as_str().to_string(), def);
         self
     }
 
@@ -228,6 +275,7 @@ impl RuntimeHost {
         self.audit_log.push(event);
         if result.is_ok() {
             self.current_profile = Some(Arc::new(profile.clone()));
+            self.current_module_name = Some(manifest.module.clone());
         }
         result
     }
@@ -236,9 +284,10 @@ impl RuntimeHost {
     ///
     /// Steps:
     /// 1. Check the active profile grants `capability`; deny if not.
-    /// 2. Find the first handler whose `capabilities()` includes `capability`.
-    /// 3. Dispatch to `handler.handle(capability, operation, payload)`.
-    /// 4. Append an [`AuditEvent::CapabilityCallExecuted`] event.
+    /// 2. Validate the input payload against the registered schema (if any).
+    /// 3. Find the first handler whose `capabilities()` includes `capability`.
+    /// 4. Dispatch to `handler.handle(capability, operation, payload)`.
+    /// 5. Append an [`AuditEvent::CapabilityCallExecuted`] event.
     pub fn call_capability(
         &mut self,
         capability: &CapabilityId,
@@ -269,7 +318,29 @@ impl RuntimeHost {
             return Err(err);
         }
 
-        // Step 2: find matching handler.
+        // Step 2: schema/boundary validation (if a definition is registered).
+        if let Some(def) = self.schema_registry.get(capability.as_str()) {
+            if let Err(schema_err) = def.schema().input().validate(payload) {
+                let err = HostError {
+                    message: format!(
+                        "PayloadDecodeError: schema validation failed for `{}`: {}",
+                        capability.as_str(),
+                        schema_err.message
+                    ),
+                };
+                let duration_us = start.elapsed().as_micros() as u64;
+                self.audit_log.push(AuditEvent::CapabilityCallExecuted {
+                    capability: capability.clone(),
+                    operation: operation.to_string(),
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us,
+                });
+                return Err(err);
+            }
+        }
+
+        // Step 3: find matching handler.
         let handler = self
             .handlers
             .iter()
@@ -292,12 +363,12 @@ impl RuntimeHost {
 
         let handler_name = handler.name().to_string();
 
-        // Step 3: dispatch.
+        // Step 4: dispatch.
         let result = handler.handle(capability, operation, payload);
         let duration_us = start.elapsed().as_micros() as u64;
         let succeeded = result.is_ok();
 
-        // Step 4: audit.
+        // Step 5: audit.
         self.audit_log.push(AuditEvent::CapabilityCallExecuted {
             capability: capability.clone(),
             operation: operation.to_string(),
@@ -307,6 +378,165 @@ impl RuntimeHost {
         });
 
         result
+    }
+
+    /// Execute a closure within a transaction group, committing on success and
+    /// rolling back on failure.
+    ///
+    /// The closure receives `&mut RuntimeHost` for capability dispatch.
+    /// - On `Ok(_)`: `tx.commit()` is called and the result is returned.
+    /// - On `Err(_)`: `tx.rollback()` is called and the error is returned.
+    ///
+    /// Use [`execute_with_rollback_detail`] to also receive the list of
+    /// non-rollbackable capability IDs on failure.
+    ///
+    /// [`execute_with_rollback_detail`]: RuntimeHost::execute_with_rollback_detail
+    pub fn execute_with_rollback<F, T>(
+        &mut self,
+        tx: &mut TransactionGroup,
+        f: F,
+    ) -> HostResult<T>
+    where
+        F: FnOnce(&mut RuntimeHost) -> HostResult<T>,
+    {
+        let result = f(self);
+        match result {
+            Ok(val) => {
+                tx.commit();
+                Ok(val)
+            }
+            Err(err) => {
+                tx.rollback();
+                Err(err)
+            }
+        }
+    }
+
+    /// Execute a closure within a transaction group, committing on success and
+    /// rolling back on failure.
+    ///
+    /// Returns `(result, non_rollbackable)` where `non_rollbackable` is the
+    /// list of [`CapabilityId`]s that could not be rolled back automatically
+    /// (i.e. those with [`TransactionPolicy::NonRollbackable`]).
+    ///
+    /// On success, `non_rollbackable` is always empty.
+    ///
+    /// [`TransactionPolicy::NonRollbackable`]: crate::transaction::TransactionPolicy::NonRollbackable
+    pub fn execute_with_rollback_detail<F, T>(
+        &mut self,
+        tx: &mut TransactionGroup,
+        f: F,
+    ) -> (HostResult<T>, Vec<CapabilityId>)
+    where
+        F: FnOnce(&mut RuntimeHost) -> HostResult<T>,
+    {
+        let result = f(self);
+        match result {
+            Ok(val) => {
+                tx.commit();
+                (Ok(val), vec![])
+            }
+            Err(err) => {
+                let non_rollbackable = tx.rollback();
+                (Err(err), non_rollbackable)
+            }
+        }
+    }
+
+    /// Emit a [`RuntimeReport`] summarising the current execution.
+    ///
+    /// Aggregates capability call statistics from the audit log and populates
+    /// all report fields required by docs/runtime.md §"Runtime report":
+    /// - module_name from the most recently instantiated manifest
+    /// - verification_report_hash from the active profile
+    /// - capability_summaries from CapabilityCallExecuted audit events
+    /// - audit_log_hash from BLAKE3(serialized audit events)
+    ///
+    /// Must be called after [`validate_and_instantiate`] has stored the
+    /// active profile; if no profile is stored yet, profile fields are empty.
+    ///
+    /// `status` — the caller-supplied execution outcome.
+    /// `id` — caller-supplied report identifier (e.g. a trace ID).
+    ///
+    /// [`validate_and_instantiate`]: RuntimeHost::validate_and_instantiate
+    pub fn emit_report(
+        &self,
+        status: RuntimeReportStatus,
+        id: impl Into<String>,
+    ) -> RuntimeReport {
+        let (profile_name, module_hash, verification_report_hash) = self
+            .current_profile
+            .as_ref()
+            .map(|p| {
+                (
+                    p.name().to_string(),
+                    p.module_hash().to_string(),
+                    p.verification_report_hash().to_string(),
+                )
+            })
+            .unwrap_or_default();
+
+        let module_name = self
+            .current_module_name
+            .clone()
+            .unwrap_or_default();
+
+        // Build per-capability summaries from CapabilityCallExecuted events.
+        let mut totals: HashMap<String, (u32, u32, u32)> = HashMap::new(); // cap → (total, ok, err)
+
+        for event in self.audit_log.events() {
+            if let AuditEvent::CapabilityCallExecuted {
+                capability,
+                succeeded,
+                ..
+            } = event
+            {
+                let entry = totals.entry(capability.as_str().to_string()).or_default();
+                entry.0 += 1;
+                if *succeeded {
+                    entry.1 += 1;
+                } else {
+                    entry.2 += 1;
+                }
+            }
+        }
+
+        let summaries: Vec<CapabilityCallSummary> = totals
+            .into_iter()
+            .map(|(cap_str, (total, ok, err))| CapabilityCallSummary {
+                capability: CapabilityId::new(cap_str),
+                total_calls: total,
+                succeeded: ok,
+                failed: err,
+            })
+            .collect();
+
+        // Compute audit log hash: BLAKE3 over the concatenation of all event
+        // debug representations (stable, deterministic for the same event set).
+        let audit_log_hash = if !self.audit_log.is_empty() {
+            let serialized: String = self
+                .audit_log
+                .events()
+                .iter()
+                .map(|e| format!("{e:?}"))
+                .collect::<Vec<_>>()
+                .join("|");
+            Some(blake3_hex_of(serialized.as_bytes()))
+        } else {
+            None
+        };
+
+        let report = RuntimeReport::new(id.into(), profile_name, module_name, module_hash, status)
+            .with_verification_report_hash(verification_report_hash)
+            .with_summaries(summaries);
+
+        let report = if let Some(hash) = audit_log_hash {
+            report.with_audit_log_hash(hash)
+        } else {
+            report
+        };
+
+        report
     }
 
     // ── private ──────────────────────────────────────────────────────────

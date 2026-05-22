@@ -6,12 +6,10 @@
 //! - Owns the only direct `wasmtime` dependency in the workspace.
 //! - Enforces a deny-by-default capability policy via preflight checks.
 //! - Validates WASM module hashes and capability manifests before instantiation.
+//! - Enforces payload boundary schemas at capability call sites (G29 R2).
+//! - Integrates transaction rollback with handler execution flow (G29 R2).
+//! - Verifies replay output hashes against recorded BLAKE3 digests (G29 R2).
 //! - Appends exactly one redacted [`AuditEvent`] per preflight call.
-//!
-//! # What this crate does NOT do
-//! - No CLI surface or Context Server integration.
-//! - No persistent audit backend (events are in-memory only).
-//! - Wasmtime Linker host-import wiring deferred to PR2.
 //!
 //! # Architecture
 //!
@@ -29,10 +27,19 @@
 //! RuntimeInstance (only on pass)
 //!
 //! RuntimeHost::call_capability
-//!         │ check grant → HandlerDispatch → Handler::handle
+//!         │ check grant
+//!         │ validate payload against CapabilityInputSchema (if registered)
+//!         │ HandlerDispatch → Handler::handle
 //!         │ append CapabilityCallExecuted
 //!         ▼
 //! HostResult<Vec<u8>>
+//!
+//! RuntimeHost::execute_with_rollback(tx, closure)
+//!         │ run closure
+//!         │ on Ok  → tx.commit()
+//!         │ on Err → tx.rollback()
+//!         ▼
+//! HostResult<T>
 //! ```
 
 pub mod abi;
@@ -42,6 +49,10 @@ pub mod handler;
 pub mod host;
 pub mod manifest;
 pub mod profile;
+pub mod replay;
+pub mod report;
+pub mod schema;
+pub mod transaction;
 
 pub use ail_package::manifest::PackageManifest;
 pub use ail_package::trust::TrustLevel;
@@ -53,3 +64,19 @@ pub use handler::{Handler, InMemoryHandler};
 pub use host::{RuntimeHost, RuntimeInstance};
 pub use manifest::{CapabilityManifest, blake3_hex_of};
 pub use profile::{CapabilityGrant, CapabilityId, ResourceLimits, RuntimeProfile};
+pub use replay::{
+    FakePayment, FixedClock, InMemoryDb, RecordedHttp, ReplayEngine, ReplayHandler,
+    ReplayVerificationError, SeededRandom, TamperTestHandler,
+};
+pub use report::{
+    CapabilityCallSummary, LimitSnapshot, RuntimeCheck, RuntimeCheckResult, RuntimeReport,
+    RuntimeReportStatus,
+};
+pub use schema::{
+    CapabilityDefinition, CapabilityErrorSchema, CapabilityInputSchema, CapabilityOutputSchema,
+    CapabilitySchema, SchemaField, SchemaValidationError,
+};
+pub use transaction::{
+    CompensationPolicy, CompensationRequired, TransactionEntry, TransactionGroup,
+    TransactionPolicy, TransactionStatus,
+};
