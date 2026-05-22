@@ -8,16 +8,27 @@
 //    The stable sort preserves relative order among ops of the same phase.
 // 2. **Default materialization**: an empty `description` is replaced with
 //    `"<no description>"` so downstream consumers never handle empty strings.
+//    `create_function` and `create_type` ops without `visibility` get
+//    `visibility=private` materialized.
 // 3. **Per-block hashing**: every `CanonicalOp` carries a blake3 `BlockHash`
 //    computed from the op's CBOR encoding and its position index.
-// 4. **Determinism**: calling `canonicalize` twice with the same input always
-//    produces CBOR-identical output.
+// 4. **Determinism**: calling `canonicalize` / `canonicalize_parsed` twice
+//    with the same input always produces CBOR-identical output.
+// 5. **Precondition carry-through**: `canonicalize_parsed` carries preconditions
+//    from `ParsedChangeSet` into the resulting `CanonicalChangeSet`.
+// 6. **ACL version**: `CanonicalChangeSet` records the `acl_version` from the
+//    source document (defaults to `"1.0"`).
+
+use std::collections::BTreeMap;
 
 use ail_core::semantic_graph::{GraphEdge, GraphNode, NodeRef};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
     AssertExists, AssertHash, BlockHash, ChangeSet, ChangeSetOp, SnapshotId, Timestamp,
+};
+use crate::parser::{
+    ApprovalRequirements, ChangeComposition, ExpectClaims, OpArgs, ParsedBlock, ParsedChangeSet,
 };
 
 // ── Phase ordering ────────────────────────────────────────────────────────
@@ -101,10 +112,22 @@ pub enum OpPayload {
 // ── CanonicalOp ───────────────────────────────────────────────────────────
 
 /// A single canonicalized operation: phase classifier + payload + block hash.
+///
+/// `verb` holds the full verb string (e.g. `"create_function"`).
+/// `args` holds the kv arguments with all applicable defaults materialized.
+/// For ops originating from the legacy `canonicalize(ChangeSet)` path,
+/// `verb` is the empty string and `args` is empty.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalOp {
     /// Phase classifier (used for ordering and labelling).
     pub kind: ChangeSetOp,
+    /// Full verb as written in the source (e.g. `"create_function"`).
+    /// Empty string for ops produced by the legacy `canonicalize` path.
+    pub verb: String,
+    /// Key/value arguments with defaults materialized.
+    /// Empty for ops produced by the legacy `canonicalize` path.
+    #[serde(default)]
+    pub args: OpArgs,
     /// Concrete graph mutation payload.
     pub payload: OpPayload,
     /// blake3 hash of this op's canonical encoding.
@@ -129,18 +152,115 @@ pub enum Precondition {
 
 /// A fully canonicalized changeset ready for atomic application.
 ///
-/// Constructed either via `canonicalize(ChangeSet)` or directly in tests
-/// when explicit payloads are required.
+/// Constructed either via `canonicalize(ChangeSet)` / `canonicalize_parsed`
+/// or directly in tests when explicit payloads are required.
+///
+/// All optional sections from the submitted form (`expect`, `approval`,
+/// `composition`, `blocks`, `verify`) are carried through so downstream
+/// consumers (verifier, policy engine) can inspect them without re-parsing
+/// the submitted text.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalChangeSet {
     /// Canonicalized authorship and intent metadata.
     pub meta: CanonicalMeta,
     /// Snapshot identity against which this changeset was authored.
     pub base_snapshot_id: SnapshotId,
+    /// ACL language version (defaults to `"1.0"`).
+    #[serde(default = "default_acl_version")]
+    pub acl_version: String,
     /// Preconditions evaluated before any op is applied.
     pub preconditions: Vec<Precondition>,
     /// Phase-ordered, hash-stamped operations.
     pub ops: Vec<CanonicalOp>,
+    /// AI-written claims about the expected diff (carried for verifier).
+    #[serde(default)]
+    pub expect: Option<ExpectClaims>,
+    /// Approval requirements declared in the submitted form.
+    #[serde(default)]
+    pub approval: Option<ApprovalRequirements>,
+    /// Cross-changeset composition relationships.
+    #[serde(default)]
+    pub composition: ChangeComposition,
+    /// Typed block sections (expressions, schemas, docs, etc.).
+    #[serde(default)]
+    pub blocks: Vec<ParsedBlock>,
+    /// Verify directives (short form and block form lines combined).
+    #[serde(default)]
+    pub verify: Vec<String>,
+}
+
+fn default_acl_version() -> String {
+    "1.0".to_string()
+}
+
+// ── normalize_id ──────────────────────────────────────────────────────────
+
+/// Normalize an ACL identifier to canonical lower_snake form.
+///
+/// Rules (from spec):
+/// - `Fn.CartTotal`    → `fn.cart_total`   (upper namespace + PascalCase → lower.snake)
+/// - `fn.cart-total`   → `fn.cart_total`   (kebab → snake)
+/// - `fn.cart_total`   → `fn.cart_total`   (already canonical)
+/// - `type.CartItem`   → `type.CartItem`   (type. namespace: PascalCase preserved)
+/// - `handler.StripePayment` → `handler.StripePayment` (handler. namespace preserved)
+///
+/// Namespaces that use PascalCase by convention (`type.`, `handler.`,
+/// `boundary.`) are left with their original casing in the local part.
+/// All other namespaces are lowercased with underscores.
+pub fn normalize_id(id: &str) -> String {
+    let dot = match id.find('.') {
+        Some(p) => p,
+        None => return id.to_string(), // no namespace — return as-is
+    };
+    let ns = &id[..dot];
+    let local = &id[dot + 1..];
+
+    // Namespaces whose local part keeps PascalCase by spec convention.
+    const PASCAL_NAMESPACES: &[&str] = &["type", "handler", "boundary"];
+
+    let ns_lower = ns.to_lowercase();
+    let local_normalized = if PASCAL_NAMESPACES.contains(&ns_lower.as_str()) {
+        // Preserve PascalCase in the local part; still normalize kebab → snake.
+        local.replace('-', "_")
+    } else {
+        // Lower namespace + snake_case local part.
+        pascal_to_snake(local).replace('-', "_")
+    };
+
+    format!("{}.{}", ns_lower, local_normalized)
+}
+
+/// Convert a PascalCase string to lower_snake_case.
+///
+/// `CartTotal` → `cart_total`
+/// `cart_total` → `cart_total` (already snake)
+fn pascal_to_snake(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for (i, ch) in s.char_indices() {
+        if ch.is_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.extend(ch.to_lowercase());
+    }
+    out
+}
+
+// ── normalize_op_args ─────────────────────────────────────────────────────
+
+/// Normalize ID-valued op arguments in place.
+///
+/// Keys that conventionally carry node identifiers (`id`, `target`, `source`,
+/// `to`, `from`) are normalized via `normalize_id`. Other values (type
+/// expressions, free strings) are left as-is.
+const ID_ARG_KEYS: &[&str] = &["id", "target", "source", "to", "from"];
+
+fn normalize_op_args(args: &mut OpArgs) {
+    for key in ID_ARG_KEYS {
+        if let Some(v) = args.get_mut(*key) {
+            let normalized = normalize_id(v);
+            *v = normalized;
+        }
+    }
 }
 
 // ── canonicalize ──────────────────────────────────────────────────────────
@@ -152,6 +272,9 @@ pub struct CanonicalChangeSet {
 /// 2. Stable-sort ops by phase ordinal (see `phase_order`).
 /// 3. Compute a blake3 `BlockHash` per op from its CBOR encoding + index.
 /// 4. Wrap each op with `OpPayload::Noop` (raw ops carry no payload data).
+///
+/// This is the legacy path — no kv args, no defaults, no preconditions.
+/// Prefer `canonicalize_parsed` when a `ParsedChangeSet` is available.
 pub fn canonicalize(cs: ChangeSet) -> CanonicalChangeSet {
     // Step 1: materialize description default.
     let description = if cs.meta.description.is_empty() {
@@ -172,6 +295,8 @@ pub fn canonicalize(cs: ChangeSet) -> CanonicalChangeSet {
             let block_hash = compute_block_hash(&op, idx);
             CanonicalOp {
                 kind: op,
+                verb: String::new(),
+                args: BTreeMap::new(),
                 payload: OpPayload::Noop,
                 block_hash,
             }
@@ -185,8 +310,126 @@ pub fn canonicalize(cs: ChangeSet) -> CanonicalChangeSet {
             timestamp: cs.meta.timestamp,
         },
         base_snapshot_id: cs.base_snapshot_id,
+        acl_version: "1.0".to_string(),
         preconditions: vec![],
         ops: canonical_ops,
+        expect: None,
+        approval: None,
+        composition: ChangeComposition::default(),
+        blocks: vec![],
+        verify: vec![],
+    }
+}
+
+// ── canonicalize_parsed ───────────────────────────────────────────────────
+
+/// Transform a `ParsedChangeSet` (with full kv args) into canonical form.
+///
+/// Additional steps beyond `canonicalize`:
+/// - Carries preconditions from `ParsedChangeSet.preconditions`.
+/// - Carries `acl_version` from the parsed document.
+/// - Carries `expect`, `approval`, `composition`, `blocks`, `verify`.
+/// - Materializes safe defaults:
+///   - `create_function` / `create_type` without `visibility` → `"private"`.
+///   - `create_type` without `derive` → `"none"`.
+/// - Normalizes ID-valued args (`id`, `target`, `source`, `to`, `from`).
+/// - Marks `infer_*` ops with `infer_pending=true` for downstream expansion.
+/// - Stores full verb and materialized args on each `CanonicalOp`.
+pub fn canonicalize_parsed(pcs: ParsedChangeSet) -> CanonicalChangeSet {
+    // Step 1: materialize description default.
+    let description = if pcs.changeset.meta.description.is_empty() {
+        "<no description>".to_string()
+    } else {
+        pcs.changeset.meta.description.clone()
+    };
+
+    // Step 2: zip parsed_ops with kinds for sorting; fall back to bare kind
+    // if parsed_ops is shorter (shouldn't happen in normal flow).
+    let mut op_pairs: Vec<(ChangeSetOp, String, OpArgs)> = if pcs.parsed_ops.is_empty() {
+        // Legacy path: no parsed ops, just bare kinds.
+        pcs.changeset
+            .ops
+            .into_iter()
+            .map(|k| (k, String::new(), BTreeMap::new()))
+            .collect()
+    } else {
+        pcs.parsed_ops
+            .into_iter()
+            .map(|po| (po.kind, po.verb, po.args))
+            .collect()
+    };
+
+    // Stable-sort by canonical phase order.
+    op_pairs.sort_by(|a, b| phase_order(&a.0).cmp(&phase_order(&b.0)));
+
+    // Materialize defaults, normalize IDs, mark infer ops, compute hashes.
+    let canonical_ops: Vec<CanonicalOp> = op_pairs
+        .into_iter()
+        .enumerate()
+        .map(|(idx, (kind, verb, mut args))| {
+            // Normalize ID-valued arguments.
+            normalize_op_args(&mut args);
+            // Materialize safe defaults for this op.
+            materialize_defaults(&kind, &verb, &mut args);
+            // Mark infer_* verbs as pending expansion.
+            if kind == ChangeSetOp::Infer && verb.starts_with("infer_") {
+                args.entry("infer_pending".to_string())
+                    .or_insert_with(|| "true".to_string());
+            }
+            let block_hash = compute_block_hash(&kind, idx);
+            CanonicalOp {
+                kind,
+                verb,
+                args,
+                payload: OpPayload::Noop,
+                block_hash,
+            }
+        })
+        .collect();
+
+    CanonicalChangeSet {
+        meta: CanonicalMeta {
+            author: pcs.changeset.meta.author,
+            description,
+            timestamp: pcs.changeset.meta.timestamp,
+        },
+        base_snapshot_id: pcs.changeset.base_snapshot_id,
+        acl_version: pcs.acl_version,
+        preconditions: pcs.preconditions,
+        ops: canonical_ops,
+        expect: pcs.expect,
+        approval: pcs.approval,
+        composition: pcs.composition,
+        blocks: pcs.blocks,
+        verify: pcs.verify,
+    }
+}
+
+// ── materialize_defaults ──────────────────────────────────────────────────
+
+/// Apply safe, mechanical defaults to an op's args in place.
+///
+/// Defaults applied:
+/// - `create_function` / `create_type` without `visibility` → `"private"`.
+/// - `create_type` without `derive` → `"none"`.
+///
+/// Rules (from spec):
+/// 1. Defaults must be safe (never public/unsafe/assumed).
+/// 2. Defaults must be mechanical (no semantic ambiguity).
+/// 3. Defaults must not grant permissions or expose APIs.
+fn materialize_defaults(kind: &ChangeSetOp, verb: &str, args: &mut OpArgs) {
+    match kind {
+        ChangeSetOp::Create => {
+            if matches!(verb, "create_function" | "create_type") {
+                args.entry("visibility".to_string())
+                    .or_insert_with(|| "private".to_string());
+            }
+            if verb == "create_type" {
+                args.entry("derive".to_string())
+                    .or_insert_with(|| "none".to_string());
+            }
+        }
+        _ => {}
     }
 }
 
