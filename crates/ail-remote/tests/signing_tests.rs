@@ -63,6 +63,7 @@ fn make_context_response(tag: &[u8]) -> ContextResponse {
             omitted_sections: Vec::new(),
         },
         history_entries: Vec::new(),
+        freshness_status: ail_context::FreshnessStatus::Fresh,
     }
 }
 

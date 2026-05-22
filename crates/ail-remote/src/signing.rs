@@ -228,6 +228,7 @@ mod tests {
                 omitted_sections: Vec::new(),
             },
             history_entries: Vec::new(),
+            freshness_status: ail_context::FreshnessStatus::Fresh,
         }
     }
 
