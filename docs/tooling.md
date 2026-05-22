@@ -52,13 +52,19 @@ ail verify
 ail apply
 ail compile
 ail run
+ail eval
 ail inspect
 ail diff
 ail rollback
+ail rebase
+ail merge
+ail refactor
+ail approve
+ail reject
 ail package
 ail policy
-ail approve
 ail doctor
+ail gc
 ```
 
 ### Output modes
@@ -395,6 +401,8 @@ approval records are immutable
 ### Policy workflow
 
 ```txt
+ail policy list
+ail policy add "deny capability file.write:*"
 ail policy check change.add_checkout --profile prod
 ail policy explain no_unverified_public_api
 ail policy set max_new_capabilities=2
@@ -402,10 +410,40 @@ ail policy set max_new_capabilities=2
 
 Policy changes are themselves ChangeSets or admin records, depending project mode.
 
+#### policy list
+
+Lists all active policy rules persisted for the project.
+
+```txt
+ail policy list
+```
+
+Outputs:
+
+```txt
+active policies: <N>
+<rule 1>
+<rule 2>
+...
+```
+
+#### policy add
+
+Appends a policy rule to the project's persisted rule list.
+
+```txt
+ail policy add "deny capability file.write:*"
+```
+
+Rules are stored as plain text entries. The `check` subcommand parses capability deny/allow rules from this list when enforcing policy against a ChangeSet.
+
 ### Package workflow
 
 ```txt
+ail package init [--name <name>] [--version <version>]
 ail package add payments.stripe@1.2
+ail package install payments.stripe@1.2
+ail package search <query>
 ail package verify
 ail package publish
 ail package audit
@@ -413,6 +451,56 @@ ail package explain payments.stripe
 ```
 
 Package install does not grant capabilities.
+
+#### package init
+
+Creates a `PackageManifest` for the current graph and persists it to the project store.
+
+```txt
+ail package init --name my.package --version 0.1.0
+```
+
+Outputs:
+
+```txt
+package initialized
+name: <name>
+version: <version>
+manifest_hash: <blake3-hex>
+```
+
+#### package install
+
+Installs a specific package from the local registry into the project lockfile.
+
+```txt
+ail package install payments.stripe@1.2
+```
+
+Shows trust level and package hash. Does not grant any capabilities; capabilities must be declared explicitly in the program's semantic graph.
+
+```txt
+installed: <name>@<version>
+trust: <level>
+package_hash: <blake3-hex>
+note: package install does not grant capabilities
+```
+
+#### package search
+
+Searches the local package registry for packages matching a query string.
+
+```txt
+ail package search stripe
+```
+
+Returns up to 20 results with name, latest version, and description.
+
+```txt
+packages found: <N>
+<name>@<version>
+...
+```
 
 CLI must show:
 
@@ -423,6 +511,67 @@ requested capabilities
 assumptions
 unsafe surface
 advisories
+```
+
+### Eval workflow
+
+```txt
+ail eval "add(20, 22)"
+ail eval "mul(6, 7)"
+ail eval 42
+```
+
+Evaluates an inline arithmetic expression without initializing a project or requiring a graph snapshot. Supported forms:
+
+```txt
+<integer literal>          e.g. 42
+add(<a>, <b>)
+sub(<a>, <b>)
+mul(<a>, <b>)
+div(<a>, <b>)
+mod(<a>, <b>)
+double(<x>)
+```
+
+The expression is compiled directly to ANF → WASM via the `dev` profile, instantiated in the runtime host, and the result is printed.
+
+Outputs:
+
+```txt
+expression: add(20, 22)
+result: 42
+```
+
+Rules:
+
+```txt
+eval does not require ail init.
+eval does not read or write graph snapshots.
+eval uses the dev profile with no capability requirements.
+```
+
+### GC workflow
+
+```txt
+ail gc
+```
+
+Deletes objects in `.ail/store/objects/` that are no longer reachable from any branch tip. Requires an initialized file store (`.ail/` directory); returns an error for memory and Postgres backends.
+
+Outputs:
+
+```txt
+objects before: <N>
+objects after: <M>
+bytes freed: <B>
+```
+
+Rules:
+
+```txt
+gc only removes objects unreachable from branch tips.
+gc does not delete snapshots, change logs, or branch refs.
+gc requires an initialized file project (ail init).
 ```
 
 ### Doctor workflow
@@ -573,5 +722,9 @@ The current implementation resolves the original tooling questions as follows:
 | Editor edits | Design direction is editor-generated ChangeSets; full editor integration is not implemented. |
 | Approval UX | Approval records and requirements exist in storage/change models; final human UX remains future work. |
 | Local experiments | Test/local object stores exist. Disabling graph storage entirely is not part of the implemented model. |
+| `ail eval` | Implemented. Compiles and runs inline integer/arithmetic expressions without project initialization. |
+| `ail gc` | Implemented for the file store. Collects unreachable objects under `.ail/store/objects/`. Not supported for memory or Postgres backends. |
+| `policy list` / `policy add` | Implemented. Rules are persisted as text entries; `policy check` parses capability deny/allow rules from the list. |
+| `package init` / `package install` / `package search` | Implemented against the local in-process registry. `install` adds to the lockfile; `search` queries by name prefix. |
 
 Code references: `crates/ail-cli/src/main.rs`, `crates/ail-change/src/parser.rs`, `crates/ail-storage/src/approval.rs`.
