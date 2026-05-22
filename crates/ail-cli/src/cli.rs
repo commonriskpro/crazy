@@ -1779,6 +1779,9 @@ fn conflict_reason_message(reason: &ConflictReason) -> &'static str {
         }
         ConflictReason::PublicApiConflict => "public API changes conflict",
         ConflictReason::InvariantTouchedConcurrently => "invariant changes conflict",
+        ConflictReason::IncompatibleNodeModification => {
+            "semantic node content conflict (return type, body, or effects differ)"
+        }
     }
 }
 
