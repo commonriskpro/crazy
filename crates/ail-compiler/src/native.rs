@@ -470,6 +470,110 @@ fn lower_anf_expr_cranelift<'a>(
             }
         }
 
+        // ── Loop ─────────────────────────────────────────────────────────
+        AnfExpr::Loop { body } => {
+            let break_block = builder.create_block();
+            let loop_block  = builder.create_block();
+
+            let result_ty = infer_cranelift_return_type(body);
+            if let Some(ty) = result_ty {
+                builder.append_block_param(break_block, ty);
+            }
+
+            // Jump into the loop.
+            builder.ins().jump(loop_block, &[]);
+            builder.switch_to_block(loop_block);
+            // DO NOT seal loop_block yet — back-edges from Continue not emitted.
+            ctx.push_label(NativeLabelKind::LoopBreak, break_block);
+            ctx.push_label(NativeLabelKind::LoopContinue, loop_block);
+
+            let body_result = lower_anf_expr_cranelift(body, ctx, builder);
+
+            ctx.pop_label(); // LoopContinue
+            ctx.pop_label(); // LoopBreak
+
+            // Implicit fall-through (no explicit break): jump back to header.
+            if !matches!(body_result, LowerResult::Terminated) {
+                builder.ins().jump(loop_block, &[]);
+            }
+            builder.seal_block(loop_block);
+            builder.switch_to_block(break_block);
+            builder.seal_block(break_block);
+
+            match result_ty {
+                Some(_) => LowerResult::Value(builder.block_params(break_block)[0]),
+                None    => LowerResult::Unit,
+            }
+        }
+
+        // ── Break ─────────────────────────────────────────────────────────
+        AnfExpr::Break { value } => {
+            let break_block = match ctx.find_label(NativeLabelKind::LoopBreak) {
+                Some(b) => b,
+                None => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    return LowerResult::Terminated;
+                }
+            };
+            match lower_anf_expr_cranelift(value, ctx, builder) {
+                LowerResult::Value(v)  => { builder.ins().jump(break_block, &[v]); }
+                LowerResult::Unit      => { builder.ins().jump(break_block, &[]); }
+                LowerResult::Terminated => {}
+            }
+            LowerResult::Terminated
+        }
+
+        // ── Continue ──────────────────────────────────────────────────────
+        AnfExpr::Continue => {
+            let loop_block = match ctx.find_label(NativeLabelKind::LoopContinue) {
+                Some(b) => b,
+                None => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    return LowerResult::Terminated;
+                }
+            };
+            builder.ins().jump(loop_block, &[]);
+            LowerResult::Terminated
+        }
+
+        // ── WhileLoop ─────────────────────────────────────────────────────
+        AnfExpr::WhileLoop { cond, body } => {
+            let break_block    = builder.create_block();
+            let loop_block     = builder.create_block();
+            let body_block     = builder.create_block();
+
+            // Jump into the loop header.
+            builder.ins().jump(loop_block, &[]);
+            builder.switch_to_block(loop_block);
+            // DO NOT seal loop_block yet.
+
+            let cond_val = match ctx.lookup(cond.as_str()) {
+                Some((v, _)) => v,
+                None => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    return LowerResult::Terminated;
+                }
+            };
+            // brif cond → body_block, else → break_block (exit on false)
+            builder.ins().brif(cond_val, body_block, &[], break_block, &[]);
+
+            builder.switch_to_block(body_block);
+            builder.seal_block(body_block);
+            ctx.push_label(NativeLabelKind::LoopBreak, break_block);
+            ctx.push_label(NativeLabelKind::LoopContinue, loop_block);
+            let while_body_result = lower_anf_expr_cranelift(body, ctx, builder);
+            ctx.pop_label(); // LoopContinue
+            ctx.pop_label(); // LoopBreak
+            if !matches!(while_body_result, LowerResult::Terminated) {
+                builder.ins().jump(loop_block, &[]);
+            }
+
+            builder.seal_block(loop_block);
+            builder.switch_to_block(break_block);
+            builder.seal_block(break_block);
+            LowerResult::Unit
+        }
+
         // ── If ────────────────────────────────────────────────────────────
         AnfExpr::If { cond, then_branch, else_branch } => {
             let cond_val = match ctx.lookup(cond.as_str()) {
