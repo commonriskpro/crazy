@@ -310,6 +310,53 @@ pub enum AnfExpr {
     /// `cell` and `value` are atomic variable names — guaranteed by lowering.
     CellSet { cell: String, value: String },
 
+    // ── ola5-compiler-core: Gap 2 — new ANF primitives ───────────────────
+
+    /// An explicit proof assumption — no runtime effect; lowers to unit.
+    ///
+    /// `predicate` is the logical predicate being assumed.
+    /// `reason` documents why the assumption is justified.
+    Assume { predicate: String, reason: String },
+
+    /// Explicit abort/panic — always traps at runtime.
+    ///
+    /// Represents an impossible-branch terminal with a diagnostic message.
+    Abort { message: String },
+
+    /// Indexed element access from a collection.
+    ///
+    /// `collection` and `index` are atomic variable names — guaranteed by lowering.
+    /// Layout contract: collection pointer points to `[len: i64, elem0: i64, ...]`.
+    IndexGet { collection: String, index: String },
+
+    /// Construct a map from atomic key-value name pairs.
+    ///
+    /// Both keys and values are atomic variable names — guaranteed by lowering.
+    /// Layout contract: `[count: i64, k0: i64, v0: i64, k1: i64, v1: i64, ...]`.
+    MapNew { entries: Vec<(String, String)> },
+
+    /// Construct a set from atomic element names.
+    ///
+    /// Elements are atomic variable names — guaranteed by lowering.
+    /// Layout contract: `[count: i64, elem0: i64, elem1: i64, ...]`.
+    SetNew { elements: Vec<String> },
+
+    /// Structured loop over a list collection (ForEach).
+    ///
+    /// `collection` is an atomic variable name — guaranteed by lowering.
+    /// `binding` names the loop variable; `body` is executed for each element.
+    ForEach {
+        binding: String,
+        collection: String,
+        body: Box<AnfExpr>,
+    },
+
+    /// Left fold (reduce) over a list collection.
+    ///
+    /// `init`, `list`, and `func` are atomic variable names — guaranteed by lowering.
+    /// `func` must hold an I64 function pointer with signature `(acc: I64, elem: I64) -> I64`.
+    Fold { init: String, list: String, func: String },
+
     /// Placeholder for nodes that have no expression body yet, or for
     /// `CoreExpr::Placeholder` nodes.
     ///
