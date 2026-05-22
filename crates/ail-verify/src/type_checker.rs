@@ -82,6 +82,7 @@ use std::collections::BTreeMap;
 
 use ail_core::semantic_graph::{
     EdgeKind, GenericParamKind, GraphNode, NodeKind, NodeRef, SemanticGraph,
+    EffectArgBinding, CapabilityArgBinding,
 };
 
 use crate::report::{SummaryCounts, VerificationEntry, VerificationReport, VerificationState};
@@ -155,6 +156,12 @@ pub const E_BLANKET_IMPL_OVERLAP: &str = "E_BLANKET_IMPL_OVERLAP";
 /// interface name nor the implementing type name appears in the graph as an
 /// owned node — orphan rule violation.
 pub const E_ORPHAN_RULE_VIOLATION: &str = "E_ORPHAN_RULE_VIOLATION";
+/// An EffectParam instantiation binding specifies an effect not present in
+/// the caller's effect_row — the caller cannot supply that effect.
+pub const E_EFFECT_PARAM_NOT_THREADED: &str = "E_EFFECT_PARAM_NOT_THREADED";
+/// A CapabilityParam instantiation binding specifies a capability not present
+/// in the caller's capability_reqs — the caller cannot supply that capability.
+pub const E_CAPABILITY_PARAM_NOT_THREADED: &str = "E_CAPABILITY_PARAM_NOT_THREADED";
 /// ConstParam instantiation value is not a decidable literal (not a simple
 /// numeric string or simple identifier).
 pub const E_CONST_PARAM_VALUE_INVALID: &str = "E_CONST_PARAM_VALUE_INVALID";
@@ -278,6 +285,9 @@ impl TypeChecker {
 
         // Subpass 16 — ForeignType boundary schema enforcement.
         Self::check_boundary_schema(graph, &mut entries);
+
+        // Subpass 18 — Effect and capability parameter threading at call sites.
+        Self::check_effect_capability_param_threading(graph, &ctx, &mut entries);
 
         // Subpass 17 — Blanket impl coherence and orphan rule.
         Self::check_blanket_impl_coherence(graph, &ctx, &mut entries);
@@ -1463,6 +1473,116 @@ impl TypeChecker {
         }
     }
 
+    // ── Subpass 18: Effect and capability parameter threading ─────────────
+
+    /// For each `Calls` edge with `effect_arg_bindings` or `capability_arg_bindings`,
+    /// verify that the caller can supply the required effects / capabilities.
+    ///
+    /// **Effect threading**: for each `EffectArgBinding`, every effect listed in
+    /// `binding.effects` must appear in the caller's `effect_row.effects`.
+    /// - All present → Proven (claim "effect-param-threading")
+    /// - Any missing → Failed (E_EFFECT_PARAM_NOT_THREADED)
+    ///
+    /// **Capability threading**: for each `CapabilityArgBinding`, every cap listed
+    /// in `binding.caps` must appear in the caller's `capability_reqs.caps`.
+    /// - All present → Proven (claim "capability-param-threading")
+    /// - Any missing → Failed (E_CAPABILITY_PARAM_NOT_THREADED)
+    fn check_effect_capability_param_threading(
+        graph: &SemanticGraph,
+        ctx: &TypeContext<'_>,
+        entries: &mut Vec<VerificationEntry>,
+    ) {
+        for edge in &graph.edges {
+            if edge.kind != EdgeKind::Calls {
+                continue;
+            }
+            let Some(caller) = ctx.by_ref.get(&edge.source).copied() else {
+                continue;
+            };
+            let Some(callee) = ctx.by_ref.get(&edge.target).copied() else {
+                continue;
+            };
+            let scope = format!("{}→{}", caller.name, callee.name);
+
+            // ── Effect param threading ──────────────────────────────────
+            if let Some(effect_bindings) = &edge.effect_arg_bindings {
+                let caller_effects = caller
+                    .effect_row
+                    .as_ref()
+                    .map(|row| row.effects.as_slice())
+                    .unwrap_or(&[]);
+
+                let mut all_ok = true;
+                for binding in effect_bindings {
+                    for effect in &binding.effects {
+                        if !caller_effects.iter().any(|e| e == effect) {
+                            entries.push(VerificationEntry {
+                                claim: "effect-param-threading".into(),
+                                state: VerificationState::Failed,
+                                scope: scope.clone(),
+                                evidence: Some(format!(
+                                    "{E_EFFECT_PARAM_NOT_THREADED}: EffectParam '{}' requires \
+                                     effect '{}' which is not in caller '{}' effect_row {:?}",
+                                    binding.param, effect, caller.name, caller_effects
+                                )),
+                                blocking: true,
+                            });
+                            all_ok = false;
+                        }
+                    }
+                }
+                if all_ok {
+                    entries.push(VerificationEntry {
+                        claim: "effect-param-threading".into(),
+                        state: VerificationState::Proven,
+                        scope: scope.clone(),
+                        evidence: None,
+                        blocking: false,
+                    });
+                }
+            }
+
+            // ── Capability param threading ──────────────────────────────
+            if let Some(cap_bindings) = &edge.capability_arg_bindings {
+                let caller_caps = caller
+                    .capability_reqs
+                    .as_ref()
+                    .map(|reqs| reqs.caps.as_slice())
+                    .unwrap_or(&[]);
+
+                let mut all_ok = true;
+                for binding in cap_bindings {
+                    for cap in &binding.caps {
+                        if !caller_caps.iter().any(|c| c == cap) {
+                            entries.push(VerificationEntry {
+                                claim: "capability-param-threading".into(),
+                                state: VerificationState::Failed,
+                                scope: scope.clone(),
+                                evidence: Some(format!(
+                                    "{E_CAPABILITY_PARAM_NOT_THREADED}: CapabilityParam '{}' \
+                                     requires cap '{}' which is not in caller '{}' \
+                                     capability_reqs {:?}",
+                                    binding.param, cap, caller.name, caller_caps
+                                )),
+                                blocking: true,
+                            });
+                            all_ok = false;
+                        }
+                    }
+                }
+                if all_ok {
+                    entries.push(VerificationEntry {
+                        claim: "capability-param-threading".into(),
+                        state: VerificationState::Proven,
+                        scope: scope.clone(),
+                        evidence: None,
+                        blocking: false,
+                    });
+                }
+            }
+        }
+    }
+
     // ── Subpass 16: ForeignType boundary schema enforcement ───────────────
 
     /// For each `Function` node whose `return_type` starts with `"ForeignType"`:
@@ -1943,6 +2063,161 @@ mod tests {
             assoc.is_empty(),
             "non-assoc return type must emit no assoc-type-resolution entries, got: {:?}",
             assoc
+        );
+    }
+
+    // ── Task C3 (RED): check_effect_capability_param_threading ───────────
+    // Tests written BEFORE the subpass exists.
+
+    // C3-1: EffectParam effect present in caller → Proven.
+    // Spec scenario: "EffectParam effect present in caller"
+    //   GIVEN caller with effect_row={effects:["IO"]}
+    //   AND Calls edge effect_arg_bindings=[{param:"e", effects:["IO"]}]
+    //   THEN entry claim "effect-param-threading", state Proven
+    #[test]
+    fn effect_param_present_in_caller_is_proven() {
+        use ail_core::semantic_graph::{EffectArgBinding, InferredFact};
+
+        let mut caller = make_node(0, NodeKind::Function, "caller_fn");
+        caller.effect_row = Some(EffectRow { effects: vec!["IO".to_string()] });
+
+        let callee = make_node(1, NodeKind::Function, "effect_fn");
+
+        let mut edge = make_edge(0, 1);
+        edge.effect_arg_bindings = Some(vec![EffectArgBinding {
+            param: "e".to_string(),
+            effects: vec!["IO".to_string()],
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let threading = entries_with_claim(&report.entries, "effect-param-threading");
+        assert!(
+            !threading.is_empty(),
+            "expected effect-param-threading entry"
+        );
+        let proven = threading.iter().find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "effect present in caller must be Proven, got: {:?}",
+            threading
+        );
+    }
+
+    // C3-2: EffectParam effect MISSING from caller → Failed.
+    // Spec scenario: "EffectParam effect missing from caller"
+    //   GIVEN caller with effect_row={effects:[]}
+    //   AND Calls edge effect_arg_bindings=[{param:"e", effects:["IO"]}]
+    //   THEN entry claim "effect-param-threading", state Failed, evidence E_EFFECT_PARAM_NOT_THREADED
+    #[test]
+    fn effect_param_missing_from_caller_fails() {
+        use ail_core::semantic_graph::EffectArgBinding;
+
+        let mut caller = make_node(0, NodeKind::Function, "pure_caller");
+        caller.effect_row = Some(EffectRow { effects: vec![] }); // empty
+
+        let callee = make_node(1, NodeKind::Function, "effect_fn");
+
+        let mut edge = make_edge(0, 1);
+        edge.effect_arg_bindings = Some(vec![EffectArgBinding {
+            param: "e".to_string(),
+            effects: vec!["IO".to_string()],
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let threading = entries_with_claim(&report.entries, "effect-param-threading");
+        let failed = threading.iter().find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "effect missing from caller must be Failed, got: {:?}",
+            threading
+        );
+        let ev = failed.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_EFFECT_PARAM_NOT_THREADED),
+            "evidence must contain {E_EFFECT_PARAM_NOT_THREADED}, got: {ev}"
+        );
+    }
+
+    // C3-3: CapabilityParam cap MISSING from caller → Failed.
+    // Spec scenario: "CapabilityParam cap missing from caller"
+    //   GIVEN caller with capability_reqs={caps:[]}
+    //   AND Calls edge capability_arg_bindings=[{param:"cap", caps:["net:read"]}]
+    //   THEN entry claim "capability-param-threading", state Failed, evidence E_CAPABILITY_PARAM_NOT_THREADED
+    #[test]
+    fn capability_param_missing_from_caller_fails() {
+        use ail_core::semantic_graph::CapabilityArgBinding;
+
+        let mut caller = make_node(0, NodeKind::Function, "no_cap_caller");
+        caller.capability_reqs = Some(CapabilityReqs { caps: vec![] }); // empty
+
+        let callee = make_node(1, NodeKind::Function, "cap_fn");
+
+        let mut edge = make_edge(0, 1);
+        edge.capability_arg_bindings = Some(vec![CapabilityArgBinding {
+            param: "cap".to_string(),
+            caps: vec!["net:read".to_string()],
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let threading = entries_with_claim(&report.entries, "capability-param-threading");
+        let failed = threading.iter().find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "cap missing from caller must be Failed, got: {:?}",
+            threading
+        );
+        let ev = failed.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_CAPABILITY_PARAM_NOT_THREADED),
+            "evidence must contain {E_CAPABILITY_PARAM_NOT_THREADED}, got: {ev}"
+        );
+    }
+
+    // C3-4 (TRIANGULATE): CapabilityParam cap PRESENT in caller → Proven.
+    #[test]
+    fn capability_param_present_in_caller_is_proven() {
+        use ail_core::semantic_graph::CapabilityArgBinding;
+
+        let mut caller = make_node(0, NodeKind::Function, "cap_caller");
+        caller.capability_reqs = Some(CapabilityReqs {
+            caps: vec!["net:read".to_string()],
+        });
+
+        let callee = make_node(1, NodeKind::Function, "cap_fn");
+
+        let mut edge = make_edge(0, 1);
+        edge.capability_arg_bindings = Some(vec![CapabilityArgBinding {
+            param: "cap".to_string(),
+            caps: vec!["net:read".to_string()],
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let threading = entries_with_claim(&report.entries, "capability-param-threading");
+        let proven = threading.iter().find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "cap present in caller must be Proven, got: {:?}",
+            threading
         );
     }
 

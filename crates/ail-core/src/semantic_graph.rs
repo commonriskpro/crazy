@@ -358,6 +358,39 @@ pub struct TypeArgBinding {
     pub ty: String,
 }
 
+// ── Effect and capability argument bindings ───────────────────────────────
+//
+// Added in ola4-type-formalism to model the instantiation of EffectParam and
+// CapabilityParam generic parameters at Calls edges.  Both structs are optional
+// on `GraphEdge` (serde default + skip_serializing_if) for backward compat.
+
+/// Instantiation binding for an EffectParam at a `Calls` edge.
+///
+/// Carries the name of the effect parameter (`param`) and the concrete list of
+/// effects that must be supplied by the caller at this call site.
+/// Symmetric with `TypeArgBinding`; both live on `GraphEdge.type_arg_bindings`
+/// and `GraphEdge.effect_arg_bindings` respectively.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectArgBinding {
+    /// Effect parameter name declared on the callee (e.g., `"e"`).
+    pub param: String,
+    /// Concrete effects the caller must supply (e.g., `["IO"]`).
+    pub effects: Vec<String>,
+}
+
+/// Instantiation binding for a CapabilityParam at a `Calls` edge.
+///
+/// Carries the name of the capability parameter (`param`) and the concrete
+/// list of capability names that must be present in the caller's capability
+/// requirements at this call site.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityArgBinding {
+    /// Capability parameter name declared on the callee (e.g., `"cap"`).
+    pub param: String,
+    /// Concrete capabilities the caller must supply (e.g., `["net:read"]`).
+    pub caps: Vec<String>,
+}
+
 /// Declared effect row for a `GraphNode`.
 ///
 /// Uses `Vec<String>` (no `HashMap`) for CBOR determinism.
@@ -683,9 +716,9 @@ impl GraphNode {
 
 /// A directed, typed edge between two `GraphNode`s.
 ///
-/// The optional `call_args` and `type_arg_bindings` fields are populated
-/// only on `Calls` edges and are absent from the wire format otherwise,
-/// preserving backward CBOR compatibility.
+/// The optional `call_args`, `type_arg_bindings`, `effect_arg_bindings`, and
+/// `capability_arg_bindings` fields are populated only on `Calls` edges and are
+/// absent from the wire format otherwise, preserving backward CBOR compatibility.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphEdge {
     /// Source node.
@@ -707,6 +740,23 @@ pub struct GraphEdge {
     /// to verify that concrete types satisfy the callee's generic constraints.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_arg_bindings: Option<Vec<TypeArgBinding>>,
+
+    // ── ola4-type-formalism: effect and capability param threading ────────
+    /// Effect argument bindings at this call site.
+    ///
+    /// Present only on `Calls` edges where EffectParam generic parameters are
+    /// instantiated.  Each binding maps a parameter name to the concrete list
+    /// of effects the caller supplies.  Absent from the wire format when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_arg_bindings: Option<Vec<EffectArgBinding>>,
+    /// Capability argument bindings at this call site.
+    ///
+    /// Present only on `Calls` edges where CapabilityParam generic parameters
+    /// are instantiated.  Each binding maps a parameter name to the concrete
+    /// list of capabilities the caller supplies.  Absent from the wire format
+    /// when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_arg_bindings: Option<Vec<CapabilityArgBinding>>,
 }
 
 impl GraphEdge {
@@ -718,6 +768,8 @@ impl GraphEdge {
             kind,
             call_args: None,
             type_arg_bindings: None,
+            effect_arg_bindings: None,
+            capability_arg_bindings: None,
         }
     }
 }
@@ -1243,6 +1295,8 @@ mod tests {
                     param: "T".into(),
                     ty: "UserId".into(),
                 }]),
+                effect_arg_bindings: None,
+                capability_arg_bindings: None,
             }],
         };
 
@@ -1559,6 +1613,147 @@ mod tests {
             decoded.nodes[0].handler_meta.is_none(),
             "legacy node must have handler_meta=None after CBOR round-trip"
         );
+    }
+
+    // ── Task C1 (RED): EffectArgBinding and CapabilityArgBinding on GraphEdge ──
+    // Tests written BEFORE the structs and fields exist — compilation fails = RED.
+
+    // C1-1: EffectArgBinding is constructible and fields are correct.
+    // Spec scenario: "EffectArgBinding CBOR round-trip"
+    #[test]
+    fn effect_arg_binding_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+
+        let binding = EffectArgBinding {
+            param: "e".to_string(),
+            effects: vec!["IO".to_string()],
+        };
+        let bytes = codec.encode(&binding).expect("encode EffectArgBinding");
+        let decoded: EffectArgBinding = codec.decode(&bytes).expect("decode EffectArgBinding");
+        assert_eq!(decoded.param, "e");
+        assert_eq!(decoded.effects, ["IO"]);
+        assert_eq!(decoded, binding);
+    }
+
+    // C1-2: GraphEdge with effect_arg_bindings round-trips through CBOR.
+    // Spec scenario: "EffectArgBinding CBOR round-trip" (on an edge)
+    #[test]
+    fn graph_edge_with_effect_arg_bindings_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+
+        let graph = SemanticGraph {
+            nodes: vec![
+                node(0, NodeKind::Function, "caller"),
+                node(1, NodeKind::Function, "callee"),
+            ],
+            edges: vec![GraphEdge {
+                source: NodeRef(0),
+                target: NodeRef(1),
+                kind: EdgeKind::Calls,
+                call_args: None,
+                type_arg_bindings: None,
+                effect_arg_bindings: Some(vec![EffectArgBinding {
+                    param: "e".to_string(),
+                    effects: vec!["IO".to_string()],
+                }]),
+                capability_arg_bindings: None,
+            }],
+        };
+
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        assert_eq!(decoded, graph);
+        let bindings = decoded.edges[0]
+            .effect_arg_bindings
+            .as_ref()
+            .expect("effect_arg_bindings must be Some");
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].param, "e");
+        assert_eq!(bindings[0].effects, ["IO"]);
+    }
+
+    // C1-3: Edge without effect_arg_bindings is backward compatible (None after decode).
+    // Spec scenario: "Edge without effect_arg_bindings is backward compatible"
+    #[test]
+    fn edge_without_effect_arg_bindings_is_backward_compat() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+
+        // Simulate an edge encoded before EffectArgBinding field existed.
+        // Creating it with the new constructor (None fields) produces identical
+        // bytes to the old format (serde skips None).
+        let graph = SemanticGraph {
+            nodes: vec![node(0, NodeKind::Function, "f"), node(1, NodeKind::Function, "g")],
+            edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls)],
+        };
+
+        let bytes = codec.encode(&graph).expect("encode legacy edge");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        assert!(
+            decoded.edges[0].effect_arg_bindings.is_none(),
+            "legacy edge must decode with effect_arg_bindings=None"
+        );
+        assert!(
+            decoded.edges[0].capability_arg_bindings.is_none(),
+            "legacy edge must decode with capability_arg_bindings=None"
+        );
+    }
+
+    // C1-4: CapabilityArgBinding is constructible and round-trips through CBOR.
+    // Spec scenario: "CapabilityArgBinding" struct
+    #[test]
+    fn capability_arg_binding_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+
+        let binding = CapabilityArgBinding {
+            param: "cap".to_string(),
+            caps: vec!["net:read".to_string()],
+        };
+        let bytes = codec.encode(&binding).expect("encode CapabilityArgBinding");
+        let decoded: CapabilityArgBinding =
+            codec.decode(&bytes).expect("decode CapabilityArgBinding");
+        assert_eq!(decoded.param, "cap");
+        assert_eq!(decoded.caps, ["net:read"]);
+        assert_eq!(decoded, binding);
+    }
+
+    // C1-5 (TRIANGULATE): GraphEdge with both new fields round-trips.
+    // Forces the real implementation to handle both fields simultaneously.
+    #[test]
+    fn graph_edge_with_both_arg_binding_fields_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+
+        let graph = SemanticGraph {
+            nodes: vec![
+                node(0, NodeKind::Function, "caller"),
+                node(1, NodeKind::Function, "callee"),
+            ],
+            edges: vec![GraphEdge {
+                source: NodeRef(0),
+                target: NodeRef(1),
+                kind: EdgeKind::Calls,
+                call_args: None,
+                type_arg_bindings: None,
+                effect_arg_bindings: Some(vec![EffectArgBinding {
+                    param: "e".to_string(),
+                    effects: vec!["IO".to_string()],
+                }]),
+                capability_arg_bindings: Some(vec![CapabilityArgBinding {
+                    param: "cap".to_string(),
+                    caps: vec!["net:read".to_string()],
+                }]),
+            }],
+        };
+
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        assert_eq!(decoded, graph);
+        assert!(decoded.edges[0].effect_arg_bindings.is_some());
+        assert!(decoded.edges[0].capability_arg_bindings.is_some());
     }
 
     // S-D3c: HandlerMeta without satisfies_contract omits that field.
