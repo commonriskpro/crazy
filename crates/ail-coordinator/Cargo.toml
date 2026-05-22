@@ -3,12 +3,16 @@ name    = "ail-coordinator"
 version.workspace = true
 edition.workspace = true
 
+[features]
+otel = ["dep:tracing"]
+
 [dependencies]
 ail-change  = { workspace = true, features = ["storage-bridge"] }
 ail-core    = { workspace = true }
 ail-remote  = { workspace = true }
 tokio       = { workspace = true }
 serde       = { workspace = true }
+tracing     = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -185,6 +185,10 @@ impl RuntimeHost {
     ///
     /// On success, stores the profile internally so `call_capability` can
     /// enforce grant checks.
+    #[cfg_attr(
+        feature = "otel",
+        tracing::instrument(skip_all, name = "runtime.validate_and_instantiate")
+    )]
     pub fn validate_and_instantiate(
         &mut self,
         wasm: &[u8],

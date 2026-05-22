@@ -154,6 +154,10 @@ impl Coordinator {
     ///
     /// Acquires the exclusive lock, runs the snapshot-guard → (rebase) → apply
     /// → advance cycle, and returns a `CoordinatorOutcome`.
+    #[cfg_attr(
+        feature = "otel",
+        tracing::instrument(skip_all, name = "coordinator.submit")
+    )]
     pub async fn submit(&self, cs: CanonicalChangeSet) -> CoordinatorOutcome {
         let mut state = self.inner.lock().await;
 

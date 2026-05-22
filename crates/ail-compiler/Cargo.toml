@@ -3,6 +3,9 @@ name    = "ail-compiler"
 version.workspace = true
 edition.workspace = true
 
+[features]
+otel = ["dep:tracing"]
+
 [dependencies]
 ail-core           = { workspace = true }
 ail-verify         = { workspace = true }
@@ -15,11 +18,13 @@ cranelift-frontend = { workspace = true }
 cranelift-module   = { workspace = true }
 cranelift-native   = { workspace = true }
 cranelift-object   = { workspace = true }
+tracing            = { workspace = true, optional = true }
 
 [dev-dependencies]
 ail-testkit  = { workspace = true }
 wasmparser   = { workspace = true }
 criterion    = { version = "0.5", features = ["html_reports"] }
+tracing      = { workspace = true }
 
 [[bench]]
 name    = "large_graph"
