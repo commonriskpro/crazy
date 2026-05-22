@@ -1000,13 +1000,23 @@ fn check_invariants(
                 );
             }
 
-            // Which changed nodes are covered by BreaksIfChanged edges to the invariant?
-            let covered: BTreeSet<NodeRef> = target_graph
-                .edges
-                .iter()
-                .filter(|e| e.kind == EdgeKind::BreaksIfChanged && e.target == inv_id)
-                .map(|e| e.source)
-                .collect();
+            // Transitive BreaksIfChanged coverage: BFS following BreaksIfChanged edges
+            // backward toward inv_id to find all transitively covered nodes (ITC-1).
+            let mut covered: BTreeSet<NodeRef> = BTreeSet::new();
+            let mut bfc_queue: VecDeque<NodeRef> = VecDeque::from([inv_id]);
+            let mut bfc_visited: BTreeSet<NodeRef> = BTreeSet::from([inv_id]);
+            while let Some(cur) = bfc_queue.pop_front() {
+                for edge in &target_graph.edges {
+                    if edge.kind == EdgeKind::BreaksIfChanged
+                        && edge.target == cur
+                        && !bfc_visited.contains(&edge.source)
+                    {
+                        bfc_visited.insert(edge.source);
+                        covered.insert(edge.source);
+                        bfc_queue.push_back(edge.source);
+                    }
+                }
+            }
 
             let uncovered: Vec<&str> = reachable_changed
                 .iter()
@@ -1150,11 +1160,88 @@ fn find_ordering_violation(body: &str) -> Option<String> {
     None
 }
 
+/// Scan `body` for effect ordering violations:
+/// - `run_effect(ident)` before `bind_effect(ident)` → E_ANF_EFFECT_ORDER
+/// - `run_effect(ident)` without any `bind_effect(ident)` → E_ANF_EFFECT_ORDER
+/// - `emit_effect(ident)` appearing more than once → E_ANF_DUPLICATE_EFFECT
+fn find_effect_ordering_violation(body: &str) -> Option<String> {
+    use std::collections::HashMap;
+
+    let mut binds: HashMap<String, usize> = HashMap::new();
+    let mut runs: HashMap<String, usize> = HashMap::new();
+    let mut emits: HashMap<String, usize> = HashMap::new();
+
+    // Walk the body scanning for effect keywords.
+    let mut pos = 0;
+    while pos < body.len() {
+        for (keyword, map) in [
+            ("bind_effect(", &mut binds),
+            ("run_effect(", &mut runs),
+            ("emit_effect(", &mut emits),
+        ] {
+            if body[pos..].starts_with(keyword) {
+                let inner_start = pos + keyword.len();
+                if let Some(close) = body[inner_start..].find(')') {
+                    let ident = body[inner_start..inner_start + close].trim().to_string();
+                    if !ident.is_empty()
+                        && ident
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                    {
+                        *map.entry(ident).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        pos += 1;
+    }
+
+    // Check: emit_effect duplicate
+    for (ident, count) in &emits {
+        if *count > 1 {
+            return Some(format!("E_ANF_DUPLICATE_EFFECT:{ident}"));
+        }
+    }
+
+    // Check: run_effect before bind_effect (positional scan)
+    for ident in runs.keys() {
+        let bind_pos = find_keyword_pos(body, "bind_effect(", ident);
+        let run_pos = find_keyword_pos(body, "run_effect(", ident);
+        match (bind_pos, run_pos) {
+            (None, Some(_)) => return Some(format!("E_ANF_EFFECT_ORDER_NO_BIND:{ident}")),
+            (Some(b), Some(r)) if r < b => {
+                return Some(format!("E_ANF_EFFECT_ORDER:{ident}"));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Find the byte position of the first `keyword + ident + ")"` in `body`.
+fn find_keyword_pos(body: &str, keyword: &str, ident: &str) -> Option<usize> {
+    let mut pos = 0;
+    while pos < body.len() {
+        if body[pos..].starts_with(keyword) {
+            let inner_start = pos + keyword.len();
+            if let Some(close) = body[inner_start..].find(')') {
+                let found = body[inner_start..inner_start + close].trim();
+                if found == ident {
+                    return Some(pos);
+                }
+            }
+        }
+        pos += 1;
+    }
+    None
+}
+
 fn check_anf_ordering(graph: &SemanticGraph) -> VerificationEntry {
     for node in &graph.nodes {
         let Some(body) = &node.body_expr else {
             continue;
         };
+        // Resource ordering check (existing — runs first, ANF-4)
         if let Some(ident) = find_ordering_violation(body) {
             return stage_entry(
                 "20-check-anf-effect-resource-ordering",
@@ -1166,6 +1253,34 @@ fn check_anf_ordering(graph: &SemanticGraph) -> VerificationEntry {
                 )),
             );
         }
+        // Effect ordering check (new)
+        if let Some(violation) = find_effect_ordering_violation(body) {
+            let (code, detail) =
+                if let Some(ident) = violation.strip_prefix("E_ANF_DUPLICATE_EFFECT:") {
+                    (
+                        "E_ANF_DUPLICATE_EFFECT",
+                        format!("emit_effect('{ident}') appears more than once"),
+                    )
+                } else if let Some(ident) = violation.strip_prefix("E_ANF_EFFECT_ORDER_NO_BIND:") {
+                    (
+                        "E_ANF_EFFECT_ORDER",
+                        format!("run_effect('{ident}') without bind_effect"),
+                    )
+                } else if let Some(ident) = violation.strip_prefix("E_ANF_EFFECT_ORDER:") {
+                    (
+                        "E_ANF_EFFECT_ORDER",
+                        format!("run_effect('{ident}') before bind_effect('{ident}')"),
+                    )
+                } else {
+                    ("E_ANF_EFFECT_ORDER", violation)
+                };
+            return stage_entry(
+                "20-check-anf-effect-resource-ordering",
+                VerificationState::Failed,
+                node.name.clone(),
+                Some(format!("{code}: {detail}")),
+            );
+        }
     }
     stage_entry(
         "20-check-anf-effect-resource-ordering",
@@ -1173,6 +1288,181 @@ fn check_anf_ordering(graph: &SemanticGraph) -> VerificationEntry {
         "anf_ir",
         Some("effect/resource ordering preserved".into()),
     )
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use ail_core::semantic_graph::{EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph};
+
+    use crate::report::VerificationState;
+
+    use super::{check_anf_ordering, check_invariants};
+
+    fn graph_with_body(body: &str) -> SemanticGraph {
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.test");
+        node.body_expr = Some(body.to_string());
+        SemanticGraph { nodes: vec![node], edges: vec![] }
+    }
+
+    fn empty_graph() -> SemanticGraph {
+        SemanticGraph { nodes: vec![], edges: vec![] }
+    }
+
+    // ── T-09 / T-10: ANF effect ordering ─────────────────────────────────
+
+    #[test]
+    fn anf_run_before_bind_fails() {
+        let graph = graph_with_body("run_effect(db); bind_effect(db)");
+        let entry = check_anf_ordering(&graph);
+        assert_eq!(entry.state, VerificationState::Failed);
+        assert!(
+            entry.evidence.as_deref().unwrap_or("").contains("E_ANF_EFFECT_ORDER"),
+            "evidence must contain E_ANF_EFFECT_ORDER"
+        );
+    }
+
+    #[test]
+    fn anf_run_without_bind_fails() {
+        let graph = graph_with_body("run_effect(db)");
+        let entry = check_anf_ordering(&graph);
+        assert_eq!(entry.state, VerificationState::Failed);
+        assert!(
+            entry.evidence.as_deref().unwrap_or("").contains("E_ANF_EFFECT_ORDER"),
+            "run_effect without bind_effect must produce E_ANF_EFFECT_ORDER"
+        );
+    }
+
+    #[test]
+    fn anf_duplicate_emit_fails() {
+        let graph = graph_with_body("emit_effect(log); emit_effect(log)");
+        let entry = check_anf_ordering(&graph);
+        assert_eq!(entry.state, VerificationState::Failed);
+        assert!(
+            entry.evidence.as_deref().unwrap_or("").contains("E_ANF_DUPLICATE_EFFECT"),
+            "duplicate emit_effect must produce E_ANF_DUPLICATE_EFFECT"
+        );
+    }
+
+    #[test]
+    fn anf_valid_bind_then_run_passes() {
+        let graph = graph_with_body("bind_effect(db); run_effect(db)");
+        let entry = check_anf_ordering(&graph);
+        assert_eq!(entry.state, VerificationState::Proven);
+    }
+
+    #[test]
+    fn anf_valid_single_emit_passes() {
+        let graph = graph_with_body("emit_effect(log)");
+        let entry = check_anf_ordering(&graph);
+        assert_eq!(entry.state, VerificationState::Proven);
+    }
+
+    // Existing resource ordering must still work (ANF-3)
+    #[test]
+    fn anf_release_before_acquire_still_fails() {
+        let graph = graph_with_body("release(conn); acquire(conn)");
+        let entry = check_anf_ordering(&graph);
+        assert_eq!(entry.state, VerificationState::Failed);
+        assert!(
+            entry.evidence.as_deref().unwrap_or("").contains("E_ANF_RESOURCE_ORDER"),
+            "resource order violation must produce E_ANF_RESOURCE_ORDER"
+        );
+    }
+
+    // ── T-13 / T-14: Invariant BFS transitive coverage ───────────────────
+
+    fn make_invariant_graph_two_hop() -> (SemanticGraph, SemanticGraph) {
+        // base_graph: empty (no nodes → all target nodes are "new" / changed)
+        let base = empty_graph();
+        // target_graph: inv A (id=0), B (id=1), C (id=2)
+        // Edges: C --BIC--> B --BIC--> A
+        let inv_a = GraphNode::new(NodeRef(0), NodeKind::Invariant, "inv.A");
+        let node_b = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.B");
+        let node_c = GraphNode::new(NodeRef(2), NodeKind::Function, "fn.C");
+        let target = SemanticGraph {
+            nodes: vec![inv_a, node_b, node_c],
+            edges: vec![
+                GraphEdge::new(NodeRef(2), NodeRef(1), EdgeKind::BreaksIfChanged), // C → B
+                GraphEdge::new(NodeRef(1), NodeRef(0), EdgeKind::BreaksIfChanged), // B → A
+            ],
+        };
+        (base, target)
+    }
+
+    #[test]
+    fn invariant_two_hop_breaks_if_changed_is_covered() {
+        // C --BIC--> B --BIC--> inv A; C changed → Proven (transitive)
+        let (base, target) = make_invariant_graph_two_hop();
+        let entries = check_invariants(Some(&base), &target);
+        let inv_entry = entries.iter().find(|e| e.scope == "inv.A").unwrap();
+        assert_eq!(
+            inv_entry.state,
+            VerificationState::Proven,
+            "two-hop BIC chain: C must be transitively covered"
+        );
+    }
+
+    #[test]
+    fn invariant_direct_breaks_if_changed_still_covered() {
+        // Only direct edge: D --BIC--> inv A; D changed → Proven
+        let base = empty_graph();
+        let inv_a = GraphNode::new(NodeRef(0), NodeKind::Invariant, "inv.A");
+        let node_d = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.D");
+        let target = SemanticGraph {
+            nodes: vec![inv_a, node_d],
+            edges: vec![GraphEdge::new(NodeRef(1), NodeRef(0), EdgeKind::BreaksIfChanged)],
+        };
+        let entries = check_invariants(Some(&base), &target);
+        let inv_entry = entries.iter().find(|e| e.scope == "inv.A").unwrap();
+        assert_eq!(inv_entry.state, VerificationState::Proven);
+    }
+
+    #[test]
+    fn invariant_uncovered_changed_node_is_unverified() {
+        // E is reachable from inv A (via DependsOn) but has NO BIC edge → Unverified
+        let base = empty_graph();
+        let inv_a = GraphNode::new(NodeRef(0), NodeKind::Invariant, "inv.A");
+        let node_e = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.E");
+        let target = SemanticGraph {
+            nodes: vec![inv_a, node_e],
+            // E is reachable via DependsOn but NOT covered by BreaksIfChanged
+            edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn)],
+        };
+        let entries = check_invariants(Some(&base), &target);
+        let inv_entry = entries.iter().find(|e| e.scope == "inv.A").unwrap();
+        assert_eq!(
+            inv_entry.state,
+            VerificationState::Unverified,
+            "reachable but uncovered changed node must be Unverified"
+        );
+    }
+
+    #[test]
+    fn invariant_three_hop_chain_covered() {
+        // D --BIC--> C --BIC--> B --BIC--> inv A; D changed → Proven
+        let base = empty_graph();
+        let inv_a = GraphNode::new(NodeRef(0), NodeKind::Invariant, "inv.A");
+        let node_b = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.B");
+        let node_c = GraphNode::new(NodeRef(2), NodeKind::Function, "fn.C");
+        let node_d = GraphNode::new(NodeRef(3), NodeKind::Function, "fn.D");
+        let target = SemanticGraph {
+            nodes: vec![inv_a, node_b, node_c, node_d],
+            edges: vec![
+                GraphEdge::new(NodeRef(3), NodeRef(2), EdgeKind::BreaksIfChanged), // D → C
+                GraphEdge::new(NodeRef(2), NodeRef(1), EdgeKind::BreaksIfChanged), // C → B
+                GraphEdge::new(NodeRef(1), NodeRef(0), EdgeKind::BreaksIfChanged), // B → A
+            ],
+        };
+        let entries = check_invariants(Some(&base), &target);
+        let inv_entry = entries.iter().find(|e| e.scope == "inv.A").unwrap();
+        assert_eq!(
+            inv_entry.state,
+            VerificationState::Proven,
+            "three-hop BIC chain: D must be transitively covered"
+        );
+    }
 }
 
 fn validate_manifest(graph: &SemanticGraph, manifest_caps: &[String]) -> VerificationEntry {
