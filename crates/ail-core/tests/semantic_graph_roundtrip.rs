@@ -412,7 +412,7 @@ fn storage_identity_fields_cbor_round_trip() {
         version: "core_ir/2".to_string(),
     });
     node.trust_metadata = Some(TrustMetadata {
-        level: "verified".to_string(),
+        level: ail_core::semantic_graph::TrustLevel::Verified,
         tags: vec!["signed".to_string(), "reviewed".to_string()],
     });
 

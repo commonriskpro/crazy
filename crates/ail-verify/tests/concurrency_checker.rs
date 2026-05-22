@@ -4,7 +4,7 @@
 // Spec: verification-pipeline/spec §2 (concurrency safety checker).
 
 use ail_core::semantic_graph::{
-    EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph, TrustMetadata,
+    EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph, TrustLevel, TrustMetadata,
 };
 use ail_verify::concurrency_checker::ConcurrencyChecker;
 use ail_verify::report::VerificationState;
@@ -12,7 +12,7 @@ use ail_verify::report::VerificationState;
 fn conc_node(id: u32, name: &str, level: &str, tags: Vec<&str>) -> GraphNode {
     let mut node = GraphNode::new(NodeRef(id), NodeKind::Type, name);
     node.trust_metadata = Some(TrustMetadata {
-        level: level.to_string(),
+        level: TrustLevel::from_str_compat(level),
         tags: tags.into_iter().map(String::from).collect(),
     });
     node

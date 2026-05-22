@@ -144,21 +144,82 @@ pub struct SchemaRef {
     pub version: String,
 }
 
+/// The four canonical trust levels defined in `docs/core-ir.md §1/§13`.
+///
+/// A `Custom` variant is provided for backward-compatible classification tags
+/// (e.g., `"resource:linear"`, `"task"`) that are not one of the four core
+/// trust levels.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrustLevel {
+    /// Code/model proven within the system.
+    Verified,
+    /// External contract assumed without mechanical proof.
+    Assumed,
+    /// Not proven but isolated.
+    Unverified,
+    /// May break guarantees; requires explicit permission.
+    Unsafe,
+    /// Non-standard classification tag for backward compatibility.
+    Custom(String),
+}
+
+impl TrustLevel {
+    /// Return the string representation for downstream code that needs
+    /// string-based matching.
+    pub fn as_str(&self) -> &str {
+        match self {
+            TrustLevel::Verified => "verified",
+            TrustLevel::Assumed => "assumed",
+            TrustLevel::Unverified => "unverified",
+            TrustLevel::Unsafe => "unsafe",
+            TrustLevel::Custom(s) => s.as_str(),
+        }
+    }
+
+    /// Parse a string into a `TrustLevel`, mapping the four canonical values
+    /// to their typed variants and everything else to `Custom`.
+    pub fn from_str_compat(s: &str) -> Self {
+        match s {
+            "verified" => TrustLevel::Verified,
+            "assumed" => TrustLevel::Assumed,
+            "unverified" => TrustLevel::Unverified,
+            "unsafe" => TrustLevel::Unsafe,
+            other => TrustLevel::Custom(other.to_string()),
+        }
+    }
+}
+
 /// Trust metadata associated with a `GraphNode`.
 ///
 /// Records the trust level assigned by the policy layer and an optional
-/// comment string.  The specific trust model (e.g., numeric level, role name)
-/// is defined by the trust-management layer; `ail-core` treats the value as
-/// opaque.
+/// comment string.  The `level` field is a typed `TrustLevel` enum per
+/// `docs/core-ir.md §1/§13`: `verified | assumed | unverified | unsafe`.
 ///
 /// Uses `Vec<String>` for `tags` (not a `HashMap`) to guarantee deterministic
 /// CBOR serialization.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustMetadata {
-    /// Trust level identifier (e.g., `"verified"`, `"unverified"`, `"high"`).
-    pub level: String,
+    /// Trust level — one of the four canonical levels or a custom classification.
+    pub level: TrustLevel,
     /// Ordered tags qualifying the trust level (e.g., `["signed", "reviewed"]`).
     pub tags: Vec<String>,
+}
+
+// ── Span (source location) ────────────────────────────────────────────────
+
+/// Optional reference to a textual view or source location for a `GraphNode`.
+///
+/// Corresponds to `docs/core-ir.md §1 — Span/View`.  Carries the source
+/// file (or view name) and byte offsets so tooling can map IR nodes back to
+/// the generated or authored text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Span {
+    /// Source file or view identifier (e.g., `"src/checkout.ail"`).
+    pub source: String,
+    /// Byte offset of the start of the span (inclusive).
+    pub start: u32,
+    /// Byte offset of the end of the span (exclusive).
+    pub end: u32,
 }
 
 // ── Semantic fact value types ─────────────────────────────────────────────
@@ -655,6 +716,25 @@ pub struct GraphNode {
     /// so that existing CBOR fixtures are byte-identical when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handler_meta: Option<HandlerMeta>,
+
+    // ── doc-alignment: identity fields from docs/core-ir.md §1 ────────────
+
+    /// Optional source location / textual view reference.
+    ///
+    /// Corresponds to `docs/core-ir.md §1 — Span/View`.
+    /// `None` for nodes without a known source location.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<Span>,
+
+    /// Human-readable stable identifier (e.g., `"fn.cart_total"`,
+    /// `"type.Money"`, `"cap.payment.charge"`).
+    ///
+    /// Corresponds to `docs/core-ir.md §1 — NodeId`.  Coexists with
+    /// `NodeRef(u32)` which remains the efficient intra-graph index.
+    /// The `stable_id` is the external-facing, content-addressable identity
+    /// that survives refactors and graph rebuilds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable_id: Option<String>,
 }
 
 impl GraphNode {
@@ -708,6 +788,8 @@ impl GraphNode {
             assertions: vec![],
             workflow_state: None,
             handler_meta: None,
+            span: None,
+            stable_id: None,
         }
     }
 }

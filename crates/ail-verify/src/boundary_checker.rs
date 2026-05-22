@@ -333,7 +333,7 @@ impl BoundaryChecker {
 
 #[cfg(test)]
 mod tests {
-    use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph, TrustMetadata};
+    use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph, TrustLevel, TrustMetadata};
 
     use super::{BoundaryChecker, BoundaryCheckerConfig, E_BOUNDARY_EXPIRED_ASSUMPTION};
     use crate::report::VerificationState;
@@ -341,7 +341,7 @@ mod tests {
     fn boundary_graph(tags: Vec<&str>) -> SemanticGraph {
         let mut node = GraphNode::new(NodeRef(0), NodeKind::Boundary, "test_boundary");
         node.trust_metadata = Some(TrustMetadata {
-            level: "verified".to_string(),
+            level: TrustLevel::Verified,
             tags: tags.into_iter().map(|s| s.to_string()).collect(),
         });
         SemanticGraph { nodes: vec![node], edges: vec![] }

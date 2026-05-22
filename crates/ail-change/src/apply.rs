@@ -350,7 +350,7 @@ fn set_node_metadata(node: &mut GraphNode, key: &str, value: &str) {
         "body" => node.body_expr = Some(value.to_string()),
         _ => {
             let trust = node.trust_metadata.get_or_insert_with(|| TrustMetadata {
-                level: "metadata".to_string(),
+                level: ail_core::semantic_graph::TrustLevel::Custom("metadata".to_string()),
                 tags: vec![],
             });
             let tag = format!("{key}={value}");

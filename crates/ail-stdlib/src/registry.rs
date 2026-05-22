@@ -217,6 +217,8 @@ impl StdlibRegistry {
                 assertions: vec![],
                 workflow_state: None,
                 handler_meta: None,
+                span: None,
+                stable_id: None,
             })
             .collect()
     }

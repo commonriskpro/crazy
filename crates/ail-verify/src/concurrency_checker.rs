@@ -92,7 +92,7 @@ impl ConcurrencyChecker {
 
             let tags = &tm.tags;
             let scope = node.name.clone();
-            let claim = format!("concurrency-safety[{}]", tm.level);
+            let claim = format!("concurrency-safety[{}]", tm.level.as_str());
 
             let (state, evidence) = Self::classify(kind, tags, &scope, node.id, graph);
 

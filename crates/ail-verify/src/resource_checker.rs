@@ -88,7 +88,7 @@ impl ResourceChecker {
 
             let tags = &tm.tags;
             let scope = node.name.clone();
-            let claim = format!("resource-lifecycle[{}]", tm.level);
+            let claim = format!("resource-lifecycle[{}]", tm.level.as_str());
 
             let (state, evidence) = Self::classify_resource(resource_kind, tags, &scope, node.id, graph);
 

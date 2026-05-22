@@ -14,7 +14,8 @@
 //  6. Semantic compose_check upgrades target_fn obligation to RuntimeChecked
 
 use ail_core::semantic_graph::{
-    ContractClauses, GraphNode, NodeKind, NodeRef, SemanticGraph, TrustMetadata, TypeFacts,
+    ContractClauses, GraphNode, NodeKind, NodeRef, SemanticGraph, TrustLevel, TrustMetadata,
+    TypeFacts,
 };
 use ail_verify::pipeline::{PipelineContext, VerificationPipeline};
 use ail_verify::proof::ObligationState;
@@ -45,7 +46,7 @@ fn make_target_graph() -> SemanticGraph {
     // → ResourceChecker emits Unverified with E_RESOURCE_NO_LIFECYCLE_EDGE (T-18)
     let mut resource_db = GraphNode::new(NodeRef(1), NodeKind::Type, "resource_db");
     resource_db.trust_metadata = Some(TrustMetadata {
-        level: "resource:linear".into(),
+        level: TrustLevel::Custom("resource:linear".into()),
         tags: vec![], // no "released" or violation tags
     });
 
@@ -53,7 +54,7 @@ fn make_target_graph() -> SemanticGraph {
     // → ConcurrencyChecker emits Unverified "potential orphan scope" (T-20)
     let mut orphan_task = GraphNode::new(NodeRef(2), NodeKind::Type, "orphan_task");
     orphan_task.trust_metadata = Some(TrustMetadata {
-        level: "task".into(),
+        level: TrustLevel::Custom("task".into()),
         tags: vec![], // no "awaited"/"cancelled"/"transferred"
     });
 
@@ -61,7 +62,7 @@ fn make_target_graph() -> SemanticGraph {
     // → BoundaryChecker emits Failed, blocking=true (T-22)
     let mut expired_api = GraphNode::new(NodeRef(3), NodeKind::Boundary, "expired_api");
     expired_api.trust_metadata = Some(TrustMetadata {
-        level: "boundary".into(),
+        level: TrustLevel::Custom("boundary".into()),
         tags: vec!["has-assumption-expired".into()],
     });
 

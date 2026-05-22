@@ -3,14 +3,14 @@
 // Strict TDD — tests for boundary/FFI trust verification.
 // Spec: verification-pipeline/spec §3 (boundary/FFI trust checker).
 
-use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph, TrustMetadata};
+use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph, TrustLevel, TrustMetadata};
 use ail_verify::boundary_checker::BoundaryChecker;
 use ail_verify::report::VerificationState;
 
 fn boundary_node(id: u32, name: &str, tags: Vec<&str>) -> GraphNode {
     let mut node = GraphNode::new(NodeRef(id), NodeKind::Boundary, name);
     node.trust_metadata = Some(TrustMetadata {
-        level: "boundary".to_string(),
+        level: TrustLevel::Custom("boundary".to_string()),
         tags: tags.into_iter().map(String::from).collect(),
     });
     node

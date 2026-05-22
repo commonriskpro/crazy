@@ -6,7 +6,7 @@
 
 use ail_core::semantic_graph::{
     EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, RefinementRef, RefinementStatus,
-    SemanticGraph, TrustMetadata, TypeFacts,
+    SemanticGraph, TrustLevel, TrustMetadata, TypeFacts,
 };
 use ail_verify::codegen_checker::ArtifactEntry;
 use ail_verify::pipeline::{PipelineContext, VerificationPipeline};
@@ -105,13 +105,13 @@ fn proven_graph_passes_test_profile_policy() {
 fn pipeline_collects_entries_from_multiple_stages() {
     let mut resource_node = GraphNode::new(NodeRef(0), NodeKind::Type, "lock");
     resource_node.trust_metadata = Some(TrustMetadata {
-        level: "resource:linear".into(),
+        level: TrustLevel::Custom("resource:linear".into()),
         tags: vec!["released".into()],
     });
 
     let mut boundary_node = GraphNode::new(NodeRef(1), NodeKind::Boundary, "stripe");
     boundary_node.trust_metadata = Some(TrustMetadata {
-        level: "boundary".into(),
+        level: TrustLevel::Custom("boundary".into()),
         tags: vec![
             "has-trust-level".into(),
             "has-contract".into(),
@@ -245,12 +245,12 @@ fn pipeline_generates_non_contract_obligations_for_refinement_resource_concurren
     });
     let mut resource = GraphNode::new(NodeRef(1), NodeKind::Type, "Lock");
     resource.trust_metadata = Some(TrustMetadata {
-        level: "resource:linear".into(),
+        level: TrustLevel::Custom("resource:linear".into()),
         tags: vec![],
     });
     let mut concurrent = GraphNode::new(NodeRef(2), NodeKind::Function, "worker");
     concurrent.trust_metadata = Some(TrustMetadata {
-        level: "verified".into(),
+        level: TrustLevel::Verified,
         tags: vec!["concurrent".into()],
     });
     let boundary = GraphNode::new(NodeRef(3), NodeKind::Boundary, "ffi.stripe");

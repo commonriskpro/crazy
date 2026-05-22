@@ -284,7 +284,7 @@ impl ProofObligationPipeline {
             if node
                 .trust_metadata
                 .as_ref()
-                .map(|trust| trust.level.starts_with("resource:"))
+                .map(|trust| trust.level.as_str().starts_with("resource:"))
                 .unwrap_or(false)
             {
                 obligations.push(GeneratedObligation {
