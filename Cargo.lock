@@ -87,6 +87,7 @@ dependencies = [
  "ail-change",
  "ail-compiler",
  "ail-core",
+ "ail-package",
  "ail-runtime",
  "ail-storage",
  "ail-verify",

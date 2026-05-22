@@ -324,7 +324,7 @@ pub async fn build_store(db_url: Option<&str>) -> Result<StoreHandle, CliError> 
     }
     // 3. Local file store when the project has been initialized.
     let ail_dir = std::env::current_dir()?.join(".ail");
-    if ail_dir.exists() {
+    if ail_dir.join("HEAD").exists() && ail_dir.join("store").join("objects").exists() {
         return Ok(file_handle(ail_dir));
     }
     // 4. In-memory fallback.
