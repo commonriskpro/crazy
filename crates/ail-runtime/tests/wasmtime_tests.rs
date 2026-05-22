@@ -12,7 +12,7 @@ use ail_compiler::{emit_wasm, lower_to_anf, lower_to_core_ir};
 use ail_core::semantic_graph::SemanticGraph;
 use ail_runtime::{
     CapabilityManifest, PreflightFailure, ResourceLimits, RuntimeError, RuntimeHost,
-    RuntimeProfile, blake3_hex_of,
+    RuntimeProfile, RuntimeValue, blake3_hex_of,
 };
 use ail_verify::report::VerificationReport;
 
@@ -134,6 +134,41 @@ fn compiler_wasm_validates_and_instantiates() {
     let log = host.audit_log();
     assert_eq!(log.len(), 1);
     assert!(log.events()[0].is_passed(), "event must be PreflightPassed");
+}
+
+#[test]
+fn exported_i64_function_can_be_invoked() {
+    let mut module = wasm_encoder::Module::new();
+    let mut types = wasm_encoder::TypeSection::new();
+    types.ty().function([], [wasm_encoder::ValType::I64]);
+    module.section(&types);
+    let mut functions = wasm_encoder::FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut exports = wasm_encoder::ExportSection::new();
+    exports.export("answer", wasm_encoder::ExportKind::Func, 0);
+    module.section(&exports);
+    let mut codes = wasm_encoder::CodeSection::new();
+    let mut function = wasm_encoder::Function::new([]);
+    function.instruction(&wasm_encoder::Instruction::I64Const(42));
+    function.instruction(&wasm_encoder::Instruction::End);
+    codes.function(&function);
+    module.section(&codes);
+    let wasm = module.finish();
+
+    let manifest = CapabilityManifest {
+        module: "invoke-test".to_string(),
+        requires: vec![],
+    };
+    let profile = matching_profile(&wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("WASM must instantiate");
+
+    let value = instance.invoke("answer", &[]).expect("invoke must succeed");
+
+    assert_eq!(value, RuntimeValue::I64(42));
 }
 
 // TRIANGULATE: the 8-byte WASM header (minimal valid module) also succeeds.

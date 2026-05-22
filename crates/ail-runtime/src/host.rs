@@ -56,6 +56,17 @@ use crate::report::{CapabilityCallSummary, RuntimeReport, RuntimeReportStatus};
 use crate::schema::CapabilityDefinition;
 use crate::transaction::TransactionGroup;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuntimeArg {
+    I64(i64),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuntimeValue {
+    I64(i64),
+    Unit,
+}
+
 // ── HostState ─────────────────────────────────────────────────────────────
 
 /// Data carried in the Wasmtime `Store`.
@@ -102,6 +113,25 @@ impl RuntimeInstance {
     /// observing a real Wasmtime `Instance` rather than only a compiled module.
     pub fn export_count(&mut self) -> usize {
         self.instance.exports(&mut self.store).count()
+    }
+
+    pub fn invoke(
+        &mut self,
+        export_name: &str,
+        args: &[RuntimeArg],
+    ) -> RuntimeResult<RuntimeValue> {
+        if !args.is_empty() {
+            return Err(RuntimeError::EncodingError(
+                "only zero-arg exports are supported".to_string(),
+            ));
+        }
+        let func = self
+            .instance
+            .get_typed_func::<(), i64>(&mut self.store, export_name)
+            .map_err(|e| RuntimeError::EncodingError(format!("export `{export_name}`: {e}")))?;
+        func.call(&mut self.store, ())
+            .map(RuntimeValue::I64)
+            .map_err(|e| RuntimeError::EncodingError(format!("invoke `{export_name}`: {e}")))
     }
 }
 
@@ -391,11 +421,7 @@ impl RuntimeHost {
     /// non-rollbackable capability IDs on failure.
     ///
     /// [`execute_with_rollback_detail`]: RuntimeHost::execute_with_rollback_detail
-    pub fn execute_with_rollback<F, T>(
-        &mut self,
-        tx: &mut TransactionGroup,
-        f: F,
-    ) -> HostResult<T>
+    pub fn execute_with_rollback<F, T>(&mut self, tx: &mut TransactionGroup, f: F) -> HostResult<T>
     where
         F: FnOnce(&mut RuntimeHost) -> HostResult<T>,
     {
@@ -459,11 +485,7 @@ impl RuntimeHost {
     /// `id` — caller-supplied report identifier (e.g. a trace ID).
     ///
     /// [`validate_and_instantiate`]: RuntimeHost::validate_and_instantiate
-    pub fn emit_report(
-        &self,
-        status: RuntimeReportStatus,
-        id: impl Into<String>,
-    ) -> RuntimeReport {
+    pub fn emit_report(&self, status: RuntimeReportStatus, id: impl Into<String>) -> RuntimeReport {
         let (profile_name, module_hash, verification_report_hash) = self
             .current_profile
             .as_ref()
@@ -476,10 +498,7 @@ impl RuntimeHost {
             })
             .unwrap_or_default();
 
-        let module_name = self
-            .current_module_name
-            .clone()
-            .unwrap_or_default();
+        let module_name = self.current_module_name.clone().unwrap_or_default();
 
         // Build per-capability summaries from CapabilityCallExecuted events.
         let mut totals: HashMap<String, (u32, u32, u32)> = HashMap::new(); // cap → (total, ok, err)

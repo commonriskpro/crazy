@@ -45,7 +45,10 @@
 use std::collections::BTreeMap;
 
 use ail_core::semantic_graph::NodeRef;
-use wasm_encoder::{CodeSection, Function, FunctionSection, Instruction, Module, TypeSection, ValType};
+use wasm_encoder::{
+    CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, Module,
+    TypeSection, ValType,
+};
 
 use crate::anf::{AnfExpr, AnfIr, SourceMap, SourceMapEntry};
 use crate::artifact_manifest::ArtifactManifest;
@@ -108,8 +111,9 @@ fn build_type_section(n_functions: usize) -> Option<TypeSection> {
         return None;
     }
     let mut types = TypeSection::new();
-    // Single stub type: no params, no results.
+    // Type 0: no params, no results. Type 1: no params, i64 result.
     types.ty().function([], []);
+    types.ty().function([], [ValType::I64]);
     Some(types)
 }
 
@@ -118,15 +122,57 @@ fn build_type_section(n_functions: usize) -> Option<TypeSection> {
 /// Build a function section referencing type index 0 for every function.
 ///
 /// Returns `None` when `n_functions == 0`.
-fn build_function_section(n_functions: usize) -> Option<FunctionSection> {
-    if n_functions == 0 {
+fn binding_result(binding: &crate::anf::AnfBinding) -> Option<ValType> {
+    match &binding.expr {
+        AnfExpr::Literal(LiteralValue::Int(_)) => Some(ValType::I64),
+        AnfExpr::Return(inner)
+            if matches!(inner.as_ref(), AnfExpr::Literal(LiteralValue::Int(_))) =>
+        {
+            Some(ValType::I64)
+        }
+        _ => None,
+    }
+}
+
+fn build_function_section(bindings: &[crate::anf::AnfBinding]) -> Option<FunctionSection> {
+    if bindings.is_empty() {
         return None;
     }
     let mut functions = FunctionSection::new();
-    for _ in 0..n_functions {
-        functions.function(0); // all stubs share type index 0
+    for binding in bindings {
+        functions.function(if binding_result(binding).is_some() {
+            1
+        } else {
+            0
+        });
     }
     Some(functions)
+}
+
+fn export_name(binding_name: &str) -> String {
+    let local = binding_name.rsplit('.').next().unwrap_or(binding_name);
+    local
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn build_export_section(bindings: &[crate::anf::AnfBinding]) -> Option<ExportSection> {
+    let mut exports = ExportSection::new();
+    let mut count = 0usize;
+    for (idx, binding) in bindings.iter().enumerate() {
+        if binding_result(binding).is_some() {
+            exports.export(&export_name(&binding.name), ExportKind::Func, idx as u32);
+            count += 1;
+        }
+    }
+    (count > 0).then_some(exports)
 }
 
 // ── WasmCodegenCtx ────────────────────────────────────────────────────────
@@ -145,14 +191,21 @@ struct WasmCodegenCtx<'a> {
 
 impl<'a> WasmCodegenCtx<'a> {
     fn new() -> Self {
-        WasmCodegenCtx { locals: Vec::new(), next_local: 0 }
+        WasmCodegenCtx {
+            locals: Vec::new(),
+            next_local: 0,
+        }
     }
 
     /// Look up a variable name and return its local index.
     /// Returns `None` if the name is not in scope.
     fn lookup(&self, name: &str) -> Option<u32> {
         // Search from the most-recently-bound end (innermost scope).
-        self.locals.iter().rev().find(|(n, _)| *n == name).map(|(_, i)| *i)
+        self.locals
+            .iter()
+            .rev()
+            .find(|(n, _)| *n == name)
+            .map(|(_, i)| *i)
     }
 
     /// Bind a new name to a fresh local slot and return the slot index.
@@ -220,7 +273,11 @@ fn emit_anf_expr<'a>(
         }
 
         // ── Conditional (short-circuit AND/OR) ────────────────────────────
-        AnfExpr::If { cond, then_branch, else_branch } => {
+        AnfExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             // Condition: look up the atomic variable.
             if let Some(idx) = ctx.lookup(cond) {
                 insns.push(Instruction::LocalGet(idx));
@@ -228,7 +285,9 @@ fn emit_anf_expr<'a>(
                 insns.push(Instruction::I32Const(0));
             }
             // WASM if/else/end block (type: i32 result).
-            insns.push(Instruction::If(wasm_encoder::BlockType::Result(ValType::I32)));
+            insns.push(Instruction::If(wasm_encoder::BlockType::Result(
+                ValType::I32,
+            )));
             emit_anf_expr(then_branch, ctx, insns);
             insns.push(Instruction::Else);
             emit_anf_expr(else_branch, ctx, insns);
@@ -243,7 +302,9 @@ fn emit_anf_expr<'a>(
             } else {
                 insns.push(Instruction::I32Const(0));
             }
-            insns.push(Instruction::If(wasm_encoder::BlockType::Result(ValType::I32)));
+            insns.push(Instruction::If(wasm_encoder::BlockType::Result(
+                ValType::I32,
+            )));
             emit_anf_expr(right, ctx, insns);
             insns.push(Instruction::Else);
             insns.push(Instruction::I32Const(0));
@@ -258,7 +319,9 @@ fn emit_anf_expr<'a>(
             } else {
                 insns.push(Instruction::I32Const(0));
             }
-            insns.push(Instruction::If(wasm_encoder::BlockType::Result(ValType::I32)));
+            insns.push(Instruction::If(wasm_encoder::BlockType::Result(
+                ValType::I32,
+            )));
             insns.push(Instruction::I32Const(1));
             insns.push(Instruction::Else);
             emit_anf_expr(right, ctx, insns);
@@ -431,8 +494,9 @@ fn build_code_section(bindings: &[crate::anf::AnfBinding]) -> Option<CodeSection
 
         emit_anf_expr(&binding.expr, &mut ctx, &mut insns);
 
-        // Function type is () -> () — drop any residual stack value.
-        insns.push(Instruction::Drop);
+        if binding_result(binding).is_none() {
+            insns.push(Instruction::Drop);
+        }
         insns.push(Instruction::End);
 
         // Allocate locals: one i64 slot per let-binding (conservative).
@@ -543,8 +607,11 @@ pub fn emit_wasm(anf: &AnfIr) -> Result<WasmArtifact, CompileError> {
     if let Some(types) = build_type_section(n) {
         module.section(&types);
     }
-    if let Some(functions) = build_function_section(n) {
+    if let Some(functions) = build_function_section(&anf.bindings) {
         module.section(&functions);
+    }
+    if let Some(exports) = build_export_section(&anf.bindings) {
+        module.section(&exports);
     }
     if let Some(codes) = build_code_section(&anf.bindings) {
         module.section(&codes);
@@ -580,7 +647,9 @@ pub fn emit_wasm(anf: &AnfIr) -> Result<WasmArtifact, CompileError> {
             ..entry.clone()
         })
         .collect();
-    let source_map = SourceMap { entries: source_map_entries };
+    let source_map = SourceMap {
+        entries: source_map_entries,
+    };
 
     // Seal: source_map_hash = blake3(source_map_cbor_bytes).
     let source_map_bytes = stable_cbor_bytes(&source_map)?;
@@ -726,5 +795,49 @@ mod tests {
     fn build_type_section_some_for_nonzero() {
         assert!(build_type_section(1).is_some());
         assert!(build_type_section(5).is_some());
+    }
+
+    #[test]
+    fn emit_wasm_exports_literal_function_name() {
+        use crate::anf::AnfBinding;
+        use wasmparser::{ExternalKind, Parser, Payload};
+
+        let binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.answer".to_string(),
+            expr: AnfExpr::Literal(LiteralValue::Int(42)),
+        };
+        let anf = AnfIr {
+            schema_version: crate::anf::ANF_SCHEMA_VERSION,
+            bindings: vec![binding.clone()],
+            source_map: SourceMap::from_bindings(&[binding]),
+            stage_hashes: StageHashes {
+                graph_snapshot_hash: [0u8; 32],
+                verification_report_hash: [0u8; 32],
+                core_ir_hash: [1u8; 32],
+                anf_ir_hash: Some([2u8; 32]),
+                wasm_hash: None,
+                native_hash: None,
+                source_map_hash: None,
+                artifact_manifest_hash: None,
+            },
+        };
+
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let mut found = false;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::ExportSection(exports) = payload.unwrap() {
+                for export in exports {
+                    let export = export.unwrap();
+                    if export.name == "answer" && export.kind == ExternalKind::Func {
+                        found = true;
+                    }
+                }
+            }
+        }
+
+        assert!(found, "expected function export named answer");
     }
 }

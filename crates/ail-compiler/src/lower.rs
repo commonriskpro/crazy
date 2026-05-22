@@ -501,6 +501,14 @@ pub fn nominal_to_core_type(nominal: &str) -> CoreType {
     }
 }
 
+fn literal_expr_from_runtime_checks(
+    checks: Option<&Vec<ail_core::semantic_graph::RuntimeCheckMeta>>,
+) -> Option<CoreExpr> {
+    let predicate = checks?.first()?.predicate.strip_prefix("literal:i64=")?;
+    let value = predicate.parse::<i64>().ok()?;
+    Some(CoreExpr::Literal(LiteralValue::Int(value)))
+}
+
 // ── lower_to_core_ir ──────────────────────────────────────────────────────
 
 /// Lower a verified `SemanticGraph` into a `CoreIr`.
@@ -559,7 +567,7 @@ pub fn lower_to_core_ir(
                 .type_facts
                 .as_ref()
                 .map(|tf| nominal_to_core_type(&tf.nominal)),
-            expr: None,
+            expr: literal_expr_from_runtime_checks(gn.runtime_checks.as_ref()),
         })
         .collect();
 
@@ -1020,6 +1028,29 @@ mod tests {
             core.nodes[0].ty,
             Some(CoreType::Int),
             "node with TypeFacts.nominal=Int must get ty=Some(CoreType::Int)"
+        );
+    }
+
+    #[test]
+    fn lower_to_core_ir_maps_literal_function_value_to_expr() {
+        use ail_core::semantic_graph::RuntimeCheckMeta;
+
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.answer");
+        node.return_type = Some("Int".to_string());
+        node.runtime_checks = Some(vec![RuntimeCheckMeta {
+            predicate: "literal:i64=42".to_string(),
+            hash: "literal-hash".to_string(),
+        }]);
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
+
+        let core = lower_to_core_ir(&graph, &proven_report()).unwrap();
+
+        assert_eq!(
+            core.nodes[0].expr,
+            Some(CoreExpr::Literal(LiteralValue::Int(42)))
         );
     }
 
