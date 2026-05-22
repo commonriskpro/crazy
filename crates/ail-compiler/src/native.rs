@@ -1922,4 +1922,89 @@ mod tests {
         assert_ne!(art.native_bytes, ph.native_bytes,
             "RuntimeCheck must produce different bytes than Placeholder");
     }
+
+    // ── TASK-G0: RecordNew / FieldGet / FieldUpdate — RED ────────────────
+
+    fn anf_with_record(fields: Vec<(&str, i64)>) -> AnfIr {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let field_exprs: Vec<(String, AnfExpr)> = fields.into_iter()
+            .map(|(f, v)| (f.to_string(), AnfExpr::Literal(LiteralValue::Int(v))))
+            .collect();
+        anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::RecordNew { fields: field_exprs },
+        })
+    }
+
+    #[test]
+    fn native_record_new_differs_from_placeholder() {
+        let art = emit_native(&anf_with_record(vec![("x", 1), ("y", 2)])).unwrap();
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "RecordNew must produce different bytes than Placeholder");
+        assert_eq!(
+            infer_cranelift_return_type(&crate::anf::AnfExpr::RecordNew {
+                fields: vec![("x".to_string(), crate::anf::AnfExpr::Literal(
+                    crate::core_ir::LiteralValue::Int(1)))],
+            }),
+            Some(cranelift_codegen::ir::types::I64)
+        );
+    }
+
+    #[test]
+    fn native_field_get_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "r".to_string(),
+                value: Box::new(AnfExpr::RecordNew {
+                    fields: vec![("x".to_string(), AnfExpr::Literal(LiteralValue::Int(10)))],
+                }),
+                body: Box::new(AnfExpr::FieldGet {
+                    record: "r".to_string(),
+                    field: "x".to_string(),
+                }),
+            },
+        });
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        let art = emit_native(&anf).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "FieldGet must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_field_update_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "r".to_string(),
+                value: Box::new(AnfExpr::RecordNew {
+                    fields: vec![("x".to_string(), AnfExpr::Literal(LiteralValue::Int(1)))],
+                }),
+                body: Box::new(AnfExpr::FieldUpdate {
+                    record: "r".to_string(),
+                    field: "x".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(99))),
+                }),
+            },
+        });
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        let art = emit_native(&anf).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "FieldUpdate must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_record_zero_fields_compiles() {
+        let art = emit_native(&anf_with_record(vec![]));
+        assert!(art.is_ok(), "RecordNew{{[]}} must compile without panic");
+    }
 }
