@@ -204,7 +204,7 @@ mod tests {
         let codec = CborCodec;
         let query = ContextQuery::Graph {
             scope: QueryScope::Full,
-            budget: usize::MAX,
+            budget: ail_context::QueryBudget::default(),
         };
         let query_bytes = codec.encode(&query).expect("encode query");
         let query_hash = *blake3::hash(&query_bytes).as_bytes();

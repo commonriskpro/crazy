@@ -56,7 +56,7 @@ fn context_builder_produces_non_empty_summary_from_self_model() {
     let query = ContextQuery::Node {
         target: NodeRef(0),
         scope: QueryScope::Full,
-        budget: usize::MAX,
+        budget: ail_context::QueryBudget::default(),
     };
 
     let response = ResponseBuilder::build(&query, &graph, &snapshot, &redacted)

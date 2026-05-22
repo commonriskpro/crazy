@@ -85,18 +85,12 @@ fn matching_base_snapshot_returns_applied_and_graph_reflects_ops() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(1),
-        acl_version: "1.0".to_string(),
-        preconditions: vec![],
         ops: vec![
             create_op(graph_node(0, NodeKind::Module, "mod_a")),
             create_op(graph_node(1, NodeKind::Function, "fn_b")),
             connect_op(graph_edge(0, 1, EdgeKind::DependsOn)),
         ],
-        expect: None,
-        approval: None,
-        composition: Default::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     };
 
     let outcome = apply(cs, &mut graph, &bridge);
@@ -124,14 +118,7 @@ fn matching_base_with_no_ops_returns_applied() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(5),
-        acl_version: "1.0".to_string(),
-        preconditions: vec![],
-        ops: vec![],
-        expect: None,
-        approval: None,
-        composition: Default::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     };
 
     let outcome = apply(cs, &mut graph, &bridge);
@@ -151,18 +138,12 @@ fn stale_base_snapshot_returns_rebase_required_with_graph_unmodified() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(1), // stale: 1 ≠ 99
-        acl_version: "1.0".to_string(),
-        preconditions: vec![],
         ops: vec![create_op(graph_node(
             0,
             NodeKind::Module,
             "should_not_appear",
         ))],
-        expect: None,
-        approval: None,
-        composition: Default::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     };
 
     let pre_graph = graph.clone();
@@ -190,14 +171,7 @@ fn stale_base_zero_vs_nonzero_also_returns_rebase_required() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(1), // 1 ≠ 0
-        acl_version: "1.0".to_string(),
-        preconditions: vec![],
-        ops: vec![],
-        expect: None,
-        approval: None,
-        composition: Default::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     };
 
     let outcome = apply(cs, &mut graph, &bridge);
@@ -222,19 +196,13 @@ fn mid_apply_op_failure_returns_failed_and_graph_is_rolled_back() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(1),
-        acl_version: "1.0".to_string(),
-        preconditions: vec![],
         ops: vec![
             create_op(graph_node(1, NodeKind::Module, "mod_a")),
             create_op(graph_node(2, NodeKind::Function, "fn_b")),
             // Op 3: duplicate NodeRef(1) — violates graph invariants
             create_op(graph_node(1, NodeKind::Type, "duplicate_id")),
         ],
-        expect: None,
-        approval: None,
-        composition: Default::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     };
 
     let pre_apply_graph = graph.clone();
@@ -263,7 +231,6 @@ fn assert_exists_on_missing_node_triggers_failed_and_rollback() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(1),
-        acl_version: "1.0".to_string(),
         preconditions: vec![Precondition::AssertExists(AssertExists {
             node_id: NodeRef(99),
         })],
@@ -272,11 +239,7 @@ fn assert_exists_on_missing_node_triggers_failed_and_rollback() {
             NodeKind::Module,
             "should_not_be_created",
         ))],
-        expect: None,
-        approval: None,
-        composition: Default::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     };
 
     let pre_graph = graph.clone();
@@ -303,16 +266,11 @@ fn assert_exists_on_present_node_allows_apply_to_proceed() {
     let cs = CanonicalChangeSet {
         meta: canonical_meta(),
         base_snapshot_id: SnapshotId(1),
-        acl_version: "1.0".to_string(),
         preconditions: vec![Precondition::AssertExists(AssertExists {
             node_id: NodeRef(0),
         })],
         ops: vec![create_op(graph_node(1, NodeKind::Function, "fn_new"))],
-        expect: None,
-        approval: None,
-        composition: Default::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     };
 
     let outcome = apply(cs, &mut graph, &bridge);

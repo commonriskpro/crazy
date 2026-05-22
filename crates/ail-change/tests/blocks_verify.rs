@@ -261,14 +261,9 @@ fn canonicalize_parsed_normalizes_id_args() {
             base_snapshot_id: SnapshotId(0),
             ops: vec![ChangeSetOp::Create],
         },
-        preconditions: vec![],
         parsed_ops: vec![parsed_op],
         acl_version: "1.0".to_string(),
-        expect: None,
-        approval: None,
-        composition: ChangeComposition::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     };
 
     let canonical = canonicalize_parsed(pcs);
@@ -310,14 +305,9 @@ fn create_type_without_derive_gets_derive_none_default() {
             base_snapshot_id: SnapshotId(0),
             ops: vec![ChangeSetOp::Create],
         },
-        preconditions: vec![],
         parsed_ops: vec![parsed_op],
         acl_version: "1.0".to_string(),
-        expect: None,
-        approval: None,
-        composition: ChangeComposition::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     };
 
     let canonical = canonicalize_parsed(pcs);
@@ -355,14 +345,9 @@ fn create_type_with_explicit_derive_is_preserved() {
             base_snapshot_id: SnapshotId(0),
             ops: vec![ChangeSetOp::Create],
         },
-        preconditions: vec![],
         parsed_ops: vec![parsed_op],
         acl_version: "1.0".to_string(),
-        expect: None,
-        approval: None,
-        composition: ChangeComposition::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     };
 
     let canonical = canonicalize_parsed(pcs);

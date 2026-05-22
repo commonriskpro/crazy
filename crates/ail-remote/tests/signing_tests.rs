@@ -39,7 +39,7 @@ fn make_context_response(tag: &[u8]) -> ContextResponse {
     let structured = Vec::new();
     let query = ContextQuery::Graph {
         scope: ail_context::QueryScope::Full,
-        budget: usize::MAX,
+        budget: ail_context::QueryBudget::default(),
     };
     let query_bytes = codec.encode(&query).expect("encode query");
     let query_hash = *blake3::hash(&query_bytes).as_bytes();

@@ -232,10 +232,28 @@ impl Default for CanonicalOp {
 /// pre-apply graph clone (rollback).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Precondition {
-    /// The referenced node must exist in the graph.
+    /// The referenced node must exist in the graph (numeric NodeRef form).
     AssertExists(AssertExists),
-    /// The referenced node's canonical hash must match the expected value.
+    /// The referenced node's canonical hash must match the expected value (numeric form).
     AssertHash(AssertHash),
+    /// The named node (e.g. `type.Cart`) must exist in the graph.
+    AssertExistsByName(String),
+    /// The named node's canonical hash must match the expected value.
+    AssertHashByName {
+        /// Stable graph name of the node (e.g. `fn.cart_total`).
+        name: String,
+        /// Expected blake3 hash of the node's canonical encoding.
+        expected_hash: BlockHash,
+    },
+    /// A context slice hash assertion: verifies that the named node exists
+    /// and — when a context hash is supplied — that it matches the recorded
+    /// context slice hash (tool: `ail context <target>`).
+    AssertContext {
+        /// Stable graph name of the target (e.g. `fn.checkout`).
+        target_name: String,
+        /// Optional context hash returned by `ail context <target> --json`.
+        context_hash: Option<String>,
+    },
 }
 
 // ── CanonicalChangeSet ────────────────────────────────────────────────────
@@ -249,15 +267,35 @@ pub enum Precondition {
 /// `composition`, `blocks`, `verify`) are carried through so downstream
 /// consumers (verifier, policy engine) can inspect them without re-parsing
 /// the submitted text.
+///
+/// ## Schema versions (§Versioning y schema evolution)
+///
+/// The five schema version fields are carried through from `ParsedChangeSet`
+/// unchanged. They default to `None` when absent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalChangeSet {
     /// Canonicalized authorship and intent metadata.
     pub meta: CanonicalMeta,
     /// Snapshot identity against which this changeset was authored.
     pub base_snapshot_id: SnapshotId,
-    /// ACL language version (defaults to `"1.0"`).
+    /// ACL language syntax version (defaults to `"1.0"`).
     #[serde(default = "default_acl_version")]
     pub acl_version: String,
+    /// Op-schema version declared by this changeset (`op_schema <N>`).
+    #[serde(default)]
+    pub op_schema_version: Option<String>,
+    /// Semantic Graph schema version (`graph_schema <N>`).
+    #[serde(default)]
+    pub graph_schema_version: Option<String>,
+    /// Core IR schema version (`core_ir_schema <N>`).
+    #[serde(default)]
+    pub core_ir_schema_version: Option<String>,
+    /// Diagnostics format version (`diagnostics_schema <N>`).
+    #[serde(default)]
+    pub diagnostics_schema_version: Option<String>,
+    /// Verification report format version (`verification_schema <N>`).
+    #[serde(default)]
+    pub verification_schema_version: Option<String>,
     /// Preconditions evaluated before any op is applied.
     pub preconditions: Vec<Precondition>,
     /// Phase-ordered, hash-stamped operations.
@@ -289,6 +327,11 @@ impl Default for CanonicalChangeSet {
             },
             base_snapshot_id: SnapshotId(0),
             acl_version: default_acl_version(),
+            op_schema_version: None,
+            graph_schema_version: None,
+            core_ir_schema_version: None,
+            diagnostics_schema_version: None,
+            verification_schema_version: None,
             preconditions: Vec::new(),
             ops: Vec::new(),
             expect: None,
@@ -422,6 +465,11 @@ pub fn canonicalize(cs: ChangeSet) -> CanonicalChangeSet {
         },
         base_snapshot_id: cs.base_snapshot_id,
         acl_version: "1.0".to_string(),
+        op_schema_version: None,
+        graph_schema_version: None,
+        core_ir_schema_version: None,
+        diagnostics_schema_version: None,
+        verification_schema_version: None,
         preconditions: vec![],
         ops: canonical_ops,
         expect: None,
@@ -654,6 +702,11 @@ fn canonicalize_parsed_inner(pcs: ParsedChangeSet) -> CanonicalChangeSet {
         },
         base_snapshot_id: pcs.changeset.base_snapshot_id,
         acl_version: pcs.acl_version,
+        op_schema_version: pcs.op_schema_version,
+        graph_schema_version: pcs.graph_schema_version,
+        core_ir_schema_version: pcs.core_ir_schema_version,
+        diagnostics_schema_version: pcs.diagnostics_schema_version,
+        verification_schema_version: pcs.verification_schema_version,
         preconditions: pcs.preconditions,
         ops: canonical_ops,
         expect: pcs.expect,
