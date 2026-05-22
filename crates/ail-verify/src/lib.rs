@@ -25,6 +25,7 @@ pub mod contract_checker;
 pub mod diagnostic;
 pub mod effect_checker;
 pub mod package_checker;
+pub mod policy;
 pub mod proof;
 pub mod report;
 pub mod solver;
@@ -34,3 +35,6 @@ pub mod type_checker;
 pub mod z3_solver;
 
 pub use package_checker::PackageTrustChecker;
+pub use policy::{
+    ApprovalRecord, PolicyDecision, PolicyEngine, PolicyInput, PolicyRule, PolicyViolation,
+};
