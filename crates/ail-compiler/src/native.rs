@@ -1231,4 +1231,77 @@ mod tests {
             "Let+Add must produce different code than a Placeholder trap stub"
         );
     }
+
+    // ── TASK-C0: Seq, RuntimeCheck — RED ──────────────────────────────────
+
+    #[test]
+    fn native_seq_emits_last_value() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        // Triangulation: two Seqs that differ only in last element must produce
+        // different bytes once Seq is properly lowered.
+        // RED: currently both hit catch-all trap → identical bytes.
+        let seq_a = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Seq(vec![
+                AnfExpr::Literal(LiteralValue::Int(1)),
+                AnfExpr::Literal(LiteralValue::Int(2)),
+            ]),
+        });
+        let seq_b = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Seq(vec![
+                AnfExpr::Literal(LiteralValue::Int(1)),
+                AnfExpr::Literal(LiteralValue::Int(5)),
+            ]),
+        });
+        let art_a = emit_native(&seq_a).unwrap();
+        let art_b = emit_native(&seq_b).unwrap();
+        assert_ne!(art_a.native_bytes, art_b.native_bytes,
+            "Seq([Int(1), Int(2)]) and Seq([Int(1), Int(5)]) must produce different bytes");
+        // infer_return_type should be Some for the last element
+        assert_eq!(
+            infer_cranelift_return_type(&AnfExpr::Seq(vec![
+                AnfExpr::Literal(LiteralValue::Int(1)),
+                AnfExpr::Literal(LiteralValue::Int(2)),
+            ])),
+            Some(cranelift_codegen::ir::types::I64)
+        );
+    }
+
+    #[test]
+    fn native_seq_empty_compiles() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Seq(vec![]),
+        });
+        assert!(emit_native(&anf).is_ok(), "Seq([]) must compile without panic");
+    }
+
+    #[test]
+    fn native_runtime_check_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "ok".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                body: Box::new(AnfExpr::RuntimeCheck {
+                    check_ref: "c1".to_string(),
+                    cond: "ok".to_string(),
+                    msg: "err".to_string(),
+                }),
+            },
+        });
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        let art = emit_native(&anf).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "RuntimeCheck must produce different bytes than Placeholder");
+    }
 }
