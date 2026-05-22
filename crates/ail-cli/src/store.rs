@@ -12,10 +12,13 @@
 // `build_store` constructs the appropriate variant from the optional URL and
 // is the sole entry-point for store creation in the CLI.
 
+use ail_core::semantic_graph::SemanticGraph;
 use ail_storage::{
     GraphStore, ObjectBackedGraphStore, PostgresGraphStore, SnapshotEnvelope,
-    backends::memory::MemoryObjectStore, error::StorageResult, graph::ChangeSetLogEntry,
-    object::ObjectId,
+    backends::memory::MemoryObjectStore,
+    error::StorageResult,
+    graph::ChangeSetLogEntry,
+    object::{ObjectId, ObjectStore, RawObject},
 };
 
 use crate::error::CliError;
@@ -28,7 +31,10 @@ use crate::error::CliError;
 /// heap allocation overhead in a short-lived CLI process.
 pub enum StoreHandle {
     /// In-memory store — no persistence across invocations.
-    Memory(ObjectBackedGraphStore<MemoryObjectStore>),
+    Memory {
+        graph: ObjectBackedGraphStore<MemoryObjectStore>,
+        objects: MemoryObjectStore,
+    },
     /// Postgres-backed durable store.
     Postgres(PostgresGraphStore),
 }
@@ -37,7 +43,7 @@ impl StoreHandle {
     /// Save a snapshot envelope; delegates to the active backend.
     pub async fn save_snapshot(&self, env: &SnapshotEnvelope) -> StorageResult<ObjectId> {
         match self {
-            StoreHandle::Memory(s) => s.save_snapshot(env).await,
+            StoreHandle::Memory { graph, .. } => graph.save_snapshot(env).await,
             StoreHandle::Postgres(s) => s.save_snapshot(env).await,
         }
     }
@@ -45,7 +51,7 @@ impl StoreHandle {
     /// Load a snapshot envelope by its id; delegates to the active backend.
     pub async fn load_snapshot(&self, id: &ObjectId) -> StorageResult<Option<SnapshotEnvelope>> {
         match self {
-            StoreHandle::Memory(s) => s.load_snapshot(id).await,
+            StoreHandle::Memory { graph, .. } => graph.load_snapshot(id).await,
             StoreHandle::Postgres(s) => s.load_snapshot(id).await,
         }
     }
@@ -53,7 +59,7 @@ impl StoreHandle {
     /// Append a changeset log entry; delegates to the active backend.
     pub async fn append_changeset_log(&self, entry: &ChangeSetLogEntry) -> StorageResult<ObjectId> {
         match self {
-            StoreHandle::Memory(s) => s.append_changeset_log(entry).await,
+            StoreHandle::Memory { graph, .. } => graph.append_changeset_log(entry).await,
             StoreHandle::Postgres(s) => s.append_changeset_log(entry).await,
         }
     }
@@ -61,8 +67,35 @@ impl StoreHandle {
     /// List all saved snapshot envelopes; delegates to the active backend.
     pub async fn list_snapshots(&self) -> StorageResult<Vec<SnapshotEnvelope>> {
         match self {
-            StoreHandle::Memory(s) => s.list_snapshots().await,
+            StoreHandle::Memory { graph, .. } => graph.list_snapshots().await,
             StoreHandle::Postgres(s) => s.list_snapshots().await,
+        }
+    }
+
+    /// Store a semantic graph as a content-addressed object and return its root hash.
+    pub async fn save_graph(&self, graph: &SemanticGraph) -> Result<ObjectId, CliError> {
+        let mut bytes = Vec::new();
+        ciborium::into_writer(graph, &mut bytes)
+            .map_err(|e| CliError::Domain(format!("graph encoding failed: {e}")))?;
+
+        match self {
+            StoreHandle::Memory { objects, .. } => Ok(objects.put(RawObject(bytes)).await?),
+            StoreHandle::Postgres(_) => Ok(ObjectId::from_bytes(&bytes)),
+        }
+    }
+
+    /// Load a semantic graph object by its content-addressed root hash.
+    pub async fn load_graph(&self, root: &ObjectId) -> Result<Option<SemanticGraph>, CliError> {
+        match self {
+            StoreHandle::Memory { objects, .. } => {
+                let Some(raw) = objects.get(root).await? else {
+                    return Ok(None);
+                };
+                ciborium::from_reader(raw.0.as_slice())
+                    .map(Some)
+                    .map_err(|e| CliError::Domain(format!("graph decoding failed: {e}")))
+            }
+            StoreHandle::Postgres(_) => Ok(None),
         }
     }
 }
@@ -90,9 +123,7 @@ pub async fn build_store(db_url: Option<&str>) -> Result<StoreHandle, CliError> 
         return connect_postgres(&url).await;
     }
     // 3. In-memory fallback.
-    Ok(StoreHandle::Memory(ObjectBackedGraphStore::new(
-        MemoryObjectStore::new(),
-    )))
+    Ok(memory_handle())
 }
 
 async fn connect_postgres(url: &str) -> Result<StoreHandle, CliError> {
@@ -106,7 +137,15 @@ async fn connect_postgres(url: &str) -> Result<StoreHandle, CliError> {
 /// environment. Not part of the public production API.
 #[cfg(test)]
 pub fn memory_store() -> StoreHandle {
-    StoreHandle::Memory(ObjectBackedGraphStore::new(MemoryObjectStore::new()))
+    memory_handle()
+}
+
+fn memory_handle() -> StoreHandle {
+    let objects = MemoryObjectStore::new();
+    StoreHandle::Memory {
+        graph: ObjectBackedGraphStore::new(objects.clone()),
+        objects,
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -124,7 +163,7 @@ mod tests {
     fn memory_store_returns_memory_variant() {
         let store = memory_store();
         assert!(
-            matches!(store, StoreHandle::Memory(_)),
+            matches!(store, StoreHandle::Memory { .. }),
             "memory_store must produce Memory backend"
         );
     }
@@ -167,5 +206,24 @@ mod tests {
         let list = store.list_snapshots().await.expect("list must succeed");
         assert_eq!(list.len(), 1, "exactly one snapshot must be listed");
         assert_eq!(list[0].id, id, "listed snapshot must match saved id");
+    }
+
+    // Scenario: Semantic graph object roundtrips through memory storage.
+    #[tokio::test]
+    async fn store_handle_saves_and_loads_graph() {
+        let store = memory_store();
+        let graph = SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
+
+        let root = store.save_graph(&graph).await.expect("save graph");
+        let loaded = store
+            .load_graph(&root)
+            .await
+            .expect("load graph")
+            .expect("graph object must exist");
+
+        assert_eq!(loaded, graph, "loaded graph must match saved graph");
     }
 }
