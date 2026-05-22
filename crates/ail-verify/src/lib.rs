@@ -52,14 +52,16 @@ pub mod z3_solver;
 
 pub use package_checker::PackageTrustChecker;
 pub use policy::{
-    ApprovalRecord, ApprovalStrength, CapabilityGrant, PackageTrustEntry, PolicyAudit,
-    PolicyAuditEntry, PolicyDecision, PolicyEngine, PolicyInput, PolicyRule, PolicyViolation,
-    PolicyWarning, PublicApiChange, StructuralDiff, POLICY_ASSUMED_UNAPPROVED,
+    ApprovalRecord, ApprovalStrength, CapabilityGrant, POLICY_ASSUMED_UNAPPROVED,
     POLICY_PROFILE_GATE, POLICY_PUBLIC_API_CHANGED, POLICY_UNSAFE_BLOCKED,
-    POLICY_UNVERIFIED_PUBLIC_API, POLICY_WEAK_ASSUMPTION,
+    POLICY_UNVERIFIED_PUBLIC_API, POLICY_WEAK_ASSUMPTION, PackageTrustEntry, PolicyAudit,
+    PolicyAuditEntry, PolicyDecision, PolicyEngine, PolicyInput, PolicyRule, PolicyViolation,
+    PolicyWarning, PublicApiChange, StructuralDiff,
 };
 pub use proof::{
     ClauseRole, ObligationAttempt, ObligationLedgerEntry, ObligationState, ProofObligation,
     ProofObligationPipeline,
 };
-pub use report::{ArtifactHash, DegradationEvent, VerificationEntry, VerificationReport, VerificationState};
+pub use report::{
+    ArtifactHash, DegradationEvent, VerificationEntry, VerificationReport, VerificationState,
+};

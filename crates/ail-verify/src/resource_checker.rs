@@ -89,8 +89,7 @@ impl ResourceChecker {
             let scope = node.name.clone();
             let claim = format!("resource-lifecycle[{}]", tm.level);
 
-            let (state, evidence) =
-                Self::classify_resource(resource_kind, tags, &scope);
+            let (state, evidence) = Self::classify_resource(resource_kind, tags, &scope);
 
             // Emit diagnostics for blocking violations
             match state {
@@ -102,32 +101,28 @@ impl ResourceChecker {
                     } else {
                         E_LINEAR_NOT_CONSUMED
                     };
-                    diagnostics.push(
-                        Diagnostic {
-                            code: code.to_string(),
-                            severity: DiagnosticSeverity::Error,
-                            target: node.id,
-                            evidence: evidence.clone(),
-                            expected: None,
-                            actual: None,
-                            repair_options: vec![],
-                            blocking: true,
-                        }
-                    );
+                    diagnostics.push(Diagnostic {
+                        code: code.to_string(),
+                        severity: DiagnosticSeverity::Error,
+                        target: node.id,
+                        evidence: evidence.clone(),
+                        expected: None,
+                        actual: None,
+                        repair_options: vec![],
+                        blocking: true,
+                    });
                 }
                 VerificationState::Unsafe => {
-                    diagnostics.push(
-                        Diagnostic {
-                            code: E_SHARED_WITHOUT_SAFE_CAPABILITY.to_string(),
-                            severity: DiagnosticSeverity::Error,
-                            target: node.id,
-                            evidence: evidence.clone(),
-                            expected: None,
-                            actual: None,
-                            repair_options: vec![],
-                            blocking: true,
-                        }
-                    );
+                    diagnostics.push(Diagnostic {
+                        code: E_SHARED_WITHOUT_SAFE_CAPABILITY.to_string(),
+                        severity: DiagnosticSeverity::Error,
+                        target: node.id,
+                        evidence: evidence.clone(),
+                        expected: None,
+                        actual: None,
+                        repair_options: vec![],
+                        blocking: true,
+                    });
                 }
                 _ => {}
             }
@@ -259,8 +254,7 @@ fn compute_counts(entries: &[VerificationEntry]) -> SummaryCounts {
         verified_count: entries
             .iter()
             .filter(|e| {
-                e.state == VerificationState::Proven
-                    || e.state == VerificationState::RuntimeChecked
+                e.state == VerificationState::Proven || e.state == VerificationState::RuntimeChecked
             })
             .count(),
         runtime_checked_count: entries

@@ -222,11 +222,7 @@ mod tests {
         reg.create_tag("v2.0", snap_id(2), 2000, Some(meta.clone()))
             .await
             .expect("create");
-        let tag = reg
-            .get_tag("v2.0")
-            .await
-            .expect("get")
-            .expect("must exist");
+        let tag = reg.get_tag("v2.0").await.expect("get").expect("must exist");
         assert_eq!(tag.release_metadata, Some(meta));
     }
 

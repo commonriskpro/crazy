@@ -23,10 +23,10 @@ use ail_compiler::{
     AnfExpr, CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, StageHashes,
     lower_to_anf, lower_to_core_ir,
 };
-#[allow(unused_imports)]
-use ciborium;
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_verify::report::VerificationReport;
+#[allow(unused_imports)]
+use ciborium;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -628,7 +628,10 @@ fn lower_to_anf_populates_source_map() {
         .entries
         .iter()
         .any(|e| e.node_id == NodeRef(7));
-    assert!(has_node_7, "source_map must contain an entry with node_id == NodeRef(7)");
+    assert!(
+        has_node_7,
+        "source_map must contain an entry with node_id == NodeRef(7)"
+    );
 }
 
 // R2-S3: SourceMap::from_bindings maps binding names to node_ids.
@@ -689,7 +692,10 @@ fn and_lowers_to_short_circuit_and() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert!(out.is_empty(), "Var left must not produce synthetic bindings");
+    assert!(
+        out.is_empty(),
+        "Var left must not produce synthetic bindings"
+    );
     match result {
         AnfExpr::ShortCircuitAnd { left, right } => {
             assert_eq!(left, "a");
@@ -753,7 +759,11 @@ fn effect_call_lowers_correctly() {
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
     assert!(out.is_empty(), "Var arg must not produce bindings");
     match result {
-        AnfExpr::EffectCall { capability, func, args } => {
+        AnfExpr::EffectCall {
+            capability,
+            func,
+            args,
+        } => {
             assert_eq!(capability, "database");
             assert_eq!(func, "read");
             assert_eq!(args, vec!["cart_id"]);
@@ -773,10 +783,18 @@ fn effect_call_atomizes_non_var_args() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert_eq!(out.len(), 1, "Literal arg must produce one synthetic binding");
+    assert_eq!(
+        out.len(),
+        1,
+        "Literal arg must produce one synthetic binding"
+    );
     match result {
         AnfExpr::EffectCall { args, .. } => {
-            assert!(args[0].starts_with("anf_"), "arg must be synthetic: {}", args[0]);
+            assert!(
+                args[0].starts_with("anf_"),
+                "arg must be synthetic: {}",
+                args[0]
+            );
         }
         other => panic!("expected EffectCall, got {other:?}"),
     }
@@ -797,7 +815,11 @@ fn dispatch_lowers_correctly() {
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
     assert!(out.is_empty());
     match result {
-        AnfExpr::Dispatch { handler, method, args } => {
+        AnfExpr::Dispatch {
+            handler,
+            method,
+            args,
+        } => {
             assert_eq!(handler, "PaymentProvider");
             assert_eq!(method, "charge");
             assert_eq!(args, vec!["amount"]);
@@ -882,9 +904,16 @@ fn runtime_check_lowers_correctly() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert!(out.is_empty(), "Var cond must not produce synthetic bindings");
+    assert!(
+        out.is_empty(),
+        "Var cond must not produce synthetic bindings"
+    );
     match result {
-        AnfExpr::RuntimeCheck { check_ref, cond, msg } => {
+        AnfExpr::RuntimeCheck {
+            check_ref,
+            cond,
+            msg,
+        } => {
             assert_eq!(check_ref, "contract.balance_non_negative");
             assert_eq!(cond, "is_valid");
             assert_eq!(msg, "balance must be non-negative");
@@ -969,7 +998,10 @@ fn resource_release_atomizes_non_var_handle() {
     assert_eq!(out.len(), 1, "Call handle must be let-bound");
     match result {
         AnfExpr::ResourceRelease { handle } => {
-            assert!(handle.starts_with("anf_"), "handle must be synthetic: {handle}");
+            assert!(
+                handle.starts_with("anf_"),
+                "handle must be synthetic: {handle}"
+            );
         }
         other => panic!("expected ResourceRelease, got {other:?}"),
     }
@@ -981,12 +1013,19 @@ fn resource_release_atomizes_non_var_handle() {
 #[test]
 fn record_new_literal_field_is_let_bound() {
     let expr = CoreExpr::RecordNew {
-        fields: vec![("price".to_string(), CoreExpr::Literal(LiteralValue::Int(99)))],
+        fields: vec![(
+            "price".to_string(),
+            CoreExpr::Literal(LiteralValue::Int(99)),
+        )],
     };
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert_eq!(out.len(), 1, "Literal field must produce one synthetic binding");
+    assert_eq!(
+        out.len(),
+        1,
+        "Literal field must produce one synthetic binding"
+    );
     match result {
         AnfExpr::RecordNew { fields } => {
             // Field value must be a Var referring to the synthetic binding.
@@ -1006,7 +1045,11 @@ fn tuple_new_literal_elements_are_let_bound() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert_eq!(out.len(), 2, "Two Literal elements → two synthetic bindings");
+    assert_eq!(
+        out.len(),
+        2,
+        "Two Literal elements → two synthetic bindings"
+    );
     match result {
         AnfExpr::TupleNew(elems) => {
             assert!(matches!(elems[0], AnfExpr::Var(_)));
@@ -1026,7 +1069,11 @@ fn variant_new_literal_payload_is_let_bound() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert_eq!(out.len(), 1, "Literal payload must produce one synthetic binding");
+    assert_eq!(
+        out.len(),
+        1,
+        "Literal payload must produce one synthetic binding"
+    );
     match result {
         AnfExpr::VariantNew { payload, .. } => {
             assert!(matches!(*payload.unwrap(), AnfExpr::Var(_)));
@@ -1081,7 +1128,10 @@ fn task_group_body_lowered_recursively() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert!(out.is_empty(), "Var arg inside body must not produce extra bindings");
+    assert!(
+        out.is_empty(),
+        "Var arg inside body must not produce extra bindings"
+    );
     match result {
         AnfExpr::TaskGroup { body } => {
             assert_eq!(
@@ -1113,7 +1163,9 @@ fn channel_new_unbounded_lowers_correctly() {
 // TRIANGULATE: ChannelNew bounded — capacity Some(n) preserved.
 #[test]
 fn channel_new_bounded_preserves_capacity() {
-    let expr = CoreExpr::ChannelNew { capacity: Some(128) };
+    let expr = CoreExpr::ChannelNew {
+        capacity: Some(128),
+    };
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
@@ -1138,7 +1190,10 @@ fn select_var_channel_lowers_correctly() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert!(out.is_empty(), "Var channel must produce no synthetic bindings");
+    assert!(
+        out.is_empty(),
+        "Var channel must produce no synthetic bindings"
+    );
     match result {
         AnfExpr::Select { branches } => {
             assert_eq!(branches.len(), 1);
@@ -1174,7 +1229,11 @@ fn select_two_branches_complex_channel_is_atomized() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert_eq!(out.len(), 1, "one non-Var channel must produce one synthetic binding");
+    assert_eq!(
+        out.len(),
+        1,
+        "one non-Var channel must produce one synthetic binding"
+    );
     match result {
         AnfExpr::Select { branches } => {
             assert_eq!(branches.len(), 2);
@@ -1195,7 +1254,10 @@ fn timeout_var_duration_lowers_correctly() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert!(out.is_empty(), "Var operands must not produce synthetic bindings");
+    assert!(
+        out.is_empty(),
+        "Var operands must not produce synthetic bindings"
+    );
     match result {
         AnfExpr::Timeout { duration, body } => {
             assert_eq!(duration, "deadline");
@@ -1215,10 +1277,17 @@ fn timeout_literal_duration_is_atomized() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert_eq!(out.len(), 1, "Literal duration must produce one synthetic binding");
+    assert_eq!(
+        out.len(),
+        1,
+        "Literal duration must produce one synthetic binding"
+    );
     match result {
         AnfExpr::Timeout { duration, .. } => {
-            assert!(duration.starts_with("anf_"), "duration must be synthetic: {duration}");
+            assert!(
+                duration.starts_with("anf_"),
+                "duration must be synthetic: {duration}"
+            );
         }
         other => panic!("expected Timeout, got {other:?}"),
     }
@@ -1249,7 +1318,11 @@ fn cell_new_literal_init_is_atomized() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert_eq!(out.len(), 1, "Literal init must produce one synthetic binding");
+    assert_eq!(
+        out.len(),
+        1,
+        "Literal init must produce one synthetic binding"
+    );
     match result {
         AnfExpr::CellNew { init } => {
             assert!(init.starts_with("anf_"), "init must be synthetic: {init}");
@@ -1284,7 +1357,10 @@ fn cell_set_var_operands_lowers_correctly() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert!(out.is_empty(), "Var operands must not produce synthetic bindings");
+    assert!(
+        out.is_empty(),
+        "Var operands must not produce synthetic bindings"
+    );
     match result {
         AnfExpr::CellSet { cell, value } => {
             assert_eq!(cell, "acc");
@@ -1304,11 +1380,18 @@ fn cell_set_literal_value_is_atomized() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert_eq!(out.len(), 1, "Literal value must produce one synthetic binding");
+    assert_eq!(
+        out.len(),
+        1,
+        "Literal value must produce one synthetic binding"
+    );
     match result {
         AnfExpr::CellSet { cell, value } => {
             assert_eq!(cell, "counter"); // Var → unchanged
-            assert!(value.starts_with("anf_"), "value must be synthetic: {value}");
+            assert!(
+                value.starts_with("anf_"),
+                "value must be synthetic: {value}"
+            );
         }
         other => panic!("expected CellSet, got {other:?}"),
     }
@@ -1327,7 +1410,11 @@ fn cell_set_both_literal_operands_are_atomized() {
     let mut fresh = 0u32;
     let mut out = vec![];
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
-    assert_eq!(out.len(), 2, "two non-Var operands must produce two synthetic bindings");
+    assert_eq!(
+        out.len(),
+        2,
+        "two non-Var operands must produce two synthetic bindings"
+    );
     match result {
         AnfExpr::CellSet { cell, value } => {
             assert!(cell.starts_with("anf_"), "cell must be synthetic");
@@ -1341,7 +1428,9 @@ fn cell_set_both_literal_operands_are_atomized() {
 #[test]
 fn task_await_cbor_round_trip() {
     use ail_compiler::hash::stable_cbor_bytes;
-    let expr = AnfExpr::TaskAwait { task: "t0".to_string() };
+    let expr = AnfExpr::TaskAwait {
+        task: "t0".to_string(),
+    };
     let bytes = stable_cbor_bytes(&expr).unwrap();
     let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).unwrap();
     assert_eq!(decoded, expr);

@@ -197,9 +197,8 @@ pub trait AssumptionStore {
     ) -> impl Future<Output = StorageResult<Option<AssumptionRecord>>> + Send;
 
     /// List all assumption records.
-    fn list_assumptions(
-        &self,
-    ) -> impl Future<Output = StorageResult<Vec<AssumptionRecord>>> + Send;
+    fn list_assumptions(&self)
+    -> impl Future<Output = StorageResult<Vec<AssumptionRecord>>> + Send;
 }
 
 // ── AssumptionRegistry ────────────────────────────────────────────────────
@@ -535,8 +534,12 @@ mod tests {
     async fn store_approval_idempotent() {
         let reg = ApprovalRegistry::new();
         let record = make_approval(1, 1000);
-        reg.store_approval(record.clone()).await.expect("first store");
-        reg.store_approval(record.clone()).await.expect("duplicate store must succeed");
+        reg.store_approval(record.clone())
+            .await
+            .expect("first store");
+        reg.store_approval(record.clone())
+            .await
+            .expect("duplicate store must succeed");
         let list = reg.list_approvals().await.expect("list");
         assert_eq!(list.len(), 1, "duplicate must not create two entries");
     }
@@ -597,7 +600,9 @@ mod tests {
         let reg = AssumptionRegistry::new();
         let record = make_assumption(2, AssumptionStatus::Active);
         reg.store_assumption(record.clone()).await.expect("first");
-        reg.store_assumption(record.clone()).await.expect("duplicate");
+        reg.store_assumption(record.clone())
+            .await
+            .expect("duplicate");
         let list = reg.list_assumptions().await.expect("list");
         assert_eq!(list.len(), 1);
     }
@@ -720,7 +725,9 @@ mod tests {
         let expired = make_assumption(2, AssumptionStatus::Expired);
         let result = super::evaluate_verification_gate(&[active, expired.clone()], None);
         match result {
-            super::VerificationGateResult::Fail { failed_assumption_ids } => {
+            super::VerificationGateResult::Fail {
+                failed_assumption_ids,
+            } => {
                 assert!(failed_assumption_ids.contains(&expired.id));
             }
             super::VerificationGateResult::Pass => panic!("gate must fail"),
@@ -732,10 +739,7 @@ mod tests {
     async fn gate_fails_with_revoked_assumption() {
         let revoked = make_assumption(3, AssumptionStatus::Revoked);
         let result = super::evaluate_verification_gate(&[revoked.clone()], None);
-        assert!(matches!(
-            result,
-            super::VerificationGateResult::Fail { .. }
-        ));
+        assert!(matches!(result, super::VerificationGateResult::Fail { .. }));
     }
 
     // Scenario: gate fails when assumption has time-based expiry and now_ms >= expires_at.
@@ -745,10 +749,7 @@ mod tests {
         record.expires_at = Some(1_000_000); // expires at timestamp 1_000_000
         // now_ms = 1_000_001 → assumption is expired
         let result = super::evaluate_verification_gate(&[record.clone()], Some(1_000_001));
-        assert!(matches!(
-            result,
-            super::VerificationGateResult::Fail { .. }
-        ));
+        assert!(matches!(result, super::VerificationGateResult::Fail { .. }));
     }
 
     // Scenario: gate passes when now_ms < expires_at (not yet expired).
@@ -794,7 +795,10 @@ mod tests {
         let store = super::ObjectBackedApprovalStore::new(MemoryObjectStore::new());
         let record = make_approval(2, 2000);
         store.store_approval(record.clone()).await.expect("first");
-        store.store_approval(record.clone()).await.expect("duplicate");
+        store
+            .store_approval(record.clone())
+            .await
+            .expect("duplicate");
         let list = store.list_approvals().await.expect("list");
         assert_eq!(list.len(), 1);
     }
@@ -804,8 +808,14 @@ mod tests {
     async fn object_backed_approval_store_list_sorted() {
         use crate::backends::memory::MemoryObjectStore;
         let store = super::ObjectBackedApprovalStore::new(MemoryObjectStore::new());
-        store.store_approval(make_approval(1, 500)).await.expect("a");
-        store.store_approval(make_approval(2, 100)).await.expect("b");
+        store
+            .store_approval(make_approval(1, 500))
+            .await
+            .expect("a");
+        store
+            .store_approval(make_approval(2, 100))
+            .await
+            .expect("b");
         let list = store.list_approvals().await.expect("list");
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].timestamp, 100);
@@ -836,7 +846,10 @@ mod tests {
         let store = super::ObjectBackedAssumptionStore::new(MemoryObjectStore::new());
         let record = make_assumption(1, AssumptionStatus::Active);
         store.store_assumption(record.clone()).await.expect("first");
-        store.store_assumption(record.clone()).await.expect("duplicate");
+        store
+            .store_assumption(record.clone())
+            .await
+            .expect("duplicate");
         let list = store.list_assumptions().await.expect("list");
         assert_eq!(list.len(), 1);
     }

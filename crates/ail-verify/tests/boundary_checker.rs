@@ -17,7 +17,10 @@ fn boundary_node(id: u32, name: &str, tags: Vec<&str>) -> GraphNode {
 }
 
 fn graph(nodes: Vec<GraphNode>) -> SemanticGraph {
-    SemanticGraph { nodes, edges: vec![] }
+    SemanticGraph {
+        nodes,
+        edges: vec![],
+    }
 }
 
 /// All required tags for a fully-declared boundary.
@@ -66,7 +69,13 @@ fn expired_assumption_is_failed() {
     let g = graph(vec![boundary_node(0, "old_api", tags)]);
     let report = BoundaryChecker::check(&g);
     assert_eq!(report.entries[0].state, VerificationState::Failed);
-    assert!(report.entries[0].evidence.as_ref().unwrap().contains("expired"));
+    assert!(
+        report.entries[0]
+            .evidence
+            .as_ref()
+            .unwrap()
+            .contains("expired")
+    );
 }
 
 // ── Scenario: no-contract boundary → Failed ──────────────────────────────
@@ -89,7 +98,13 @@ fn unsafe_ffi_without_approval_is_unsafe() {
     let g = graph(vec![boundary_node(0, "raw_ffi", vec!["unsafe-ffi"])]);
     let report = BoundaryChecker::check(&g);
     assert_eq!(report.entries[0].state, VerificationState::Unsafe);
-    assert!(report.entries[0].evidence.as_ref().unwrap().contains("unchecked FFI"));
+    assert!(
+        report.entries[0]
+            .evidence
+            .as_ref()
+            .unwrap()
+            .contains("unchecked FFI")
+    );
 }
 
 // ── Scenario: unsafe-ffi with approval → check required tags ─────────────

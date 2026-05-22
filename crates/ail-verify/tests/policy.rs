@@ -8,8 +8,8 @@
 //   PolicyRule: NoUnsafe | NoUnverifiedPublicApi | RequireApproval | ProfileGate(String)
 
 use ail_verify::policy::{
-    ApprovalRecord, ApprovalStrength, PolicyDecision, PolicyEngine, PolicyInput, PolicyRule,
-    POLICY_PROFILE_GATE, POLICY_UNSAFE_BLOCKED, POLICY_UNVERIFIED_PUBLIC_API,
+    ApprovalRecord, ApprovalStrength, POLICY_PROFILE_GATE, POLICY_UNSAFE_BLOCKED,
+    POLICY_UNVERIFIED_PUBLIC_API, PolicyDecision, PolicyEngine, PolicyInput, PolicyRule,
 };
 use ail_verify::report::{VerificationEntry, VerificationReport, VerificationState};
 
@@ -81,8 +81,16 @@ fn empty_report_passes_all_rules() {
 
 #[test]
 fn no_unsafe_blocks_unsafe_entry_without_approval() {
-    let report = report_with(vec![entry("type", "fn.transfer", VerificationState::Unsafe)]);
-    let input = policy_input!(report = &report, rules = &[PolicyRule::NoUnsafe], approvals = &[]);
+    let report = report_with(vec![entry(
+        "type",
+        "fn.transfer",
+        VerificationState::Unsafe,
+    )]);
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::NoUnsafe],
+        approvals = &[]
+    );
     let decision = PolicyEngine::evaluate(&input);
     match decision {
         PolicyDecision::Failed(violations) => {
@@ -99,7 +107,11 @@ fn no_unsafe_blocks_unsafe_entry_without_approval() {
 
 #[test]
 fn no_unsafe_passes_unsafe_entry_with_approval() {
-    let report = report_with(vec![entry("type", "fn.transfer", VerificationState::Unsafe)]);
+    let report = report_with(vec![entry(
+        "type",
+        "fn.transfer",
+        VerificationState::Unsafe,
+    )]);
     let input = policy_input!(
         report = &report,
         rules = &[PolicyRule::NoUnsafe],
@@ -212,7 +224,11 @@ fn require_approval_passes_unsafe_with_approval() {
 
 #[test]
 fn profile_gate_prod_blocks_unverified() {
-    let report = report_with(vec![entry("type", "some.node", VerificationState::Unverified)]);
+    let report = report_with(vec![entry(
+        "type",
+        "some.node",
+        VerificationState::Unverified,
+    )]);
     let input = policy_input!(
         report = &report,
         rules = &[PolicyRule::ProfileGate("prod".into())],
@@ -237,7 +253,11 @@ fn profile_gate_prod_blocks_unverified() {
 
 #[test]
 fn profile_gate_draft_allows_unverified() {
-    let report = report_with(vec![entry("type", "some.node", VerificationState::Unverified)]);
+    let report = report_with(vec![entry(
+        "type",
+        "some.node",
+        VerificationState::Unverified,
+    )]);
     let input = policy_input!(
         report = &report,
         rules = &[PolicyRule::ProfileGate("draft".into())],
@@ -256,8 +276,7 @@ fn profile_gate_draft_allows_unverified() {
 #[test]
 fn profile_gate_always_blocks_failed_entries() {
     for profile in &["draft", "dev", "test", "staging", "prod", "critical"] {
-        let report =
-            report_with(vec![entry("type", "broken.fn", VerificationState::Failed)]);
+        let report = report_with(vec![entry("type", "broken.fn", VerificationState::Failed)]);
         let input = policy_input!(
             report = &report,
             rules = &[PolicyRule::ProfileGate(profile.to_string())],
@@ -276,8 +295,7 @@ fn profile_gate_always_blocks_failed_entries() {
 #[test]
 fn profile_gate_blocks_unsafe_in_strict_profiles() {
     for profile in &["prod", "staging", "critical"] {
-        let report =
-            report_with(vec![entry("type", "unsafe.fn", VerificationState::Unsafe)]);
+        let report = report_with(vec![entry("type", "unsafe.fn", VerificationState::Unsafe)]);
         let input = policy_input!(
             report = &report,
             rules = &[PolicyRule::ProfileGate(profile.to_string())],
@@ -399,8 +417,7 @@ fn verification_report_policy_decision_field_serializes() {
 
     // Round-trip through serde_json (test the shape is serializable)
     let json = serde_json::to_string(&report).expect("must serialize");
-    let deserialized: VerificationReport =
-        serde_json::from_str(&json).expect("must deserialize");
+    let deserialized: VerificationReport = serde_json::from_str(&json).expect("must deserialize");
 
     match deserialized.policy_decision {
         Some(PolicyDecision::Failed(vs)) => {
@@ -417,7 +434,11 @@ fn verification_report_policy_decision_field_serializes() {
 #[test]
 fn no_unsafe_passes_proven_entry() {
     let report = report_with(vec![entry("type", "fn.safe", VerificationState::Proven)]);
-    let input = policy_input!(report = &report, rules = &[PolicyRule::NoUnsafe], approvals = &[]);
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::NoUnsafe],
+        approvals = &[]
+    );
     let decision = PolicyEngine::evaluate(&input);
     assert!(matches!(decision, PolicyDecision::Passed));
 }

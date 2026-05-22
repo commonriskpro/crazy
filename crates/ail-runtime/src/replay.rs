@@ -20,8 +20,8 @@
 // `verify(cap, op, actual)` compares actual bytes against the recorded hash.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::abi::{HostError, HostResult};
 use crate::handler::Handler;
@@ -453,15 +453,15 @@ impl ReplayEngine {
         operation: &str,
         actual_response: &[u8],
     ) -> Result<(), ReplayVerificationError> {
-        let recorded_hash = self
-            .recorded_hash(capability, operation)
-            .ok_or_else(|| ReplayVerificationError {
-                message: format!(
-                    "replay: no recording for capability=`{}` operation=`{}`",
-                    capability.as_str(),
-                    operation
-                ),
-            })?;
+        let recorded_hash =
+            self.recorded_hash(capability, operation)
+                .ok_or_else(|| ReplayVerificationError {
+                    message: format!(
+                        "replay: no recording for capability=`{}` operation=`{}`",
+                        capability.as_str(),
+                        operation
+                    ),
+                })?;
 
         let actual_hash = blake3_hex(actual_response);
         if actual_hash != recorded_hash {

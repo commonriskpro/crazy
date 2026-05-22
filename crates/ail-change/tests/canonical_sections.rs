@@ -7,9 +7,9 @@
 //   3. acl_version-aware canonicalization behavior
 //   4. blocks carried into CanonicalChangeSet
 
-use ail_change::parser::{parse_changeset, ChangeComposition};
-use ail_change::canonical::{canonicalize_parsed, CanonicalChangeSet};
+use ail_change::canonical::{CanonicalChangeSet, canonicalize_parsed};
 use ail_change::model::{ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp};
+use ail_change::parser::{ChangeComposition, parse_changeset};
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -105,7 +105,9 @@ fn canonicalize_carries_none_approval() {
 #[test]
 fn canonicalize_carries_composition() {
     let mut pcs = minimal_parsed(vec![]);
-    pcs.composition.depends_on.push("change.add_cart_types".to_string());
+    pcs.composition
+        .depends_on
+        .push("change.add_cart_types".to_string());
     pcs.composition.supersedes.push("change.old".to_string());
 
     let canonical = canonicalize_parsed(pcs);
@@ -202,8 +204,8 @@ fn canonicalize_carries_verify() {
 // The canonicalizer records that expansion is needed.
 #[test]
 fn infer_boundary_is_marked_for_expansion() {
+    use ail_change::parser::{ParsedChangeSet, ParsedOp};
     use std::collections::BTreeMap;
-    use ail_change::parser::{ParsedOp, ParsedChangeSet};
 
     let mut args = BTreeMap::new();
     args.insert("target".to_string(), "fn.checkout".to_string());
@@ -237,7 +239,10 @@ fn infer_boundary_is_marked_for_expansion() {
 
     // The infer_boundary op must be present in canonical form.
     let infer_op = canonical.ops.iter().find(|o| o.verb == "infer_boundary");
-    assert!(infer_op.is_some(), "infer_boundary must be in canonical ops");
+    assert!(
+        infer_op.is_some(),
+        "infer_boundary must be in canonical ops"
+    );
 
     // It must be marked as needing expansion.
     let infer_op = infer_op.unwrap();
@@ -251,8 +256,8 @@ fn infer_boundary_is_marked_for_expansion() {
 // ── Scenario: infer_effects is also marked for expansion ──────────────────
 #[test]
 fn infer_effects_is_marked_for_expansion() {
-    use std::collections::BTreeMap;
     use ail_change::parser::ParsedOp;
+    use std::collections::BTreeMap;
 
     let mut args = BTreeMap::new();
     args.insert("target".to_string(), "fn.checkout".to_string());
@@ -283,7 +288,11 @@ fn infer_effects_is_marked_for_expansion() {
     };
 
     let canonical = canonicalize_parsed(pcs);
-    let infer_op = canonical.ops.iter().find(|o| o.verb == "infer_effects").unwrap();
+    let infer_op = canonical
+        .ops
+        .iter()
+        .find(|o| o.verb == "infer_effects")
+        .unwrap();
     assert_eq!(
         infer_op.args.get("infer_pending"),
         Some(&"true".to_string())
@@ -380,8 +389,15 @@ end
     assert_eq!(canonical.ops.len(), 6);
 
     // create_function gets visibility=private
-    let create_op = canonical.ops.iter().find(|o| o.verb == "create_function").unwrap();
-    assert_eq!(create_op.args.get("visibility"), Some(&"private".to_string()));
+    let create_op = canonical
+        .ops
+        .iter()
+        .find(|o| o.verb == "create_function")
+        .unwrap();
+    assert_eq!(
+        create_op.args.get("visibility"),
+        Some(&"private".to_string())
+    );
 
     // expect carried
     assert!(canonical.expect.is_some());

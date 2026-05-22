@@ -264,10 +264,9 @@ mod tests {
         store.save_snapshot(&e2).await.expect("save e2");
         store.save_snapshot(&e3).await.expect("save e3");
 
-        let bundle =
-            build_export_bundle(&store, e2.id, scope_root_only(), 99999, vec![], vec![])
-                .await
-                .expect("build");
+        let bundle = build_export_bundle(&store, e2.id, scope_root_only(), 99999, vec![], vec![])
+            .await
+            .expect("build");
         assert_eq!(bundle.root_snapshot_id, e2.id);
         assert_eq!(bundle.snapshot_ids, vec![e2.id]);
         assert_eq!(bundle.scope, scope_root_only());
@@ -288,7 +287,10 @@ mod tests {
         store.save_snapshot(&e1).await.expect("save e1");
         store.save_snapshot(&e2).await.expect("save e2");
         store.save_snapshot(&e3).await.expect("save e3");
-        store.save_snapshot(&unrelated).await.expect("save unrelated");
+        store
+            .save_snapshot(&unrelated)
+            .await
+            .expect("save unrelated");
 
         let bundle =
             build_export_bundle(&store, e3.id, scope_with_history(), 99999, vec![], vec![])
@@ -300,7 +302,10 @@ mod tests {
         assert!(ids.contains(&e1.id), "e1 must be reachable from e3");
         assert!(ids.contains(&e2.id), "e2 must be reachable from e3");
         assert!(ids.contains(&e3.id), "e3 must be root");
-        assert!(!ids.contains(&unrelated.id), "unrelated must not be in bundle");
+        assert!(
+            !ids.contains(&unrelated.id),
+            "unrelated must not be in bundle"
+        );
         assert_eq!(ids.len(), 3);
     }
 
@@ -311,10 +316,9 @@ mod tests {
         let e = make_envelope(10, 1000);
         store.save_snapshot(&e).await.expect("save");
 
-        let bundle =
-            build_export_bundle(&store, e.id, scope_root_only(), 0, vec![], vec![])
-                .await
-                .expect("build");
+        let bundle = build_export_bundle(&store, e.id, scope_root_only(), 0, vec![], vec![])
+            .await
+            .expect("build");
         assert_eq!(bundle.snapshots.len(), 1);
         assert_eq!(bundle.snapshots[0], e);
     }
@@ -328,10 +332,9 @@ mod tests {
         e.applied_change_id = Some(cs_id);
         store.save_snapshot(&e).await.expect("save");
 
-        let bundle =
-            build_export_bundle(&store, e.id, scope_root_only(), 0, vec![], vec![])
-                .await
-                .expect("build");
+        let bundle = build_export_bundle(&store, e.id, scope_root_only(), 0, vec![], vec![])
+            .await
+            .expect("build");
         assert_eq!(bundle.changeset_ids, vec![cs_id]);
     }
 
@@ -344,8 +347,12 @@ mod tests {
         let artifact_id = ObjectId::from_bytes(&[0xbb; 32]);
 
         let bundle = build_export_bundle(
-            &store, e.id, scope_root_only(), 0,
-            vec![artifact_id], vec![],
+            &store,
+            e.id,
+            scope_root_only(),
+            0,
+            vec![artifact_id],
+            vec![],
         )
         .await
         .expect("build");
@@ -370,10 +377,9 @@ mod tests {
             include_artifacts: true,
             include_schemas: false,
         };
-        let bundle =
-            build_export_bundle(&store, e.id, scope, 0, vec![a1, a2], vec![])
-                .await
-                .expect("build");
+        let bundle = build_export_bundle(&store, e.id, scope, 0, vec![a1, a2], vec![])
+            .await
+            .expect("build");
         assert!(bundle.artifact_ids.contains(&a1));
         assert!(bundle.artifact_ids.contains(&a2));
     }
@@ -391,10 +397,9 @@ mod tests {
             include_artifacts: false,
             include_schemas: true,
         };
-        let bundle =
-            build_export_bundle(&store, e.id, scope, 0, vec![], vec![s1])
-                .await
-                .expect("build");
+        let bundle = build_export_bundle(&store, e.id, scope, 0, vec![], vec![s1])
+            .await
+            .expect("build");
         assert!(bundle.schema_ids.contains(&s1));
     }
 
@@ -406,10 +411,9 @@ mod tests {
         store.save_snapshot(&e).await.expect("save");
         let s1 = ObjectId::from_bytes(&[0x10; 32]);
 
-        let bundle =
-            build_export_bundle(&store, e.id, scope_root_only(), 0, vec![], vec![s1])
-                .await
-                .expect("build");
+        let bundle = build_export_bundle(&store, e.id, scope_root_only(), 0, vec![], vec![s1])
+            .await
+            .expect("build");
         assert!(bundle.schema_ids.is_empty());
     }
 
@@ -419,10 +423,9 @@ mod tests {
         let store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
         let e = make_envelope(42, 0);
         store.save_snapshot(&e).await.expect("save");
-        let bundle =
-            build_export_bundle(&store, e.id, scope_root_only(), 1234, vec![], vec![])
-                .await
-                .expect("build");
+        let bundle = build_export_bundle(&store, e.id, scope_root_only(), 1234, vec![], vec![])
+            .await
+            .expect("build");
         assert_eq!(bundle.root_snapshot_id, e.id);
         assert_eq!(bundle.created_at, 1234);
     }

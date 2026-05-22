@@ -237,17 +237,24 @@ fn source_map_hash_is_deterministic_across_runs() {
 /// runtime_checks.
 fn graph_with_rich_provenance() -> SemanticGraph {
     let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn_checkout");
-    node.provenance = Some(Provenance { change_id: "change.add_checkout".to_string() });
+    node.provenance = Some(Provenance {
+        change_id: "change.add_checkout".to_string(),
+    });
     node.contract_clauses = Some(ContractClauses {
         requires: vec!["amount > 0".to_string()],
         ensures: vec![],
     });
-    node.effect_row = Some(EffectRow { effects: vec!["database.read".to_string()] });
+    node.effect_row = Some(EffectRow {
+        effects: vec!["database.read".to_string()],
+    });
     node.runtime_checks = Some(vec![RuntimeCheckMeta {
         predicate: "cart_id != null".to_string(),
         hash: "rtcheck_hash_abc123".to_string(),
     }]);
-    SemanticGraph { nodes: vec![node], edges: vec![] }
+    SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    }
 }
 
 /// Build a `SemanticGraph` with one Module node (which should receive a
@@ -342,10 +349,7 @@ fn lower_to_anf_with_graph_sets_block_ref_for_module_nodes() {
     let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
     // Entry 0 is the Module node "mod_core".
     let block_ref = &anf.source_map.entries[0].block_ref;
-    assert!(
-        block_ref.is_some(),
-        "Module node must receive a block_ref"
-    );
+    assert!(block_ref.is_some(), "Module node must receive a block_ref");
     assert!(
         block_ref.as_ref().unwrap().0.contains("mod_core"),
         "block_ref must be derived from module name, got {:?}",
@@ -380,12 +384,30 @@ fn lower_to_anf_with_graph_leaves_none_when_no_graph_data() {
     let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
     let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
     let entry = &anf.source_map.entries[0];
-    assert!(entry.change_set.is_none(), "change_set must be None when no provenance on node");
-    assert!(entry.block_ref.is_none(), "block_ref must be None for Function without block data");
-    assert!(entry.contract_ref.is_none(), "contract_ref must be None when no contract_clauses");
-    assert!(entry.effect_ref.is_none(), "effect_ref must be None when no effect_row");
-    assert!(entry.runtime_check_ref.is_none(), "runtime_check_ref must be None when no runtime_checks");
-    assert!(entry.proof_obligation_ref.is_none(), "proof_obligation_ref must always be None (upstream not producing yet)");
+    assert!(
+        entry.change_set.is_none(),
+        "change_set must be None when no provenance on node"
+    );
+    assert!(
+        entry.block_ref.is_none(),
+        "block_ref must be None for Function without block data"
+    );
+    assert!(
+        entry.contract_ref.is_none(),
+        "contract_ref must be None when no contract_clauses"
+    );
+    assert!(
+        entry.effect_ref.is_none(),
+        "effect_ref must be None when no effect_row"
+    );
+    assert!(
+        entry.runtime_check_ref.is_none(),
+        "runtime_check_ref must be None when no runtime_checks"
+    );
+    assert!(
+        entry.proof_obligation_ref.is_none(),
+        "proof_obligation_ref must always be None (upstream not producing yet)"
+    );
 }
 
 // TRIANGULATE: lower_to_anf_with_graph produces same hash as lower_to_anf
@@ -403,8 +425,7 @@ fn lower_to_anf_with_graph_same_anf_ir_hash_as_lower_to_anf_for_plain_nodes() {
     let anf_with_graph = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
     // anf_ir_hash covers bindings (not source map provenance), so must be identical.
     assert_eq!(
-        anf_plain.stage_hashes.anf_ir_hash,
-        anf_with_graph.stage_hashes.anf_ir_hash,
+        anf_plain.stage_hashes.anf_ir_hash, anf_with_graph.stage_hashes.anf_ir_hash,
         "anf_ir_hash must be identical for the same bindings regardless of provenance enrichment"
     );
 }

@@ -643,12 +643,12 @@ fn is_provenance_empty(p: &ProvenanceBlock) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::dto::{ProvenanceBlock, RedactionState};
     use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef};
     use ail_storage::codec::{CborCodec, ContentCodec};
     use ail_storage::graph::SnapshotEnvelope;
     use ail_storage::object::ObjectId;
-    #[allow(unused_imports)]
-    use crate::dto::{ProvenanceBlock, RedactionState};
 
     fn make_snapshot() -> SnapshotEnvelope {
         let id = ObjectId::from_bytes(b"test-snap");
@@ -946,27 +946,52 @@ mod tests {
     #[test]
     fn g27_budget_accessor_for_new_variants() {
         assert_eq!(
-            ContextQuery::Proofs { target: NodeRef(0), budget: 111 }.budget(),
+            ContextQuery::Proofs {
+                target: NodeRef(0),
+                budget: 111
+            }
+            .budget(),
             111
         );
         assert_eq!(
-            ContextQuery::Resources { target: NodeRef(0), budget: 222 }.budget(),
+            ContextQuery::Resources {
+                target: NodeRef(0),
+                budget: 222
+            }
+            .budget(),
             222
         );
         assert_eq!(
-            ContextQuery::Boundaries { target: NodeRef(0), budget: 333 }.budget(),
+            ContextQuery::Boundaries {
+                target: NodeRef(0),
+                budget: 333
+            }
+            .budget(),
             333
         );
         assert_eq!(
-            ContextQuery::Why { target: NodeRef(0), budget: 444 }.budget(),
+            ContextQuery::Why {
+                target: NodeRef(0),
+                budget: 444
+            }
+            .budget(),
             444
         );
         assert_eq!(
-            ContextQuery::RefactorContext { target: NodeRef(0), budget: 555 }.budget(),
+            ContextQuery::RefactorContext {
+                target: NodeRef(0),
+                budget: 555
+            }
+            .budget(),
             555
         );
         assert_eq!(
-            ContextQuery::Runtime { target: NodeRef(0), profile: "dev".to_string(), budget: 666 }.budget(),
+            ContextQuery::Runtime {
+                target: NodeRef(0),
+                profile: "dev".to_string(),
+                budget: 666
+            }
+            .budget(),
             666
         );
     }
@@ -976,15 +1001,28 @@ mod tests {
     #[test]
     fn g27_target_accessor_for_new_variants() {
         assert_eq!(
-            ContextQuery::Proofs { target: NodeRef(10), budget: 1 }.target(),
+            ContextQuery::Proofs {
+                target: NodeRef(10),
+                budget: 1
+            }
+            .target(),
             Some(NodeRef(10))
         );
         assert_eq!(
-            ContextQuery::Resources { target: NodeRef(11), budget: 1 }.target(),
+            ContextQuery::Resources {
+                target: NodeRef(11),
+                budget: 1
+            }
+            .target(),
             Some(NodeRef(11))
         );
         assert_eq!(
-            ContextQuery::Runtime { target: NodeRef(15), profile: "test".to_string(), budget: 1 }.target(),
+            ContextQuery::Runtime {
+                target: NodeRef(15),
+                profile: "test".to_string(),
+                budget: 1
+            }
+            .target(),
             Some(NodeRef(15))
         );
     }
@@ -997,7 +1035,11 @@ mod tests {
     #[test]
     fn freshness_status_cbor_roundtrip() {
         let codec = CborCodec;
-        for status in [FreshnessStatus::Fresh, FreshnessStatus::Stale, FreshnessStatus::Unknown] {
+        for status in [
+            FreshnessStatus::Fresh,
+            FreshnessStatus::Stale,
+            FreshnessStatus::Unknown,
+        ] {
             let bytes = codec.encode(&status).expect("encode must succeed");
             let decoded: FreshnessStatus = codec.decode(&bytes).expect("decode must succeed");
             assert_eq!(decoded, status, "{status:?} must survive CBOR roundtrip");
@@ -1032,7 +1074,10 @@ mod tests {
         };
         let bytes = codec.encode(&policy).expect("encode must succeed");
         let decoded: RedactionPolicy = codec.decode(&bytes).expect("decode must succeed");
-        assert_eq!(decoded, policy, "RedactionPolicy must survive CBOR roundtrip");
+        assert_eq!(
+            decoded, policy,
+            "RedactionPolicy must survive CBOR roundtrip"
+        );
     }
 
     // ── context_response_with_stale_status_roundtrip ─────────────────────

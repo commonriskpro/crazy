@@ -413,7 +413,6 @@ pub struct GraphNode {
     // All fields below are additive and optional.  Existing CBOR fixtures that
     // omit them are unaffected — fields absent in the wire format deserialize
     // as `None`.  The `GraphNode::new` constructor initialises all to `None`.
-
     /// Typed generic parameter declarations for this node.
     ///
     /// Present on Function/Type nodes that declare generic parameters.
@@ -902,7 +901,10 @@ mod tests {
         };
         let bytes = codec.encode(&graph).expect("encode must succeed");
         let decoded: SemanticGraph = codec.decode(&bytes).expect("decode must succeed");
-        assert_eq!(decoded, graph, "graph with generic_params must survive CBOR round-trip");
+        assert_eq!(
+            decoded, graph,
+            "graph with generic_params must survive CBOR round-trip"
+        );
         assert_eq!(
             decoded.nodes[0].generic_params.as_ref().unwrap().len(),
             4,
@@ -1069,7 +1071,10 @@ mod tests {
         let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
         assert_eq!(decoded, graph);
         let e = &decoded.edges[0];
-        assert_eq!(e.call_args.as_deref(), Some(["OrderId".to_string()].as_ref()));
+        assert_eq!(
+            e.call_args.as_deref(),
+            Some(["OrderId".to_string()].as_ref())
+        );
         assert_eq!(e.type_arg_bindings.as_ref().unwrap()[0].ty, "UserId");
     }
 
@@ -1090,12 +1095,27 @@ mod tests {
         let bytes = codec.encode(&graph).expect("encode");
         let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
         let n = &decoded.nodes[0];
-        assert!(n.generic_params.is_none(), "generic_params must be None for legacy node");
+        assert!(
+            n.generic_params.is_none(),
+            "generic_params must be None for legacy node"
+        );
         assert!(n.params.is_none(), "params must be None for legacy node");
-        assert!(n.return_type.is_none(), "return_type must be None for legacy node");
-        assert!(n.interface_impls.is_none(), "interface_impls must be None for legacy node");
-        assert!(n.refinement_ref.is_none(), "refinement_ref must be None for legacy node");
-        assert!(n.constraint_set.is_none(), "constraint_set must be None for legacy node");
+        assert!(
+            n.return_type.is_none(),
+            "return_type must be None for legacy node"
+        );
+        assert!(
+            n.interface_impls.is_none(),
+            "interface_impls must be None for legacy node"
+        );
+        assert!(
+            n.refinement_ref.is_none(),
+            "refinement_ref must be None for legacy node"
+        );
+        assert!(
+            n.constraint_set.is_none(),
+            "constraint_set must be None for legacy node"
+        );
     }
 
     // ── TRIANGULATE: different_graphs_produce_different_bytes ────────────
@@ -1146,7 +1166,10 @@ mod tests {
     fn ref_newtypes_inequality() {
         let a = BlockRef("block_a".to_string());
         let b = BlockRef("block_b".to_string());
-        assert_ne!(a, b, "BlockRef with different inner values must not be equal");
+        assert_ne!(
+            a, b,
+            "BlockRef with different inner values must not be equal"
+        );
 
         let ca = ContractRef("c1".to_string());
         let cb = ContractRef("c2".to_string());
@@ -1180,6 +1203,9 @@ mod tests {
         let original = ContractRef("contract.checkout.payment".to_string());
         let bytes = codec.encode(&original).expect("encode ContractRef");
         let decoded: ContractRef = codec.decode(&bytes).expect("decode ContractRef");
-        assert_eq!(original, decoded, "ContractRef must survive CBOR round-trip");
+        assert_eq!(
+            original, decoded,
+            "ContractRef must survive CBOR round-trip"
+        );
     }
 }

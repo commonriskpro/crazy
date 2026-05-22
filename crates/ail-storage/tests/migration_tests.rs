@@ -17,8 +17,8 @@ use ail_storage::{
     MigrationError,
     backends::memory::MemoryObjectStore,
     migration::{
-        DomainVersions, MigrationReport, V0ToV1Migration, default_catalog, write_version,
-        MigrationStore,
+        DomainVersions, MigrationReport, MigrationStore, V0ToV1Migration, default_catalog,
+        write_version,
     },
 };
 use futures::executor::block_on;
@@ -52,7 +52,10 @@ fn default_catalog_advances_to_v3() {
             "default_catalog must successfully apply on a v0 store: {result:?}"
         );
         let new_version = result.unwrap();
-        assert_eq!(new_version, 3, "default_catalog must advance store to version 3");
+        assert_eq!(
+            new_version, 3,
+            "default_catalog must advance store to version 3"
+        );
     });
 }
 
@@ -75,7 +78,10 @@ fn migration_on_fresh_store_writes_version_3() {
             .current_version(Arc::clone(&store))
             .await
             .expect("current_version must succeed after migration");
-        assert_eq!(stored, 3, "current_version must return 3 after successful migration");
+        assert_eq!(
+            stored, 3,
+            "current_version must return 3 after successful migration"
+        );
     });
 }
 
@@ -268,7 +274,10 @@ fn domain_versions_domains_are_independent() {
     let mut dv = DomainVersions::default();
     dv.graph = 4;
     assert_eq!(dv.acl, 0, "acl must stay at 0 when only graph advances");
-    assert_eq!(dv.runtime, 0, "runtime must stay at 0 when only graph advances");
+    assert_eq!(
+        dv.runtime, 0,
+        "runtime must stay at 0 when only graph advances"
+    );
     dv.acl = 2;
     assert_eq!(dv.graph, 4, "graph must stay at 4 when only acl advances");
 }
@@ -295,20 +304,30 @@ fn migration_report_fields_are_accessible() {
 #[test]
 fn migration_output_can_carry_new_snapshot() {
     use ail_storage::graph::SnapshotEnvelope;
-    use ail_storage::object::ObjectId;
     use ail_storage::migration::{Migration, MigrationCatalog, MigrationOutput, MigrationStore};
-    use std::pin::Pin;
+    use ail_storage::object::ObjectId;
     use std::future::Future;
+    use std::pin::Pin;
 
     // A migration that produces a new snapshot.
     struct SnapshotCreatingMigration;
     impl Migration for SnapshotCreatingMigration {
-        fn source_version(&self) -> u32 { 0 }
-        fn target_version(&self) -> u32 { 1 }
+        fn source_version(&self) -> u32 {
+            0
+        }
+        fn target_version(&self) -> u32 {
+            1
+        }
         fn up(
             &self,
             store: MigrationStore,
-        ) -> Pin<Box<dyn Future<Output = Result<MigrationOutput, ail_storage::MigrationError>> + Send + '_>> {
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<MigrationOutput, ail_storage::MigrationError>>
+                    + Send
+                    + '_,
+            >,
+        > {
             Box::pin(async move {
                 write_version(&store, 1).await?;
                 let snap = SnapshotEnvelope {
@@ -343,8 +362,14 @@ fn migration_output_can_carry_new_snapshot() {
             .expect("apply_with_output");
         assert_eq!(outputs.len(), 1);
         let output = &outputs[0];
-        let snap = output.new_snapshot.as_ref().expect("must have new snapshot");
-        assert_eq!(snap.id, ail_storage::object::ObjectId::from_bytes(&[0xab; 32]));
+        let snap = output
+            .new_snapshot
+            .as_ref()
+            .expect("must have new snapshot");
+        assert_eq!(
+            snap.id,
+            ail_storage::object::ObjectId::from_bytes(&[0xab; 32])
+        );
         assert_eq!(snap.created_at, 12345);
         // Report records the post snapshot id.
         let report = output.report.as_ref().unwrap();

@@ -301,7 +301,13 @@ mod tests {
         assert_ne!(ContextError::SnapshotNotFound, ContextError::Stale);
         assert_ne!(ContextError::RedactionRequired, ContextError::AccessDenied);
         assert_ne!(ContextError::QueryAmbiguous, ContextError::NodeNotFound);
-        assert_ne!(ContextError::SnapshotNotFound, ContextError::RedactionRequired);
-        assert_ne!(ContextError::RedactionRequired, ContextError::QueryAmbiguous);
+        assert_ne!(
+            ContextError::SnapshotNotFound,
+            ContextError::RedactionRequired
+        );
+        assert_ne!(
+            ContextError::RedactionRequired,
+            ContextError::QueryAmbiguous
+        );
     }
 }

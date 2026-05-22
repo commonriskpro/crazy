@@ -262,11 +262,7 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
             }
             in_change = true;
             // Parse inline attrs from the change line (e.g. `acl=1.0 base=0`).
-            let after_id = line
-                .splitn(3, ' ')
-                .nth(2)
-                .unwrap_or("")
-                .trim();
+            let after_id = line.splitn(3, ' ').nth(2).unwrap_or("").trim();
             if !after_id.is_empty() {
                 parse_change_line_attrs(after_id, line_num, &mut acl_version, &mut base)?;
             }
@@ -532,7 +528,8 @@ fn parse_block_header(rest: &str, line_num: usize) -> Result<ParsedBlock, String
     } else {
         // Look for `hash=<value>` in remaining attrs.
         attrs_str.split_whitespace().find_map(|tok| {
-            tok.strip_prefix("hash=").map(|v| extract_string_value(v).to_string())
+            tok.strip_prefix("hash=")
+                .map(|v| extract_string_value(v).to_string())
         })
     };
 
@@ -639,7 +636,15 @@ fn parse_op_or_directive(
         });
     } else if *section == Section::TopLevel {
         // Allow metadata directives at the top level.
-        parse_metadata_line(line, line_num, author, description, base, acl_version, composition)?;
+        parse_metadata_line(
+            line,
+            line_num,
+            author,
+            description,
+            base,
+            acl_version,
+            composition,
+        )?;
     } else {
         return Err(format!(
             "line {line_num}: expected 'op' directive inside 'ops' section, got: '{line}'"
@@ -777,14 +782,19 @@ pub fn parse_kv_args(args_str: &str) -> OpArgs {
         // Parse the value: quoted string or bare word.
         let (value, rest) = if remaining.starts_with('"') {
             // Scan for the closing quote.
-            let end = remaining[1..].find('"').map(|p| p + 2).unwrap_or(remaining.len());
+            let end = remaining[1..]
+                .find('"')
+                .map(|p| p + 2)
+                .unwrap_or(remaining.len());
             let raw = &remaining[..end];
             let value = extract_string_value(raw.trim());
             let rest = remaining[end..].trim_start();
             (value, rest)
         } else {
             // Bare word ends at the next whitespace.
-            let end = remaining.find(|c: char| c.is_whitespace()).unwrap_or(remaining.len());
+            let end = remaining
+                .find(|c: char| c.is_whitespace())
+                .unwrap_or(remaining.len());
             let value = remaining[..end].trim().to_string();
             let rest = remaining[end..].trim_start();
             (value, rest)

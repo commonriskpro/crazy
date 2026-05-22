@@ -377,9 +377,7 @@ impl PolicyEngine {
     fn evaluate_rule(rule: &PolicyRule, input: &PolicyInput<'_>) -> PolicyDecision {
         match rule {
             PolicyRule::NoUnsafe => Self::eval_no_unsafe(input.report, input.approvals),
-            PolicyRule::NoUnverifiedPublicApi => {
-                Self::eval_no_unverified_public_api(input.report)
-            }
+            PolicyRule::NoUnverifiedPublicApi => Self::eval_no_unverified_public_api(input.report),
             PolicyRule::RequireApproval => {
                 Self::eval_require_approval(input.report, input.approvals)
             }
@@ -423,9 +421,7 @@ impl PolicyEngine {
         let violations: Vec<PolicyViolation> = report
             .entries
             .iter()
-            .filter(|e| {
-                e.state == VerificationState::Unverified && e.scope.starts_with("pub::")
-            })
+            .filter(|e| e.state == VerificationState::Unverified && e.scope.starts_with("pub::"))
             .map(|e| PolicyViolation {
                 code: POLICY_UNVERIFIED_PUBLIC_API.to_string(),
                 scope: e.scope.clone(),
@@ -587,7 +583,10 @@ impl PolicyEngine {
                 ),
                 // prod: blocks without Strong approval (security exception = Strong)
                 "prod" => {
-                    if approval.map(|a| a.strength == ApprovalStrength::Strong).unwrap_or(false) {
+                    if approval
+                        .map(|a| a.strength == ApprovalStrength::Strong)
+                        .unwrap_or(false)
+                    {
                         GateResult::Pass
                     } else {
                         GateResult::Block(
@@ -637,7 +636,8 @@ impl PolicyEngine {
                 // draft: Unverified allowed but emits a warning.
                 "draft" => GateResult::Warn(
                     "POLICY_UNVERIFIED_WARN".to_string(),
-                    "entry has Unverified state in draft profile; annotation recommended".to_string(),
+                    "entry has Unverified state in draft profile; annotation recommended"
+                        .to_string(),
                 ),
                 // test: Unverified allowed (no warning required).
                 "test" => GateResult::Pass,

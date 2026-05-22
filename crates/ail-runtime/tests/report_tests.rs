@@ -3,19 +3,16 @@
 // TDD tests for ail-runtime RuntimeReport emission (G29).
 // Written BEFORE implementation — RED phase.
 
+use ail_runtime::host::RuntimeHost;
 use ail_runtime::manifest::{CapabilityManifest, blake3_hex_of};
 use ail_runtime::profile::{CapabilityGrant, CapabilityId, ResourceLimits, RuntimeProfile};
 use ail_runtime::report::{RuntimeReport, RuntimeReportStatus};
-use ail_runtime::host::RuntimeHost;
 
 // ── RuntimeReportStatus ───────────────────────────────────────────────────
 
 #[test]
 fn status_variants_are_distinct() {
-    assert_ne!(
-        RuntimeReportStatus::Completed,
-        RuntimeReportStatus::Failed
-    );
+    assert_ne!(RuntimeReportStatus::Completed, RuntimeReportStatus::Failed);
     assert_ne!(RuntimeReportStatus::Failed, RuntimeReportStatus::Denied);
     assert_ne!(
         RuntimeReportStatus::Denied,
@@ -25,10 +22,30 @@ fn status_variants_are_distinct() {
 
 #[test]
 fn status_display_contains_discriminant() {
-    assert!(RuntimeReportStatus::Completed.to_string().to_lowercase().contains("completed"));
-    assert!(RuntimeReportStatus::Failed.to_string().to_lowercase().contains("failed"));
-    assert!(RuntimeReportStatus::Denied.to_string().to_lowercase().contains("denied"));
-    assert!(RuntimeReportStatus::LimitExceeded.to_string().to_lowercase().contains("limit"));
+    assert!(
+        RuntimeReportStatus::Completed
+            .to_string()
+            .to_lowercase()
+            .contains("completed")
+    );
+    assert!(
+        RuntimeReportStatus::Failed
+            .to_string()
+            .to_lowercase()
+            .contains("failed")
+    );
+    assert!(
+        RuntimeReportStatus::Denied
+            .to_string()
+            .to_lowercase()
+            .contains("denied")
+    );
+    assert!(
+        RuntimeReportStatus::LimitExceeded
+            .to_string()
+            .to_lowercase()
+            .contains("limit")
+    );
 }
 
 // ── RuntimeReport construction ─────────────────────────────────────────────
@@ -75,7 +92,10 @@ fn build_minimal_profile(wasm: &[u8]) -> (CapabilityManifest, RuntimeProfile) {
         "vr-hash".to_string(),
         manifest_hash,
         vec![],
-        ResourceLimits { max_memory_bytes: None, max_fuel: None },
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+        },
     );
     (manifest, profile)
 }
@@ -101,8 +121,8 @@ fn emit_report_after_successful_instantiation_returns_completed() {
 
 #[test]
 fn emit_report_with_capability_calls_summarizes_them() {
+    use ail_runtime::InMemoryHandler;
     use std::sync::Arc;
-    use ail_runtime::{InMemoryHandler};
 
     let wasm = minimal_wasm();
     let cap_id = CapabilityId::new("database.read:Cart");
@@ -122,7 +142,10 @@ fn emit_report_with_capability_calls_summarizes_them() {
         "vr-hash".to_string(),
         manifest_hash,
         vec![grant],
-        ResourceLimits { max_memory_bytes: None, max_fuel: None },
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+        },
     );
 
     let handler = Arc::new(InMemoryHandler::new(
@@ -143,8 +166,11 @@ fn emit_report_with_capability_calls_summarizes_them() {
     let report = host.emit_report(RuntimeReportStatus::Completed, "rep-caps");
     // The report must summarize capability call activity
     // At least one summary entry for the calls that were dispatched
-    assert!(!report.capability_summaries().is_empty() || report.status() == &RuntimeReportStatus::Completed,
-        "report must have been emitted");
+    assert!(
+        !report.capability_summaries().is_empty()
+            || report.status() == &RuntimeReportStatus::Completed,
+        "report must have been emitted"
+    );
 }
 
 #[test]

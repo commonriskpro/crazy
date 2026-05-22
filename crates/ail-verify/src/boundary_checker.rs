@@ -233,8 +233,7 @@ fn compute_counts(entries: &[VerificationEntry]) -> SummaryCounts {
         verified_count: entries
             .iter()
             .filter(|e| {
-                e.state == VerificationState::Proven
-                    || e.state == VerificationState::RuntimeChecked
+                e.state == VerificationState::Proven || e.state == VerificationState::RuntimeChecked
             })
             .count(),
         runtime_checked_count: entries

@@ -58,10 +58,7 @@ pub trait BranchStore {
     ) -> impl Future<Output = StorageResult<Branch>> + Send;
 
     /// Return the branch named `name`, or `None` if it does not exist.
-    fn get_branch(
-        &self,
-        name: &str,
-    ) -> impl Future<Output = StorageResult<Option<Branch>>> + Send;
+    fn get_branch(&self, name: &str) -> impl Future<Output = StorageResult<Option<Branch>>> + Send;
 
     /// Move branch `name` to point at `new_target_snapshot_id`.
     ///
@@ -219,10 +216,7 @@ mod tests {
             .await
             .expect("first create");
         let err = reg.create_branch("main", snap_id(2), 1).await;
-        assert!(
-            err.is_err(),
-            "duplicate create must return error"
-        );
+        assert!(err.is_err(), "duplicate create must return error");
     }
 
     // Scenario: update_branch moves the pointer.
@@ -273,7 +267,9 @@ mod tests {
     #[tokio::test]
     async fn delete_nonexistent_branch_is_noop() {
         let reg = BranchRegistry::new();
-        reg.delete_branch("ghost").await.expect("delete noop must succeed");
+        reg.delete_branch("ghost")
+            .await
+            .expect("delete noop must succeed");
     }
 
     // Scenario: list_branches returns all created branches.

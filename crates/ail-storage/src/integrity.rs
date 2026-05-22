@@ -297,9 +297,7 @@ where
     // ── Check 7: assumptions link to boundaries ───────────────────────────
     for assumption in &input.assumptions {
         if !known_boundary_set.contains(&assumption.boundary_id) {
-            issues.push(IntegrityIssue::AssumptionOrphanedBoundary {
-                id: assumption.id,
-            });
+            issues.push(IntegrityIssue::AssumptionOrphanedBoundary { id: assumption.id });
         }
     }
 
@@ -381,7 +379,11 @@ mod tests {
         }
     }
 
-    fn make_assumption(id_seed: u8, boundary_seed: u8, status: AssumptionStatus) -> AssumptionRecord {
+    fn make_assumption(
+        id_seed: u8,
+        boundary_seed: u8,
+        status: AssumptionStatus,
+    ) -> AssumptionRecord {
         AssumptionRecord {
             id: make_id(id_seed),
             boundary_id: make_id(boundary_seed),
@@ -506,9 +508,10 @@ mod tests {
             .await
             .expect("verify");
         assert!(!report.passed);
-        let has_orphan = report.issues.iter().any(|i| {
-            matches!(i, IntegrityIssue::OrphanedSnapshot { id } if *id == e.id)
-        });
+        let has_orphan = report
+            .issues
+            .iter()
+            .any(|i| matches!(i, IntegrityIssue::OrphanedSnapshot { id } if *id == e.id));
         assert!(has_orphan, "must have OrphanedSnapshot issue");
     }
 
@@ -624,9 +627,10 @@ mod tests {
             .await
             .expect("verify");
         assert!(!report.passed);
-        let has_issue = report.issues.iter().any(|i| {
-            matches!(i, IntegrityIssue::ChangeMissingReport { id } if *id == cs_id)
-        });
+        let has_issue = report
+            .issues
+            .iter()
+            .any(|i| matches!(i, IntegrityIssue::ChangeMissingReport { id } if *id == cs_id));
         assert!(has_issue, "must have ChangeMissingReport");
     }
 
@@ -694,9 +698,10 @@ mod tests {
             .await
             .expect("verify");
         assert!(!report.passed);
-        let has_issue = report.issues.iter().any(|i| {
-            matches!(i, IntegrityIssue::ReportMissingArtifact { id } if *id == report_id)
-        });
+        let has_issue = report
+            .issues
+            .iter()
+            .any(|i| matches!(i, IntegrityIssue::ReportMissingArtifact { id } if *id == report_id));
         assert!(has_issue, "must have ReportMissingArtifact");
     }
 
@@ -722,9 +727,9 @@ mod tests {
             .await
             .expect("verify");
         assert!(!report.passed);
-        let has_issue = report.issues.iter().any(|i| {
-            matches!(i, IntegrityIssue::ApprovalOrphanedChange { id } if *id == approval.id)
-        });
+        let has_issue = report.issues.iter().any(
+            |i| matches!(i, IntegrityIssue::ApprovalOrphanedChange { id } if *id == approval.id),
+        );
         assert!(has_issue, "must have ApprovalOrphanedChange");
     }
 
@@ -839,9 +844,10 @@ mod tests {
             .await
             .expect("verify");
         assert!(!report.passed);
-        let has_stale = report.issues.iter().any(|i| {
-            matches!(i, IntegrityIssue::StaleIndex { id } if *id == index_id)
-        });
+        let has_stale = report
+            .issues
+            .iter()
+            .any(|i| matches!(i, IntegrityIssue::StaleIndex { id } if *id == index_id));
         assert!(has_stale, "must have StaleIndex issue");
     }
 
@@ -876,10 +882,14 @@ mod tests {
             .await
             .expect("verify");
         // No StaleIndex for the exempt index.
-        let has_stale = report.issues.iter().any(|i| {
-            matches!(i, IntegrityIssue::StaleIndex { id } if *id == index_id)
-        });
-        assert!(!has_stale, "exempt stale index must not produce StaleIndex issue");
+        let has_stale = report
+            .issues
+            .iter()
+            .any(|i| matches!(i, IntegrityIssue::StaleIndex { id } if *id == index_id));
+        assert!(
+            !has_stale,
+            "exempt stale index must not produce StaleIndex issue"
+        );
     }
 
     // Scenario: index with correct root hash passes.

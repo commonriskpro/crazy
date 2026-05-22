@@ -17,7 +17,10 @@ fn resource_node(id: u32, name: &str, level: &str, tags: Vec<&str>) -> GraphNode
 }
 
 fn graph(nodes: Vec<GraphNode>) -> SemanticGraph {
-    SemanticGraph { nodes, edges: vec![] }
+    SemanticGraph {
+        nodes,
+        edges: vec![],
+    }
 }
 
 // ── Scenario: non-resource nodes are skipped ──────────────────────────────
@@ -49,7 +52,13 @@ fn use_after_release_is_failed() {
     let report = ResourceChecker::check(&g);
     assert_eq!(report.entries.len(), 1);
     assert_eq!(report.entries[0].state, VerificationState::Failed);
-    assert!(report.entries[0].evidence.as_ref().unwrap().contains("use-after-release"));
+    assert!(
+        report.entries[0]
+            .evidence
+            .as_ref()
+            .unwrap()
+            .contains("use-after-release")
+    );
 }
 
 // ── Scenario: double-release → Failed ────────────────────────────────────
@@ -84,7 +93,13 @@ fn linear_never_consumed_is_failed() {
     let report = ResourceChecker::check(&g);
     assert_eq!(report.entries.len(), 1);
     assert_eq!(report.entries[0].state, VerificationState::Failed);
-    assert!(report.entries[0].evidence.as_ref().unwrap().contains("never consumed"));
+    assert!(
+        report.entries[0]
+            .evidence
+            .as_ref()
+            .unwrap()
+            .contains("never consumed")
+    );
 }
 
 // ── Scenario: linear properly released → Proven ───────────────────────────
@@ -214,7 +229,12 @@ fn failed_resource_emits_blocking_diagnostic() {
 // ── TRIANGULATE: claim format includes resource kind ─────────────────────
 #[test]
 fn entry_claim_includes_resource_kind() {
-    let g = graph(vec![resource_node(0, "tx", "resource:affine", vec!["released"])]);
+    let g = graph(vec![resource_node(
+        0,
+        "tx",
+        "resource:affine",
+        vec!["released"],
+    )]);
     let report = ResourceChecker::check(&g);
     assert!(report.entries[0].claim.contains("resource:affine"));
 }

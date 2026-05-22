@@ -6,8 +6,8 @@
 //   2. `language acl/1.0` directive
 //   3. Defaults to "1.0" when absent
 
-use ail_change::parser::parse_changeset;
 use ail_change::canonical::canonicalize_parsed;
+use ail_change::parser::parse_changeset;
 
 // ── Scenario: acl version from inline change line attr ───────────────────
 // GIVEN `change x acl=1.0 base=0`
@@ -121,7 +121,10 @@ end
     let result = parse_changeset(src).expect("spec example must parse");
     assert_eq!(result.acl_version, "1.0");
     assert_eq!(result.changeset.base_snapshot_id.0, 1);
-    assert_eq!(result.changeset.meta.description, "Add pure cart total calculation");
+    assert_eq!(
+        result.changeset.meta.description,
+        "Add pure cart total calculation"
+    );
     assert_eq!(result.changeset.ops.len(), 3);
     assert_eq!(result.preconditions.len(), 2);
 }

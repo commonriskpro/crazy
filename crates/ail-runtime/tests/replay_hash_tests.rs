@@ -24,7 +24,10 @@ fn replay_engine_records_output_hash_with_response() {
 
     // The engine should have stored the hash of the response
     let hash = engine.recorded_hash(&cap, "read:Cart:42");
-    assert!(hash.is_some(), "engine must store output hash for recorded response");
+    assert!(
+        hash.is_some(),
+        "engine must store output hash for recorded response"
+    );
     // The hash must be a non-empty hex string
     let h = hash.unwrap();
     assert!(!h.is_empty(), "hash must not be empty");
@@ -82,7 +85,10 @@ fn replay_handler_verifies_matching_output_hash() {
 
     // The verifying handler replays the recorded response AND verifies hash
     let result = handler.handle(&cap, "read:Cart:42", b"");
-    assert!(result.is_ok(), "verifying handler must return recorded response");
+    assert!(
+        result.is_ok(),
+        "verifying handler must return recorded response"
+    );
     assert_eq!(result.unwrap(), response);
 }
 
@@ -142,7 +148,10 @@ fn replay_engine_verify_fails_for_unknown_recording() {
     let engine = ReplayEngine::new();
     let cap = CapabilityId::new("database.read:Cart");
     let result = engine.verify(&cap, "read:Cart:99", b"anything");
-    assert!(result.is_err(), "verify against unknown recording must fail");
+    assert!(
+        result.is_err(),
+        "verify against unknown recording must fail"
+    );
 }
 
 // ── ReplayVerificationError ───────────────────────────────────────────────
@@ -176,5 +185,9 @@ fn hash_of_returns_nonempty_hex_string() {
     let h = ReplayEngine::hash_of(b"test");
     assert!(!h.is_empty());
     // Must be valid hex
-    assert!(h.chars().all(|c| c.is_ascii_hexdigit()), "hash must be hex: {}", h);
+    assert!(
+        h.chars().all(|c| c.is_ascii_hexdigit()),
+        "hash must be hex: {}",
+        h
+    );
 }

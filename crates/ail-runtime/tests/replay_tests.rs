@@ -5,7 +5,9 @@
 
 use ail_runtime::handler::Handler;
 use ail_runtime::profile::CapabilityId;
-use ail_runtime::replay::{FakePayment, FixedClock, InMemoryDb, RecordedHttp, ReplayEngine, SeededRandom};
+use ail_runtime::replay::{
+    FakePayment, FixedClock, InMemoryDb, RecordedHttp, ReplayEngine, SeededRandom,
+};
 
 // ── FixedClock ────────────────────────────────────────────────────────────
 
@@ -124,8 +126,7 @@ fn in_memory_db_declares_database_capabilities() {
     let db = InMemoryDb::new();
     let caps = db.capabilities();
     assert!(
-        caps.iter()
-            .any(|c| c.as_str().starts_with("database.read")),
+        caps.iter().any(|c| c.as_str().starts_with("database.read")),
         "InMemoryDb must declare database.read capability"
     );
     assert!(
@@ -167,7 +168,10 @@ fn fake_payment_fails_when_configured() {
     let fp = FakePayment::new(false, b"".to_vec());
     let cap = CapabilityId::new("payment.charge:PaymentProvider");
     let result = fp.handle(&cap, "charge", b"amount=100");
-    assert!(result.is_err(), "FakePayment configured to fail must return Err");
+    assert!(
+        result.is_err(),
+        "FakePayment configured to fail must return Err"
+    );
     let err = result.unwrap_err();
     assert!(
         err.message.contains("PaymentDeclined") || err.message.contains("declined"),

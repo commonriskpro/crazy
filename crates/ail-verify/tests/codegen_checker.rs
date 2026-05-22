@@ -8,7 +8,10 @@ use ail_verify::codegen_checker::{ArtifactEntry, CodegenChecker};
 use ail_verify::report::VerificationState;
 
 fn graph(nodes: Vec<GraphNode>) -> SemanticGraph {
-    SemanticGraph { nodes, edges: vec![] }
+    SemanticGraph {
+        nodes,
+        edges: vec![],
+    }
 }
 
 fn capability_node(id: u32, name: &str) -> GraphNode {
@@ -60,8 +63,8 @@ fn mismatched_hash_is_failed() {
 #[test]
 fn empty_hash_is_unverified() {
     let artifacts = vec![
-        artifact("wasm", "", "abc123"),     // empty expected
-        artifact("anf_ir", "abc123", ""),   // empty actual
+        artifact("wasm", "", "abc123"),   // empty expected
+        artifact("anf_ir", "abc123", ""), // empty actual
     ];
     let report = CodegenChecker::check_artifacts(&artifacts);
     assert_eq!(report.entries.len(), 2);
@@ -104,9 +107,9 @@ fn artifact_entry_scope_format() {
 #[test]
 fn mixed_artifacts_produce_correct_states() {
     let artifacts = vec![
-        artifact("canonical_change", "abc", "abc"),   // Proven
-        artifact("core_ir", "abc", "xyz"),             // Failed
-        artifact("wasm", "", ""),                      // Unverified
+        artifact("canonical_change", "abc", "abc"), // Proven
+        artifact("core_ir", "abc", "xyz"),          // Failed
+        artifact("wasm", "", ""),                   // Unverified
     ];
     let report = CodegenChecker::check_artifacts(&artifacts);
     assert_eq!(report.entries.len(), 3);
@@ -119,8 +122,8 @@ fn mixed_artifacts_produce_correct_states() {
 #[test]
 fn summary_reflects_worst_artifact_state() {
     let artifacts = vec![
-        artifact("a", "x", "x"),   // Proven
-        artifact("b", "x", "y"),   // Failed
+        artifact("a", "x", "x"), // Proven
+        artifact("b", "x", "y"), // Failed
     ];
     let report = CodegenChecker::check_artifacts(&artifacts);
     assert_eq!(report.summary(), VerificationState::Failed);
@@ -146,7 +149,13 @@ fn capability_in_graph_not_in_manifest_is_failed() {
     let manifest_caps = vec![]; // empty manifest
     let report = CodegenChecker::check_manifest_consistency(&g, &manifest_caps);
     assert_eq!(report.entries[0].state, VerificationState::Failed);
-    assert!(report.entries[0].evidence.as_ref().unwrap().contains("not present in capabilities manifest"));
+    assert!(
+        report.entries[0]
+            .evidence
+            .as_ref()
+            .unwrap()
+            .contains("not present in capabilities manifest")
+    );
 }
 
 // ── Manifest consistency: extra capability in manifest not in graph → Failed

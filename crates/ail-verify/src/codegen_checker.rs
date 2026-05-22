@@ -27,7 +27,9 @@
 
 use ail_core::semantic_graph::{NodeKind, SemanticGraph};
 
-use crate::report::{ArtifactHash, SummaryCounts, VerificationEntry, VerificationReport, VerificationState};
+use crate::report::{
+    ArtifactHash, SummaryCounts, VerificationEntry, VerificationReport, VerificationState,
+};
 
 // ── ArtifactEntry ─────────────────────────────────────────────────────────
 
@@ -67,27 +69,26 @@ impl CodegenChecker {
             let scope = format!("artifact:{}", artifact.name);
             let claim = "codegen-consistency".to_string();
 
-            let (state, evidence) = if artifact.expected_hash.is_empty()
-                || artifact.actual_hash.is_empty()
-            {
-                (
-                    VerificationState::Unverified,
-                    Some(format!(
-                        "artifact '{}' hash not computed; cannot verify consistency",
-                        artifact.name
-                    )),
-                )
-            } else if artifact.expected_hash == artifact.actual_hash {
-                (VerificationState::Proven, None)
-            } else {
-                (
-                    VerificationState::Failed,
-                    Some(format!(
-                        "artifact '{}' hash mismatch: expected '{}', actual '{}'",
-                        artifact.name, artifact.expected_hash, artifact.actual_hash
-                    )),
-                )
-            };
+            let (state, evidence) =
+                if artifact.expected_hash.is_empty() || artifact.actual_hash.is_empty() {
+                    (
+                        VerificationState::Unverified,
+                        Some(format!(
+                            "artifact '{}' hash not computed; cannot verify consistency",
+                            artifact.name
+                        )),
+                    )
+                } else if artifact.expected_hash == artifact.actual_hash {
+                    (VerificationState::Proven, None)
+                } else {
+                    (
+                        VerificationState::Failed,
+                        Some(format!(
+                            "artifact '{}' hash mismatch: expected '{}', actual '{}'",
+                            artifact.name, artifact.expected_hash, artifact.actual_hash
+                        )),
+                    )
+                };
 
             entries.push(VerificationEntry {
                 claim,
@@ -131,8 +132,7 @@ impl CodegenChecker {
         let mut entries = Vec::new();
 
         // Check graph capability nodes against manifest
-        let mut manifest_cap_set: Vec<&str> =
-            manifest_caps.iter().map(|s| s.as_str()).collect();
+        let mut manifest_cap_set: Vec<&str> = manifest_caps.iter().map(|s| s.as_str()).collect();
 
         for node in &graph.nodes {
             if node.kind != NodeKind::Capability {
@@ -194,8 +194,7 @@ fn compute_counts(entries: &[VerificationEntry]) -> SummaryCounts {
         verified_count: entries
             .iter()
             .filter(|e| {
-                e.state == VerificationState::Proven
-                    || e.state == VerificationState::RuntimeChecked
+                e.state == VerificationState::Proven || e.state == VerificationState::RuntimeChecked
             })
             .count(),
         runtime_checked_count: entries

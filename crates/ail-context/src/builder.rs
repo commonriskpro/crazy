@@ -30,8 +30,8 @@ use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::graph::SnapshotEnvelope;
 
 use crate::dto::{
-    CONTEXT_SCHEMA_V1, ContextQuery, ContextResponse, FreshnessStatus, ProvenanceBlock,
-    QueryScope, RedactionPolicy, RedactionState, RepairOption, ResponseLimits,
+    CONTEXT_SCHEMA_V1, ContextQuery, ContextResponse, FreshnessStatus, ProvenanceBlock, QueryScope,
+    RedactionPolicy, RedactionState, RepairOption, ResponseLimits,
 };
 use crate::error::{ContextError, ContextResult};
 use crate::summary::render_summary;
@@ -89,7 +89,13 @@ impl ResponseBuilder {
         snapshot: &SnapshotEnvelope,
         redacted_refs: &BTreeSet<NodeRef>,
     ) -> ContextResult<ContextResponse> {
-        Self::build_full(query, graph, snapshot, redacted_refs, &BuildOptions::default())
+        Self::build_full(
+            query,
+            graph,
+            snapshot,
+            redacted_refs,
+            &BuildOptions::default(),
+        )
     }
 
     /// Build a `ContextResponse` with an optional history chain.
@@ -142,11 +148,7 @@ impl ResponseBuilder {
 
         // ── Security check ────────────────────────────────────────────────
         // If not authorized and the query targets a redacted node, deny access.
-        if !opts.authorized
-            && query
-                .target()
-                .is_some_and(|t| redacted_refs.contains(&t))
-        {
+        if !opts.authorized && query.target().is_some_and(|t| redacted_refs.contains(&t)) {
             return Err(ContextError::AccessDenied);
         }
 
@@ -230,9 +232,9 @@ impl ResponseBuilder {
             repair_options.push(RepairOption {
                 option_id: "query_latest".to_string(),
                 description: "Re-issue the query at the latest snapshot".to_string(),
-                suggested_query: query.target().map(|t| {
-                    format!("context {:?} snapshot=latest", t)
-                }),
+                suggested_query: query
+                    .target()
+                    .map(|t| format!("context {:?} snapshot=latest", t)),
             });
         }
         if truncated {
@@ -474,8 +476,12 @@ fn collect_candidates_with_history(
                 .ok_or(ContextError::NodeNotFound)?
                 .clone();
 
-            let mut resource_nodes =
-                bfs_filtered(graph, &node_map, *target, &[EdgeKind::Reads, EdgeKind::Writes]);
+            let mut resource_nodes = bfs_filtered(
+                graph,
+                &node_map,
+                *target,
+                &[EdgeKind::Reads, EdgeKind::Writes],
+            );
             resource_nodes.insert(0, target_node);
             resource_nodes.dedup_by_key(|n| n.id);
             resource_nodes.sort_by_key(|n| n.id);
@@ -568,8 +574,7 @@ fn collect_candidates_with_history(
                 .ok_or(ContextError::NodeNotFound)?
                 .clone();
 
-            let mut runtime_nodes =
-                bfs_filtered(graph, &node_map, *target, &[EdgeKind::Emits]);
+            let mut runtime_nodes = bfs_filtered(graph, &node_map, *target, &[EdgeKind::Emits]);
             runtime_nodes.insert(0, target_node);
             runtime_nodes.dedup_by_key(|n| n.id);
             runtime_nodes.sort_by_key(|n| n.id);
@@ -614,8 +619,7 @@ fn collect_candidates_with_history(
                 .ok_or(ContextError::NodeNotFound)?
                 .clone();
 
-            let mut todo_nodes =
-                bfs_filtered(graph, &node_map, *target, &[EdgeKind::Proves]);
+            let mut todo_nodes = bfs_filtered(graph, &node_map, *target, &[EdgeKind::Proves]);
             todo_nodes.insert(0, target_node);
             todo_nodes.dedup_by_key(|n| n.id);
             todo_nodes.sort_by_key(|n| n.id);
@@ -1753,9 +1757,7 @@ mod tests {
                 GraphNode::new(NodeRef(1), NodeKind::Invariant, "stock_never_negative"),
                 GraphNode::new(NodeRef(2), NodeKind::Module, "unrelated"),
             ],
-            edges: vec![
-                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Proves),
-            ],
+            edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Proves)],
         };
         let snapshot = make_snapshot();
         let query = ContextQuery::Proofs {
@@ -1828,11 +1830,11 @@ mod tests {
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
         assert!(ids.contains(&0), "target must be in result; got: {ids:?}");
         assert!(ids.contains(&1), "read dep must be in result; got: {ids:?}");
-        assert!(ids.contains(&2), "write dep must be in result; got: {ids:?}");
         assert!(
-            !ids.contains(&3),
-            "unrelated must not appear; got: {ids:?}"
+            ids.contains(&2),
+            "write dep must be in result; got: {ids:?}"
         );
+        assert!(!ids.contains(&3), "unrelated must not appear; got: {ids:?}");
     }
 
     // ── resources_missing_target_returns_node_not_found ───────────────────
@@ -1884,7 +1886,10 @@ mod tests {
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("boundaries build must succeed");
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
-        assert!(ids.contains(&0), "target module must be in result; got: {ids:?}");
+        assert!(
+            ids.contains(&0),
+            "target module must be in result; got: {ids:?}"
+        );
         assert!(
             ids.contains(&1),
             "Stripe boundary must be in result; got: {ids:?}"
@@ -1953,10 +1958,7 @@ mod tests {
             ids.contains(&2),
             "type.Cart (BreaksIfChanged) must be in result; got: {ids:?}"
         );
-        assert!(
-            !ids.contains(&3),
-            "unrelated must not appear; got: {ids:?}"
-        );
+        assert!(!ids.contains(&3), "unrelated must not appear; got: {ids:?}");
         // Why query also returns the history chain (even if 1 entry for genesis).
         assert_eq!(
             resp.history_entries.len(),
@@ -2004,9 +2006,9 @@ mod tests {
                 GraphNode::new(NodeRef(4), NodeKind::Module, "unrelated"),
             ],
             edges: vec![
-                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),   // A calls B → A is a caller
-                GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Proves),  // B proves C → C is a proof
-                GraphEdge::new(NodeRef(1), NodeRef(3), EdgeKind::Emits),   // B emits D → D is an effect
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls), // A calls B → A is a caller
+                GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Proves), // B proves C → C is a proof
+                GraphEdge::new(NodeRef(1), NodeRef(3), EdgeKind::Emits), // B emits D → D is an effect
             ],
         };
         let snapshot = make_snapshot();
@@ -2021,10 +2023,7 @@ mod tests {
         assert!(ids.contains(&1), "target B must be in result; got: {ids:?}");
         assert!(ids.contains(&2), "proof C must be in result; got: {ids:?}");
         assert!(ids.contains(&3), "effect D must be in result; got: {ids:?}");
-        assert!(
-            !ids.contains(&4),
-            "unrelated must not appear; got: {ids:?}"
-        );
+        assert!(!ids.contains(&4), "unrelated must not appear; got: {ids:?}");
     }
 
     // ── refactor_context_missing_target_returns_node_not_found ───────────
@@ -2076,7 +2075,10 @@ mod tests {
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("runtime build must succeed");
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
-        assert!(ids.contains(&0), "target checkout must be in result; got: {ids:?}");
+        assert!(
+            ids.contains(&0),
+            "target checkout must be in result; got: {ids:?}"
+        );
         assert!(
             ids.contains(&1),
             "effect.payment (Emits) must be in result; got: {ids:?}"
@@ -2158,8 +2160,14 @@ mod tests {
         let graph = make_graph();
         let snapshot = make_snapshot();
         let result = ResponseBuilder::build(
-            &ContextQuery::Diff { snapshot_a: None, snapshot_b: None, budget: 0 },
-            &graph, &snapshot, &no_redactions(),
+            &ContextQuery::Diff {
+                snapshot_a: None,
+                snapshot_b: None,
+                budget: 0,
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
         );
         assert_eq!(result, Err(ContextError::InvalidBudget));
     }
@@ -2207,8 +2215,13 @@ mod tests {
         let graph = make_graph();
         let snapshot = make_snapshot();
         let result = ResponseBuilder::build(
-            &ContextQuery::Risks { target: NodeRef(99), budget: usize::MAX },
-            &graph, &snapshot, &no_redactions(),
+            &ContextQuery::Risks {
+                target: NodeRef(99),
+                budget: usize::MAX,
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
         );
         assert_eq!(result, Err(ContextError::NodeNotFound));
     }
@@ -2226,9 +2239,7 @@ mod tests {
                 GraphNode::new(NodeRef(1), NodeKind::Invariant, "stock"),
                 GraphNode::new(NodeRef(2), NodeKind::Module, "unrelated"),
             ],
-            edges: vec![
-                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Proves),
-            ],
+            edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Proves)],
         };
         let snapshot = make_snapshot();
         let query = ContextQuery::Todo {
@@ -2243,10 +2254,7 @@ mod tests {
             ids.contains(&1),
             "proves node must be in todo; got: {ids:?}"
         );
-        assert!(
-            !ids.contains(&2),
-            "unrelated must not appear; got: {ids:?}"
-        );
+        assert!(!ids.contains(&2), "unrelated must not appear; got: {ids:?}");
     }
 
     // ── r2_todo_missing_target_returns_node_not_found ─────────────────────
@@ -2255,8 +2263,13 @@ mod tests {
         let graph = make_graph();
         let snapshot = make_snapshot();
         let result = ResponseBuilder::build(
-            &ContextQuery::Todo { target: NodeRef(99), budget: usize::MAX },
-            &graph, &snapshot, &no_redactions(),
+            &ContextQuery::Todo {
+                target: NodeRef(99),
+                budget: usize::MAX,
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
         );
         assert_eq!(result, Err(ContextError::NodeNotFound));
     }
@@ -2311,7 +2324,9 @@ mod tests {
                 profile: "prod".to_string(),
                 budget: usize::MAX,
             },
-            &graph, &snapshot, &no_redactions(),
+            &graph,
+            &snapshot,
+            &no_redactions(),
         );
         assert_eq!(result, Err(ContextError::NodeNotFound));
     }
@@ -2344,13 +2359,19 @@ mod tests {
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("handlers build must succeed");
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
-        assert!(ids.contains(&0), "target cap.payment must be in result; got: {ids:?}");
-        assert!(ids.contains(&1), "handler_A must be in result; got: {ids:?}");
-        assert!(ids.contains(&2), "handler_B must be in result; got: {ids:?}");
         assert!(
-            !ids.contains(&3),
-            "unrelated must not appear; got: {ids:?}"
+            ids.contains(&0),
+            "target cap.payment must be in result; got: {ids:?}"
         );
+        assert!(
+            ids.contains(&1),
+            "handler_A must be in result; got: {ids:?}"
+        );
+        assert!(
+            ids.contains(&2),
+            "handler_B must be in result; got: {ids:?}"
+        );
+        assert!(!ids.contains(&3), "unrelated must not appear; got: {ids:?}");
     }
 
     // ── r2_handlers_missing_target_returns_node_not_found ────────────────
@@ -2364,7 +2385,9 @@ mod tests {
                 profile: "prod".to_string(),
                 budget: usize::MAX,
             },
-            &graph, &snapshot, &no_redactions(),
+            &graph,
+            &snapshot,
+            &no_redactions(),
         );
         assert_eq!(result, Err(ContextError::NodeNotFound));
     }
@@ -2411,8 +2434,13 @@ mod tests {
         let graph = make_graph();
         let snapshot = make_snapshot();
         let result = ResponseBuilder::build(
-            &ContextQuery::Concurrency { target: NodeRef(99), budget: usize::MAX },
-            &graph, &snapshot, &no_redactions(),
+            &ContextQuery::Concurrency {
+                target: NodeRef(99),
+                budget: usize::MAX,
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
         );
         assert_eq!(result, Err(ContextError::NodeNotFound));
     }
@@ -2439,7 +2467,10 @@ mod tests {
             ],
         };
         let snapshot = make_snapshot();
-        let query = ContextQuery::Tasks { target: NodeRef(0), budget: usize::MAX };
+        let query = ContextQuery::Tasks {
+            target: NodeRef(0),
+            budget: usize::MAX,
+        };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("tasks build must succeed");
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
@@ -2458,8 +2489,13 @@ mod tests {
         let graph = make_graph();
         let snapshot = make_snapshot();
         let result = ResponseBuilder::build(
-            &ContextQuery::Tasks { target: NodeRef(99), budget: usize::MAX },
-            &graph, &snapshot, &no_redactions(),
+            &ContextQuery::Tasks {
+                target: NodeRef(99),
+                budget: usize::MAX,
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
         );
         assert_eq!(result, Err(ContextError::NodeNotFound));
     }
@@ -2484,7 +2520,10 @@ mod tests {
             ],
         };
         let snapshot = make_snapshot();
-        let query = ContextQuery::Assumptions { target: NodeRef(0), budget: usize::MAX };
+        let query = ContextQuery::Assumptions {
+            target: NodeRef(0),
+            budget: usize::MAX,
+        };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("assumptions build must succeed");
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
@@ -2505,8 +2544,13 @@ mod tests {
         let graph = make_graph();
         let snapshot = make_snapshot();
         let result = ResponseBuilder::build(
-            &ContextQuery::Assumptions { target: NodeRef(99), budget: usize::MAX },
-            &graph, &snapshot, &no_redactions(),
+            &ContextQuery::Assumptions {
+                target: NodeRef(99),
+                budget: usize::MAX,
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
         );
         assert_eq!(result, Err(ContextError::NodeNotFound));
     }
@@ -2525,12 +2569,13 @@ mod tests {
                 GraphNode::new(NodeRef(1), NodeKind::Function, "inner"),
                 GraphNode::new(NodeRef(2), NodeKind::Module, "unrelated"),
             ],
-            edges: vec![
-                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),
-            ],
+            edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls)],
         };
         let snapshot = make_snapshot();
-        let query = ContextQuery::ExtractCandidates { target: NodeRef(0), budget: usize::MAX };
+        let query = ContextQuery::ExtractCandidates {
+            target: NodeRef(0),
+            budget: usize::MAX,
+        };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("extract_candidates build must succeed");
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
@@ -2561,7 +2606,10 @@ mod tests {
             ],
         };
         let snapshot = make_snapshot();
-        let query = ContextQuery::ExtractCandidates { target: NodeRef(0), budget: usize::MAX };
+        let query = ContextQuery::ExtractCandidates {
+            target: NodeRef(0),
+            budget: usize::MAX,
+        };
         let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
             .expect("extract_candidates build must succeed");
         let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
@@ -2578,8 +2626,13 @@ mod tests {
         let graph = make_graph();
         let snapshot = make_snapshot();
         let result = ResponseBuilder::build(
-            &ContextQuery::ExtractCandidates { target: NodeRef(99), budget: usize::MAX },
-            &graph, &snapshot, &no_redactions(),
+            &ContextQuery::ExtractCandidates {
+                target: NodeRef(99),
+                budget: usize::MAX,
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
         );
         assert_eq!(result, Err(ContextError::NodeNotFound));
     }
@@ -2619,7 +2672,10 @@ mod tests {
         assert!(ids.contains(&1), "target must be in result; got: {ids:?}");
         assert!(ids.contains(&2), "contract must be in result; got: {ids:?}");
         assert!(ids.contains(&3), "effect must be in result; got: {ids:?}");
-        assert!(ids.contains(&4), "destination must be in result; got: {ids:?}");
+        assert!(
+            ids.contains(&4),
+            "destination must be in result; got: {ids:?}"
+        );
     }
 
     // ── r2_move_safety_missing_target_returns_node_not_found ─────────────
@@ -2633,7 +2689,9 @@ mod tests {
                 destination: NodeRef(0),
                 budget: usize::MAX,
             },
-            &graph, &snapshot, &no_redactions(),
+            &graph,
+            &snapshot,
+            &no_redactions(),
         );
         assert_eq!(result, Err(ContextError::NodeNotFound));
     }
@@ -2649,7 +2707,10 @@ mod tests {
     fn r2_generated_at_is_populated() {
         let graph = make_graph();
         let snapshot = make_snapshot();
-        let query = ContextQuery::Graph { scope: QueryScope::Full, budget: usize::MAX };
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
         let opts = BuildOptions {
             generated_at: 99_000,
             authorized: true,
@@ -2657,7 +2718,10 @@ mod tests {
         };
         let resp = ResponseBuilder::build_full(&query, &graph, &snapshot, &no_redactions(), &opts)
             .expect("build_full must succeed");
-        assert_eq!(resp.generated_at, 99_000, "generated_at must match opts value");
+        assert_eq!(
+            resp.generated_at, 99_000,
+            "generated_at must match opts value"
+        );
     }
 
     // ── r2_freshness_stale_when_latest_differs ────────────────────────────
@@ -2668,7 +2732,10 @@ mod tests {
         let graph = make_graph();
         let snapshot = make_snapshot(); // id = "builder-snap"
         let other_id = ObjectId::from_bytes(b"other-snap");
-        let query = ContextQuery::Graph { scope: QueryScope::Full, budget: usize::MAX };
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
         let opts = BuildOptions {
             latest_snapshot_id: Some(&other_id),
             authorized: true,
@@ -2692,7 +2759,10 @@ mod tests {
         let graph = make_graph();
         let snapshot = make_snapshot();
         let snap_id = snapshot.id;
-        let query = ContextQuery::Graph { scope: QueryScope::Full, budget: usize::MAX };
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
         let opts = BuildOptions {
             latest_snapshot_id: Some(&snap_id),
             authorized: true,
@@ -2715,7 +2785,10 @@ mod tests {
         let graph = make_graph();
         let snapshot = make_snapshot();
         let other_id = ObjectId::from_bytes(b"newer-snap");
-        let query = ContextQuery::Graph { scope: QueryScope::Full, budget: usize::MAX };
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
         let opts = BuildOptions {
             latest_snapshot_id: Some(&other_id),
             authorized: true,
@@ -2724,7 +2797,9 @@ mod tests {
         let resp = ResponseBuilder::build_full(&query, &graph, &snapshot, &no_redactions(), &opts)
             .expect("build_full must succeed");
         assert!(
-            resp.repair_options.iter().any(|r| r.option_id == "query_latest"),
+            resp.repair_options
+                .iter()
+                .any(|r| r.option_id == "query_latest"),
             "stale response must contain query_latest repair option; got: {:?}",
             resp.repair_options
         );
@@ -2736,13 +2811,21 @@ mod tests {
     fn r2_truncated_response_has_narrow_scope_repair_option() {
         let graph = make_graph(); // 3 nodes
         let snapshot = make_snapshot();
-        let query = ContextQuery::Graph { scope: QueryScope::Full, budget: 1 }; // too small
-        let opts = BuildOptions { authorized: true, ..Default::default() };
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: 1,
+        }; // too small
+        let opts = BuildOptions {
+            authorized: true,
+            ..Default::default()
+        };
         let resp = ResponseBuilder::build_full(&query, &graph, &snapshot, &no_redactions(), &opts)
             .expect("build_full must succeed even when truncated");
         assert!(resp.truncated, "response must be truncated with budget=1");
         assert!(
-            resp.repair_options.iter().any(|r| r.option_id == "narrow_scope"),
+            resp.repair_options
+                .iter()
+                .any(|r| r.option_id == "narrow_scope"),
             "truncated response must contain narrow_scope repair option; got: {:?}",
             resp.repair_options
         );
@@ -2756,8 +2839,15 @@ mod tests {
         let snapshot = make_snapshot();
         let mut redacted = BTreeSet::new();
         redacted.insert(NodeRef(0)); // redact the target
-        let query = ContextQuery::Node { target: NodeRef(0), scope: QueryScope::Local, budget: usize::MAX };
-        let opts = BuildOptions { authorized: false, ..Default::default() };
+        let query = ContextQuery::Node {
+            target: NodeRef(0),
+            scope: QueryScope::Local,
+            budget: usize::MAX,
+        };
+        let opts = BuildOptions {
+            authorized: false,
+            ..Default::default()
+        };
         let result = ResponseBuilder::build_full(&query, &graph, &snapshot, &redacted, &opts);
         assert_eq!(
             result,
@@ -2775,8 +2865,14 @@ mod tests {
         let snapshot = make_snapshot();
         let mut redacted = BTreeSet::new();
         redacted.insert(NodeRef(0));
-        let query = ContextQuery::Graph { scope: QueryScope::Full, budget: usize::MAX };
-        let opts = BuildOptions { authorized: true, ..Default::default() };
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
+        let opts = BuildOptions {
+            authorized: true,
+            ..Default::default()
+        };
         let resp = ResponseBuilder::build_full(&query, &graph, &snapshot, &redacted, &opts)
             .expect("authorized call must succeed");
         assert!(resp.redacted, "redacted flag must be set");
@@ -2801,7 +2897,10 @@ mod tests {
             categories: vec!["secrets".to_string()],
             requires_approval: false,
         };
-        let query = ContextQuery::Graph { scope: QueryScope::Full, budget: usize::MAX };
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
         let opts = BuildOptions {
             authorized: true,
             redaction_policy: Some(&policy),
@@ -2834,7 +2933,10 @@ mod tests {
             categories: vec!["audit_logs".to_string()],
             requires_approval: true,
         };
-        let query = ContextQuery::Graph { scope: QueryScope::Full, budget: usize::MAX };
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
         let opts = BuildOptions {
             authorized: true,
             redaction_policy: Some(&policy),
@@ -2856,12 +2958,21 @@ mod tests {
     fn r2_provenance_block_includes_semantic_graph_source() {
         let graph = make_graph();
         let snapshot = make_snapshot();
-        let query = ContextQuery::Graph { scope: QueryScope::Full, budget: usize::MAX };
-        let opts = BuildOptions { authorized: true, ..Default::default() };
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
+        let opts = BuildOptions {
+            authorized: true,
+            ..Default::default()
+        };
         let resp = ResponseBuilder::build_full(&query, &graph, &snapshot, &no_redactions(), &opts)
             .expect("build must succeed");
         assert!(
-            resp.provenance.sources.iter().any(|s| s == "semantic_graph"),
+            resp.provenance
+                .sources
+                .iter()
+                .any(|s| s == "semantic_graph"),
             "provenance must contain semantic_graph source; got: {:?}",
             resp.provenance.sources
         );
@@ -2873,8 +2984,14 @@ mod tests {
     fn r2_provenance_block_includes_extra_sources() {
         let graph = make_graph();
         let snapshot = make_snapshot();
-        let extra_sources = vec!["verification_reports".to_string(), "runtime_profiles".to_string()];
-        let query = ContextQuery::Graph { scope: QueryScope::Full, budget: usize::MAX };
+        let extra_sources = vec![
+            "verification_reports".to_string(),
+            "runtime_profiles".to_string(),
+        ];
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
         let opts = BuildOptions {
             authorized: true,
             provenance_sources: &extra_sources,
@@ -2883,7 +3000,10 @@ mod tests {
         let resp = ResponseBuilder::build_full(&query, &graph, &snapshot, &no_redactions(), &opts)
             .expect("build must succeed");
         assert!(
-            resp.provenance.sources.iter().any(|s| s == "verification_reports"),
+            resp.provenance
+                .sources
+                .iter()
+                .any(|s| s == "verification_reports"),
             "provenance must contain verification_reports; got: {:?}",
             resp.provenance.sources
         );
@@ -2901,7 +3021,10 @@ mod tests {
             hash: [0u8; 32],
             stale: false,
         }];
-        let query = ContextQuery::Graph { scope: QueryScope::Full, budget: usize::MAX };
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
         let opts = BuildOptions {
             authorized: true,
             index_info: &indexes,
@@ -2929,7 +3052,10 @@ mod tests {
             hash: [0u8; 32],
             stale: true, // stale!
         }];
-        let query = ContextQuery::Graph { scope: QueryScope::Full, budget: usize::MAX };
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
         let opts = BuildOptions {
             authorized: true,
             index_info: &indexes,
@@ -2938,7 +3064,9 @@ mod tests {
         let resp = ResponseBuilder::build_full(&query, &graph, &snapshot, &no_redactions(), &opts)
             .expect("build must succeed");
         assert!(
-            resp.repair_options.iter().any(|r| r.option_id == "rebuild_index"),
+            resp.repair_options
+                .iter()
+                .any(|r| r.option_id == "rebuild_index"),
             "stale index must generate rebuild_index repair option; got: {:?}",
             resp.repair_options
         );
@@ -2956,8 +3084,14 @@ mod tests {
                 snapshot_b: None,
                 budget: 1024,
             },
-            ContextQuery::Risks { target: NodeRef(1), budget: 512 },
-            ContextQuery::Todo { target: NodeRef(2), budget: 256 },
+            ContextQuery::Risks {
+                target: NodeRef(1),
+                budget: 512,
+            },
+            ContextQuery::Todo {
+                target: NodeRef(2),
+                budget: 256,
+            },
             ContextQuery::Capabilities {
                 target: NodeRef(3),
                 profile: "prod".to_string(),
@@ -2968,10 +3102,22 @@ mod tests {
                 profile: "dev".to_string(),
                 budget: 4096,
             },
-            ContextQuery::Concurrency { target: NodeRef(5), budget: 512 },
-            ContextQuery::Tasks { target: NodeRef(6), budget: 1024 },
-            ContextQuery::Assumptions { target: NodeRef(7), budget: 2048 },
-            ContextQuery::ExtractCandidates { target: NodeRef(8), budget: 4096 },
+            ContextQuery::Concurrency {
+                target: NodeRef(5),
+                budget: 512,
+            },
+            ContextQuery::Tasks {
+                target: NodeRef(6),
+                budget: 1024,
+            },
+            ContextQuery::Assumptions {
+                target: NodeRef(7),
+                budget: 2048,
+            },
+            ContextQuery::ExtractCandidates {
+                target: NodeRef(8),
+                budget: 4096,
+            },
             ContextQuery::MoveSafety {
                 target: NodeRef(9),
                 destination: NodeRef(10),
@@ -2989,10 +3135,14 @@ mod tests {
     // RedactionState enum must survive CBOR roundtrip.
     #[test]
     fn r2_redaction_state_cbor_roundtrip() {
-        use ail_storage::codec::{CborCodec, ContentCodec};
         use crate::dto::RedactionState;
+        use ail_storage::codec::{CborCodec, ContentCodec};
         let codec = CborCodec;
-        for state in [RedactionState::None, RedactionState::Partial, RedactionState::Restricted] {
+        for state in [
+            RedactionState::None,
+            RedactionState::Partial,
+            RedactionState::Restricted,
+        ] {
             let bytes = codec.encode(&state).expect("encode must succeed");
             let decoded: RedactionState = codec.decode(&bytes).expect("decode must succeed");
             assert_eq!(decoded, state, "{state:?} must survive CBOR roundtrip");
@@ -3003,12 +3153,19 @@ mod tests {
     // ProvenanceBlock must survive CBOR roundtrip.
     #[test]
     fn r2_provenance_block_cbor_roundtrip() {
-        use ail_storage::codec::{CborCodec, ContentCodec};
         use crate::dto::{IndexInfo, ProvenanceBlock};
+        use ail_storage::codec::{CborCodec, ContentCodec};
         let codec = CborCodec;
         let prov = ProvenanceBlock {
-            sources: vec!["semantic_graph".to_string(), "verification_reports".to_string()],
-            indexes: vec![IndexInfo { kind: "call_graph".to_string(), hash: [1u8; 32], stale: false }],
+            sources: vec![
+                "semantic_graph".to_string(),
+                "verification_reports".to_string(),
+            ],
+            indexes: vec![IndexInfo {
+                kind: "call_graph".to_string(),
+                hash: [1u8; 32],
+                stale: false,
+            }],
             reports: vec![[2u8; 32]],
         };
         let bytes = codec.encode(&prov).expect("encode must succeed");
@@ -3020,8 +3177,8 @@ mod tests {
     // RepairOption must survive CBOR roundtrip.
     #[test]
     fn r2_repair_option_cbor_roundtrip() {
-        use ail_storage::codec::{CborCodec, ContentCodec};
         use crate::dto::RepairOption;
+        use ail_storage::codec::{CborCodec, ContentCodec};
         let codec = CborCodec;
         let opt = RepairOption {
             option_id: "query_latest".to_string(),
@@ -3037,15 +3194,24 @@ mod tests {
     // ContextResponse with all new R2 fields must survive CBOR roundtrip.
     #[test]
     fn r2_full_response_cbor_roundtrip() {
+        use crate::dto::{
+            FreshnessStatus, IndexInfo, ProvenanceBlock, RedactionState, RepairOption,
+        };
         use ail_storage::codec::{CborCodec, ContentCodec};
-        use crate::dto::{FreshnessStatus, IndexInfo, ProvenanceBlock, RedactionState, RepairOption};
         let codec = CborCodec;
         let graph = make_graph();
         let snapshot = make_snapshot();
-        let query = ContextQuery::Graph { scope: QueryScope::Full, budget: usize::MAX };
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
         let other_id = ObjectId::from_bytes(b"other");
         let sources = vec!["semantic_graph".to_string()];
-        let indexes = vec![IndexInfo { kind: "call_graph".to_string(), hash: [0u8; 32], stale: false }];
+        let indexes = vec![IndexInfo {
+            kind: "call_graph".to_string(),
+            hash: [0u8; 32],
+            stale: false,
+        }];
         let opts = BuildOptions {
             authorized: true,
             latest_snapshot_id: Some(&other_id), // force Stale
@@ -3059,7 +3225,11 @@ mod tests {
         assert_eq!(resp.freshness_status, FreshnessStatus::Stale);
 
         let bytes = codec.encode(&resp).expect("encode must succeed");
-        let decoded: crate::dto::ContextResponse = codec.decode(&bytes).expect("decode must succeed");
-        assert_eq!(decoded, resp, "full R2 ContextResponse must survive CBOR roundtrip");
+        let decoded: crate::dto::ContextResponse =
+            codec.decode(&bytes).expect("decode must succeed");
+        assert_eq!(
+            decoded, resp,
+            "full R2 ContextResponse must survive CBOR roundtrip"
+        );
     }
 }

@@ -5,8 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use ail_change::parser::{OpArgs, ParsedOp, parse_changeset};
 use ail_change::model::ChangeSetOp;
+use ail_change::parser::{OpArgs, ParsedOp, parse_changeset};
 
 // ── Scenario: op with multiple kv args ────────────────────────────────────
 // GIVEN `op create_function id=fn.checkout visibility=public`
@@ -40,7 +40,10 @@ fn parse_op_quoted_value_is_unquoted() {
     let src = "change x\nauthor B\nbase 0\nop set_return target=fn.x type=\"Result<OrderId, Err>\"\nend\n";
     let result = parse_changeset(src).expect("must parse");
     let op = &result.parsed_ops[0];
-    assert_eq!(op.args.get("type"), Some(&"Result<OrderId, Err>".to_string()));
+    assert_eq!(
+        op.args.get("type"),
+        Some(&"Result<OrderId, Err>".to_string())
+    );
     assert_eq!(op.args.get("target"), Some(&"fn.x".to_string()));
 }
 
@@ -122,7 +125,10 @@ end
 ";
     let result = parse_changeset(src).expect("must parse");
     assert_eq!(result.parsed_ops.len(), 2);
-    assert_eq!(result.parsed_ops[0].args.get("id"), Some(&"fn.y".to_string()));
+    assert_eq!(
+        result.parsed_ops[0].args.get("id"),
+        Some(&"fn.y".to_string())
+    );
 }
 
 // ── Scenario: ref value (starting with @) is stored as-is ─────────────────

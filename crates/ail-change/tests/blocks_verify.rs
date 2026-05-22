@@ -10,8 +10,8 @@
 //   6. ID normalization (Fn.CartTotal → fn.cart_total)
 //   7. Literal/value normalization
 
-use ail_change::parser::{parse_changeset, ParsedBlock};
 use ail_change::canonical::canonicalize_parsed;
+use ail_change::parser::{ParsedBlock, parse_changeset};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Block parsing
@@ -238,9 +238,9 @@ fn canonicalize_leaves_type_pascal_case_unchanged() {
 // ── Scenario: op args with ID values are normalized by canonicalize_parsed ─
 #[test]
 fn canonicalize_parsed_normalizes_id_args() {
-    use ail_change::parser::ParsedOp;
     use ail_change::model::{ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp};
-    use ail_change::parser::{ParsedChangeSet, ChangeComposition};
+    use ail_change::parser::ParsedOp;
+    use ail_change::parser::{ChangeComposition, ParsedChangeSet};
     use std::collections::BTreeMap;
 
     let mut args = BTreeMap::new();
@@ -287,9 +287,9 @@ fn canonicalize_parsed_normalizes_id_args() {
 // ── Scenario: create_type without derive gets derive=none default ──────────
 #[test]
 fn create_type_without_derive_gets_derive_none_default() {
-    use ail_change::parser::ParsedOp;
     use ail_change::model::{ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp};
-    use ail_change::parser::{ParsedChangeSet, ChangeComposition};
+    use ail_change::parser::ParsedOp;
+    use ail_change::parser::{ChangeComposition, ParsedChangeSet};
     use std::collections::BTreeMap;
 
     let mut args = BTreeMap::new();
@@ -331,9 +331,9 @@ fn create_type_without_derive_gets_derive_none_default() {
 // ── TRIANGULATE: create_type with explicit derive is NOT overridden ─────────
 #[test]
 fn create_type_with_explicit_derive_is_preserved() {
-    use ail_change::parser::ParsedOp;
     use ail_change::model::{ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp};
-    use ail_change::parser::{ParsedChangeSet, ChangeComposition};
+    use ail_change::parser::ParsedOp;
+    use ail_change::parser::{ChangeComposition, ParsedChangeSet};
     use std::collections::BTreeMap;
 
     let mut args = BTreeMap::new();

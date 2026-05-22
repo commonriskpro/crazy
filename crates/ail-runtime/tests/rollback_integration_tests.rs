@@ -16,9 +16,7 @@
 //     requires idempotency + compensation/refund policy
 
 use ail_runtime::profile::CapabilityId;
-use ail_runtime::transaction::{
-    CompensationPolicy, TransactionGroup, TransactionPolicy,
-};
+use ail_runtime::transaction::{CompensationPolicy, TransactionGroup, TransactionPolicy};
 
 // ── CompensationPolicy ────────────────────────────────────────────────────
 
@@ -122,12 +120,12 @@ fn rollback_returns_non_rollbackable_with_compensation_info() {
 
 #[test]
 fn runtime_host_execute_with_rollback_commits_on_success() {
-    use std::sync::Arc;
+    use ail_runtime::InMemoryHandler;
     use ail_runtime::host::RuntimeHost;
     use ail_runtime::manifest::{CapabilityManifest, blake3_hex_of};
     use ail_runtime::profile::{CapabilityGrant, ResourceLimits, RuntimeProfile};
-    use ail_runtime::InMemoryHandler;
     use ail_runtime::transaction::TransactionStatus;
+    use std::sync::Arc;
 
     let wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
     let db_cap = CapabilityId::new("database.write:Order");
@@ -145,10 +143,19 @@ fn runtime_host_execute_with_rollback_commits_on_success() {
         "vr-hash".to_string(),
         manifest_hash,
         vec![
-            CapabilityGrant { module: "test".to_string(), capability: db_cap.clone() },
-            CapabilityGrant { module: "test".to_string(), capability: event_cap.clone() },
+            CapabilityGrant {
+                module: "test".to_string(),
+                capability: db_cap.clone(),
+            },
+            CapabilityGrant {
+                module: "test".to_string(),
+                capability: event_cap.clone(),
+            },
         ],
-        ResourceLimits { max_memory_bytes: None, max_fuel: None },
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+        },
     );
 
     let db_handler = Arc::new(InMemoryHandler::new(
@@ -186,13 +193,13 @@ fn runtime_host_execute_with_rollback_commits_on_success() {
 
 #[test]
 fn runtime_host_execute_with_rollback_rolls_back_on_failure() {
-    use std::sync::Arc;
+    use ail_runtime::InMemoryHandler;
     use ail_runtime::abi::HostError;
     use ail_runtime::host::RuntimeHost;
     use ail_runtime::manifest::{CapabilityManifest, blake3_hex_of};
     use ail_runtime::profile::{CapabilityGrant, ResourceLimits, RuntimeProfile};
-    use ail_runtime::InMemoryHandler;
     use ail_runtime::transaction::TransactionStatus;
+    use std::sync::Arc;
 
     let wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
     let db_cap = CapabilityId::new("database.write:Order");
@@ -207,8 +214,14 @@ fn runtime_host_execute_with_rollback_rolls_back_on_failure() {
         module_hash,
         "vr-hash".to_string(),
         manifest_hash,
-        vec![CapabilityGrant { module: "test".to_string(), capability: db_cap.clone() }],
-        ResourceLimits { max_memory_bytes: None, max_fuel: None },
+        vec![CapabilityGrant {
+            module: "test".to_string(),
+            capability: db_cap.clone(),
+        }],
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+        },
     );
 
     let db_handler = Arc::new(InMemoryHandler::new(
@@ -226,23 +239,28 @@ fn runtime_host_execute_with_rollback_rolls_back_on_failure() {
 
     let result: Result<(), _> = host.execute_with_rollback(&mut tx, |_h| {
         // Simulate execution failure
-        Err(HostError { message: "simulated handler failure".to_string() })
+        Err(HostError {
+            message: "simulated handler failure".to_string(),
+        })
     });
 
     assert!(result.is_err(), "execution failure must propagate error");
-    assert_eq!(tx.status(), TransactionStatus::RolledBack,
-        "execution failure must trigger rollback");
+    assert_eq!(
+        tx.status(),
+        TransactionStatus::RolledBack,
+        "execution failure must trigger rollback"
+    );
 }
 
 #[test]
 fn runtime_host_execute_with_rollback_returns_non_rollbackable_on_failure() {
-    use std::sync::Arc;
+    use ail_runtime::InMemoryHandler;
     use ail_runtime::abi::HostError;
     use ail_runtime::host::RuntimeHost;
     use ail_runtime::manifest::{CapabilityManifest, blake3_hex_of};
     use ail_runtime::profile::{CapabilityGrant, ResourceLimits, RuntimeProfile};
-    use ail_runtime::InMemoryHandler;
     use ail_runtime::transaction::TransactionStatus;
+    use std::sync::Arc;
 
     let wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
     let db_cap = CapabilityId::new("database.write:Order");
@@ -260,10 +278,19 @@ fn runtime_host_execute_with_rollback_returns_non_rollbackable_on_failure() {
         "vr-hash".to_string(),
         manifest_hash,
         vec![
-            CapabilityGrant { module: "test".to_string(), capability: db_cap.clone() },
-            CapabilityGrant { module: "test".to_string(), capability: pay_cap.clone() },
+            CapabilityGrant {
+                module: "test".to_string(),
+                capability: db_cap.clone(),
+            },
+            CapabilityGrant {
+                module: "test".to_string(),
+                capability: pay_cap.clone(),
+            },
         ],
-        ResourceLimits { max_memory_bytes: None, max_fuel: None },
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+        },
     );
 
     let db_handler = Arc::new(InMemoryHandler::new(
@@ -281,12 +308,18 @@ fn runtime_host_execute_with_rollback_returns_non_rollbackable_on_failure() {
     tx.add(db_cap.clone(), TransactionPolicy::Transactional);
     tx.add(pay_cap.clone(), TransactionPolicy::NonRollbackable);
 
-    let (result, non_rollbackable): (Result<(), _>, _) = host.execute_with_rollback_detail(&mut tx, |_h| {
-        Err(HostError { message: "simulated failure after payment".to_string() })
-    });
+    let (result, non_rollbackable): (Result<(), _>, _) =
+        host.execute_with_rollback_detail(&mut tx, |_h| {
+            Err(HostError {
+                message: "simulated failure after payment".to_string(),
+            })
+        });
 
     assert!(result.is_err());
     assert_eq!(tx.status(), TransactionStatus::RolledBack);
     assert_eq!(non_rollbackable.len(), 1);
-    assert_eq!(non_rollbackable[0].as_str(), "payment.charge:PaymentProvider");
+    assert_eq!(
+        non_rollbackable[0].as_str(),
+        "payment.charge:PaymentProvider"
+    );
 }

@@ -21,8 +21,8 @@
 //     R2-11 Pipeline — ChangeSetOp::Verify wired end-to-end with checker→policy
 
 use ail_verify::policy::{
-    ApprovalRecord, ApprovalStrength, PolicyDecision, PolicyEngine, PolicyInput, PolicyRule,
-    PolicyViolation, POLICY_WEAK_ASSUMPTION,
+    ApprovalRecord, ApprovalStrength, POLICY_WEAK_ASSUMPTION, PolicyDecision, PolicyEngine,
+    PolicyInput, PolicyRule, PolicyViolation,
 };
 use ail_verify::policy::{PolicyAudit, PolicyAuditEntry};
 use ail_verify::report::{VerificationEntry, VerificationReport, VerificationState};
@@ -71,7 +71,11 @@ fn weak_approval_for(scope: &str) -> ApprovalRecord {
 
 #[test]
 fn unknown_profile_blocks_unverified_strict_by_default() {
-    let report = report_with(vec![entry("type", "some.node", VerificationState::Unverified)]);
+    let report = report_with(vec![entry(
+        "type",
+        "some.node",
+        VerificationState::Unverified,
+    )]);
     let input = PolicyInput {
         report: &report,
         rules: &[PolicyRule::ProfileGate("completely_unknown_profile".into())],
@@ -147,7 +151,10 @@ fn policy_input_carries_structural_diff_field() {
         package_trust_metadata: &[],
     };
     // Empty report + no rules must still pass
-    assert!(matches!(PolicyEngine::evaluate(&input), PolicyDecision::Passed));
+    assert!(matches!(
+        PolicyEngine::evaluate(&input),
+        PolicyDecision::Passed
+    ));
 }
 
 #[test]
@@ -164,7 +171,10 @@ fn policy_input_carries_public_api_changes_field() {
         package_trust_metadata: &[],
     };
     // No public api changes → passes
-    assert!(matches!(PolicyEngine::evaluate(&input), PolicyDecision::Passed));
+    assert!(matches!(
+        PolicyEngine::evaluate(&input),
+        PolicyDecision::Passed
+    ));
 }
 
 #[test]
@@ -208,7 +218,10 @@ fn policy_passes_approved_public_api_change() {
         public_api_changes: &[api_change],
         package_trust_metadata: &[],
     };
-    assert!(matches!(PolicyEngine::evaluate(&input), PolicyDecision::Passed));
+    assert!(matches!(
+        PolicyEngine::evaluate(&input),
+        PolicyDecision::Passed
+    ));
 }
 
 #[test]
@@ -229,7 +242,10 @@ fn policy_input_carries_capability_grants_field() {
         package_trust_metadata: &[],
     };
     // No blocking rules — should pass
-    assert!(matches!(PolicyEngine::evaluate(&input), PolicyDecision::Passed));
+    assert!(matches!(
+        PolicyEngine::evaluate(&input),
+        PolicyDecision::Passed
+    ));
 }
 
 #[test]
@@ -250,7 +266,10 @@ fn policy_input_carries_package_trust_metadata_field() {
         package_trust_metadata: &[entry],
     };
     // No blocking rules — should pass
-    assert!(matches!(PolicyEngine::evaluate(&input), PolicyDecision::Passed));
+    assert!(matches!(
+        PolicyEngine::evaluate(&input),
+        PolicyDecision::Passed
+    ));
 }
 
 // ── R2-3: Assumed gating — approved vs unapproved ─────────────────────────
@@ -287,7 +306,11 @@ fn approval_record_has_strength_field() {
 
 #[test]
 fn draft_profile_passes_unverified_but_emits_warning() {
-    let report = report_with(vec![entry("type", "draft.fn", VerificationState::Unverified)]);
+    let report = report_with(vec![entry(
+        "type",
+        "draft.fn",
+        VerificationState::Unverified,
+    )]);
     let input = PolicyInput {
         report: &report,
         rules: &[PolicyRule::ProfileGate("draft".into())],
@@ -347,7 +370,11 @@ fn draft_profile_passes_clean_report_without_warnings() {
 #[test]
 fn dev_profile_blocks_assumed_without_boundary() {
     // Assumed without any approval or evidence = no boundary → block in dev
-    let report = report_with(vec![entry("type", "internal.fn", VerificationState::Assumed)]);
+    let report = report_with(vec![entry(
+        "type",
+        "internal.fn",
+        VerificationState::Assumed,
+    )]);
     let input = PolicyInput {
         report: &report,
         rules: &[PolicyRule::ProfileGate("dev".into())],
@@ -359,14 +386,21 @@ fn dev_profile_blocks_assumed_without_boundary() {
     };
     let decision = PolicyEngine::evaluate(&input);
     assert!(
-        matches!(decision, PolicyDecision::Failed(_) | PolicyDecision::ApprovalRequired(_)),
+        matches!(
+            decision,
+            PolicyDecision::Failed(_) | PolicyDecision::ApprovalRequired(_)
+        ),
         "dev must require boundary/approval for bare Assumed entries"
     );
 }
 
 #[test]
 fn dev_profile_passes_assumed_with_approval() {
-    let report = report_with(vec![entry("type", "internal.fn", VerificationState::Assumed)]);
+    let report = report_with(vec![entry(
+        "type",
+        "internal.fn",
+        VerificationState::Assumed,
+    )]);
     let input = PolicyInput {
         report: &report,
         rules: &[PolicyRule::ProfileGate("dev".into())],
@@ -386,7 +420,11 @@ fn dev_profile_passes_assumed_with_approval() {
 #[test]
 fn dev_profile_blocks_unverified_public_scope() {
     // This was covered in R1 but must still hold in R2 with the new input shape
-    let report = report_with(vec![entry("type", "pub::my_fn", VerificationState::Unverified)]);
+    let report = report_with(vec![entry(
+        "type",
+        "pub::my_fn",
+        VerificationState::Unverified,
+    )]);
     let input = PolicyInput {
         report: &report,
         rules: &[PolicyRule::ProfileGate("dev".into())],
@@ -410,7 +448,11 @@ fn dev_profile_blocks_unverified_public_scope() {
 
 #[test]
 fn test_profile_allows_assumed_without_strong_approval() {
-    let report = report_with(vec![entry("type", "mock.service", VerificationState::Assumed)]);
+    let report = report_with(vec![entry(
+        "type",
+        "mock.service",
+        VerificationState::Assumed,
+    )]);
     let input = PolicyInput {
         report: &report,
         rules: &[PolicyRule::ProfileGate("test".into())],
@@ -483,7 +525,10 @@ fn staging_blocks_assumed_without_approval() {
     };
     let decision = PolicyEngine::evaluate(&input);
     assert!(
-        matches!(decision, PolicyDecision::Failed(_) | PolicyDecision::ApprovalRequired(_)),
+        matches!(
+            decision,
+            PolicyDecision::Failed(_) | PolicyDecision::ApprovalRequired(_)
+        ),
         "staging must block/require-approval for unapproved Assumed"
     );
 }
@@ -553,7 +598,10 @@ fn prod_blocks_assumed_without_approval() {
     };
     let decision = PolicyEngine::evaluate(&input);
     assert!(
-        matches!(decision, PolicyDecision::Failed(_) | PolicyDecision::ApprovalRequired(_)),
+        matches!(
+            decision,
+            PolicyDecision::Failed(_) | PolicyDecision::ApprovalRequired(_)
+        ),
         "prod must block unapproved Assumed"
     );
 }
@@ -645,7 +693,10 @@ fn critical_blocks_assumed_with_no_approval() {
     };
     let decision = PolicyEngine::evaluate(&input);
     assert!(
-        matches!(decision, PolicyDecision::Failed(_) | PolicyDecision::ApprovalRequired(_)),
+        matches!(
+            decision,
+            PolicyDecision::Failed(_) | PolicyDecision::ApprovalRequired(_)
+        ),
         "critical must block Assumed without any approval"
     );
 }
@@ -704,7 +755,11 @@ fn critical_passes_assumed_with_strong_approval() {
 
 #[test]
 fn critical_blocks_unsafe_even_with_weak_approval() {
-    let report = report_with(vec![entry("type", "critical.unsafe", VerificationState::Unsafe)]);
+    let report = report_with(vec![entry(
+        "type",
+        "critical.unsafe",
+        VerificationState::Unsafe,
+    )]);
     let input = PolicyInput {
         report: &report,
         rules: &[PolicyRule::ProfileGate("critical".into())],
@@ -723,7 +778,11 @@ fn critical_blocks_unsafe_even_with_weak_approval() {
 #[test]
 fn critical_blocks_unsafe_even_with_strong_approval() {
     // critical: Unsafe is always blocked — no exceptions
-    let report = report_with(vec![entry("type", "critical.unsafe", VerificationState::Unsafe)]);
+    let report = report_with(vec![entry(
+        "type",
+        "critical.unsafe",
+        VerificationState::Unsafe,
+    )]);
     let input = PolicyInput {
         report: &report,
         rules: &[PolicyRule::ProfileGate("critical".into())],
@@ -809,9 +868,11 @@ fn policy_engine_populates_audit_in_report() {
     // When ProfileGate("prod") is used, the engine must populate policy_audit
     // on the returned decision context.
     // For now, verify that evaluate returns an AuditableDecision when asked.
-    let report = report_with(vec![
-        entry("type", "fn.checkout", VerificationState::Assumed),
-    ]);
+    let report = report_with(vec![entry(
+        "type",
+        "fn.checkout",
+        VerificationState::Assumed,
+    )]);
     let approvals = [strong_approval_for("fn.checkout")];
     let input = PolicyInput {
         report: &report,
@@ -852,7 +913,10 @@ fn checker_report_flows_through_policy_engine() {
         nominal: "Int".to_string(),
         generics: vec![],
     });
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let report = Checker::check(&graph);
 
     // Run policy engine on the checker output
@@ -892,14 +956,15 @@ fn checker_report_with_all_proven_passes_prod_policy() {
     node.capability_reqs = Some(CapabilityReqs {
         caps: vec!["database.write:Order".to_string()],
     });
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let report = Checker::check(&graph);
 
     // With effect_row → Assumed; cap_reqs → Assumed
     // For prod: Assumed needs approval
-    let approvals = [
-        strong_approval_for("fn.checkout"),
-    ];
+    let approvals = [strong_approval_for("fn.checkout")];
     let input = PolicyInput {
         report: &report,
         rules: &[PolicyRule::NoUnsafe, PolicyRule::ProfileGate("prod".into())],

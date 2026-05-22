@@ -101,19 +101,23 @@ pub struct WasmArtifact {
 
 // ── build_type_section ────────────────────────────────────────────────────
 
-/// Build a type section with one entry: `() -> ()` (stub type for all
-/// Phase 7 function bodies).
+/// Build a type section with one entry per function signature.
 ///
 /// Returns `None` when `n_functions == 0` — no type section is needed for
 /// an empty module.
-fn build_type_section(n_functions: usize) -> Option<TypeSection> {
-    if n_functions == 0 {
+fn build_type_section(signatures: &[WasmSignature]) -> Option<TypeSection> {
+    if signatures.is_empty() {
         return None;
     }
     let mut types = TypeSection::new();
-    // Type 0: no params, no results. Type 1: no params, i64 result.
-    types.ty().function([], []);
-    types.ty().function([], [ValType::I64]);
+    for signature in signatures {
+        let params = vec![ValType::I64; signature.param_count];
+        if signature.result.is_some() {
+            types.ty().function(params, [ValType::I64]);
+        } else {
+            types.ty().function(params, []);
+        }
+    }
     Some(types)
 }
 
@@ -171,8 +175,8 @@ fn infer_expr_type(expr: &AnfExpr, locals: &mut Vec<(String, ValType)>) -> Optio
         | AnfExpr::ListNew(_)
         | AnfExpr::Lambda { .. }
         | AnfExpr::Seq(_) => Some(ValType::I32),
+        AnfExpr::Call { .. } => Some(ValType::I64),
         AnfExpr::Placeholder
-        | AnfExpr::Call { .. }
         | AnfExpr::EffectCall { .. }
         | AnfExpr::Dispatch { .. }
         | AnfExpr::TaskSpawn { .. }
@@ -200,20 +204,26 @@ fn infer_expr_type(expr: &AnfExpr, locals: &mut Vec<(String, ValType)>) -> Optio
 ///
 /// Returns `None` when `n_functions == 0`.
 fn binding_result(binding: &crate::anf::AnfBinding) -> Option<ValType> {
-    infer_expr_type(&binding.expr, &mut Vec::new()).filter(|ty| *ty == ValType::I64)
+    let mut locals = binding_params(binding)
+        .into_iter()
+        .map(|name| (name.to_string(), ValType::I64))
+        .collect();
+    infer_expr_type(&binding.expr, &mut locals).filter(|ty| *ty == ValType::I64)
 }
 
-fn build_function_section(bindings: &[crate::anf::AnfBinding]) -> Option<FunctionSection> {
-    if bindings.is_empty() {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WasmSignature {
+    param_count: usize,
+    result: Option<ValType>,
+}
+
+fn build_function_section(signatures: &[WasmSignature]) -> Option<FunctionSection> {
+    if signatures.is_empty() {
         return None;
     }
     let mut functions = FunctionSection::new();
-    for binding in bindings {
-        functions.function(if binding_result(binding).is_some() {
-            1
-        } else {
-            0
-        });
+    for (type_idx, _) in signatures.iter().enumerate() {
+        functions.function(type_idx as u32);
     }
     Some(functions)
 }
@@ -244,6 +254,102 @@ fn build_export_section(bindings: &[crate::anf::AnfBinding]) -> Option<ExportSec
     (count > 0).then_some(exports)
 }
 
+fn function_index(bindings: &[crate::anf::AnfBinding]) -> BTreeMap<String, u32> {
+    let mut functions = BTreeMap::new();
+    for (idx, binding) in bindings.iter().enumerate() {
+        functions.insert(binding.name.clone(), idx as u32);
+        functions.insert(export_name(&binding.name), idx as u32);
+    }
+    functions
+}
+
+fn collect_free_vars<'a>(expr: &'a AnfExpr, bound: &mut Vec<&'a str>, out: &mut Vec<&'a str>) {
+    match expr {
+        AnfExpr::Var(name) => {
+            if !bound.iter().rev().any(|bound_name| *bound_name == name)
+                && !out.iter().any(|existing| *existing == name)
+            {
+                out.push(name);
+            }
+        }
+        AnfExpr::Let { name, value, body } => {
+            collect_free_vars(value, bound, out);
+            bound.push(name);
+            collect_free_vars(body, bound, out);
+            bound.pop();
+        }
+        AnfExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            if !bound.iter().rev().any(|bound_name| *bound_name == cond)
+                && !out.iter().any(|existing| *existing == cond)
+            {
+                out.push(cond);
+            }
+            collect_free_vars(then_branch, bound, out);
+            collect_free_vars(else_branch, bound, out);
+        }
+        AnfExpr::Call { args, .. } => {
+            for arg in args {
+                if !bound.iter().rev().any(|bound_name| *bound_name == arg)
+                    && !out.iter().any(|existing| *existing == arg)
+                {
+                    out.push(arg);
+                }
+            }
+        }
+        AnfExpr::Return(inner)
+        | AnfExpr::ShortCircuitAnd { right: inner, .. }
+        | AnfExpr::ShortCircuitOr { right: inner, .. }
+        | AnfExpr::FieldUpdate { value: inner, .. } => collect_free_vars(inner, bound, out),
+        AnfExpr::Seq(exprs) | AnfExpr::TupleNew(exprs) | AnfExpr::ListNew(exprs) => {
+            for expr in exprs {
+                collect_free_vars(expr, bound, out);
+            }
+        }
+        AnfExpr::Match { arms, .. } => {
+            for arm in arms {
+                collect_free_vars(&arm.body, bound, out);
+            }
+        }
+        AnfExpr::Lambda { params, body } => {
+            let original_len = bound.len();
+            bound.extend(params.iter().map(String::as_str));
+            collect_free_vars(body, bound, out);
+            bound.truncate(original_len);
+        }
+        AnfExpr::RecordNew { fields } => {
+            for (_, expr) in fields {
+                collect_free_vars(expr, bound, out);
+            }
+        }
+        AnfExpr::VariantNew { payload, .. } => {
+            if let Some(payload) = payload {
+                collect_free_vars(payload, bound, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn binding_params(binding: &crate::anf::AnfBinding) -> Vec<&str> {
+    let mut params = Vec::new();
+    collect_free_vars(&binding.expr, &mut Vec::new(), &mut params);
+    params
+}
+
+fn binding_signatures(bindings: &[crate::anf::AnfBinding]) -> Vec<WasmSignature> {
+    bindings
+        .iter()
+        .map(|binding| WasmSignature {
+            param_count: binding_params(binding).len(),
+            result: binding_result(binding),
+        })
+        .collect()
+}
+
 // ── WasmCodegenCtx ────────────────────────────────────────────────────────
 
 /// Local-variable environment for WASM codegen.
@@ -260,10 +366,15 @@ struct WasmCodegenCtx<'a> {
 }
 
 impl<'a> WasmCodegenCtx<'a> {
-    fn new() -> Self {
+    fn new(params: Vec<&'a str>) -> Self {
+        let param_count = params.len() as u32;
         WasmCodegenCtx {
-            locals: Vec::new(),
-            next_local: 0,
+            locals: params
+                .into_iter()
+                .enumerate()
+                .map(|(idx, name)| (name, idx as u32, ValType::I64))
+                .collect(),
+            next_local: param_count,
             local_types: Vec::new(),
         }
     }
@@ -306,9 +417,10 @@ fn emit_branch_expr<'a>(
     expr: &'a AnfExpr,
     result_ty: Option<ValType>,
     ctx: &mut WasmCodegenCtx<'a>,
+    functions: &BTreeMap<String, u32>,
     insns: &mut Vec<Instruction<'a>>,
 ) -> Option<ValType> {
-    let emitted_ty = emit_anf_expr(expr, ctx, insns);
+    let emitted_ty = emit_anf_expr(expr, ctx, functions, insns);
     if result_ty.is_none() && emitted_ty.is_some() {
         insns.push(Instruction::Drop);
     }
@@ -320,6 +432,18 @@ fn emit_local_get<'a>(ctx: &WasmCodegenCtx<'a>, name: &str, insns: &mut Vec<Inst
         insns.push(Instruction::LocalGet(idx));
     } else {
         insns.push(Instruction::Unreachable);
+    }
+}
+
+fn emit_condition_get<'a>(ctx: &WasmCodegenCtx<'a>, name: &str, insns: &mut Vec<Instruction<'a>>) {
+    if let Some((idx, ty)) = ctx.lookup(name) {
+        insns.push(Instruction::LocalGet(idx));
+        if ty == ValType::I64 {
+            insns.push(Instruction::I64Const(0));
+            insns.push(Instruction::I64Ne);
+        }
+    } else {
+        insns.push(Instruction::I32Const(0));
     }
 }
 
@@ -341,6 +465,7 @@ fn emit_match_arms<'a>(
     arms: &'a [crate::anf::AnfMatchArm],
     result_ty: Option<ValType>,
     ctx: &mut WasmCodegenCtx<'a>,
+    functions: &BTreeMap<String, u32>,
     insns: &mut Vec<Instruction<'a>>,
 ) -> Option<ValType> {
     let Some((first, rest)) = arms.split_first() else {
@@ -349,7 +474,7 @@ fn emit_match_arms<'a>(
     };
 
     if first.pattern.trim() == "_" {
-        return emit_branch_expr(&first.body, result_ty, ctx, insns);
+        return emit_branch_expr(&first.body, result_ty, ctx, functions, insns);
     }
 
     let can_match = match scrutinee_ty {
@@ -368,15 +493,31 @@ fn emit_match_arms<'a>(
 
     if can_match.is_none() {
         if rest.is_empty() {
-            return emit_branch_expr(&first.body, result_ty, ctx, insns);
+            return emit_branch_expr(&first.body, result_ty, ctx, functions, insns);
         }
-        return emit_match_arms(scrutinee, scrutinee_ty, rest, result_ty, ctx, insns);
+        return emit_match_arms(
+            scrutinee,
+            scrutinee_ty,
+            rest,
+            result_ty,
+            ctx,
+            functions,
+            insns,
+        );
     }
 
     insns.push(Instruction::If(block_type(result_ty)));
-    emit_branch_expr(&first.body, result_ty, ctx, insns);
+    emit_branch_expr(&first.body, result_ty, ctx, functions, insns);
     insns.push(Instruction::Else);
-    emit_match_arms(scrutinee, scrutinee_ty, rest, result_ty, ctx, insns);
+    emit_match_arms(
+        scrutinee,
+        scrutinee_ty,
+        rest,
+        result_ty,
+        ctx,
+        functions,
+        insns,
+    );
     insns.push(Instruction::End);
     result_ty
 }
@@ -394,6 +535,7 @@ fn emit_match_arms<'a>(
 fn emit_anf_expr<'a>(
     expr: &'a AnfExpr,
     ctx: &mut WasmCodegenCtx<'a>,
+    functions: &BTreeMap<String, u32>,
     insns: &mut Vec<Instruction<'a>>,
 ) -> Option<ValType> {
     match expr {
@@ -434,12 +576,12 @@ fn emit_anf_expr<'a>(
         // ── Let binding ───────────────────────────────────────────────────
         AnfExpr::Let { name, value, body } => {
             // Emit value expression (leaves one value on stack).
-            let value_ty = emit_anf_expr(value, ctx, insns).unwrap_or(ValType::I32);
+            let value_ty = emit_anf_expr(value, ctx, functions, insns).unwrap_or(ValType::I32);
             // Allocate a fresh local and set it.
             let idx = ctx.bind(name, value_ty);
             insns.push(Instruction::LocalSet(idx));
             // Emit the body with the new binding in scope.
-            emit_anf_expr(body, ctx, insns)
+            emit_anf_expr(body, ctx, functions, insns)
         }
 
         // ── Conditional (short-circuit AND/OR) ────────────────────────────
@@ -449,18 +591,14 @@ fn emit_anf_expr<'a>(
             else_branch,
         } => {
             // Condition: look up the atomic variable.
-            if let Some((idx, _)) = ctx.lookup(cond) {
-                insns.push(Instruction::LocalGet(idx));
-            } else {
-                insns.push(Instruction::I32Const(0));
-            }
+            emit_condition_get(ctx, cond, insns);
             let result_ty = ctx
                 .expr_type(then_branch)
                 .filter(|ty| Some(*ty) == ctx.expr_type(else_branch));
             insns.push(Instruction::If(block_type(result_ty)));
-            emit_branch_expr(then_branch, result_ty, ctx, insns);
+            emit_branch_expr(then_branch, result_ty, ctx, functions, insns);
             insns.push(Instruction::Else);
-            emit_branch_expr(else_branch, result_ty, ctx, insns);
+            emit_branch_expr(else_branch, result_ty, ctx, functions, insns);
             insns.push(Instruction::End);
             result_ty
         }
@@ -468,13 +606,9 @@ fn emit_anf_expr<'a>(
         // ── Short-circuit AND ─────────────────────────────────────────────
         // if left { right } else { false }
         AnfExpr::ShortCircuitAnd { left, right } => {
-            if let Some((idx, _)) = ctx.lookup(left) {
-                insns.push(Instruction::LocalGet(idx));
-            } else {
-                insns.push(Instruction::I32Const(0));
-            }
+            emit_condition_get(ctx, left, insns);
             insns.push(Instruction::If(BlockType::Result(ValType::I32)));
-            emit_anf_expr(right, ctx, insns);
+            emit_anf_expr(right, ctx, functions, insns);
             insns.push(Instruction::Else);
             insns.push(Instruction::I32Const(0));
             insns.push(Instruction::End);
@@ -484,15 +618,11 @@ fn emit_anf_expr<'a>(
         // ── Short-circuit OR ──────────────────────────────────────────────
         // if left { true } else { right }
         AnfExpr::ShortCircuitOr { left, right } => {
-            if let Some((idx, _)) = ctx.lookup(left) {
-                insns.push(Instruction::LocalGet(idx));
-            } else {
-                insns.push(Instruction::I32Const(0));
-            }
+            emit_condition_get(ctx, left, insns);
             insns.push(Instruction::If(BlockType::Result(ValType::I32)));
             insns.push(Instruction::I32Const(1));
             insns.push(Instruction::Else);
-            emit_anf_expr(right, ctx, insns);
+            emit_anf_expr(right, ctx, functions, insns);
             insns.push(Instruction::End);
             Some(ValType::I32)
         }
@@ -501,7 +631,7 @@ fn emit_anf_expr<'a>(
         AnfExpr::Seq(exprs) => {
             let mut last_ty = Some(ValType::I32);
             for (i, e) in exprs.iter().enumerate() {
-                last_ty = emit_anf_expr(e, ctx, insns);
+                last_ty = emit_anf_expr(e, ctx, functions, insns);
                 // Drop intermediate results (all but the last).
                 if i + 1 < exprs.len() {
                     insns.push(Instruction::Drop);
@@ -516,25 +646,32 @@ fn emit_anf_expr<'a>(
 
         // ── Return ────────────────────────────────────────────────────────
         AnfExpr::Return(inner) => {
-            emit_anf_expr(inner, ctx, insns);
+            emit_anf_expr(inner, ctx, functions, insns);
             insns.push(Instruction::Return);
             None
         }
 
         // ── Function call (pure) ──────────────────────────────────────────
         // Emits args via local.get, then calls the function.
-        // Function index resolution is deferred (emit unreachable for now
-        // since we don't have a full import table yet).
-        AnfExpr::Call { args, .. } => {
+        AnfExpr::Call { func, args } => {
             for arg_name in args {
                 if let Some((idx, _)) = ctx.lookup(arg_name) {
                     insns.push(Instruction::LocalGet(idx));
+                } else {
+                    insns.push(Instruction::Unreachable);
+                    return None;
                 }
             }
-            // TODO: resolve function index from name table.
-            // For now emit unreachable as the call target placeholder.
-            insns.push(Instruction::Unreachable);
-            None
+            if matches!(func.as_str(), "i64.add" | "+") && args.len() == 2 {
+                insns.push(Instruction::I64Add);
+                Some(ValType::I64)
+            } else if let Some(idx) = functions.get(func) {
+                insns.push(Instruction::Call(*idx));
+                Some(ValType::I64)
+            } else {
+                insns.push(Instruction::Unreachable);
+                None
+            }
         }
 
         // ── FieldGet ──────────────────────────────────────────────────────
@@ -558,7 +695,7 @@ fn emit_anf_expr<'a>(
                 None
             };
             // Emit the replacement value.
-            emit_anf_expr(value, ctx, insns);
+            emit_anf_expr(value, ctx, functions, insns);
             insns.push(Instruction::Drop); // consume value (TODO: actual update)
             // Return the (unchanged, pending real update) record reference.
             record_ty
@@ -568,7 +705,7 @@ fn emit_anf_expr<'a>(
         AnfExpr::RecordNew { fields } => {
             // Emit all field values (they are all Var refs after full ANF normalization).
             for (_, v) in fields {
-                emit_anf_expr(v, ctx, insns);
+                emit_anf_expr(v, ctx, functions, insns);
                 insns.push(Instruction::Drop); // TODO: pack into record struct
             }
             // Return opaque i32(0) as the record handle placeholder.
@@ -579,7 +716,7 @@ fn emit_anf_expr<'a>(
         // ── TupleNew ─────────────────────────────────────────────────────
         AnfExpr::TupleNew(elems) => {
             for e in elems {
-                emit_anf_expr(e, ctx, insns);
+                emit_anf_expr(e, ctx, functions, insns);
                 insns.push(Instruction::Drop); // TODO: pack tuple
             }
             insns.push(Instruction::I32Const(0));
@@ -589,7 +726,7 @@ fn emit_anf_expr<'a>(
         // ── VariantNew ───────────────────────────────────────────────────
         AnfExpr::VariantNew { payload, .. } => {
             if let Some(p) = payload {
-                emit_anf_expr(p, ctx, insns);
+                emit_anf_expr(p, ctx, functions, insns);
                 insns.push(Instruction::Drop); // TODO: tag the variant
             }
             insns.push(Instruction::I32Const(0));
@@ -599,7 +736,7 @@ fn emit_anf_expr<'a>(
         // ── ListNew ──────────────────────────────────────────────────────
         AnfExpr::ListNew(elems) => {
             for e in elems {
-                emit_anf_expr(e, ctx, insns);
+                emit_anf_expr(e, ctx, functions, insns);
                 insns.push(Instruction::Drop); // TODO: append to list
             }
             insns.push(Instruction::I32Const(0));
@@ -612,7 +749,15 @@ fn emit_anf_expr<'a>(
         AnfExpr::Match { scrutinee, arms } => {
             if let Some((_, scrutinee_ty)) = ctx.lookup(scrutinee) {
                 let result_ty = ctx.expr_type(expr);
-                emit_match_arms(scrutinee, scrutinee_ty, arms, result_ty, ctx, insns)
+                emit_match_arms(
+                    scrutinee,
+                    scrutinee_ty,
+                    arms,
+                    result_ty,
+                    ctx,
+                    functions,
+                    insns,
+                )
             } else {
                 insns.push(Instruction::Unreachable);
                 None
@@ -673,11 +818,13 @@ fn build_code_section(bindings: &[crate::anf::AnfBinding]) -> Option<CodeSection
         return None;
     }
     let mut codes = CodeSection::new();
+    let functions = function_index(bindings);
     for binding in bindings {
-        let mut ctx = WasmCodegenCtx::new();
+        let params = binding_params(binding);
+        let mut ctx = WasmCodegenCtx::new(params);
         let mut insns: Vec<Instruction<'_>> = Vec::new();
 
-        let emitted_ty = emit_anf_expr(&binding.expr, &mut ctx, &mut insns);
+        let emitted_ty = emit_anf_expr(&binding.expr, &mut ctx, &functions, &mut insns);
 
         if binding_result(binding).is_none() && emitted_ty.is_some() {
             insns.push(Instruction::Drop);
@@ -789,14 +936,14 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         .anf_ir_hash
         .ok_or_else(|| CompileError::EncodingError("anf_ir_hash not sealed".to_string()))?;
 
-    let n = anf.bindings.len();
+    let signatures = binding_signatures(&anf.bindings);
 
     // Assemble WASM module first so we can compute byte offsets.
     let mut module = Module::new();
-    if let Some(types) = build_type_section(n) {
+    if let Some(types) = build_type_section(&signatures) {
         module.section(&types);
     }
-    if let Some(functions) = build_function_section(&anf.bindings) {
+    if let Some(functions) = build_function_section(&signatures) {
         module.section(&functions);
     }
     if let Some(exports) = build_export_section(&anf.bindings) {
@@ -972,14 +1119,210 @@ mod tests {
     // Scenario: build_type_section returns None for 0 functions.
     #[test]
     fn build_type_section_none_for_zero() {
-        assert!(build_type_section(0).is_none());
+        assert!(build_type_section(&[]).is_none());
     }
 
     // TRIANGULATE: build_type_section returns Some for N > 0.
     #[test]
     fn build_type_section_some_for_nonzero() {
-        assert!(build_type_section(1).is_some());
-        assert!(build_type_section(5).is_some());
+        let signature = WasmSignature {
+            param_count: 0,
+            result: None,
+        };
+        assert!(build_type_section(std::slice::from_ref(&signature)).is_some());
+        assert!(build_type_section(&vec![signature; 5]).is_some());
+    }
+
+    fn sealed_anf(bindings: Vec<crate::anf::AnfBinding>) -> AnfIr {
+        AnfIr {
+            schema_version: crate::anf::ANF_SCHEMA_VERSION,
+            source_map: SourceMap::from_bindings(&bindings),
+            bindings,
+            stage_hashes: StageHashes {
+                graph_snapshot_hash: [0u8; 32],
+                verification_report_hash: [0u8; 32],
+                core_ir_hash: [1u8; 32],
+                anf_ir_hash: Some([2u8; 32]),
+                wasm_hash: None,
+                native_hash: None,
+                source_map_hash: None,
+                artifact_manifest_hash: None,
+            },
+        }
+    }
+
+    #[test]
+    fn emit_wasm_call_uses_resolved_function_index() {
+        use crate::anf::AnfBinding;
+        use wasmparser::{Operator, Parser, Payload};
+
+        let anf = sealed_anf(vec![
+            AnfBinding {
+                source_ref: NodeRef(0),
+                name: "fn.answer".to_string(),
+                expr: AnfExpr::Literal(LiteralValue::Int(42)),
+            },
+            AnfBinding {
+                source_ref: NodeRef(1),
+                name: "fn.main".to_string(),
+                expr: AnfExpr::Call {
+                    func: "answer".to_string(),
+                    args: vec![],
+                },
+            },
+        ]);
+
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let mut saw_call_answer = false;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    if matches!(reader.read().unwrap(), Operator::Call { function_index: 0 }) {
+                        saw_call_answer = true;
+                    }
+                }
+            }
+        }
+
+        assert!(saw_call_answer, "expected fn.main to call function index 0");
+    }
+
+    #[test]
+    fn emit_wasm_single_arg_call_emits_i64_add_and_call() {
+        use crate::anf::AnfBinding;
+        use wasmparser::{Operator, Parser, Payload};
+
+        let anf = sealed_anf(vec![
+            AnfBinding {
+                source_ref: NodeRef(0),
+                name: "fn.double".to_string(),
+                expr: AnfExpr::Call {
+                    func: "i64.add".to_string(),
+                    args: vec!["x".to_string(), "x".to_string()],
+                },
+            },
+            AnfBinding {
+                source_ref: NodeRef(1),
+                name: "fn.main".to_string(),
+                expr: AnfExpr::Let {
+                    name: "n".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(21))),
+                    body: Box::new(AnfExpr::Call {
+                        func: "double".to_string(),
+                        args: vec!["n".to_string()],
+                    }),
+                },
+            },
+        ]);
+
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let mut saw_i64_add = false;
+        let mut saw_call_double = false;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    match reader.read().unwrap() {
+                        Operator::I64Add => saw_i64_add = true,
+                        Operator::Call { function_index: 0 } => saw_call_double = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(saw_i64_add, "expected double to use i64.add");
+        assert!(saw_call_double, "expected main to call double");
+    }
+
+    #[test]
+    fn emit_wasm_multi_arg_call_emits_call() {
+        use crate::anf::AnfBinding;
+        use wasmparser::{Operator, Parser, Payload};
+
+        let anf = sealed_anf(vec![
+            AnfBinding {
+                source_ref: NodeRef(0),
+                name: "fn.sum".to_string(),
+                expr: AnfExpr::Call {
+                    func: "i64.add".to_string(),
+                    args: vec!["a".to_string(), "b".to_string()],
+                },
+            },
+            AnfBinding {
+                source_ref: NodeRef(1),
+                name: "fn.main".to_string(),
+                expr: AnfExpr::Let {
+                    name: "a".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(20))),
+                    body: Box::new(AnfExpr::Let {
+                        name: "b".to_string(),
+                        value: Box::new(AnfExpr::Literal(LiteralValue::Int(22))),
+                        body: Box::new(AnfExpr::Call {
+                            func: "sum".to_string(),
+                            args: vec!["a".to_string(), "b".to_string()],
+                        }),
+                    }),
+                },
+            },
+        ]);
+
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let mut saw_call_sum = false;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    if matches!(reader.read().unwrap(), Operator::Call { function_index: 0 }) {
+                        saw_call_sum = true;
+                    }
+                }
+            }
+        }
+
+        assert!(saw_call_sum, "expected main to call sum");
+    }
+
+    #[test]
+    fn emit_wasm_recursive_call_validates() {
+        use crate::anf::AnfBinding;
+        use wasmparser::{Operator, Parser, Payload};
+
+        let anf = sealed_anf(vec![AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.recur".to_string(),
+            expr: AnfExpr::Call {
+                func: "recur".to_string(),
+                args: vec!["n".to_string()],
+            },
+        }]);
+
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("recursive call module must validate");
+
+        let mut saw_self_call = false;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    if matches!(reader.read().unwrap(), Operator::Call { function_index: 0 }) {
+                        saw_self_call = true;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_self_call,
+            "recursive call should target its own function index"
+        );
     }
 
     #[test]

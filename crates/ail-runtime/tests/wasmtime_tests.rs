@@ -9,8 +9,7 @@
 //  - RuntimeHost::new() succeeds (engine initialization is infallible from caller's view).
 
 use ail_compiler::{
-    AnfBinding, AnfExpr, AnfIr, SourceMap,
-    core_ir::{LiteralValue, StageHashes},
+    ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, LiteralValue, SourceMap, StageHashes,
     emit_wasm, lower_to_anf, lower_to_core_ir,
 };
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
@@ -56,16 +55,11 @@ fn matching_profile(wasm: &[u8], manifest: &CapabilityManifest) -> RuntimeProfil
     )
 }
 
-fn compiler_wasm_for_expr(expr: AnfExpr, name: &str) -> Vec<u8> {
-    let binding = AnfBinding {
-        source_ref: NodeRef(0),
-        name: name.to_string(),
-        expr,
-    };
-    let anf = AnfIr {
-        schema_version: ail_compiler::anf::ANF_SCHEMA_VERSION,
-        source_map: SourceMap::from_bindings(std::slice::from_ref(&binding)),
-        bindings: vec![binding],
+fn sealed_anf(bindings: Vec<AnfBinding>) -> AnfIr {
+    AnfIr {
+        schema_version: ANF_SCHEMA_VERSION,
+        source_map: SourceMap::from_bindings(&bindings),
+        bindings,
         stage_hashes: StageHashes {
             graph_snapshot_hash: [0u8; 32],
             verification_report_hash: [0u8; 32],
@@ -76,8 +70,16 @@ fn compiler_wasm_for_expr(expr: AnfExpr, name: &str) -> Vec<u8> {
             source_map_hash: None,
             artifact_manifest_hash: None,
         },
-    };
+    }
+}
 
+fn compiler_wasm_for_expr(expr: AnfExpr, name: &str) -> Vec<u8> {
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: name.to_string(),
+        expr,
+    };
+    let anf = sealed_anf(vec![binding]);
     emit_wasm(&anf).expect("emit_wasm failed").wasm
 }
 
@@ -227,6 +229,45 @@ fn compiler_if_else_function_returns_taken_branch() {
     let value = instance.invoke("branch", &[]).expect("invoke must succeed");
 
     assert_eq!(value, RuntimeValue::I64(20));
+}
+
+#[test]
+fn compiler_function_call_double_21_invokes_to_42() {
+    let anf = sealed_anf(vec![
+        AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.double".to_string(),
+            expr: AnfExpr::Call {
+                func: "i64.add".to_string(),
+                args: vec!["x".to_string(), "x".to_string()],
+            },
+        },
+        AnfBinding {
+            source_ref: NodeRef(1),
+            name: "fn.main".to_string(),
+            expr: AnfExpr::Let {
+                name: "n".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(21))),
+                body: Box::new(AnfExpr::Call {
+                    func: "double".to_string(),
+                    args: vec!["n".to_string()],
+                }),
+            },
+        },
+    ]);
+    let wasm = emit_wasm(&anf).expect("emit_wasm failed").wasm;
+    let manifest = CapabilityManifest {
+        module: "function-call-test".to_string(),
+        requires: vec![],
+    };
+    let profile = matching_profile(&wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("WASM must instantiate");
+
+    let value = instance.invoke("main", &[]).expect("main must invoke");
+    assert_eq!(value, RuntimeValue::I64(42));
 }
 
 // TRIANGULATE: the 8-byte WASM header (minimal valid module) also succeeds.

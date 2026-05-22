@@ -12,11 +12,11 @@
 // Per runtime.md §"Runtime checks":
 //   runtime_checked only counts if check exists in verified artifact hash.
 
+use ail_runtime::profile::CapabilityId;
 use ail_runtime::schema::{
     CapabilityDefinition, CapabilityErrorSchema, CapabilityInputSchema, CapabilityOutputSchema,
     CapabilitySchema, SchemaField, SchemaValidationError,
 };
-use ail_runtime::profile::CapabilityId;
 
 // ── CapabilityDefinition: schema attachment ───────────────────────────────
 
@@ -90,7 +90,10 @@ fn input_schema_rejects_payload_missing_required_field() {
     // Missing "currency"
     let payload = b"amount_cents=100";
     let result = schema.validate(payload);
-    assert!(result.is_err(), "missing required field must fail validation");
+    assert!(
+        result.is_err(),
+        "missing required field must fail validation"
+    );
     let err = result.unwrap_err();
     assert!(
         err.message.contains("currency"),
@@ -165,11 +168,11 @@ fn runtime_host_can_register_capability_definition() {
 
 #[test]
 fn capability_call_with_schema_passes_valid_payload() {
-    use std::sync::Arc;
+    use ail_runtime::InMemoryHandler;
     use ail_runtime::host::RuntimeHost;
     use ail_runtime::manifest::{CapabilityManifest, blake3_hex_of};
     use ail_runtime::profile::{CapabilityGrant, ResourceLimits, RuntimeProfile};
-    use ail_runtime::InMemoryHandler;
+    use std::sync::Arc;
 
     let wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
     let cap_id = CapabilityId::new("database.read:Cart");
@@ -190,7 +193,10 @@ fn capability_call_with_schema_passes_valid_payload() {
         "vr-hash".to_string(),
         manifest_hash,
         vec![grant],
-        ResourceLimits { max_memory_bytes: None, max_fuel: None },
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+        },
     );
 
     // Schema requires "cart_id" field in the payload
@@ -218,16 +224,20 @@ fn capability_call_with_schema_passes_valid_payload() {
 
     // Valid payload: contains the "cart_id" field
     let result = host.call_capability(&cap_id, "read", b"cart_id=42");
-    assert!(result.is_ok(), "valid payload must pass schema check: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "valid payload must pass schema check: {:?}",
+        result.err()
+    );
 }
 
 #[test]
 fn capability_call_with_schema_rejects_invalid_payload() {
-    use std::sync::Arc;
+    use ail_runtime::InMemoryHandler;
     use ail_runtime::host::RuntimeHost;
     use ail_runtime::manifest::{CapabilityManifest, blake3_hex_of};
     use ail_runtime::profile::{CapabilityGrant, ResourceLimits, RuntimeProfile};
-    use ail_runtime::InMemoryHandler;
+    use std::sync::Arc;
 
     let wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
     let cap_id = CapabilityId::new("database.read:Cart");
@@ -248,7 +258,10 @@ fn capability_call_with_schema_rejects_invalid_payload() {
         "vr-hash".to_string(),
         manifest_hash,
         vec![grant],
-        ResourceLimits { max_memory_bytes: None, max_fuel: None },
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+        },
     );
 
     // Schema requires "cart_id" field
@@ -279,7 +292,9 @@ fn capability_call_with_schema_rejects_invalid_payload() {
     assert!(result.is_err(), "invalid payload must fail schema check");
     let err = result.unwrap_err();
     assert!(
-        err.message.contains("PayloadDecodeError") || err.message.contains("cart_id") || err.message.contains("schema"),
+        err.message.contains("PayloadDecodeError")
+            || err.message.contains("cart_id")
+            || err.message.contains("schema"),
         "error must indicate payload schema violation: {:?}",
         err
     );
@@ -287,11 +302,11 @@ fn capability_call_with_schema_rejects_invalid_payload() {
 
 #[test]
 fn capability_call_without_registered_schema_passes_through() {
-    use std::sync::Arc;
+    use ail_runtime::InMemoryHandler;
     use ail_runtime::host::RuntimeHost;
     use ail_runtime::manifest::{CapabilityManifest, blake3_hex_of};
     use ail_runtime::profile::{CapabilityGrant, ResourceLimits, RuntimeProfile};
-    use ail_runtime::InMemoryHandler;
+    use std::sync::Arc;
 
     let wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
     let cap_id = CapabilityId::new("event.emit:OrderPaid");
@@ -312,7 +327,10 @@ fn capability_call_without_registered_schema_passes_through() {
         "vr-hash".to_string(),
         manifest_hash,
         vec![grant],
-        ResourceLimits { max_memory_bytes: None, max_fuel: None },
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+        },
     );
 
     let handler = Arc::new(InMemoryHandler::new(

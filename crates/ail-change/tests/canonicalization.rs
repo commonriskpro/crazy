@@ -8,8 +8,10 @@ use std::collections::BTreeMap;
 
 use ail_change::{
     canonical::{CanonicalChangeSet, canonicalize, canonicalize_parsed},
-    model::{AssertExists, BlockHash, ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp},
-    parser::{OpArgs, ParsedOp, ParsedChangeSet, parse_changeset},
+    model::{
+        AssertExists, BlockHash, ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp,
+    },
+    parser::{OpArgs, ParsedChangeSet, ParsedOp, parse_changeset},
 };
 use ail_core::semantic_graph::NodeRef;
 
@@ -256,11 +258,15 @@ fn make_parsed_op(kind: ChangeSetOp, verb: &str, args: &[(&str, &str)]) -> Parse
     for (k, v) in args {
         map.insert(k.to_string(), v.to_string());
     }
-    ParsedOp { kind, verb: verb.to_string(), args: map }
+    ParsedOp {
+        kind,
+        verb: verb.to_string(),
+        args: map,
+    }
 }
 
 fn minimal_parsed_changeset(parsed_ops: Vec<ParsedOp>) -> ParsedChangeSet {
-    use ail_change::parser::{ChangeComposition, ExpectClaims, ApprovalRequirements};
+    use ail_change::parser::{ApprovalRequirements, ChangeComposition, ExpectClaims};
     ParsedChangeSet {
         changeset: ChangeSet {
             meta: ChangeSetMeta {
@@ -291,8 +297,12 @@ fn canonicalize_parsed_carries_preconditions() {
     use ail_change::canonical::Precondition;
     let mut pcs = minimal_parsed_changeset(vec![]);
     pcs.preconditions = vec![
-        Precondition::AssertExists(AssertExists { node_id: NodeRef(1) }),
-        Precondition::AssertExists(AssertExists { node_id: NodeRef(2) }),
+        Precondition::AssertExists(AssertExists {
+            node_id: NodeRef(1),
+        }),
+        Precondition::AssertExists(AssertExists {
+            node_id: NodeRef(2),
+        }),
     ];
 
     let canonical = canonicalize_parsed(pcs);
@@ -401,7 +411,11 @@ fn canonicalize_parsed_respects_phase_ordering() {
         make_parsed_op(ChangeSetOp::Connect, "connect", &[]),
         make_parsed_op(ChangeSetOp::Create, "create_function", &[("id", "fn.x")]),
         make_parsed_op(ChangeSetOp::Infer, "infer_boundary", &[("target", "fn.x")]),
-        make_parsed_op(ChangeSetOp::Set, "set_return", &[("target", "fn.x"), ("type", "Unit")]),
+        make_parsed_op(
+            ChangeSetOp::Set,
+            "set_return",
+            &[("target", "fn.x"), ("type", "Unit")],
+        ),
     ]);
 
     let canonical = canonicalize_parsed(pcs);
@@ -437,7 +451,14 @@ end
 
     assert_eq!(canonical.ops.len(), 3);
     // create_function should have visibility=private materialized.
-    let create_op = canonical.ops.iter().find(|o| o.verb == "create_function").unwrap();
-    assert_eq!(create_op.args.get("visibility"), Some(&"private".to_string()));
+    let create_op = canonical
+        .ops
+        .iter()
+        .find(|o| o.verb == "create_function")
+        .unwrap();
+    assert_eq!(
+        create_op.args.get("visibility"),
+        Some(&"private".to_string())
+    );
     assert_eq!(create_op.args.get("id"), Some(&"fn.checkout".to_string()));
 }

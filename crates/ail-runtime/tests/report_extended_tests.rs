@@ -14,10 +14,10 @@
 //   audit_log hash=audit_123        ← audit_log_hash
 //   end
 
+use ail_runtime::profile::CapabilityId;
 use ail_runtime::report::{
     LimitSnapshot, RuntimeCheck, RuntimeCheckResult, RuntimeReport, RuntimeReportStatus,
 };
-use ail_runtime::profile::CapabilityId;
 
 // ── RuntimeCheck ─────────────────────────────────────────────────────────
 
@@ -205,10 +205,13 @@ fn emit_report_includes_module_name_and_vr_hash() {
     let profile = RuntimeProfile::new(
         "prod".to_string(),
         module_hash,
-        "ver_abc123".to_string(),  // verification_report_hash
+        "ver_abc123".to_string(), // verification_report_hash
         manifest_hash,
         vec![],
-        ResourceLimits { max_memory_bytes: None, max_fuel: None },
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+        },
     );
 
     let mut host = RuntimeHost::new();
@@ -242,7 +245,10 @@ fn emit_report_includes_audit_log_hash() {
         "vr-hash".to_string(),
         manifest_hash,
         vec![],
-        ResourceLimits { max_memory_bytes: None, max_fuel: None },
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+        },
     );
 
     let mut host = RuntimeHost::new();

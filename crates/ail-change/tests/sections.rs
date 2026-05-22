@@ -3,7 +3,7 @@
 // Strict TDD — tests for expect, approval, and composition sections in the
 // ACL parser.
 
-use ail_change::parser::{parse_changeset, ExpectClaims, ApprovalRequirements, ChangeComposition};
+use ail_change::parser::{ApprovalRequirements, ChangeComposition, ExpectClaims, parse_changeset};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Expect section
@@ -87,7 +87,11 @@ end
     let result = parse_changeset(src).expect("must parse");
     let approval = result.approval.expect("approval must be Some");
     assert_eq!(approval.0.len(), 2);
-    assert!(approval.0.contains(&"require_if public_api_changed".to_string()));
+    assert!(
+        approval
+            .0
+            .contains(&"require_if public_api_changed".to_string())
+    );
     assert!(approval.0.contains(&"require_if unsafe_added".to_string()));
 }
 
@@ -180,10 +184,26 @@ end
 ";
     let result = parse_changeset(src).expect("must parse");
     assert_eq!(result.composition.depends_on.len(), 2);
-    assert!(result.composition.depends_on.contains(&"change.a".to_string()));
-    assert!(result.composition.depends_on.contains(&"change.b".to_string()));
-    assert_eq!(result.composition.supersedes, vec!["change.old".to_string()]);
-    assert_eq!(result.composition.conflicts_with, vec!["change.c".to_string()]);
+    assert!(
+        result
+            .composition
+            .depends_on
+            .contains(&"change.a".to_string())
+    );
+    assert!(
+        result
+            .composition
+            .depends_on
+            .contains(&"change.b".to_string())
+    );
+    assert_eq!(
+        result.composition.supersedes,
+        vec!["change.old".to_string()]
+    );
+    assert_eq!(
+        result.composition.conflicts_with,
+        vec!["change.c".to_string()]
+    );
 }
 
 // ── Scenario: composition fields default to empty when absent ─────────────
@@ -238,7 +258,10 @@ end
 
     assert_eq!(result.acl_version, "1.0");
     assert_eq!(result.changeset.base_snapshot_id.0, 1);
-    assert_eq!(result.changeset.meta.description, "Add checkout flow with payment and order creation");
+    assert_eq!(
+        result.changeset.meta.description,
+        "Add checkout flow with payment and order creation"
+    );
     assert_eq!(result.preconditions.len(), 2);
     assert_eq!(result.changeset.ops.len(), 3);
 
@@ -248,8 +271,14 @@ end
     let approval = result.approval.expect("approval must be Some");
     assert_eq!(approval.0.len(), 1);
 
-    assert_eq!(result.composition.depends_on, vec!["change.add_cart_types".to_string()]);
-    assert_eq!(result.composition.supersedes, vec!["change.old_checkout_attempt".to_string()]);
+    assert_eq!(
+        result.composition.depends_on,
+        vec!["change.add_cart_types".to_string()]
+    );
+    assert_eq!(
+        result.composition.supersedes,
+        vec!["change.old_checkout_attempt".to_string()]
+    );
 }
 
 // ── Scenario: unclosed expect section returns error ───────────────────────
@@ -257,7 +286,10 @@ end
 fn parse_unclosed_expect_section_returns_error() {
     let src = "change x\nauthor E\nbase 0\nexpect\n  creates fn.x\n";
     let err = parse_changeset(src).expect_err("unclosed expect must error");
-    assert!(err.contains("unclosed"), "error must say 'unclosed'; got: {err}");
+    assert!(
+        err.contains("unclosed"),
+        "error must say 'unclosed'; got: {err}"
+    );
 }
 
 // ── Scenario: unclosed approval section returns error ─────────────────────
@@ -265,5 +297,8 @@ fn parse_unclosed_expect_section_returns_error() {
 fn parse_unclosed_approval_section_returns_error() {
     let src = "change x\nauthor F\nbase 0\napproval\n  require_if unsafe_added\n";
     let err = parse_changeset(src).expect_err("unclosed approval must error");
-    assert!(err.contains("unclosed"), "error must say 'unclosed'; got: {err}");
+    assert!(
+        err.contains("unclosed"),
+        "error must say 'unclosed'; got: {err}"
+    );
 }
