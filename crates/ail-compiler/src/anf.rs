@@ -126,7 +126,6 @@ pub enum AnfExpr {
     Seq(Vec<AnfExpr>),
 
     // ── G20: expression body variants ────────────────────────────────────
-
     /// Pattern matching over a variant (or any scrutinee).
     ///
     /// `scrutinee` is an atomic variable name — guaranteed by the lowering
@@ -180,7 +179,6 @@ pub enum AnfExpr {
     ListNew(Vec<AnfExpr>),
 
     // ── G20 R2: semantic effect / concurrency / runtime-check variants ────
-
     /// Short-circuit AND lowered to conditional branching.
     ///
     /// Evaluates `left`; if false, result is false without evaluating `right`.
@@ -253,7 +251,6 @@ pub enum AnfExpr {
     ResourceRelease { handle: String },
 
     // ── G23: missing concurrency and cell primitives ──────────────────────
-
     /// Await a previously spawned task.
     ///
     /// `task` is an atomic variable name — guaranteed by lowering.
@@ -284,7 +281,10 @@ pub enum AnfExpr {
     ///
     /// `duration` is an atomic variable name — guaranteed by lowering.
     /// `body` is the timed ANF expression.
-    Timeout { duration: String, body: Box<AnfExpr> },
+    Timeout {
+        duration: String,
+        body: Box<AnfExpr>,
+    },
 
     /// Create a new mutable cell initialised to a value.
     ///
@@ -506,7 +506,10 @@ mod tests {
             body: Box::new(AnfExpr::Var("x".to_string())),
         };
         let _record = AnfExpr::RecordNew {
-            fields: vec![("amount".to_string(), AnfExpr::Literal(LiteralValue::Int(10)))],
+            fields: vec![(
+                "amount".to_string(),
+                AnfExpr::Literal(LiteralValue::Int(10)),
+            )],
         };
         let _field_update = AnfExpr::FieldUpdate {
             record: "order".to_string(),
@@ -540,8 +543,12 @@ mod tests {
     // G23: all new concurrency + cell AnfExpr variants are constructible.
     #[test]
     fn all_new_concurrency_cell_anf_expr_variants_are_constructible() {
-        let _task_await = AnfExpr::TaskAwait { task: "t".to_string() };
-        let _task_cancel = AnfExpr::TaskCancel { task: "t".to_string() };
+        let _task_await = AnfExpr::TaskAwait {
+            task: "t".to_string(),
+        };
+        let _task_cancel = AnfExpr::TaskCancel {
+            task: "t".to_string(),
+        };
         let _task_group = AnfExpr::TaskGroup {
             body: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
         };
@@ -558,16 +565,25 @@ mod tests {
             duration: "dur".to_string(),
             body: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
         };
-        let _cell_new = AnfExpr::CellNew { init: "zero".to_string() };
-        let _cell_get = AnfExpr::CellGet { cell: "c".to_string() };
-        let _cell_set = AnfExpr::CellSet { cell: "c".to_string(), value: "v".to_string() };
+        let _cell_new = AnfExpr::CellNew {
+            init: "zero".to_string(),
+        };
+        let _cell_get = AnfExpr::CellGet {
+            cell: "c".to_string(),
+        };
+        let _cell_set = AnfExpr::CellSet {
+            cell: "c".to_string(),
+            value: "v".to_string(),
+        };
         // All constructed without panic — test passes.
     }
 
     // TRIANGULATE: channel operands are atomic strings (not nested exprs).
     #[test]
     fn anf_task_await_task_is_atomic_string() {
-        let expr = AnfExpr::TaskAwait { task: "task_0".to_string() };
+        let expr = AnfExpr::TaskAwait {
+            task: "task_0".to_string(),
+        };
         if let AnfExpr::TaskAwait { task } = expr {
             assert_eq!(task, "task_0");
         } else {
@@ -580,8 +596,12 @@ mod tests {
     fn new_concurrency_cell_anf_variants_cbor_round_trip() {
         use crate::hash::stable_cbor_bytes;
         let variants: Vec<AnfExpr> = vec![
-            AnfExpr::TaskAwait { task: "t".to_string() },
-            AnfExpr::TaskCancel { task: "t".to_string() },
+            AnfExpr::TaskAwait {
+                task: "t".to_string(),
+            },
+            AnfExpr::TaskCancel {
+                task: "t".to_string(),
+            },
             AnfExpr::TaskGroup {
                 body: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
             },
@@ -598,9 +618,16 @@ mod tests {
                 duration: "d".to_string(),
                 body: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
             },
-            AnfExpr::CellNew { init: "zero".to_string() },
-            AnfExpr::CellGet { cell: "c".to_string() },
-            AnfExpr::CellSet { cell: "c".to_string(), value: "v".to_string() },
+            AnfExpr::CellNew {
+                init: "zero".to_string(),
+            },
+            AnfExpr::CellGet {
+                cell: "c".to_string(),
+            },
+            AnfExpr::CellSet {
+                cell: "c".to_string(),
+                value: "v".to_string(),
+            },
         ];
         for expr in &variants {
             let bytes = stable_cbor_bytes(expr).expect("encode must succeed");
@@ -685,7 +712,10 @@ mod tests {
         };
         let bytes = stable_cbor_bytes(&expr).expect("encode");
         let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, expr, "AnfExpr::Lambda must survive CBOR round-trip");
+        assert_eq!(
+            decoded, expr,
+            "AnfExpr::Lambda must survive CBOR round-trip"
+        );
     }
 
     // G20: AnfExpr::RecordNew CBOR round-trip.
@@ -693,13 +723,19 @@ mod tests {
     fn anf_record_new_cbor_round_trip() {
         let expr = AnfExpr::RecordNew {
             fields: vec![
-                ("name".to_string(), AnfExpr::Literal(LiteralValue::Text("Alice".to_string()))),
+                (
+                    "name".to_string(),
+                    AnfExpr::Literal(LiteralValue::Text("Alice".to_string())),
+                ),
                 ("age".to_string(), AnfExpr::Literal(LiteralValue::Int(30))),
             ],
         };
         let bytes = stable_cbor_bytes(&expr).expect("encode");
         let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, expr, "AnfExpr::RecordNew must survive CBOR round-trip");
+        assert_eq!(
+            decoded, expr,
+            "AnfExpr::RecordNew must survive CBOR round-trip"
+        );
     }
 
     // G20: AnfExpr::FieldUpdate — record is an atomic String.
@@ -728,7 +764,10 @@ mod tests {
         };
         let bytes = stable_cbor_bytes(&expr).expect("encode");
         let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, expr, "AnfExpr::FieldUpdate must survive CBOR round-trip");
+        assert_eq!(
+            decoded, expr,
+            "AnfExpr::FieldUpdate must survive CBOR round-trip"
+        );
     }
 
     // G20: AnfExpr::TupleNew CBOR round-trip.
@@ -740,7 +779,10 @@ mod tests {
         ]);
         let bytes = stable_cbor_bytes(&expr).expect("encode");
         let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, expr, "AnfExpr::TupleNew must survive CBOR round-trip");
+        assert_eq!(
+            decoded, expr,
+            "AnfExpr::TupleNew must survive CBOR round-trip"
+        );
     }
 
     // G20: AnfExpr::VariantNew with payload CBOR round-trip.
@@ -752,7 +794,10 @@ mod tests {
         };
         let bytes = stable_cbor_bytes(&expr).expect("encode");
         let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, expr, "AnfExpr::VariantNew with payload must survive CBOR round-trip");
+        assert_eq!(
+            decoded, expr,
+            "AnfExpr::VariantNew with payload must survive CBOR round-trip"
+        );
     }
 
     // G20: AnfExpr::VariantNew without payload CBOR round-trip.
@@ -764,7 +809,10 @@ mod tests {
         };
         let bytes = stable_cbor_bytes(&expr).expect("encode");
         let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, expr, "AnfExpr::VariantNew without payload must survive CBOR round-trip");
+        assert_eq!(
+            decoded, expr,
+            "AnfExpr::VariantNew without payload must survive CBOR round-trip"
+        );
     }
 
     // G20: AnfExpr::ListNew CBOR round-trip.
@@ -777,7 +825,10 @@ mod tests {
         ]);
         let bytes = stable_cbor_bytes(&expr).expect("encode");
         let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, expr, "AnfExpr::ListNew must survive CBOR round-trip");
+        assert_eq!(
+            decoded, expr,
+            "AnfExpr::ListNew must survive CBOR round-trip"
+        );
     }
 
     // If.cond is a String (atomic), not a nested AnfExpr.
@@ -934,7 +985,9 @@ mod tests {
     // RED: written after types exist; GREEN from the start of this change.
     #[test]
     fn source_map_entry_with_typed_refs_is_constructible() {
-        use ail_core::semantic_graph::{BlockRef, ContractRef, EffectRef, ProofObligationRef, RuntimeCheckRef};
+        use ail_core::semantic_graph::{
+            BlockRef, ContractRef, EffectRef, ProofObligationRef, RuntimeCheckRef,
+        };
 
         let entry = SourceMapEntry {
             binding_name: "fn_checkout".to_string(),
@@ -951,8 +1004,14 @@ mod tests {
         assert_eq!(entry.block_ref.as_ref().unwrap().0, "block_checkout");
         assert_eq!(entry.contract_ref.as_ref().unwrap().0, "contract.payment");
         assert_eq!(entry.effect_ref.as_ref().unwrap().0, "effect.db.read");
-        assert_eq!(entry.proof_obligation_ref.as_ref().unwrap().0, "proof.no_negative_balance");
-        assert_eq!(entry.runtime_check_ref.as_ref().unwrap().0, "rtcheck.null_guard");
+        assert_eq!(
+            entry.proof_obligation_ref.as_ref().unwrap().0,
+            "proof.no_negative_balance"
+        );
+        assert_eq!(
+            entry.runtime_check_ref.as_ref().unwrap().0,
+            "rtcheck.null_guard"
+        );
     }
 
     // TRIANGULATE: SourceMapEntry with typed refs survives CBOR round-trip.
@@ -974,7 +1033,10 @@ mod tests {
         };
         let bytes = stable_cbor_bytes(&entry).expect("encode");
         let decoded: SourceMapEntry = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, entry, "SourceMapEntry with typed refs must survive CBOR round-trip");
+        assert_eq!(
+            decoded, entry,
+            "SourceMapEntry with typed refs must survive CBOR round-trip"
+        );
     }
 
     // Spec: SourceMap from_bindings builds entries with None for all optional fields.
@@ -995,14 +1057,38 @@ mod tests {
         let sm = SourceMap::from_bindings(&bindings);
         assert_eq!(sm.entries.len(), 2);
         for entry in &sm.entries {
-            assert!(entry.block_ref.is_none(), "block_ref must be None from from_bindings");
-            assert!(entry.change_set.is_none(), "change_set must be None from from_bindings");
-            assert!(entry.contract_ref.is_none(), "contract_ref must be None from from_bindings");
-            assert!(entry.effect_ref.is_none(), "effect_ref must be None from from_bindings");
-            assert!(entry.proof_obligation_ref.is_none(), "proof_obligation_ref must be None from from_bindings");
-            assert!(entry.runtime_check_ref.is_none(), "runtime_check_ref must be None from from_bindings");
-            assert!(entry.wasm_offset.is_none(), "wasm_offset must be None from from_bindings");
-            assert!(entry.native_offset.is_none(), "native_offset must be None from from_bindings");
+            assert!(
+                entry.block_ref.is_none(),
+                "block_ref must be None from from_bindings"
+            );
+            assert!(
+                entry.change_set.is_none(),
+                "change_set must be None from from_bindings"
+            );
+            assert!(
+                entry.contract_ref.is_none(),
+                "contract_ref must be None from from_bindings"
+            );
+            assert!(
+                entry.effect_ref.is_none(),
+                "effect_ref must be None from from_bindings"
+            );
+            assert!(
+                entry.proof_obligation_ref.is_none(),
+                "proof_obligation_ref must be None from from_bindings"
+            );
+            assert!(
+                entry.runtime_check_ref.is_none(),
+                "runtime_check_ref must be None from from_bindings"
+            );
+            assert!(
+                entry.wasm_offset.is_none(),
+                "wasm_offset must be None from from_bindings"
+            );
+            assert!(
+                entry.native_offset.is_none(),
+                "native_offset must be None from from_bindings"
+            );
         }
     }
 
@@ -1023,7 +1109,11 @@ mod tests {
             },
         ];
         let sm = SourceMap::from_bindings(&bindings);
-        assert_eq!(sm.entries.len(), 2, "duplicate NodeRefs must NOT be collapsed");
+        assert_eq!(
+            sm.entries.len(),
+            2,
+            "duplicate NodeRefs must NOT be collapsed"
+        );
         assert_eq!(sm.entries[0].node_id, NodeRef(5));
         assert_eq!(sm.entries[1].node_id, NodeRef(5));
         assert_eq!(sm.entries[0].binding_name, "fn_x");
@@ -1034,7 +1124,10 @@ mod tests {
     #[test]
     fn source_map_from_empty_bindings_is_empty() {
         let sm = SourceMap::from_bindings(&[]);
-        assert!(sm.entries.is_empty(), "empty bindings must produce empty source map");
+        assert!(
+            sm.entries.is_empty(),
+            "empty bindings must produce empty source map"
+        );
     }
 
     // Scenario: source_ref is not dropped when name is the same.

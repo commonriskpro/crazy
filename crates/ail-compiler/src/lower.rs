@@ -208,7 +208,11 @@ pub fn lower_core_expr_to_anf(
 
         // FieldUpdate: record expression must be atomic; value is also atomized
         // for full ANF normalization.
-        CoreExpr::FieldUpdate { record, field, value } => {
+        CoreExpr::FieldUpdate {
+            record,
+            field,
+            value,
+        } => {
             let record_name = atomize(record, fresh, source_ref, out);
             let value_name = atomize(value, fresh, source_ref, out);
             AnfExpr::FieldUpdate {
@@ -280,7 +284,11 @@ pub fn lower_core_expr_to_anf(
         }
 
         // EffectCall: atomize all args; effect ordering is structural.
-        CoreExpr::EffectCall { capability, func, args } => {
+        CoreExpr::EffectCall {
+            capability,
+            func,
+            args,
+        } => {
             let atomic_args: Vec<String> = args
                 .iter()
                 .map(|a| atomize(a, fresh, source_ref, out))
@@ -293,7 +301,11 @@ pub fn lower_core_expr_to_anf(
         }
 
         // Dispatch: dynamic handler dispatch — atomize all args.
-        CoreExpr::Dispatch { handler, method, args } => {
+        CoreExpr::Dispatch {
+            handler,
+            method,
+            args,
+        } => {
             let atomic_args: Vec<String> = args
                 .iter()
                 .map(|a| atomize(a, fresh, source_ref, out))
@@ -330,11 +342,17 @@ pub fn lower_core_expr_to_anf(
         // ChannelReceive: channel must be atomic.
         CoreExpr::ChannelReceive { channel } => {
             let channel_name = atomize(channel, fresh, source_ref, out);
-            AnfExpr::ChannelReceive { channel: channel_name }
+            AnfExpr::ChannelReceive {
+                channel: channel_name,
+            }
         }
 
         // RuntimeCheck: condition must be atomic; check_ref and msg are preserved.
-        CoreExpr::RuntimeCheck { check_ref, cond, msg } => {
+        CoreExpr::RuntimeCheck {
+            check_ref,
+            cond,
+            msg,
+        } => {
             let cond_name = atomize(cond, fresh, source_ref, out);
             AnfExpr::RuntimeCheck {
                 check_ref: check_ref.clone(),
@@ -358,7 +376,9 @@ pub fn lower_core_expr_to_anf(
         // ResourceRelease: handle must be atomic.
         CoreExpr::ResourceRelease { handle } => {
             let handle_name = atomize(handle, fresh, source_ref, out);
-            AnfExpr::ResourceRelease { handle: handle_name }
+            AnfExpr::ResourceRelease {
+                handle: handle_name,
+            }
         }
 
         // ── G23: new concurrency and cell primitives ─────────────────────
@@ -378,23 +398,23 @@ pub fn lower_core_expr_to_anf(
         // TaskGroup: body is lowered recursively (may contain TaskSpawn calls).
         CoreExpr::TaskGroup { body } => {
             let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
-            AnfExpr::TaskGroup { body: Box::new(anf_body) }
+            AnfExpr::TaskGroup {
+                body: Box::new(anf_body),
+            }
         }
 
         // ChannelNew: capacity is a primitive scalar — no sub-expression to lower.
-        CoreExpr::ChannelNew { capacity } => {
-            AnfExpr::ChannelNew { capacity: *capacity }
-        }
+        CoreExpr::ChannelNew { capacity } => AnfExpr::ChannelNew {
+            capacity: *capacity,
+        },
 
         // Select: each branch channel must be atomic; body is lowered recursively.
         CoreExpr::Select { branches } => {
             let anf_branches = branches
                 .iter()
                 .map(|clause| {
-                    let channel_name =
-                        atomize(&clause.channel, fresh, source_ref, out);
-                    let anf_body =
-                        lower_core_expr_to_anf(&clause.body, fresh, source_ref, out);
+                    let channel_name = atomize(&clause.channel, fresh, source_ref, out);
+                    let anf_body = lower_core_expr_to_anf(&clause.body, fresh, source_ref, out);
                     crate::anf::AnfSelectClause {
                         channel: channel_name,
                         binding: clause.binding.clone(),
@@ -402,7 +422,9 @@ pub fn lower_core_expr_to_anf(
                     }
                 })
                 .collect();
-            AnfExpr::Select { branches: anf_branches }
+            AnfExpr::Select {
+                branches: anf_branches,
+            }
         }
 
         // Timeout: duration must be atomic; body is lowered recursively.
@@ -624,9 +646,7 @@ fn extract_provenance_lookup(graph: &SemanticGraph) -> BTreeMap<NodeRef, NodePro
             let prov = NodeProvenance {
                 change_set: gn.provenance.as_ref().map(|p| p.change_id.clone()),
                 block_ref: match gn.kind {
-                    NodeKind::Module | NodeKind::Boundary => {
-                        Some(format!("block.{}", gn.name))
-                    }
+                    NodeKind::Module | NodeKind::Boundary => Some(format!("block.{}", gn.name)),
                     _ => None,
                 },
                 contract_ref: gn
@@ -1124,7 +1144,10 @@ mod tests {
         };
         let (result, out) = lower_single(&expr);
         // Scrutinee is already Var, so no extra bindings emitted.
-        assert!(out.is_empty(), "Var scrutinee must not produce extra bindings");
+        assert!(
+            out.is_empty(),
+            "Var scrutinee must not produce extra bindings"
+        );
         match result {
             crate::anf::AnfExpr::Match { scrutinee, arms } => {
                 assert_eq!(scrutinee, "payment");
@@ -1148,11 +1171,17 @@ mod tests {
         };
         let (result, out) = lower_single(&expr);
         // Literal scrutinee must be atomized → one synthetic binding.
-        assert!(!out.is_empty(), "Literal scrutinee must produce a synthetic binding");
+        assert!(
+            !out.is_empty(),
+            "Literal scrutinee must produce a synthetic binding"
+        );
         match result {
             crate::anf::AnfExpr::Match { scrutinee, .. } => {
                 // scrutinee must be the synthetic name, not "42"
-                assert!(scrutinee.starts_with("anf_"), "scrutinee must be synthetic name, got {scrutinee}");
+                assert!(
+                    scrutinee.starts_with("anf_"),
+                    "scrutinee must be synthetic name, got {scrutinee}"
+                );
             }
             other => panic!("expected AnfExpr::Match, got {other:?}"),
         }
@@ -1166,7 +1195,10 @@ mod tests {
             body: Box::new(CoreExpr::Var("x".to_string())),
         };
         let (result, out) = lower_single(&expr);
-        assert!(out.is_empty(), "Lambda body Var must not produce extra bindings");
+        assert!(
+            out.is_empty(),
+            "Lambda body Var must not produce extra bindings"
+        );
         match result {
             crate::anf::AnfExpr::Lambda { params, body } => {
                 assert_eq!(params, vec!["x", "y"]);
@@ -1186,14 +1218,24 @@ mod tests {
     fn lower_record_new_field_values() {
         let expr = CoreExpr::RecordNew {
             fields: vec![
-                ("amount".to_string(), CoreExpr::Literal(LiteralValue::Int(10))),
+                (
+                    "amount".to_string(),
+                    CoreExpr::Literal(LiteralValue::Int(10)),
+                ),
                 ("label".to_string(), CoreExpr::Var("lbl".to_string())),
             ],
         };
         let (result, out) = lower_single(&expr);
         // Literal field must produce one synthetic binding.
-        assert_eq!(out.len(), 1, "Literal field must produce one synthetic binding, got {out:?}");
-        assert_eq!(out[0].expr, crate::anf::AnfExpr::Literal(LiteralValue::Int(10)));
+        assert_eq!(
+            out.len(),
+            1,
+            "Literal field must produce one synthetic binding, got {out:?}"
+        );
+        assert_eq!(
+            out[0].expr,
+            crate::anf::AnfExpr::Literal(LiteralValue::Int(10))
+        );
         let synthetic_name = out[0].name.clone();
         match result {
             crate::anf::AnfExpr::RecordNew { fields } => {
@@ -1220,10 +1262,18 @@ mod tests {
         };
         let (result, out) = lower_single(&expr);
         // Literal value must produce one synthetic binding.
-        assert_eq!(out.len(), 1, "Literal value must produce one synthetic binding");
+        assert_eq!(
+            out.len(),
+            1,
+            "Literal value must produce one synthetic binding"
+        );
         let value_name = out[0].name.clone();
         match result {
-            crate::anf::AnfExpr::FieldUpdate { record, field, value } => {
+            crate::anf::AnfExpr::FieldUpdate {
+                record,
+                field,
+                value,
+            } => {
                 assert_eq!(record, "order");
                 assert_eq!(field, "status");
                 // Value is now a Var referring to the synthetic binding.
@@ -1259,7 +1309,10 @@ mod tests {
             payload: Some(Box::new(CoreExpr::Var("x".to_string()))),
         };
         let (result, out) = lower_single(&expr);
-        assert!(out.is_empty(), "Var payload must not produce extra bindings");
+        assert!(
+            out.is_empty(),
+            "Var payload must not produce extra bindings"
+        );
         match result {
             crate::anf::AnfExpr::VariantNew { tag, payload } => {
                 assert_eq!(tag, "Ok");
@@ -1299,7 +1352,11 @@ mod tests {
         ]);
         let (result, out) = lower_single(&expr);
         // Literal element must produce one synthetic binding.
-        assert_eq!(out.len(), 1, "Literal element must produce one synthetic binding");
+        assert_eq!(
+            out.len(),
+            1,
+            "Literal element must produce one synthetic binding"
+        );
         let lit_name = out[0].name.clone();
         match result {
             crate::anf::AnfExpr::ListNew(elems) => {
@@ -1334,7 +1391,10 @@ mod tests {
                 value: Box::new(CoreExpr::Literal(LiteralValue::Unit)),
             },
             CoreExpr::TupleNew(vec![]),
-            CoreExpr::VariantNew { tag: "A".to_string(), payload: None },
+            CoreExpr::VariantNew {
+                tag: "A".to_string(),
+                payload: None,
+            },
             CoreExpr::ListNew(vec![]),
         ];
         for expr in &real_exprs {
@@ -1363,7 +1423,10 @@ mod tests {
             task: Box::new(CoreExpr::Var("task_0".to_string())),
         };
         let (result, out) = lower_single(&expr);
-        assert!(out.is_empty(), "Var task must not produce synthetic bindings");
+        assert!(
+            out.is_empty(),
+            "Var task must not produce synthetic bindings"
+        );
         match result {
             crate::anf::AnfExpr::TaskAwait { task } => {
                 assert_eq!(task, "task_0");
@@ -1382,7 +1445,10 @@ mod tests {
             }),
         };
         let (result, out) = lower_single(&expr);
-        assert!(!out.is_empty(), "non-Var task must produce a synthetic binding");
+        assert!(
+            !out.is_empty(),
+            "non-Var task must produce a synthetic binding"
+        );
         match result {
             crate::anf::AnfExpr::TaskAwait { task } => {
                 assert!(task.starts_with("anf_"), "task must be synthetic: {task}");
@@ -1414,7 +1480,10 @@ mod tests {
             body: Box::new(CoreExpr::Var("spawner".to_string())),
         };
         let (result, out) = lower_single(&expr);
-        assert!(out.is_empty(), "Var body must not produce synthetic bindings");
+        assert!(
+            out.is_empty(),
+            "Var body must not produce synthetic bindings"
+        );
         match result {
             crate::anf::AnfExpr::TaskGroup { body } => {
                 assert_eq!(*body, crate::anf::AnfExpr::Var("spawner".to_string()));
@@ -1428,7 +1497,10 @@ mod tests {
     fn lower_channel_new_unbounded() {
         let expr = CoreExpr::ChannelNew { capacity: None };
         let (result, out) = lower_single(&expr);
-        assert!(out.is_empty(), "ChannelNew must produce no synthetic bindings");
+        assert!(
+            out.is_empty(),
+            "ChannelNew must produce no synthetic bindings"
+        );
         match result {
             crate::anf::AnfExpr::ChannelNew { capacity } => {
                 assert!(capacity.is_none());
@@ -1463,13 +1535,19 @@ mod tests {
             }],
         };
         let (result, out) = lower_single(&expr);
-        assert!(out.is_empty(), "Var channel must not produce synthetic bindings");
+        assert!(
+            out.is_empty(),
+            "Var channel must not produce synthetic bindings"
+        );
         match result {
             crate::anf::AnfExpr::Select { branches } => {
                 assert_eq!(branches.len(), 1);
                 assert_eq!(branches[0].channel, "inbox");
                 assert_eq!(branches[0].binding, "item");
-                assert_eq!(branches[0].body, crate::anf::AnfExpr::Var("item".to_string()));
+                assert_eq!(
+                    branches[0].body,
+                    crate::anf::AnfExpr::Var("item".to_string())
+                );
             }
             other => panic!("expected Select, got {other:?}"),
         }
@@ -1490,7 +1568,10 @@ mod tests {
             }],
         };
         let (result, out) = lower_single(&expr);
-        assert!(!out.is_empty(), "non-Var channel must produce a synthetic binding");
+        assert!(
+            !out.is_empty(),
+            "non-Var channel must produce a synthetic binding"
+        );
         match result {
             crate::anf::AnfExpr::Select { branches } => {
                 assert!(branches[0].channel.starts_with("anf_"));
@@ -1507,7 +1588,10 @@ mod tests {
             body: Box::new(CoreExpr::Literal(LiteralValue::Unit)),
         };
         let (result, out) = lower_single(&expr);
-        assert!(out.is_empty(), "Var duration must not produce synthetic bindings");
+        assert!(
+            out.is_empty(),
+            "Var duration must not produce synthetic bindings"
+        );
         match result {
             crate::anf::AnfExpr::Timeout { duration, body } => {
                 assert_eq!(duration, "ms");
@@ -1525,10 +1609,16 @@ mod tests {
             body: Box::new(CoreExpr::Literal(LiteralValue::Unit)),
         };
         let (result, out) = lower_single(&expr);
-        assert!(!out.is_empty(), "Literal duration must produce a synthetic binding");
+        assert!(
+            !out.is_empty(),
+            "Literal duration must produce a synthetic binding"
+        );
         match result {
             crate::anf::AnfExpr::Timeout { duration, .. } => {
-                assert!(duration.starts_with("anf_"), "duration must be synthetic: {duration}");
+                assert!(
+                    duration.starts_with("anf_"),
+                    "duration must be synthetic: {duration}"
+                );
             }
             other => panic!("expected Timeout, got {other:?}"),
         }
@@ -1541,7 +1631,10 @@ mod tests {
             init: Box::new(CoreExpr::Var("zero".to_string())),
         };
         let (result, out) = lower_single(&expr);
-        assert!(out.is_empty(), "Var init must not produce synthetic bindings");
+        assert!(
+            out.is_empty(),
+            "Var init must not produce synthetic bindings"
+        );
         match result {
             crate::anf::AnfExpr::CellNew { init } => {
                 assert_eq!(init, "zero");
@@ -1557,7 +1650,10 @@ mod tests {
             init: Box::new(CoreExpr::Literal(LiteralValue::Int(0))),
         };
         let (result, out) = lower_single(&expr);
-        assert!(!out.is_empty(), "Literal init must produce a synthetic binding");
+        assert!(
+            !out.is_empty(),
+            "Literal init must produce a synthetic binding"
+        );
         match result {
             crate::anf::AnfExpr::CellNew { init } => {
                 assert!(init.starts_with("anf_"), "init must be synthetic: {init}");
@@ -1590,7 +1686,10 @@ mod tests {
             value: Box::new(CoreExpr::Var("v".to_string())),
         };
         let (result, out) = lower_single(&expr);
-        assert!(out.is_empty(), "Var operands must not produce synthetic bindings");
+        assert!(
+            out.is_empty(),
+            "Var operands must not produce synthetic bindings"
+        );
         match result {
             crate::anf::AnfExpr::CellSet { cell, value } => {
                 assert_eq!(cell, "c");
@@ -1611,11 +1710,18 @@ mod tests {
             value: Box::new(CoreExpr::Literal(LiteralValue::Int(42))),
         };
         let (result, out) = lower_single(&expr);
-        assert_eq!(out.len(), 2, "two non-Var operands must produce two synthetic bindings");
+        assert_eq!(
+            out.len(),
+            2,
+            "two non-Var operands must produce two synthetic bindings"
+        );
         match result {
             crate::anf::AnfExpr::CellSet { cell, value } => {
                 assert!(cell.starts_with("anf_"), "cell must be synthetic: {cell}");
-                assert!(value.starts_with("anf_"), "value must be synthetic: {value}");
+                assert!(
+                    value.starts_with("anf_"),
+                    "value must be synthetic: {value}"
+                );
             }
             other => panic!("expected CellSet, got {other:?}"),
         }
