@@ -20,6 +20,7 @@ fn report_with_state(state: VerificationState) -> VerificationReport {
             scope: "test".to_string(),
             evidence: None,
             blocking: false,
+            repair_options: vec![],
         }],
         ..Default::default()
     }

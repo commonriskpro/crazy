@@ -280,6 +280,7 @@ dependencies = [
  "ail-change",
  "ail-core",
  "ail-package",
+ "blake3",
  "ciborium",
  "serde",
  "serde_json",
