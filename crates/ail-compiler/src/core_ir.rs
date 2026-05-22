@@ -434,6 +434,17 @@ pub struct StageHashes {
     /// `blake3(anf_ir_hash || native_binary)` — set by `emit_native`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_hash: Option<[u8; 32]>,
+    /// `blake3(source_map_cbor_bytes)` — set by backend stages after populating offsets.
+    ///
+    /// Any change to the semantic source map (offsets, provenance fields)
+    /// causes this hash to change, invalidating downstream manifests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_map_hash: Option<[u8; 32]>,
+    /// `blake3(artifact_manifest_cbor_bytes)` — set by artifact manifest emission.
+    ///
+    /// Covers profile, compiler version, and all upstream artifact hashes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_manifest_hash: Option<[u8; 32]>,
 }
 
 // ── CoreIr ────────────────────────────────────────────────────────────────
@@ -479,6 +490,8 @@ mod tests {
                 anf_ir_hash: None,
                 wasm_hash: None,
                 native_hash: None,
+                source_map_hash: None,
+                artifact_manifest_hash: None,
             },
         };
         assert_eq!(ir.nodes.len(), 1);
@@ -572,6 +585,8 @@ mod tests {
             anf_ir_hash: None,
             wasm_hash: None,
             native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
         };
         assert!(h.anf_ir_hash.is_none());
         assert!(h.wasm_hash.is_none());

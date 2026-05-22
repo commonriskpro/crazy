@@ -255,6 +255,8 @@ pub fn compile_incremental(
                 anf_ir_hash: None,
                 wasm_hash: None,
                 native_hash: None,
+                source_map_hash: None,
+                artifact_manifest_hash: None,
             };
 
             let entry = ArtifactEntry {
@@ -301,6 +303,8 @@ pub fn compile_incremental(
             anf_ir_hash: None,
             wasm_hash: None,
             native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
         }
     });
 

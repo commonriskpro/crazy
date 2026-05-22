@@ -53,10 +53,11 @@ use cranelift_module::{Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
 
-use crate::anf::AnfIr;
+use crate::anf::{AnfIr, SourceMap, SourceMapEntry};
+use crate::artifact_manifest::ArtifactManifest;
 use crate::core_ir::StageHashes;
 use crate::error::CompileError;
-use crate::hash::hash_with_parent;
+use crate::hash::{hash_with_parent, stable_cbor_bytes};
 
 // ── CapabilityEntry ───────────────────────────────────────────────────────
 
@@ -94,15 +95,34 @@ pub struct CapabilitiesManifest {
 pub struct NativeArtifact {
     /// Platform-native object bytes (ELF / Mach-O / COFF).
     pub native_bytes: Vec<u8>,
+    /// Semantic source map with `native_offset` populated for every binding.
+    ///
+    /// One entry per `AnfBinding` in binding order.  `wasm_offset` is always
+    /// `None` in native artifacts (populated only by `emit_wasm`).
+    pub source_map: SourceMap,
     /// Maps each `NodeRef` from the source graph to its cumulative byte
     /// offset in the object file's code section.
+    /// Kept as a derived compatibility index; prefer `source_map` for new code.
     /// Empty when the input `AnfIr` has no bindings.
     pub provenance: BTreeMap<NodeRef, u64>,
     /// Capability manifest listing all binding names.
     pub capabilities_manifest: CapabilitiesManifest,
     /// Hash chain extended through the native backend stage.
     /// `hash_chain.native_hash` is `Some(...)` after `emit_native` completes.
+    /// `hash_chain.source_map_hash` is `Some(...)` after `emit_native` completes.
+    /// `hash_chain.artifact_manifest_hash` is `Some(...)` after `emit_native`.
     pub hash_chain: StageHashes,
+    /// Profile-bound artifact manifest for this native artifact.
+    ///
+    /// Can be serialized as `program.artifact.json` by callers.
+    pub artifact_manifest: ArtifactManifest,
+    /// JSON-serialized `SourceMap` — content for `program.source_map.json`.
+    ///
+    /// Callers write this to disk as the source-map sidecar for debugging,
+    /// profiling, and runtime error mapping.
+    pub source_map_json: Vec<u8>,
+    /// JSON-serialized `ArtifactManifest` — content for `program.artifact.json`.
+    pub artifact_manifest_json: Vec<u8>,
 }
 
 // ── build_isa ─────────────────────────────────────────────────────────────
@@ -214,11 +234,13 @@ pub fn emit_native(anf: &AnfIr) -> Result<NativeArtifact, CompileError> {
 
     // Lower each binding and accumulate provenance.
     let mut provenance: BTreeMap<NodeRef, u64> = BTreeMap::new();
+    let mut native_offsets: Vec<u64> = Vec::with_capacity(anf.bindings.len());
     let mut cumulative_offset: u64 = 0;
 
     for binding in &anf.bindings {
         // Record provenance entry: this binding starts at current offset.
         provenance.insert(binding.source_ref, cumulative_offset);
+        native_offsets.push(cumulative_offset);
 
         // Lower the binding and get its compiled code size.
         let code_size = lower_binding(&mut module, &binding.name, cumulative_offset)?;
@@ -230,6 +252,29 @@ pub fn emit_native(anf: &AnfIr) -> Result<NativeArtifact, CompileError> {
     let native_bytes = object
         .emit()
         .map_err(|e| CompileError::NativeEncodingError(format!("object emit failed: {e}")))?;
+
+    // Build semantic source map — clone ANF source map and populate native_offset.
+    let source_map_entries: Vec<SourceMapEntry> = anf
+        .source_map
+        .entries
+        .iter()
+        .zip(
+            native_offsets
+                .iter()
+                .map(|&o| Some(o))
+                .chain(std::iter::repeat(None)),
+        )
+        .map(|(entry, native_offset)| SourceMapEntry {
+            native_offset,
+            ..entry.clone()
+        })
+        .collect();
+    let source_map = SourceMap { entries: source_map_entries };
+
+    // Seal: source_map_hash = blake3(source_map_cbor_bytes).
+    let source_map_bytes = stable_cbor_bytes(&source_map)
+        .map_err(|e| CompileError::NativeEncodingError(format!("source_map encode: {e}")))?;
+    let source_map_hash = hash_with_parent(&[], &source_map_bytes);
 
     // Generate capability manifest from bindings.
     let capabilities_manifest = CapabilitiesManifest {
@@ -249,12 +294,47 @@ pub fn emit_native(anf: &AnfIr) -> Result<NativeArtifact, CompileError> {
     // Extend the stage hashes from ANF.
     let mut hash_chain = anf.stage_hashes.clone();
     hash_chain.native_hash = Some(native_hash);
+    hash_chain.source_map_hash = Some(source_map_hash);
+
+    // Build ArtifactManifest from the complete hash chain.
+    //
+    // `profile` defaults to "unspecified" — the pipeline does not yet carry a
+    // target_profile input.  When profile threading is added, replace this.
+    let artifact_manifest = ArtifactManifest {
+        profile: "unspecified".to_string(),
+        compiler_version: env!("CARGO_PKG_VERSION").to_string(),
+        graph_snapshot_hash: hash_chain.graph_snapshot_hash,
+        verification_report_hash: hash_chain.verification_report_hash,
+        core_ir_hash: hash_chain.core_ir_hash,
+        anf_ir_hash,
+        wasm_hash: None,
+        native_hash: Some(native_hash),
+        source_map_hash: Some(source_map_hash),
+    };
+
+    // Seal: artifact_manifest_hash = blake3(manifest_cbor_bytes).
+    let manifest_cbor = stable_cbor_bytes(&artifact_manifest)
+        .map_err(|e| CompileError::NativeEncodingError(format!("manifest CBOR encode: {e}")))?;
+    let artifact_manifest_hash = hash_with_parent(&[], &manifest_cbor);
+    hash_chain.artifact_manifest_hash = Some(artifact_manifest_hash);
+
+    // Serialize JSON sidecars.
+    let source_map_json = serde_json::to_vec(&source_map)
+        .map_err(|e| CompileError::NativeEncodingError(format!("source_map JSON encode: {e}")))?;
+    let artifact_manifest_json = serde_json::to_vec(&artifact_manifest)
+        .map_err(|e| {
+            CompileError::NativeEncodingError(format!("artifact_manifest JSON encode: {e}"))
+        })?;
 
     Ok(NativeArtifact {
         native_bytes,
+        source_map,
         provenance,
         capabilities_manifest,
         hash_chain,
+        artifact_manifest,
+        source_map_json,
+        artifact_manifest_json,
     })
 }
 
@@ -304,6 +384,8 @@ mod tests {
                 anf_ir_hash: None, // unsealed
                 wasm_hash: None,
                 native_hash: None,
+                source_map_hash: None,
+                artifact_manifest_hash: None,
             },
         };
         let result = emit_native(&anf);

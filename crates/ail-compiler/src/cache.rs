@@ -113,6 +113,8 @@ mod tests {
             anf_ir_hash: None,
             wasm_hash: None,
             native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
         }
     }
 

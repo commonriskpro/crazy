@@ -118,6 +118,7 @@ dependencies = [
  "cranelift-object",
  "criterion",
  "serde",
+ "serde_json",
  "tracing",
  "wasm-encoder 0.244.0",
  "wasmparser 0.244.0",

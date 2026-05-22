@@ -17,6 +17,7 @@
 //! - No expression / body codegen (deferred to Phase 8).
 
 pub mod anf;
+pub mod artifact_manifest;
 pub mod cache;
 pub mod core_ir;
 pub mod error;
@@ -33,6 +34,7 @@ pub use anf::{
     ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, AnfMatchArm, AnfSelectClause, SourceMap,
     SourceMapEntry,
 };
+pub use artifact_manifest::ArtifactManifest;
 pub use cache::{ArtifactCache, ArtifactEntry, MemoryArtifactCache};
 pub use core_ir::{
     CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, MatchArm, SelectClause,
@@ -41,8 +43,8 @@ pub use core_ir::{
 pub use error::CompileError;
 pub use incremental::{DirtySet, NodeHashes, compile_incremental, compute_node_hashes};
 pub use lower::{
-    is_report_accepted, lower_core_expr_to_anf, lower_to_anf, lower_to_core_ir,
-    nominal_to_core_type,
+    is_report_accepted, lower_core_expr_to_anf, lower_to_anf, lower_to_anf_with_graph,
+    lower_to_core_ir, nominal_to_core_type,
 };
 pub use native::{CapabilitiesManifest, CapabilityEntry, NativeArtifact, emit_native};
 pub use wasm::{WasmArtifact, emit_wasm};

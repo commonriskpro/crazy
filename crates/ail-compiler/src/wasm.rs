@@ -47,10 +47,11 @@ use std::collections::BTreeMap;
 use ail_core::semantic_graph::NodeRef;
 use wasm_encoder::{CodeSection, Function, FunctionSection, Instruction, Module, TypeSection, ValType};
 
-use crate::anf::{AnfExpr, AnfIr};
+use crate::anf::{AnfExpr, AnfIr, SourceMap, SourceMapEntry};
+use crate::artifact_manifest::ArtifactManifest;
 use crate::core_ir::{LiteralValue, StageHashes};
 use crate::error::CompileError;
-use crate::hash::hash_with_parent;
+use crate::hash::{hash_with_parent, stable_cbor_bytes};
 
 // ── WasmArtifact ─────────────────────────────────────────────────────────
 
@@ -63,14 +64,36 @@ use crate::hash::hash_with_parent;
 pub struct WasmArtifact {
     /// Encoded WASM binary; passes `wasmparser::validate` structural checks.
     pub wasm: Vec<u8>,
+    /// Semantic source map with `wasm_offset` populated for every binding.
+    ///
+    /// One entry per `AnfBinding` in binding order.  `native_offset` is always
+    /// `None` in WASM artifacts (populated only by `emit_native`).
+    pub source_map: SourceMap,
     /// Maps each `NodeRef` from the source graph to its byte offset in the
     /// WASM code section (i.e., the position of the body-size LEB128 byte
     /// for that function's entry in the encoded binary).
+    /// Kept as a derived compatibility index; prefer `source_map` for new code.
     /// Empty when the input `AnfIr` has no bindings.
     pub provenance: BTreeMap<NodeRef, u32>,
     /// Hash chain extended through the WASM stage.
     /// `hash_chain.wasm_hash` is `Some(...)` after `emit_wasm` completes.
+    /// `hash_chain.source_map_hash` is `Some(...)` after `emit_wasm` completes.
+    /// `hash_chain.artifact_manifest_hash` is `Some(...)` after `emit_wasm`.
     pub hash_chain: StageHashes,
+    /// Profile-bound artifact manifest for this WASM artifact.
+    ///
+    /// Can be serialized as `program.artifact.json` by callers.
+    /// Includes the full hash chain and compiler version.
+    pub artifact_manifest: ArtifactManifest,
+    /// JSON-serialized `SourceMap` — content for `program.source_map.json`.
+    ///
+    /// Callers write this to disk as the source-map sidecar for debugging,
+    /// profiling, and runtime error mapping.
+    pub source_map_json: Vec<u8>,
+    /// JSON-serialized `ArtifactManifest` — content for `program.artifact.json`.
+    ///
+    /// Callers write this to disk as the artifact metadata sidecar.
+    pub artifact_manifest_json: Vec<u8>,
 }
 
 // ── build_type_section ────────────────────────────────────────────────────
@@ -539,17 +562,78 @@ pub fn emit_wasm(anf: &AnfIr) -> Result<WasmArtifact, CompileError> {
         .map(|(b, &offset)| (b.source_ref, offset))
         .collect();
 
+    // Build semantic source map — clone ANF source map and populate wasm_offset.
+    // Each binding entry gets wasm_offset = the byte offset from code_entry_offsets.
+    let source_map_entries: Vec<SourceMapEntry> = anf
+        .source_map
+        .entries
+        .iter()
+        .zip(
+            // Zip with entry_offsets; pad with None if offsets are shorter.
+            entry_offsets
+                .iter()
+                .map(|&o| Some(o))
+                .chain(std::iter::repeat(None)),
+        )
+        .map(|(entry, wasm_offset)| SourceMapEntry {
+            wasm_offset,
+            ..entry.clone()
+        })
+        .collect();
+    let source_map = SourceMap { entries: source_map_entries };
+
+    // Seal: source_map_hash = blake3(source_map_cbor_bytes).
+    let source_map_bytes = stable_cbor_bytes(&source_map)?;
+    let source_map_hash = hash_with_parent(&[], &source_map_bytes);
+
     // Seal: wasm_hash = blake3(anf_ir_hash || wasm_binary).
     let wasm_hash = hash_with_parent(&anf_ir_hash, &wasm);
 
     // Extend the stage hashes from ANF.
     let mut hash_chain = anf.stage_hashes.clone();
     hash_chain.wasm_hash = Some(wasm_hash);
+    hash_chain.source_map_hash = Some(source_map_hash);
+
+    // Build ArtifactManifest from the complete hash chain.
+    //
+    // `profile` defaults to "unspecified" — the pipeline does not yet carry a
+    // target_profile input.  When profile threading is added, replace this.
+    // `capabilities_manifest_hash` (listed in compiler.md §Profile-bound
+    // artifacts) is not yet wired through; it will be added when the
+    // capability manifest emission is wired into the pipeline.
+    let artifact_manifest = ArtifactManifest {
+        profile: "unspecified".to_string(),
+        compiler_version: env!("CARGO_PKG_VERSION").to_string(),
+        graph_snapshot_hash: hash_chain.graph_snapshot_hash,
+        verification_report_hash: hash_chain.verification_report_hash,
+        core_ir_hash: hash_chain.core_ir_hash,
+        anf_ir_hash,
+        wasm_hash: Some(wasm_hash),
+        native_hash: None,
+        source_map_hash: Some(source_map_hash),
+    };
+
+    // Seal: artifact_manifest_hash = blake3(manifest_cbor_bytes).
+    let manifest_cbor = stable_cbor_bytes(&artifact_manifest)?;
+    let artifact_manifest_hash = hash_with_parent(&[], &manifest_cbor);
+    hash_chain.artifact_manifest_hash = Some(artifact_manifest_hash);
+
+    // Serialize JSON sidecars.
+    // `program.source_map.json` — semantic source map for debugging/profiling.
+    let source_map_json = serde_json::to_vec(&source_map)
+        .map_err(|e| CompileError::EncodingError(format!("source_map JSON encode: {e}")))?;
+    // `program.artifact.json` — profile-bound artifact manifest.
+    let artifact_manifest_json = serde_json::to_vec(&artifact_manifest)
+        .map_err(|e| CompileError::EncodingError(format!("artifact_manifest JSON encode: {e}")))?;
 
     Ok(WasmArtifact {
         wasm,
+        source_map,
         provenance,
         hash_chain,
+        artifact_manifest,
+        source_map_json,
+        artifact_manifest_json,
     })
 }
 
@@ -598,6 +682,8 @@ mod tests {
                 anf_ir_hash: None, // unsealed
                 wasm_hash: None,
                 native_hash: None,
+                source_map_hash: None,
+                artifact_manifest_hash: None,
             },
         };
         let result = emit_wasm(&anf);
