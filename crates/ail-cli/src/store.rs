@@ -15,6 +15,7 @@
 // `build_store` constructs the appropriate variant from the optional URL and
 // is the sole entry-point for store creation in the CLI.
 
+use ail_change::canonical::CanonicalChangeSet;
 use ail_core::semantic_graph::SemanticGraph;
 use std::path::{Path, PathBuf};
 
@@ -190,6 +191,78 @@ impl StoreHandle {
             }
             StoreHandle::Postgres(_) => Ok(None),
         }
+    }
+
+    /// Store the raw CBOR bytes of a `CanonicalChangeSet` under its change-id.
+    ///
+    /// The `change_id_hex` MUST be the 64-char hex encoding of `blake3(cbor_bytes)`,
+    /// which is how `cmd_change` derives it.  This invariant lets `load_changeset_by_id`
+    /// retrieve the bytes by decoding the hex back to the content-addressed key.
+    ///
+    /// Postgres: no-op (changeset retrieval not supported by that backend).
+    pub async fn save_changeset_payload(
+        &self,
+        change_id_hex: &str,
+        cbor_bytes: &[u8],
+    ) -> Result<(), CliError> {
+        match self {
+            StoreHandle::Memory { objects, .. } => {
+                objects.put(RawObject(cbor_bytes.to_vec())).await?;
+                Ok(())
+            }
+            StoreHandle::File { objects, .. } => {
+                objects.put(RawObject(cbor_bytes.to_vec())).await?;
+                Ok(())
+            }
+            // Postgres: changeset payload storage not supported; return Ok silently.
+            StoreHandle::Postgres(_) => {
+                let _ = change_id_hex;
+                Ok(())
+            }
+        }
+    }
+
+    /// Load the raw CBOR bytes for a `CanonicalChangeSet` by its change-id and decode it.
+    ///
+    /// Returns `Ok(None)` when the change-id is not found in the store (triggers fallback
+    /// in `cmd_verify`).  Returns `Ok(None)` for Postgres (not supported).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the change-id hex is malformed (not 64-char lowercase hex) or
+    /// if CBOR decoding fails (corrupt stored object).
+    pub async fn load_changeset_by_id(
+        &self,
+        change_id_hex: &str,
+    ) -> Result<Option<CanonicalChangeSet>, CliError> {
+        if change_id_hex.len() != 64 || !change_id_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(CliError::Domain(format!(
+                "invalid change-id: {change_id_hex}"
+            )));
+        }
+        // Decode the 64-char hex string to a 32-byte content-addressed ObjectId.
+        let mut bytes = [0u8; 32];
+        for (i, chunk) in change_id_hex.as_bytes().chunks(2).enumerate() {
+            let s = std::str::from_utf8(chunk)
+                .map_err(|_| CliError::Domain("invalid change-id: non-UTF8".to_string()))?;
+            bytes[i] = u8::from_str_radix(s, 16)
+                .map_err(|_| CliError::Domain(format!("invalid change-id hex: {change_id_hex}")))?;
+        }
+        let oid = ObjectId::from(bytes);
+
+        let raw = match self {
+            StoreHandle::Memory { objects, .. } => objects.get(&oid).await?,
+            StoreHandle::File { objects, .. } => objects.get(&oid).await?,
+            StoreHandle::Postgres(_) => return Ok(None),
+        };
+
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+
+        ciborium::from_reader(raw.0.as_slice())
+            .map(Some)
+            .map_err(|e| CliError::Domain(format!("changeset decoding failed: {e}")))
     }
 }
 
@@ -638,6 +711,7 @@ fn hex_to_object_id(hex: &str) -> StorageResult<ObjectId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ail_change::canonical::CanonicalChangeSet;
     use ail_storage::object::ObjectId;
 
     // Scenario: memory_store returns Memory variant without touching env.
@@ -882,6 +956,95 @@ mod tests {
         assert!(
             object_store.object_path(&root).exists(),
             "reachable graph root must be kept"
+        );
+    }
+
+    // ── T3: save_changeset_payload + load_changeset_by_id ─────────────────
+
+    /// Build a minimal CanonicalChangeSet and return its CBOR bytes + change_id hex.
+    fn minimal_canonical() -> (CanonicalChangeSet, Vec<u8>, String) {
+        let canonical = CanonicalChangeSet::default();
+        let mut cbor_bytes = Vec::new();
+        ciborium::into_writer(&canonical, &mut cbor_bytes)
+            .expect("CBOR encode must succeed");
+        // change_id = content-addressed ObjectId expressed as hex
+        let change_id = ObjectId::from_bytes(&cbor_bytes).to_hex();
+        (canonical, cbor_bytes, change_id)
+    }
+
+    // Scenario: memory store roundtrip — save then load returns same changeset.
+    //   GIVEN a memory StoreHandle and a CanonicalChangeSet encoded as CBOR
+    //   WHEN save_changeset_payload then load_changeset_by_id with same change_id
+    //   THEN Some(canonical) is returned and equals the original
+    #[tokio::test]
+    async fn save_load_changeset_payload_roundtrip_memory() {
+        let store = memory_store();
+        let (canonical, cbor_bytes, change_id) = minimal_canonical();
+
+        store
+            .save_changeset_payload(&change_id, &cbor_bytes)
+            .await
+            .expect("save_changeset_payload must succeed");
+
+        let loaded = store
+            .load_changeset_by_id(&change_id)
+            .await
+            .expect("load_changeset_by_id must succeed");
+
+        assert_eq!(
+            loaded,
+            Some(canonical),
+            "loaded changeset must equal the saved canonical"
+        );
+    }
+
+    // TRIANGULATE: file store roundtrip — save then load returns same changeset.
+    //   GIVEN a file StoreHandle backed by a TempDir
+    //   WHEN save_changeset_payload then load_changeset_by_id
+    //   THEN Some(canonical) is returned and equals the original
+    #[tokio::test]
+    async fn save_load_changeset_payload_roundtrip_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        init_file_layout(&ail_dir).expect("init layout");
+        let store = file_store(ail_dir);
+        let (canonical, cbor_bytes, change_id) = minimal_canonical();
+
+        store
+            .save_changeset_payload(&change_id, &cbor_bytes)
+            .await
+            .expect("save_changeset_payload must succeed for file store");
+
+        let loaded = store
+            .load_changeset_by_id(&change_id)
+            .await
+            .expect("load_changeset_by_id must succeed for file store");
+
+        assert_eq!(
+            loaded,
+            Some(canonical),
+            "file store: loaded changeset must equal the saved canonical"
+        );
+    }
+
+    // TRIANGULATE: unknown change-id returns None (fallback behavior).
+    //   GIVEN a memory StoreHandle with no saved changeset
+    //   WHEN load_changeset_by_id is called with a valid 64-char hex id
+    //   THEN Ok(None) is returned — no error, no panic
+    #[tokio::test]
+    async fn load_changeset_by_id_unknown_returns_none() {
+        let store = memory_store();
+        // A valid 64-char hex id that was never stored.
+        let unknown_id = "b".repeat(64);
+
+        let result = store
+            .load_changeset_by_id(&unknown_id)
+            .await
+            .expect("load_changeset_by_id must not error for unknown id");
+
+        assert_eq!(
+            result, None,
+            "unknown change-id must return None (fallback)"
         );
     }
 }

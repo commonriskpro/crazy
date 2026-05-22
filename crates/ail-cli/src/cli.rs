@@ -970,6 +970,8 @@ async fn cmd_change(
         created_at: unix_ms_now(),
     };
     store.append_changeset_log(&entry).await?;
+    // Persist the canonical CBOR bytes so cmd_verify can reconstruct the graph.
+    store.save_changeset_payload(&change_id, &cbor_bytes).await?;
 
     let snapshots_before = store.list_snapshots().await?;
     let mut graph = SemanticGraph {
