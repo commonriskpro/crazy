@@ -1335,3 +1335,101 @@ fn stage21_no_artifact_hash_skips_hash_check() {
             && entry.state == ail_verify::report::VerificationState::Proven
     }), "no artifact_manifest_hash → existing cap-set check must still pass");
 }
+
+// ── Scenario: report stores target_snapshot from graph ────────────────────
+// GIVEN a non-empty graph
+// WHEN the pipeline runs
+// THEN report.target_snapshot is Some(...)
+#[test]
+fn report_stores_target_snapshot_from_graph() {
+    let graph = SemanticGraph {
+        nodes: vec![GraphNode::new(NodeRef(1), NodeKind::Function, "fn.checkout")],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "dev", &[]);
+    let report = VerificationPipeline::run(&ctx);
+    assert!(
+        report.target_snapshot.is_some(),
+        "target_snapshot must be set when graph has nodes"
+    );
+    let snap = report.target_snapshot.as_ref().unwrap();
+    assert!(snap.starts_with("snap:"), "snapshot id must use snap: prefix");
+    assert!(snap.contains("fn.checkout"), "snapshot must include node name");
+}
+
+// ── Scenario: report stores base_snapshot when base_graph provided ────────
+#[test]
+fn report_stores_base_snapshot_when_base_graph_provided() {
+    let graph = SemanticGraph { nodes: vec![], edges: vec![] };
+    let base = SemanticGraph { nodes: vec![], edges: vec![] };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "dev", &[]);
+    let report = VerificationPipeline::run_with_changeset(&ctx, None, Some(&base));
+    assert!(
+        report.base_snapshot.is_some(),
+        "base_snapshot must be set when base_graph is provided"
+    );
+}
+
+// ── Scenario: report stores structural_diff from context ──────────────────
+#[test]
+fn report_stores_structural_diff_from_context() {
+    use ail_verify::policy::{ApprovalRecord, ApprovalStrength, StructuralDiff};
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let diff = StructuralDiff { description: "added fn.checkout".into() };
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &[],
+        profile: "dev",
+        solver: &solver,
+        approvals: &[],
+        rules: &[],
+        structural_diff: Some(&diff),
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &[],
+        artifact_manifest_hash: None,
+    };
+    let report = VerificationPipeline::run(&ctx);
+    assert_eq!(
+        report.structural_diff.as_ref().map(|d| d.description.as_str()),
+        Some("added fn.checkout"),
+        "structural_diff must be stored verbatim in the report"
+    );
+}
+
+// ── Scenario: report stores approvals from context ────────────────────────
+#[test]
+fn report_stores_approvals_from_context() {
+    use ail_verify::policy::{ApprovalRecord, ApprovalStrength};
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let approvals = vec![ApprovalRecord {
+        scope: "fn.transfer".into(),
+        approver: "security-team".into(),
+        reason: "audited on 2026-01".into(),
+        strength: ApprovalStrength::Strong,
+    }];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &[],
+        profile: "prod",
+        solver: &solver,
+        approvals: &approvals,
+        rules: &[],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &[],
+        artifact_manifest_hash: None,
+    };
+    let report = VerificationPipeline::run(&ctx);
+    assert_eq!(report.approvals.len(), 1);
+    assert_eq!(report.approvals[0].scope, "fn.transfer");
+}

@@ -32,7 +32,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::diagnostic::Diagnostic;
-use crate::policy::{PolicyAudit, PolicyDecision};
+use crate::policy::{ApprovalRecord, PolicyAudit, PolicyDecision, StructuralDiff};
 use crate::proof::ObligationLedgerEntry;
 
 // Re-export PolicyAudit sub-types so callers can import from `report` module.
@@ -284,6 +284,34 @@ pub struct VerificationReport {
     /// Empty for reports that have not gone through the codegen checker.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifact_hashes: Vec<ArtifactHash>,
+
+    /// Identifier of the base graph snapshot this report was computed against.
+    ///
+    /// `None` when no base snapshot was provided (e.g. initial creation).
+    /// Set from `PipelineContext::base_graph` when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_snapshot: Option<String>,
+
+    /// Identifier of the target graph snapshot this report describes.
+    ///
+    /// `None` when the target snapshot id was not provided to the pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_snapshot: Option<String>,
+
+    /// Structural diff consumed by the policy engine.
+    ///
+    /// Stored in the report so auditors can trace policy decisions back to
+    /// the structural changes that triggered them.
+    /// `None` when no structural diff was provided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structural_diff: Option<StructuralDiff>,
+
+    /// Approval records that were active during this pipeline run.
+    ///
+    /// Stored verbatim so the report is self-contained for audit.
+    /// Empty when no approvals were provided.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approvals: Vec<ApprovalRecord>,
 }
 
 /// Aggregated counts of entries by verification state.

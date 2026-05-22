@@ -349,6 +349,12 @@ impl VerificationPipeline {
             })
             .collect();
 
+        // ── Snapshot IDs from graph structure ─────────────────────────────
+        // Derive a stable snapshot identifier from node names + IDs so the
+        // report is self-describing without adding new PipelineContext fields.
+        let target_snapshot = Some(graph_snapshot_id(ctx.graph));
+        let base_snapshot = base_graph.map(graph_snapshot_id);
+
         // ── Assemble pre-policy report ────────────────────────────────────
         let mut pre_policy = VerificationReport {
             entries: all_entries,
@@ -358,6 +364,10 @@ impl VerificationPipeline {
             proof_obligations,
             degradation_events,
             artifact_hashes: vec![],
+            base_snapshot,
+            target_snapshot,
+            structural_diff: ctx.structural_diff.cloned(),
+            approvals: ctx.approvals.to_vec(),
             ..Default::default()
         };
 
@@ -469,6 +479,17 @@ impl VerificationPipeline {
             ..pre_policy
         }
     }
+}
+
+/// Derive a stable, human-readable snapshot identifier from a `SemanticGraph`.
+///
+/// The ID is computed from the sorted node names joined with `|` and
+/// prefixed with the node count.  This is NOT a cryptographic hash —
+/// it is a deterministic label for audit/debug purposes.
+fn graph_snapshot_id(graph: &SemanticGraph) -> String {
+    let mut names: Vec<&str> = graph.nodes.iter().map(|n| n.name.as_str()).collect();
+    names.sort_unstable();
+    format!("snap:{}:{}", graph.nodes.len(), names.join("|"))
 }
 
 fn stage_entry(
