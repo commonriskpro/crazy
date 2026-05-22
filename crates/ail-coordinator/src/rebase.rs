@@ -196,11 +196,11 @@ mod tests {
     fn create_op(node_ref: u32) -> CanonicalOp {
         CanonicalOp {
             kind: ail_change::model::ChangeSetOp::Create,
-            payload: OpPayload::CreateNode(GraphNode::new(
+            payload: OpPayload::CreateNode(Box::new(GraphNode::new(
                 NodeRef(node_ref),
                 NodeKind::Function,
                 "fn",
-            )),
+            ))),
             block_hash: dummy_hash(),
         }
     }

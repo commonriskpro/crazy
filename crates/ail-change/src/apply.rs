@@ -136,7 +136,7 @@ fn evaluate_precondition(precondition: &Precondition, graph: &SemanticGraph) -> 
 fn apply_payload(payload: &OpPayload, graph: &mut SemanticGraph) {
     match payload {
         OpPayload::CreateNode(node) => {
-            graph.nodes.push(node.clone());
+            graph.nodes.push((**node).clone());
         }
         OpPayload::AddEdge(edge) => {
             graph.edges.push(edge.clone());

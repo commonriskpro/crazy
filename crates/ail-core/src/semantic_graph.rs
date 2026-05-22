@@ -80,6 +80,61 @@ pub enum EdgeKind {
     BreaksIfChanged,
 }
 
+// ── Storage identity value types ─────────────────────────────────────────
+
+/// A content-addressed hash identifying the binary object stored for a
+/// `GraphNode`.
+///
+/// Carries the raw hex digest (e.g., a BLAKE3 hex string) as produced by the
+/// storage layer.  The string is opaque to `ail-core`; storage is responsible
+/// for producing and validating it.
+///
+/// Uses `String` rather than a fixed-size byte array so that the CBOR
+/// encoding remains schema-version-agnostic and readable in debug output.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentHash {
+    /// Hex-encoded content digest (e.g., BLAKE3).
+    pub hex: String,
+}
+
+/// The provenance of a `GraphNode` — which `ChangeSet` or operation created
+/// or last modified it.
+///
+/// The value is an opaque identifier (e.g., `"change.add_checkout"`) as
+/// defined by the storage and change-management layers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Provenance {
+    /// Identifier of the originating change or operation.
+    pub change_id: String,
+}
+
+/// The schema version under which a `GraphNode` was created.
+///
+/// Carries the schema name and version string (e.g., `"core_ir/2"`) so that
+/// readers can apply the appropriate migrator if the current schema is newer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchemaRef {
+    /// Schema identifier and version, e.g., `"core_ir/2"`.
+    pub version: String,
+}
+
+/// Trust metadata associated with a `GraphNode`.
+///
+/// Records the trust level assigned by the policy layer and an optional
+/// comment string.  The specific trust model (e.g., numeric level, role name)
+/// is defined by the trust-management layer; `ail-core` treats the value as
+/// opaque.
+///
+/// Uses `Vec<String>` for `tags` (not a `HashMap`) to guarantee deterministic
+/// CBOR serialization.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustMetadata {
+    /// Trust level identifier (e.g., `"verified"`, `"unverified"`, `"high"`).
+    pub level: String,
+    /// Ordered tags qualifying the trust level (e.g., `["signed", "reviewed"]`).
+    pub tags: Vec<String>,
+}
+
 // ── Semantic fact value types ─────────────────────────────────────────────
 
 /// Contract clauses attached to a `GraphNode`.
@@ -142,10 +197,11 @@ pub struct CapabilityReqs {
 ///
 /// # Backward Compatibility
 ///
-/// All optional fact fields (`type_facts`, `effect_row`, `capability_reqs`,
-/// `contract_clauses`, `runtime_checks`) are serialized only when `Some`;
-/// absent fields deserialize as `None`.  This keeps the Phase 1–5 CBOR wire
-/// format byte-identical when all optional fields are `None`.
+/// All optional fields are serialized only when `Some` and deserialize as
+/// `None` when absent.  This keeps every prior CBOR wire format byte-identical
+/// when the corresponding fields are not populated.  Storage identity fields
+/// (`content_hash`, `provenance`, `schema`, `trust_metadata`) were added in
+/// G15 following the same pattern.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphNode {
     /// Intra-graph identity.
@@ -174,15 +230,44 @@ pub struct GraphNode {
     /// Serialized only when `Some`; absent fields deserialize as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_checks: Option<Vec<RuntimeCheckMeta>>,
+    /// Content-addressed hash of the stored binary object for this node.
+    ///
+    /// Populated by the storage layer after the node is persisted.
+    /// `None` for in-memory nodes that have not yet been committed to storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<ContentHash>,
+    /// Provenance: which change or operation last created/modified this node.
+    ///
+    /// Set by the change-management layer when a `ChangeSet` is applied.
+    /// `None` for nodes not yet associated with a committed change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
+    /// Schema version under which this node was created.
+    ///
+    /// Used by the storage layer to select the appropriate migrator when
+    /// reading older objects.  `None` for nodes created without explicit
+    /// schema tracking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<SchemaRef>,
+    /// Trust metadata assigned by the policy layer.
+    ///
+    /// `None` for nodes that have not yet passed through the trust-assignment
+    /// pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_metadata: Option<TrustMetadata>,
 }
 
 impl GraphNode {
-    /// Create a new `GraphNode` with all optional fact fields set to `None`.
+    /// Create a new `GraphNode` with all optional fields set to `None`.
     ///
-    /// This is the preferred constructor for all Phase 1–4 code and for new
-    /// nodes that do not yet have resolved type/effect/capability information.
-    /// Using this constructor avoids future struct-literal source-compat breaks
-    /// when additional optional fields are introduced.
+    /// This is the preferred constructor for all phases and for new nodes that
+    /// do not yet have resolved type/effect/capability or storage identity
+    /// information.  Using this constructor avoids source-compat breaks when
+    /// additional optional fields are added.
+    ///
+    /// Storage identity fields (`content_hash`, `provenance`, `schema`,
+    /// `trust_metadata`) are also initialized to `None`; the storage and
+    /// change-management layers populate them after persistence.
     ///
     /// # Example
     ///
@@ -192,6 +277,7 @@ impl GraphNode {
     /// let node = GraphNode::new(NodeRef(0), NodeKind::Module, "core");
     /// assert_eq!(node.name, "core");
     /// assert!(node.type_facts.is_none());
+    /// assert!(node.content_hash.is_none());
     /// ```
     pub fn new(id: NodeRef, kind: NodeKind, name: impl Into<String>) -> Self {
         Self {
@@ -203,6 +289,10 @@ impl GraphNode {
             capability_reqs: None,
             contract_clauses: None,
             runtime_checks: None,
+            content_hash: None,
+            provenance: None,
+            schema: None,
+            trust_metadata: None,
         }
     }
 }

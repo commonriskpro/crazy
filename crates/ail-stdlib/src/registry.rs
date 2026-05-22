@@ -198,6 +198,10 @@ impl StdlibRegistry {
                 capability_reqs: entry.capability_reqs.clone(),
                 contract_clauses: entry.contract_clauses.clone(),
                 runtime_checks: None,
+                content_hash: None,
+                provenance: None,
+                schema: None,
+                trust_metadata: None,
             })
             .collect()
     }

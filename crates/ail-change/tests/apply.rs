@@ -45,7 +45,7 @@ fn graph_edge(source: u32, target: u32, kind: EdgeKind) -> GraphEdge {
 fn create_op(node: GraphNode) -> CanonicalOp {
     CanonicalOp {
         kind: ChangeSetOp::Create,
-        payload: OpPayload::CreateNode(node),
+        payload: OpPayload::CreateNode(Box::new(node)),
         block_hash: BlockHash([1u8; 32]),
     }
 }

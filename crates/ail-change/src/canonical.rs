@@ -87,7 +87,7 @@ pub struct CanonicalMeta {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OpPayload {
     /// Create a new node in the graph.
-    CreateNode(GraphNode),
+    CreateNode(Box<GraphNode>),
     /// Add a directed edge to the graph.
     AddEdge(GraphEdge),
     /// Remove an existing node by ref.
