@@ -23,7 +23,7 @@
 use ail_core::semantic_graph::{GraphValidationError, NodeKind, SemanticGraph};
 use ail_verify::report::{VerificationReport, VerificationState};
 
-use crate::anf::{AnfBinding, AnfExpr, AnfIr};
+use crate::anf::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, SourceMap};
 use crate::core_ir::{
     CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, StageHashes,
 };
@@ -188,43 +188,48 @@ pub fn lower_core_expr_to_anf(
             }
         }
 
-        // RecordNew: lower each field value recursively.
-        // Field values are not atomized — they may be arbitrary AnfExprs.
+        // RecordNew: full ANF normalization — each field value is let-bound
+        // so field construction arguments are always atomic.
         CoreExpr::RecordNew { fields } => {
-            let anf_fields = fields
+            let anf_fields: Vec<(String, AnfExpr)> = fields
                 .iter()
                 .map(|(name, val)| {
-                    let anf_val = lower_core_expr_to_anf(val, fresh, source_ref, out);
-                    (name.clone(), anf_val)
+                    let atom = atomize(val, fresh, source_ref, out);
+                    (name.clone(), AnfExpr::Var(atom))
                 })
                 .collect();
             AnfExpr::RecordNew { fields: anf_fields }
         }
 
-        // FieldUpdate: record expression must be atomic; value is lowered recursively.
+        // FieldUpdate: record expression must be atomic; value is also atomized
+        // for full ANF normalization.
         CoreExpr::FieldUpdate { record, field, value } => {
             let record_name = atomize(record, fresh, source_ref, out);
-            let anf_value = lower_core_expr_to_anf(value, fresh, source_ref, out);
+            let value_name = atomize(value, fresh, source_ref, out);
             AnfExpr::FieldUpdate {
                 record: record_name,
                 field: field.clone(),
-                value: Box::new(anf_value),
+                value: Box::new(AnfExpr::Var(value_name)),
             }
         }
 
-        // TupleNew: lower each element recursively.
+        // TupleNew: full ANF normalization — each element is let-bound.
         CoreExpr::TupleNew(elems) => {
-            let anf_elems = elems
+            let anf_elems: Vec<AnfExpr> = elems
                 .iter()
-                .map(|e| lower_core_expr_to_anf(e, fresh, source_ref, out))
+                .map(|e| {
+                    let name = atomize(e, fresh, source_ref, out);
+                    AnfExpr::Var(name)
+                })
                 .collect();
             AnfExpr::TupleNew(anf_elems)
         }
 
-        // VariantNew: lower payload recursively if present.
+        // VariantNew: payload is atomized for full ANF normalization.
         CoreExpr::VariantNew { tag, payload } => {
             let anf_payload = payload.as_ref().map(|p| {
-                Box::new(lower_core_expr_to_anf(p, fresh, source_ref, out))
+                let name = atomize(p, fresh, source_ref, out);
+                Box::new(AnfExpr::Var(name))
             });
             AnfExpr::VariantNew {
                 tag: tag.clone(),
@@ -232,13 +237,123 @@ pub fn lower_core_expr_to_anf(
             }
         }
 
-        // ListNew: lower each element recursively.
+        // ListNew: lower each element recursively; let-bind non-atomic elements
+        // to enforce full ANF normalization.
         CoreExpr::ListNew(elems) => {
-            let anf_elems = elems
+            let anf_elems: Vec<AnfExpr> = elems
                 .iter()
-                .map(|e| lower_core_expr_to_anf(e, fresh, source_ref, out))
+                .map(|e| {
+                    let name = atomize(e, fresh, source_ref, out);
+                    AnfExpr::Var(name)
+                })
                 .collect();
             AnfExpr::ListNew(anf_elems)
+        }
+
+        // ── G20 R2: new semantic variants ────────────────────────────────
+
+        // And: short-circuit — lower left; result is Var(left_name); right
+        // is wrapped in the ANF ShortCircuitAnd so it is only evaluated when
+        // the condition demands it.
+        CoreExpr::And { left, right } => {
+            let left_name = atomize(left, fresh, source_ref, out);
+            let anf_right = lower_core_expr_to_anf(right, fresh, source_ref, out);
+            AnfExpr::ShortCircuitAnd {
+                left: left_name,
+                right: Box::new(anf_right),
+            }
+        }
+
+        // Or: symmetric short-circuit — left is atomized; right is wrapped.
+        CoreExpr::Or { left, right } => {
+            let left_name = atomize(left, fresh, source_ref, out);
+            let anf_right = lower_core_expr_to_anf(right, fresh, source_ref, out);
+            AnfExpr::ShortCircuitOr {
+                left: left_name,
+                right: Box::new(anf_right),
+            }
+        }
+
+        // EffectCall: atomize all args; effect ordering is structural.
+        CoreExpr::EffectCall { capability, func, args } => {
+            let atomic_args: Vec<String> = args
+                .iter()
+                .map(|a| atomize(a, fresh, source_ref, out))
+                .collect();
+            AnfExpr::EffectCall {
+                capability: capability.clone(),
+                func: func.clone(),
+                args: atomic_args,
+            }
+        }
+
+        // Dispatch: dynamic handler dispatch — atomize all args.
+        CoreExpr::Dispatch { handler, method, args } => {
+            let atomic_args: Vec<String> = args
+                .iter()
+                .map(|a| atomize(a, fresh, source_ref, out))
+                .collect();
+            AnfExpr::Dispatch {
+                handler: handler.clone(),
+                method: method.clone(),
+                args: atomic_args,
+            }
+        }
+
+        // TaskSpawn: atomize all args; explicit ordering via ANF let-chain.
+        CoreExpr::TaskSpawn { func, args } => {
+            let atomic_args: Vec<String> = args
+                .iter()
+                .map(|a| atomize(a, fresh, source_ref, out))
+                .collect();
+            AnfExpr::TaskSpawn {
+                func: func.clone(),
+                args: atomic_args,
+            }
+        }
+
+        // ChannelSend: both channel and value must be atomic.
+        CoreExpr::ChannelSend { channel, value } => {
+            let channel_name = atomize(channel, fresh, source_ref, out);
+            let value_name = atomize(value, fresh, source_ref, out);
+            AnfExpr::ChannelSend {
+                channel: channel_name,
+                value: value_name,
+            }
+        }
+
+        // ChannelRecv: channel must be atomic.
+        CoreExpr::ChannelRecv { channel } => {
+            let channel_name = atomize(channel, fresh, source_ref, out);
+            AnfExpr::ChannelRecv { channel: channel_name }
+        }
+
+        // RuntimeCheck: condition must be atomic; check_ref and msg are preserved.
+        CoreExpr::RuntimeCheck { check_ref, cond, msg } => {
+            let cond_name = atomize(cond, fresh, source_ref, out);
+            AnfExpr::RuntimeCheck {
+                check_ref: check_ref.clone(),
+                cond: cond_name,
+                msg: msg.clone(),
+            }
+        }
+
+        // ResourceAcquire: atomize all args; acquisition ordering is structural.
+        CoreExpr::ResourceAcquire { resource, args } => {
+            let atomic_args: Vec<String> = args
+                .iter()
+                .map(|a| atomize(a, fresh, source_ref, out))
+                .collect();
+            AnfExpr::ResourceAcquire {
+                resource: resource.clone(),
+                args: atomic_args,
+            }
+        }
+
+        // ResourceRelease: handle must be atomic.
+        CoreExpr::ResourceRelease { handle } => {
+            let handle_name = atomize(handle, fresh, source_ref, out);
+            AnfExpr::ResourceRelease { handle: handle_name }
         }
 
         // CoreExpr::Placeholder → AnfExpr::Placeholder (no expression body).
@@ -414,6 +529,9 @@ pub fn lower_to_anf(core: &CoreIr) -> Result<AnfIr, CompileError> {
         map_core_node_to_anf(node, &mut fresh, &mut bindings);
     }
 
+    // Build semantic source map from the lowered bindings.
+    let source_map = SourceMap::from_bindings(&bindings);
+
     // Seal: anf_ir_hash = blake3(core_ir_hash || anf_ir_bytes).
     let anf_ir_bytes = stable_cbor_bytes(&bindings)?;
     let anf_ir_hash = hash_with_parent(&core.stage_hashes.core_ir_hash, &anf_ir_bytes);
@@ -423,7 +541,9 @@ pub fn lower_to_anf(core: &CoreIr) -> Result<AnfIr, CompileError> {
     stage_hashes.anf_ir_hash = Some(anf_ir_hash);
 
     Ok(AnfIr {
+        schema_version: ANF_SCHEMA_VERSION,
         bindings,
+        source_map,
         stage_hashes,
     })
 }
@@ -783,7 +903,12 @@ mod tests {
         }
     }
 
-    // S3: RecordNew — field values are lowered recursively.
+    // S3: RecordNew — field values are fully ANF-normalized (let-bound atomics).
+    //
+    // Full ANF normalization: non-Var field values must be let-bound before use.
+    // A Var field still passes through atomize but returns the same name without
+    // producing an extra binding.  A Literal field WILL produce a synthetic
+    // binding (anf_0) and the field value will be Var("anf_0").
     #[test]
     fn lower_record_new_field_values() {
         let expr = CoreExpr::RecordNew {
@@ -793,20 +918,26 @@ mod tests {
             ],
         };
         let (result, out) = lower_single(&expr);
-        assert!(out.is_empty(), "simple RecordNew must not produce synthetic bindings");
+        // Literal field must produce one synthetic binding.
+        assert_eq!(out.len(), 1, "Literal field must produce one synthetic binding, got {out:?}");
+        assert_eq!(out[0].expr, crate::anf::AnfExpr::Literal(LiteralValue::Int(10)));
+        let synthetic_name = out[0].name.clone();
         match result {
             crate::anf::AnfExpr::RecordNew { fields } => {
                 assert_eq!(fields.len(), 2);
                 assert_eq!(fields[0].0, "amount");
-                assert_eq!(fields[0].1, crate::anf::AnfExpr::Literal(LiteralValue::Int(10)));
+                // Literal field → Var(synthetic_name)
+                assert_eq!(fields[0].1, crate::anf::AnfExpr::Var(synthetic_name));
                 assert_eq!(fields[1].0, "label");
+                // Var field → Var("lbl") (same name, no extra binding)
                 assert_eq!(fields[1].1, crate::anf::AnfExpr::Var("lbl".to_string()));
             }
             other => panic!("expected AnfExpr::RecordNew, got {other:?}"),
         }
     }
 
-    // S4: FieldUpdate — record Var is preserved as atomic name.
+    // S4: FieldUpdate — record Var is preserved as atomic name;
+    //     value is also atomized (full ANF normalization).
     #[test]
     fn lower_field_update_var_record_is_preserved() {
         let expr = CoreExpr::FieldUpdate {
@@ -815,12 +946,15 @@ mod tests {
             value: Box::new(CoreExpr::Literal(LiteralValue::Text("Paid".to_string()))),
         };
         let (result, out) = lower_single(&expr);
-        assert!(out.is_empty(), "Var record must not produce extra bindings");
+        // Literal value must produce one synthetic binding.
+        assert_eq!(out.len(), 1, "Literal value must produce one synthetic binding");
+        let value_name = out[0].name.clone();
         match result {
             crate::anf::AnfExpr::FieldUpdate { record, field, value } => {
                 assert_eq!(record, "order");
                 assert_eq!(field, "status");
-                assert_eq!(*value, crate::anf::AnfExpr::Literal(LiteralValue::Text("Paid".to_string())));
+                // Value is now a Var referring to the synthetic binding.
+                assert_eq!(*value, crate::anf::AnfExpr::Var(value_name));
             }
             other => panic!("expected AnfExpr::FieldUpdate, got {other:?}"),
         }
@@ -879,18 +1013,25 @@ mod tests {
         }
     }
 
-    // S7: ListNew — elements are lowered recursively.
+    // S7: ListNew — elements are fully ANF-normalized (let-bound atomics).
+    //
+    // Full ANF normalization: non-Var elements are let-bound.
+    // Literal(1) → synthetic binding anf_0 → Var("anf_0")
+    // Var("x")   → passes through atomize as "x" → Var("x")
     #[test]
     fn lower_list_new_elements() {
         let expr = CoreExpr::ListNew(vec![
             CoreExpr::Literal(LiteralValue::Int(1)),
             CoreExpr::Var("x".to_string()),
         ]);
-        let (result, _out) = lower_single(&expr);
+        let (result, out) = lower_single(&expr);
+        // Literal element must produce one synthetic binding.
+        assert_eq!(out.len(), 1, "Literal element must produce one synthetic binding");
+        let lit_name = out[0].name.clone();
         match result {
             crate::anf::AnfExpr::ListNew(elems) => {
                 assert_eq!(elems.len(), 2);
-                assert_eq!(elems[0], crate::anf::AnfExpr::Literal(LiteralValue::Int(1)));
+                assert_eq!(elems[0], crate::anf::AnfExpr::Var(lit_name));
                 assert_eq!(elems[1], crate::anf::AnfExpr::Var("x".to_string()));
             }
             other => panic!("expected AnfExpr::ListNew, got {other:?}"),

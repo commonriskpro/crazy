@@ -28,6 +28,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::core_ir::{LiteralValue, StageHashes};
 
+// ── Schema version ────────────────────────────────────────────────────────
+
+/// Schema version for `AnfIr` serialization.
+///
+/// Incremented when the ANF IR schema changes in a backward-incompatible way.
+/// Consumers MUST reject `AnfIr` artifacts whose `schema_version` is higher
+/// than the version they understand.
+pub const ANF_SCHEMA_VERSION: u32 = 1;
+
 // ── AnfMatchArm ───────────────────────────────────────────────────────────
 
 /// One arm of an `AnfExpr::Match` expression.
@@ -151,6 +160,79 @@ pub enum AnfExpr {
     /// Elements may be any `AnfExpr` (lowered recursively).
     ListNew(Vec<AnfExpr>),
 
+    // ── G20 R2: semantic effect / concurrency / runtime-check variants ────
+
+    /// Short-circuit AND lowered to conditional branching.
+    ///
+    /// Evaluates `left`; if false, result is false without evaluating `right`.
+    /// Both `left` and `right` are atomic variable names (guaranteed by lowering).
+    ShortCircuitAnd { left: String, right: Box<AnfExpr> },
+
+    /// Short-circuit OR lowered to conditional branching.
+    ///
+    /// Evaluates `left`; if true, result is true without evaluating `right`.
+    /// Both `left` and `right` are atomic variable names (guaranteed by lowering).
+    ShortCircuitOr { left: String, right: Box<AnfExpr> },
+
+    /// Effect-ordered capability call.
+    ///
+    /// `capability` and `func` identify the effect operation.
+    /// `args` are atomic variable names — guaranteed by lowering.
+    EffectCall {
+        capability: String,
+        func: String,
+        args: Vec<String>,
+    },
+
+    /// Dynamic dispatch through a handler/capability dispatch table.
+    ///
+    /// `handler` and `method` identify the dispatch target.
+    /// `args` are atomic variable names — guaranteed by lowering.
+    Dispatch {
+        handler: String,
+        method: String,
+        args: Vec<String>,
+    },
+
+    /// Spawn a concurrent task (explicit ordering in ANF).
+    ///
+    /// `func` is the task entry-point name.
+    /// `args` are atomic variable names — guaranteed by lowering.
+    TaskSpawn { func: String, args: Vec<String> },
+
+    /// Send a value on a channel (explicit ordering in ANF).
+    ///
+    /// `channel` is an atomic variable name.
+    /// `value` is an atomic variable name.
+    ChannelSend { channel: String, value: String },
+
+    /// Receive a value from a channel (explicit ordering in ANF).
+    ///
+    /// `channel` is an atomic variable name.
+    ChannelRecv { channel: String },
+
+    /// Runtime assertion — contract/boundary check preserved through lowering.
+    ///
+    /// `check_ref` identifies the proof obligation.
+    /// `cond` is an atomic variable name.
+    /// `msg` is the failure message.
+    RuntimeCheck {
+        check_ref: String,
+        cond: String,
+        msg: String,
+    },
+
+    /// Acquire a named resource — ordering is explicit in ANF.
+    ///
+    /// `resource` identifies the resource type.
+    /// `args` are atomic variable names — guaranteed by lowering.
+    ResourceAcquire { resource: String, args: Vec<String> },
+
+    /// Release a previously acquired resource handle.
+    ///
+    /// `handle` is an atomic variable name — guaranteed by lowering.
+    ResourceRelease { handle: String },
+
     /// Placeholder for nodes that have no expression body yet, or for
     /// `CoreExpr::Placeholder` nodes.
     ///
@@ -187,18 +269,113 @@ pub struct AnfBinding {
     pub expr: AnfExpr,
 }
 
+// ── SourceMapEntry ────────────────────────────────────────────────────────
+
+/// One entry in the semantic source map — maps an ANF node back to its
+/// origin in the semantic graph with full provenance.
+///
+/// Corresponds to the `semantic_source_map` fields in `docs/compiler.md §
+/// Semantic source maps`.
+///
+/// `wasm_offset` and `native_offset` are filled in by the backend stage;
+/// they are `None` in the ANF IR before backend emission.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceMapEntry {
+    /// ANF binding name this entry refers to.
+    pub binding_name: String,
+    /// The `NodeRef` this binding was lowered from — from the `SemanticGraph`.
+    pub node_id: NodeRef,
+    /// The `BlockRef` (block identity) in the semantic graph, if applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_ref: Option<String>,
+    /// The `ChangeSet` provenance identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_set: Option<String>,
+    /// The `ContractRef` for the contract that governs this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_ref: Option<String>,
+    /// The `EffectRef` for the effect associated with this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_ref: Option<String>,
+    /// The `ProofObligationRef` for the proof obligation at this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof_obligation_ref: Option<String>,
+    /// The `RuntimeCheckRef` for any runtime check inserted at this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_check_ref: Option<String>,
+    /// Byte offset in the emitted WASM binary (code section), if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wasm_offset: Option<u32>,
+    /// Byte offset in the emitted native binary (code section), if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_offset: Option<u64>,
+}
+
+/// Semantic source map for an `AnfIr`.
+///
+/// Maps ANF nodes back to their origin in the semantic graph.  Backends
+/// populate `wasm_offset` / `native_offset` as they emit code.
+///
+/// Preserved through every pipeline stage — SSA, WASM, native — per the
+/// compiler.md rules ("Every lowering preserves provenance/source maps").
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceMap {
+    /// One entry per ANF binding, in binding order.
+    pub entries: Vec<SourceMapEntry>,
+}
+
+impl SourceMap {
+    /// Build a `SourceMap` from an `AnfIr`'s bindings.
+    ///
+    /// Each binding contributes one entry with `node_id` set to
+    /// `binding.source_ref`.  All optional provenance fields are `None`
+    /// at ANF stage; backends fill in offsets later.
+    pub fn from_bindings(bindings: &[AnfBinding]) -> Self {
+        let entries = bindings
+            .iter()
+            .map(|b| SourceMapEntry {
+                binding_name: b.name.clone(),
+                node_id: b.source_ref,
+                block_ref: None,
+                change_set: None,
+                contract_ref: None,
+                effect_ref: None,
+                proof_obligation_ref: None,
+                runtime_check_ref: None,
+                wasm_offset: None,
+                native_offset: None,
+            })
+            .collect();
+        SourceMap { entries }
+    }
+}
+
 // ── AnfIr ─────────────────────────────────────────────────────────────────
 
 /// Output of the second pipeline stage: a flat list of ANF bindings with
 /// full provenance and an extended hash chain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnfIr {
+    /// Schema version for forward compatibility.
+    ///
+    /// Consumers MUST reject artifacts whose `schema_version` exceeds the
+    /// version they support.  Always set to `ANF_SCHEMA_VERSION` by
+    /// `lower_to_anf`.
+    pub schema_version: u32,
+
     /// ANF bindings in source traversal order.
     ///
     /// May contain more bindings than the originating `CoreIr.nodes` because
     /// the ANF flattening pass introduces synthetic let-bindings for nested
     /// sub-expressions.
     pub bindings: Vec<AnfBinding>,
+
+    /// Semantic source map — maps ANF bindings back to semantic graph nodes.
+    ///
+    /// Generated by `lower_to_anf`; backend stages fill in `wasm_offset` /
+    /// `native_offset` as they emit code.
+    pub source_map: SourceMap,
+
     /// Hash chain extended through the ANF stage.
     /// `stage_hashes.anf_ir_hash` is `Some(...)` after this stage completes.
     pub stage_hashes: StageHashes,
@@ -519,19 +696,23 @@ mod tests {
     // Scenario: AnfIr is constructible with bindings and stage hashes.
     #[test]
     fn anf_ir_is_constructible() {
+        let bindings = vec![
+            AnfBinding {
+                source_ref: NodeRef(0),
+                name: "mod_root".to_string(),
+                expr: AnfExpr::Literal(LiteralValue::Unit),
+            },
+            AnfBinding {
+                source_ref: NodeRef(1),
+                name: "fn_main".to_string(),
+                expr: AnfExpr::Placeholder,
+            },
+        ];
+        let source_map = crate::anf::SourceMap::from_bindings(&bindings);
         let ir = AnfIr {
-            bindings: vec![
-                AnfBinding {
-                    source_ref: NodeRef(0),
-                    name: "mod_root".to_string(),
-                    expr: AnfExpr::Literal(LiteralValue::Unit),
-                },
-                AnfBinding {
-                    source_ref: NodeRef(1),
-                    name: "fn_main".to_string(),
-                    expr: AnfExpr::Placeholder,
-                },
-            ],
+            schema_version: crate::anf::ANF_SCHEMA_VERSION,
+            bindings,
+            source_map,
             stage_hashes: StageHashes {
                 graph_snapshot_hash: [0u8; 32],
                 verification_report_hash: [0u8; 32],

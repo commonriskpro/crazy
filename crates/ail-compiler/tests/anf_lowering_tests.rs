@@ -16,12 +16,15 @@
 //   S11 — CBOR round-trip with Let expr is lossless
 //   S12 — Different AnfExpr payloads → different anf_ir_hash
 
+use ail_compiler::anf::{ANF_SCHEMA_VERSION, SourceMap};
 use ail_compiler::hash::stable_cbor_bytes;
 use ail_compiler::lower::lower_core_expr_to_anf;
 use ail_compiler::{
     AnfExpr, CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, StageHashes,
     lower_to_anf, lower_to_core_ir,
 };
+#[allow(unused_imports)]
+use ciborium;
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_verify::report::VerificationReport;
 
@@ -581,4 +584,560 @@ fn full_pipeline_with_core_expr_succeeds() {
             args: vec!["ctx".to_string()],
         }
     );
+}
+
+// ── G20 R2: schema version and source map ─────────────────────────────────
+
+// R2-S1: lower_to_anf sets schema_version to ANF_SCHEMA_VERSION.
+#[test]
+fn lower_to_anf_sets_schema_version() {
+    let anf = lower_to_anf(&core_ir_with_expr(
+        NodeRef(0),
+        "fn_test",
+        CoreExpr::Var("x".to_string()),
+    ))
+    .unwrap();
+    assert_eq!(
+        anf.schema_version, ANF_SCHEMA_VERSION,
+        "schema_version must equal ANF_SCHEMA_VERSION"
+    );
+}
+
+// R2-S2: lower_to_anf populates source_map with one entry per binding.
+#[test]
+fn lower_to_anf_populates_source_map() {
+    let anf = lower_to_anf(&core_ir_with_expr(
+        NodeRef(7),
+        "fn_check",
+        CoreExpr::Literal(LiteralValue::Int(1)),
+    ))
+    .unwrap();
+    // At least one source map entry must exist (one per binding).
+    assert!(
+        !anf.source_map.entries.is_empty(),
+        "source_map must have at least one entry"
+    );
+    // The first original-node entry must have node_id == NodeRef(7).
+    // (Synthetic bindings may have different node_ids — all share source_ref of parent.)
+    let has_node_7 = anf
+        .source_map
+        .entries
+        .iter()
+        .any(|e| e.node_id == NodeRef(7));
+    assert!(has_node_7, "source_map must contain an entry with node_id == NodeRef(7)");
+}
+
+// R2-S3: SourceMap::from_bindings maps binding names to node_ids.
+#[test]
+fn source_map_from_bindings_maps_names_to_node_ids() {
+    use ail_compiler::AnfBinding;
+    let bindings = vec![
+        AnfBinding {
+            source_ref: NodeRef(10),
+            name: "fn_a".to_string(),
+            expr: AnfExpr::Placeholder,
+        },
+        AnfBinding {
+            source_ref: NodeRef(20),
+            name: "fn_b".to_string(),
+            expr: AnfExpr::Placeholder,
+        },
+    ];
+    let map = SourceMap::from_bindings(&bindings);
+    assert_eq!(map.entries.len(), 2);
+    assert_eq!(map.entries[0].binding_name, "fn_a");
+    assert_eq!(map.entries[0].node_id, NodeRef(10));
+    assert_eq!(map.entries[1].binding_name, "fn_b");
+    assert_eq!(map.entries[1].node_id, NodeRef(20));
+}
+
+// R2-S4: SourceMapEntry optional fields are None by default.
+#[test]
+fn source_map_entry_optional_fields_default_none() {
+    use ail_compiler::AnfBinding;
+    let bindings = vec![AnfBinding {
+        source_ref: NodeRef(5),
+        name: "fn_x".to_string(),
+        expr: AnfExpr::Placeholder,
+    }];
+    let map = SourceMap::from_bindings(&bindings);
+    let entry = &map.entries[0];
+    assert!(entry.block_ref.is_none());
+    assert!(entry.change_set.is_none());
+    assert!(entry.contract_ref.is_none());
+    assert!(entry.effect_ref.is_none());
+    assert!(entry.proof_obligation_ref.is_none());
+    assert!(entry.runtime_check_ref.is_none());
+    assert!(entry.wasm_offset.is_none());
+    assert!(entry.native_offset.is_none());
+}
+
+// ── G20 R2: short-circuit lowering ────────────────────────────────────────
+
+// R2-S5: CoreExpr::And lowers to AnfExpr::ShortCircuitAnd.
+// Left is atomized; right is a nested AnfExpr (lazy evaluation).
+#[test]
+fn and_lowers_to_short_circuit_and() {
+    let expr = CoreExpr::And {
+        left: Box::new(CoreExpr::Var("a".to_string())),
+        right: Box::new(CoreExpr::Var("b".to_string())),
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert!(out.is_empty(), "Var left must not produce synthetic bindings");
+    match result {
+        AnfExpr::ShortCircuitAnd { left, right } => {
+            assert_eq!(left, "a");
+            assert_eq!(*right, AnfExpr::Var("b".to_string()));
+        }
+        other => panic!("expected ShortCircuitAnd, got {other:?}"),
+    }
+}
+
+// R2-S6: CoreExpr::Or lowers to AnfExpr::ShortCircuitOr.
+#[test]
+fn or_lowers_to_short_circuit_or() {
+    let expr = CoreExpr::Or {
+        left: Box::new(CoreExpr::Var("x".to_string())),
+        right: Box::new(CoreExpr::Var("y".to_string())),
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert!(out.is_empty());
+    match result {
+        AnfExpr::ShortCircuitOr { left, right } => {
+            assert_eq!(left, "x");
+            assert_eq!(*right, AnfExpr::Var("y".to_string()));
+        }
+        other => panic!("expected ShortCircuitOr, got {other:?}"),
+    }
+}
+
+// R2-S7: And with non-Var left → left is let-bound (atomized).
+#[test]
+fn and_with_complex_left_is_atomized() {
+    let expr = CoreExpr::And {
+        left: Box::new(CoreExpr::Literal(LiteralValue::Bool(true))),
+        right: Box::new(CoreExpr::Var("b".to_string())),
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert_eq!(out.len(), 1, "Literal left must be let-bound");
+    match result {
+        AnfExpr::ShortCircuitAnd { left, .. } => {
+            assert!(left.starts_with("anf_"), "left must be synthetic: {left}");
+        }
+        other => panic!("expected ShortCircuitAnd, got {other:?}"),
+    }
+}
+
+// ── G20 R2: EffectCall lowering ───────────────────────────────────────────
+
+// R2-S8: CoreExpr::EffectCall lowers to AnfExpr::EffectCall with atomized args.
+#[test]
+fn effect_call_lowers_correctly() {
+    let expr = CoreExpr::EffectCall {
+        capability: "database".to_string(),
+        func: "read".to_string(),
+        args: vec![CoreExpr::Var("cart_id".to_string())],
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert!(out.is_empty(), "Var arg must not produce bindings");
+    match result {
+        AnfExpr::EffectCall { capability, func, args } => {
+            assert_eq!(capability, "database");
+            assert_eq!(func, "read");
+            assert_eq!(args, vec!["cart_id"]);
+        }
+        other => panic!("expected EffectCall, got {other:?}"),
+    }
+}
+
+// R2-S9: EffectCall with non-Var arg atomizes it.
+#[test]
+fn effect_call_atomizes_non_var_args() {
+    let expr = CoreExpr::EffectCall {
+        capability: "payment".to_string(),
+        func: "charge".to_string(),
+        args: vec![CoreExpr::Literal(LiteralValue::Int(100))],
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert_eq!(out.len(), 1, "Literal arg must produce one synthetic binding");
+    match result {
+        AnfExpr::EffectCall { args, .. } => {
+            assert!(args[0].starts_with("anf_"), "arg must be synthetic: {}", args[0]);
+        }
+        other => panic!("expected EffectCall, got {other:?}"),
+    }
+}
+
+// ── G20 R2: Dispatch lowering ─────────────────────────────────────────────
+
+// R2-S10: CoreExpr::Dispatch lowers to AnfExpr::Dispatch.
+#[test]
+fn dispatch_lowers_correctly() {
+    let expr = CoreExpr::Dispatch {
+        handler: "PaymentProvider".to_string(),
+        method: "charge".to_string(),
+        args: vec![CoreExpr::Var("amount".to_string())],
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert!(out.is_empty());
+    match result {
+        AnfExpr::Dispatch { handler, method, args } => {
+            assert_eq!(handler, "PaymentProvider");
+            assert_eq!(method, "charge");
+            assert_eq!(args, vec!["amount"]);
+        }
+        other => panic!("expected Dispatch, got {other:?}"),
+    }
+}
+
+// ── G20 R2: TaskSpawn lowering ────────────────────────────────────────────
+
+// R2-S11: CoreExpr::TaskSpawn lowers to AnfExpr::TaskSpawn.
+#[test]
+fn task_spawn_lowers_correctly() {
+    let expr = CoreExpr::TaskSpawn {
+        func: "worker.process".to_string(),
+        args: vec![CoreExpr::Var("payload".to_string())],
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert!(out.is_empty());
+    match result {
+        AnfExpr::TaskSpawn { func, args } => {
+            assert_eq!(func, "worker.process");
+            assert_eq!(args, vec!["payload"]);
+        }
+        other => panic!("expected TaskSpawn, got {other:?}"),
+    }
+}
+
+// ── G20 R2: ChannelSend / ChannelRecv lowering ────────────────────────────
+
+// R2-S12: CoreExpr::ChannelSend lowers to AnfExpr::ChannelSend (both atomic).
+#[test]
+fn channel_send_lowers_correctly() {
+    let expr = CoreExpr::ChannelSend {
+        channel: Box::new(CoreExpr::Var("ch".to_string())),
+        value: Box::new(CoreExpr::Var("msg".to_string())),
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert!(out.is_empty());
+    match result {
+        AnfExpr::ChannelSend { channel, value } => {
+            assert_eq!(channel, "ch");
+            assert_eq!(value, "msg");
+        }
+        other => panic!("expected ChannelSend, got {other:?}"),
+    }
+}
+
+// R2-S13: CoreExpr::ChannelRecv lowers to AnfExpr::ChannelRecv.
+#[test]
+fn channel_recv_lowers_correctly() {
+    let expr = CoreExpr::ChannelRecv {
+        channel: Box::new(CoreExpr::Var("ch".to_string())),
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert!(out.is_empty());
+    match result {
+        AnfExpr::ChannelRecv { channel } => {
+            assert_eq!(channel, "ch");
+        }
+        other => panic!("expected ChannelRecv, got {other:?}"),
+    }
+}
+
+// ── G20 R2: RuntimeCheck lowering ─────────────────────────────────────────
+
+// R2-S14: CoreExpr::RuntimeCheck lowers to AnfExpr::RuntimeCheck.
+// Contract checks MUST survive lowering.
+#[test]
+fn runtime_check_lowers_correctly() {
+    let expr = CoreExpr::RuntimeCheck {
+        check_ref: "contract.balance_non_negative".to_string(),
+        cond: Box::new(CoreExpr::Var("is_valid".to_string())),
+        msg: "balance must be non-negative".to_string(),
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert!(out.is_empty(), "Var cond must not produce synthetic bindings");
+    match result {
+        AnfExpr::RuntimeCheck { check_ref, cond, msg } => {
+            assert_eq!(check_ref, "contract.balance_non_negative");
+            assert_eq!(cond, "is_valid");
+            assert_eq!(msg, "balance must be non-negative");
+        }
+        other => panic!("expected RuntimeCheck, got {other:?}"),
+    }
+}
+
+// R2-S15: RuntimeCheck with non-Var cond atomizes it.
+#[test]
+fn runtime_check_atomizes_non_var_cond() {
+    let expr = CoreExpr::RuntimeCheck {
+        check_ref: "contract.positive".to_string(),
+        cond: Box::new(CoreExpr::Literal(LiteralValue::Bool(true))),
+        msg: "must be positive".to_string(),
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert_eq!(out.len(), 1, "Literal cond must be let-bound");
+    match result {
+        AnfExpr::RuntimeCheck { cond, .. } => {
+            assert!(cond.starts_with("anf_"), "cond must be synthetic: {cond}");
+        }
+        other => panic!("expected RuntimeCheck, got {other:?}"),
+    }
+}
+
+// ── G20 R2: Resource acquire/release ordering ─────────────────────────────
+
+// R2-S16: CoreExpr::ResourceAcquire lowers to AnfExpr::ResourceAcquire.
+#[test]
+fn resource_acquire_lowers_correctly() {
+    let expr = CoreExpr::ResourceAcquire {
+        resource: "db.connection".to_string(),
+        args: vec![CoreExpr::Var("conn_str".to_string())],
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert!(out.is_empty());
+    match result {
+        AnfExpr::ResourceAcquire { resource, args } => {
+            assert_eq!(resource, "db.connection");
+            assert_eq!(args, vec!["conn_str"]);
+        }
+        other => panic!("expected ResourceAcquire, got {other:?}"),
+    }
+}
+
+// R2-S17: CoreExpr::ResourceRelease lowers to AnfExpr::ResourceRelease.
+#[test]
+fn resource_release_lowers_correctly() {
+    let expr = CoreExpr::ResourceRelease {
+        handle: Box::new(CoreExpr::Var("conn".to_string())),
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert!(out.is_empty());
+    match result {
+        AnfExpr::ResourceRelease { handle } => {
+            assert_eq!(handle, "conn");
+        }
+        other => panic!("expected ResourceRelease, got {other:?}"),
+    }
+}
+
+// R2-S18: ResourceRelease atomizes non-Var handle.
+#[test]
+fn resource_release_atomizes_non_var_handle() {
+    // Non-Var handle: a Call that returns a handle
+    let expr = CoreExpr::ResourceRelease {
+        handle: Box::new(CoreExpr::Call {
+            func: "db.get_handle".to_string(),
+            args: vec![],
+        }),
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert_eq!(out.len(), 1, "Call handle must be let-bound");
+    match result {
+        AnfExpr::ResourceRelease { handle } => {
+            assert!(handle.starts_with("anf_"), "handle must be synthetic: {handle}");
+        }
+        other => panic!("expected ResourceRelease, got {other:?}"),
+    }
+}
+
+// ── G20 R2: composite children full ANF normalization ─────────────────────
+
+// R2-S19: RecordNew with Literal field — field is let-bound (atomized).
+#[test]
+fn record_new_literal_field_is_let_bound() {
+    let expr = CoreExpr::RecordNew {
+        fields: vec![("price".to_string(), CoreExpr::Literal(LiteralValue::Int(99)))],
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert_eq!(out.len(), 1, "Literal field must produce one synthetic binding");
+    match result {
+        AnfExpr::RecordNew { fields } => {
+            // Field value must be a Var referring to the synthetic binding.
+            assert!(matches!(fields[0].1, AnfExpr::Var(_)));
+        }
+        other => panic!("expected RecordNew, got {other:?}"),
+    }
+}
+
+// R2-S20: TupleNew with Literal elements — elements are let-bound.
+#[test]
+fn tuple_new_literal_elements_are_let_bound() {
+    let expr = CoreExpr::TupleNew(vec![
+        CoreExpr::Literal(LiteralValue::Int(1)),
+        CoreExpr::Literal(LiteralValue::Bool(false)),
+    ]);
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert_eq!(out.len(), 2, "Two Literal elements → two synthetic bindings");
+    match result {
+        AnfExpr::TupleNew(elems) => {
+            assert!(matches!(elems[0], AnfExpr::Var(_)));
+            assert!(matches!(elems[1], AnfExpr::Var(_)));
+        }
+        other => panic!("expected TupleNew, got {other:?}"),
+    }
+}
+
+// R2-S21: VariantNew Literal payload is let-bound.
+#[test]
+fn variant_new_literal_payload_is_let_bound() {
+    let expr = CoreExpr::VariantNew {
+        tag: "Some".to_string(),
+        payload: Some(Box::new(CoreExpr::Literal(LiteralValue::Int(42)))),
+    };
+    let mut fresh = 0u32;
+    let mut out = vec![];
+    let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
+    assert_eq!(out.len(), 1, "Literal payload must produce one synthetic binding");
+    match result {
+        AnfExpr::VariantNew { payload, .. } => {
+            assert!(matches!(*payload.unwrap(), AnfExpr::Var(_)));
+        }
+        other => panic!("expected VariantNew, got {other:?}"),
+    }
+}
+
+// ── G20 R2: CBOR round-trips for new AnfExpr variants ────────────────────
+
+// R2-S22: AnfExpr::ShortCircuitAnd CBOR round-trip.
+#[test]
+fn short_circuit_and_cbor_round_trip() {
+    use ail_compiler::hash::stable_cbor_bytes;
+    let expr = AnfExpr::ShortCircuitAnd {
+        left: "a".to_string(),
+        right: Box::new(AnfExpr::Var("b".to_string())),
+    };
+    let bytes = stable_cbor_bytes(&expr).unwrap();
+    let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).unwrap();
+    assert_eq!(decoded, expr);
+}
+
+// R2-S23: AnfExpr::EffectCall CBOR round-trip.
+#[test]
+fn effect_call_cbor_round_trip() {
+    let expr = AnfExpr::EffectCall {
+        capability: "db".to_string(),
+        func: "read".to_string(),
+        args: vec!["cart_id".to_string()],
+    };
+    let bytes = stable_cbor_bytes(&expr).unwrap();
+    let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).unwrap();
+    assert_eq!(decoded, expr);
+}
+
+// R2-S24: AnfExpr::RuntimeCheck CBOR round-trip.
+#[test]
+fn runtime_check_cbor_round_trip() {
+    let expr = AnfExpr::RuntimeCheck {
+        check_ref: "contract.positive".to_string(),
+        cond: "is_valid".to_string(),
+        msg: "must be positive".to_string(),
+    };
+    let bytes = stable_cbor_bytes(&expr).unwrap();
+    let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).unwrap();
+    assert_eq!(decoded, expr);
+}
+
+// R2-S25: AnfExpr::ResourceAcquire CBOR round-trip.
+#[test]
+fn resource_acquire_cbor_round_trip() {
+    let expr = AnfExpr::ResourceAcquire {
+        resource: "db.conn".to_string(),
+        args: vec!["conn_str".to_string()],
+    };
+    let bytes = stable_cbor_bytes(&expr).unwrap();
+    let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).unwrap();
+    assert_eq!(decoded, expr);
+}
+
+// R2-S26: AnfExpr::TaskSpawn CBOR round-trip.
+#[test]
+fn task_spawn_cbor_round_trip() {
+    let expr = AnfExpr::TaskSpawn {
+        func: "worker.process".to_string(),
+        args: vec!["payload".to_string()],
+    };
+    let bytes = stable_cbor_bytes(&expr).unwrap();
+    let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).unwrap();
+    assert_eq!(decoded, expr);
+}
+
+// R2-S27: AnfExpr::Dispatch CBOR round-trip.
+#[test]
+fn dispatch_cbor_round_trip() {
+    let expr = AnfExpr::Dispatch {
+        handler: "PaymentProvider".to_string(),
+        method: "charge".to_string(),
+        args: vec!["amount".to_string()],
+    };
+    let bytes = stable_cbor_bytes(&expr).unwrap();
+    let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).unwrap();
+    assert_eq!(decoded, expr);
+}
+
+// R2-S28: AnfIr schema_version is 1 and survives CBOR round-trip.
+#[test]
+fn anf_ir_schema_version_survives_cbor() {
+    let anf = lower_to_anf(&core_ir_with_expr(
+        NodeRef(0),
+        "fn_test",
+        CoreExpr::Literal(LiteralValue::Unit),
+    ))
+    .unwrap();
+    assert_eq!(anf.schema_version, 1);
+
+    let bytes = stable_cbor_bytes(&anf).unwrap();
+    let decoded: ail_compiler::AnfIr = ciborium::from_reader(bytes.as_slice()).unwrap();
+    assert_eq!(decoded.schema_version, 1);
+}
+
+// R2-S29: AnfIr source_map entries match bindings count and node_ids.
+#[test]
+fn anf_ir_source_map_matches_bindings() {
+    let anf = lower_to_anf(&core_ir_with_expr(
+        NodeRef(3),
+        "fn_mapped",
+        CoreExpr::Var("x".to_string()),
+    ))
+    .unwrap();
+    // Every binding must have a corresponding source map entry.
+    assert_eq!(anf.source_map.entries.len(), anf.bindings.len());
+    // The last entry's node_id must match the root binding's source_ref.
+    let last_entry = anf.source_map.entries.last().unwrap();
+    let last_binding = anf.bindings.last().unwrap();
+    assert_eq!(last_entry.node_id, last_binding.source_ref);
 }

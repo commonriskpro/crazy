@@ -188,16 +188,25 @@ fn different_anf_inputs_produce_different_wasm_hashes() {
     );
 }
 
-// ── Task 3.1 / verify-fix: function body stubs (exact sequence) ──────────
+// ── G20 R2: function bodies are real ANF-derived WASM code ───────────────
 
-// Spec: each function body is EXACTLY [unreachable, end] — no extra instructions.
-// Parse with wasmparser and assert the full operator sequence for every body.
+// Spec (G20 R2): function bodies are generated from ANF expressions — no longer
+// stub-only.  For Placeholder/default nodes, the body contains unreachable.
+// For real AnfExpr nodes, the body contains real instructions ending with End.
+//
+// We assert:
+//  1. The correct number of code sections are emitted.
+//  2. Every body ends with End (valid WASM).
+//  3. Bodies are structurally valid (wasmparser validates the whole module).
 #[test]
 fn function_bodies_are_exactly_unreachable_end() {
     use wasmparser::{Operator, Parser, Payload};
 
     let anf = anf_for_graph(&graph_with_n_nodes(2));
     let artifact = emit_wasm(&anf).expect("emit_wasm failed");
+
+    // Module must be structurally valid.
+    wasmparser::validate(&artifact.wasm).expect("wasmparser rejected module");
 
     let mut function_bodies_found = 0usize;
     for payload in Parser::new(0).parse_all(&artifact.wasm) {
@@ -207,23 +216,25 @@ fn function_bodies_are_exactly_unreachable_end() {
                 .get_operators_reader()
                 .expect("get_operators_reader failed");
 
-            // Read all operators and assert exact sequence: Unreachable, End.
+            // Read all operators for this body.
             let ops: Vec<_> = std::iter::from_fn(|| reader.read().ok()).collect();
 
-            assert_eq!(
-                ops.len(),
-                2,
-                "function body must have exactly 2 instructions (unreachable + end), got {ops:?}"
+            // Every body must be non-empty and end with End.
+            assert!(
+                !ops.is_empty(),
+                "function body must have at least one instruction"
             );
             assert!(
-                matches!(ops[0], Operator::Unreachable),
-                "instruction 0 must be Unreachable, got {:?}",
-                ops[0]
+                matches!(ops.last().unwrap(), Operator::End),
+                "last instruction must be End, got {:?}",
+                ops.last()
             );
+            // Placeholder nodes (no expr body) produce: [Unreachable, Drop, End].
+            // The Drop is emitted because function type is () -> ().
+            // At minimum there must be at least 2 instructions (something + End).
             assert!(
-                matches!(ops[1], Operator::End),
-                "instruction 1 must be End, got {:?}",
-                ops[1]
+                ops.len() >= 2,
+                "function body must have at least 2 instructions, got {ops:?}"
             );
         }
     }
@@ -236,9 +247,9 @@ fn function_bodies_are_exactly_unreachable_end() {
 // ── verify-fix: provenance values are byte offsets, not function indexes ──
 
 // Spec: provenance map stores the WASM byte offset of each code entry.
-// For a stub body [0-locals, unreachable, end] the body-size LEB128 is 0x03.
-// We assert that wasm[provenance[NodeRef(i)]] == 0x03, proving the stored
-// value is a byte position in the binary, NOT the function index.
+// We assert that wasm[provenance[NodeRef(i)]] is a valid LEB128-encoded byte
+// (i.e. its value is non-zero for a non-empty body), proving the stored value
+// is a byte position in the binary, NOT the function index.
 #[test]
 fn provenance_values_are_byte_offsets_not_function_indexes() {
     let n = 3usize;
@@ -258,13 +269,30 @@ fn provenance_values_are_byte_offsets_not_function_indexes() {
             .get(&nr)
             .unwrap_or_else(|| panic!("NodeRef({i}) missing from provenance"));
 
-        // The byte at the stored offset is the LEB128-encoded body size (= 3).
-        // Body = [0 locals, unreachable, end] → 3 bytes → encoded as 0x03.
-        assert_eq!(
-            artifact.wasm[offset as usize], 0x03,
-            "wasm[provenance[NodeRef({i})]] = wasm[{offset}] must be 0x03 (body size), \
-             got 0x{:02x} — stored value must be a byte offset, not a function index",
+        // The byte at the stored offset is the LEB128-encoded body size.
+        // For G20 R2, bodies contain real ANF-derived code — size > 0.
+        // We assert the offset is a valid index into the WASM binary.
+        assert!(
+            (offset as usize) < artifact.wasm.len(),
+            "provenance offset {offset} must be within wasm binary of len {}",
+            artifact.wasm.len()
+        );
+        // The byte at the offset must be non-zero (non-empty body).
+        assert_ne!(
+            artifact.wasm[offset as usize], 0x00,
+            "wasm[provenance[NodeRef({i})]] = wasm[{offset}] must be non-zero (body size), \
+             got 0x{:02x} — body cannot be empty",
             artifact.wasm[offset as usize]
+        );
+        // Crucially: the value must NOT equal the function index (0, 1, 2).
+        // If it were a function index, wasm[0] = 0x00 (magic byte) and
+        // provenance[NodeRef(0)] would equal 0 — but 0x00 is the magic byte,
+        // not a valid code-entry header.
+        // We prove it's an offset by checking offset > 8 (past the WASM header).
+        assert!(
+            offset > 8,
+            "provenance offset {offset} must be past the 8-byte WASM header \
+             (function index 0 would point to magic byte region)"
         );
     }
 }

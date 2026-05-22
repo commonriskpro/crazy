@@ -143,6 +143,96 @@ pub enum CoreExpr {
     },
     /// Construct a list from element expressions.
     ListNew(Vec<CoreExpr>),
+
+    // ── Semantic effect / concurrency / runtime-check variants ────────────
+
+    /// Short-circuit boolean AND: `left && right`.
+    ///
+    /// MUST lower to conditional branching in ANF — `right` is NOT evaluated
+    /// when `left` is false.  Both operands are `Box<CoreExpr>`.
+    And {
+        left: Box<CoreExpr>,
+        right: Box<CoreExpr>,
+    },
+
+    /// Short-circuit boolean OR: `left || right`.
+    ///
+    /// MUST lower to conditional branching in ANF — `right` is NOT evaluated
+    /// when `left` is true.  Both operands are `Box<CoreExpr>`.
+    Or {
+        left: Box<CoreExpr>,
+        right: Box<CoreExpr>,
+    },
+
+    /// An effect-ordered function call through a named capability.
+    ///
+    /// `capability` names the effect (e.g. `"database.read"`).
+    /// `func` names the operation (e.g. `"Cart"`).
+    /// `args` are the operands — may be non-atomic; atomized during ANF lowering.
+    EffectCall {
+        capability: String,
+        func: String,
+        args: Vec<CoreExpr>,
+    },
+
+    /// Dynamic dispatch through a handler/capability dispatch table.
+    ///
+    /// `handler` names the dispatch target (e.g. `"PaymentProvider"`).
+    /// `method` names the operation.
+    /// `args` are the operands.
+    Dispatch {
+        handler: String,
+        method: String,
+        args: Vec<CoreExpr>,
+    },
+
+    /// Spawn a concurrent task.
+    ///
+    /// `func` is the task entry-point name.
+    /// `args` are the arguments passed to the task.
+    TaskSpawn {
+        func: String,
+        args: Vec<CoreExpr>,
+    },
+
+    /// Send a value on a channel.
+    ///
+    /// `channel` is the channel variable name (must be atomic).
+    /// `value` is the message expression.
+    ChannelSend {
+        channel: Box<CoreExpr>,
+        value: Box<CoreExpr>,
+    },
+
+    /// Receive a value from a channel.
+    ///
+    /// `channel` is the channel variable name (must be atomic).
+    ChannelRecv { channel: Box<CoreExpr> },
+
+    /// Insert a runtime check (assertion) before continuing.
+    ///
+    /// `check_ref` identifies the contract/proof obligation being checked.
+    /// `cond` is the condition expression; `msg` is the failure message.
+    RuntimeCheck {
+        check_ref: String,
+        cond: Box<CoreExpr>,
+        msg: String,
+    },
+
+    /// Acquire a named resource.
+    ///
+    /// `resource` identifies the resource type.
+    /// `args` are the acquisition arguments.
+    ResourceAcquire {
+        resource: String,
+        args: Vec<CoreExpr>,
+    },
+
+    /// Release a previously acquired resource handle.
+    ///
+    /// `handle` is the variable holding the acquired resource (must be atomic).
+    ResourceRelease { handle: Box<CoreExpr> },
+
     /// Placeholder for nodes that have no expression body yet.
     ///
     /// Used by `lower_to_core_ir` for nodes that carry only type/kind
