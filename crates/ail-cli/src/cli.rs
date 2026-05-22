@@ -1280,8 +1280,37 @@ async fn cmd_verify(
         })
         .collect();
 
-    // Diagnostics: empty graph produces no diagnostics.
-    let diagnostics: Vec<Value> = vec![];
+    // Diagnostics: surface Failed and Unsafe entries as actionable diagnostics.
+    // Each diagnostic carries a suggested repair action based on the state.
+    let diagnostics: Vec<Value> = report
+        .entries
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.state,
+                ail_verify::report::VerificationState::Failed
+                    | ail_verify::report::VerificationState::Unsafe
+            )
+        })
+        .map(|e| {
+            let repair = match e.state {
+                ail_verify::report::VerificationState::Failed => {
+                    "Fix the failing invariant or update the contract clause."
+                }
+                ail_verify::report::VerificationState::Unsafe => {
+                    "Add a runtime check or capability restriction to make this safe."
+                }
+                _ => "Review and address this verification issue.",
+            };
+            json!({
+                "claim": e.claim,
+                "state": format!("{:?}", e.state),
+                "scope": e.scope,
+                "repair": repair,
+            })
+        })
+        .collect();
+    let diag_count = diagnostics.len();
     // Proof obligations: derived from verification entries.
     let proof_obligations: Vec<Value> = report
         .entries
@@ -1302,7 +1331,7 @@ async fn cmd_verify(
     };
 
     let human_msg = format!(
-        "change-id: {change_id}\nprofile: {profile}\nentries: {entry_count}\nsummary: {summary}\ndiagnostics: 0\npolicy: ok"
+        "change-id: {change_id}\nprofile: {profile}\nentries: {entry_count}\nsummary: {summary}\ndiagnostics: {diag_count}\npolicy: ok"
     );
     print_response(
         mode,
