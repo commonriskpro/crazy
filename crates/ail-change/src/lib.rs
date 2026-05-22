@@ -1,3 +1,5 @@
+/// ACL version migrators: trait, concrete implementations, and migration chain.
+pub mod acl_migrator;
 pub mod apply;
 pub mod canonical;
 /// Typed ChangeSet model, canonicalization, and atomic apply for `ail-change`.

@@ -7,7 +7,8 @@
 //   3. acl_version-aware canonicalization behavior
 //   4. blocks carried into CanonicalChangeSet
 
-use ail_change::canonical::{CanonicalChangeSet, canonicalize_parsed};
+use ail_change::acl_migrator::MigrateError;
+use ail_change::canonical::{CanonicalChangeSet, canonicalize_parsed, try_canonicalize_parsed};
 use ail_change::model::{ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp};
 use ail_change::parser::{ChangeComposition, parse_changeset};
 
@@ -312,17 +313,20 @@ fn canonicalize_records_acl_version_1_0() {
     assert_eq!(canonical.acl_version, "1.0");
 }
 
-// ── Scenario: unknown acl_version is preserved as-is ─────────────────────
-// The canonicalizer records the version even if unknown (for forward compat).
+// ── Scenario: unknown acl_version returns MigrateError ───────────────────
+// With version-aware migration, unknown/future versions cannot be processed.
 #[test]
-fn canonicalize_preserves_unknown_acl_version() {
+fn canonicalize_unknown_acl_version_returns_error() {
     use ail_change::parser::ParsedChangeSet;
 
     let mut pcs = minimal_parsed(vec![]);
     pcs.acl_version = "2.0".to_string();
 
-    let canonical = canonicalize_parsed(pcs);
-    assert_eq!(canonical.acl_version, "2.0");
+    let result = try_canonicalize_parsed(pcs);
+    assert!(
+        matches!(result, Err(MigrateError::UnknownVersion(ref v)) if v == "2.0"),
+        "unknown version must return UnknownVersion error, got {result:?}"
+    );
 }
 
 // ── Scenario: full round-trip of the spec's end-to-end example ────────────

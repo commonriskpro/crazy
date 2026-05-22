@@ -27,6 +27,7 @@ use ail_core::semantic_graph::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::acl_migrator::{CURRENT_ACL_VERSION, MigrateError, run_migration_chain};
 use crate::model::{
     AssertExists, AssertHash, BlockHash, ChangeSet, ChangeSetOp, SnapshotId, Timestamp,
 };
@@ -548,8 +549,9 @@ fn expand_infer_boundary(ops: Vec<CanonicalOp>) -> Vec<CanonicalOp> {
 /// Transform a `ParsedChangeSet` (with full kv args) into canonical form.
 ///
 /// Additional steps beyond `canonicalize`:
+/// - Runs the ACL migrator chain when `acl_version` < [`CURRENT_ACL_VERSION`].
 /// - Carries preconditions from `ParsedChangeSet.preconditions`.
-/// - Carries `acl_version` from the parsed document.
+/// - Carries `acl_version` (post-migration) from the parsed document.
 /// - Carries `expect`, `approval`, `composition`, `blocks`, `verify`.
 /// - Materializes safe defaults:
 ///   - `create_function` / `create_type` without `visibility` → `"private"`.
@@ -559,7 +561,35 @@ fn expand_infer_boundary(ops: Vec<CanonicalOp>) -> Vec<CanonicalOp> {
 /// - Stores full verb and materialized args on each `CanonicalOp`.
 /// - **Expands `infer_boundary`** into explicit `set_return` / `add_effect` ops
 ///   so the canonical form is self-contained (see `expand_infer_boundary`).
+///
+/// # Panics
+///
+/// Panics if the document declares an ACL version for which no migration path
+/// is registered.  Use [`try_canonicalize_parsed`] to handle unknown versions
+/// without panicking.
 pub fn canonicalize_parsed(pcs: ParsedChangeSet) -> CanonicalChangeSet {
+    try_canonicalize_parsed(pcs).expect("ACL migration must succeed for known versions")
+}
+
+/// Fallible variant of [`canonicalize_parsed`].
+///
+/// Returns `Ok(CanonicalChangeSet)` on success or
+/// `Err(MigrateError::UnknownVersion)` when the document declares a version
+/// for which no migration path is registered.
+pub fn try_canonicalize_parsed(
+    pcs: ParsedChangeSet,
+) -> Result<CanonicalChangeSet, MigrateError> {
+    // Run the migration chain if the declared version is not current.
+    let pcs = if pcs.acl_version != CURRENT_ACL_VERSION {
+        run_migration_chain(pcs, CURRENT_ACL_VERSION)?
+    } else {
+        pcs
+    };
+    Ok(canonicalize_parsed_inner(pcs))
+}
+
+/// Inner, infallible canonicalization after migration has already run.
+fn canonicalize_parsed_inner(pcs: ParsedChangeSet) -> CanonicalChangeSet {
     // Step 1: materialize description default.
     let description = if pcs.changeset.meta.description.is_empty() {
         "<no description>".to_string()
