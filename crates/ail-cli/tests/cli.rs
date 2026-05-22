@@ -675,6 +675,95 @@ fn disk_store_persists_change_for_compile() {
         .assert(predicate::path::is_dir());
 }
 
+#[test]
+fn init_branch_writes_indirect_head_and_status_shows_branch() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+
+    ail()
+        .args(["init", "--branch", "feature.disk"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let head = std::fs::read_to_string(dir.path().join(".ail").join("HEAD")).expect("read HEAD");
+    assert_eq!(head, "ref: refs/branches/feature.disk\n");
+
+    let output = ail()
+        .args(["status", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["branch"], "feature.disk");
+}
+
+#[test]
+fn change_branch_targets_named_branch_ref() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    ail()
+        .args([
+            "change",
+            "branch-specific snapshot",
+            "--branch",
+            "experiment",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let branch_ref = dir
+        .path()
+        .join(".ail")
+        .join("refs")
+        .join("branches")
+        .join("experiment");
+    let value = std::fs::read_to_string(branch_ref).expect("read experiment ref");
+    assert_eq!(value.trim().len(), 64, "branch ref must store snapshot id");
+}
+
+#[test]
+fn doctor_and_gc_report_file_store_object_counts() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    ail()
+        .args(["change", "doctor gc snapshot"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let doctor_output = ail()
+        .args(["doctor", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let doctor_json = parse_json_output(&doctor_output);
+    assert!(
+        doctor_json["data"]["objects"]["total"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
+
+    let gc_output = ail()
+        .args(["gc", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let gc_json = parse_json_output(&gc_output);
+    assert!(gc_json["data"]["objects_before"].is_number());
+    assert!(gc_json["data"]["objects_after"].is_number());
+    assert!(gc_json["data"]["bytes_freed"].is_number());
+}
+
 /// Spec scenario: status exits 0.
 ///   GIVEN any store state
 ///   WHEN `ail status` runs

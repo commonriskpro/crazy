@@ -70,7 +70,9 @@ use serde_json::{Value, json};
 use crate::changeset_input::{ChangeInput, load_changeset};
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
-use crate::store::{StoreHandle, build_store, file_store, init_file_layout};
+use crate::store::{
+    StoreHandle, build_store, doctor, file_store, gc, init_file_layout_with_branch,
+};
 
 // ── Cli ───────────────────────────────────────────────────────────────────
 
@@ -136,6 +138,9 @@ enum Commands {
         /// Read ChangeSet from stdin.
         #[arg(long)]
         stdin: bool,
+        /// Branch to receive the generated snapshot.
+        #[arg(long)]
+        branch: Option<String>,
     },
 
     /// Run the verifier on a ChangeSet by its canonical change-id.
@@ -182,7 +187,11 @@ enum Commands {
     },
 
     /// Initialize the project: create .ail/ directories and genesis snapshot.
-    Init,
+    Init {
+        /// Initial branch name.
+        #[arg(long, default_value = "main")]
+        branch: String,
+    },
 
     /// Show current snapshot, branch, pending changes, and system state.
     Status,
@@ -275,6 +284,9 @@ enum Commands {
 
     /// Run integrity and health checks on the project.
     Doctor,
+
+    /// Delete objects unreachable from branch tips.
+    Gc,
 }
 
 // ── PolicyCmd ─────────────────────────────────────────────────────────────
@@ -340,7 +352,7 @@ pub async fn run() -> Result<(), CliError> {
             eprintln!(
                 "Available subcommands: context, change, verify, apply, compile, run, \
                  init, status, inspect, diff, rollback, rebase, merge, refactor, \
-                 approve, reject, policy, package, doctor"
+                 approve, reject, policy, package, doctor, gc"
             );
             std::process::exit(2);
         }
@@ -361,8 +373,21 @@ pub async fn run() -> Result<(), CliError> {
         Commands::Callers { target } => cmd_callers(mode, &target, &store).await,
         Commands::Effects { target } => cmd_effects(mode, &target, &store).await,
         Commands::Proofs { target } => cmd_proofs(mode, &target, &store).await,
-        Commands::Change { text, file, stdin } => {
-            cmd_change(mode, text.as_deref(), file, stdin, &store).await
+        Commands::Change {
+            text,
+            file,
+            stdin,
+            branch,
+        } => {
+            cmd_change(
+                mode,
+                text.as_deref(),
+                file,
+                stdin,
+                branch.as_deref(),
+                &store,
+            )
+            .await
         }
         Commands::Verify { change_id, profile } => cmd_verify(mode, &change_id, &profile),
         Commands::Apply {
@@ -376,7 +401,7 @@ pub async fn run() -> Result<(), CliError> {
             module,
             replay,
         } => cmd_run(mode, &profile, module.as_deref(), replay.as_deref(), &store).await,
-        Commands::Init => cmd_init(mode, &store).await,
+        Commands::Init { branch } => cmd_init(mode, &store, &branch).await,
         Commands::Status => cmd_status(mode, &store).await,
         Commands::Inspect { kind, id } => cmd_inspect(mode, &kind, &id, &store).await,
         Commands::Diff { target, semantic } => cmd_diff(mode, &target, semantic, &store).await,
@@ -397,7 +422,8 @@ pub async fn run() -> Result<(), CliError> {
         Commands::Reject { change_id, reason } => cmd_reject(mode, &change_id, &reason),
         Commands::Policy { cmd } => cmd_policy(mode, cmd),
         Commands::Package { cmd } => cmd_package(mode, cmd),
-        Commands::Doctor => cmd_doctor(mode),
+        Commands::Doctor => cmd_doctor(mode, &store),
+        Commands::Gc => cmd_gc(mode, &store),
     }
 }
 
@@ -615,6 +641,7 @@ async fn cmd_change(
     text: Option<&str>,
     file: Option<PathBuf>,
     from_stdin: bool,
+    branch: Option<&str>,
     store: &StoreHandle,
 ) -> Result<(), CliError> {
     // Determine input source: text > file > stdin.
@@ -665,7 +692,7 @@ async fn cmd_change(
                 created_at: unix_ms_now(),
                 verification_report_hash: None,
             };
-            store.save_snapshot(&snapshot).await?;
+            store.save_snapshot_on_branch(&snapshot, branch).await?;
         }
         ail_change::model::ChangeSetOutcome::RebaseRequired {
             current_snapshot_id,
@@ -1168,12 +1195,12 @@ fn runtime_value_to_string(value: &RuntimeValue) -> String {
 /// - stdlib baseline
 /// - package lock
 /// - context indexes
-async fn cmd_init(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError> {
+async fn cmd_init(mode: OutputMode, store: &StoreHandle, branch: &str) -> Result<(), CliError> {
     use crate::project::{ArtifactKind, ProjectContext};
 
     let ctx = ProjectContext::from_cwd()?;
 
-    init_file_layout(&ctx.ail_dir)?;
+    init_file_layout_with_branch(&ctx.ail_dir, branch)?;
 
     // Create all required subdirectories.
     for kind in [
@@ -1195,7 +1222,7 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError>
     let config_path = ctx.ail_dir.join("project.toml");
     if !config_path.exists() {
         let config_content = format!(
-            "name = \".\"\ncreated_at = {}\nbranch = \"main\"\npolicy = \"default\"\n",
+            "name = \".\"\ncreated_at = {}\nbranch = \"{branch}\"\npolicy = \"default\"\n",
             unix_ms_now()
         );
         std::fs::write(&config_path, config_content)?;
@@ -1256,7 +1283,7 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError>
 
     let genesis_hex = genesis_id.to_hex();
     let human_msg = format!(
-        "initialized project at {}\ngenesis snapshot: {genesis_hex}\nbranch: main\npolicy: default\nruntime profiles: dev, prod\nstdlib: v0\npackage lock: empty\ncontext index: empty",
+        "initialized project at {}\ngenesis snapshot: {genesis_hex}\nbranch: {branch}\npolicy: default\nruntime profiles: dev, prod\nstdlib: v0\npackage lock: empty\ncontext index: empty",
         ctx.ail_dir.display()
     );
     print_response(
@@ -1265,7 +1292,7 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError>
         json!({
             "initialized": true,
             "genesis_snapshot_id": genesis_hex,
-            "branch": "main",
+            "branch": branch,
             "policy": "default",
             "runtime_profiles": ["dev", "prod"],
             "stdlib_baseline": "v0",
@@ -1288,6 +1315,9 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError>
 /// - package advisories
 async fn cmd_status(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError> {
     let snapshots = store.list_snapshots().await?;
+    let current_branch = store
+        .current_branch()?
+        .unwrap_or_else(|| "main".to_string());
 
     // Compute status fields.
     let (snap_hex, graph_root_hex, branch, pending_changes, verification_state) =
@@ -1295,7 +1325,7 @@ async fn cmd_status(mode: OutputMode, store: &StoreHandle) -> Result<(), CliErro
             (
                 "(none)".to_string(),
                 "(none)".to_string(),
-                "main".to_string(),
+                current_branch,
                 0usize,
                 "unverified",
             )
@@ -1308,7 +1338,7 @@ async fn cmd_status(mode: OutputMode, store: &StoreHandle) -> Result<(), CliErro
             } else {
                 "unverified"
             };
-            (snap_hex, graph_root_hex, "main".to_string(), 0, ver_state)
+            (snap_hex, graph_root_hex, current_branch, 0, ver_state)
         };
 
     // Derived status fields.
@@ -2146,7 +2176,11 @@ fn cmd_package(mode: OutputMode, cmd: PackageCmd) -> Result<(), CliError> {
 /// - runtime profile validity
 /// - package advisories
 /// - assumption expirations
-fn cmd_doctor(mode: OutputMode) -> Result<(), CliError> {
+fn cmd_doctor(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError> {
+    let storage_report = match store {
+        StoreHandle::File { ail_dir, .. } => Some(doctor(ail_dir)?),
+        _ => None,
+    };
     // Real checks: each is evaluated; status is "ok" or "warn" or "error".
     let checks: Vec<(&str, &str, &str)> = vec![
         (
@@ -2191,9 +2225,22 @@ fn cmd_doctor(mode: OutputMode) -> Result<(), CliError> {
         .iter()
         .map(|(name, status, _msg)| format!("{name}: {status}"))
         .collect();
+    let storage_msg = storage_report
+        .as_ref()
+        .map(|report| {
+            format!(
+                "objects: total={} valid={} corrupted={} unreachable={}",
+                report.total_objects,
+                report.valid_objects,
+                report.corrupted_objects,
+                report.unreachable_objects
+            )
+        })
+        .unwrap_or_else(|| "objects: file store not active".to_string());
     let human_msg = format!(
-        "{}\noverall: {}",
+        "{}\n{}\noverall: {}",
         human_lines.join("\n"),
+        storage_msg,
         if all_ok { "healthy" } else { "issues found" }
     );
 
@@ -2214,6 +2261,36 @@ fn cmd_doctor(mode: OutputMode) -> Result<(), CliError> {
         json!({
             "overall": if all_ok { "healthy" } else { "issues_found" },
             "checks": json_checks,
+            "objects": storage_report.map(|report| json!({
+                "total": report.total_objects,
+                "valid": report.valid_objects,
+                "corrupted": report.corrupted_objects,
+                "unreachable": report.unreachable_objects,
+            })),
+        }),
+    );
+    Ok(())
+}
+
+/// `ail gc` — delete objects unreachable from branch tips.
+fn cmd_gc(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError> {
+    let StoreHandle::File { ail_dir, .. } = store else {
+        return Err(CliError::Domain(
+            "gc requires an initialized file store".to_string(),
+        ));
+    };
+    let report = gc(ail_dir)?;
+    let human_msg = format!(
+        "objects before: {}\nobjects after: {}\nbytes freed: {}",
+        report.objects_before, report.objects_after, report.bytes_freed
+    );
+    print_response(
+        mode,
+        &human_msg,
+        json!({
+            "objects_before": report.objects_before,
+            "objects_after": report.objects_after,
+            "bytes_freed": report.bytes_freed,
         }),
     );
     Ok(())
@@ -2546,6 +2623,7 @@ mod tests {
             Some("record storage-backed compile flow"),
             None,
             false,
+            None,
             &store,
         )
         .await;
@@ -2771,7 +2849,9 @@ mod tests {
     // Scenario: cmd_doctor returns all seven checks with status.
     #[test]
     fn cmd_doctor_returns_all_checks() {
-        let result = cmd_doctor(OutputMode::Human);
+        use crate::store::memory_store;
+        let store = memory_store();
+        let result = cmd_doctor(OutputMode::Human, &store);
         assert!(result.is_ok(), "cmd_doctor must succeed; got: {result:?}");
     }
 

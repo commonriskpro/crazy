@@ -27,6 +27,7 @@ use ail_storage::{
     graph::ChangeSetLogEntry,
     object::{ObjectId, ObjectStore, RawObject},
 };
+use serde::{Deserialize, Serialize};
 
 use crate::error::CliError;
 
@@ -59,11 +60,30 @@ impl StoreHandle {
             StoreHandle::Memory { graph, .. } => graph.save_snapshot(env).await,
             StoreHandle::File { graph, ail_dir, .. } => {
                 let id = graph.save_snapshot(env).await?;
-                write_ref(&ail_dir.join("HEAD"), &id)?;
-                write_ref(&ail_dir.join("refs").join("branches").join("main"), &id)?;
+                let branch = current_branch(ail_dir)?;
+                write_object_ref(&branch_ref_path(ail_dir, &branch)?, &id)?;
+                update_snapshot_index(ail_dir, env)?;
                 Ok(id)
             }
             StoreHandle::Postgres(s) => s.save_snapshot(env).await,
+        }
+    }
+
+    /// Save a snapshot to a specific branch when supported by the backend.
+    pub async fn save_snapshot_on_branch(
+        &self,
+        env: &SnapshotEnvelope,
+        branch: Option<&str>,
+    ) -> StorageResult<ObjectId> {
+        match (self, branch) {
+            (StoreHandle::File { graph, ail_dir, .. }, Some(branch)) => {
+                validate_branch_name(branch)?;
+                let id = graph.save_snapshot(env).await?;
+                write_object_ref(&branch_ref_path(ail_dir, branch)?, &id)?;
+                update_snapshot_index(ail_dir, env)?;
+                Ok(id)
+            }
+            _ => self.save_snapshot(env).await,
         }
     }
 
@@ -94,8 +114,16 @@ impl StoreHandle {
             StoreHandle::Memory { graph, .. } => graph.list_snapshots().await,
             StoreHandle::File {
                 objects, ail_dir, ..
-            } => objects.list_snapshots_from_head(ail_dir),
+            } => objects.list_snapshots_from_index(ail_dir),
             StoreHandle::Postgres(s) => s.list_snapshots().await,
+        }
+    }
+
+    /// Return the selected branch for file-backed stores.
+    pub fn current_branch(&self) -> StorageResult<Option<String>> {
+        match self {
+            StoreHandle::File { ail_dir, .. } => Ok(Some(current_branch(ail_dir)?)),
+            _ => Ok(None),
         }
     }
 
@@ -136,6 +164,27 @@ impl StoreHandle {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StoreDoctorReport {
+    pub total_objects: usize,
+    pub valid_objects: usize,
+    pub corrupted_objects: usize,
+    pub unreachable_objects: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StoreGcReport {
+    pub objects_before: usize,
+    pub objects_after: usize,
+    pub bytes_freed: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SnapshotIndexEntry {
+    id: ObjectId,
+    created_at: u64,
+}
+
 // ── FileObjectStore ───────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -164,7 +213,14 @@ impl FileObjectStore {
             if !path.is_file() {
                 continue;
             }
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !is_object_file_name(file_name) {
+                continue;
+            }
             let bytes = std::fs::read(&path)?;
+            verify_object_bytes(file_name, &bytes)?;
             let Ok(snapshot) = CborCodec.decode::<SnapshotEnvelope>(&bytes) else {
                 continue;
             };
@@ -175,22 +231,19 @@ impl FileObjectStore {
         Ok(None)
     }
 
-    fn list_snapshots_from_head(&self, ail_dir: &Path) -> StorageResult<Vec<SnapshotEnvelope>> {
-        let head_path = ail_dir.join("HEAD");
-        if !head_path.exists() {
+    fn list_snapshots_from_index(&self, ail_dir: &Path) -> StorageResult<Vec<SnapshotEnvelope>> {
+        let entries = read_snapshot_index(ail_dir)?;
+        if entries.is_empty() {
             return Ok(vec![]);
         }
 
         let mut snapshots = Vec::new();
-        let mut next = Some(read_ref(&head_path)?);
-        while let Some(id) = next {
-            let Some(snapshot) = self.find_snapshot(&id)? else {
+        for entry in entries {
+            let Some(snapshot) = self.find_snapshot(&entry.id)? else {
                 return Err(StorageError::NotFound);
             };
-            next = snapshot.parent_id;
             snapshots.push(snapshot);
         }
-        snapshots.reverse();
         Ok(snapshots)
     }
 }
@@ -201,7 +254,7 @@ impl ObjectStore for FileObjectStore {
         let id = ObjectId::from_bytes(&object.0);
         let path = self.object_path(&id);
         if !path.exists() {
-            std::fs::write(&path, &object.0)?;
+            atomic_write(&path, &object.0)?;
         }
         Ok(id)
     }
@@ -209,7 +262,14 @@ impl ObjectStore for FileObjectStore {
     async fn get(&self, id: &ObjectId) -> StorageResult<Option<RawObject>> {
         let path = self.object_path(id);
         if path.exists() {
-            Ok(Some(RawObject(std::fs::read(path)?)))
+            let bytes = std::fs::read(path)?;
+            if ObjectId::from_bytes(&bytes) != *id {
+                return Err(StorageError::Codec(format!(
+                    "object hash mismatch: expected {}",
+                    id.to_hex()
+                )));
+            }
+            Ok(Some(RawObject(bytes)))
         } else {
             Ok(None)
         }
@@ -279,9 +339,98 @@ pub fn file_store(ail_dir: PathBuf) -> StoreHandle {
 }
 
 pub fn init_file_layout(ail_dir: &Path) -> Result<(), CliError> {
+    init_file_layout_with_branch(ail_dir, "main")
+}
+
+pub fn init_file_layout_with_branch(ail_dir: &Path, branch: &str) -> Result<(), CliError> {
+    validate_branch_name(branch).map_err(CliError::Storage)?;
     std::fs::create_dir_all(ail_dir.join("refs").join("branches"))?;
     std::fs::create_dir_all(ail_dir.join("store").join("objects"))?;
+    std::fs::create_dir_all(ail_dir.join("index"))?;
+    write_head(ail_dir, branch).map_err(CliError::Storage)?;
+    let branch_ref = branch_ref_path(ail_dir, branch).map_err(CliError::Storage)?;
+    if !branch_ref.exists() {
+        atomic_write_text(&branch_ref, "").map_err(CliError::Storage)?;
+    }
     Ok(())
+}
+
+pub fn doctor(ail_dir: &Path) -> StorageResult<StoreDoctorReport> {
+    let objects_dir = ail_dir.join("store").join("objects");
+    let mut object_ids = Vec::new();
+    let mut corrupted_objects = 0usize;
+
+    if objects_dir.exists() {
+        for entry in std::fs::read_dir(&objects_dir)? {
+            let path = entry?.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !is_object_file_name(file_name) {
+                continue;
+            }
+            let bytes = std::fs::read(&path)?;
+            if verify_object_bytes(file_name, &bytes).is_ok() {
+                object_ids.push(hex_to_object_id(file_name)?);
+            } else {
+                corrupted_objects += 1;
+            }
+        }
+    }
+
+    let total_objects = object_ids.len() + corrupted_objects;
+    let reachable = reachable_objects(ail_dir)?;
+    let unreachable_objects = object_ids
+        .iter()
+        .filter(|id| !reachable.contains(id))
+        .count();
+
+    Ok(StoreDoctorReport {
+        total_objects,
+        valid_objects: object_ids.len(),
+        corrupted_objects,
+        unreachable_objects,
+    })
+}
+
+pub fn gc(ail_dir: &Path) -> StorageResult<StoreGcReport> {
+    let objects_dir = ail_dir.join("store").join("objects");
+    let reachable = reachable_objects(ail_dir)?;
+    let mut objects_before = 0usize;
+    let mut objects_after = 0usize;
+    let mut bytes_freed = 0u64;
+
+    if objects_dir.exists() {
+        for entry in std::fs::read_dir(&objects_dir)? {
+            let path = entry?.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !is_object_file_name(file_name) {
+                continue;
+            }
+            objects_before += 1;
+            let id = hex_to_object_id(file_name)?;
+            if reachable.contains(&id) {
+                objects_after += 1;
+            } else {
+                bytes_freed += std::fs::metadata(&path)?.len();
+                std::fs::remove_file(&path)?;
+            }
+        }
+    }
+
+    Ok(StoreGcReport {
+        objects_before,
+        objects_after,
+        bytes_freed,
+    })
 }
 
 fn file_handle(ail_dir: PathBuf) -> StoreHandle {
@@ -293,16 +442,151 @@ fn file_handle(ail_dir: PathBuf) -> StoreHandle {
     }
 }
 
-fn write_ref(path: &Path, id: &ObjectId) -> StorageResult<()> {
+fn write_object_ref(path: &Path, id: &ObjectId) -> StorageResult<()> {
+    atomic_write_text(path, &format!("{}\n", id.to_hex()))
+}
+
+fn write_head(ail_dir: &Path, branch: &str) -> StorageResult<()> {
+    atomic_write_text(
+        &ail_dir.join("HEAD"),
+        &format!("ref: refs/branches/{branch}\n"),
+    )
+}
+
+fn atomic_write_text(path: &Path, content: &str) -> StorageResult<()> {
+    atomic_write(path, content.as_bytes())
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> StorageResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, format!("{}\n", id.to_hex()))?;
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, bytes)?;
+    std::fs::rename(tmp_path, path)?;
     Ok(())
 }
 
-fn read_ref(path: &Path) -> StorageResult<ObjectId> {
-    hex_to_object_id(std::fs::read_to_string(path)?.trim())
+fn current_branch(ail_dir: &Path) -> StorageResult<String> {
+    let head_path = ail_dir.join("HEAD");
+    if !head_path.exists() {
+        return Ok("main".to_string());
+    }
+    let head = std::fs::read_to_string(head_path)?;
+    let head = head.trim();
+    let Some(branch) = head.strip_prefix("ref: refs/branches/") else {
+        return Ok("main".to_string());
+    };
+    validate_branch_name(branch)?;
+    Ok(branch.to_string())
+}
+
+fn branch_ref_path(ail_dir: &Path, branch: &str) -> StorageResult<PathBuf> {
+    validate_branch_name(branch)?;
+    Ok(ail_dir.join("refs").join("branches").join(branch))
+}
+
+fn read_branch_ref(path: &Path) -> StorageResult<Option<ObjectId>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(path)?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(hex_to_object_id(trimmed)?))
+}
+
+fn read_snapshot_index(ail_dir: &Path) -> StorageResult<Vec<SnapshotIndexEntry>> {
+    let path = ail_dir.join("index").join("snapshots.cbor");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let bytes = std::fs::read(path)?;
+    CborCodec.decode::<Vec<SnapshotIndexEntry>>(&bytes)
+}
+
+fn update_snapshot_index(ail_dir: &Path, snapshot: &SnapshotEnvelope) -> StorageResult<()> {
+    let mut entries = read_snapshot_index(ail_dir)?;
+    if let Some(existing) = entries.iter_mut().find(|entry| entry.id == snapshot.id) {
+        existing.created_at = snapshot.created_at;
+    } else {
+        entries.push(SnapshotIndexEntry {
+            id: snapshot.id,
+            created_at: snapshot.created_at,
+        });
+    }
+    entries.sort_by_key(|entry| entry.created_at);
+
+    let bytes = CborCodec.encode(&entries)?;
+    atomic_write(&ail_dir.join("index").join("snapshots.cbor"), &bytes)
+}
+
+fn reachable_objects(ail_dir: &Path) -> StorageResult<std::collections::BTreeSet<ObjectId>> {
+    let objects = FileObjectStore::new(ail_dir);
+    let mut reachable = std::collections::BTreeSet::new();
+    let branches_dir = ail_dir.join("refs").join("branches");
+
+    if branches_dir.exists() {
+        for entry in std::fs::read_dir(branches_dir)? {
+            let path = entry?.path();
+            if !path.is_file() {
+                continue;
+            }
+            let mut next = read_branch_ref(&path)?;
+            while let Some(snapshot_id) = next {
+                let Some(snapshot) = objects.find_snapshot(&snapshot_id)? else {
+                    break;
+                };
+                let snapshot_cas = ObjectId::from_bytes(&CborCodec.encode(&snapshot)?);
+                if !reachable.insert(snapshot_cas) {
+                    break;
+                }
+                reachable.insert(snapshot.graph_root_hash);
+                if let Some(change_id) = snapshot.applied_change_id {
+                    reachable.insert(change_id);
+                }
+                if let Some(report_hash) = snapshot.verification_report_hash {
+                    reachable.insert(ObjectId::from(report_hash));
+                }
+                next = snapshot.parent_id;
+            }
+        }
+    }
+
+    Ok(reachable)
+}
+
+fn verify_object_bytes(file_name: &str, bytes: &[u8]) -> StorageResult<()> {
+    let expected = hex_to_object_id(file_name)?;
+    let actual = ObjectId::from_bytes(bytes);
+    if expected != actual {
+        return Err(StorageError::Codec(format!(
+            "object hash mismatch: expected {file_name}, actual {}",
+            actual.to_hex()
+        )));
+    }
+    Ok(())
+}
+
+fn is_object_file_name(name: &str) -> bool {
+    name.len() == 64 && name.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn validate_branch_name(branch: &str) -> StorageResult<()> {
+    if branch.is_empty()
+        || branch.starts_with('/')
+        || branch.contains('/')
+        || branch.contains("..")
+        || branch.contains('\\')
+        || branch.chars().any(char::is_whitespace)
+    {
+        return Err(StorageError::Codec(format!(
+            "invalid branch name: {branch}"
+        )));
+    }
+    Ok(())
 }
 
 fn hex_to_object_id(hex: &str) -> StorageResult<ObjectId> {
@@ -397,5 +681,178 @@ mod tests {
             .expect("graph object must exist");
 
         assert_eq!(loaded, graph, "loaded graph must match saved graph");
+    }
+
+    fn test_snapshot(
+        id_seed: &[u8],
+        root: ObjectId,
+        parent_id: Option<ObjectId>,
+    ) -> SnapshotEnvelope {
+        SnapshotEnvelope {
+            id: ObjectId::from_bytes(id_seed),
+            graph_root_hash: root,
+            parent_id,
+            applied_change_id: None,
+            created_at: id_seed.len() as u64,
+            verification_report_hash: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn file_store_writes_objects_atomically_and_verifies_hash_on_load() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        init_file_layout(&ail_dir).expect("init layout");
+        let store = FileObjectStore::new(&ail_dir);
+
+        let id = store
+            .put(RawObject(b"atomic-object".to_vec()))
+            .await
+            .expect("put object");
+        let path = store.object_path(&id);
+
+        assert!(path.exists(), "final object file must exist");
+        assert!(
+            !path.with_extension("tmp").exists(),
+            "temporary object file must not remain after rename"
+        );
+        assert!(
+            store.get(&id).await.expect("get object").is_some(),
+            "valid object must load"
+        );
+
+        std::fs::write(&path, b"corrupted").expect("corrupt object");
+        assert!(
+            store.get(&id).await.is_err(),
+            "hash mismatch must fail on load"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_store_uses_indirect_head_and_named_branch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        init_file_layout_with_branch(&ail_dir, "feature").expect("init layout");
+        let store = file_store(ail_dir.clone());
+        let root = store
+            .save_graph(&SemanticGraph {
+                nodes: vec![],
+                edges: vec![],
+            })
+            .await
+            .expect("save graph");
+        let snapshot = test_snapshot(b"feature-snapshot", root, None);
+
+        store.save_snapshot(&snapshot).await.expect("save snapshot");
+
+        assert_eq!(
+            std::fs::read_to_string(ail_dir.join("HEAD")).expect("read HEAD"),
+            "ref: refs/branches/feature\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ail_dir.join("refs").join("branches").join("feature"))
+                .expect("read branch ref"),
+            format!("{}\n", snapshot.id.to_hex())
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_index_is_updated_and_used_for_listing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        init_file_layout(&ail_dir).expect("init layout");
+        let store = file_store(ail_dir.clone());
+        let root = store
+            .save_graph(&SemanticGraph {
+                nodes: vec![],
+                edges: vec![],
+            })
+            .await
+            .expect("save graph");
+        let first = test_snapshot(b"first", root, None);
+        let second = test_snapshot(b"second-snapshot", root, Some(first.id));
+
+        store.save_snapshot(&second).await.expect("save second");
+        store.save_snapshot(&first).await.expect("save first");
+
+        assert!(
+            ail_dir.join("index").join("snapshots.cbor").exists(),
+            "snapshot index must be written"
+        );
+        let listed = store.list_snapshots().await.expect("list snapshots");
+        assert_eq!(
+            listed,
+            vec![first, second],
+            "index order must be by timestamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_corrupted_and_unreachable_objects() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        init_file_layout(&ail_dir).expect("init layout");
+        let store = file_store(ail_dir.clone());
+        let root = store
+            .save_graph(&SemanticGraph {
+                nodes: vec![],
+                edges: vec![],
+            })
+            .await
+            .expect("save graph");
+        let snapshot = test_snapshot(b"reachable", root, None);
+        store.save_snapshot(&snapshot).await.expect("save snapshot");
+        let orphan = FileObjectStore::new(&ail_dir)
+            .put(RawObject(b"orphan".to_vec()))
+            .await
+            .expect("put orphan");
+        std::fs::write(
+            ail_dir.join("store").join("objects").join("0".repeat(64)),
+            b"bad",
+        )
+        .expect("write corrupt object");
+
+        let report = doctor(&ail_dir).expect("doctor");
+
+        assert_eq!(report.corrupted_objects, 1);
+        assert!(
+            report.unreachable_objects >= 1,
+            "orphan object {} must be unreachable",
+            orphan
+        );
+    }
+
+    #[tokio::test]
+    async fn gc_deletes_unreachable_objects_and_keeps_branch_tip_history() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        init_file_layout(&ail_dir).expect("init layout");
+        let store = file_store(ail_dir.clone());
+        let root = store
+            .save_graph(&SemanticGraph {
+                nodes: vec![],
+                edges: vec![],
+            })
+            .await
+            .expect("save graph");
+        let snapshot = test_snapshot(b"reachable", root, None);
+        store.save_snapshot(&snapshot).await.expect("save snapshot");
+        let object_store = FileObjectStore::new(&ail_dir);
+        let orphan = object_store
+            .put(RawObject(b"delete-me".to_vec()))
+            .await
+            .expect("put orphan");
+
+        let report = gc(&ail_dir).expect("gc");
+
+        assert!(report.bytes_freed > 0, "gc must free orphan bytes");
+        assert!(
+            !object_store.object_path(&orphan).exists(),
+            "orphan must be deleted"
+        );
+        assert!(
+            object_store.object_path(&root).exists(),
+            "reachable graph root must be kept"
+        );
     }
 }
