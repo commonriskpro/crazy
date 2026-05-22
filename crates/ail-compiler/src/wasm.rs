@@ -369,7 +369,7 @@ fn emit_anf_expr<'a>(
         | AnfExpr::TaskGroup { .. }
         | AnfExpr::ChannelNew { .. }
         | AnfExpr::ChannelSend { .. }
-        | AnfExpr::ChannelRecv { .. }
+        | AnfExpr::ChannelReceive { .. }
         | AnfExpr::Select { .. }
         | AnfExpr::Timeout { .. }
         | AnfExpr::CellNew { .. }

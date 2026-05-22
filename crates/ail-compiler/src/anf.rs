@@ -226,7 +226,7 @@ pub enum AnfExpr {
     /// Receive a value from a channel (explicit ordering in ANF).
     ///
     /// `channel` is an atomic variable name.
-    ChannelRecv { channel: String },
+    ChannelReceive { channel: String },
 
     /// Runtime assertion — contract/boundary check preserved through lowering.
     ///

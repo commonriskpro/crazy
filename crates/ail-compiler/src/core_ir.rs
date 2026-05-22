@@ -225,7 +225,7 @@ pub enum CoreExpr {
     /// Receive a value from a channel.
     ///
     /// `channel` is the channel variable name (must be atomic).
-    ChannelRecv { channel: Box<CoreExpr> },
+    ChannelReceive { channel: Box<CoreExpr> },
 
     /// Insert a runtime check (assertion) before continuing.
     ///

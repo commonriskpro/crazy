@@ -322,10 +322,10 @@ pub fn lower_core_expr_to_anf(
             }
         }
 
-        // ChannelRecv: channel must be atomic.
-        CoreExpr::ChannelRecv { channel } => {
+        // ChannelReceive: channel must be atomic.
+        CoreExpr::ChannelReceive { channel } => {
             let channel_name = atomize(channel, fresh, source_ref, out);
-            AnfExpr::ChannelRecv { channel: channel_name }
+            AnfExpr::ChannelReceive { channel: channel_name }
         }
 
         // RuntimeCheck: condition must be atomic; check_ref and msg are preserved.

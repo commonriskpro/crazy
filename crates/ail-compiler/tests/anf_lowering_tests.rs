@@ -824,7 +824,7 @@ fn task_spawn_lowers_correctly() {
     }
 }
 
-// ── G20 R2: ChannelSend / ChannelRecv lowering ────────────────────────────
+// ── G20 R2: ChannelSend / ChannelReceive lowering ─────────────────────────
 
 // R2-S12: CoreExpr::ChannelSend lowers to AnfExpr::ChannelSend (both atomic).
 #[test]
@@ -846,10 +846,10 @@ fn channel_send_lowers_correctly() {
     }
 }
 
-// R2-S13: CoreExpr::ChannelRecv lowers to AnfExpr::ChannelRecv.
+// R2-S13: CoreExpr::ChannelReceive lowers to AnfExpr::ChannelReceive.
 #[test]
 fn channel_recv_lowers_correctly() {
-    let expr = CoreExpr::ChannelRecv {
+    let expr = CoreExpr::ChannelReceive {
         channel: Box::new(CoreExpr::Var("ch".to_string())),
     };
     let mut fresh = 0u32;
@@ -857,10 +857,10 @@ fn channel_recv_lowers_correctly() {
     let result = lower_core_expr_to_anf(&expr, &mut fresh, NodeRef(0), &mut out);
     assert!(out.is_empty());
     match result {
-        AnfExpr::ChannelRecv { channel } => {
+        AnfExpr::ChannelReceive { channel } => {
             assert_eq!(channel, "ch");
         }
-        other => panic!("expected ChannelRecv, got {other:?}"),
+        other => panic!("expected ChannelReceive, got {other:?}"),
     }
 }
 
