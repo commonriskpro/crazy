@@ -47,10 +47,10 @@ use std::collections::BTreeMap;
 use ail_core::semantic_graph::NodeRef;
 use wasm_encoder::{CodeSection, Function, FunctionSection, Instruction, Module, TypeSection, ValType};
 
-use crate::anf::{AnfExpr, AnfIr};
+use crate::anf::{AnfExpr, AnfIr, SourceMap, SourceMapEntry};
 use crate::core_ir::{LiteralValue, StageHashes};
 use crate::error::CompileError;
-use crate::hash::hash_with_parent;
+use crate::hash::{hash_with_parent, stable_cbor_bytes};
 
 // ── WasmArtifact ─────────────────────────────────────────────────────────
 
@@ -63,13 +63,20 @@ use crate::hash::hash_with_parent;
 pub struct WasmArtifact {
     /// Encoded WASM binary; passes `wasmparser::validate` structural checks.
     pub wasm: Vec<u8>,
+    /// Semantic source map with `wasm_offset` populated for every binding.
+    ///
+    /// One entry per `AnfBinding` in binding order.  `native_offset` is always
+    /// `None` in WASM artifacts (populated only by `emit_native`).
+    pub source_map: SourceMap,
     /// Maps each `NodeRef` from the source graph to its byte offset in the
     /// WASM code section (i.e., the position of the body-size LEB128 byte
     /// for that function's entry in the encoded binary).
+    /// Kept as a derived compatibility index; prefer `source_map` for new code.
     /// Empty when the input `AnfIr` has no bindings.
     pub provenance: BTreeMap<NodeRef, u32>,
     /// Hash chain extended through the WASM stage.
     /// `hash_chain.wasm_hash` is `Some(...)` after `emit_wasm` completes.
+    /// `hash_chain.source_map_hash` is `Some(...)` after `emit_wasm` completes.
     pub hash_chain: StageHashes,
 }
 
@@ -530,15 +537,41 @@ pub fn emit_wasm(anf: &AnfIr) -> Result<WasmArtifact, CompileError> {
         .map(|(b, &offset)| (b.source_ref, offset))
         .collect();
 
+    // Build semantic source map — clone ANF source map and populate wasm_offset.
+    // Each binding entry gets wasm_offset = the byte offset from code_entry_offsets.
+    let source_map_entries: Vec<SourceMapEntry> = anf
+        .source_map
+        .entries
+        .iter()
+        .zip(
+            // Zip with entry_offsets; pad with None if offsets are shorter.
+            entry_offsets
+                .iter()
+                .map(|&o| Some(o))
+                .chain(std::iter::repeat(None)),
+        )
+        .map(|(entry, wasm_offset)| SourceMapEntry {
+            wasm_offset,
+            ..entry.clone()
+        })
+        .collect();
+    let source_map = SourceMap { entries: source_map_entries };
+
+    // Seal: source_map_hash = blake3(source_map_cbor_bytes).
+    let source_map_bytes = stable_cbor_bytes(&source_map)?;
+    let source_map_hash = hash_with_parent(&[], &source_map_bytes);
+
     // Seal: wasm_hash = blake3(anf_ir_hash || wasm_binary).
     let wasm_hash = hash_with_parent(&anf_ir_hash, &wasm);
 
     // Extend the stage hashes from ANF.
     let mut hash_chain = anf.stage_hashes.clone();
     hash_chain.wasm_hash = Some(wasm_hash);
+    hash_chain.source_map_hash = Some(source_map_hash);
 
     Ok(WasmArtifact {
         wasm,
+        source_map,
         provenance,
         hash_chain,
     })
@@ -589,6 +622,8 @@ mod tests {
                 anf_ir_hash: None, // unsealed
                 wasm_hash: None,
                 native_hash: None,
+                source_map_hash: None,
+                artifact_manifest_hash: None,
             },
         };
         let result = emit_wasm(&anf);

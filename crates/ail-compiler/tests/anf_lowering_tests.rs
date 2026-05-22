@@ -61,6 +61,8 @@ fn core_ir_with_expr(source_ref: NodeRef, name: &str, expr: CoreExpr) -> CoreIr 
             anf_ir_hash: None,
             wasm_hash: None,
             native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
         },
     }
 }
@@ -413,6 +415,8 @@ fn core_node_without_expr_produces_literal_unit() {
             anf_ir_hash: None,
             wasm_hash: None,
             native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
         },
     };
     let anf = lower_to_anf(&core).expect("lower_to_anf must succeed");
