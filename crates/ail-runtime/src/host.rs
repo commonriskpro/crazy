@@ -1076,24 +1076,67 @@ fn read_memory(
 ///
 /// Reads cap/op/args from WASM memory, dispatches to the matching handler,
 /// and writes the handler's response bytes into WASM memory at `out_ptr`
-/// (up to `out_max` bytes).  Returns the number of bytes written on success,
-/// or `None` (→ -1 at the call site) on denial, missing handler, or overflow.
-///
-/// TASK-F4 will provide the full implementation; this stub always returns -1.
+/// (up to `out_max` bytes).  Returns the number of bytes written as `Some(n)`
+/// on success, or `None` (→ -1 at the call site) on denial, missing handler,
+/// overflow, or any other error.
 #[allow(clippy::too_many_arguments)]
 fn dispatch_host_call_write(
-    _caller: &mut wasmtime::Caller<'_, HostState>,
-    _cap_ptr: i32,
-    _cap_len: i32,
-    _op_ptr: i32,
-    _op_len: i32,
-    _args_ptr: i32,
-    _args_len: i32,
-    _out_ptr: i32,
-    _out_max: i32,
+    caller: &mut wasmtime::Caller<'_, HostState>,
+    cap_ptr: i32,
+    cap_len: i32,
+    op_ptr: i32,
+    op_len: i32,
+    args_ptr: i32,
+    args_len: i32,
+    out_ptr: i32,
+    out_max: i32,
 ) -> Option<i32> {
-    // Stub: full dispatch implemented in TASK-F4.
-    None
+    // Validate output buffer params.
+    if out_ptr < 0 || out_max < 0 {
+        return None;
+    }
+
+    // Read capability name, operation name, and args bytes from WASM memory.
+    let capability = String::from_utf8(read_memory(caller, cap_ptr, cap_len)?).ok()?;
+    let operation = String::from_utf8(read_memory(caller, op_ptr, op_len)?).ok()?;
+    let args_bytes = read_memory(caller, args_ptr, args_len.checked_mul(8)?)?;
+    let cap = CapabilityId::new(capability);
+
+    // Grant check.
+    {
+        let state = caller.data();
+        if !state.profile.grants_capability(&cap) {
+            return None;
+        }
+    }
+
+    // Find the matching handler.
+    let handler = {
+        let state = caller.data();
+        state
+            .handlers
+            .iter()
+            .find(|h| h.capabilities().contains(&cap))
+            .cloned()
+    };
+    let handler = handler?;
+
+    // Dispatch.
+    let result = handler.handle(&cap, &operation, &args_bytes);
+    let response = result.ok()?;
+
+    // Bounds-check: response must fit in the out buffer.
+    if response.len() > out_max as usize {
+        return None;
+    }
+
+    // Write response bytes to WASM memory at out_ptr.
+    let memory = caller.get_export("memory")?.into_memory()?;
+    memory
+        .write(caller, out_ptr as usize, &response)
+        .ok()?;
+
+    Some(response.len() as i32)
 }
 
 fn dispatch_host_call(

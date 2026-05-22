@@ -153,6 +153,13 @@ pub struct WasmArtifact {
     /// Populated by `emit_wasm` from the expression trees of exported bindings.
     /// Used by the runtime's `invoke_typed` to decode structured return values.
     pub export_types: BTreeMap<String, WasmTypeDescriptor>,
+    /// Offset in WASM linear memory where `host_call_write` writes structured
+    /// effect call results.
+    ///
+    /// `Some(offset)` when the module imports `ail/host_call_write` (i.e. at
+    /// least one exported binding uses a structured EffectCall).
+    /// `None` for modules that do not use `host_call_write`.
+    pub result_buffer_offset: Option<i32>,
 }
 
 // ── build_type_section ────────────────────────────────────────────────────
@@ -1767,6 +1774,12 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         }
     }
 
+    let result_buffer_offset = if effect_data.needs_host_call_write {
+        Some(effect_data.result_buffer_offset)
+    } else {
+        None
+    };
+
     Ok(WasmArtifact {
         wasm,
         source_map,
@@ -1776,6 +1789,7 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         source_map_json,
         artifact_manifest_json,
         export_types,
+        result_buffer_offset,
     })
 }
 

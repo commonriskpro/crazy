@@ -647,10 +647,13 @@ The current runtime implementation resolves the original open questions for the 
 
 | Topic | Implementation status |
 |-------|-----------------------|
-| Host call ABI | Implemented as `ail/host_call(cap_ptr, cap_len, op_ptr, op_len, args_ptr, args_len) -> i64` with handler dispatch in `RuntimeHost`. This is not the final rich typed ABI. |
+| Host call ABI | Scalar calls: `ail/host_call(cap_ptr, cap_len, op_ptr, op_len, args_ptr, args_len) -> i64`. Structured calls: `ail/host_call_write(…, out_ptr, out_max) -> i32` writes handler response bytes to WASM linear memory and returns bytes written. Both are registered in `RuntimeHost::new` and dispatched to `Handler::handle`. |
+| Typed boundary codec | `RuntimeInstance::invoke_typed(export, args, ValueLayout)` returns a `StructuredValue` by reading WASM linear memory and decoding with `ValueDecoder`. Supports `Scalar`, `Record`, `Variant`, `List`, `Option`, `Result`, and `Handle` layouts. |
+| Memory access | `RuntimeInstance::read_wasm_memory(ptr, len)` and `write_wasm_memory(ptr, bytes)` provide direct access to WASM linear memory for structured result decoding. |
+| Handler structured dispatch | `Handler::handle_structured` default method encodes `StructuredValue` args as LE i64 bytes, dispatches to `handle`, and decodes the response as `StructuredValue::Scalar`. |
 | WASI exposure | Hidden behind the host runtime. The workspace owns direct `wasmtime` usage in `ail-runtime`; programs interact through host calls and exported functions. |
 | Handler execution | In-process Rust `Handler` trait implementations. Verified-module handlers remain future work. |
 | Tracing | OpenTelemetry dependencies exist; runtime audit/reporting is implemented. Full distributed tracing across capability calls remains future hardening. |
 | Sync/async calls | Current host capability calls are synchronous from the Rust API perspective. Async-native capability typing remains part of the full design, not this milestone. |
 
-Code references: `crates/ail-runtime/src/host.rs`, `crates/ail-runtime/src/handler.rs`, `crates/ail-runtime/src/schema.rs`, `crates/ail-runtime/tests/effect_runtime_tests.rs`.
+Code references: `crates/ail-runtime/src/host.rs`, `crates/ail-runtime/src/handler.rs`, `crates/ail-runtime/src/codec.rs`, `crates/ail-runtime/src/schema.rs`, `crates/ail-runtime/tests/effect_runtime_tests.rs`, `crates/ail-runtime/tests/typed_abi_tests.rs`.
