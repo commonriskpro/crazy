@@ -145,6 +145,16 @@ pub const E_PARTIAL_ORD_REQUIRED: &str = "E_PARTIAL_ORD_REQUIRED";
 /// Associated type reference in a callee return type could not be resolved
 /// to a concrete type via any impl binding in the call context.
 pub const E_ASSOC_TYPE_NOT_RESOLVED: &str = "E_ASSOC_TYPE_NOT_RESOLVED";
+/// Function node has a ForeignType return type but no `boundary-schema` inferred
+/// fact — the foreign value has no declared serialization schema.
+pub const E_FOREIGN_TYPE_NO_SCHEMA: &str = "E_FOREIGN_TYPE_NO_SCHEMA";
+/// Two non-adapter Type nodes both implement the same interface with overlapping
+/// type families, creating a blanket impl coherence conflict.
+pub const E_BLANKET_IMPL_OVERLAP: &str = "E_BLANKET_IMPL_OVERLAP";
+/// A non-adapter implementation declares a foreign interface but neither the
+/// interface name nor the implementing type name appears in the graph as an
+/// owned node — orphan rule violation.
+pub const E_ORPHAN_RULE_VIOLATION: &str = "E_ORPHAN_RULE_VIOLATION";
 /// ConstParam instantiation value is not a decidable literal (not a simple
 /// numeric string or simple identifier).
 pub const E_CONST_PARAM_VALUE_INVALID: &str = "E_CONST_PARAM_VALUE_INVALID";
@@ -265,6 +275,12 @@ impl TypeChecker {
 
         // Subpass 15 — ConstParam value validation at call sites (extends Subpass 3b).
         Self::check_const_param_call_bindings(graph, &ctx, &mut entries);
+
+        // Subpass 16 — ForeignType boundary schema enforcement.
+        Self::check_boundary_schema(graph, &mut entries);
+
+        // Subpass 17 — Blanket impl coherence and orphan rule.
+        Self::check_blanket_impl_coherence(graph, &ctx, &mut entries);
 
         let summary_counts = build_summary_counts(&entries);
         VerificationReport {
@@ -1447,6 +1463,141 @@ impl TypeChecker {
         }
     }
 
+    // ── Subpass 16: ForeignType boundary schema enforcement ───────────────
+
+    /// For each `Function` node whose `return_type` starts with `"ForeignType"`:
+    /// - If the node has an `inferred` fact with `kind == "boundary-schema"` → Proven
+    /// - Otherwise → Failed (E_FOREIGN_TYPE_NO_SCHEMA)
+    fn check_boundary_schema(graph: &SemanticGraph, entries: &mut Vec<VerificationEntry>) {
+        for node in &graph.nodes {
+            if node.kind != NodeKind::Function {
+                continue;
+            }
+            let Some(return_type) = &node.return_type else {
+                continue;
+            };
+            if !return_type.starts_with("ForeignType") {
+                continue;
+            }
+
+            let has_schema = node
+                .inferred
+                .iter()
+                .any(|fact| fact.kind == "boundary-schema");
+
+            let scope = node.name.clone();
+            if has_schema {
+                entries.push(VerificationEntry {
+                    claim: "boundary-schema".into(),
+                    state: VerificationState::Proven,
+                    scope,
+                    evidence: None,
+                    blocking: false,
+                });
+            } else {
+                entries.push(VerificationEntry {
+                    claim: "boundary-schema".into(),
+                    state: VerificationState::Failed,
+                    scope,
+                    evidence: Some(format!(
+                        "{E_FOREIGN_TYPE_NO_SCHEMA}: function '{}' returns a ForeignType \
+                         ('{}') but has no 'boundary-schema' inferred fact; \
+                         foreign values crossing boundaries must declare a serialization schema",
+                        node.name, return_type
+                    )),
+                    blocking: true,
+                });
+            }
+        }
+    }
+
+    // ── Subpass 17: Blanket impl coherence and orphan rule ────────────────
+
+    /// Check two coherence invariants across all Type nodes in the graph:
+    ///
+    /// 1. **Blanket impl overlap**: if two distinct non-adapter Type nodes both
+    ///    declare `interface_impls` with the same interface name, that is an
+    ///    overlap → Failed (E_BLANKET_IMPL_OVERLAP).
+    ///
+    /// 2. **Orphan rule**: a non-adapter impl's interface must be "owned" by the
+    ///    graph — either an `Interface` node with that name or a `Type` node with
+    ///    that name must exist.  If neither is present → Failed (E_ORPHAN_RULE_VIOLATION).
+    fn check_blanket_impl_coherence(
+        graph: &SemanticGraph,
+        ctx: &TypeContext<'_>,
+        entries: &mut Vec<VerificationEntry>,
+    ) {
+        // Pass 1 — collect all (interface_name, type_node_name) pairs for
+        // non-adapter impls.  Use a BTreeMap<interface, Vec<node_name>> to
+        // detect duplicates deterministically.
+        let mut impl_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+        for node in &graph.nodes {
+            let Some(impls) = &node.interface_impls else {
+                continue;
+            };
+            for impl_meta in impls {
+                if impl_meta.is_adapter {
+                    continue; // adapter exception
+                }
+                impl_map
+                    .entry(impl_meta.interface.clone())
+                    .or_default()
+                    .push(node.name.clone());
+            }
+        }
+
+        // Emit overlap entries.
+        for (interface, node_names) in &impl_map {
+            if node_names.len() > 1 {
+                entries.push(VerificationEntry {
+                    claim: "blanket-impl-coherence".into(),
+                    state: VerificationState::Failed,
+                    scope: node_names.join(","),
+                    evidence: Some(format!(
+                        "{E_BLANKET_IMPL_OVERLAP}: interface '{}' has overlapping \
+                         non-adapter impls on nodes {:?}; \
+                         blanket impl coherence violation",
+                        interface, node_names
+                    )),
+                    blocking: true,
+                });
+            }
+        }
+
+        // Pass 2 — orphan rule check.
+        for node in &graph.nodes {
+            let Some(impls) = &node.interface_impls else {
+                continue;
+            };
+            for impl_meta in impls {
+                if impl_meta.is_adapter {
+                    continue; // adapter exception
+                }
+                // The interface is "owned" if there is an Interface node
+                // or a Type node with that name in the graph.
+                let interface_owned = ctx.get_by_name(&impl_meta.interface).map_or(false, |n| {
+                    matches!(n.kind, NodeKind::Interface | NodeKind::Type)
+                });
+                if !interface_owned {
+                    entries.push(VerificationEntry {
+                        claim: "orphan-rule".into(),
+                        state: VerificationState::Failed,
+                        scope: node.name.clone(),
+                        evidence: Some(format!(
+                            "{E_ORPHAN_RULE_VIOLATION}: node '{}' implements interface '{}' \
+                             (is_adapter=false) but neither an Interface nor a Type node \
+                             named '{}' exists in the graph; \
+                             orphan rule requires the interface or type to be declared locally",
+                            node.name, impl_meta.interface, impl_meta.interface
+                        )),
+                        blocking: true,
+                    });
+                }
+            }
+        }
+    }
+
     // ── Subpass 15: ConstParam value validation at call sites ─────────────
 
     /// For each `Calls` edge with `type_arg_bindings`, check bindings that
@@ -1792,6 +1943,255 @@ mod tests {
             assoc.is_empty(),
             "non-assoc return type must emit no assoc-type-resolution entries, got: {:?}",
             assoc
+        );
+    }
+
+    // ── Task F3 (RED): check_boundary_schema ─────────────────────────────
+    // Tests written BEFORE the subpass exists.
+
+    // F3-1: ForeignType return without boundary-schema fact → Failed.
+    // Spec scenario: "ForeignType without schema fails"
+    //   GIVEN Function node return_type="ForeignType(payments.external)"
+    //   AND no inferred fact of kind "boundary-schema"
+    //   THEN entry claim "boundary-schema", state Failed, evidence E_FOREIGN_TYPE_NO_SCHEMA
+    #[test]
+    fn foreign_type_without_schema_fails() {
+        let mut fn_node = make_node(0, NodeKind::Function, "fetch_payment");
+        fn_node.return_type = Some("ForeignType(payments.external)".to_string());
+        // no inferred facts
+
+        let graph = SemanticGraph {
+            nodes: vec![fn_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let schema_entries = entries_with_claim(&report.entries, "boundary-schema");
+        assert!(
+            !schema_entries.is_empty(),
+            "expected boundary-schema entry for ForeignType without schema"
+        );
+        let failed = schema_entries
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "ForeignType without boundary-schema must be Failed, got: {:?}",
+            schema_entries
+        );
+        let ev = failed.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_FOREIGN_TYPE_NO_SCHEMA),
+            "evidence must contain {E_FOREIGN_TYPE_NO_SCHEMA}, got: {ev}"
+        );
+    }
+
+    // F3-2: ForeignType return WITH boundary-schema inferred fact → Proven.
+    // Spec scenario: "ForeignType with schema passes"
+    //   GIVEN Function node return_type="ForeignType(payments.external)"
+    //   AND inferred fact { kind: "boundary-schema", value: "PaymentsJsonSchema" }
+    //   THEN entry claim "boundary-schema", state Proven
+    #[test]
+    fn foreign_type_with_schema_fact_is_proven() {
+        use ail_core::semantic_graph::InferredFact;
+
+        let mut fn_node = make_node(0, NodeKind::Function, "fetch_payment");
+        fn_node.return_type = Some("ForeignType(payments.external)".to_string());
+        fn_node.inferred = vec![InferredFact {
+            kind: "boundary-schema".to_string(),
+            value: "PaymentsJsonSchema".to_string(),
+        }];
+
+        let graph = SemanticGraph {
+            nodes: vec![fn_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let schema_entries = entries_with_claim(&report.entries, "boundary-schema");
+        let proven = schema_entries
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "ForeignType with boundary-schema fact must be Proven, got: {:?}",
+            schema_entries
+        );
+    }
+
+    // F3-3 (TRIANGULATE): Non-ForeignType return type must NOT emit boundary-schema entry.
+    #[test]
+    fn non_foreign_return_type_emits_no_boundary_schema_entry() {
+        let mut fn_node = make_node(0, NodeKind::Function, "get_count");
+        fn_node.return_type = Some("Int".to_string()); // not ForeignType
+
+        let graph = SemanticGraph {
+            nodes: vec![fn_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let schema_entries = entries_with_claim(&report.entries, "boundary-schema");
+        assert!(
+            schema_entries.is_empty(),
+            "non-ForeignType return must emit no boundary-schema entries, got: {:?}",
+            schema_entries
+        );
+    }
+
+    // ── Task D1 (RED): check_blanket_impl_coherence ───────────────────────
+    // Tests written BEFORE the subpass exists.
+
+    // D1-1: Two non-adapter Type nodes with same interface → E_BLANKET_IMPL_OVERLAP.
+    // Spec scenario: "Two conflicting blanket impls detected"
+    //   GIVEN two Type nodes both with interface_impls containing "Serializable<List<T>>" (non-adapter)
+    //   THEN entry claim "blanket-impl-coherence", state Failed, evidence E_BLANKET_IMPL_OVERLAP
+    #[test]
+    fn two_non_adapter_impls_for_same_interface_fails() {
+        let mut type_a = make_node(0, NodeKind::Type, "ConcreteListA");
+        type_a.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "Serializable<List<T>>".to_string(),
+            associated_types: vec![],
+            is_adapter: false,
+        }]);
+
+        let mut type_b = make_node(1, NodeKind::Type, "ConcreteListB");
+        type_b.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "Serializable<List<T>>".to_string(),
+            associated_types: vec![],
+            is_adapter: false,
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![type_a, type_b],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let blanket = entries_with_claim(&report.entries, "blanket-impl-coherence");
+        assert!(
+            !blanket.is_empty(),
+            "expected blanket-impl-coherence entry for overlapping impls"
+        );
+        let failed = blanket
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "overlapping non-adapter impls must fail, got: {:?}",
+            blanket
+        );
+        let ev = failed.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_BLANKET_IMPL_OVERLAP),
+            "evidence must contain {E_BLANKET_IMPL_OVERLAP}, got: {ev}"
+        );
+    }
+
+    // D1-2: Adapter impls are exempt from overlap rule.
+    // Spec scenario: "Adapter impls are exempt from overlap rule"
+    //   GIVEN two Type nodes with same interface_impls but both is_adapter=true
+    //   THEN no E_BLANKET_IMPL_OVERLAP entry emitted
+    #[test]
+    fn adapter_impls_exempt_from_blanket_impl_overlap() {
+        let mut type_a = make_node(0, NodeKind::Type, "AdapterA");
+        type_a.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "Serializable<List<T>>".to_string(),
+            associated_types: vec![],
+            is_adapter: true, // adapter exception
+        }]);
+
+        let mut type_b = make_node(1, NodeKind::Type, "AdapterB");
+        type_b.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "Serializable<List<T>>".to_string(),
+            associated_types: vec![],
+            is_adapter: true,
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![type_a, type_b],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let blanket = entries_with_claim(&report.entries, "blanket-impl-coherence");
+        let overlap = blanket
+            .iter()
+            .find(|e| e.evidence.as_deref().unwrap_or("").contains(E_BLANKET_IMPL_OVERLAP));
+        assert!(
+            overlap.is_none(),
+            "adapter impls must NOT trigger E_BLANKET_IMPL_OVERLAP, got: {:?}",
+            blanket
+        );
+    }
+
+    // D1-3: Orphan rule — Type with foreign interface impl and no Interface/Type node.
+    // Spec scenario: "Orphan impl detected"
+    //   GIVEN Type node "ExternalType" with interface_impls = [{ interface: "ForeignInterface", is_adapter: false }]
+    //   AND no Interface node for "ForeignInterface" in graph
+    //   THEN entry claim "orphan-rule", state Failed, evidence E_ORPHAN_RULE_VIOLATION
+    #[test]
+    fn orphan_impl_without_interface_node_fails() {
+        let mut type_node = make_node(0, NodeKind::Type, "ExternalType");
+        type_node.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "ForeignInterface".to_string(),
+            associated_types: vec![],
+            is_adapter: false,
+        }]);
+        // No Interface node for "ForeignInterface" in the graph
+
+        let graph = SemanticGraph {
+            nodes: vec![type_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let orphan = entries_with_claim(&report.entries, "orphan-rule");
+        assert!(
+            !orphan.is_empty(),
+            "expected orphan-rule entry for impl without Interface node"
+        );
+        let failed = orphan
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "orphan impl must be Failed, got: {:?}",
+            orphan
+        );
+        let ev = failed.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_ORPHAN_RULE_VIOLATION),
+            "evidence must contain {E_ORPHAN_RULE_VIOLATION}, got: {ev}"
+        );
+    }
+
+    // D1-4 (TRIANGULATE): Impl with Interface node present → no orphan violation.
+    #[test]
+    fn impl_with_local_interface_node_passes_orphan_rule() {
+        let iface_node = make_node(0, NodeKind::Interface, "LocalInterface");
+
+        let mut type_node = make_node(1, NodeKind::Type, "LocalType");
+        type_node.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "LocalInterface".to_string(),
+            associated_types: vec![],
+            is_adapter: false,
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![iface_node, type_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let orphan = entries_with_claim(&report.entries, "orphan-rule");
+        let violation = orphan
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
+        assert!(
+            violation.is_none(),
+            "impl with local Interface node must NOT trigger orphan-rule violation, got: {:?}",
+            orphan
         );
     }
 
