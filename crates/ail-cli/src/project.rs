@@ -1,6 +1,4 @@
 // ── ail-cli::project ──────────────────────────────────────────────────────
-// `ProjectContext` is wired into cli.rs command handlers in PR2.
-#![allow(dead_code)]
 //
 // `ProjectContext` owns project-local path resolution for the `.ail/`
 // directory layout.  All path operations are pure: no I/O is performed here

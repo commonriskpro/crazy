@@ -301,6 +301,12 @@ impl FileObjectStore {
         }
     }
 
+    /// Expose construction for test helpers (e.g. doctor unit tests).
+    #[cfg(test)]
+    pub fn new_for_test(ail_dir: &Path) -> Self {
+        Self::new(ail_dir)
+    }
+
     fn object_path(&self, id: &ObjectId) -> PathBuf {
         self.objects_dir.join(id.to_hex())
     }

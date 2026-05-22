@@ -1965,7 +1965,14 @@ async fn cmd_status(mode: OutputMode, store: &StoreHandle) -> Result<(), CliErro
     // Derived status fields.
     let stale_indexes = false;
     let runtime_profile_status = "valid";
-    let package_advisories = 0usize;
+    // Real lockfile count: number of installed packages when using a persistent store.
+    let package_advisories = if store.has_persistent_project() {
+        load_package_lockfile(store)
+            .map(|lf| lf.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
     let human_msg = format!(
         "branch: {branch}\nHEAD snapshot: {snap_hex}\ngraph nodes: {graph_nodes}\nlast change: {last_change_at}\ngraph_root: {graph_root_hex}\npending changes: {pending_changes}\nverification: {verification_state}\nstale indexes: {stale_indexes}\nruntime profile: {runtime_profile_status}\npackage advisories: {package_advisories}"
@@ -3299,6 +3306,74 @@ async fn cmd_package(
     Ok(())
 }
 
+/// Check whether the snapshot index is fresh relative to stored objects.
+///
+/// - "ok"   — no objects in store (nothing to be stale against), OR index exists and
+///            is not obviously missing after objects were written.
+/// - "warn" — at least one object exists in the store but `index/snapshots.cbor` is absent.
+///
+/// Finer mtime comparison is not performed to avoid platform portability issues.
+fn doctor_index_freshness(ail_dir: &Path) -> (&'static str, &'static str) {
+    let objects_dir = ail_dir.join("store").join("objects");
+    let index_path = ail_dir.join("index").join("snapshots.cbor");
+
+    // If no objects directory or it is empty, nothing can be stale.
+    let has_objects = objects_dir.exists()
+        && std::fs::read_dir(&objects_dir)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
+
+    if !has_objects {
+        return ("ok", "All context indexes match current snapshot.");
+    }
+
+    if !index_path.exists() {
+        return (
+            "warn",
+            "Snapshot index is missing — run `ail status` to rebuild.",
+        );
+    }
+
+    ("ok", "All context indexes match current snapshot.")
+}
+
+/// Check whether the stored schema version is compatible with this toolchain.
+///
+/// - "ok"   — `project.toml` does not exist, or the `version` key is absent, or it equals "1".
+/// - "warn" — `project.toml` exists and `version` field is present but not "1".
+fn doctor_schema_compatibility(ail_dir: &Path) -> (&'static str, &'static str) {
+    const CURRENT_SCHEMA: &str = "1";
+
+    let project_toml = ail_dir.join("project.toml");
+    if !project_toml.exists() {
+        return (
+            "ok",
+            "Storage schema version matches current toolchain.",
+        );
+    }
+
+    let Ok(content) = std::fs::read_to_string(&project_toml) else {
+        return ("ok", "Storage schema version matches current toolchain.");
+    };
+
+    // Simple line-based parse: look for `version = "..."`.
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("version") {
+            let rest = rest.trim_start().trim_start_matches('=').trim();
+            let version = rest.trim_matches('"').trim_matches('\'');
+            if version != CURRENT_SCHEMA {
+                return (
+                    "warn",
+                    "Storage schema version mismatch — project may need migration.",
+                );
+            }
+        }
+    }
+
+    ("ok", "Storage schema version matches current toolchain.")
+}
+
 /// `ail doctor` — run integrity and health checks on the project.
 ///
 /// Checks (from tooling.md):
@@ -3314,23 +3389,26 @@ fn cmd_doctor(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError> {
         StoreHandle::File { ail_dir, .. } => Some(doctor(ail_dir)?),
         _ => None,
     };
-    // Real checks: each is evaluated; status is "ok" or "warn" or "error".
+
+    // Run real filesystem checks when a file store is active.
+    let (index_freshness_status, index_freshness_msg) = match store {
+        StoreHandle::File { ail_dir, .. } => doctor_index_freshness(ail_dir),
+        _ => ("ok", "All context indexes match current snapshot."),
+    };
+    let (schema_compat_status, schema_compat_msg) = match store {
+        StoreHandle::File { ail_dir, .. } => doctor_schema_compatibility(ail_dir),
+        _ => ("ok", "Storage schema version matches current toolchain."),
+    };
+
+    // Build the checks list with real values for index_freshness and schema_compatibility.
     let checks: Vec<(&str, &str, &str)> = vec![
         (
             "graph_integrity",
             "ok",
             "Graph structure is consistent — no orphan nodes or dangling edges.",
         ),
-        (
-            "index_freshness",
-            "ok",
-            "All context indexes match current snapshot.",
-        ),
-        (
-            "schema_compatibility",
-            "ok",
-            "Storage schema version matches current toolchain.",
-        ),
+        ("index_freshness", index_freshness_status, index_freshness_msg),
+        ("schema_compatibility", schema_compat_status, schema_compat_msg),
         (
             "artifact_hash_consistency",
             "ok",
@@ -4685,6 +4763,83 @@ mod tests {
         let store = memory_store();
         let result = cmd_doctor(OutputMode::Human, &store);
         assert!(result.is_ok(), "cmd_doctor must succeed; got: {result:?}");
+    }
+
+    // ── T7e: doctor real filesystem checks ────────────────────────────────
+
+    // Scenario DR-1b: index_freshness is "ok" when no objects exist yet.
+    //   GIVEN an ail_dir with no objects in store/objects/
+    //   WHEN doctor_index_freshness is called
+    //   THEN status is "ok" (nothing to be stale against)
+    #[test]
+    fn doctor_index_freshness_ok_when_no_objects() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        crate::store::init_file_layout(&ail_dir).expect("init layout");
+        // No objects stored — index freshness must be "ok"
+        let (status, _msg) = doctor_index_freshness(&ail_dir);
+        assert_eq!(status, "ok", "no objects → freshness must be ok");
+    }
+
+    // TRIANGULATE: index_freshness is "warn" when objects exist but no snapshots.cbor.
+    //   GIVEN an ail_dir with at least one object in store/objects/ but no index
+    //   WHEN doctor_index_freshness is called
+    //   THEN status is "warn" (objects exist but index is missing)
+    #[test]
+    fn doctor_index_freshness_warn_when_objects_without_index() {
+        use crate::store::FileObjectStore;
+        use ail_storage::object::{ObjectStore, RawObject};
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        crate::store::init_file_layout(&ail_dir).expect("init layout");
+        // Write an object but no snapshots.cbor
+        let fos = FileObjectStore::new_for_test(&ail_dir);
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(fos.put(RawObject(b"test-object".to_vec())))
+            .expect("put object");
+        // Ensure snapshots.cbor does NOT exist
+        let index_path = ail_dir.join("index").join("snapshots.cbor");
+        assert!(!index_path.exists(), "test setup: snapshots.cbor must not exist");
+
+        let (status, _msg) = doctor_index_freshness(&ail_dir);
+        assert_eq!(status, "warn", "objects without index → freshness must be warn");
+    }
+
+    // Scenario: schema_compatibility is "ok" when project.toml does not exist.
+    //   GIVEN an ail_dir with no project.toml
+    //   WHEN doctor_schema_compatibility is called
+    //   THEN status is "ok"
+    #[test]
+    fn doctor_schema_compat_ok_when_no_project_toml() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        std::fs::create_dir_all(&ail_dir).expect("create ail_dir");
+        // No project.toml
+        let (status, _msg) = doctor_schema_compatibility(&ail_dir);
+        assert_eq!(status, "ok", "missing project.toml → schema compat must be ok");
+    }
+
+    // TRIANGULATE: schema_compatibility is "warn" when project.toml has version = "0".
+    //   GIVEN a project.toml with `version = "0"` (non-"1" value)
+    //   WHEN doctor_schema_compatibility is called
+    //   THEN status is "warn"
+    #[test]
+    fn doctor_schema_compat_warn_when_version_is_zero() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        std::fs::create_dir_all(&ail_dir).expect("create ail_dir");
+        std::fs::write(
+            ail_dir.join("project.toml"),
+            b"version = \"0\"\n",
+        )
+        .expect("write project.toml");
+
+        let (status, _msg) = doctor_schema_compatibility(&ail_dir);
+        assert_eq!(
+            status, "warn",
+            "project.toml version = \"0\" → schema compat must be warn"
+        );
     }
 
     // Scenario: cmd_inspect node returns edges/effects/capabilities/contracts.
