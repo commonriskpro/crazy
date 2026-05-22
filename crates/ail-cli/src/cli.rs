@@ -52,11 +52,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ail_change::{
     apply::SnapshotBridge,
     canonical::{canonicalize, canonicalize_parsed},
-    model::SnapshotId,
+    model::{ChangeSetOutcome, ConflictReason, SnapshotId},
     parser::parse_changeset,
 };
-use ail_compiler::{emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir};
-use ail_core::semantic_graph::SemanticGraph;
+use ail_compiler::{
+    ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, LiteralValue, SourceMap, StageHashes,
+    emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir,
+};
+use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_runtime::{
     CapabilityManifest, ResourceLimits, RuntimeHost, RuntimeProfile, RuntimeValue, blake3_hex_of,
 };
@@ -67,7 +70,7 @@ use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
-use crate::changeset_input::{ChangeInput, load_changeset};
+use crate::changeset_input::{ChangeInput, load_parsed_changeset};
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
 use crate::store::{
@@ -78,7 +81,11 @@ use crate::store::{
 
 /// ail — AI-native language toolchain.
 #[derive(Parser)]
-#[command(version, about)]
+#[command(
+    version,
+    about,
+    long_about = "ail — AI-native language toolchain.\n\nExamples:\n  ail init\n  ail change --file ./change.acl\n  ail compile --profile dev\n  ail run fn.answer\n  ail eval \"add(20, 22)\""
+)]
 struct Cli {
     /// Emit machine-readable JSON (status + data) instead of human text.
     #[arg(long, global = true)]
@@ -184,6 +191,12 @@ enum Commands {
         /// Replay a recorded trace by its id.
         #[arg(long)]
         replay: Option<String>,
+    },
+
+    /// Evaluate an inline expression without initializing a project.
+    Eval {
+        /// Expression to evaluate (e.g. `add(20, 22)`, `mul(6, 7)`, or `42`).
+        expression: String,
     },
 
     /// Initialize the project: create .ail/ directories and genesis snapshot.
@@ -351,7 +364,7 @@ pub async fn run() -> Result<(), CliError> {
         if kind == ErrorKind::InvalidSubcommand {
             eprintln!(
                 "Available subcommands: context, change, verify, apply, compile, run, \
-                 init, status, inspect, diff, rollback, rebase, merge, refactor, \
+                 eval, init, status, inspect, diff, rollback, rebase, merge, refactor, \
                  approve, reject, policy, package, doctor, gc"
             );
             std::process::exit(2);
@@ -401,6 +414,7 @@ pub async fn run() -> Result<(), CliError> {
             module,
             replay,
         } => cmd_run(mode, &profile, module.as_deref(), replay.as_deref(), &store).await,
+        Commands::Eval { expression } => cmd_eval(mode, &expression),
         Commands::Init { branch } => cmd_init(mode, &store, &branch).await,
         Commands::Status => cmd_status(mode, &store).await,
         Commands::Inspect { kind, id } => cmd_inspect(mode, &kind, &id, &store).await,
@@ -645,10 +659,11 @@ async fn cmd_change(
     store: &StoreHandle,
 ) -> Result<(), CliError> {
     // Determine input source: text > file > stdin.
-    let (changeset, input_source) = if let Some(t) = text {
+    let (changeset, canonical, input_source) = if let Some(t) = text {
         // Text input: create a minimal ChangeSet from free-text description.
         let cs = make_text_changeset(t);
-        (cs, "text")
+        let canonical = canonicalize(cs.clone());
+        (cs, canonical, "text")
     } else {
         let input = if let Some(path) = file {
             ChangeInput::File(path)
@@ -656,12 +671,12 @@ async fn cmd_change(
             // Both explicit --stdin and bare stdin (no file, no text) read from stdin.
             ChangeInput::Stdin
         };
-        let cs = load_changeset(input)?;
+        let parsed = load_parsed_changeset(input)?;
+        let canonical = canonicalize_parsed(parsed.clone());
         let src = input_source_label(from_stdin);
-        (cs, src)
+        (parsed.changeset, canonical, src)
     };
 
-    let canonical = canonicalize(changeset.clone());
     let cbor_bytes = encode_cbor(&canonical)?;
     let change_id = blake3_hex_of(&cbor_bytes);
 
@@ -678,7 +693,14 @@ async fn cmd_change(
     store.append_changeset_log(&entry).await?;
 
     let snapshots_before = store.list_snapshots().await?;
-    let mut graph = load_current_graph_for_cli(store).await?;
+    let mut graph = if snapshots_before.is_empty() {
+        SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        }
+    } else {
+        load_current_graph_for_cli(store).await?
+    };
     let bridge = SimpleSnapshotBridge(SnapshotId(snapshots_before.len().saturating_sub(1) as u64));
     match ail_change::apply::apply(canonical.clone(), &mut graph, &bridge) {
         ail_change::model::ChangeSetOutcome::Applied => {
@@ -705,7 +727,10 @@ async fn cmd_change(
             return Err(CliError::Domain(format!("change apply failed: {reason}")));
         }
         ail_change::model::ChangeSetOutcome::ConflictIrresolvable { reason } => {
-            return Err(CliError::Domain(format!("change conflict: {reason:?}")));
+            return Err(CliError::Domain(format!(
+                "Change conflict: {}",
+                conflict_reason_message(&reason)
+            )));
         }
     }
 
@@ -944,9 +969,9 @@ async fn cmd_apply(
         ail_change::model::ChangeSetOutcome::Failed { reason } => {
             Err(CliError::Domain(format!("apply failed: {reason}")))
         }
-        ail_change::model::ChangeSetOutcome::ConflictIrresolvable { reason } => {
-            Err(CliError::Domain(format!("conflict: {reason:?}")))
-        }
+        ail_change::model::ChangeSetOutcome::ConflictIrresolvable { reason } => Err(
+            CliError::Domain(format!("Conflict: {}", conflict_reason_message(&reason))),
+        ),
     }
 }
 
@@ -969,13 +994,13 @@ async fn cmd_compile(
     let report = accepted_compile_report();
 
     let core = lower_to_core_ir(&graph, &report)
-        .map_err(|e| CliError::Domain(format!("compile (core ir): {e:?}")))?;
+        .map_err(|e| CliError::Domain(format!("Failed to lower graph to Core IR: {e}")))?;
 
     let anf = lower_to_anf_with_graph(&core, &graph)
-        .map_err(|e| CliError::Domain(format!("compile (anf): {e:?}")))?;
+        .map_err(|e| CliError::Domain(format!("Failed to lower Core IR to ANF: {e}")))?;
 
     let artifact = emit_wasm_with_profile(&anf, profile)
-        .map_err(|e| CliError::Domain(format!("compile (wasm): {e:?}")))?;
+        .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?;
 
     let wasm_hash = artifact
         .hash_chain
@@ -1044,11 +1069,11 @@ async fn cmd_run(
     let report = accepted_compile_report();
 
     let core = lower_to_core_ir(&graph, &report)
-        .map_err(|e| CliError::Domain(format!("run (core ir): {e:?}")))?;
+        .map_err(|e| CliError::Domain(format!("Failed to lower graph to Core IR: {e}")))?;
     let anf = lower_to_anf_with_graph(&core, &graph)
-        .map_err(|e| CliError::Domain(format!("run (anf): {e:?}")))?;
+        .map_err(|e| CliError::Domain(format!("Failed to lower Core IR to ANF: {e}")))?;
     let artifact = emit_wasm_with_profile(&anf, profile)
-        .map_err(|e| CliError::Domain(format!("run (wasm): {e:?}")))?;
+        .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?;
 
     let module_name = module.unwrap_or("(default)");
     let manifest = CapabilityManifest {
@@ -1147,20 +1172,82 @@ fn current_graph_for_cli() -> Result<SemanticGraph, CliError> {
     let bridge = SimpleSnapshotBridge(SnapshotId(0));
     match ail_change::apply::apply(canonical, &mut graph, &bridge) {
         ail_change::model::ChangeSetOutcome::Applied => Ok(graph),
-        other => Err(CliError::Domain(format!("load current graph: {other:?}"))),
+        other => Err(CliError::Domain(format!(
+            "Failed to build fallback graph: {}",
+            changeset_outcome_message(&other)
+        ))),
     }
 }
 
 async fn load_current_graph_for_cli(store: &StoreHandle) -> Result<SemanticGraph, CliError> {
     let snapshots = store.list_snapshots().await?;
-    let Some(snapshot) = latest_snapshot(&snapshots) else {
-        return current_graph_for_cli();
+    let head_snapshot = store.head_snapshot().await?;
+    let Some(snapshot) = head_snapshot
+        .as_ref()
+        .or_else(|| latest_snapshot(&snapshots))
+    else {
+        return if store.has_persistent_project() {
+            Ok(SemanticGraph {
+                nodes: vec![],
+                edges: vec![],
+            })
+        } else {
+            current_graph_for_cli()
+        };
     };
 
     match store.load_graph(&snapshot.graph_root_hash).await? {
         Some(graph) => Ok(graph),
+        None if store.has_persistent_project() => Err(CliError::Domain(format!(
+            "Failed to load graph for HEAD snapshot {}",
+            snapshot.id.to_hex()
+        ))),
         None => current_graph_for_cli(),
     }
+}
+
+fn cmd_eval(mode: OutputMode, expression: &str) -> Result<(), CliError> {
+    let expr = parse_eval_expression(expression)?;
+    let anf = eval_anf(expr);
+    let artifact = emit_wasm_with_profile(&anf, "dev")
+        .map_err(|e| CliError::Domain(format!("Failed to compile expression: {e}")))?;
+    let manifest = CapabilityManifest {
+        module: "eval".to_string(),
+        requires: vec![],
+    };
+    let module_hash = blake3_hex_of(&artifact.wasm);
+    let manifest_hash = manifest
+        .blake3_hex()
+        .map_err(|e| CliError::Domain(format!("Failed to hash eval manifest: {e}")))?;
+    let runtime_profile = RuntimeProfile::new(
+        "dev".to_string(),
+        module_hash,
+        String::new(),
+        manifest_hash,
+        vec![],
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+        },
+    );
+    let mut host = RuntimeHost::new();
+    let mut instance = host
+        .validate_and_instantiate(&artifact.wasm, &manifest, &runtime_profile)
+        .map_err(|e| CliError::PreflightFailed(format!("Failed to start eval runtime: {e}")))?;
+    let value = instance
+        .invoke("eval", &[])
+        .map_err(|e| CliError::Domain(format!("Failed to run expression: {e}")))?;
+    let result = runtime_value_to_string(&value);
+
+    print_response(
+        mode,
+        &format!("expression: {expression}\nresult: {result}"),
+        json!({
+            "expression": expression,
+            "result": result,
+        }),
+    );
+    Ok(())
 }
 
 fn latest_snapshot(snapshots: &[SnapshotEnvelope]) -> Option<&SnapshotEnvelope> {
@@ -1182,6 +1269,128 @@ fn runtime_value_to_string(value: &RuntimeValue) -> String {
     match value {
         RuntimeValue::I64(value) => value.to_string(),
         RuntimeValue::Unit => "()".to_string(),
+    }
+}
+
+fn format_unix_ms(ms: u64) -> String {
+    if ms == 0 {
+        "(unknown)".to_string()
+    } else {
+        format!("{ms} ms since Unix epoch")
+    }
+}
+
+fn parse_eval_expression(expression: &str) -> Result<AnfExpr, CliError> {
+    let trimmed = expression.trim();
+    if let Ok(value) = trimmed.parse::<i64>() {
+        return Ok(AnfExpr::Literal(LiteralValue::Int(value)));
+    }
+
+    let Some(open) = trimmed.find('(') else {
+        return Err(CliError::ParseError(format!(
+            "Failed to parse expression: expected a number or call like add(20, 22)"
+        )));
+    };
+    let Some(close) = trimmed.rfind(')') else {
+        return Err(CliError::ParseError(
+            "Failed to parse expression: missing closing ')'".to_string(),
+        ));
+    };
+    if close != trimmed.len() - 1 {
+        return Err(CliError::ParseError(
+            "Failed to parse expression: unexpected text after ')'".to_string(),
+        ));
+    }
+
+    let op = trimmed[..open].trim();
+    let args: Vec<&str> = trimmed[open + 1..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|arg| !arg.is_empty())
+        .collect();
+    if args.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "Failed to parse expression: {op} expects exactly 2 arguments"
+        )));
+    }
+    let left = parse_eval_i64(args[0])?;
+    let right = parse_eval_i64(args[1])?;
+    let func = match op {
+        "add" => "i64.add",
+        "sub" => "i64.sub",
+        "mul" => "i64.mul",
+        "div" => "i64.div_s",
+        "mod" => "i64.rem_s",
+        _ => {
+            return Err(CliError::ParseError(format!(
+                "Failed to parse expression: unsupported function '{op}'"
+            )));
+        }
+    };
+
+    Ok(AnfExpr::Let {
+        name: "a".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(left))),
+        body: Box::new(AnfExpr::Let {
+            name: "b".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(right))),
+            body: Box::new(AnfExpr::Call {
+                func: func.to_string(),
+                args: vec!["a".to_string(), "b".to_string()],
+            }),
+        }),
+    })
+}
+
+fn parse_eval_i64(value: &str) -> Result<i64, CliError> {
+    value.parse::<i64>().map_err(|_| {
+        CliError::ParseError(format!(
+            "Failed to parse expression: '{value}' is not an integer"
+        ))
+    })
+}
+
+fn eval_anf(expr: AnfExpr) -> AnfIr {
+    let bindings = vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.eval".to_string(),
+        expr,
+    }];
+    let source_map = SourceMap::from_bindings(&bindings);
+    AnfIr {
+        schema_version: ANF_SCHEMA_VERSION,
+        bindings,
+        source_map,
+        stage_hashes: StageHashes {
+            graph_snapshot_hash: [0; 32],
+            verification_report_hash: [0; 32],
+            core_ir_hash: [0; 32],
+            anf_ir_hash: Some([0; 32]),
+            wasm_hash: None,
+            native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
+        },
+    }
+}
+
+fn changeset_outcome_message(outcome: &ChangeSetOutcome) -> &'static str {
+    match outcome {
+        ChangeSetOutcome::Applied => "applied",
+        ChangeSetOutcome::RebaseRequired { .. } => "rebase required",
+        ChangeSetOutcome::Failed { .. } => "change failed",
+        ChangeSetOutcome::ConflictIrresolvable { reason } => conflict_reason_message(reason),
+    }
+}
+
+fn conflict_reason_message(reason: &ConflictReason) -> &'static str {
+    match reason {
+        ConflictReason::SameNodeModifiedIncompatibly => "same node was modified incompatibly",
+        ConflictReason::NodeDeletedWhileModified => {
+            "node was deleted while another change modified it"
+        }
+        ConflictReason::PublicApiConflict => "public API changes conflict",
+        ConflictReason::InvariantTouchedConcurrently => "invariant changes conflict",
     }
 }
 
@@ -1320,26 +1529,52 @@ async fn cmd_status(mode: OutputMode, store: &StoreHandle) -> Result<(), CliErro
         .unwrap_or_else(|| "main".to_string());
 
     // Compute status fields.
-    let (snap_hex, graph_root_hex, branch, pending_changes, verification_state) =
-        if snapshots.is_empty() {
-            (
-                "(none)".to_string(),
-                "(none)".to_string(),
-                current_branch,
-                0usize,
-                "unverified",
-            )
+    let (
+        snap_hex,
+        graph_root_hex,
+        branch,
+        pending_changes,
+        verification_state,
+        graph_nodes,
+        last_change_at,
+    ) = if snapshots.is_empty() {
+        (
+            "(none)".to_string(),
+            "(none)".to_string(),
+            current_branch,
+            0usize,
+            "unverified",
+            0usize,
+            "(none)".to_string(),
+        )
+    } else {
+        let head_snapshot = store.head_snapshot().await?;
+        let current = head_snapshot
+            .as_ref()
+            .or_else(|| latest_snapshot(&snapshots))
+            .expect("non-empty");
+        let snap_hex = current.id.to_hex();
+        let graph_root_hex = current.graph_root_hash.to_hex();
+        let graph_nodes = store
+            .load_graph(&current.graph_root_hash)
+            .await?
+            .map(|graph| graph.nodes.len())
+            .unwrap_or(0);
+        let ver_state = if current.verification_report_hash.is_some() {
+            "verified"
         } else {
-            let current = latest_snapshot(&snapshots).expect("non-empty");
-            let snap_hex = current.id.to_hex();
-            let graph_root_hex = current.graph_root_hash.to_hex();
-            let ver_state = if current.verification_report_hash.is_some() {
-                "verified"
-            } else {
-                "unverified"
-            };
-            (snap_hex, graph_root_hex, current_branch, 0, ver_state)
+            "unverified"
         };
+        (
+            snap_hex,
+            graph_root_hex,
+            current_branch,
+            0,
+            ver_state,
+            graph_nodes,
+            format_unix_ms(current.created_at),
+        )
+    };
 
     // Derived status fields.
     let stale_indexes = false;
@@ -1347,15 +1582,18 @@ async fn cmd_status(mode: OutputMode, store: &StoreHandle) -> Result<(), CliErro
     let package_advisories = 0usize;
 
     let human_msg = format!(
-        "snapshot: {snap_hex}\ngraph_root: {graph_root_hex}\nbranch: {branch}\npending changes: {pending_changes}\nverification: {verification_state}\nstale indexes: {stale_indexes}\nruntime profile: {runtime_profile_status}\npackage advisories: {package_advisories}"
+        "branch: {branch}\nHEAD snapshot: {snap_hex}\ngraph nodes: {graph_nodes}\nlast change: {last_change_at}\ngraph_root: {graph_root_hex}\npending changes: {pending_changes}\nverification: {verification_state}\nstale indexes: {stale_indexes}\nruntime profile: {runtime_profile_status}\npackage advisories: {package_advisories}"
     );
     print_response(
         mode,
         &human_msg,
         json!({
             "snapshot_id": snap_hex,
+            "head_snapshot": snap_hex,
             "graph_root_hash": graph_root_hex,
             "branch": branch,
+            "graph_nodes": graph_nodes,
+            "last_change_at": last_change_at,
             "snapshot_count": snapshots.len(),
             "pending_changes": pending_changes,
             "verification_state": verification_state,

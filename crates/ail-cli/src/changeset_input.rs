@@ -17,7 +17,7 @@
 use std::io::Read;
 use std::path::PathBuf;
 
-use ail_change::model::ChangeSet;
+use ail_change::{model::ChangeSet, parser::ParsedChangeSet};
 
 use crate::error::CliError;
 
@@ -38,6 +38,11 @@ pub enum ChangeInput {
 /// Returns `Err(CliError::Io(_))` on read failures and
 /// `Err(CliError::ParseError(_))` on format violations.
 pub fn load_changeset(input: ChangeInput) -> Result<ChangeSet, CliError> {
+    Ok(load_parsed_changeset(input)?.changeset)
+}
+
+/// Load and parse a ChangeSet while preserving parsed operation arguments.
+pub fn load_parsed_changeset(input: ChangeInput) -> Result<ParsedChangeSet, CliError> {
     let content = match input {
         ChangeInput::File(path) => std::fs::read_to_string(path)?,
         ChangeInput::Stdin => {
@@ -46,7 +51,7 @@ pub fn load_changeset(input: ChangeInput) -> Result<ChangeSet, CliError> {
             buf
         }
     };
-    parse_changeset(&content)
+    ail_change::parser::parse_changeset(&content).map_err(CliError::ParseError)
 }
 
 // ── parse_changeset ───────────────────────────────────────────────────────
