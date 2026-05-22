@@ -1272,6 +1272,91 @@ mod tests {
         );
     }
 
+    // ── TASK-D0: Loop / Break / Continue / WhileLoop — RED ───────────────
+
+    #[test]
+    fn native_loop_break_int_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Loop {
+                body: Box::new(AnfExpr::Break {
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
+                }),
+            },
+        });
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        let art = emit_native(&anf).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "Loop{{Break{{Int(42)}}}} must produce different bytes than Placeholder");
+        assert_eq!(
+            infer_cranelift_return_type(&AnfExpr::Loop {
+                body: Box::new(AnfExpr::Break {
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
+                }),
+            }),
+            Some(cranelift_codegen::ir::types::I64)
+        );
+    }
+
+    #[test]
+    fn native_loop_break_unit_compiles() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Loop {
+                body: Box::new(AnfExpr::Break {
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+                }),
+            },
+        });
+        assert!(emit_native(&anf).is_ok(), "Loop{{Break{{Unit}}}} must compile without panic");
+    }
+
+    #[test]
+    fn native_while_loop_compiles() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "c".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Bool(false))),
+                body: Box::new(AnfExpr::WhileLoop {
+                    cond: "c".to_string(),
+                    body: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                }),
+            },
+        });
+        assert!(emit_native(&anf).is_ok(), "WhileLoop with Bool(false) cond must compile");
+    }
+
+    #[test]
+    fn native_continue_compiles() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        // Loop { Seq([Continue, Break{Int(1)}]) }
+        // Continue is unreachable after first iteration but CFG must be valid.
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Loop {
+                body: Box::new(AnfExpr::Seq(vec![
+                    AnfExpr::Continue,
+                    AnfExpr::Break {
+                        value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                    },
+                ])),
+            },
+        });
+        assert!(emit_native(&anf).is_ok(), "Loop{{Continue; Break}} must compile without panic");
+    }
+
     // ── TASK-C0: Seq, RuntimeCheck — RED ──────────────────────────────────
 
     #[test]
