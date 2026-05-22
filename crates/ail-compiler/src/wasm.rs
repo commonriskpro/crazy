@@ -176,8 +176,9 @@ fn build_type_section(signatures: &[WasmSignature]) -> Option<TypeSection> {
     Some(types)
 }
 
-fn build_type_section_with_host_call(signatures: &[WasmSignature]) -> TypeSection {
+fn build_type_section_with_host_call(signatures: &[WasmSignature], needs_host_call_write: bool) -> TypeSection {
     let mut types = TypeSection::new();
+    // type 0: ail/host_call — (i32 × 6) → i64
     types.ty().function(
         [
             ValType::I32,
@@ -189,6 +190,22 @@ fn build_type_section_with_host_call(signatures: &[WasmSignature]) -> TypeSectio
         ],
         [ValType::I64],
     );
+    if needs_host_call_write {
+        // type 1: ail/host_call_write — (i32 × 8) → i32
+        types.ty().function(
+            [
+                ValType::I32,
+                ValType::I32,
+                ValType::I32,
+                ValType::I32,
+                ValType::I32,
+                ValType::I32,
+                ValType::I32,
+                ValType::I32,
+            ],
+            [ValType::I32],
+        );
+    }
     for signature in signatures {
         let params = vec![ValType::I64; signature.param_count];
         match signature.result {
@@ -589,7 +606,14 @@ struct EffectDataLayout {
     strings: BTreeMap<String, (i32, i32)>,
     next_offset: i32,
     args_offset: i32,
+    /// Offset of the structured result buffer in WASM linear memory.
+    /// Set when `needs_host_call_write` is true; placed after the args area.
+    result_buffer_offset: i32,
     needs_host_call: bool,
+    /// True when at least one EffectCall in a binding has a structured return type
+    /// (Record, Variant, List, Option, or Result). Causes `ail/host_call_write`
+    /// to be imported and used in place of `ail/host_call` for those calls.
+    needs_host_call_write: bool,
     needs_memory: bool,
 }
 
@@ -601,6 +625,22 @@ impl EffectDataLayout {
         }
         if layout.needs_host_call {
             layout.args_offset = layout.next_offset.max(1);
+        }
+        // Detect structured EffectCall: any binding that both (a) contains an
+        // EffectCall and (b) has a structured return type needs host_call_write.
+        if layout.needs_host_call {
+            for binding in bindings {
+                if has_effect_call(&binding.expr)
+                    && is_structured_descriptor(&derive_wasm_type(&binding.expr))
+                {
+                    layout.needs_host_call_write = true;
+                    break;
+                }
+            }
+        }
+        if layout.needs_host_call_write {
+            // Reserve the result buffer after the args area.
+            layout.result_buffer_offset = layout.args_offset + MAX_ARGS_BYTES;
         }
         layout
     }
@@ -688,12 +728,63 @@ impl EffectDataLayout {
     }
 }
 
-fn build_import_section(needs_host_call: bool) -> Option<ImportSection> {
+/// Maximum bytes the host may write into the result buffer.
+const RESULT_BUFFER_MAX: i32 = 1024;
+
+/// Maximum args slots reserved in the args buffer (8 args × 8 bytes = 64).
+const MAX_ARGS_BYTES: i32 = 64;
+
+/// Returns true if `expr` or any sub-expression is an `EffectCall`.
+fn has_effect_call(expr: &AnfExpr) -> bool {
+    match expr {
+        AnfExpr::EffectCall { .. } => true,
+        AnfExpr::Let { value, body, .. } => has_effect_call(value) || has_effect_call(body),
+        AnfExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => has_effect_call(then_branch) || has_effect_call(else_branch),
+        AnfExpr::Return(inner)
+        | AnfExpr::ShortCircuitAnd { right: inner, .. }
+        | AnfExpr::ShortCircuitOr { right: inner, .. }
+        | AnfExpr::Loop { body: inner }
+        | AnfExpr::Break { value: inner }
+        | AnfExpr::FieldUpdate { value: inner, .. } => has_effect_call(inner),
+        AnfExpr::WhileLoop { body, .. } => has_effect_call(body),
+        AnfExpr::Seq(exprs) | AnfExpr::TupleNew(exprs) | AnfExpr::ListNew(exprs) => {
+            exprs.iter().any(has_effect_call)
+        }
+        AnfExpr::RecordNew { fields } => fields.iter().any(|(_, e)| has_effect_call(e)),
+        AnfExpr::VariantNew { payload, .. } => {
+            payload.as_deref().is_some_and(has_effect_call)
+        }
+        AnfExpr::Match { arms, .. } => arms.iter().any(|arm| has_effect_call(&arm.body)),
+        AnfExpr::Lambda { body, .. } => has_effect_call(body),
+        _ => false,
+    }
+}
+
+/// Returns true when `desc` is a compound/structured type (not a plain scalar).
+fn is_structured_descriptor(desc: &WasmTypeDescriptor) -> bool {
+    matches!(
+        desc,
+        WasmTypeDescriptor::Record { .. }
+            | WasmTypeDescriptor::Variant { .. }
+            | WasmTypeDescriptor::List(_)
+            | WasmTypeDescriptor::Option(_)
+            | WasmTypeDescriptor::Result { .. }
+    )
+}
+
+fn build_import_section(needs_host_call: bool, needs_host_call_write: bool) -> Option<ImportSection> {
     if !needs_host_call {
         return None;
     }
     let mut imports = ImportSection::new();
     imports.import("ail", "host_call", EntityType::Function(0));
+    if needs_host_call_write {
+        imports.import("ail", "host_call_write", EntityType::Function(1));
+    }
     Some(imports)
 }
 
@@ -1226,7 +1317,18 @@ fn emit_anf_expr<'a>(
             insns.push(Instruction::I32Const(op_len));
             insns.push(Instruction::I32Const(ctx.effect_data.args_offset));
             insns.push(Instruction::I32Const(args.len() as i32));
-            insns.push(Instruction::Call(0));
+
+            if ctx.effect_data.needs_host_call_write {
+                // host_call_write: (cap, op, args, out_ptr, out_max) → i32
+                // Function index 1 (after host_call at 0).
+                insns.push(Instruction::I32Const(ctx.effect_data.result_buffer_offset));
+                insns.push(Instruction::I32Const(RESULT_BUFFER_MAX));
+                insns.push(Instruction::Call(1));
+                // Extend the i32 return to i64 to match the standard EffectCall return type.
+                insns.push(Instruction::I64ExtendI32S);
+            } else {
+                insns.push(Instruction::Call(0));
+            }
             Some(ValType::I64)
         }
 
@@ -1539,18 +1641,23 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     let signatures = binding_signatures(&anf.bindings);
     let effect_data = EffectDataLayout::for_bindings(&anf.bindings);
     let needs_host_call = effect_data.needs_host_call;
+    let needs_host_call_write = effect_data.needs_host_call_write;
     let needs_memory = effect_data.needs_host_call || effect_data.needs_memory;
-    let type_offset = u32::from(needs_host_call);
-    let function_offset = u32::from(needs_host_call);
+    // type_offset: bindings start after the host import type entries.
+    // function_offset: bindings start after the imported functions.
+    // When only host_call is imported: offset = 1.
+    // When host_call + host_call_write are both imported: offset = 2.
+    let type_offset = needs_host_call as u32 + needs_host_call_write as u32;
+    let function_offset = needs_host_call as u32 + needs_host_call_write as u32;
 
     // Assemble WASM module first so we can compute byte offsets.
     let mut module = Module::new();
     if needs_host_call {
-        module.section(&build_type_section_with_host_call(&signatures));
+        module.section(&build_type_section_with_host_call(&signatures, needs_host_call_write));
     } else if let Some(types) = build_type_section(&signatures) {
         module.section(&types);
     }
-    if let Some(imports) = build_import_section(needs_host_call) {
+    if let Some(imports) = build_import_section(needs_host_call, needs_host_call_write) {
         module.section(&imports);
     }
     if let Some(functions) = build_function_section(&signatures, type_offset) {
@@ -2644,6 +2751,106 @@ mod tests {
         assert!(
             saw_i32_store_at_0,
             "VariantNew tag must be stored as a full i32 (I32Store at offset 0), not I32Store8"
+        );
+    }
+
+    // ── TASK-E1: host_call_write codegen tests (TDD RED) ─────────────────
+    // These tests verify that when an EffectCall result flows into a structured
+    // context (RecordNew), the emitted WASM:
+    //   1. Imports "ail"/"host_call_write".
+    //   2. EffectDataLayout has result_buffer_offset > args_offset.
+    //   3. The code section contains a Call to function index 1 (host_call_write).
+
+    fn effect_call_with_record_result_anf() -> AnfIr {
+        use crate::anf::AnfBinding;
+        // let effect_result = effect_call("data", "fetch", []);
+        // record_new([("val", effect_result)])
+        let binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.fetch_record".to_string(),
+            expr: AnfExpr::Let {
+                name: "effect_result".to_string(),
+                value: Box::new(AnfExpr::EffectCall {
+                    capability: "data".to_string(),
+                    func: "fetch".to_string(),
+                    args: vec![],
+                }),
+                body: Box::new(AnfExpr::RecordNew {
+                    fields: vec![("val".to_string(), AnfExpr::Var("effect_result".to_string()))],
+                }),
+            },
+        };
+        sealed_anf(vec![binding])
+    }
+
+    #[test]
+    fn effect_call_structured_return_emits_host_call_write_import() {
+        use wasmparser::{Parser, Payload};
+
+        let anf = effect_call_with_record_result_anf();
+        let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let mut found_host_call_write = false;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::ImportSection(imports) = payload.unwrap() {
+                for imp in imports.into_imports() {
+                    let imp = imp.unwrap();
+                    if imp.module == "ail" && imp.name == "host_call_write" {
+                        found_host_call_write = true;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            found_host_call_write,
+            "structured EffectCall must import 'ail'/'host_call_write'"
+        );
+    }
+
+    #[test]
+    fn effect_data_layout_has_result_buffer_offset() {
+        use crate::anf::AnfBinding;
+        let anf = effect_call_with_record_result_anf();
+        let layout = EffectDataLayout::for_bindings(&anf.bindings);
+
+        assert!(
+            layout.needs_host_call_write,
+            "EffectDataLayout must set needs_host_call_write for structured EffectCall"
+        );
+        assert!(
+            layout.result_buffer_offset > layout.args_offset,
+            "result_buffer_offset ({}) must be greater than args_offset ({})",
+            layout.result_buffer_offset,
+            layout.args_offset,
+        );
+    }
+
+    #[test]
+    fn host_call_write_call_passes_out_ptr() {
+        use wasmparser::{Operator, Parser, Payload};
+
+        let anf = effect_call_with_record_result_anf();
+        let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        // host_call_write is imported as function index 1 (after host_call at 0).
+        let mut saw_call_1 = false;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    if let Operator::Call { function_index: 1 } = reader.read().unwrap() {
+                        saw_call_1 = true;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_call_1,
+            "structured EffectCall must emit Call {{ function_index: 1 }} (host_call_write)"
         );
     }
 }
