@@ -5,7 +5,8 @@
 // Design: canonical verification facade that sequences all checkers.
 
 use ail_core::semantic_graph::{
-    GraphNode, NodeKind, NodeRef, RefinementRef, RefinementStatus, SemanticGraph, TrustMetadata,
+    EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, RefinementRef, RefinementStatus,
+    SemanticGraph, TrustMetadata,
 };
 use ail_verify::codegen_checker::ArtifactEntry;
 use ail_verify::pipeline::{PipelineContext, VerificationPipeline};
@@ -340,4 +341,192 @@ fn pipeline_report_has_schema_version() {
     let ctx = make_ctx(&g, &solver, "test", &[]);
     let report = VerificationPipeline::run(&ctx);
     assert_eq!(report.schema_version, "verification/1.0");
+}
+
+#[test]
+fn full_pipeline_emits_23_steps_in_documented_order() {
+    let base = empty_graph();
+    let mut answer = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.answer");
+    answer.body_expr = Some("literal(42)".into());
+    let graph = SemanticGraph {
+        nodes: vec![answer],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+    let changeset =
+        "change answer base=0\nauthor tester\nop create_function id=fn.answer return=Int\nend\n";
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), Some(&base));
+    let claims = report
+        .entries
+        .iter()
+        .map(|entry| entry.claim.as_str())
+        .collect::<Vec<_>>();
+
+    for expected in [
+        "01-parse-changeset",
+        "02-canonicalize-changeset",
+        "03-validate-op-schemas",
+        "04-resolve-graph-references",
+        "05-build-semantic-diff",
+        "06-lower-affected-graph-to-core-ir",
+        "07-type-check",
+        "08-effect-capability-check",
+        "09-generate-proof-obligations",
+        "10-check-refinements",
+        "11-check-contracts",
+        "12-check-invariants-via-impact-analysis",
+        "13-check-resource-lifecycle",
+        "14-check-concurrency-safety",
+        "15-check-boundaries-ffi-trust",
+        "16-check-package-trust-dependencies",
+        "17-check-policy-gates",
+        "18-check-approval-records",
+        "19-lower-to-anf",
+        "20-check-anf-effect-resource-ordering",
+        "21-generate-validate-manifest",
+        "22-codegen-consistency-check",
+        "23-emit-verification-report",
+    ] {
+        if claims.contains(&expected) {
+            continue;
+        }
+        panic!("missing pipeline claim {expected}; claims were {claims:?}");
+    }
+
+    let pos = |claim: &str| claims.iter().position(|actual| *actual == claim).unwrap();
+    assert!(pos("01-parse-changeset") < pos("02-canonicalize-changeset"));
+    assert!(pos("02-canonicalize-changeset") < pos("03-validate-op-schemas"));
+    assert!(pos("03-validate-op-schemas") < pos("04-resolve-graph-references"));
+    assert!(pos("04-resolve-graph-references") < pos("05-build-semantic-diff"));
+    assert!(pos("05-build-semantic-diff") < pos("06-lower-affected-graph-to-core-ir"));
+    assert!(pos("06-lower-affected-graph-to-core-ir") < pos("07-type-check"));
+    assert!(pos("07-type-check") < pos("08-effect-capability-check"));
+    assert!(pos("08-effect-capability-check") < pos("09-generate-proof-obligations"));
+    assert!(pos("09-generate-proof-obligations") < pos("10-check-refinements"));
+    assert!(pos("10-check-refinements") < pos("11-check-contracts"));
+    assert!(pos("11-check-contracts") < pos("12-check-invariants-via-impact-analysis"));
+    assert!(pos("12-check-invariants-via-impact-analysis") < pos("13-check-resource-lifecycle"));
+    assert!(pos("13-check-resource-lifecycle") < pos("14-check-concurrency-safety"));
+    assert!(pos("14-check-concurrency-safety") < pos("15-check-boundaries-ffi-trust"));
+    assert!(pos("15-check-boundaries-ffi-trust") < pos("16-check-package-trust-dependencies"));
+    assert!(pos("16-check-package-trust-dependencies") < pos("17-check-policy-gates"));
+    assert!(pos("17-check-policy-gates") < pos("18-check-approval-records"));
+    assert!(pos("18-check-approval-records") < pos("19-lower-to-anf"));
+    assert!(pos("19-lower-to-anf") < pos("20-check-anf-effect-resource-ordering"));
+    assert!(pos("20-check-anf-effect-resource-ordering") < pos("21-generate-validate-manifest"));
+    assert!(pos("21-generate-validate-manifest") < pos("22-codegen-consistency-check"));
+    assert!(pos("22-codegen-consistency-check") < pos("23-emit-verification-report"));
+}
+
+#[test]
+fn full_pipeline_fails_invalid_op_schema() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+    let changeset = "change bad base=0\nauthor tester\nop add_param target=fn.answer name=x\nend\n";
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), Some(&graph));
+
+    assert!(report.entries.iter().any(|entry| {
+        entry.claim == "03-validate-op-schemas"
+            && entry.state == ail_verify::report::VerificationState::Failed
+            && entry
+                .evidence
+                .as_deref()
+                .is_some_and(|e| e.contains("type"))
+    }));
+}
+
+#[test]
+fn full_pipeline_fails_unresolved_graph_reference() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+    let changeset =
+        "change bad_ref base=0\nauthor tester\nop set_return target=fn.missing type=Int\nend\n";
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), Some(&graph));
+
+    assert!(report.entries.iter().any(|entry| {
+        entry.claim == "04-resolve-graph-references"
+            && entry.state == ail_verify::report::VerificationState::Failed
+    }));
+}
+
+#[test]
+fn full_pipeline_checks_invariants_by_impact_edges() {
+    let base = empty_graph();
+    let invariant = GraphNode::new(NodeRef(0), NodeKind::Invariant, "inv.balance_non_negative");
+    let changed_fn = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.debit");
+    let graph = SemanticGraph {
+        nodes: vec![invariant, changed_fn],
+        edges: vec![GraphEdge::new(
+            NodeRef(1),
+            NodeRef(0),
+            EdgeKind::BreaksIfChanged,
+        )],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, None, Some(&base));
+
+    assert!(report.entries.iter().any(|entry| {
+        entry.claim == "12-check-invariants-via-impact-analysis"
+            && entry.scope == "inv.balance_non_negative"
+            && entry.state == ail_verify::report::VerificationState::Proven
+    }));
+}
+
+#[test]
+fn full_pipeline_fails_anf_resource_use_after_release_order() {
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.bad_resource_order");
+    node.body_expr = Some("release(lock); use(lock)".into());
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run(&ctx);
+
+    assert!(report.entries.iter().any(|entry| {
+        entry.claim == "20-check-anf-effect-resource-ordering"
+            && entry.state == ail_verify::report::VerificationState::Failed
+    }));
+}
+
+#[test]
+fn full_pipeline_validates_manifest_capabilities() {
+    let cap = GraphNode::new(NodeRef(0), NodeKind::Capability, "cap.payment.charge");
+    let graph = SemanticGraph {
+        nodes: vec![cap],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let manifest_caps = vec!["cap.payment.charge".to_string()];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &[],
+        profile: "test",
+        solver: &solver,
+        approvals: &[],
+        rules: &[],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &manifest_caps,
+    };
+
+    let report = VerificationPipeline::run(&ctx);
+
+    assert!(report.entries.iter().any(|entry| {
+        entry.claim == "21-generate-validate-manifest"
+            && entry.state == ail_verify::report::VerificationState::Proven
+    }));
 }
