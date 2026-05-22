@@ -28,6 +28,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::core_ir::{LiteralValue, StageHashes};
 
+// ── AnfMatchArm ───────────────────────────────────────────────────────────
+
+/// One arm of an `AnfExpr::Match` expression.
+///
+/// `pattern` is a string pattern (e.g. `"Ok(x)"`, `"None"`, `"_"`), matching
+/// the same convention as `MatchArm` in `CoreExpr`.
+/// `body` is the ANF expression evaluated when the pattern matches.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnfMatchArm {
+    /// Pattern string (e.g. `"Ok(x)"`, `"None"`, `"_"`).
+    pub pattern: String,
+    /// Body expression evaluated when the pattern matches.
+    pub body: AnfExpr,
+}
+
 // ── AnfExpr ───────────────────────────────────────────────────────────────
 
 /// A-Normal Form expression — all intermediate values are let-bound.
@@ -81,9 +96,64 @@ pub enum AnfExpr {
     /// Used for sequential effect calls where the individual results are
     /// discarded (or each step produces a unit).
     Seq(Vec<AnfExpr>),
-    /// Placeholder for `CoreExpr` variants not yet lowered to ANF.
+
+    // ── G20: expression body variants ────────────────────────────────────
+
+    /// Pattern matching over a variant (or any scrutinee).
     ///
-    /// Represents unhandled variants (Match, Lambda, RecordNew, etc.).
+    /// `scrutinee` is an atomic variable name — guaranteed by the lowering
+    /// pass.  Each arm carries a pattern string and a body expression.
+    Match {
+        scrutinee: String,
+        arms: Vec<AnfMatchArm>,
+    },
+
+    /// An anonymous pure or effectful function.
+    ///
+    /// `params` are parameter names.  `body` is the ANF body expression,
+    /// which may itself be a `Let`-chain.
+    Lambda {
+        params: Vec<String>,
+        body: Box<AnfExpr>,
+    },
+
+    /// Construct a record value from named field expressions.
+    ///
+    /// Fields are in declaration order.  Field expressions may be any
+    /// `AnfExpr` (they are lowered recursively, not atomized).
+    RecordNew { fields: Vec<(String, AnfExpr)> },
+
+    /// Immutable field update — returns a new record with one field replaced.
+    ///
+    /// `record` is an atomic variable name — guaranteed by the lowering pass.
+    /// `value` is the replacement expression, lowered recursively.
+    FieldUpdate {
+        record: String,
+        field: String,
+        value: Box<AnfExpr>,
+    },
+
+    /// Construct a tuple from positional expressions.
+    ///
+    /// Elements may be any `AnfExpr` (lowered recursively).
+    TupleNew(Vec<AnfExpr>),
+
+    /// Construct a variant case, optionally carrying a payload.
+    ///
+    /// `payload` is lowered recursively if present.
+    VariantNew {
+        tag: String,
+        payload: Option<Box<AnfExpr>>,
+    },
+
+    /// Construct a list from element expressions.
+    ///
+    /// Elements may be any `AnfExpr` (lowered recursively).
+    ListNew(Vec<AnfExpr>),
+
+    /// Placeholder for nodes that have no expression body yet, or for
+    /// `CoreExpr::Placeholder` nodes.
+    ///
     /// Backends treat this as a `trap`/`unreachable` stub.
     Placeholder,
 }
@@ -178,6 +248,205 @@ mod tests {
             AnfExpr::Literal(LiteralValue::Unit),
         ]);
         let _placeholder = AnfExpr::Placeholder;
+        // G20 variants
+        let _match = AnfExpr::Match {
+            scrutinee: "v".to_string(),
+            arms: vec![AnfMatchArm {
+                pattern: "Some(x)".to_string(),
+                body: AnfExpr::Var("x".to_string()),
+            }],
+        };
+        let _lambda = AnfExpr::Lambda {
+            params: vec!["x".to_string()],
+            body: Box::new(AnfExpr::Var("x".to_string())),
+        };
+        let _record = AnfExpr::RecordNew {
+            fields: vec![("amount".to_string(), AnfExpr::Literal(LiteralValue::Int(10)))],
+        };
+        let _field_update = AnfExpr::FieldUpdate {
+            record: "order".to_string(),
+            field: "status".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("Paid".to_string()))),
+        };
+        let _tuple = AnfExpr::TupleNew(vec![
+            AnfExpr::Var("a".to_string()),
+            AnfExpr::Var("b".to_string()),
+        ]);
+        let _variant = AnfExpr::VariantNew {
+            tag: "Ok".to_string(),
+            payload: Some(Box::new(AnfExpr::Var("x".to_string()))),
+        };
+        let _list = AnfExpr::ListNew(vec![AnfExpr::Literal(LiteralValue::Int(1))]);
+    }
+
+    // G20: AnfMatchArm is constructible and has correct fields.
+    #[test]
+    fn anf_match_arm_is_constructible() {
+        let arm = AnfMatchArm {
+            pattern: "None".to_string(),
+            body: AnfExpr::Literal(LiteralValue::Unit),
+        };
+        assert_eq!(arm.pattern, "None");
+        assert_eq!(arm.body, AnfExpr::Literal(LiteralValue::Unit));
+    }
+
+    // G20: AnfExpr::Match — scrutinee is a String (atomic name).
+    #[test]
+    fn anf_match_scrutinee_is_atomic_string() {
+        let expr = AnfExpr::Match {
+            scrutinee: "payment".to_string(),
+            arms: vec![AnfMatchArm {
+                pattern: "Ok(r)".to_string(),
+                body: AnfExpr::Var("r".to_string()),
+            }],
+        };
+        if let AnfExpr::Match { scrutinee, arms } = &expr {
+            assert_eq!(scrutinee, "payment");
+            assert_eq!(arms.len(), 1);
+            assert_eq!(arms[0].pattern, "Ok(r)");
+        } else {
+            panic!("expected Match variant");
+        }
+    }
+
+    // G20: AnfExpr::Match CBOR round-trip.
+    #[test]
+    fn anf_match_cbor_round_trip() {
+        let expr = AnfExpr::Match {
+            scrutinee: "result".to_string(),
+            arms: vec![
+                AnfMatchArm {
+                    pattern: "Ok(v)".to_string(),
+                    body: AnfExpr::Var("v".to_string()),
+                },
+                AnfMatchArm {
+                    pattern: "Err(e)".to_string(),
+                    body: AnfExpr::Var("e".to_string()),
+                },
+            ],
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::Match must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::Lambda — params and body are correct.
+    #[test]
+    fn anf_lambda_fields_are_correct() {
+        let expr = AnfExpr::Lambda {
+            params: vec!["x".to_string(), "y".to_string()],
+            body: Box::new(AnfExpr::Var("x".to_string())),
+        };
+        if let AnfExpr::Lambda { params, body } = &expr {
+            assert_eq!(params, &["x", "y"]);
+            assert_eq!(**body, AnfExpr::Var("x".to_string()));
+        } else {
+            panic!("expected Lambda variant");
+        }
+    }
+
+    // G20: AnfExpr::Lambda CBOR round-trip.
+    #[test]
+    fn anf_lambda_cbor_round_trip() {
+        let expr = AnfExpr::Lambda {
+            params: vec!["a".to_string()],
+            body: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::Lambda must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::RecordNew CBOR round-trip.
+    #[test]
+    fn anf_record_new_cbor_round_trip() {
+        let expr = AnfExpr::RecordNew {
+            fields: vec![
+                ("name".to_string(), AnfExpr::Literal(LiteralValue::Text("Alice".to_string()))),
+                ("age".to_string(), AnfExpr::Literal(LiteralValue::Int(30))),
+            ],
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::RecordNew must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::FieldUpdate — record is an atomic String.
+    #[test]
+    fn anf_field_update_record_is_atomic_string() {
+        let expr = AnfExpr::FieldUpdate {
+            record: "order".to_string(),
+            field: "status".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("Paid".to_string()))),
+        };
+        if let AnfExpr::FieldUpdate { record, field, .. } = &expr {
+            assert_eq!(record, "order");
+            assert_eq!(field, "status");
+        } else {
+            panic!("expected FieldUpdate variant");
+        }
+    }
+
+    // G20: AnfExpr::FieldUpdate CBOR round-trip.
+    #[test]
+    fn anf_field_update_cbor_round_trip() {
+        let expr = AnfExpr::FieldUpdate {
+            record: "rec".to_string(),
+            field: "x".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(99))),
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::FieldUpdate must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::TupleNew CBOR round-trip.
+    #[test]
+    fn anf_tuple_new_cbor_round_trip() {
+        let expr = AnfExpr::TupleNew(vec![
+            AnfExpr::Literal(LiteralValue::Int(1)),
+            AnfExpr::Literal(LiteralValue::Bool(false)),
+        ]);
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::TupleNew must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::VariantNew with payload CBOR round-trip.
+    #[test]
+    fn anf_variant_new_with_payload_cbor_round_trip() {
+        let expr = AnfExpr::VariantNew {
+            tag: "Some".to_string(),
+            payload: Some(Box::new(AnfExpr::Literal(LiteralValue::Int(42)))),
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::VariantNew with payload must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::VariantNew without payload CBOR round-trip.
+    #[test]
+    fn anf_variant_new_no_payload_cbor_round_trip() {
+        let expr = AnfExpr::VariantNew {
+            tag: "None".to_string(),
+            payload: None,
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::VariantNew without payload must survive CBOR round-trip");
+    }
+
+    // G20: AnfExpr::ListNew CBOR round-trip.
+    #[test]
+    fn anf_list_new_cbor_round_trip() {
+        let expr = AnfExpr::ListNew(vec![
+            AnfExpr::Literal(LiteralValue::Int(1)),
+            AnfExpr::Literal(LiteralValue::Int(2)),
+            AnfExpr::Literal(LiteralValue::Int(3)),
+        ]);
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: AnfExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "AnfExpr::ListNew must survive CBOR round-trip");
     }
 
     // If.cond is a String (atomic), not a nested AnfExpr.
