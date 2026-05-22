@@ -122,6 +122,20 @@ pub const E_FLOAT_EQ_IMPLICIT: &str = "E_FLOAT_EQ_IMPLICIT";
 pub const E_FLOAT_ORD_IMPLICIT: &str = "E_FLOAT_ORD_IMPLICIT";
 /// Associated type binding has empty concrete type (ty field is empty).
 pub const E_ASSOC_TYPE_EMPTY_BINDING: &str = "E_ASSOC_TYPE_EMPTY_BINDING";
+/// Generic call-site bindings do not match the callee declaration arity.
+pub const E_GENERIC_BINDING_ARITY: &str = "E_GENERIC_BINDING_ARITY";
+/// Callee effects are not propagated to the caller effect row.
+pub const E_EFFECT_NOT_PROPAGATED: &str = "E_EFFECT_NOT_PROPAGATED";
+/// Callee capabilities are not propagated to the caller capability requirements.
+pub const E_CAPABILITY_NOT_PROPAGATED: &str = "E_CAPABILITY_NOT_PROPAGATED";
+/// Structural type requirement is not satisfied by the concrete argument type.
+pub const E_STRUCTURAL_TYPE_MISMATCH: &str = "E_STRUCTURAL_TYPE_MISMATCH";
+/// Dynamic interface dispatch target does not implement the requested interface.
+pub const E_DYN_INTERFACE_UNAVAILABLE: &str = "E_DYN_INTERFACE_UNAVAILABLE";
+/// Refinement status claims proof but predicate cannot be discharged locally.
+pub const E_REFINEMENT_PROOF_UNDISCHARGED: &str = "E_REFINEMENT_PROOF_UNDISCHARGED";
+/// Runtime-checked refinement has no materialized runtime check metadata.
+pub const E_REFINEMENT_RUNTIME_CHECK_MISSING: &str = "E_REFINEMENT_RUNTIME_CHECK_MISSING";
 
 // ── Collection constraint table ───────────────────────────────────────────
 
@@ -195,8 +209,17 @@ impl TypeChecker {
         // Subpass 3 — generic param kind validation.
         Self::check_generic_params(graph, &mut entries);
 
+        // Subpass 3b — call-site generic arity/binding validation.
+        Self::check_generic_call_bindings(graph, &ctx, &mut entries);
+
+        // Subpass 3c — effects and capabilities must propagate across calls.
+        Self::check_effect_capability_propagation(graph, &ctx, &mut entries);
+
         // Subpass 4 — variance enforcement.
         Self::check_variance(graph, &ctx, &mut entries);
+
+        // Subpass 4b — structural/Dyn interface call-site checks.
+        Self::check_structural_and_dyn_calls(graph, &ctx, &mut entries);
 
         // Subpass 5 — interface coherence.
         Self::check_interface_coherence(graph, &mut entries);
@@ -259,9 +282,7 @@ impl TypeChecker {
                         claim: "type-check".into(),
                         state: VerificationState::Failed,
                         scope,
-                        evidence: Some(
-                            "E_GENERIC_ARITY: generic parameter name is empty".into(),
-                        ),
+                        evidence: Some("E_GENERIC_ARITY: generic parameter name is empty".into()),
                     }
                 } else {
                     VerificationEntry {
@@ -427,6 +448,150 @@ impl TypeChecker {
         }
     }
 
+    fn check_generic_call_bindings(
+        graph: &SemanticGraph,
+        ctx: &TypeContext<'_>,
+        entries: &mut Vec<VerificationEntry>,
+    ) {
+        for edge in &graph.edges {
+            if edge.kind != EdgeKind::Calls {
+                continue;
+            }
+            let Some(bindings) = &edge.type_arg_bindings else {
+                continue;
+            };
+            let Some(callee) = ctx.by_ref.get(&edge.target).copied() else {
+                continue;
+            };
+            let Some(generic_params) = &callee.generic_params else {
+                continue;
+            };
+
+            let declared: Vec<&str> = generic_params
+                .iter()
+                .filter(|p| p.kind == GenericParamKind::TypeParam)
+                .map(|p| p.name.as_str())
+                .collect();
+            let scope = format!("{}→{}", edge.source.0, callee.name);
+
+            let unknown = bindings
+                .iter()
+                .find(|b| !declared.iter().any(|name| *name == b.param));
+            if let Some(binding) = unknown {
+                entries.push(VerificationEntry {
+                    claim: "generic-call-binding".into(),
+                    state: VerificationState::Failed,
+                    scope,
+                    evidence: Some(format!(
+                        "{E_GENERIC_BINDING_ARITY}: call binds unknown generic '{}' on '{}'",
+                        binding.param, callee.name
+                    )),
+                });
+                continue;
+            }
+
+            if bindings.len() != declared.len() {
+                entries.push(VerificationEntry {
+                    claim: "generic-call-binding".into(),
+                    state: VerificationState::Failed,
+                    scope,
+                    evidence: Some(format!(
+                        "{E_GENERIC_BINDING_ARITY}: '{}' expects {} type generic bindings, got {}",
+                        callee.name,
+                        declared.len(),
+                        bindings.len()
+                    )),
+                });
+            } else {
+                entries.push(VerificationEntry {
+                    claim: "generic-call-binding".into(),
+                    state: VerificationState::Proven,
+                    scope,
+                    evidence: None,
+                });
+            }
+        }
+    }
+
+    fn check_effect_capability_propagation(
+        graph: &SemanticGraph,
+        ctx: &TypeContext<'_>,
+        entries: &mut Vec<VerificationEntry>,
+    ) {
+        for edge in &graph.edges {
+            if edge.kind != EdgeKind::Calls {
+                continue;
+            }
+            let Some(caller) = ctx.by_ref.get(&edge.source).copied() else {
+                continue;
+            };
+            let Some(callee) = ctx.by_ref.get(&edge.target).copied() else {
+                continue;
+            };
+            let scope = format!("{}→{}", caller.name, callee.name);
+
+            if let Some(callee_effects) = &callee.effect_row {
+                let caller_effects = caller
+                    .effect_row
+                    .as_ref()
+                    .map(|row| row.effects.as_slice())
+                    .unwrap_or(&[]);
+                if let Some(missing) = callee_effects
+                    .effects
+                    .iter()
+                    .find(|effect| !caller_effects.iter().any(|e| e == *effect))
+                {
+                    entries.push(VerificationEntry {
+                        claim: "effect-propagation".into(),
+                        state: VerificationState::Failed,
+                        scope: scope.clone(),
+                        evidence: Some(format!(
+                            "{E_EFFECT_NOT_PROPAGATED}: callee effect '{}' from '{}' is missing from caller '{}'",
+                            missing, callee.name, caller.name
+                        )),
+                    });
+                } else if !callee_effects.effects.is_empty() {
+                    entries.push(VerificationEntry {
+                        claim: "effect-propagation".into(),
+                        state: VerificationState::Proven,
+                        scope: scope.clone(),
+                        evidence: None,
+                    });
+                }
+            }
+
+            if let Some(callee_caps) = &callee.capability_reqs {
+                let caller_caps = caller
+                    .capability_reqs
+                    .as_ref()
+                    .map(|reqs| reqs.caps.as_slice())
+                    .unwrap_or(&[]);
+                if let Some(missing) = callee_caps
+                    .caps
+                    .iter()
+                    .find(|cap| !caller_caps.iter().any(|c| c == *cap))
+                {
+                    entries.push(VerificationEntry {
+                        claim: "capability-propagation".into(),
+                        state: VerificationState::Failed,
+                        scope: scope.clone(),
+                        evidence: Some(format!(
+                            "{E_CAPABILITY_NOT_PROPAGATED}: callee capability '{}' from '{}' is missing from caller '{}'",
+                            missing, callee.name, caller.name
+                        )),
+                    });
+                } else if !callee_caps.caps.is_empty() {
+                    entries.push(VerificationEntry {
+                        claim: "capability-propagation".into(),
+                        state: VerificationState::Proven,
+                        scope: scope.clone(),
+                        evidence: None,
+                    });
+                }
+            }
+        }
+    }
+
     // ── Subpass 4: Variance enforcement ──────────────────────────────────
 
     fn check_variance(
@@ -476,6 +641,76 @@ impl TypeChecker {
                              use an explicit adapter/constraint instead",
                             param.ty
                         )),
+                    });
+                }
+            }
+        }
+    }
+
+    fn check_structural_and_dyn_calls(
+        graph: &SemanticGraph,
+        ctx: &TypeContext<'_>,
+        entries: &mut Vec<VerificationEntry>,
+    ) {
+        for edge in &graph.edges {
+            if edge.kind != EdgeKind::Calls {
+                continue;
+            }
+            let Some(call_args) = &edge.call_args else {
+                continue;
+            };
+            let Some(callee) = ctx.by_ref.get(&edge.target).copied() else {
+                continue;
+            };
+            let Some(params) = &callee.params else {
+                continue;
+            };
+
+            for (idx, (arg_ty, param)) in call_args.iter().zip(params.iter()).enumerate() {
+                let scope = format!("{}→{}[{}]", edge.source.0, callee.name, idx);
+                if let Some(required) = structural_fields(&param.ty) {
+                    if structural_type_satisfies(ctx, arg_ty, &required) {
+                        entries.push(VerificationEntry {
+                            claim: "structural-type".into(),
+                            state: VerificationState::Proven,
+                            scope: scope.clone(),
+                            evidence: None,
+                        });
+                    } else {
+                        entries.push(VerificationEntry {
+                            claim: "structural-type".into(),
+                            state: VerificationState::Failed,
+                            scope: scope.clone(),
+                            evidence: Some(format!(
+                                "{E_STRUCTURAL_TYPE_MISMATCH}: argument type '{}' does not satisfy structural requirement '{}'",
+                                arg_ty, param.ty
+                            )),
+                        });
+                    }
+                }
+
+                if let Some(interface) = dyn_interface(&param.ty) {
+                    let implements = ctx
+                        .get_by_name(arg_ty)
+                        .and_then(|node| node.interface_impls.as_ref())
+                        .map(|impls| impls.iter().any(|impl_| impl_.interface == interface))
+                        .unwrap_or(false);
+                    entries.push(VerificationEntry {
+                        claim: "dyn-interface".into(),
+                        state: if implements {
+                            VerificationState::Proven
+                        } else {
+                            VerificationState::Failed
+                        },
+                        scope,
+                        evidence: if implements {
+                            None
+                        } else {
+                            Some(format!(
+                                "{E_DYN_INTERFACE_UNAVAILABLE}: argument type '{}' has no impl for Dyn<{}>",
+                                arg_ty, interface
+                            ))
+                        },
                     });
                 }
             }
@@ -608,7 +843,10 @@ impl TypeChecker {
                 let needs_eq = gp.required_constraints.iter().any(|c| c == "Eq");
                 let needs_hash = gp.required_constraints.iter().any(|c| c == "Hashable");
                 let needs_ord = gp.required_constraints.iter().any(|c| c == "Ord");
-                let scope = format!("{}→{}[{}={}]", edge.source.0, callee.name, binding.param, binding.ty);
+                let scope = format!(
+                    "{}→{}[{}={}]",
+                    edge.source.0, callee.name, binding.param, binding.ty
+                );
                 Self::emit_constraint_check_for_scope(
                     ctx,
                     &binding.ty,
@@ -632,7 +870,9 @@ impl TypeChecker {
         entries: &mut Vec<VerificationEntry>,
     ) {
         let scope = format!("{node_name}<{type_arg}>");
-        Self::emit_constraint_check_for_scope(ctx, type_arg, &scope, needs_eq, needs_hash, needs_ord, entries);
+        Self::emit_constraint_check_for_scope(
+            ctx, type_arg, &scope, needs_eq, needs_hash, needs_ord, entries,
+        );
     }
 
     fn emit_constraint_check_for_scope(
@@ -833,7 +1073,7 @@ impl TypeChecker {
             };
 
             // Map RefinementStatus to VerificationState.
-            let state = match rf.status {
+            let mut state = match rf.status {
                 ail_core::semantic_graph::RefinementStatus::Proven => VerificationState::Proven,
                 ail_core::semantic_graph::RefinementStatus::RuntimeChecked => {
                     VerificationState::RuntimeChecked
@@ -844,15 +1084,60 @@ impl TypeChecker {
                 }
                 ail_core::semantic_graph::RefinementStatus::Failed => VerificationState::Failed,
             };
+            let mut evidence = format!("predicate: '{}'; base: '{}'", rf.predicate, rf.base_type);
+
+            if matches!(
+                rf.status,
+                ail_core::semantic_graph::RefinementStatus::Proven
+            ) {
+                match rf.predicate.trim() {
+                    "true" => {}
+                    "false" | "" => {
+                        state = VerificationState::Failed;
+                        evidence = format!(
+                            "{E_REFINEMENT_PROOF_UNDISCHARGED}: proven refinement '{}' cannot be discharged locally",
+                            rf.predicate
+                        );
+                    }
+                    _ => {
+                        if node.contract_clauses.as_ref().map(|clauses| {
+                            clauses
+                                .ensures
+                                .iter()
+                                .any(|p| p.trim() == rf.predicate.trim())
+                        }) != Some(true)
+                        {
+                            state = VerificationState::Unverified;
+                            evidence = format!(
+                                "{E_REFINEMENT_PROOF_UNDISCHARGED}: refinement '{}' has no matching ensures clause or literal proof",
+                                rf.predicate
+                            );
+                        }
+                    }
+                }
+            }
+
+            if matches!(
+                rf.status,
+                ail_core::semantic_graph::RefinementStatus::RuntimeChecked
+            ) && node
+                .runtime_checks
+                .as_ref()
+                .map(|checks| checks.is_empty())
+                .unwrap_or(true)
+            {
+                state = VerificationState::Failed;
+                evidence = format!(
+                    "{E_REFINEMENT_RUNTIME_CHECK_MISSING}: runtime-checked refinement '{}' has no materialized runtime check",
+                    rf.predicate
+                );
+            }
 
             entries.push(VerificationEntry {
                 claim: "refinement".into(),
                 state,
                 scope: node.name.clone(),
-                evidence: Some(format!(
-                    "predicate: '{}'; base: '{}'",
-                    rf.predicate, rf.base_type
-                )),
+                evidence: Some(evidence),
             });
 
             // Emit explicit erasure entry if the refinement was downgraded.
@@ -878,10 +1163,7 @@ impl TypeChecker {
 /// Returns `true` when `name` is a simple decidable identifier:
 /// letters, digits, or underscores only — no spaces, operators, or brackets.
 fn is_simple_identifier(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_')
+    !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// Split `"Base<Inner>"` into `("Base", "Inner")`.
@@ -897,14 +1179,60 @@ fn split_generic(ty: &str) -> (&str, &str) {
     }
 }
 
+fn dyn_interface(ty: &str) -> Option<&str> {
+    ty.strip_prefix("Dyn<")
+        .and_then(|rest| rest.strip_suffix('>'))
+        .map(str::trim)
+        .filter(|interface| !interface.is_empty())
+}
+
+fn structural_fields(ty: &str) -> Option<Vec<String>> {
+    let body = ty
+        .strip_prefix("struct{")
+        .and_then(|rest| rest.strip_suffix('}'))?;
+    let fields: Vec<String> = body
+        .split(',')
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+        .map(str::to_string)
+        .collect();
+    if fields.is_empty() {
+        None
+    } else {
+        Some(fields)
+    }
+}
+
+fn structural_type_satisfies(ctx: &TypeContext<'_>, arg_ty: &str, required: &[String]) -> bool {
+    if let Some(actual) = structural_fields(arg_ty) {
+        return required
+            .iter()
+            .all(|field| actual.iter().any(|a| a == field));
+    }
+    let Some(node) = ctx.get_by_name(arg_ty) else {
+        return false;
+    };
+    let Some(constraints) = &node.constraint_set else {
+        return false;
+    };
+    required.iter().all(|field| {
+        constraints.extras.iter().any(|extra| {
+            extra == field
+                || extra
+                    .strip_prefix("field:")
+                    .map(|declared| declared == field)
+                    .unwrap_or(false)
+        })
+    })
+}
+
 /// Build `SummaryCounts` from the entry list.
 fn build_summary_counts(entries: &[VerificationEntry]) -> SummaryCounts {
     SummaryCounts {
         verified_count: entries
             .iter()
             .filter(|e| {
-                e.state == VerificationState::Proven
-                    || e.state == VerificationState::RuntimeChecked
+                e.state == VerificationState::Proven || e.state == VerificationState::RuntimeChecked
             })
             .count(),
         runtime_checked_count: entries

@@ -55,7 +55,7 @@ use ail_change::{
     model::SnapshotId,
     parser::parse_changeset,
 };
-use ail_compiler::{AnfExpr, LiteralValue, emit_wasm, lower_to_anf, lower_to_core_ir};
+use ail_compiler::{emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir};
 use ail_core::semantic_graph::SemanticGraph;
 use ail_runtime::{
     CapabilityManifest, ResourceLimits, RuntimeHost, RuntimeProfile, RuntimeValue, blake3_hex_of,
@@ -384,9 +384,10 @@ pub async fn run() -> Result<(), CliError> {
             cmd_rollback(mode, to.as_deref(), change_id.as_deref(), &store).await
         }
         Commands::Rebase { change_id, onto } => cmd_rebase(mode, &change_id, &onto),
-        Commands::Merge { branch, into_target } => {
-            cmd_merge(mode, &branch, &into_target, &store).await
-        }
+        Commands::Merge {
+            branch,
+            into_target,
+        } => cmd_merge(mode, &branch, &into_target, &store).await,
         Commands::Refactor { operation, args } => cmd_refactor(mode, &operation, &args),
         Commands::Approve {
             change_id,
@@ -486,11 +487,7 @@ async fn cmd_context(
 ///
 /// Returns which nodes are transitively affected by changes to this target.
 /// Output is hash-bound to the current snapshot.
-async fn cmd_impact(
-    mode: OutputMode,
-    target: &str,
-    store: &StoreHandle,
-) -> Result<(), CliError> {
+async fn cmd_impact(mode: OutputMode, target: &str, store: &StoreHandle) -> Result<(), CliError> {
     let snapshots = store.list_snapshots().await?;
     let snapshot_id = snapshots
         .last()
@@ -503,9 +500,8 @@ async fn cmd_impact(
 
     // Impact analysis: currently empty graph — no transitive dependents.
     let affected: Vec<Value> = vec![];
-    let human_msg = format!(
-        "target: {target}\nsnapshot: {snapshot_id}\nhash: {snapshot_hash}\naffected: 0"
-    );
+    let human_msg =
+        format!("target: {target}\nsnapshot: {snapshot_id}\nhash: {snapshot_hash}\naffected: 0");
     print_response(
         mode,
         &human_msg,
@@ -522,11 +518,7 @@ async fn cmd_impact(
 /// `ail callers <target>` — list all callers of a function/node target.
 ///
 /// Output is hash-bound to the current snapshot.
-async fn cmd_callers(
-    mode: OutputMode,
-    target: &str,
-    store: &StoreHandle,
-) -> Result<(), CliError> {
+async fn cmd_callers(mode: OutputMode, target: &str, store: &StoreHandle) -> Result<(), CliError> {
     let snapshots = store.list_snapshots().await?;
     let snapshot_id = snapshots
         .last()
@@ -538,9 +530,8 @@ async fn cmd_callers(
         .unwrap_or_else(|| "(no hash)".to_string());
 
     let callers: Vec<Value> = vec![];
-    let human_msg = format!(
-        "target: {target}\nsnapshot: {snapshot_id}\nhash: {snapshot_hash}\ncallers: 0"
-    );
+    let human_msg =
+        format!("target: {target}\nsnapshot: {snapshot_id}\nhash: {snapshot_hash}\ncallers: 0");
     print_response(
         mode,
         &human_msg,
@@ -557,11 +548,7 @@ async fn cmd_callers(
 /// `ail effects <target>` — show effects emitted by a module target.
 ///
 /// Output is hash-bound to the current snapshot.
-async fn cmd_effects(
-    mode: OutputMode,
-    target: &str,
-    store: &StoreHandle,
-) -> Result<(), CliError> {
+async fn cmd_effects(mode: OutputMode, target: &str, store: &StoreHandle) -> Result<(), CliError> {
     let snapshots = store.list_snapshots().await?;
     let snapshot_id = snapshots
         .last()
@@ -573,9 +560,8 @@ async fn cmd_effects(
         .unwrap_or_else(|| "(no hash)".to_string());
 
     let effects: Vec<Value> = vec![];
-    let human_msg = format!(
-        "target: {target}\nsnapshot: {snapshot_id}\nhash: {snapshot_hash}\neffects: 0"
-    );
+    let human_msg =
+        format!("target: {target}\nsnapshot: {snapshot_id}\nhash: {snapshot_hash}\neffects: 0");
     print_response(
         mode,
         &human_msg,
@@ -592,11 +578,7 @@ async fn cmd_effects(
 /// `ail proofs <target>` — show proof obligations for an invariant target.
 ///
 /// Output is hash-bound to the current snapshot.
-async fn cmd_proofs(
-    mode: OutputMode,
-    target: &str,
-    store: &StoreHandle,
-) -> Result<(), CliError> {
+async fn cmd_proofs(mode: OutputMode, target: &str, store: &StoreHandle) -> Result<(), CliError> {
     let snapshots = store.list_snapshots().await?;
     let snapshot_id = snapshots
         .last()
@@ -925,10 +907,11 @@ fn cmd_compile(mode: OutputMode, profile: &str, target: &str) -> Result<(), CliE
     let core = lower_to_core_ir(&graph, &report)
         .map_err(|e| CliError::Domain(format!("compile (core ir): {e:?}")))?;
 
-    let anf = lower_to_anf(&core).map_err(|e| CliError::Domain(format!("compile (anf): {e:?}")))?;
+    let anf = lower_to_anf_with_graph(&core, &graph)
+        .map_err(|e| CliError::Domain(format!("compile (anf): {e:?}")))?;
 
-    let artifact =
-        emit_wasm(&anf).map_err(|e| CliError::Domain(format!("compile (wasm): {e:?}")))?;
+    let artifact = emit_wasm_with_profile(&anf, profile)
+        .map_err(|e| CliError::Domain(format!("compile (wasm): {e:?}")))?;
 
     let wasm_hash = artifact
         .hash_chain
@@ -943,20 +926,10 @@ fn cmd_compile(mode: OutputMode, profile: &str, target: &str) -> Result<(), CliE
         "requires": [],
         "hash": wasm_hash,
     });
-    // Semantic source map.
-    let semantic_source_map = json!({
-        "profile": profile,
-        "target": target,
-        "entries": [],
-    });
-    // Artifact manifest.
-    let artifact_manifest = json!({
-        "profile": profile,
-        "target": target,
-        "wasm_hash": wasm_hash,
-        "wasm_bytes": wasm_size,
-        "profile_bound": profile,
-    });
+    let semantic_source_map: Value = serde_json::from_slice(&artifact.source_map_json)
+        .map_err(|e| CliError::Domain(format!("compile (source map sidecar): {e}")))?;
+    let artifact_manifest: Value = serde_json::from_slice(&artifact.artifact_manifest_json)
+        .map_err(|e| CliError::Domain(format!("compile (artifact sidecar): {e}")))?;
     // Compiler report.
     let compiler_report = json!({
         "profile": profile,
@@ -1007,8 +980,10 @@ fn cmd_run(
 
     let core = lower_to_core_ir(&graph, &report)
         .map_err(|e| CliError::Domain(format!("run (core ir): {e:?}")))?;
-    let anf = lower_to_anf(&core).map_err(|e| CliError::Domain(format!("run (anf): {e:?}")))?;
-    let artifact = emit_wasm(&anf).map_err(|e| CliError::Domain(format!("run (wasm): {e:?}")))?;
+    let anf = lower_to_anf_with_graph(&core, &graph)
+        .map_err(|e| CliError::Domain(format!("run (anf): {e:?}")))?;
+    let artifact = emit_wasm_with_profile(&anf, profile)
+        .map_err(|e| CliError::Domain(format!("run (wasm): {e:?}")))?;
 
     let module_name = module.unwrap_or("(default)");
     let manifest = CapabilityManifest {
@@ -1041,10 +1016,7 @@ fn cmd_run(
 
             // Derive the WASM export name from the module target.
             // Convention: "fn.answer" → export "answer" (last segment, sanitised).
-            let export_name = module_name
-                .rsplit('.')
-                .next()
-                .unwrap_or(module_name);
+            let export_name = module_name.rsplit('.').next().unwrap_or(module_name);
 
             // Try to invoke the export; if it doesn't exist, fall back to preflight-only.
             let invoke_result = instance.invoke(export_name, &[]);
@@ -1176,8 +1148,7 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError>
     // Write runtime profiles baseline.
     let profiles_path = ctx.ail_dir.join("runtime_profiles.toml");
     if !profiles_path.exists() {
-        let profiles_content =
-            "[profiles]\ndev = { max_memory_bytes = \"unlimited\", max_fuel = \"unlimited\" }\nprod = { max_memory_bytes = \"128mb\", max_fuel = \"1000000\" }\n";
+        let profiles_content = "[profiles]\ndev = { max_memory_bytes = \"unlimited\", max_fuel = \"unlimited\" }\nprod = { max_memory_bytes = \"128mb\", max_fuel = \"1000000\" }\n";
         std::fs::write(&profiles_path, profiles_content)?;
     }
 
@@ -1362,9 +1333,8 @@ async fn cmd_inspect(
         }
         "report" => {
             // Inspect verification report by id.
-            let human_msg = format!(
-                "type: report\nid: {id}\nstatus: accepted\nentries: 0\ndiagnostics: 0"
-            );
+            let human_msg =
+                format!("type: report\nid: {id}\nstatus: accepted\nentries: 0\ndiagnostics: 0");
             print_response(
                 mode,
                 &human_msg,
@@ -1425,7 +1395,8 @@ async fn cmd_inspect(
                     let change_hex = snap.applied_change_id.map(|c| c.to_hex());
                     let human_msg = format!(
                         "type: snapshot\nid: {}\ngraph_root: {}\nparent: {}\napplied_change: {}\ncreated_at: {}",
-                        snap.id, snap.graph_root_hash,
+                        snap.id,
+                        snap.graph_root_hash,
                         parent_hex.as_deref().unwrap_or("(none)"),
                         change_hex.as_deref().unwrap_or("(none)"),
                         snap.created_at,
@@ -1637,9 +1608,7 @@ async fn cmd_rollback(
         (Some(snap_id), _) => {
             // Rollback to snapshot by id.
             if !is_valid_change_id(snap_id) {
-                return Err(CliError::NotFound(format!(
-                    "snapshot not found: {snap_id}"
-                )));
+                return Err(CliError::NotFound(format!("snapshot not found: {snap_id}")));
             }
             let oid = hex_to_object_id(snap_id)?;
             let new_envelope = SnapshotEnvelope {
@@ -1674,9 +1643,7 @@ async fn cmd_rollback(
                 return Err(CliError::NotFound(format!("change-id not found: {cid}")));
             }
             let new_envelope = SnapshotEnvelope {
-                id: ObjectId::from_bytes(
-                    &format!("rollback-change-{cid}").into_bytes(),
-                ),
+                id: ObjectId::from_bytes(&format!("rollback-change-{cid}").into_bytes()),
                 graph_root_hash: ObjectId::from_bytes(b"rollback-graph-root"),
                 parent_id,
                 applied_change_id: None,
@@ -1735,9 +1702,8 @@ fn cmd_rebase(mode: OutputMode, change_id: &str, onto: &str) -> Result<(), CliEr
         "repair_options_count": repair_options.len(),
     });
 
-    let human_msg = format!(
-        "rebased {change_id} onto {onto}\nconflicts: 0\nrepair_options: 0\nstatus: ok"
-    );
+    let human_msg =
+        format!("rebased {change_id} onto {onto}\nconflicts: 0\nrepair_options: 0\nstatus: ok");
     print_response(
         mode,
         &human_msg,
@@ -1768,9 +1734,7 @@ async fn cmd_merge(
     let repair_options: Vec<Value> = vec![];
 
     let new_envelope = SnapshotEnvelope {
-        id: ObjectId::from_bytes(
-            &format!("merge-{branch}-into-{into_target}").into_bytes(),
-        ),
+        id: ObjectId::from_bytes(&format!("merge-{branch}-into-{into_target}").into_bytes()),
         graph_root_hash: ObjectId::from_bytes(b"merged-graph-root"),
         parent_id,
         applied_change_id: None,
@@ -1910,9 +1874,8 @@ fn cmd_reject(mode: OutputMode, change_id: &str, reason: &str) -> Result<(), Cli
         bytes_to_hex(hash.as_bytes())
     };
 
-    let human_msg = format!(
-        "rejected {change_id}\nreason: {reason}\nrecord_id: {record_id}\nimmutable: true"
-    );
+    let human_msg =
+        format!("rejected {change_id}\nreason: {reason}\nrecord_id: {record_id}\nimmutable: true");
     print_response(
         mode,
         &human_msg,
@@ -1988,7 +1951,8 @@ fn cmd_policy(mode: OutputMode, cmd: PolicyCmd) -> Result<(), CliError> {
         PolicyCmd::Set { setting } => {
             // Parse key=value.
             let (key, value) = setting.split_once('=').unwrap_or((&setting, ""));
-            let human_msg = format!("policy updated: {key}={value}\nnote: policy changes are admin records");
+            let human_msg =
+                format!("policy updated: {key}={value}\nnote: policy changes are admin records");
             print_response(
                 mode,
                 &human_msg,
@@ -2035,7 +1999,8 @@ fn cmd_package(mode: OutputMode, cmd: PackageCmd) -> Result<(), CliError> {
             );
         }
         PackageCmd::Verify => {
-            let human_msg = "packages: all verified\nhash_integrity: ok\nlock_file: consistent".to_string();
+            let human_msg =
+                "packages: all verified\nhash_integrity: ok\nlock_file: consistent".to_string();
             print_response(
                 mode,
                 &human_msg,
@@ -2337,7 +2302,10 @@ mod tests {
     fn cmd_verify_prod_profile_has_approval_requirements() {
         let id = "a".repeat(64);
         let result = cmd_verify(OutputMode::Json, &id, "prod");
-        assert!(result.is_ok(), "cmd_verify prod must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "cmd_verify prod must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_compile succeeds with an empty graph (exit 0).
@@ -2361,7 +2329,10 @@ mod tests {
     #[test]
     fn cmd_compile_native_target_succeeds() {
         let result = cmd_compile(OutputMode::Human, "prod", "native");
-        assert!(result.is_ok(), "cmd_compile native must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "cmd_compile native must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_run succeeds when preflight passes (exit 0).
@@ -2375,14 +2346,20 @@ mod tests {
     #[test]
     fn cmd_run_with_module_succeeds() {
         let result = cmd_run(OutputMode::Human, "dev", Some("module.checkout"), None);
-        assert!(result.is_ok(), "cmd_run with module must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "cmd_run with module must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_run with replay succeeds.
     #[test]
     fn cmd_run_with_replay_succeeds() {
         let result = cmd_run(OutputMode::Human, "test", None, Some("trace_123"));
-        assert!(result.is_ok(), "cmd_run with replay must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "cmd_run with replay must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: hex_to_object_id roundtrip.
@@ -2416,7 +2393,10 @@ mod tests {
         use crate::store::memory_store;
         let store = memory_store();
         let result = cmd_context(OutputMode::Human, Some("fn.checkout"), &store).await;
-        assert!(result.is_ok(), "cmd_context with target must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "cmd_context with target must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_impact returns snapshot-bound result.
@@ -2555,7 +2535,10 @@ mod tests {
         let store = memory_store();
         let change_id = "c".repeat(64);
         let result = cmd_rollback(OutputMode::Human, None, Some(&change_id), &store).await;
-        assert!(result.is_ok(), "rollback-by-change must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "rollback-by-change must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_rollback with no args returns Domain error.
@@ -2582,7 +2565,11 @@ mod tests {
         let result = cmd_refactor(
             OutputMode::Human,
             "extract-function",
-            &["fn.checkout".to_string(), "--to".to_string(), "fn.pay".to_string()],
+            &[
+                "fn.checkout".to_string(),
+                "--to".to_string(),
+                "fn.pay".to_string(),
+            ],
         );
         assert!(result.is_ok(), "cmd_refactor must succeed; got: {result:?}");
     }
@@ -2626,7 +2613,10 @@ mod tests {
                 rule: "no_unverified_public_api".to_string(),
             },
         );
-        assert!(result.is_ok(), "policy explain must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "policy explain must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_package add shows trust/capabilities/advisories.
@@ -2650,7 +2640,10 @@ mod tests {
                 package: "payments.stripe".to_string(),
             },
         );
-        assert!(result.is_ok(), "package explain must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "package explain must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_doctor returns all seven checks with status.
@@ -2675,7 +2668,10 @@ mod tests {
         use crate::store::memory_store;
         let store = memory_store();
         let result = cmd_inspect(OutputMode::Human, "report", "ver_123", &store).await;
-        assert!(result.is_ok(), "inspect report must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "inspect report must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_inspect artifact returns name/hash/profile.
@@ -2684,7 +2680,10 @@ mod tests {
         use crate::store::memory_store;
         let store = memory_store();
         let result = cmd_inspect(OutputMode::Human, "artifact", "checkout.wasm", &store).await;
-        assert!(result.is_ok(), "inspect artifact must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "inspect artifact must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_inspect capability returns provider/granted/assumptions.
@@ -2699,7 +2698,10 @@ mod tests {
             &store,
         )
         .await;
-        assert!(result.is_ok(), "inspect capability must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "inspect capability must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_diff with range notation returns semantic diff.
@@ -2723,7 +2725,10 @@ mod tests {
         use crate::store::memory_store;
         let store = memory_store();
         let result = cmd_diff(OutputMode::Human, "change.add_checkout", true, &store).await;
-        assert!(result.is_ok(), "semantic diff must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "semantic diff must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: make_text_changeset creates a ChangeSet from text.

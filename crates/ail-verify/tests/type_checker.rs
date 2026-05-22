@@ -40,17 +40,21 @@
 //   - Refinement with erased=true → additional "refinement-erasure" entry
 //   - Refinement with status Failed → VerificationState::Failed
 
+use ail_core::semantic_graph::EdgeKind;
 use ail_core::semantic_graph::{
-    AssociatedTypeBinding, ConstraintSet, GenericParamDecl, GenericParamKind, GraphEdge,
-    GraphNode, InterfaceImplMeta, NodeKind, NodeRef, ParamDecl, RefinementRef, RefinementStatus,
-    SemanticGraph, TypeArgBinding, TypeFacts,
+    AssociatedTypeBinding, CapabilityReqs, ConstraintSet, ContractClauses, EffectRow,
+    GenericParamDecl, GenericParamKind, GraphEdge, GraphNode, InterfaceImplMeta, NodeKind, NodeRef,
+    ParamDecl, RefinementRef, RefinementStatus, RuntimeCheckMeta, SemanticGraph, TypeArgBinding,
+    TypeFacts,
 };
 use ail_verify::report::VerificationState;
 use ail_verify::type_checker::{
-    TypeChecker, E_CAPABILITY_PARAM_WIDENED, E_COHERENCE_DUPLICATE, E_EFFECT_PARAM_WIDENED,
-    E_MISSING_HASH, E_MISSING_ORD, E_NOMINAL_MISMATCH, E_VARIANCE_COERCION,
+    E_CAPABILITY_NOT_PROPAGATED, E_CAPABILITY_PARAM_WIDENED, E_COHERENCE_DUPLICATE,
+    E_DYN_INTERFACE_UNAVAILABLE, E_EFFECT_NOT_PROPAGATED, E_EFFECT_PARAM_WIDENED,
+    E_GENERIC_BINDING_ARITY, E_MISSING_HASH, E_MISSING_ORD, E_NOMINAL_MISMATCH,
+    E_REFINEMENT_PROOF_UNDISCHARGED, E_REFINEMENT_RUNTIME_CHECK_MISSING,
+    E_STRUCTURAL_TYPE_MISMATCH, E_VARIANCE_COERCION, TypeChecker,
 };
-use ail_core::semantic_graph::EdgeKind;
 
 fn graph_from(nodes: Vec<GraphNode>) -> SemanticGraph {
     SemanticGraph {
@@ -211,6 +215,187 @@ fn fn_node(id: u32, name: &str) -> GraphNode {
     GraphNode::new(NodeRef(id), NodeKind::Function, name)
 }
 
+#[test]
+fn generic_call_missing_binding_fails_arity_validation() {
+    let caller = fn_node(0, "caller");
+    let mut callee = fn_node(1, "make_pair");
+    callee.generic_params = Some(vec![
+        GenericParamDecl {
+            name: "K".into(),
+            kind: GenericParamKind::TypeParam,
+            required_constraints: vec![],
+        },
+        GenericParamDecl {
+            name: "V".into(),
+            kind: GenericParamKind::TypeParam,
+            required_constraints: vec![],
+        },
+    ]);
+    let edge = GraphEdge {
+        source: NodeRef(0),
+        target: NodeRef(1),
+        kind: EdgeKind::Calls,
+        call_args: None,
+        type_arg_bindings: Some(vec![TypeArgBinding {
+            param: "K".into(),
+            ty: "Text".into(),
+        }]),
+    };
+
+    let report = TypeChecker::check(&graph_with_edges(vec![caller, callee], vec![edge]));
+    assert!(report.entries.iter().any(|entry| {
+        entry.claim == "generic-call-binding"
+            && entry.state == VerificationState::Failed
+            && entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains(E_GENERIC_BINDING_ARITY)
+    }));
+}
+
+#[test]
+fn callee_effects_and_capabilities_must_propagate_to_caller() {
+    let mut caller = fn_node(0, "caller");
+    caller.effect_row = Some(EffectRow { effects: vec![] });
+    caller.capability_reqs = Some(CapabilityReqs { caps: vec![] });
+    let mut callee = fn_node(1, "charge");
+    callee.effect_row = Some(EffectRow {
+        effects: vec!["IO".into()],
+    });
+    callee.capability_reqs = Some(CapabilityReqs {
+        caps: vec!["payments:charge".into()],
+    });
+    let edge = GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls);
+
+    let report = TypeChecker::check(&graph_with_edges(vec![caller, callee], vec![edge]));
+    assert!(report.entries.iter().any(|entry| {
+        entry.claim == "effect-propagation"
+            && entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains(E_EFFECT_NOT_PROPAGATED)
+    }));
+    assert!(report.entries.iter().any(|entry| {
+        entry.claim == "capability-propagation"
+            && entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains(E_CAPABILITY_NOT_PROPAGATED)
+    }));
+}
+
+#[test]
+fn structural_type_and_dyn_interface_fail_when_unavailable() {
+    let caller = fn_node(0, "caller");
+    let mut callee = fn_node(1, "render");
+    callee.params = Some(vec![
+        ParamDecl {
+            name: "item".into(),
+            ty: "struct{id:Int,name:Text}".into(),
+        },
+        ParamDecl {
+            name: "service".into(),
+            ty: "Dyn<Chargeable>".into(),
+        },
+    ]);
+    let user = type_node(2, "User");
+    let payment = type_node(3, "PaymentService");
+    let edge = GraphEdge {
+        source: NodeRef(0),
+        target: NodeRef(1),
+        kind: EdgeKind::Calls,
+        call_args: Some(vec!["User".into(), "PaymentService".into()]),
+        type_arg_bindings: None,
+    };
+
+    let report = TypeChecker::check(&graph_with_edges(
+        vec![caller, callee, user, payment],
+        vec![edge],
+    ));
+    assert!(report.entries.iter().any(|entry| {
+        entry.claim == "structural-type"
+            && entry.state == VerificationState::Failed
+            && entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains(E_STRUCTURAL_TYPE_MISMATCH)
+    }));
+    assert!(report.entries.iter().any(|entry| {
+        entry.claim == "dyn-interface"
+            && entry.state == VerificationState::Failed
+            && entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains(E_DYN_INTERFACE_UNAVAILABLE)
+    }));
+}
+
+#[test]
+fn refinement_proven_requires_local_discharge_and_runtime_checked_requires_check() {
+    let mut claimed_proven = type_node(0, "PositiveInt");
+    claimed_proven.refinement_ref = Some(RefinementRef {
+        base_type: "Int".into(),
+        predicate: "value > 0".into(),
+        status: RefinementStatus::Proven,
+        erased: false,
+    });
+    let mut runtime_checked = type_node(1, "NonEmptyText");
+    runtime_checked.refinement_ref = Some(RefinementRef {
+        base_type: "Text".into(),
+        predicate: "len(value) > 0".into(),
+        status: RefinementStatus::RuntimeChecked,
+        erased: false,
+    });
+    runtime_checked.runtime_checks = Some(vec![]);
+    let mut discharged = type_node(2, "AlwaysTrue");
+    discharged.refinement_ref = Some(RefinementRef {
+        base_type: "Bool".into(),
+        predicate: "true".into(),
+        status: RefinementStatus::Proven,
+        erased: false,
+    });
+    discharged.runtime_checks = Some(vec![RuntimeCheckMeta {
+        predicate: "true".into(),
+        hash: "h".into(),
+    }]);
+
+    let report = TypeChecker::check(&graph_from(vec![
+        claimed_proven,
+        runtime_checked,
+        discharged,
+    ]));
+    assert!(report.entries.iter().any(|entry| {
+        entry.scope == "PositiveInt"
+            && entry.claim == "refinement"
+            && entry.state == VerificationState::Unverified
+            && entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains(E_REFINEMENT_PROOF_UNDISCHARGED)
+    }));
+    assert!(report.entries.iter().any(|entry| {
+        entry.scope == "NonEmptyText"
+            && entry.claim == "refinement"
+            && entry.state == VerificationState::Failed
+            && entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains(E_REFINEMENT_RUNTIME_CHECK_MISSING)
+    }));
+    assert!(report.entries.iter().any(|entry| {
+        entry.scope == "AlwaysTrue"
+            && entry.claim == "refinement"
+            && entry.state == VerificationState::Proven
+    }));
+}
+
 // ── Subpass 2: Nominal call check ────────────────────────────────────────
 
 // Spec scenario 1: "Passing OrderId to load_user(UserId) fails"
@@ -262,10 +447,7 @@ fn nominal_mismatch_at_call_site_fails() {
             .map(|ev| ev.contains(E_NOMINAL_MISMATCH))
             .unwrap_or(false)
     });
-    assert!(
-        has_evidence,
-        "evidence must contain {E_NOMINAL_MISMATCH}"
-    );
+    assert!(has_evidence, "evidence must contain {E_NOMINAL_MISMATCH}");
 }
 
 // Spec scenario 1 TRIANGULATE: "Passing UserId to load_user(UserId) passes"
@@ -326,7 +508,10 @@ fn nominal_alias_does_not_auto_match() {
         .entries
         .iter()
         .any(|e| e.claim == "nominal-call" && e.state == VerificationState::Failed);
-    assert!(failed, "aliases with same representation must still fail nominal check");
+    assert!(
+        failed,
+        "aliases with same representation must still fail nominal check"
+    );
 }
 
 // ── Subpass 3: Generic param kind validation ──────────────────────────────
@@ -430,7 +615,10 @@ fn capability_param_not_in_caps_is_failed() {
                     .map(|ev| ev.contains(E_CAPABILITY_PARAM_WIDENED))
                     .unwrap_or(false)
         });
-    assert!(has_failed, "CapabilityParam not in caps must fail with {E_CAPABILITY_PARAM_WIDENED}");
+    assert!(
+        has_failed,
+        "CapabilityParam not in caps must fail with {E_CAPABILITY_PARAM_WIDENED}"
+    );
 }
 
 // TypeParam with required constraints missing from instantiation → constraint failure
@@ -482,7 +670,10 @@ fn parameterized_type_arg_coercion_fails() {
         .entries
         .iter()
         .any(|e| e.claim == "variance" && e.state == VerificationState::Failed);
-    assert!(failed, "parameterized type coercion must fail with variance error");
+    assert!(
+        failed,
+        "parameterized type coercion must fail with variance error"
+    );
 
     let has_code = report
         .entries
@@ -519,7 +710,10 @@ fn matching_parameterized_type_passes_variance() {
         .entries
         .iter()
         .any(|e| e.claim == "variance" && e.state == VerificationState::Failed);
-    assert!(!failed, "identical parameterized types must not fail variance check");
+    assert!(
+        !failed,
+        "identical parameterized types must not fail variance check"
+    );
 }
 
 // ── Subpass 5: Interface coherence ───────────────────────────────────────
@@ -591,10 +785,7 @@ fn adapter_impl_does_not_fail_coherence() {
         .entries
         .iter()
         .any(|e| e.claim == "coherence" && e.state == VerificationState::Failed);
-    assert!(
-        !failed,
-        "adapter impl must not trigger coherence failure"
-    );
+    assert!(!failed, "adapter impl must not trigger coherence failure");
 }
 
 // Spec scenario 3: "Associated-type mismatch fails"
@@ -623,7 +814,10 @@ fn associated_type_empty_name_fails_coherence() {
         .entries
         .iter()
         .any(|e| e.claim == "coherence" && e.state == VerificationState::Failed);
-    assert!(failed, "empty associated type name must fail coherence check");
+    assert!(
+        failed,
+        "empty associated type name must fail coherence check"
+    );
 }
 
 // ── Subpass 6: Constraint enforcement ────────────────────────────────────
@@ -652,7 +846,10 @@ fn set_type_without_hash_fails() {
         .entries
         .iter()
         .any(|e| e.claim == "constraint-check" && e.state == VerificationState::Failed);
-    assert!(failed, "Set<T> without Hashable<T> must fail constraint check");
+    assert!(
+        failed,
+        "Set<T> without Hashable<T> must fail constraint check"
+    );
 
     let has_code = report
         .entries
@@ -690,7 +887,10 @@ fn set_type_with_hash_passes() {
         .entries
         .iter()
         .any(|e| e.claim == "constraint-check" && e.state == VerificationState::Failed);
-    assert!(!failed, "Set<T> with Hashable<T> must not fail constraint check");
+    assert!(
+        !failed,
+        "Set<T> with Hashable<T> must not fail constraint check"
+    );
 }
 
 // Spec scenario 5: "sort<Float> fails unless wrapped"
@@ -759,14 +959,19 @@ fn generic_fn_missing_eq_constraint_fails() {
         }]),
     };
 
-    let report =
-        TypeChecker::check(&graph_with_edges(vec![no_eq_type, contains_fn, caller], vec![edge]));
+    let report = TypeChecker::check(&graph_with_edges(
+        vec![no_eq_type, contains_fn, caller],
+        vec![edge],
+    ));
 
     let failed = report
         .entries
         .iter()
         .any(|e| e.claim == "constraint-check" && e.state == VerificationState::Failed);
-    assert!(failed, "generic fn with Eq requirement on T must fail when T lacks Eq");
+    assert!(
+        failed,
+        "generic fn with Eq requirement on T must fail when T lacks Eq"
+    );
 
     let has_code = report
         .entries
@@ -814,8 +1019,10 @@ fn generic_fn_eq_constraint_satisfied_passes() {
         }]),
     };
 
-    let report =
-        TypeChecker::check(&graph_with_edges(vec![eq_type, contains_fn, caller], vec![edge]));
+    let report = TypeChecker::check(&graph_with_edges(
+        vec![eq_type, contains_fn, caller],
+        vec![edge],
+    ));
 
     let failed = report
         .entries
@@ -866,7 +1073,10 @@ fn const_param_with_complex_expression_fails() {
                 .map(|ev| ev.contains(E_CONST_PARAM_UNDECIDABLE))
                 .unwrap_or(false)
         });
-    assert!(has_code, "evidence must contain {E_CONST_PARAM_UNDECIDABLE}");
+    assert!(
+        has_code,
+        "evidence must contain {E_CONST_PARAM_UNDECIDABLE}"
+    );
 }
 
 // TRIANGULATE: simple ConstParam identifier passes
@@ -898,7 +1108,7 @@ fn const_param_simple_identifier_passes() {
 //   THEN PolicyDecision is deterministic and reflects failures
 #[test]
 fn type_checker_report_flows_into_policy_engine() {
-    use ail_verify::{PolicyDecision, PolicyEngine, PolicyInput, PolicyRule, ApprovalRecord};
+    use ail_verify::{ApprovalRecord, PolicyDecision, PolicyEngine, PolicyInput, PolicyRule};
 
     // Build a graph: nominal match passes, nominal mismatch fails.
     let mut callee = fn_node(1, "process");
@@ -920,7 +1130,10 @@ fn type_checker_report_flows_into_policy_engine() {
 
     // Verify the report has a Failed entry before feeding to PolicyEngine.
     assert!(
-        report.entries.iter().any(|e| e.state == VerificationState::Failed),
+        report
+            .entries
+            .iter()
+            .any(|e| e.state == VerificationState::Failed),
         "report must contain at least one Failed entry"
     );
     assert!(
@@ -997,14 +1210,20 @@ fn fn_with_params_but_no_return_type_emits_unverified_boundary() {
     let unverified = boundary_entries
         .iter()
         .any(|e| e.state == VerificationState::Unverified);
-    assert!(unverified, "missing return_type must produce Unverified boundary-materialization");
+    assert!(
+        unverified,
+        "missing return_type must produce Unverified boundary-materialization"
+    );
     let has_code = boundary_entries.iter().any(|e| {
         e.evidence
             .as_deref()
             .map(|ev| ev.contains(E_BOUNDARY_NOT_MATERIALIZED))
             .unwrap_or(false)
     });
-    assert!(has_code, "evidence must contain {E_BOUNDARY_NOT_MATERIALIZED}");
+    assert!(
+        has_code,
+        "evidence must contain {E_BOUNDARY_NOT_MATERIALIZED}"
+    );
 }
 
 // TRIANGULATE: Function with both params and return_type → Proven boundary
@@ -1024,7 +1243,10 @@ fn fn_with_params_and_return_type_emits_proven_boundary() {
         .iter()
         .filter(|e| e.claim == "boundary-materialization")
         .any(|e| e.state == VerificationState::Proven);
-    assert!(proven, "fn with params and return_type must emit Proven boundary-materialization");
+    assert!(
+        proven,
+        "fn with params and return_type must emit Proven boundary-materialization"
+    );
 }
 
 // TRIANGULATE: Function with no params skips boundary check (no entry)
@@ -1087,8 +1309,6 @@ fn return_type_null_fails_null_policy() {
 // TRIANGULATE: return_type = "nil" also fails
 #[test]
 fn return_type_nil_fails_null_policy() {
-    use ail_verify::type_checker::E_NULL_IN_CORE_IR;
-
     let mut node = fn_node(0, "legacy_nil_fn");
     node.params = Some(vec![]);
     node.return_type = Some("nil".into());
@@ -1115,7 +1335,10 @@ fn return_type_option_passes_null_policy() {
         .entries
         .iter()
         .any(|e| e.claim == "null-policy" && e.state == VerificationState::Failed);
-    assert!(!failed, "return_type 'Option<Text>' must NOT fail null-policy check");
+    assert!(
+        !failed,
+        "return_type 'Option<Text>' must NOT fail null-policy check"
+    );
 }
 
 // ── Subpass 10: Float equality/ordering policy ────────────────────────────
@@ -1138,7 +1361,7 @@ fn float_type_with_eq_fails_float_policy() {
         generics: vec![],
     });
     node.constraint_set = Some(ConstraintSet {
-        has_eq: true,  // implicit equality on Float — violation
+        has_eq: true, // implicit equality on Float — violation
         has_ord: false,
         has_hash: false,
         extras: vec![],
@@ -1177,7 +1400,7 @@ fn float_type_with_ord_fails_float_policy() {
     });
     node.constraint_set = Some(ConstraintSet {
         has_eq: false,
-        has_ord: true,  // implicit Ord on Float — violation
+        has_ord: true, // implicit Ord on Float — violation
         has_hash: false,
         extras: vec![],
     });
@@ -1188,7 +1411,10 @@ fn float_type_with_ord_fails_float_policy() {
         .entries
         .iter()
         .any(|e| e.claim == "float-policy" && e.state == VerificationState::Failed);
-    assert!(failed, "Float type with has_ord=true must fail float-policy");
+    assert!(
+        failed,
+        "Float type with has_ord=true must fail float-policy"
+    );
 
     let has_code = report
         .entries
@@ -1224,7 +1450,10 @@ fn float_type_without_eq_ord_passes_float_policy() {
         .entries
         .iter()
         .any(|e| e.claim == "float-policy" && e.state == VerificationState::Failed);
-    assert!(!failed, "Float type with no eq/ord must not fail float-policy");
+    assert!(
+        !failed,
+        "Float type with no eq/ord must not fail float-policy"
+    );
 }
 
 // TRIANGULATE: NonNaNFloat (non-Float nominal) is exempt from float-policy
@@ -1237,7 +1466,7 @@ fn non_nan_float_refinement_is_exempt_from_float_policy() {
     });
     node.constraint_set = Some(ConstraintSet {
         has_eq: false,
-        has_ord: true,  // OK — NonNaNFloat can have Ord
+        has_ord: true, // OK — NonNaNFloat can have Ord
         has_hash: false,
         extras: vec![],
     });
@@ -1248,7 +1477,10 @@ fn non_nan_float_refinement_is_exempt_from_float_policy() {
         .entries
         .iter()
         .any(|e| e.claim == "float-policy" && e.state == VerificationState::Failed);
-    assert!(!failed, "NonNaNFloat (non-Float nominal) must not fail float-policy");
+    assert!(
+        !failed,
+        "NonNaNFloat (non-Float nominal) must not fail float-policy"
+    );
 }
 
 // ── Improved Subpass 5: Associated type binding with empty ty ─────────────
@@ -1269,7 +1501,7 @@ fn associated_type_binding_with_empty_ty_fails_coherence() {
         interface: "cap.Repository".into(),
         associated_types: vec![AssociatedTypeBinding {
             name: "Error".into(),
-            ty: "".into(),  // empty ty — concrete type not resolved
+            ty: "".into(), // empty ty — concrete type not resolved
         }],
         is_adapter: false,
     }]);
@@ -1280,7 +1512,10 @@ fn associated_type_binding_with_empty_ty_fails_coherence() {
         .entries
         .iter()
         .any(|e| e.claim == "coherence" && e.state == VerificationState::Failed);
-    assert!(failed, "empty associated type binding ty must fail coherence");
+    assert!(
+        failed,
+        "empty associated type binding ty must fail coherence"
+    );
 
     let has_code = report
         .entries
@@ -1292,7 +1527,10 @@ fn associated_type_binding_with_empty_ty_fails_coherence() {
                 .map(|ev| ev.contains(E_ASSOC_TYPE_EMPTY_BINDING))
                 .unwrap_or(false)
         });
-    assert!(has_code, "evidence must contain {E_ASSOC_TYPE_EMPTY_BINDING}");
+    assert!(
+        has_code,
+        "evidence must contain {E_ASSOC_TYPE_EMPTY_BINDING}"
+    );
 }
 
 // TRIANGULATE: binding with both name and ty present passes
@@ -1303,7 +1541,7 @@ fn associated_type_binding_with_valid_ty_passes() {
         interface: "cap.Repository".into(),
         associated_types: vec![AssociatedTypeBinding {
             name: "Error".into(),
-            ty: "DbError".into(),  // valid concrete type
+            ty: "DbError".into(), // valid concrete type
         }],
         is_adapter: false,
     }]);
@@ -1314,13 +1552,16 @@ fn associated_type_binding_with_valid_ty_passes() {
         .entries
         .iter()
         .any(|e| e.claim == "coherence" && e.state == VerificationState::Failed);
-    assert!(!failed, "binding with valid name and ty must not fail coherence");
+    assert!(
+        !failed,
+        "binding with valid name and ty must not fail coherence"
+    );
 }
 
 // TRIANGULATE: all-Proven report flows to PolicyEngine as Accept
 #[test]
 fn all_proven_report_is_accepted_by_policy_engine() {
-    use ail_verify::{PolicyEngine, PolicyInput, PolicyRule, ApprovalRecord, PolicyDecision};
+    use ail_verify::{ApprovalRecord, PolicyEngine, PolicyInput, PolicyRule};
 
     let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "safe_fn");
     node.type_facts = Some(TypeFacts {
@@ -1364,6 +1605,10 @@ fn refinement_proven_emits_proven_entry() {
         status: RefinementStatus::Proven,
         erased: false,
     });
+    node.contract_clauses = Some(ContractClauses {
+        requires: vec![],
+        ensures: vec!["value > Decimal.zero".into()],
+    });
 
     let report = TypeChecker::check(&graph_from(vec![node]));
 
@@ -1372,7 +1617,10 @@ fn refinement_proven_emits_proven_entry() {
         .iter()
         .filter(|e| e.claim == "refinement")
         .collect();
-    assert!(!refinement_entries.is_empty(), "expected 'refinement' entries");
+    assert!(
+        !refinement_entries.is_empty(),
+        "expected 'refinement' entries"
+    );
     assert_eq!(
         refinement_entries[0].state,
         VerificationState::Proven,
@@ -1392,6 +1640,10 @@ fn refinement_runtime_checked_emits_runtime_checked_entry() {
         status: RefinementStatus::RuntimeChecked,
         erased: false,
     });
+    node.runtime_checks = Some(vec![RuntimeCheckMeta {
+        predicate: "matches_email(value)".into(),
+        hash: "email-check".into(),
+    }]);
 
     let report = TypeChecker::check(&graph_from(vec![node]));
 

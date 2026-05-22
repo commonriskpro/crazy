@@ -701,11 +701,7 @@ fn diff_missing_snapshots_exits_one() {
     let id_a = "aa".repeat(32); // 64 hex chars
     let id_b = "bb".repeat(32);
     let range = format!("{id_a}..{id_b}");
-    ail()
-        .args(["diff", &range])
-        .assert()
-        .failure()
-        .code(1);
+    ail().args(["diff", &range]).assert().failure().code(1);
 }
 
 /// Spec scenario: diff with invalid format exits 1.
@@ -911,7 +907,13 @@ fn reject_exits_zero() {
 fn approve_json_has_approved_and_canonical_hash() {
     let change_id = "aa".repeat(32);
     let output = ail()
-        .args(["approve", &change_id, "--for", "public_api_changed", "--json"])
+        .args([
+            "approve",
+            &change_id,
+            "--for",
+            "public_api_changed",
+            "--json",
+        ])
         .assert()
         .success()
         .get_output()
@@ -919,7 +921,10 @@ fn approve_json_has_approved_and_canonical_hash() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert_eq!(v["data"]["approved"], true, "data.approved must be true; got: {v}");
+    assert_eq!(
+        v["data"]["approved"], true,
+        "data.approved must be true; got: {v}"
+    );
     assert!(
         v["data"]["canonical_hash"].is_string(),
         "data.canonical_hash must be a string; got: {v}"
@@ -939,7 +944,10 @@ fn reject_json_has_approved_false() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert_eq!(v["data"]["approved"], false, "data.approved must be false for reject; got: {v}");
+    assert_eq!(
+        v["data"]["approved"], false,
+        "data.approved must be false for reject; got: {v}"
+    );
 }
 
 // ── G31: policy ───────────────────────────────────────────────────────────
@@ -1211,7 +1219,9 @@ fn doctor_json_checks_have_required_fields() {
         .clone();
 
     let v = parse_json_output(&output);
-    let checks = v["data"]["checks"].as_array().expect("checks must be array");
+    let checks = v["data"]["checks"]
+        .as_array()
+        .expect("checks must be array");
     assert!(!checks.is_empty(), "doctor must report at least one check");
 
     for check in checks {
@@ -1242,7 +1252,10 @@ fn unknown_subcommand_lists_all_commands_including_new() {
         .clone();
 
     let err_text = std::str::from_utf8(&stderr.stderr).expect("stderr must be UTF-8");
-    for cmd in &["rollback", "rebase", "merge", "refactor", "approve", "reject", "policy", "package", "doctor"] {
+    for cmd in &[
+        "rollback", "rebase", "merge", "refactor", "approve", "reject", "policy", "package",
+        "doctor",
+    ] {
         assert!(
             err_text.contains(cmd),
             "error message must list '{cmd}'; got:\n{err_text}"
@@ -1304,9 +1317,18 @@ fn impact_exits_zero_with_snapshot_hash() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["affected_nodes"].is_array(), "affected_nodes must be array; got: {v}");
-    assert!(v["data"]["snapshot_id"].is_string(), "snapshot_id must be string; got: {v}");
-    assert!(v["data"]["snapshot_hash"].is_string(), "snapshot_hash must be string; got: {v}");
+    assert!(
+        v["data"]["affected_nodes"].is_array(),
+        "affected_nodes must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["snapshot_id"].is_string(),
+        "snapshot_id must be string; got: {v}"
+    );
+    assert!(
+        v["data"]["snapshot_hash"].is_string(),
+        "snapshot_hash must be string; got: {v}"
+    );
 }
 
 /// SC-CAL1: callers returns hash-bound callers list.
@@ -1321,8 +1343,14 @@ fn callers_exits_zero_with_snapshot_hash() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["callers"].is_array(), "callers must be array; got: {v}");
-    assert!(v["data"]["snapshot_hash"].is_string(), "snapshot_hash must be string; got: {v}");
+    assert!(
+        v["data"]["callers"].is_array(),
+        "callers must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["snapshot_hash"].is_string(),
+        "snapshot_hash must be string; got: {v}"
+    );
 }
 
 /// SC-EFF1: effects returns hash-bound effects list.
@@ -1337,8 +1365,14 @@ fn effects_exits_zero_with_snapshot_hash() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["effects"].is_array(), "effects must be array; got: {v}");
-    assert!(v["data"]["snapshot_hash"].is_string(), "snapshot_hash must be string; got: {v}");
+    assert!(
+        v["data"]["effects"].is_array(),
+        "effects must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["snapshot_hash"].is_string(),
+        "snapshot_hash must be string; got: {v}"
+    );
 }
 
 /// SC-PRF1: proofs returns hash-bound proof_obligations.
@@ -1353,8 +1387,14 @@ fn proofs_exits_zero_with_snapshot_hash() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["proof_obligations"].is_array(), "proof_obligations must be array; got: {v}");
-    assert!(v["data"]["snapshot_hash"].is_string(), "snapshot_hash must be string; got: {v}");
+    assert!(
+        v["data"]["proof_obligations"].is_array(),
+        "proof_obligations must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["snapshot_hash"].is_string(),
+        "snapshot_hash must be string; got: {v}"
+    );
 }
 
 // ── G31 R2: change with text input ───────────────────────────────────────
@@ -1371,7 +1411,10 @@ fn change_text_input_creates_draft() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert_eq!(v["data"]["status"], "draft", "change must be draft; got: {v}");
+    assert_eq!(
+        v["data"]["status"], "draft",
+        "change must be draft; got: {v}"
+    );
     assert!(
         v["data"]["canonical_change"]["change_id"].is_string(),
         "canonical_change.change_id must be string; got: {v}"
@@ -1391,10 +1434,22 @@ fn change_output_includes_structural_diff() {
 
     let v = parse_json_output(&output);
     let diff = &v["data"]["structural_diff"];
-    assert!(diff.is_object(), "structural_diff must be an object; got: {v}");
-    assert!(diff["creates"].is_number(), "structural_diff.creates must be a number; got: {diff}");
-    assert!(diff["modifies"].is_number(), "structural_diff.modifies must be a number; got: {diff}");
-    assert!(diff["deletes"].is_number(), "structural_diff.deletes must be a number; got: {diff}");
+    assert!(
+        diff.is_object(),
+        "structural_diff must be an object; got: {v}"
+    );
+    assert!(
+        diff["creates"].is_number(),
+        "structural_diff.creates must be a number; got: {diff}"
+    );
+    assert!(
+        diff["modifies"].is_number(),
+        "structural_diff.modifies must be a number; got: {diff}"
+    );
+    assert!(
+        diff["deletes"].is_number(),
+        "structural_diff.deletes must be a number; got: {diff}"
+    );
 }
 
 /// SC-CH3: change output includes submitted/parsed/canonical outputs.
@@ -1409,9 +1464,18 @@ fn change_output_includes_submitted_parsed_canonical() {
         .clone();
 
     let v = parse_json_output(&output);
-    assert!(v["data"]["submitted_change"].is_object(), "submitted_change must be object; got: {v}");
-    assert!(v["data"]["parsed_change"].is_object(), "parsed_change must be object; got: {v}");
-    assert!(v["data"]["canonical_change"].is_object(), "canonical_change must be object; got: {v}");
+    assert!(
+        v["data"]["submitted_change"].is_object(),
+        "submitted_change must be object; got: {v}"
+    );
+    assert!(
+        v["data"]["parsed_change"].is_object(),
+        "parsed_change must be object; got: {v}"
+    );
+    assert!(
+        v["data"]["canonical_change"].is_object(),
+        "canonical_change must be object; got: {v}"
+    );
 }
 
 // ── G31 R2: verify with --profile ─────────────────────────────────────────
@@ -1429,10 +1493,22 @@ fn verify_profile_dev_has_policy_and_approval() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["policy_report"].is_object(), "policy_report must be object; got: {v}");
-    assert!(v["data"]["approval_requirements"].is_object(), "approval_requirements must be object; got: {v}");
-    assert!(v["data"]["diagnostics"].is_array(), "diagnostics must be array; got: {v}");
-    assert!(v["data"]["proof_obligations"].is_array(), "proof_obligations must be array; got: {v}");
+    assert!(
+        v["data"]["policy_report"].is_object(),
+        "policy_report must be object; got: {v}"
+    );
+    assert!(
+        v["data"]["approval_requirements"].is_object(),
+        "approval_requirements must be object; got: {v}"
+    );
+    assert!(
+        v["data"]["diagnostics"].is_array(),
+        "diagnostics must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["proof_obligations"].is_array(),
+        "proof_obligations must be array; got: {v}"
+    );
 }
 
 /// SC-VER2: verify with --profile prod has approval_requirements.required=true.
@@ -1471,12 +1547,30 @@ fn apply_json_has_pre_apply_gate() {
     assert_eq!(v["status"], "ok");
     let gate = &v["data"]["pre_apply_gate"];
     assert!(gate.is_object(), "pre_apply_gate must be object; got: {v}");
-    assert!(gate["canonical_change_hash"].is_string(), "gate.canonical_change_hash must be string; got: {gate}");
-    assert!(gate["structural_diff"].is_object(), "gate.structural_diff must be object; got: {gate}");
-    assert!(gate["verification_report_status"].is_string(), "gate.verification_report_status must be string; got: {gate}");
-    assert!(gate["policy_status"].is_object(), "gate.policy_status must be object; got: {gate}");
-    assert!(gate["approval_status"].is_object(), "gate.approval_status must be object; got: {gate}");
-    assert!(gate["target_snapshot"].is_string(), "gate.target_snapshot must be string; got: {gate}");
+    assert!(
+        gate["canonical_change_hash"].is_string(),
+        "gate.canonical_change_hash must be string; got: {gate}"
+    );
+    assert!(
+        gate["structural_diff"].is_object(),
+        "gate.structural_diff must be object; got: {gate}"
+    );
+    assert!(
+        gate["verification_report_status"].is_string(),
+        "gate.verification_report_status must be string; got: {gate}"
+    );
+    assert!(
+        gate["policy_status"].is_object(),
+        "gate.policy_status must be object; got: {gate}"
+    );
+    assert!(
+        gate["approval_status"].is_object(),
+        "gate.approval_status must be object; got: {gate}"
+    );
+    assert!(
+        gate["target_snapshot"].is_string(),
+        "gate.target_snapshot must be string; got: {gate}"
+    );
 }
 
 // ── G31 R2: compile --target ──────────────────────────────────────────────
@@ -1503,10 +1597,31 @@ fn compile_json_has_manifests_and_report() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["capabilities_manifest"].is_object(), "capabilities_manifest must be object; got: {v}");
-    assert!(v["data"]["artifact_manifest"].is_object(), "artifact_manifest must be object; got: {v}");
-    assert!(v["data"]["compiler_report"].is_object(), "compiler_report must be object; got: {v}");
-    assert!(v["data"]["semantic_source_map"].is_object(), "semantic_source_map must be object; got: {v}");
+    assert!(
+        v["data"]["capabilities_manifest"].is_object(),
+        "capabilities_manifest must be object; got: {v}"
+    );
+    assert!(
+        v["data"]["artifact_manifest"].is_object(),
+        "artifact_manifest must be object; got: {v}"
+    );
+    assert!(
+        v["data"]["compiler_report"].is_object(),
+        "compiler_report must be object; got: {v}"
+    );
+    assert!(
+        v["data"]["semantic_source_map"].is_object(),
+        "semantic_source_map must be object; got: {v}"
+    );
+    assert_eq!(v["data"]["artifact_manifest"]["profile"], "dev");
+    assert!(
+        v["data"]["artifact_manifest"]["capabilities_manifest_hash"].is_array(),
+        "artifact_manifest must come from backend sidecar with capabilities_manifest_hash; got: {v}"
+    );
+    assert!(
+        v["data"]["semantic_source_map"]["entries"].is_array(),
+        "semantic_source_map must come from backend sidecar entries; got: {v}"
+    );
 }
 
 /// SC-CMP3: compile with --target native succeeds.
@@ -1542,17 +1657,36 @@ fn run_json_has_full_runtime_report() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["runtime_report"].is_object(), "runtime_report must be object; got: {v}");
-    assert!(v["data"]["audit_log"].is_object(), "audit_log must be object; got: {v}");
-    assert!(v["data"]["capability_call_summary"].is_array(), "capability_call_summary must be array; got: {v}");
-    assert!(v["data"]["runtime_check_results"].is_object(), "runtime_check_results must be object; got: {v}");
+    assert!(
+        v["data"]["runtime_report"].is_object(),
+        "runtime_report must be object; got: {v}"
+    );
+    assert!(
+        v["data"]["audit_log"].is_object(),
+        "audit_log must be object; got: {v}"
+    );
+    assert!(
+        v["data"]["capability_call_summary"].is_array(),
+        "capability_call_summary must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["runtime_check_results"].is_object(),
+        "runtime_check_results must be object; got: {v}"
+    );
 }
 
 /// SC-RUN3: run with --replay trace_id includes replay info in JSON.
 #[test]
 fn run_with_replay_includes_replay_info() {
     let output = ail()
-        .args(["run", "--profile", "test", "--replay", "trace_123", "--json"])
+        .args([
+            "run",
+            "--profile",
+            "test",
+            "--replay",
+            "trace_123",
+            "--json",
+        ])
         .assert()
         .success()
         .get_output()
@@ -1585,11 +1719,26 @@ fn init_json_has_baseline_state() {
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["initialized"], true);
     assert_eq!(v["data"]["branch"], "main", "branch must be main; got: {v}");
-    assert!(v["data"]["policy"].is_string(), "policy must be string; got: {v}");
-    assert!(v["data"]["runtime_profiles"].is_array(), "runtime_profiles must be array; got: {v}");
-    assert!(v["data"]["stdlib_baseline"].is_string(), "stdlib_baseline must be string; got: {v}");
-    assert!(v["data"]["package_lock"].is_string(), "package_lock must be string; got: {v}");
-    assert!(v["data"]["context_indexes"].is_string(), "context_indexes must be string; got: {v}");
+    assert!(
+        v["data"]["policy"].is_string(),
+        "policy must be string; got: {v}"
+    );
+    assert!(
+        v["data"]["runtime_profiles"].is_array(),
+        "runtime_profiles must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["stdlib_baseline"].is_string(),
+        "stdlib_baseline must be string; got: {v}"
+    );
+    assert!(
+        v["data"]["package_lock"].is_string(),
+        "package_lock must be string; got: {v}"
+    );
+    assert!(
+        v["data"]["context_indexes"].is_string(),
+        "context_indexes must be string; got: {v}"
+    );
 }
 
 // ── G31 R2: status with all fields ───────────────────────────────────────
@@ -1606,10 +1755,22 @@ fn status_json_has_all_required_fields() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["verification_state"].is_string(), "verification_state must be string; got: {v}");
-    assert!(v["data"]["stale_indexes"].is_boolean(), "stale_indexes must be boolean; got: {v}");
-    assert!(v["data"]["runtime_profile_status"].is_string(), "runtime_profile_status must be string; got: {v}");
-    assert!(v["data"]["package_advisories"].is_number(), "package_advisories must be number; got: {v}");
+    assert!(
+        v["data"]["verification_state"].is_string(),
+        "verification_state must be string; got: {v}"
+    );
+    assert!(
+        v["data"]["stale_indexes"].is_boolean(),
+        "stale_indexes must be boolean; got: {v}"
+    );
+    assert!(
+        v["data"]["runtime_profile_status"].is_string(),
+        "runtime_profile_status must be string; got: {v}"
+    );
+    assert!(
+        v["data"]["package_advisories"].is_number(),
+        "package_advisories must be number; got: {v}"
+    );
 }
 
 // ── G31 R2: inspect all types ─────────────────────────────────────────────
@@ -1627,10 +1788,22 @@ fn inspect_node_returns_node_metadata() {
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["type"], "node");
-    assert!(v["data"]["edges"].is_array(), "edges must be array; got: {v}");
-    assert!(v["data"]["effects"].is_array(), "effects must be array; got: {v}");
-    assert!(v["data"]["capabilities"].is_array(), "capabilities must be array; got: {v}");
-    assert!(v["data"]["contracts"].is_array(), "contracts must be array; got: {v}");
+    assert!(
+        v["data"]["edges"].is_array(),
+        "edges must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["effects"].is_array(),
+        "effects must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["capabilities"].is_array(),
+        "capabilities must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["contracts"].is_array(),
+        "contracts must be array; got: {v}"
+    );
 }
 
 /// SC-INS2: inspect report returns status/entries/diagnostics.
@@ -1646,8 +1819,14 @@ fn inspect_report_returns_report_metadata() {
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["type"], "report");
-    assert!(v["data"]["entries"].is_array(), "entries must be array; got: {v}");
-    assert!(v["data"]["diagnostics"].is_array(), "diagnostics must be array; got: {v}");
+    assert!(
+        v["data"]["entries"].is_array(),
+        "entries must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["diagnostics"].is_array(),
+        "diagnostics must be array; got: {v}"
+    );
 }
 
 /// SC-INS3: inspect artifact returns name/hash/profile.
@@ -1663,14 +1842,22 @@ fn inspect_artifact_returns_artifact_metadata() {
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["type"], "artifact");
-    assert!(v["data"]["name"].is_string(), "name must be string; got: {v}");
+    assert!(
+        v["data"]["name"].is_string(),
+        "name must be string; got: {v}"
+    );
 }
 
 /// SC-INS4: inspect capability returns provider/granted/assumptions.
 #[test]
 fn inspect_capability_returns_capability_metadata() {
     let output = ail()
-        .args(["inspect", "capability", "payment.charge:PaymentProvider", "--json"])
+        .args([
+            "inspect",
+            "capability",
+            "payment.charge:PaymentProvider",
+            "--json",
+        ])
         .assert()
         .success()
         .get_output()
@@ -1679,9 +1866,18 @@ fn inspect_capability_returns_capability_metadata() {
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["type"], "capability");
-    assert!(v["data"]["provider"].is_string(), "provider must be string; got: {v}");
-    assert!(v["data"]["granted"].is_boolean(), "granted must be boolean; got: {v}");
-    assert!(v["data"]["assumptions"].is_array(), "assumptions must be array; got: {v}");
+    assert!(
+        v["data"]["provider"].is_string(),
+        "provider must be string; got: {v}"
+    );
+    assert!(
+        v["data"]["granted"].is_boolean(),
+        "granted must be boolean; got: {v}"
+    );
+    assert!(
+        v["data"]["assumptions"].is_array(),
+        "assumptions must be array; got: {v}"
+    );
 }
 
 // ── G31 R2: diff semantic ─────────────────────────────────────────────────
@@ -1701,8 +1897,19 @@ fn diff_semantic_returns_full_structural_diff() {
     let diff = &v["data"]["structural_diff"];
     assert!(diff.is_object(), "structural_diff must be object; got: {v}");
     // Verify all semantic diff categories are present.
-    for field in &["creates", "modifies", "deletes", "tombstones", "connects", "disconnects",
-                    "exposes", "hides", "effects_changed", "contracts_changed", "capabilities_changed"] {
+    for field in &[
+        "creates",
+        "modifies",
+        "deletes",
+        "tombstones",
+        "connects",
+        "disconnects",
+        "exposes",
+        "hides",
+        "effects_changed",
+        "contracts_changed",
+        "capabilities_changed",
+    ] {
         assert!(
             diff[field].is_array(),
             "structural_diff.{field} must be array; got: {diff}"
@@ -1736,9 +1943,18 @@ fn rollback_by_change_json_has_rollback_type() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert_eq!(v["data"]["rollback_type"], "by_change", "rollback_type must be by_change; got: {v}");
-    assert!(v["data"]["reversed_change_id"].is_string(), "reversed_change_id must be string; got: {v}");
-    assert_eq!(v["data"]["history_preserved"], true, "history must be preserved; got: {v}");
+    assert_eq!(
+        v["data"]["rollback_type"], "by_change",
+        "rollback_type must be by_change; got: {v}"
+    );
+    assert!(
+        v["data"]["reversed_change_id"].is_string(),
+        "reversed_change_id must be string; got: {v}"
+    );
+    assert_eq!(
+        v["data"]["history_preserved"], true,
+        "history must be preserved; got: {v}"
+    );
 }
 
 // ── G31 R2: rebase full report ────────────────────────────────────────────
@@ -1757,9 +1973,18 @@ fn rebase_json_has_rebase_report() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["rebase_report"].is_object(), "rebase_report must be object; got: {v}");
-    assert!(v["data"]["conflicts"].is_array(), "conflicts must be array; got: {v}");
-    assert!(v["data"]["repair_options"].is_array(), "repair_options must be array; got: {v}");
+    assert!(
+        v["data"]["rebase_report"].is_object(),
+        "rebase_report must be object; got: {v}"
+    );
+    assert!(
+        v["data"]["conflicts"].is_array(),
+        "conflicts must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["repair_options"].is_array(),
+        "repair_options must be array; got: {v}"
+    );
 }
 
 // ── G31 R2: merge full conflict workflow ─────────────────────────────────
@@ -1776,9 +2001,18 @@ fn merge_json_has_rebase_report_with_conflicts() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["rebase_report"].is_object(), "rebase_report must be object; got: {v}");
-    assert!(v["data"]["conflicts"].is_array(), "conflicts must be array; got: {v}");
-    assert!(v["data"]["repair_options"].is_array(), "repair_options must be array; got: {v}");
+    assert!(
+        v["data"]["rebase_report"].is_object(),
+        "rebase_report must be object; got: {v}"
+    );
+    assert!(
+        v["data"]["conflicts"].is_array(),
+        "conflicts must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["repair_options"].is_array(),
+        "repair_options must be array; got: {v}"
+    );
 }
 
 // ── G31 R2: refactor behavior locks ──────────────────────────────────────
@@ -1795,11 +2029,26 @@ fn refactor_json_has_full_behavior_metadata() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["behavior_locks"].is_array(), "behavior_locks must be array; got: {v}");
-    assert!(v["data"]["contracts_preserved"].is_array(), "contracts_preserved must be array; got: {v}");
-    assert!(v["data"]["effects_preserved"].is_array(), "effects_preserved must be array; got: {v}");
-    assert!(v["data"]["proofs_to_rerun"].is_array(), "proofs_to_rerun must be array; got: {v}");
-    assert_eq!(v["data"]["status"], "draft", "refactor ChangeSet must be draft; got: {v}");
+    assert!(
+        v["data"]["behavior_locks"].is_array(),
+        "behavior_locks must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["contracts_preserved"].is_array(),
+        "contracts_preserved must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["effects_preserved"].is_array(),
+        "effects_preserved must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["proofs_to_rerun"].is_array(),
+        "proofs_to_rerun must be array; got: {v}"
+    );
+    assert_eq!(
+        v["data"]["status"], "draft",
+        "refactor ChangeSet must be draft; got: {v}"
+    );
 }
 
 // ── G31 R2: approve full model ────────────────────────────────────────────
@@ -1809,7 +2058,15 @@ fn refactor_json_has_full_behavior_metadata() {
 fn approve_json_has_full_immutable_record() {
     let change_id = "aa".repeat(32);
     let output = ail()
-        .args(["approve", &change_id, "--for", "public_api_changed", "--role", "security", "--json"])
+        .args([
+            "approve",
+            &change_id,
+            "--for",
+            "public_api_changed",
+            "--role",
+            "security",
+            "--json",
+        ])
         .assert()
         .success()
         .get_output()
@@ -1818,10 +2075,22 @@ fn approve_json_has_full_immutable_record() {
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["approved"], true);
-    assert!(v["data"]["record_id"].is_string(), "record_id must be string; got: {v}");
-    assert_eq!(v["data"]["immutable"], true, "approval must be immutable; got: {v}");
-    assert_eq!(v["data"]["expires_on_canonical_diff_change"], true, "approval must expire on diff change; got: {v}");
-    assert_eq!(v["data"]["role"], "security", "role must be security; got: {v}");
+    assert!(
+        v["data"]["record_id"].is_string(),
+        "record_id must be string; got: {v}"
+    );
+    assert_eq!(
+        v["data"]["immutable"], true,
+        "approval must be immutable; got: {v}"
+    );
+    assert_eq!(
+        v["data"]["expires_on_canonical_diff_change"], true,
+        "approval must expire on diff change; got: {v}"
+    );
+    assert_eq!(
+        v["data"]["role"], "security",
+        "role must be security; got: {v}"
+    );
 }
 
 // ── G31 R2: reject full immutable model ──────────────────────────────────
@@ -1831,7 +2100,13 @@ fn approve_json_has_full_immutable_record() {
 fn reject_json_has_full_immutable_record() {
     let change_id = "aa".repeat(32);
     let output = ail()
-        .args(["reject", &change_id, "--reason", "capability too broad", "--json"])
+        .args([
+            "reject",
+            &change_id,
+            "--reason",
+            "capability too broad",
+            "--json",
+        ])
         .assert()
         .success()
         .get_output()
@@ -1840,8 +2115,14 @@ fn reject_json_has_full_immutable_record() {
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["approved"], false);
-    assert!(v["data"]["record_id"].is_string(), "record_id must be string; got: {v}");
-    assert_eq!(v["data"]["immutable"], true, "rejection must be immutable; got: {v}");
+    assert!(
+        v["data"]["record_id"].is_string(),
+        "record_id must be string; got: {v}"
+    );
+    assert_eq!(
+        v["data"]["immutable"], true,
+        "rejection must be immutable; got: {v}"
+    );
 }
 
 // ── G31 R2: policy real behavior ─────────────────────────────────────────
@@ -1859,8 +2140,14 @@ fn policy_check_json_has_violations_and_rules_checked() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["violations"].is_array(), "violations must be array; got: {v}");
-    assert!(v["data"]["rules_checked"].is_array(), "rules_checked must be array; got: {v}");
+    assert!(
+        v["data"]["violations"].is_array(),
+        "violations must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["rules_checked"].is_array(),
+        "rules_checked must be array; got: {v}"
+    );
 }
 
 /// SC-POL2: policy explain --json includes enforced_on field.
@@ -1875,7 +2162,10 @@ fn policy_explain_json_has_enforced_on() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["enforced_on"].is_array(), "enforced_on must be array; got: {v}");
+    assert!(
+        v["data"]["enforced_on"].is_array(),
+        "enforced_on must be array; got: {v}"
+    );
 }
 
 /// SC-POL3: policy set --json has record_type field.
@@ -1890,7 +2180,10 @@ fn policy_set_json_has_record_type() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["record_type"].is_string(), "record_type must be string; got: {v}");
+    assert!(
+        v["data"]["record_type"].is_string(),
+        "record_type must be string; got: {v}"
+    );
 }
 
 // ── G31 R2: package full metadata ────────────────────────────────────────
@@ -1908,13 +2201,34 @@ fn package_add_json_has_full_metadata() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["trust"].is_string(), "trust must be string; got: {v}");
-    assert!(v["data"]["verification_report"].is_string(), "verification_report must be string; got: {v}");
-    assert!(v["data"]["capabilities"].is_array(), "capabilities must be array; got: {v}");
-    assert!(v["data"]["assumptions"].is_array(), "assumptions must be array; got: {v}");
-    assert!(v["data"]["unsafe_surface"].is_array(), "unsafe_surface must be array; got: {v}");
-    assert!(v["data"]["advisories"].is_array(), "advisories must be array; got: {v}");
-    assert_eq!(v["data"]["capabilities_granted"], false, "package install must not grant capabilities; got: {v}");
+    assert!(
+        v["data"]["trust"].is_string(),
+        "trust must be string; got: {v}"
+    );
+    assert!(
+        v["data"]["verification_report"].is_string(),
+        "verification_report must be string; got: {v}"
+    );
+    assert!(
+        v["data"]["capabilities"].is_array(),
+        "capabilities must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["assumptions"].is_array(),
+        "assumptions must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["unsafe_surface"].is_array(),
+        "unsafe_surface must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["advisories"].is_array(),
+        "advisories must be array; got: {v}"
+    );
+    assert_eq!(
+        v["data"]["capabilities_granted"], false,
+        "package install must not grant capabilities; got: {v}"
+    );
 }
 
 /// SC-PKG2: package audit --json includes packages_checked and assumptions_valid.
@@ -1929,9 +2243,18 @@ fn package_audit_json_has_full_audit_fields() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["packages_checked"].is_number(), "packages_checked must be number; got: {v}");
-    assert!(v["data"]["assumptions_valid"].is_boolean(), "assumptions_valid must be boolean; got: {v}");
-    assert!(v["data"]["unsafe_surface"].is_array(), "unsafe_surface must be array; got: {v}");
+    assert!(
+        v["data"]["packages_checked"].is_number(),
+        "packages_checked must be number; got: {v}"
+    );
+    assert!(
+        v["data"]["assumptions_valid"].is_boolean(),
+        "assumptions_valid must be boolean; got: {v}"
+    );
+    assert!(
+        v["data"]["unsafe_surface"].is_array(),
+        "unsafe_surface must be array; got: {v}"
+    );
 }
 
 // ── G31 R2: doctor real checks ────────────────────────────────────────────
@@ -1948,17 +2271,24 @@ fn doctor_json_has_overall_and_all_check_names() {
 
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
-    assert!(v["data"]["overall"].is_string(), "overall must be string; got: {v}");
+    assert!(
+        v["data"]["overall"].is_string(),
+        "overall must be string; got: {v}"
+    );
 
-    let checks = v["data"]["checks"].as_array().expect("checks must be array");
-    let check_names: Vec<&str> = checks.iter()
-        .filter_map(|c| c["name"].as_str())
-        .collect();
+    let checks = v["data"]["checks"]
+        .as_array()
+        .expect("checks must be array");
+    let check_names: Vec<&str> = checks.iter().filter_map(|c| c["name"].as_str()).collect();
 
     for required_name in &[
-        "graph_integrity", "index_freshness", "schema_compatibility",
-        "artifact_hash_consistency", "runtime_profile_validity",
-        "package_advisories", "assumption_expirations"
+        "graph_integrity",
+        "index_freshness",
+        "schema_compatibility",
+        "artifact_hash_consistency",
+        "runtime_profile_validity",
+        "package_advisories",
+        "assumption_expirations",
     ] {
         assert!(
             check_names.contains(required_name),

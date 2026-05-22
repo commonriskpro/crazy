@@ -46,5 +46,7 @@ pub use lower::{
     is_report_accepted, lower_core_expr_to_anf, lower_to_anf, lower_to_anf_with_graph,
     lower_to_core_ir, nominal_to_core_type,
 };
-pub use native::{CapabilitiesManifest, CapabilityEntry, NativeArtifact, emit_native};
-pub use wasm::{WasmArtifact, emit_wasm};
+pub use native::{
+    CapabilitiesManifest, CapabilityEntry, NativeArtifact, emit_native, emit_native_with_profile,
+};
+pub use wasm::{WasmArtifact, emit_wasm, emit_wasm_with_profile};

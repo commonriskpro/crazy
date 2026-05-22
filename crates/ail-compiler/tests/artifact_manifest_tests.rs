@@ -11,19 +11,21 @@
 //  - hash_stability: same source-map change always produces the same hash.
 
 use ail_compiler::{
-    ArtifactManifest,
-    emit_wasm, emit_native,
+    ArtifactManifest, emit_native, emit_wasm,
     lower::{lower_to_anf, lower_to_core_ir},
 };
-#[allow(unused_imports)]
-use ciborium;
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_verify::report::VerificationReport;
+#[allow(unused_imports)]
+use ciborium;
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
 fn proven_report() -> VerificationReport {
-    VerificationReport { entries: vec![], ..Default::default() }
+    VerificationReport {
+        entries: vec![],
+        ..Default::default()
+    }
 }
 
 fn graph_with_n_nodes(n: usize) -> SemanticGraph {
@@ -57,6 +59,7 @@ fn artifact_manifest_is_constructible() {
         wasm_hash: None,
         native_hash: None,
         source_map_hash: None,
+        capabilities_manifest_hash: None,
     };
     assert_eq!(manifest.profile, "draft");
     assert!(!manifest.compiler_version.is_empty());
@@ -76,6 +79,7 @@ fn artifact_manifest_with_wasm_and_native_hashes() {
         wasm_hash: Some([20u8; 32]),
         native_hash: Some([21u8; 32]),
         source_map_hash: Some([22u8; 32]),
+        capabilities_manifest_hash: Some([23u8; 32]),
     };
     assert_eq!(manifest.wasm_hash, Some([20u8; 32]));
     assert_eq!(manifest.native_hash, Some([21u8; 32]));
@@ -97,6 +101,7 @@ fn artifact_manifest_cbor_is_deterministic() {
         wasm_hash: None,
         native_hash: None,
         source_map_hash: None,
+        capabilities_manifest_hash: None,
     };
     let mut buf1 = Vec::new();
     ciborium::ser::into_writer(&manifest, &mut buf1).expect("first encode");
@@ -118,6 +123,7 @@ fn different_manifests_produce_different_cbor() {
         wasm_hash: None,
         native_hash: None,
         source_map_hash: None,
+        capabilities_manifest_hash: None,
     };
     let mut m2 = m1.clone();
     m2.profile = "prod".to_string();
@@ -126,7 +132,10 @@ fn different_manifests_produce_different_cbor() {
     ciborium::ser::into_writer(&m1, &mut buf1).expect("encode m1");
     let mut buf2 = Vec::new();
     ciborium::ser::into_writer(&m2, &mut buf2).expect("encode m2");
-    assert_ne!(buf1, buf2, "different manifests must produce different CBOR");
+    assert_ne!(
+        buf1, buf2,
+        "different manifests must produce different CBOR"
+    );
 }
 
 // Spec: ArtifactManifest round-trips through CBOR.
@@ -142,11 +151,15 @@ fn artifact_manifest_cbor_round_trip() {
         wasm_hash: Some([50u8; 32]),
         native_hash: None,
         source_map_hash: Some([51u8; 32]),
+        capabilities_manifest_hash: None,
     };
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&manifest, &mut buf).expect("encode");
     let decoded: ArtifactManifest = ciborium::de::from_reader(buf.as_slice()).expect("decode");
-    assert_eq!(manifest, decoded, "ArtifactManifest must round-trip through CBOR");
+    assert_eq!(
+        manifest, decoded,
+        "ArtifactManifest must round-trip through CBOR"
+    );
 }
 
 // ── G32 Round 2: artifact_manifest_hash and sidecar emission ─────────────
@@ -228,9 +241,8 @@ fn emit_wasm_artifact_manifest_json_is_non_empty() {
 fn emit_wasm_artifact_manifest_json_is_valid_json() {
     let anf = anf_for_n(2);
     let artifact = emit_wasm(&anf).expect("emit_wasm");
-    let decoded: ArtifactManifest =
-        serde_json::from_slice(&artifact.artifact_manifest_json)
-            .expect("artifact_manifest_json must deserialize to ArtifactManifest");
+    let decoded: ArtifactManifest = serde_json::from_slice(&artifact.artifact_manifest_json)
+        .expect("artifact_manifest_json must deserialize to ArtifactManifest");
     assert_eq!(decoded.profile, artifact.artifact_manifest.profile);
     assert_eq!(decoded.wasm_hash, artifact.artifact_manifest.wasm_hash);
 }
@@ -252,8 +264,7 @@ fn different_inputs_produce_different_artifact_manifest_hashes() {
     let a1 = emit_wasm(&anf_for_n(1)).expect("emit_wasm 1");
     let a2 = emit_wasm(&anf_for_n(2)).expect("emit_wasm 2");
     assert_ne!(
-        a1.hash_chain.artifact_manifest_hash,
-        a2.hash_chain.artifact_manifest_hash,
+        a1.hash_chain.artifact_manifest_hash, a2.hash_chain.artifact_manifest_hash,
         "different AnfIr inputs must produce different artifact_manifest_hashes"
     );
 }
@@ -272,16 +283,26 @@ fn artifact_manifest_built_from_wasm_artifact() {
         graph_snapshot_hash: artifact.hash_chain.graph_snapshot_hash,
         verification_report_hash: artifact.hash_chain.verification_report_hash,
         core_ir_hash: artifact.hash_chain.core_ir_hash,
-        anf_ir_hash: artifact.hash_chain.anf_ir_hash.expect("anf_ir_hash must be Some"),
+        anf_ir_hash: artifact
+            .hash_chain
+            .anf_ir_hash
+            .expect("anf_ir_hash must be Some"),
         wasm_hash: artifact.hash_chain.wasm_hash,
         native_hash: artifact.hash_chain.native_hash,
         source_map_hash: artifact.hash_chain.source_map_hash,
+        capabilities_manifest_hash: artifact.artifact_manifest.capabilities_manifest_hash,
     };
 
     assert_eq!(manifest.profile, "draft");
     assert!(manifest.wasm_hash.is_some(), "wasm_hash must be populated");
-    assert!(manifest.source_map_hash.is_some(), "source_map_hash must be populated");
-    assert!(manifest.native_hash.is_none(), "native_hash must be None for WASM-only pipeline");
+    assert!(
+        manifest.source_map_hash.is_some(),
+        "source_map_hash must be populated"
+    );
+    assert!(
+        manifest.native_hash.is_none(),
+        "native_hash must be None for WASM-only pipeline"
+    );
 }
 
 // TRIANGULATE: manifest from native artifact has native_hash set.
@@ -296,13 +317,26 @@ fn artifact_manifest_built_from_native_artifact() {
         graph_snapshot_hash: artifact.hash_chain.graph_snapshot_hash,
         verification_report_hash: artifact.hash_chain.verification_report_hash,
         core_ir_hash: artifact.hash_chain.core_ir_hash,
-        anf_ir_hash: artifact.hash_chain.anf_ir_hash.expect("anf_ir_hash must be Some"),
+        anf_ir_hash: artifact
+            .hash_chain
+            .anf_ir_hash
+            .expect("anf_ir_hash must be Some"),
         wasm_hash: artifact.hash_chain.wasm_hash,
         native_hash: artifact.hash_chain.native_hash,
         source_map_hash: artifact.hash_chain.source_map_hash,
+        capabilities_manifest_hash: artifact.artifact_manifest.capabilities_manifest_hash,
     };
 
-    assert!(manifest.native_hash.is_some(), "native_hash must be populated");
-    assert!(manifest.source_map_hash.is_some(), "source_map_hash must be populated");
-    assert!(manifest.wasm_hash.is_none(), "wasm_hash must be None for native-only pipeline");
+    assert!(
+        manifest.native_hash.is_some(),
+        "native_hash must be populated"
+    );
+    assert!(
+        manifest.source_map_hash.is_some(),
+        "source_map_hash must be populated"
+    );
+    assert!(
+        manifest.wasm_hash.is_none(),
+        "wasm_hash must be None for native-only pipeline"
+    );
 }
