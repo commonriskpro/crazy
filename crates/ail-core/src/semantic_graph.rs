@@ -790,7 +790,7 @@ pub struct SemanticGraph {
 
 // ── GraphValidationError ──────────────────────────────────────────────────
 
-/// Errors produced by `SemanticGraph::validate`.
+/// Errors produced by `SemanticGraph::validate` and `SemanticGraph::validate_full`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GraphValidationError {
     /// Two nodes share the same `NodeRef`.
@@ -801,6 +801,19 @@ pub enum GraphValidationError {
         r#ref: NodeRef,
         /// Whether the missing ref was the edge source or target.
         role: DanglingRole,
+    },
+    /// A node declares a non-empty `effect_row` but has no outgoing `Emits` edges.
+    ///
+    /// Emitting effects requires graph edges — a declared effect row that is
+    /// never wired to an `Emits` edge is an incoherent graph state.
+    EffectRowNoEmitsEdge(NodeRef),
+    /// A node's `capability_reqs` names a capability that has no matching
+    /// `Capability`-kind node in this graph.
+    CapabilityReqsMissingNode {
+        /// The node that declared the unsatisfied requirement.
+        owner_ref: NodeRef,
+        /// The capability name that could not be matched to any `Capability` node.
+        cap_name: String,
     },
 }
 
@@ -849,6 +862,94 @@ impl SemanticGraph {
         }
 
         Ok(())
+    }
+
+    /// Full semantic validation — returns ALL errors found (not just the first).
+    ///
+    /// Performs the same structural checks as [`validate`] (duplicate refs,
+    /// dangling edges) plus two additional semantic coherence checks:
+    ///
+    /// 3. **Effect-row coherence** — every node whose `effect_row` is `Some` and
+    ///    non-empty must have at least one outgoing `Emits` edge.  A declared
+    ///    effect row that is never connected to an `Emits` edge is incoherent.
+    ///
+    /// 4. **Capability-reqs consistency** — every capability name listed in a
+    ///    node's `capability_reqs` must correspond to a `Capability`-kind node
+    ///    present in this graph.  Requirements that reference non-existent
+    ///    capability nodes indicate a malformed graph.
+    ///
+    /// Returns an empty `Vec` when all invariants hold; the caller can call
+    /// `validate_full().is_empty()` to test overall validity.
+    pub fn validate_full(&self) -> Vec<GraphValidationError> {
+        use std::collections::BTreeSet;
+
+        let mut errors: Vec<GraphValidationError> = Vec::new();
+
+        // Pass 1 — duplicate NodeRef detection.
+        let mut seen: BTreeSet<NodeRef> = BTreeSet::new();
+        for node in &self.nodes {
+            if !seen.insert(node.id) {
+                errors.push(GraphValidationError::DuplicateRef(node.id));
+            }
+        }
+
+        // Pass 2 — dangling edge endpoints.
+        for edge in &self.edges {
+            if !seen.contains(&edge.source) {
+                errors.push(GraphValidationError::DanglingEdge {
+                    r#ref: edge.source,
+                    role: DanglingRole::Source,
+                });
+            }
+            if !seen.contains(&edge.target) {
+                errors.push(GraphValidationError::DanglingEdge {
+                    r#ref: edge.target,
+                    role: DanglingRole::Target,
+                });
+            }
+        }
+
+        // Pass 3 — effect-row coherence.
+        // A node with a non-empty effect_row must have at least one Emits edge.
+        for node in &self.nodes {
+            if node
+                .effect_row
+                .as_ref()
+                .map_or(false, |r| !r.effects.is_empty())
+            {
+                let has_emits = self
+                    .edges
+                    .iter()
+                    .any(|e| e.source == node.id && e.kind == EdgeKind::Emits);
+                if !has_emits {
+                    errors.push(GraphValidationError::EffectRowNoEmitsEdge(node.id));
+                }
+            }
+        }
+
+        // Pass 4 — capability-reqs consistency.
+        // Build the set of Capability-kind node names available in this graph.
+        let capability_names: BTreeSet<&str> = self
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Capability)
+            .map(|n| n.name.as_str())
+            .collect();
+
+        for node in &self.nodes {
+            if let Some(cap_reqs) = &node.capability_reqs {
+                for cap_name in &cap_reqs.caps {
+                    if !capability_names.contains(cap_name.as_str()) {
+                        errors.push(GraphValidationError::CapabilityReqsMissingNode {
+                            owner_ref: node.id,
+                            cap_name: cap_name.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        errors
     }
 }
 
@@ -1784,6 +1885,201 @@ mod tests {
         assert!(
             bytes_with.len() > bytes_without.len(),
             "satisfies_contract=Some must produce more bytes than None"
+        );
+    }
+
+    // ── validate_full: valid graph returns empty errors ───────────────────
+    // Spec: validate_full on a clean graph returns zero errors.
+    //
+    // RED: validate_full() did not exist → compile error.
+    // GREEN: method added with all checks → returns empty vec.
+    #[test]
+    fn validate_full_valid_graph_returns_no_errors() {
+        let graph = SemanticGraph {
+            nodes: vec![
+                node(0, NodeKind::Module, "core"),
+                node(1, NodeKind::Function, "run"),
+                node(2, NodeKind::Effect, "io"),
+            ],
+            edges: vec![edge(0, 1, EdgeKind::DependsOn), edge(1, 2, EdgeKind::Emits)],
+        };
+        let errors = graph.validate_full();
+        assert!(
+            errors.is_empty(),
+            "clean graph must produce zero errors; got: {errors:?}"
+        );
+    }
+
+    // ── validate_full: duplicate ref detected ────────────────────────────
+    // Spec: validate_full returns DuplicateRef for duplicate NodeRef(0).
+    #[test]
+    fn validate_full_detects_duplicate_ref() {
+        let graph = SemanticGraph {
+            nodes: vec![
+                node(0, NodeKind::Module, "a"),
+                node(0, NodeKind::Function, "b"), // duplicate
+            ],
+            edges: vec![],
+        };
+        let errors = graph.validate_full();
+        assert!(
+            errors.contains(&GraphValidationError::DuplicateRef(NodeRef(0))),
+            "must detect duplicate NodeRef(0); got: {errors:?}"
+        );
+    }
+
+    // ── validate_full: dangling edge detected ─────────────────────────────
+    // TRIANGULATE: different error kind from duplicate.
+    // Spec: validate_full returns DanglingEdge for missing edge endpoint.
+    #[test]
+    fn validate_full_detects_dangling_edge() {
+        let graph = SemanticGraph {
+            nodes: vec![node(0, NodeKind::Module, "src")],
+            edges: vec![edge(0, 99, EdgeKind::DependsOn)], // target 99 missing
+        };
+        let errors = graph.validate_full();
+        assert!(
+            errors.contains(&GraphValidationError::DanglingEdge {
+                r#ref: NodeRef(99),
+                role: DanglingRole::Target,
+            }),
+            "must detect dangling target NodeRef(99); got: {errors:?}"
+        );
+    }
+
+    // ── validate_full: effect_row without Emits edge is rejected ─────────
+    // Spec: A node with non-empty effect_row but no Emits edge is incoherent.
+    //
+    // RED: EffectRowNoEmitsEdge variant did not exist → compile error.
+    // GREEN: Pass 3 in validate_full() detects the missing edge.
+    #[test]
+    fn validate_full_detects_effect_row_without_emits_edge() {
+        let mut fn_node = node(0, NodeKind::Function, "pay");
+        fn_node.effect_row = Some(EffectRow {
+            effects: vec!["IO".to_string()],
+        });
+        let graph = SemanticGraph {
+            nodes: vec![fn_node],
+            edges: vec![], // no Emits edge!
+        };
+        let errors = graph.validate_full();
+        assert!(
+            errors.contains(&GraphValidationError::EffectRowNoEmitsEdge(NodeRef(0))),
+            "must detect effect_row without Emits edge; got: {errors:?}"
+        );
+    }
+
+    // ── validate_full: effect_row WITH Emits edge passes ─────────────────
+    // TRIANGULATE: coherent effect_row must not produce an error.
+    #[test]
+    fn validate_full_effect_row_with_emits_edge_passes() {
+        let mut fn_node = node(0, NodeKind::Function, "pay");
+        fn_node.effect_row = Some(EffectRow {
+            effects: vec!["IO".to_string()],
+        });
+        let io_node = node(1, NodeKind::Effect, "io");
+        let graph = SemanticGraph {
+            nodes: vec![fn_node, io_node],
+            edges: vec![edge(0, 1, EdgeKind::Emits)],
+        };
+        let errors = graph.validate_full();
+        let effect_row_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| matches!(e, GraphValidationError::EffectRowNoEmitsEdge(_)))
+            .collect();
+        assert!(
+            effect_row_errors.is_empty(),
+            "coherent effect_row+Emits must not produce EffectRowNoEmitsEdge; got: {errors:?}"
+        );
+    }
+
+    // ── validate_full: capability_reqs missing Capability node ───────────
+    // Spec: A capability requirement that names a non-existent Capability node
+    // is incoherent.
+    //
+    // RED: CapabilityReqsMissingNode variant did not exist → compile error.
+    // GREEN: Pass 4 in validate_full() detects the missing node.
+    #[test]
+    fn validate_full_detects_capability_req_missing_node() {
+        let mut fn_node = node(0, NodeKind::Function, "transfer");
+        fn_node.capability_reqs = Some(CapabilityReqs {
+            caps: vec!["net:read".to_string()],
+        });
+        let graph = SemanticGraph {
+            nodes: vec![fn_node],
+            edges: vec![], // no Capability node named "net:read"
+        };
+        let errors = graph.validate_full();
+        assert!(
+            errors.contains(&GraphValidationError::CapabilityReqsMissingNode {
+                owner_ref: NodeRef(0),
+                cap_name: "net:read".to_string(),
+            }),
+            "must detect missing Capability node 'net:read'; got: {errors:?}"
+        );
+    }
+
+    // ── validate_full: capability_reqs WITH matching Capability node passes
+    // TRIANGULATE: satisfied capability_reqs must not produce an error.
+    #[test]
+    fn validate_full_capability_reqs_with_matching_node_passes() {
+        let mut fn_node = node(0, NodeKind::Function, "transfer");
+        fn_node.capability_reqs = Some(CapabilityReqs {
+            caps: vec!["net:read".to_string()],
+        });
+        let cap_node = node(1, NodeKind::Capability, "net:read");
+        let graph = SemanticGraph {
+            nodes: vec![fn_node, cap_node],
+            edges: vec![],
+        };
+        let errors = graph.validate_full();
+        let cap_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| matches!(e, GraphValidationError::CapabilityReqsMissingNode { .. }))
+            .collect();
+        assert!(
+            cap_errors.is_empty(),
+            "satisfied capability_reqs must not produce errors; got: {errors:?}"
+        );
+    }
+
+    // ── validate_full: multiple errors returned at once ───────────────────
+    // Spec: validate_full returns ALL errors, not just the first one.
+    #[test]
+    fn validate_full_returns_all_errors() {
+        // Two duplicate refs AND a dangling edge
+        let graph = SemanticGraph {
+            nodes: vec![
+                node(0, NodeKind::Module, "a"),
+                node(0, NodeKind::Function, "b"), // duplicate NodeRef(0)
+            ],
+            edges: vec![edge(0, 99, EdgeKind::DependsOn)], // dangling target 99
+        };
+        let errors = graph.validate_full();
+        // Must contain at least DuplicateRef and DanglingEdge
+        let has_dup = errors
+            .iter()
+            .any(|e| matches!(e, GraphValidationError::DuplicateRef(NodeRef(0))));
+        let has_dangling = errors.iter().any(|e| {
+            matches!(
+                e,
+                GraphValidationError::DanglingEdge {
+                    r#ref: NodeRef(99),
+                    role: DanglingRole::Target,
+                }
+            )
+        });
+        assert!(
+            has_dup,
+            "validate_full must include DuplicateRef error; got: {errors:?}"
+        );
+        assert!(
+            has_dangling,
+            "validate_full must include DanglingEdge error; got: {errors:?}"
+        );
+        assert!(
+            errors.len() >= 2,
+            "validate_full must return all errors, not just one; got: {errors:?}"
         );
     }
 }
