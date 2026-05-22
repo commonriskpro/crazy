@@ -784,6 +784,54 @@ async fn parse_context_query_for_cli(
             profile: "dev".to_string(),
             budget,
         }),
+        "concurrency" => Ok(ContextQuery::Concurrency {
+            target: target()?,
+            budget,
+        }),
+        "tasks" => Ok(ContextQuery::Tasks {
+            target: target()?,
+            budget,
+        }),
+        "diff" => Ok(ContextQuery::Diff {
+            snapshot_a: None,
+            snapshot_b: None,
+            budget,
+        }),
+        "risks" => Ok(ContextQuery::Risks {
+            target: target()?,
+            budget,
+        }),
+        "todo" => Ok(ContextQuery::Todo {
+            target: target()?,
+            budget,
+        }),
+        "extract_candidates" => Ok(ContextQuery::ExtractCandidates {
+            target: target()?,
+            budget,
+        }),
+        "move_safety" => {
+            let destination_raw = args.get(1).map(String::as_str).unwrap_or("0");
+            let destination = node_ref_for_cli_target(destination_raw, &graph)?;
+            Ok(ContextQuery::MoveSafety {
+                target: target()?,
+                destination,
+                budget,
+            })
+        }
+        "capabilities" => Ok(ContextQuery::Capabilities {
+            target: target()?,
+            profile: "dev".to_string(),
+            budget,
+        }),
+        "handlers" => Ok(ContextQuery::Handlers {
+            target: target()?,
+            profile: "dev".to_string(),
+            budget,
+        }),
+        "assumptions" => Ok(ContextQuery::Assumptions {
+            target: target()?,
+            budget,
+        }),
         other => Err(CliError::ParseError(format!(
             "unsupported context query type: {other}"
         ))),
@@ -4983,6 +5031,114 @@ mod tests {
         assert!(
             result.is_ok(),
             "cmd_verify with unknown id must succeed (fallback); got: {result:?}"
+        );
+    }
+
+    // ── Gap 3: parse_context_query_for_cli missing types ──────────────────
+
+    // Scenario CQ-1: `concurrency` query type maps to ContextQuery::Concurrency.
+    #[tokio::test]
+    async fn parse_context_query_concurrency_succeeds() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let args = vec!["fn.checkout".to_string()];
+        let result = parse_context_query_for_cli("concurrency", &args, &store).await;
+        assert!(
+            result.is_ok(),
+            "concurrency query must succeed; got: {result:?}"
+        );
+        assert!(
+            matches!(result.unwrap(), ContextQuery::Concurrency { .. }),
+            "must produce Concurrency query"
+        );
+    }
+
+    // TRIANGULATE: `tasks` query type maps to ContextQuery::Tasks.
+    #[tokio::test]
+    async fn parse_context_query_tasks_succeeds() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let args = vec!["fn.checkout".to_string()];
+        let result = parse_context_query_for_cli("tasks", &args, &store).await;
+        assert!(result.is_ok(), "tasks query must succeed; got: {result:?}");
+        assert!(
+            matches!(result.unwrap(), ContextQuery::Tasks { .. }),
+            "must produce Tasks query"
+        );
+    }
+
+    // Scenario CQ-2: `diff` query type maps to ContextQuery::Diff.
+    #[tokio::test]
+    async fn parse_context_query_diff_succeeds() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let result = parse_context_query_for_cli("diff", &[], &store).await;
+        assert!(result.is_ok(), "diff query must succeed; got: {result:?}");
+        assert!(
+            matches!(result.unwrap(), ContextQuery::Diff { .. }),
+            "must produce Diff query"
+        );
+    }
+
+    // TRIANGULATE: `risks` query type maps to ContextQuery::Risks.
+    #[tokio::test]
+    async fn parse_context_query_risks_succeeds() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let args = vec!["fn.checkout".to_string()];
+        let result = parse_context_query_for_cli("risks", &args, &store).await;
+        assert!(result.is_ok(), "risks query must succeed; got: {result:?}");
+        assert!(
+            matches!(result.unwrap(), ContextQuery::Risks { .. }),
+            "must produce Risks query"
+        );
+    }
+
+    // Scenario CQ-3: `todo` query type maps to ContextQuery::Todo.
+    #[tokio::test]
+    async fn parse_context_query_todo_succeeds() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let args = vec!["fn.checkout".to_string()];
+        let result = parse_context_query_for_cli("todo", &args, &store).await;
+        assert!(result.is_ok(), "todo query must succeed; got: {result:?}");
+        assert!(
+            matches!(result.unwrap(), ContextQuery::Todo { .. }),
+            "must produce Todo query"
+        );
+    }
+
+    // TRIANGULATE: `extract_candidates` maps to ContextQuery::ExtractCandidates.
+    #[tokio::test]
+    async fn parse_context_query_extract_candidates_succeeds() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let args = vec!["fn.checkout".to_string()];
+        let result = parse_context_query_for_cli("extract_candidates", &args, &store).await;
+        assert!(
+            result.is_ok(),
+            "extract_candidates query must succeed; got: {result:?}"
+        );
+        assert!(
+            matches!(result.unwrap(), ContextQuery::ExtractCandidates { .. }),
+            "must produce ExtractCandidates query"
+        );
+    }
+
+    // Scenario CQ-4: `move_safety` query type maps to ContextQuery::MoveSafety.
+    #[tokio::test]
+    async fn parse_context_query_move_safety_succeeds() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let args = vec!["fn.checkout".to_string(), "module.payments".to_string()];
+        let result = parse_context_query_for_cli("move_safety", &args, &store).await;
+        assert!(
+            result.is_ok(),
+            "move_safety query must succeed; got: {result:?}"
+        );
+        assert!(
+            matches!(result.unwrap(), ContextQuery::MoveSafety { .. }),
+            "must produce MoveSafety query"
         );
     }
 
