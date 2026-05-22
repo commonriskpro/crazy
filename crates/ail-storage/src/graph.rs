@@ -223,6 +223,24 @@ impl<S: ObjectStore + Send + Sync> GraphStore for ObjectBackedGraphStore<S> {
     }
 }
 
+// ── MutableObjectBackedGraphStore deletion ───────────────────────────────
+
+impl<S: ObjectStore + Send + Sync> ObjectBackedGraphStore<S> {
+    /// Remove the snapshot identified by `id` from the internal index.
+    ///
+    /// The underlying raw object bytes are not erased from the `ObjectStore`
+    /// (CAS stores are typically append-only); the index entry that maps
+    /// `envelope.id → CAS id` is removed so that `load_snapshot` and
+    /// `list_snapshots` will no longer return this snapshot.
+    pub(crate) fn remove_snapshot_from_index(&self, id: &ObjectId) {
+        let mut guard = self
+            .snapshot_index
+            .lock()
+            .expect("snapshot_index lock must not be poisoned");
+        guard.remove(id);
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
