@@ -343,10 +343,15 @@ impl<'a> NativeCodegenCtx<'a> {
         if let Some(&id) = self.variant_tags.get(tag) {
             return id;
         }
-        let id = self.next_variant_tag;
-        self.variant_tags.insert(tag.to_string(), id);
-        self.next_variant_tag += 1;
-        id
+        // Use FNV-1a hash of the tag name for a stable, name-dependent discriminant.
+        // This ensures the same tag always gets the same ID across compilation units.
+        let mut h: u32 = 2166136261;
+        for b in tag.bytes() {
+            h ^= b as u32;
+            h = h.wrapping_mul(16777619);
+        }
+        self.variant_tags.insert(tag.to_string(), h);
+        h
     }
 
     fn push_label(&mut self, kind: NativeLabelKind, block: cranelift_codegen::ir::Block) {
@@ -2115,5 +2120,144 @@ mod tests {
     fn native_record_zero_fields_compiles() {
         let art = emit_native(&anf_with_record(vec![]));
         assert!(art.is_ok(), "RecordNew{{[]}} must compile without panic");
+    }
+
+    // ── TASK-H0: VariantNew / ListNew / TupleNew ──────────────────────────
+
+    #[test]
+    fn native_variant_new_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::VariantNew {
+                tag: "Ok".to_string(),
+                payload: Some(Box::new(AnfExpr::Literal(LiteralValue::Int(42)))),
+            },
+        });
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        let art = emit_native(&anf).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "VariantNew must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_list_new_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::ListNew(vec![
+                AnfExpr::Literal(LiteralValue::Int(1)),
+                AnfExpr::Literal(LiteralValue::Int(2)),
+            ]),
+        });
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        let art = emit_native(&anf).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "ListNew must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_tuple_new_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::TupleNew(vec![
+                AnfExpr::Literal(LiteralValue::Int(3)),
+                AnfExpr::Literal(LiteralValue::Int(4)),
+            ]),
+        });
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        let art = emit_native(&anf).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "TupleNew must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_variant_two_tags_differ() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        let make_variant = |tag: &str| anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::VariantNew { tag: tag.to_string(), payload: None },
+        });
+        let art_ok = emit_native(&make_variant("Ok")).unwrap();
+        let art_err = emit_native(&make_variant("Err")).unwrap();
+        assert_ne!(art_ok.native_bytes, art_err.native_bytes,
+            "VariantNew('Ok') and VariantNew('Err') must produce different bytes (different tag ids)");
+    }
+
+    // ── TASK-I0: EffectCall — RED ─────────────────────────────────────────
+
+    #[test]
+    fn native_effect_call_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "id".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                body: Box::new(AnfExpr::EffectCall {
+                    capability: "db".to_string(),
+                    func: "read".to_string(),
+                    args: vec!["id".to_string()],
+                }),
+            },
+        });
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        let art = emit_native(&anf).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "EffectCall must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_effect_call_two_capabilities_differ() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let make_effect = |cap: &str| anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "id".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                body: Box::new(AnfExpr::EffectCall {
+                    capability: cap.to_string(),
+                    func: "read".to_string(),
+                    args: vec!["id".to_string()],
+                }),
+            },
+        });
+        let art_db = emit_native(&make_effect("db")).unwrap();
+        let art_fs = emit_native(&make_effect("fs")).unwrap();
+        assert_ne!(art_db.native_bytes, art_fs.native_bytes,
+            "EffectCall('db') and EffectCall('fs') must produce different bytes");
+    }
+
+    #[test]
+    fn native_effect_call_native_hash_is_some() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "id".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                body: Box::new(AnfExpr::EffectCall {
+                    capability: "db".to_string(),
+                    func: "read".to_string(),
+                    args: vec!["id".to_string()],
+                }),
+            },
+        });
+        let art = emit_native(&anf).unwrap();
+        assert!(art.hash_chain.native_hash.is_some(), "native_hash must be Some for EffectCall");
     }
 }
