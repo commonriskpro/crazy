@@ -21,9 +21,15 @@
 //
 // `import != grant`: this checker verifies the package's trust tier; it does
 // NOT grant any capability to the importing module.
+//
+// Additional checks:
+// - `check_version_constraints`: validates semver expressions on import declarations
+// - `check_deprecated_exports`: flags deprecated exports as advisory entries
 
+use ail_package::export::ExportStability;
 use ail_package::manifest::PackageManifest;
 use ail_package::trust::TrustLevel;
+use semver::VersionReq;
 
 use crate::report::{VerificationEntry, VerificationState};
 
@@ -121,6 +127,91 @@ impl PackageTrustChecker {
                 repair_options: vec![],
             }
         }
+    }
+}
+
+impl PackageTrustChecker {
+    /// Validate `version_constraint` expressions on all import declarations.
+    ///
+    /// For each import across all manifests:
+    /// - No constraint (`None`): emit `Proven` — trivially satisfied.
+    /// - Valid semver expression: emit `Proven`.
+    /// - Invalid/unparseable expression: emit `Unverified` (blocking) with
+    ///   evidence `E_VERSION_CONSTRAINT_INVALID: <constraint>`.
+    ///
+    /// Scope is `"import:<source_package>@<package>@<version>"`.
+    pub fn check_version_constraints(manifests: &[PackageManifest]) -> Vec<VerificationEntry> {
+        let mut entries = Vec::new();
+        for m in manifests {
+            for import in &m.imports {
+                let scope = format!(
+                    "import:{}@{}@{}",
+                    import.source_package, m.name, m.version
+                );
+                let entry = match &import.version_constraint {
+                    None => VerificationEntry {
+                        claim: "version-constraint".to_string(),
+                        state: VerificationState::Proven,
+                        scope,
+                        evidence: None,
+                        blocking: false,
+                        repair_options: vec![],
+                    },
+                    Some(constraint) => {
+                        let valid = VersionReq::parse(constraint).is_ok();
+                        if valid {
+                            VerificationEntry {
+                                claim: "version-constraint".to_string(),
+                                state: VerificationState::Proven,
+                                scope,
+                                evidence: None,
+                                blocking: false,
+                                repair_options: vec![],
+                            }
+                        } else {
+                            VerificationEntry {
+                                claim: "version-constraint".to_string(),
+                                state: VerificationState::Unverified,
+                                scope,
+                                evidence: Some(format!(
+                                    "E_VERSION_CONSTRAINT_INVALID: {constraint}"
+                                )),
+                                blocking: true,
+                                repair_options: vec![],
+                            }
+                        }
+                    }
+                };
+                entries.push(entry);
+            }
+        }
+        entries
+    }
+
+    /// Flag deprecated exports across all manifests.
+    ///
+    /// For each export with `ExportStability::Deprecated`:
+    /// - Emit an `Assumed` (non-blocking, advisory) entry.
+    /// - Evidence: `E_DEPRECATED_API: <export_name>`.
+    ///
+    /// Scope is `"export:<export_name>@<package>@<version>"`.
+    pub fn check_deprecated_exports(manifests: &[PackageManifest]) -> Vec<VerificationEntry> {
+        let mut entries = Vec::new();
+        for m in manifests {
+            for export in &m.exports {
+                if export.stability == ExportStability::Deprecated {
+                    entries.push(VerificationEntry {
+                        claim: "deprecated-api".to_string(),
+                        state: VerificationState::Assumed,
+                        scope: format!("export:{}@{}@{}", export.name, m.name, m.version),
+                        evidence: Some(format!("E_DEPRECATED_API: {}", export.name)),
+                        blocking: false,
+                        repair_options: vec![],
+                    });
+                }
+            }
+        }
+        entries
     }
 }
 
@@ -280,5 +371,197 @@ mod tests {
         let m = make_manifest("acme.payments", TrustLevel::Verified);
         let entries = PackageTrustChecker::check(&[m], "prod");
         assert_eq!(entries[0].scope, "package:acme.payments@1.0.0");
+    }
+
+    // ── Version constraint checks ─────────────────────────────────────────
+
+    fn make_manifest_with_imports(
+        name: &str,
+        imports: Vec<ail_package::import::ImportDeclaration>,
+    ) -> PackageManifest {
+        PackageManifest::from_def(PackageDef {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            trust_level: TrustLevel::Verified,
+            required_capabilities: vec![],
+            exported_capabilities: vec![],
+            assumptions: vec![],
+            unsafe_surface: vec![],
+            artifact_hashes: vec![],
+            build_env_hash: None,
+            handlers: vec![],
+            contracts: vec![],
+            exports: vec![],
+            imports,
+            boundaries: vec![],
+            license: None,
+            provenance: None,
+            verification_report: None,
+            graph_schema: None,
+            core_ir_schema: None,
+        })
+    }
+
+    fn make_manifest_with_exports(
+        name: &str,
+        exports: Vec<ail_package::export::ExportDeclaration>,
+    ) -> PackageManifest {
+        PackageManifest::from_def(PackageDef {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            trust_level: TrustLevel::Verified,
+            required_capabilities: vec![],
+            exported_capabilities: vec![],
+            assumptions: vec![],
+            unsafe_surface: vec![],
+            artifact_hashes: vec![],
+            build_env_hash: None,
+            handlers: vec![],
+            contracts: vec![],
+            exports,
+            imports: vec![],
+            boundaries: vec![],
+            license: None,
+            provenance: None,
+            verification_report: None,
+            graph_schema: None,
+            core_ir_schema: None,
+        })
+    }
+
+    // ── Spec scenario: valid semver constraint is Proven ──────────────────
+    // GIVEN an import with version_constraint "^1.2"
+    // WHEN check_version_constraints is called
+    // THEN the entry has state Proven and blocking: false
+    #[test]
+    fn valid_semver_constraint_is_proven() {
+        use ail_package::import::ImportDeclaration;
+        let m = make_manifest_with_imports(
+            "pkg.a",
+            vec![ImportDeclaration {
+                source_package: "dep.b".to_string(),
+                items: vec![],
+                version_constraint: Some("^1.2".to_string()),
+            }],
+        );
+        let entries = PackageTrustChecker::check_version_constraints(&[m]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].state, VerificationState::Proven);
+        assert!(!entries[0].blocking);
+    }
+
+    // ── Spec scenario: invalid constraint is Unverified + blocking ────────
+    // GIVEN an import with version_constraint "not-semver!!!"
+    // WHEN check_version_constraints is called
+    // THEN the entry has state Unverified, blocking: true, evidence contains
+    //      E_VERSION_CONSTRAINT_INVALID
+    #[test]
+    fn invalid_semver_constraint_is_unverified_and_blocking() {
+        use ail_package::import::ImportDeclaration;
+        let m = make_manifest_with_imports(
+            "pkg.a",
+            vec![ImportDeclaration {
+                source_package: "dep.bad".to_string(),
+                items: vec![],
+                version_constraint: Some("not-semver!!!".to_string()),
+            }],
+        );
+        let entries = PackageTrustChecker::check_version_constraints(&[m]);
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.state, VerificationState::Unverified);
+        assert!(e.blocking, "invalid constraint must be blocking");
+        let ev = e.evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains("E_VERSION_CONSTRAINT_INVALID"),
+            "evidence must contain E_VERSION_CONSTRAINT_INVALID, got: {ev}"
+        );
+    }
+
+    // TRIANGULATE: no version_constraint (None) is Proven.
+    #[test]
+    fn no_version_constraint_is_proven() {
+        use ail_package::import::ImportDeclaration;
+        let m = make_manifest_with_imports(
+            "pkg.a",
+            vec![ImportDeclaration {
+                source_package: "dep.c".to_string(),
+                items: vec![],
+                version_constraint: None,
+            }],
+        );
+        let entries = PackageTrustChecker::check_version_constraints(&[m]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].state, VerificationState::Proven);
+        assert!(!entries[0].blocking);
+    }
+
+    // TRIANGULATE: manifest with no imports → empty entries.
+    #[test]
+    fn manifest_with_no_imports_returns_empty() {
+        let m = make_manifest("pkg.no-imports", TrustLevel::Verified);
+        let entries = PackageTrustChecker::check_version_constraints(&[m]);
+        assert!(entries.is_empty());
+    }
+
+    // ── Deprecated export checks ──────────────────────────────────────────
+
+    // ── Spec scenario: deprecated export is flagged ───────────────────────
+    // GIVEN a manifest with an export having stability = Deprecated
+    // WHEN check_deprecated_exports is called
+    // THEN the entry has state Assumed, blocking: false, evidence E_DEPRECATED_API
+    #[test]
+    fn deprecated_export_is_flagged_as_assumed() {
+        use ail_package::export::{ExportDeclaration, ExportStability, ExportVisibility};
+        let m = make_manifest_with_exports(
+            "pkg.old",
+            vec![ExportDeclaration {
+                name: "legacyFn".to_string(),
+                signature: "() -> ()".to_string(),
+                effects: vec![],
+                contracts: vec![],
+                visibility: ExportVisibility::Public,
+                stability: ExportStability::Deprecated,
+                trust_state: None,
+            }],
+        );
+        let entries = PackageTrustChecker::check_deprecated_exports(&[m]);
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.state, VerificationState::Assumed);
+        assert!(!e.blocking, "deprecated flag must be non-blocking advisory");
+        let ev = e.evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains("E_DEPRECATED_API"),
+            "evidence must contain E_DEPRECATED_API, got: {ev}"
+        );
+    }
+
+    // TRIANGULATE: non-deprecated exports produce no entries.
+    #[test]
+    fn stable_export_produces_no_deprecated_entry() {
+        use ail_package::export::{ExportDeclaration, ExportStability, ExportVisibility};
+        let m = make_manifest_with_exports(
+            "pkg.current",
+            vec![ExportDeclaration {
+                name: "newFn".to_string(),
+                signature: "() -> ()".to_string(),
+                effects: vec![],
+                contracts: vec![],
+                visibility: ExportVisibility::Public,
+                stability: ExportStability::Stable,
+                trust_state: None,
+            }],
+        );
+        let entries = PackageTrustChecker::check_deprecated_exports(&[m]);
+        assert!(entries.is_empty());
+    }
+
+    // TRIANGULATE: manifest with no exports → empty entries.
+    #[test]
+    fn manifest_with_no_exports_returns_empty_deprecated() {
+        let m = make_manifest("pkg.no-exports", TrustLevel::Verified);
+        let entries = PackageTrustChecker::check_deprecated_exports(&[m]);
+        assert!(entries.is_empty());
     }
 }

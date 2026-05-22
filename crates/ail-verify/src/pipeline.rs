@@ -301,6 +301,10 @@ impl VerificationPipeline {
         ));
         let package_entries = PackageTrustChecker::check(ctx.manifests, ctx.profile);
         all_entries.extend(package_entries);
+        let version_entries = PackageTrustChecker::check_version_constraints(ctx.manifests);
+        all_entries.extend(version_entries);
+        let deprecated_entries = PackageTrustChecker::check_deprecated_exports(ctx.manifests);
+        all_entries.extend(deprecated_entries);
 
         // ── Compute summary counts ────────────────────────────────────────
         let summary_counts = crate::report::SummaryCounts {

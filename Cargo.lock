@@ -282,6 +282,7 @@ dependencies = [
  "ail-package",
  "blake3",
  "ciborium",
+ "semver",
  "serde",
  "serde_json",
  "z3",
