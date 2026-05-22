@@ -123,6 +123,7 @@ fn make_ctx<'a>(graph: &'a SemanticGraph, solver: &'a SimpleSolver) -> PipelineC
         package_trust_metadata: &[],
         artifacts: &[],
         manifest_caps: &[],
+        artifact_manifest_hash: None,
     }
 }
 

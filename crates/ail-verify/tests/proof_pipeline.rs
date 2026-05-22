@@ -219,3 +219,62 @@ fn compose_check_upgrades_obligation_when_peer_ensures_semantically_implies() {
         "x>0 required must be RuntimeChecked when peer ensures x>=1"
     );
 }
+
+// ── Ola5 Gap-1: SimpleSolver arithmetic proof via context constraints ──────
+
+#[test]
+fn result_ge_zero_with_checked_add_evidence_resolves_to_proven() {
+    // GIVEN: checked_add function with requires [a >= 0, b >= 0] and body_expr "result = a + b"
+    //        and ensures [result >= 0]
+    // WHEN: pipeline runs with SimpleSolver
+    // THEN: the ensures obligation "result >= 0" resolves to Proven (not Assumed)
+    //       because SimpleSolver can derive lb(result) = lb(a) + lb(b) = 0 >= 0
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "checked_add");
+    node.body_expr = Some("result = a + b".to_string());
+    node.contract_clauses = Some(ContractClauses {
+        requires: vec!["a >= 0".into(), "b >= 0".into()],
+        ensures: vec!["result >= 0".into()],
+    });
+    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let solver = SimpleSolver;
+    let results = ProofObligationPipeline::run(&graph, &solver);
+
+    // We should have 3 obligations: requires a >= 0, requires b >= 0, ensures result >= 0
+    let ensures_result = results
+        .iter()
+        .find(|r| r.obligation.predicate == "result >= 0" && r.obligation.scope == "checked_add");
+    assert!(
+        ensures_result.is_some(),
+        "must find obligation for result >= 0; obligations: {:?}",
+        results.iter().map(|r| (&r.obligation.predicate, &r.state)).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        ensures_result.unwrap().state,
+        ObligationState::Proven,
+        "result >= 0 must be Proven given a >= 0, b >= 0, result = a + b via arithmetic reasoning"
+    );
+}
+
+#[test]
+fn obligation_without_scope_node_falls_back_to_simple_solve() {
+    // GIVEN: an obligation with a scope that has no requires or body
+    //        and predicate "x > 0" (not a tautology)
+    // WHEN: pipeline runs
+    // THEN: the obligation degrades to Assumed (no constraints to use)
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "bare_fn");
+    node.contract_clauses = Some(ContractClauses {
+        requires: vec![],
+        ensures: vec!["x > 0".into()],
+    });
+    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let solver = SimpleSolver;
+    let results = ProofObligationPipeline::run(&graph, &solver);
+
+    let result = results.iter().find(|r| r.obligation.predicate == "x > 0");
+    assert!(result.is_some(), "must have obligation for x > 0");
+    assert!(
+        matches!(result.unwrap().state, ObligationState::Assumed(_) | ObligationState::RuntimeChecked),
+        "x > 0 with no constraints must be Assumed or RuntimeChecked (not Proven); got {:?}",
+        result.unwrap().state
+    );
+}

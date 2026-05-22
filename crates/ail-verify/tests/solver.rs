@@ -194,6 +194,92 @@ fn prove(predicate: &str) -> SolverOutcome {
     })
 }
 
+// ── Ola5: SimpleSolver arithmetic tautologies ─────────────────────────────
+
+// Gap-1 RED: constant arithmetic tautologies
+
+#[test]
+fn simple_solver_proves_constant_ge_zero() {
+    // "0 >= 0" is a constant arithmetic tautology → Proven
+    assert_eq!(prove("0 >= 0"), SolverOutcome::Proven);
+}
+
+#[test]
+fn simple_solver_proves_constant_gt() {
+    // "5 > 3" is a constant arithmetic tautology → Proven
+    assert_eq!(prove("5 > 3"), SolverOutcome::Proven);
+}
+
+#[test]
+fn simple_solver_proves_constant_eq() {
+    // "7 == 7" is a constant arithmetic tautology → Proven
+    assert_eq!(prove("7 == 7"), SolverOutcome::Proven);
+}
+
+#[test]
+fn simple_solver_proves_reflexive_ge() {
+    // "x >= x" is reflexively true → Proven
+    assert_eq!(prove("x >= x"), SolverOutcome::Proven);
+}
+
+#[test]
+fn simple_solver_proves_reflexive_eq() {
+    // "x == x" is reflexively true → Proven
+    assert_eq!(prove("x == x"), SolverOutcome::Proven);
+}
+
+#[test]
+fn simple_solver_unconstrained_ge_remains_unsupported() {
+    // "x >= 0" without constraints → Unsupported (can't prove without bounds)
+    assert_eq!(prove("x >= 0"), SolverOutcome::Unsupported);
+}
+
+// Gap-1 RED: solve_with_constraints
+
+fn prove_with(predicate: &str, constraints: &[&str]) -> SolverOutcome {
+    let solver = SimpleSolver;
+    let oblig = ProofObligation {
+        predicate: predicate.into(),
+        role: ClauseRole::Ensures,
+        scope: "test".into(),
+    };
+    solver.solve_with_constraints(&oblig, constraints)
+}
+
+#[test]
+fn simple_solver_proves_result_ge_zero_from_sum_of_nonneg() {
+    // Given a >= 0, b >= 0, result = a + b → prove result >= 0
+    // Evidence: result = checked_add(a, b) where a >= 0, b >= 0
+    let outcome = prove_with("result >= 0", &["a >= 0", "b >= 0", "result = a + b"]);
+    assert_eq!(
+        outcome,
+        SolverOutcome::Proven,
+        "result >= 0 must be Proven given a >= 0, b >= 0, result = a + b"
+    );
+}
+
+#[test]
+fn simple_solver_proves_via_transitivity() {
+    // Given x >= 5 → prove x >= 0 (lb(x)=5 >= 0)
+    let outcome = prove_with("x >= 0", &["x >= 5"]);
+    assert_eq!(
+        outcome,
+        SolverOutcome::Proven,
+        "x >= 0 must be Proven given x >= 5 (transitivity)"
+    );
+}
+
+#[test]
+fn simple_solver_cannot_prove_false_constraint() {
+    // Given a >= 0 → cannot prove a >= 10 (lower bound is 0, not 10)
+    let outcome = prove_with("a >= 10", &["a >= 0"]);
+    assert_eq!(
+        outcome,
+        SolverOutcome::Unsupported,
+        "a >= 10 must NOT be Proven when only a >= 0 is known"
+    );
+}
+
 #[test]
 fn known_refinement_positive_money_ident_is_proven() {
     // "PositiveMoney(amount)" is a known refinement tautology → Proven
