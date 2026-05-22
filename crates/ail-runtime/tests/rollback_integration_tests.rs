@@ -155,6 +155,7 @@ fn runtime_host_execute_with_rollback_commits_on_success() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 
@@ -221,6 +222,7 @@ fn runtime_host_execute_with_rollback_rolls_back_on_failure() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 
@@ -239,9 +241,7 @@ fn runtime_host_execute_with_rollback_rolls_back_on_failure() {
 
     let result: Result<(), _> = host.execute_with_rollback(&mut tx, |_h| {
         // Simulate execution failure
-        Err(HostError {
-            message: "simulated handler failure".to_string(),
-        })
+        Err(HostError::Custom("simulated handler failure".to_string()))
     });
 
     assert!(result.is_err(), "execution failure must propagate error");
@@ -290,6 +290,7 @@ fn runtime_host_execute_with_rollback_returns_non_rollbackable_on_failure() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 
@@ -310,9 +311,9 @@ fn runtime_host_execute_with_rollback_returns_non_rollbackable_on_failure() {
 
     let (result, non_rollbackable): (Result<(), _>, _) =
         host.execute_with_rollback_detail(&mut tx, |_h| {
-            Err(HostError {
-                message: "simulated failure after payment".to_string(),
-            })
+            Err(HostError::Custom(
+                "simulated failure after payment".to_string(),
+            ))
         });
 
     assert!(result.is_err());

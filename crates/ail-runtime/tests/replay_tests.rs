@@ -173,9 +173,10 @@ fn fake_payment_fails_when_configured() {
         "FakePayment configured to fail must return Err"
     );
     let err = result.unwrap_err();
+    let err_str = err.to_string();
     assert!(
-        err.message.contains("PaymentDeclined") || err.message.contains("declined"),
-        "error message must indicate payment declined"
+        err_str.contains("PaymentDeclined") || err_str.contains("declined"),
+        "error message must indicate payment declined: got {err:?}"
     );
 }
 

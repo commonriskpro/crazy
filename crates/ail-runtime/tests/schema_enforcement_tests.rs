@@ -196,6 +196,7 @@ fn capability_call_with_schema_passes_valid_payload() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 
@@ -261,6 +262,7 @@ fn capability_call_with_schema_rejects_invalid_payload() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 
@@ -291,12 +293,12 @@ fn capability_call_with_schema_rejects_invalid_payload() {
     let result = host.call_capability(&cap_id, "read", b"wrong_field=42");
     assert!(result.is_err(), "invalid payload must fail schema check");
     let err = result.unwrap_err();
+    let err_str = err.to_string();
     assert!(
-        err.message.contains("PayloadDecodeError")
-            || err.message.contains("cart_id")
-            || err.message.contains("schema"),
-        "error must indicate payload schema violation: {:?}",
-        err
+        err_str.contains("payload decode error")
+            || err_str.contains("cart_id")
+            || err_str.contains("schema"),
+        "error must indicate payload schema violation: {err:?}"
     );
 }
 
@@ -330,6 +332,7 @@ fn capability_call_without_registered_schema_passes_through() {
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
+            ..Default::default()
         },
     );
 

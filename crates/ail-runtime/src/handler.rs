@@ -61,19 +61,32 @@ pub trait Handler: Send + Sync {
     /// Execute a capability call with structured arguments and return a
     /// structured result.
     ///
-    /// Default implementation: encodes `args` as little-endian i64 bytes
-    /// (8 bytes per argument), calls `self.handle`, then decodes the first
-    /// 8 bytes of the response as a little-endian i64 `StructuredValue::Scalar`.
+    /// Default implementation: validates `args`, encodes `Scalar` and `Unit`
+    /// arguments as little-endian i64 bytes (8 bytes each), calls `self.handle`,
+    /// then decodes the first 8 bytes of the response as a
+    /// `StructuredValue::Scalar`.
     ///
     /// `Unit` args encode as 8 zero bytes.
     /// `Scalar(n)` args encode as `n.to_le_bytes()`.
-    /// All other variants encode as 8 zero bytes.
+    /// All other variants return `Err(HostError::PayloadEncodeError(...))` —
+    /// structured types beyond scalars and unit are not yet supported by the
+    /// default scalar ABI and must use a custom handler implementation.
     fn handle_structured(
         &self,
         capability: &CapabilityId,
         operation: &str,
         args: &[StructuredValue],
     ) -> HostResult<StructuredValue> {
+        for arg in args {
+            match arg {
+                StructuredValue::Scalar(_) | StructuredValue::Unit => {}
+                other => {
+                    return Err(HostError::PayloadEncodeError(format!(
+                        "unsupported structured value type in scalar ABI payload: {other:?}"
+                    )));
+                }
+            }
+        }
         let payload = encode_args_as_le_bytes(args);
         let raw = self.handle(capability, operation, &payload)?;
         Ok(decode_raw_as_structured(&raw))
@@ -211,9 +224,7 @@ impl Handler for ClockHandler {
     ) -> HostResult<Vec<u8>> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| HostError {
-                message: format!("clock before unix epoch: {e}"),
-            })?
+            .map_err(|e| HostError::Custom(format!("clock before unix epoch: {e}")))?
             .as_secs() as i64;
         Ok(now.to_le_bytes().to_vec())
     }
@@ -263,12 +274,10 @@ impl Handler for InMemoryHandler {
         if self.caps.contains(capability) {
             Ok(self.response.clone())
         } else {
-                Err(HostError {
-                    message: format!(
-                        "InMemoryHandler does not handle capability: {}",
-                        capability.as_str()
-                    ),
-                })
+            Err(HostError::HandlerNotBound(format!(
+                "InMemoryHandler does not handle capability: {}",
+                capability.as_str()
+            )))
         }
     }
 }
@@ -332,6 +341,34 @@ mod tests {
             .handle_structured(&cap, "op", &[StructuredValue::Scalar(42)])
             .expect("handle_structured with Scalar arg must succeed");
         assert_eq!(result, StructuredValue::Scalar(7));
+    }
+
+    #[test]
+    fn handle_structured_returns_error_for_unsupported_types() {
+        // Non-Scalar, non-Unit variants must produce PayloadEncodeError,
+        // not silently encode as zero bytes.
+        let handler = i64_handler(0);
+        let cap = CapabilityId::new("cap");
+
+        // Record variant — unsupported
+        let record_arg = StructuredValue::Record(vec![("field".to_string(), StructuredValue::Scalar(1))]);
+        let err = handler
+            .handle_structured(&cap, "op", &[record_arg])
+            .expect_err("Record arg must produce an error");
+        assert!(
+            matches!(err, crate::abi::HostError::PayloadEncodeError(_)),
+            "expected PayloadEncodeError, got {err:?}"
+        );
+
+        // List variant — unsupported
+        let list_arg = StructuredValue::List(vec![StructuredValue::Scalar(1)]);
+        let err2 = handler
+            .handle_structured(&cap, "op", &[list_arg])
+            .expect_err("List arg must produce an error");
+        assert!(
+            matches!(err2, crate::abi::HostError::PayloadEncodeError(_)),
+            "expected PayloadEncodeError for List, got {err2:?}"
+        );
     }
 }
 

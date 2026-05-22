@@ -59,15 +59,14 @@ fn host_result_ok_carries_value() {
     assert_eq!(result, Ok(42));
 }
 
-// TRIANGULATE: HostResult::Err carries the HostError message.
+// TRIANGULATE: HostResult::Err carries the HostError payload.
 #[test]
 fn host_result_err_carries_host_error() {
-    let err = HostError {
-        message: "file not found".to_string(),
-    };
+    let err = HostError::Custom("file not found".to_string());
     let result: HostResult<u32> = Err(err);
     match result {
-        Err(e) => assert_eq!(e.message, "file not found"),
+        Err(HostError::Custom(msg)) => assert_eq!(msg, "file not found"),
+        Err(e) => panic!("wrong variant: {e:?}"),
         Ok(_) => panic!("expected Err, got Ok"),
     }
 }
@@ -76,9 +75,7 @@ fn host_result_err_carries_host_error() {
 
 #[test]
 fn host_error_display_includes_message() {
-    let err = HostError {
-        message: "permission denied".to_string(),
-    };
+    let err = HostError::Custom("permission denied".to_string());
     let s = err.to_string();
     assert!(
         s.contains("permission denied"),
