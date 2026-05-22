@@ -364,8 +364,17 @@ fn emit_anf_expr<'a>(
         AnfExpr::EffectCall { .. }
         | AnfExpr::Dispatch { .. }
         | AnfExpr::TaskSpawn { .. }
+        | AnfExpr::TaskAwait { .. }
+        | AnfExpr::TaskCancel { .. }
+        | AnfExpr::TaskGroup { .. }
+        | AnfExpr::ChannelNew { .. }
         | AnfExpr::ChannelSend { .. }
         | AnfExpr::ChannelRecv { .. }
+        | AnfExpr::Select { .. }
+        | AnfExpr::Timeout { .. }
+        | AnfExpr::CellNew { .. }
+        | AnfExpr::CellGet { .. }
+        | AnfExpr::CellSet { .. }
         | AnfExpr::RuntimeCheck { .. }
         | AnfExpr::ResourceAcquire { .. }
         | AnfExpr::ResourceRelease { .. } => {
