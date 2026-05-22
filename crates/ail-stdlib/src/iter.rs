@@ -34,9 +34,6 @@ pub fn iter_fold<T, U>(items: Vec<T>, init: U, f: impl Fn(U, T) -> U) -> U {
 ///
 /// This is the effect-polymorphic `traverse` for the `Result` applicative:
 /// every `f` call must succeed for the overall traversal to succeed.
-pub fn iter_traverse<T, U, E>(
-    items: Vec<T>,
-    f: impl Fn(T) -> Result<U, E>,
-) -> Result<Vec<U>, E> {
+pub fn iter_traverse<T, U, E>(items: Vec<T>, f: impl Fn(T) -> Result<U, E>) -> Result<Vec<U>, E> {
     items.into_iter().map(f).collect()
 }

@@ -3,9 +3,9 @@
 // TDD cycle: written before v1.rs is extended.
 // Spec: G26 stdlib-impl, Requirement R6.1–R6.3.
 
+use ail_core::semantic_graph::{NodeKind, SemanticGraph};
 use ail_stdlib::registry::StdlibRegistry;
 use ail_stdlib::{v1_registry, v1_registry_with_functions};
-use ail_core::semantic_graph::{NodeKind, SemanticGraph};
 
 // ── R6.1: Function entries exist in extended registry ─────────────────────
 
@@ -29,7 +29,9 @@ fn v1_functions_registry_contains_function_entries() {
 fn v1_functions_numeric_has_checked_add() {
     let reg = v1_registry_with_functions();
     assert!(
-        reg.entries.iter().any(|e| e.id.0 == "std.numeric.checked_add"),
+        reg.entries
+            .iter()
+            .any(|e| e.id.0 == "std.numeric.checked_add"),
         "registry must contain std.numeric.checked_add"
     );
 }
@@ -101,7 +103,10 @@ fn v1_functions_registry_validates() {
 fn v1_functions_registry_projected_nodes_valid() {
     let reg = v1_registry_with_functions();
     let nodes = reg.to_graph_nodes();
-    let graph = SemanticGraph { nodes, edges: vec![] };
+    let graph = SemanticGraph {
+        nodes,
+        edges: vec![],
+    };
     assert_eq!(
         graph.validate(),
         Ok(()),
@@ -115,7 +120,10 @@ fn v1_functions_registry_cbor_round_trip() {
     let reg = v1_registry_with_functions();
     let bytes = reg.cbor_bytes().expect("cbor_bytes must succeed");
     let decoded = StdlibRegistry::from_cbor_bytes(&bytes).expect("from_cbor_bytes must succeed");
-    assert_eq!(decoded, reg, "extended registry must survive CBOR round-trip");
+    assert_eq!(
+        decoded, reg,
+        "extended registry must survive CBOR round-trip"
+    );
 }
 
 // Extended registry has more entries than base registry

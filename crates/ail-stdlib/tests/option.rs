@@ -25,7 +25,10 @@ fn option_map_none() {
 // Triangulate: type transformation
 #[test]
 fn option_map_type_change() {
-    assert_eq!(option_map(Some(42), |x| x.to_string()), Some("42".to_string()));
+    assert_eq!(
+        option_map(Some(42), |x| x.to_string()),
+        Some("42".to_string())
+    );
 }
 
 // ── R2.2: option_and_then ─────────────────────────────────────────────────

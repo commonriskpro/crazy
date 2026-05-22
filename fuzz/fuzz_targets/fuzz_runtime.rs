@@ -1,8 +1,6 @@
 #![no_main]
 
-use ail_runtime::{
-    CapabilityManifest, ResourceLimits, RuntimeHost, RuntimeProfile, blake3_hex_of,
-};
+use ail_runtime::{CapabilityManifest, ResourceLimits, RuntimeHost, RuntimeProfile, blake3_hex_of};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

@@ -397,35 +397,35 @@ fn v1_node_kind_preserved_through_projection() {
     );
 }
 
-// Spec scenario 4.9: Entry count equals 9
+// Spec scenario 4.9: Entry count equals docs/stdlib.md module list
 //   GIVEN the default v1 StdlibRegistry
 //   WHEN entries are counted
 //   THEN count equals 9
 #[test]
-fn v1_registry_contains_exactly_9_entries() {
+fn v1_registry_contains_all_30_stdlib_modules() {
     let reg = v1_registry();
     assert_eq!(
         reg.entries.len(),
-        9,
-        "v1 registry must contain exactly 9 entries"
+        30,
+        "v1 registry must contain exactly the 30 docs/stdlib.md modules"
     );
 }
 
-// Spec scenario 4.10: Out-of-scope modules are absent
+// Spec scenario 4.10: Effectful modules from docs/stdlib.md are present
 //   GIVEN the default v1 StdlibRegistry
 //   WHEN searched for std.fs or std.net entries
-//   THEN neither entry is present
+//   THEN both entries are present
 #[test]
-fn v1_registry_excludes_out_of_scope_modules() {
+fn v1_registry_includes_effectful_stdlib_modules() {
     let reg = v1_registry();
     let ids: Vec<&str> = reg.entries.iter().map(|e| e.id.0.as_str()).collect();
     assert!(
-        !ids.contains(&"std.fs"),
-        "std.fs must not be present in the v1 registry"
+        ids.contains(&"std.fs"),
+        "std.fs must be present in the v1 registry"
     );
     assert!(
-        !ids.contains(&"std.net"),
-        "std.net must not be present in the v1 registry"
+        ids.contains(&"std.net"),
+        "std.net must be present in the v1 registry"
     );
 }
 

@@ -81,14 +81,10 @@ fn iter_fold_empty_returns_init() {
 #[test]
 fn iter_fold_concat() {
     assert_eq!(
-        iter_fold(
-            vec!["a", "b", "c"],
-            String::new(),
-            |mut acc, x| {
-                acc.push_str(x);
-                acc
-            }
-        ),
+        iter_fold(vec!["a", "b", "c"], String::new(), |mut acc, x| {
+            acc.push_str(x);
+            acc
+        }),
         "abc"
     );
 }
@@ -120,7 +116,6 @@ fn iter_traverse_empty() {
 // Triangulate: all Err returns first
 #[test]
 fn iter_traverse_all_err_returns_first() {
-    let result: Result<Vec<i32>, &str> =
-        iter_traverse(vec![1, 2, 3], |_| Err("always fails"));
+    let result: Result<Vec<i32>, &str> = iter_traverse(vec![1, 2, 3], |_| Err("always fails"));
     assert_eq!(result, Err("always fails"));
 }

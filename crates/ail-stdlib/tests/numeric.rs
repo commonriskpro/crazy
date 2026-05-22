@@ -3,9 +3,7 @@
 // TDD cycle: all tests written before implementation.
 // Spec: G26 stdlib-impl, Requirements R1.1–R1.5.
 
-use ail_stdlib::numeric::{
-    checked_add, checked_mul, checked_sub, saturating_add, wrapping_add,
-};
+use ail_stdlib::numeric::{checked_add, checked_mul, checked_sub, saturating_add, wrapping_add};
 
 // ── R1.1 + R1.2: checked_add ──────────────────────────────────────────────
 
