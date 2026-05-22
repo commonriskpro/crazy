@@ -28,9 +28,9 @@ use crate::object::ObjectId;
 
 /// Metadata attached to a tag that marks a formal release.
 ///
-/// `graph_root_hash` pins the exact graph content captured by this release.
-/// `verification_report_hash` records the BLAKE3 hash of the verification
-/// report that certified the release, if one exists.
+/// All four spec-required fields are present:
+/// `graph_root_hash`, `verification_report_hash`, `runtime_profile_hash`,
+/// and `artifact_hashes`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReleaseMetadata {
     /// Content-addressed root of the graph at release time.
@@ -38,6 +38,13 @@ pub struct ReleaseMetadata {
     /// BLAKE3 hash of the verification report for this release, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification_report_hash: Option<[u8; 32]>,
+    /// BLAKE3 hash of the runtime profile captured at release time, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_profile_hash: Option<[u8; 32]>,
+    /// Content-addressed hashes of protected artifacts included in this
+    /// release (e.g. WASM blobs, generated SDKs).  Sorted for determinism.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifact_hashes: Vec<ObjectId>,
 }
 
 // ── Tag ───────────────────────────────────────────────────────────────────
@@ -196,13 +203,21 @@ mod tests {
         assert!(tag.release_metadata.is_none());
     }
 
-    // Scenario: create tag with release metadata.
+    // Scenario: create tag with release metadata (all four fields).
+    //   GIVEN create_tag with ReleaseMetadata carrying all four spec fields
+    //   WHEN get_tag
+    //   THEN metadata is round-tripped intact
     #[tokio::test]
     async fn create_tag_with_release_metadata() {
         let reg = TagRegistry::new();
         let meta = ReleaseMetadata {
             graph_root_hash: root_id(42),
             verification_report_hash: Some([0xab; 32]),
+            runtime_profile_hash: Some([0xcd; 32]),
+            artifact_hashes: vec![
+                ObjectId::from_bytes(&[0x01; 32]),
+                ObjectId::from_bytes(&[0x02; 32]),
+            ],
         };
         reg.create_tag("v2.0", snap_id(2), 2000, Some(meta.clone()))
             .await
@@ -213,6 +228,53 @@ mod tests {
             .expect("get")
             .expect("must exist");
         assert_eq!(tag.release_metadata, Some(meta));
+    }
+
+    // Scenario: ReleaseMetadata runtime_profile_hash field is stored.
+    //   GIVEN create_tag with runtime_profile_hash set
+    //   WHEN get_tag
+    //   THEN runtime_profile_hash is present
+    #[tokio::test]
+    async fn release_metadata_runtime_profile_hash() {
+        let reg = TagRegistry::new();
+        let meta = ReleaseMetadata {
+            graph_root_hash: root_id(1),
+            verification_report_hash: None,
+            runtime_profile_hash: Some([0xee; 32]),
+            artifact_hashes: Vec::new(),
+        };
+        reg.create_tag("v3.0", snap_id(3), 3000, Some(meta.clone()))
+            .await
+            .expect("create");
+        let tag = reg.get_tag("v3.0").await.expect("get").expect("must exist");
+        let rm = tag.release_metadata.expect("must have release metadata");
+        assert_eq!(rm.runtime_profile_hash, Some([0xee; 32]));
+    }
+
+    // Scenario: ReleaseMetadata artifact_hashes field is stored.
+    //   GIVEN create_tag with artifact_hashes list
+    //   WHEN get_tag
+    //   THEN artifact_hashes are preserved
+    #[tokio::test]
+    async fn release_metadata_artifact_hashes() {
+        let reg = TagRegistry::new();
+        let hashes = vec![
+            ObjectId::from_bytes(&[0xaa; 32]),
+            ObjectId::from_bytes(&[0xbb; 32]),
+            ObjectId::from_bytes(&[0xcc; 32]),
+        ];
+        let meta = ReleaseMetadata {
+            graph_root_hash: root_id(2),
+            verification_report_hash: None,
+            runtime_profile_hash: None,
+            artifact_hashes: hashes.clone(),
+        };
+        reg.create_tag("v4.0", snap_id(4), 4000, Some(meta))
+            .await
+            .expect("create");
+        let tag = reg.get_tag("v4.0").await.expect("get").expect("must exist");
+        let rm = tag.release_metadata.expect("must have release metadata");
+        assert_eq!(rm.artifact_hashes, hashes);
     }
 
     // Scenario: duplicate tag creation returns error.
