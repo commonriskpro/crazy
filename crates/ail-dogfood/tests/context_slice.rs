@@ -34,6 +34,7 @@ fn stub_snapshot() -> SnapshotEnvelope {
         parent_id: None,
         applied_change_id: None,
         created_at: 0,
+        verification_report_hash: None,
     }
 }
 

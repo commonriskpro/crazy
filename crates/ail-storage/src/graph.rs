@@ -37,13 +37,17 @@ use crate::object::{ObjectId, ObjectStore, RawObject};
 
 /// Envelope that captures the state of the graph at a single point in time.
 ///
-/// All five spec-required fields are present:
-/// `id`, `graph_root_hash`, `parent_id`, `applied_change_id`, `created_at`.
+/// All six spec-required fields are present:
+/// `id`, `graph_root_hash`, `parent_id`, `applied_change_id`, `created_at`,
+/// and `verification_report_hash`.
 ///
 /// `graph_root_hash` is the opaque `ObjectId` of the root graph object stored
 /// in the backing `ObjectStore`.  `parent_id` links to the preceding snapshot,
 /// or is `None` for a genesis (first) snapshot.  `applied_change_id` records
 /// the change-set that produced this snapshot, or `None` for genesis.
+/// `verification_report_hash` is the BLAKE3 hash of the verification report
+/// associated with this snapshot, or `None` when no report has been produced
+/// (e.g. genesis snapshots or snapshots that pre-date the verification pipeline).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotEnvelope {
     /// Envelope identity: the `ObjectId` assigned by the caller (not the CAS
@@ -58,6 +62,13 @@ pub struct SnapshotEnvelope {
     pub applied_change_id: Option<ObjectId>,
     /// Unix timestamp in milliseconds when this snapshot was created.
     pub created_at: u64,
+    /// BLAKE3 hash of the verification report linked to this snapshot.
+    ///
+    /// `None` when no verification report has been produced (genesis, or
+    /// snapshots that pre-date the verification pipeline).  Serialized only
+    /// when `Some` to keep the CBOR representation backward-compatible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_report_hash: Option<[u8; 32]>,
 }
 
 // ── ChangeSetLogEntry ─────────────────────────────────────────────────────
@@ -239,6 +250,7 @@ mod tests {
             parent_id: None,
             applied_change_id: None,
             created_at: 0,
+            verification_report_hash: None,
         }
     }
 

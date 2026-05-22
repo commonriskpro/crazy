@@ -484,6 +484,7 @@ mod tests {
             parent_id: None,
             applied_change_id: None,
             created_at: 1_000,
+            verification_report_hash: None,
         }
     }
 
@@ -1187,6 +1188,7 @@ mod tests {
             parent_id: None,
             applied_change_id: None,
             created_at: 1_000,
+            verification_report_hash: None,
         };
         let snap2 = SnapshotEnvelope {
             id: snap2_id,
@@ -1194,6 +1196,7 @@ mod tests {
             parent_id: Some(genesis_id),
             applied_change_id: None,
             created_at: 2_000,
+            verification_report_hash: None,
         };
         let snap3 = SnapshotEnvelope {
             id: snap3_id,
@@ -1201,6 +1204,7 @@ mod tests {
             parent_id: Some(snap2_id),
             applied_change_id: None,
             created_at: 3_000,
+            verification_report_hash: None,
         };
 
         let graph = SemanticGraph {
