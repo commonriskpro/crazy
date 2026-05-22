@@ -96,6 +96,12 @@ pub struct PipelineContext<'a> {
     ///
     /// Pass an empty slice to skip manifest consistency checking.
     pub manifest_caps: &'a [String],
+    /// Optional precomputed artifact manifest hash for Stage 21 comparison.
+    ///
+    /// When `Some(h)`, Stage 21 computes the actual capability-set hash and
+    /// compares it against `h`.  A mismatch emits `E_MANIFEST_HASH_MISMATCH`.
+    /// When `None`, the hash check is skipped and only the cap-set is compared.
+    pub artifact_manifest_hash: Option<&'a str>,
 }
 
 // ── VerificationPipeline ──────────────────────────────────────────────────
@@ -380,7 +386,7 @@ impl VerificationPipeline {
             .extend(check_approval_records(ctx.approvals));
 
         // ── Stage 19: Lower to ANF ────────────────────────────────────────
-        pre_policy.entries.push(lower_anf(ctx.graph));
+        pre_policy.entries.extend(lower_anf(ctx.graph));
 
         // ── Stage 20: Check ANF effect/resource ordering ──────────────────
         pre_policy.entries.push(check_anf_ordering(ctx.graph));
@@ -388,7 +394,7 @@ impl VerificationPipeline {
         // ── Stage 21: Generate/validate manifest ──────────────────────────
         pre_policy
             .entries
-            .push(validate_manifest(ctx.graph, ctx.manifest_caps));
+            .push(validate_manifest(ctx.graph, ctx.manifest_caps, ctx.artifact_manifest_hash));
 
         let mut artifact_hashes = Vec::new();
 
@@ -564,17 +570,25 @@ fn validate_op_schemas_with_graph(
                 }
             }
 
-            // Type arg validation (D2): must be a known primitive or graph node name
+            // Type arg validation (D2): must be a known primitive, graph node name,
+            // or a qualified external type (Package.Type / Domain.Sub.Type pattern).
             if let Some(type_arg) = op.args.get("type") {
                 let is_primitive = KNOWN_PRIMITIVES.contains(&type_arg.as_str());
                 let is_node = graph_names.contains(type_arg.as_str());
-                if !is_primitive && !is_node && !type_arg.is_empty() {
+                // Qualified external type: "Package.Type" or "Domain.Sub.Type" —
+                // a dot-separated path where every segment is a non-empty identifier.
+                let is_qualified = type_arg.contains('.')
+                    && type_arg.split('.').all(|seg| {
+                        !seg.is_empty()
+                            && seg.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    });
+                if !is_primitive && !is_node && !is_qualified && !type_arg.is_empty() {
                     entries.push(stage_entry(
                         "03-validate-op-schemas",
                         VerificationState::Failed,
                         scope.clone(),
                         Some(format!(
-                            "E_OP_ARG_TYPE_INVALID: type '{}' is not a known primitive or graph node name",
+                            "E_OP_ARG_TYPE_INVALID: type '{}' is not a known primitive, graph node name, or qualified external type",
                             type_arg
                         )),
                     ));
@@ -1089,11 +1103,34 @@ fn has_let_in_pattern(body: &str) -> bool {
     }
 }
 
-fn lower_anf(graph: &SemanticGraph) -> VerificationEntry {
-    let unsupported = graph.nodes.iter()
+fn lower_anf(graph: &SemanticGraph) -> Vec<VerificationEntry> {
+    use ail_core::semantic_graph::NodeKind;
+    let mut entries = Vec::new();
+
+    // Placeholder check (Ola5 Gap-2): Function nodes with no body_expr are
+    // structural placeholders.  Flag each one individually as Unverified so
+    // callers can distinguish missing implementations from verified ones.
+    for node in &graph.nodes {
+        if node.kind == NodeKind::Function && node.body_expr.is_none() {
+            entries.push(stage_entry(
+                "19-lower-to-anf",
+                VerificationState::Unverified,
+                node.name.clone(),
+                Some(format!(
+                    "Placeholder: function '{}' has no body expression; ANF lowering deferred",
+                    node.name
+                )),
+            ));
+        }
+    }
+
+    // Structural ANF check: detect bodies with non-ANF control flow.
+    let violation = graph
+        .nodes
+        .iter()
         .filter_map(|node| node.body_expr.as_ref().map(|body| (node, body)))
         .find(|(_, body)| {
-            // Non-ANF: control flow keywords that are incompatible with ANF form
+            // Non-ANF: imperative control flow keywords
             if body.contains("while ") || body.contains("for ") || body.contains("loop ") {
                 return true;
             }
@@ -1103,21 +1140,24 @@ fn lower_anf(graph: &SemanticGraph) -> VerificationEntry {
             }
             false
         });
-    if let Some((node, body)) = unsupported {
-        stage_entry(
+    if let Some((node, body)) = violation {
+        entries.push(stage_entry(
             "19-lower-to-anf",
             VerificationState::Unverified,
             node.name.clone(),
             Some(format!("body requires non-trivial ANF lowering: {body}")),
-        )
-    } else {
-        stage_entry(
-            "19-lower-to-anf",
-            VerificationState::Proven,
-            "anf_ir",
-            Some("graph expressions are ANF-compatible".into()),
-        )
+        ));
+        return entries;
     }
+
+    // Summary Proven entry when no structural violations were found.
+    entries.push(stage_entry(
+        "19-lower-to-anf",
+        VerificationState::Proven,
+        "anf_ir",
+        Some("graph expressions are ANF-compatible".into()),
+    ));
+    entries
 }
 
 /// Scan `body` for `acquire(<ident>)` and `release(<ident>)` tokens.
@@ -1465,13 +1505,65 @@ mod tests {
     }
 }
 
-fn validate_manifest(graph: &SemanticGraph, manifest_caps: &[String]) -> VerificationEntry {
+/// Compute a deterministic 64-char hex hash from sorted capability names.
+///
+/// Uses a FNV-64-inspired accumulation expanded to 256 bits (4 × u64) so the
+/// output is a valid 64-character hex string compatible with Stage 21 hash
+/// comparison.  The computation is pure and produces identical output for
+/// identical inputs across all platforms.
+fn compute_caps_hash(cap_names: &[&str]) -> String {
+    let mut sorted: Vec<&str> = cap_names.to_vec();
+    sorted.sort();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for name in &sorted {
+        for byte in name.bytes() {
+            h ^= byte as u64;
+            h = h.wrapping_mul(0x0000_0001_0000_01b3);
+        }
+        h = h.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+    let h1 = h;
+    let h2 = h
+        .wrapping_mul(0x517c_c1b7_2722_0a95)
+        .wrapping_add(0xf6bd_bff8_bce2_4095);
+    let h3 = h
+        .wrapping_mul(0xbf58_476d_1ce4_e5b9)
+        .wrapping_add(0x94d0_49bb_1331_11eb);
+    let h4 = h
+        .wrapping_mul(0x6c62_272e_07bb_0142)
+        .wrapping_add(0x62b8_2175_6295_c58d);
+    format!("{h1:016x}{h2:016x}{h3:016x}{h4:016x}")
+}
+
+fn validate_manifest(
+    graph: &SemanticGraph,
+    manifest_caps: &[String],
+    artifact_manifest_hash: Option<&str>,
+) -> VerificationEntry {
     let graph_caps = graph
         .nodes
         .iter()
         .filter(|node| node.kind == ail_core::semantic_graph::NodeKind::Capability)
         .map(|node| node.name.as_str())
         .collect::<BTreeSet<_>>();
+
+    // Hash comparison (Ola5 Gap-2): when artifact_manifest_hash is provided,
+    // compute the actual capability-set hash and compare it first.
+    if let Some(expected_hash) = artifact_manifest_hash {
+        let cap_names: Vec<&str> = graph_caps.iter().copied().collect();
+        let actual_hash = compute_caps_hash(&cap_names);
+        if actual_hash != expected_hash {
+            return stage_entry(
+                "21-generate-validate-manifest",
+                VerificationState::Failed,
+                "capabilities_manifest",
+                Some(format!(
+                    "E_MANIFEST_HASH_MISMATCH: expected {expected_hash}, computed {actual_hash}"
+                )),
+            );
+        }
+    }
+
     if manifest_caps.is_empty() && graph_caps.is_empty() {
         return stage_entry(
             "21-generate-validate-manifest",

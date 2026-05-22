@@ -39,6 +39,7 @@ fn make_ctx<'a>(
         package_trust_metadata: &[],
         artifacts: &[],
         manifest_caps: &[],
+        artifact_manifest_hash: None,
     }
 }
 
@@ -221,6 +222,7 @@ fn pipeline_checks_artifacts_when_provided() {
         package_trust_metadata: &[],
         artifacts: &artifacts,
         manifest_caps: &[],
+        artifact_manifest_hash: None,
     };
 
     let report = VerificationPipeline::run(&ctx);
@@ -293,6 +295,7 @@ fn pipeline_policy_audit_excludes_codegen_entries_but_final_report_keeps_them() 
         package_trust_metadata: &[],
         artifacts: &artifacts,
         manifest_caps: &[],
+        artifact_manifest_hash: None,
     };
 
     let report = VerificationPipeline::run(&ctx);
@@ -630,6 +633,7 @@ fn full_pipeline_validates_manifest_capabilities() {
         package_trust_metadata: &[],
         artifacts: &[],
         manifest_caps: &manifest_caps,
+        artifact_manifest_hash: None,
     };
 
     let report = VerificationPipeline::run(&ctx);
@@ -1158,4 +1162,176 @@ fn stage5_no_base_graph_produces_single_unverified_entry() {
         diff_entries[0].state,
         ail_verify::report::VerificationState::Unverified
     );
+}
+
+// ── Ola5 Gap-3: Op schema type validation beyond hardcoded list ───────────
+
+#[test]
+fn stage3_op_with_qualified_external_type_passes() {
+    // Payment.Amount follows the Package.Type pattern → must be accepted
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+    let changeset =
+        "change test base=0\nauthor tester\nop set_return target=fn.x type=Payment.Amount\nend\n";
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), None);
+
+    let failed = report.entries.iter().any(|e| {
+        e.claim == "03-validate-op-schemas"
+            && e.state == ail_verify::report::VerificationState::Failed
+            && e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_OP_ARG_TYPE_INVALID")
+    });
+    assert!(
+        !failed,
+        "qualified external type Payment.Amount must NOT produce E_OP_ARG_TYPE_INVALID"
+    );
+}
+
+#[test]
+fn stage3_op_with_multi_segment_qualified_type_passes() {
+    // Domain.Sub.Type is a multi-segment qualified external type → must be accepted
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+    let changeset =
+        "change test base=0\nauthor tester\nop set_return target=fn.x type=Domain.Sub.Type\nend\n";
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), None);
+
+    let failed = report.entries.iter().any(|e| {
+        e.claim == "03-validate-op-schemas"
+            && e.state == ail_verify::report::VerificationState::Failed
+            && e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_OP_ARG_TYPE_INVALID")
+    });
+    assert!(
+        !failed,
+        "multi-segment qualified type Domain.Sub.Type must NOT produce E_OP_ARG_TYPE_INVALID"
+    );
+}
+
+// ── Ola5 Gap-2: Stage 19 — ANF Placeholder check ─────────────────────────
+
+#[test]
+fn stage19_function_node_without_body_produces_placeholder_entry() {
+    // A Function node with no body_expr is a Placeholder → Stage 19 must flag it Unverified
+    let node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.no_body");
+    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run(&ctx);
+
+    let entry = report.entries.iter().find(|e| {
+        e.claim == "19-lower-to-anf"
+            && e.state == ail_verify::report::VerificationState::Unverified
+            && e.evidence.as_deref().unwrap_or("").to_lowercase().contains("placeholder")
+    });
+    assert!(
+        entry.is_some(),
+        "Function node with no body_expr must produce Unverified Stage 19 entry with Placeholder; entries: {:?}",
+        report.entries.iter().filter(|e| e.claim == "19-lower-to-anf").collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn stage19_non_function_node_without_body_does_not_flag_placeholder() {
+    // Module/Type/Capability nodes with no body_expr are NOT Placeholders
+    let module_node = GraphNode::new(NodeRef(0), NodeKind::Module, "mod.payments");
+    let type_node = GraphNode::new(NodeRef(1), NodeKind::Type, "Amount");
+    let graph = SemanticGraph { nodes: vec![module_node, type_node], edges: vec![] };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run(&ctx);
+
+    let placeholder_entry = report.entries.iter().find(|e| {
+        e.claim == "19-lower-to-anf"
+            && e.state == ail_verify::report::VerificationState::Unverified
+            && e.evidence.as_deref().unwrap_or("").to_lowercase().contains("placeholder")
+    });
+    assert!(
+        placeholder_entry.is_none(),
+        "Non-function nodes without body must NOT produce Placeholder Stage 19 entry"
+    );
+}
+
+// ── Ola5 Gap-2: Stage 21 — manifest hash comparison ──────────────────────
+
+#[test]
+fn stage21_manifest_hash_mismatch_produces_failed_entry() {
+    // When artifact_manifest_hash is provided but doesn't match the computed hash → Failed
+    let cap = GraphNode::new(NodeRef(0), NodeKind::Capability, "cap.payment.charge");
+    let graph = SemanticGraph { nodes: vec![cap], edges: vec![] };
+    let solver = SimpleSolver;
+    let manifest_caps = vec!["cap.payment.charge".to_string()];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &[],
+        profile: "test",
+        solver: &solver,
+        approvals: &[],
+        rules: &[],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &manifest_caps,
+        artifact_manifest_hash: Some("deadbeef00000000000000000000000000000000000000000000000000000000"),
+    };
+
+    let report = VerificationPipeline::run(&ctx);
+
+    let failed = report.entries.iter().any(|e| {
+        e.claim == "21-generate-validate-manifest"
+            && e.state == ail_verify::report::VerificationState::Failed
+            && e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_MANIFEST_HASH_MISMATCH")
+    });
+    assert!(
+        failed,
+        "wrong artifact_manifest_hash must produce E_MANIFEST_HASH_MISMATCH Failed entry; entries: {:?}",
+        report.entries.iter().filter(|e| e.claim == "21-generate-validate-manifest").collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn stage21_no_artifact_hash_skips_hash_check() {
+    // When artifact_manifest_hash is None → hash check is skipped, existing cap-set check runs
+    let cap = GraphNode::new(NodeRef(0), NodeKind::Capability, "cap.payment.charge");
+    let graph = SemanticGraph { nodes: vec![cap], edges: vec![] };
+    let solver = SimpleSolver;
+    let manifest_caps = vec!["cap.payment.charge".to_string()];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &[],
+        profile: "test",
+        solver: &solver,
+        approvals: &[],
+        rules: &[],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &manifest_caps,
+        artifact_manifest_hash: None,
+    };
+
+    let report = VerificationPipeline::run(&ctx);
+
+    // Existing behavior: cap-set check passes when graph caps == manifest caps
+    assert!(report.entries.iter().any(|entry| {
+        entry.claim == "21-generate-validate-manifest"
+            && entry.state == ail_verify::report::VerificationState::Proven
+    }), "no artifact_manifest_hash → existing cap-set check must still pass");
 }

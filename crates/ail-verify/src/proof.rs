@@ -353,8 +353,44 @@ impl ProofObligationPipeline {
             };
         }
 
-        // Stage 3: Solve — dispatch to solver.
-        let outcome = solver.solve(&obligation);
+        // Stage 3: Solve — dispatch to solver with scope constraints.
+        //
+        // Extract requires clauses + body_expr from the scope node so that
+        // SimpleSolver can apply arithmetic reasoning when SimpleSolver alone
+        // cannot determine the outcome.
+        //
+        // IMPORTANT: requires clauses and body_expr are only valid constraints
+        // for *Ensures* obligations (postconditions are proven under the
+        // assumption that preconditions hold).  Using them for *Requires*
+        // obligations would be circular — a precondition cannot prove itself.
+        let scope_node = graph.nodes.iter().find(|n| n.name == obligation.scope);
+        let mut constraint_strings: Vec<String> = if obligation.role == ClauseRole::Ensures {
+            let requires = scope_node
+                .and_then(|n| n.contract_clauses.as_ref())
+                .map(|clauses| clauses.requires.clone())
+                .unwrap_or_default();
+            let mut v = requires;
+            if let Some(body) = scope_node.and_then(|n| n.body_expr.as_ref()) {
+                v.push(body.clone());
+            }
+            v
+        } else {
+            vec![]
+        };
+        let constraint_refs: Vec<&str> = constraint_strings.iter().map(String::as_str).collect();
+
+        let outcome = solver.solve_with_constraints(&obligation, &constraint_refs);
+
+        // Z3 fallback: when SimpleSolver returns Unsupported and the z3-solver
+        // feature is enabled, try Z3 as an SMT tautology check.
+        #[cfg(feature = "z3-solver")]
+        let outcome = if outcome == crate::solver::SolverOutcome::Unsupported {
+            crate::z3_solver::Z3Solver::new().solve(&obligation)
+        } else {
+            outcome
+        };
+
+        let outcome = outcome;
 
         match outcome {
             SolverOutcome::Proven => ObligationResult {
@@ -409,6 +445,25 @@ impl ProofObligationPipeline {
         let predicate = obligation.predicate.trim();
         let mut attempts = Vec::new();
 
+        // Extract scope constraints for context-aware solving (same as resolve).
+        // Only Ensures obligations can use requires clauses as context — using
+        // them for Requires obligations is circular reasoning.
+        let scope_node = graph.nodes.iter().find(|n| n.name == obligation.scope);
+        let constraint_strings: Vec<String> = if obligation.role == ClauseRole::Ensures {
+            let requires = scope_node
+                .and_then(|n| n.contract_clauses.as_ref())
+                .map(|clauses| clauses.requires.clone())
+                .unwrap_or_default();
+            let mut v = requires;
+            if let Some(body) = scope_node.and_then(|n| n.body_expr.as_ref()) {
+                v.push(body.clone());
+            }
+            v
+        } else {
+            vec![]
+        };
+        let constraint_refs: Vec<&str> = constraint_strings.iter().map(String::as_str).collect();
+
         // Stage 2: Simplify
         if predicate == "true" {
             attempts.push(ObligationAttempt {
@@ -446,8 +501,17 @@ impl ProofObligationPipeline {
             };
         }
 
-        // Stage 3: Solve
-        let outcome = solver.solve(&obligation);
+        // Stage 3: Solve — with context constraints, then optional Z3 fallback.
+        let raw_outcome = solver.solve_with_constraints(&obligation, &constraint_refs);
+
+        #[cfg(feature = "z3-solver")]
+        let raw_outcome = if raw_outcome == SolverOutcome::Unsupported {
+            crate::z3_solver::Z3Solver::new().solve(&obligation)
+        } else {
+            raw_outcome
+        };
+
+        let outcome = raw_outcome;
 
         match outcome {
             SolverOutcome::Proven => {
