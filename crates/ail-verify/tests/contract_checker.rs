@@ -313,3 +313,96 @@ fn contract_diagnostic_target_matches_node_id() {
         "diagnostic target must match node's NodeRef"
     );
 }
+
+// ── TASK-27: ContractChecker invariant obligations ────────────────────────
+
+// REQ-13: ContractChecker must also check invariant nodes.
+
+#[test]
+fn invariant_node_with_requires_generates_obligation() {
+    // GIVEN a graph with a Invariant node that has a requires clause
+    let mut node = GraphNode::new(NodeRef(10), NodeKind::Invariant, "balance_invariant");
+    node.contract_clauses = Some(ContractClauses {
+        requires: vec!["amount > 0".to_string()],
+        ensures: vec![],
+    });
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let solver = ail_verify::solver::SimpleSolver;
+    let checker = ContractChecker::new(&solver);
+
+    // WHEN check runs
+    let report = checker.check(&graph);
+
+    // THEN an entry is generated for the invariant requires clause
+    assert!(
+        !report.entries.is_empty(),
+        "invariant node with requires must produce at least one entry"
+    );
+    let entry = report
+        .entries
+        .iter()
+        .find(|e| e.scope == "balance_invariant")
+        .expect("entry scoped to invariant node must exist");
+    assert!(
+        entry.claim.starts_with("invariant-requires:"),
+        "invariant entry claim must use invariant-requires: prefix, got '{}'",
+        entry.claim
+    );
+}
+
+#[test]
+fn invariant_node_with_ensures_generates_obligation() {
+    // GIVEN a graph with an Invariant node that has an ensures clause
+    let mut node = GraphNode::new(NodeRef(11), NodeKind::Invariant, "total_invariant");
+    node.contract_clauses = Some(ContractClauses {
+        requires: vec![],
+        ensures: vec!["total >= 0".to_string()],
+    });
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let solver = ail_verify::solver::SimpleSolver;
+    let checker = ContractChecker::new(&solver);
+
+    let report = checker.check(&graph);
+
+    assert!(
+        !report.entries.is_empty(),
+        "invariant node with ensures must produce at least one entry"
+    );
+    let entry = report
+        .entries
+        .iter()
+        .find(|e| e.scope == "total_invariant")
+        .expect("entry scoped to invariant node must exist");
+    assert!(
+        entry.claim.starts_with("invariant-ensures:"),
+        "invariant entry claim must use invariant-ensures: prefix, got '{}'",
+        entry.claim
+    );
+}
+
+#[test]
+fn regular_function_node_behavior_unchanged_by_invariant_support() {
+    // GIVEN a Function node with contracts (existing behavior must be preserved)
+    let graph = graph_with_clauses(vec!["true"], vec!["x > 0"]);
+    let solver = ail_verify::solver::SimpleSolver;
+    let checker = ContractChecker::new(&solver);
+
+    let report = checker.check(&graph);
+
+    // Regular function still produces entries (existing behavior unchanged)
+    assert_eq!(
+        report.entries.len(),
+        2,
+        "function node: one entry per clause (requires + ensures)"
+    );
+    // requires: "true" → RuntimeChecked (SimpleSolver proves it)
+    assert_eq!(report.entries[0].state, VerificationState::RuntimeChecked);
+    // ensures: "x > 0" → Assumed (SimpleSolver returns Unsupported)
+    assert_eq!(report.entries[1].state, VerificationState::Assumed);
+}
