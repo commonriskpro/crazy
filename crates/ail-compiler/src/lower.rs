@@ -627,7 +627,10 @@ pub fn lower_core_expr_to_anf(
         | CoreExpr::IndexGet { .. }
         | CoreExpr::BoundaryCall { .. }
         | CoreExpr::Assume { .. }
-        | CoreExpr::Abort { .. } => AnfExpr::Placeholder,
+        | CoreExpr::Abort { .. }
+        // ola4-type-formalism: DynCall not yet lowered to ANF — deferred to
+        // the expression-lowering phase.
+        | CoreExpr::DynCall { .. } => AnfExpr::Placeholder,
     }
 }
 

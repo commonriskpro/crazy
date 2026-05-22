@@ -82,6 +82,7 @@ use std::collections::BTreeMap;
 
 use ail_core::semantic_graph::{
     EdgeKind, GenericParamKind, GraphNode, NodeKind, NodeRef, SemanticGraph,
+    EffectArgBinding, CapabilityArgBinding,
 };
 
 use crate::report::{SummaryCounts, VerificationEntry, VerificationReport, VerificationState};
@@ -142,6 +143,28 @@ pub const E_PATCHFIELD_EMPTY_INNER: &str = "E_PATCHFIELD_EMPTY_INNER";
 pub const E_BOUNDARY_INFERENCE_MISMATCH: &str = "E_BOUNDARY_INFERENCE_MISMATCH";
 /// Type used in a context requiring PartialOrd but only partial order is available.
 pub const E_PARTIAL_ORD_REQUIRED: &str = "E_PARTIAL_ORD_REQUIRED";
+/// Associated type reference in a callee return type could not be resolved
+/// to a concrete type via any impl binding in the call context.
+pub const E_ASSOC_TYPE_NOT_RESOLVED: &str = "E_ASSOC_TYPE_NOT_RESOLVED";
+/// Function node has a ForeignType return type but no `boundary-schema` inferred
+/// fact — the foreign value has no declared serialization schema.
+pub const E_FOREIGN_TYPE_NO_SCHEMA: &str = "E_FOREIGN_TYPE_NO_SCHEMA";
+/// Two non-adapter Type nodes both implement the same interface with overlapping
+/// type families, creating a blanket impl coherence conflict.
+pub const E_BLANKET_IMPL_OVERLAP: &str = "E_BLANKET_IMPL_OVERLAP";
+/// A non-adapter implementation declares a foreign interface but neither the
+/// interface name nor the implementing type name appears in the graph as an
+/// owned node — orphan rule violation.
+pub const E_ORPHAN_RULE_VIOLATION: &str = "E_ORPHAN_RULE_VIOLATION";
+/// An EffectParam instantiation binding specifies an effect not present in
+/// the caller's effect_row — the caller cannot supply that effect.
+pub const E_EFFECT_PARAM_NOT_THREADED: &str = "E_EFFECT_PARAM_NOT_THREADED";
+/// A CapabilityParam instantiation binding specifies a capability not present
+/// in the caller's capability_reqs — the caller cannot supply that capability.
+pub const E_CAPABILITY_PARAM_NOT_THREADED: &str = "E_CAPABILITY_PARAM_NOT_THREADED";
+/// ConstParam instantiation value is not a decidable literal (not a simple
+/// numeric string or simple identifier).
+pub const E_CONST_PARAM_VALUE_INVALID: &str = "E_CONST_PARAM_VALUE_INVALID";
 
 // ── Collection constraint table ───────────────────────────────────────────
 
@@ -253,6 +276,21 @@ impl TypeChecker {
 
         // Subpass 13 — Boundary inference cross-check.
         Self::check_boundary_inference(graph, &mut entries);
+
+        // Subpass 14 — Associated type resolution at call sites.
+        Self::check_associated_type_resolution(graph, &ctx, &mut entries);
+
+        // Subpass 15 — ConstParam value validation at call sites (extends Subpass 3b).
+        Self::check_const_param_call_bindings(graph, &ctx, &mut entries);
+
+        // Subpass 16 — ForeignType boundary schema enforcement.
+        Self::check_boundary_schema(graph, &mut entries);
+
+        // Subpass 18 — Effect and capability parameter threading at call sites.
+        Self::check_effect_capability_param_threading(graph, &ctx, &mut entries);
+
+        // Subpass 17 — Blanket impl coherence and orphan rule.
+        Self::check_blanket_impl_coherence(graph, &ctx, &mut entries);
 
         let summary_counts = build_summary_counts(&entries);
         VerificationReport {
@@ -490,16 +528,31 @@ impl TypeChecker {
                 continue;
             };
 
-            let declared: Vec<&str> = generic_params
+            let declared_type_params: Vec<&str> = generic_params
                 .iter()
                 .filter(|p| p.kind == GenericParamKind::TypeParam)
                 .map(|p| p.name.as_str())
                 .collect();
+
             let scope = format!("{}→{}", edge.source.0, callee.name);
 
-            let unknown = bindings
+            // Only check TypeParam bindings — ConstParam bindings are handled
+            // in check_const_param_call_bindings (Subpass 15).
+            let type_bindings: Vec<_> = bindings
                 .iter()
-                .find(|b| !declared.iter().any(|name| *name == b.param));
+                .filter(|b| {
+                    // Keep only bindings that match a TypeParam declaration,
+                    // or that do NOT match any ConstParam (i.e., truly unknown).
+                    let is_const = generic_params
+                        .iter()
+                        .any(|p| p.name == b.param && p.kind == GenericParamKind::ConstParam);
+                    !is_const
+                })
+                .collect();
+
+            let unknown = type_bindings
+                .iter()
+                .find(|b| !declared_type_params.iter().any(|name| *name == b.param));
             if let Some(binding) = unknown {
                 entries.push(VerificationEntry {
                     claim: "generic-call-binding".into(),
@@ -514,7 +567,7 @@ impl TypeChecker {
                 continue;
             }
 
-            if bindings.len() != declared.len() {
+            if type_bindings.len() != declared_type_params.len() {
                 entries.push(VerificationEntry {
                     claim: "generic-call-binding".into(),
                     state: VerificationState::Failed,
@@ -522,12 +575,13 @@ impl TypeChecker {
                     evidence: Some(format!(
                         "{E_GENERIC_BINDING_ARITY}: '{}' expects {} type generic bindings, got {}",
                         callee.name,
-                        declared.len(),
-                        bindings.len()
+                        declared_type_params.len(),
+                        type_bindings.len()
                     )),
                     blocking: true,
                 });
-            } else {
+            } else if !type_bindings.is_empty() {
+                // Only emit Proven when there are actual TypeParam bindings to check.
                 entries.push(VerificationEntry {
                     claim: "generic-call-binding".into(),
                     state: VerificationState::Proven,
@@ -1345,6 +1399,393 @@ impl TypeChecker {
             }
         }
     }
+
+    // ── Subpass 14: Associated type resolution ────────────────────────────
+
+    /// For each `Calls` edge, if the callee's `return_type` contains "::"
+    /// (indicating a reference to an interface associated type), scan the
+    /// caller's `call_args` for a `Type` node whose `interface_impls` resolves
+    /// the association.
+    ///
+    /// - Resolved → Proven (claim "assoc-type-resolution"), evidence contains concrete type
+    /// - Unresolvable → Unverified (E_ASSOC_TYPE_NOT_RESOLVED)
+    fn check_associated_type_resolution(
+        graph: &SemanticGraph,
+        ctx: &TypeContext<'_>,
+        entries: &mut Vec<VerificationEntry>,
+    ) {
+        for edge in &graph.edges {
+            if edge.kind != EdgeKind::Calls {
+                continue;
+            }
+            let Some(call_args) = &edge.call_args else {
+                continue;
+            };
+            let Some(callee) = ctx.by_ref.get(&edge.target).copied() else {
+                continue;
+            };
+            let Some(return_type) = &callee.return_type else {
+                continue;
+            };
+            // Only process associated type references (contain "::").
+            if !return_type.contains("::") {
+                continue;
+            }
+
+            let scope = format!("{}→{}", edge.source.0, callee.name);
+
+            // Split "Interface::AssocName" into the interface base and assoc name.
+            let (interface_base, assoc_name) = split_assoc_type(return_type);
+
+            // Scan call_args for a Type node whose interface_impls can resolve
+            // the associated type.
+            let resolved = call_args.iter().find_map(|arg_ty| {
+                resolve_assoc_type(ctx, arg_ty, interface_base, assoc_name)
+            });
+
+            match resolved {
+                Some(concrete_ty) => {
+                    entries.push(VerificationEntry {
+                        claim: "assoc-type-resolution".into(),
+                        state: VerificationState::Proven,
+                        scope,
+                        evidence: Some(format!(
+                            "resolved '{return_type}' → '{concrete_ty}'"
+                        )),
+                        blocking: false,
+                    });
+                }
+                None => {
+                    entries.push(VerificationEntry {
+                        claim: "assoc-type-resolution".into(),
+                        state: VerificationState::Unverified,
+                        scope,
+                        evidence: Some(format!(
+                            "{E_ASSOC_TYPE_NOT_RESOLVED}: \
+                             associated type '{return_type}' on callee '{}' \
+                             could not be resolved from call_args {call_args:?}",
+                            callee.name
+                        )),
+                        blocking: false,
+                    });
+                }
+            }
+        }
+    }
+
+    // ── Subpass 18: Effect and capability parameter threading ─────────────
+
+    /// For each `Calls` edge with `effect_arg_bindings` or `capability_arg_bindings`,
+    /// verify that the caller can supply the required effects / capabilities.
+    ///
+    /// **Effect threading**: for each `EffectArgBinding`, every effect listed in
+    /// `binding.effects` must appear in the caller's `effect_row.effects`.
+    /// - All present → Proven (claim "effect-param-threading")
+    /// - Any missing → Failed (E_EFFECT_PARAM_NOT_THREADED)
+    ///
+    /// **Capability threading**: for each `CapabilityArgBinding`, every cap listed
+    /// in `binding.caps` must appear in the caller's `capability_reqs.caps`.
+    /// - All present → Proven (claim "capability-param-threading")
+    /// - Any missing → Failed (E_CAPABILITY_PARAM_NOT_THREADED)
+    fn check_effect_capability_param_threading(
+        graph: &SemanticGraph,
+        ctx: &TypeContext<'_>,
+        entries: &mut Vec<VerificationEntry>,
+    ) {
+        for edge in &graph.edges {
+            if edge.kind != EdgeKind::Calls {
+                continue;
+            }
+            let Some(caller) = ctx.by_ref.get(&edge.source).copied() else {
+                continue;
+            };
+            let Some(callee) = ctx.by_ref.get(&edge.target).copied() else {
+                continue;
+            };
+            let scope = format!("{}→{}", caller.name, callee.name);
+
+            // ── Effect param threading ──────────────────────────────────
+            if let Some(effect_bindings) = &edge.effect_arg_bindings {
+                let caller_effects = caller
+                    .effect_row
+                    .as_ref()
+                    .map(|row| row.effects.as_slice())
+                    .unwrap_or(&[]);
+
+                let mut all_ok = true;
+                for binding in effect_bindings {
+                    for effect in &binding.effects {
+                        if !caller_effects.iter().any(|e| e == effect) {
+                            entries.push(VerificationEntry {
+                                claim: "effect-param-threading".into(),
+                                state: VerificationState::Failed,
+                                scope: scope.clone(),
+                                evidence: Some(format!(
+                                    "{E_EFFECT_PARAM_NOT_THREADED}: EffectParam '{}' requires \
+                                     effect '{}' which is not in caller '{}' effect_row {:?}",
+                                    binding.param, effect, caller.name, caller_effects
+                                )),
+                                blocking: true,
+                            });
+                            all_ok = false;
+                        }
+                    }
+                }
+                if all_ok {
+                    entries.push(VerificationEntry {
+                        claim: "effect-param-threading".into(),
+                        state: VerificationState::Proven,
+                        scope: scope.clone(),
+                        evidence: None,
+                        blocking: false,
+                    });
+                }
+            }
+
+            // ── Capability param threading ──────────────────────────────
+            if let Some(cap_bindings) = &edge.capability_arg_bindings {
+                let caller_caps = caller
+                    .capability_reqs
+                    .as_ref()
+                    .map(|reqs| reqs.caps.as_slice())
+                    .unwrap_or(&[]);
+
+                let mut all_ok = true;
+                for binding in cap_bindings {
+                    for cap in &binding.caps {
+                        if !caller_caps.iter().any(|c| c == cap) {
+                            entries.push(VerificationEntry {
+                                claim: "capability-param-threading".into(),
+                                state: VerificationState::Failed,
+                                scope: scope.clone(),
+                                evidence: Some(format!(
+                                    "{E_CAPABILITY_PARAM_NOT_THREADED}: CapabilityParam '{}' \
+                                     requires cap '{}' which is not in caller '{}' \
+                                     capability_reqs {:?}",
+                                    binding.param, cap, caller.name, caller_caps
+                                )),
+                                blocking: true,
+                            });
+                            all_ok = false;
+                        }
+                    }
+                }
+                if all_ok {
+                    entries.push(VerificationEntry {
+                        claim: "capability-param-threading".into(),
+                        state: VerificationState::Proven,
+                        scope: scope.clone(),
+                        evidence: None,
+                        blocking: false,
+                    });
+                }
+            }
+        }
+    }
+
+    // ── Subpass 16: ForeignType boundary schema enforcement ───────────────
+
+    /// For each `Function` node whose `return_type` starts with `"ForeignType"`:
+    /// - If the node has an `inferred` fact with `kind == "boundary-schema"` → Proven
+    /// - Otherwise → Failed (E_FOREIGN_TYPE_NO_SCHEMA)
+    fn check_boundary_schema(graph: &SemanticGraph, entries: &mut Vec<VerificationEntry>) {
+        for node in &graph.nodes {
+            if node.kind != NodeKind::Function {
+                continue;
+            }
+            let Some(return_type) = &node.return_type else {
+                continue;
+            };
+            if !return_type.starts_with("ForeignType") {
+                continue;
+            }
+
+            let has_schema = node
+                .inferred
+                .iter()
+                .any(|fact| fact.kind == "boundary-schema");
+
+            let scope = node.name.clone();
+            if has_schema {
+                entries.push(VerificationEntry {
+                    claim: "boundary-schema".into(),
+                    state: VerificationState::Proven,
+                    scope,
+                    evidence: None,
+                    blocking: false,
+                });
+            } else {
+                entries.push(VerificationEntry {
+                    claim: "boundary-schema".into(),
+                    state: VerificationState::Failed,
+                    scope,
+                    evidence: Some(format!(
+                        "{E_FOREIGN_TYPE_NO_SCHEMA}: function '{}' returns a ForeignType \
+                         ('{}') but has no 'boundary-schema' inferred fact; \
+                         foreign values crossing boundaries must declare a serialization schema",
+                        node.name, return_type
+                    )),
+                    blocking: true,
+                });
+            }
+        }
+    }
+
+    // ── Subpass 17: Blanket impl coherence and orphan rule ────────────────
+
+    /// Check two coherence invariants across all Type nodes in the graph:
+    ///
+    /// 1. **Blanket impl overlap**: if two distinct non-adapter Type nodes both
+    ///    declare `interface_impls` with the same interface name, that is an
+    ///    overlap → Failed (E_BLANKET_IMPL_OVERLAP).
+    ///
+    /// 2. **Orphan rule**: a non-adapter impl's interface must be "owned" by the
+    ///    graph — either an `Interface` node with that name or a `Type` node with
+    ///    that name must exist.  If neither is present → Failed (E_ORPHAN_RULE_VIOLATION).
+    fn check_blanket_impl_coherence(
+        graph: &SemanticGraph,
+        ctx: &TypeContext<'_>,
+        entries: &mut Vec<VerificationEntry>,
+    ) {
+        // Pass 1 — collect all (interface_name, type_node_name) pairs for
+        // non-adapter impls.  Use a BTreeMap<interface, Vec<node_name>> to
+        // detect duplicates deterministically.
+        let mut impl_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+        for node in &graph.nodes {
+            let Some(impls) = &node.interface_impls else {
+                continue;
+            };
+            for impl_meta in impls {
+                if impl_meta.is_adapter {
+                    continue; // adapter exception
+                }
+                impl_map
+                    .entry(impl_meta.interface.clone())
+                    .or_default()
+                    .push(node.name.clone());
+            }
+        }
+
+        // Emit overlap entries.
+        for (interface, node_names) in &impl_map {
+            if node_names.len() > 1 {
+                entries.push(VerificationEntry {
+                    claim: "blanket-impl-coherence".into(),
+                    state: VerificationState::Failed,
+                    scope: node_names.join(","),
+                    evidence: Some(format!(
+                        "{E_BLANKET_IMPL_OVERLAP}: interface '{}' has overlapping \
+                         non-adapter impls on nodes {:?}; \
+                         blanket impl coherence violation",
+                        interface, node_names
+                    )),
+                    blocking: true,
+                });
+            }
+        }
+
+        // Pass 2 — orphan rule check.
+        for node in &graph.nodes {
+            let Some(impls) = &node.interface_impls else {
+                continue;
+            };
+            for impl_meta in impls {
+                if impl_meta.is_adapter {
+                    continue; // adapter exception
+                }
+                // The interface is "owned" if there is an Interface node
+                // or a Type node with that name in the graph.
+                let interface_owned = ctx.get_by_name(&impl_meta.interface).map_or(false, |n| {
+                    matches!(n.kind, NodeKind::Interface | NodeKind::Type)
+                });
+                if !interface_owned {
+                    entries.push(VerificationEntry {
+                        claim: "orphan-rule".into(),
+                        state: VerificationState::Failed,
+                        scope: node.name.clone(),
+                        evidence: Some(format!(
+                            "{E_ORPHAN_RULE_VIOLATION}: node '{}' implements interface '{}' \
+                             (is_adapter=false) but neither an Interface nor a Type node \
+                             named '{}' exists in the graph; \
+                             orphan rule requires the interface or type to be declared locally",
+                            node.name, impl_meta.interface, impl_meta.interface
+                        )),
+                        blocking: true,
+                    });
+                }
+            }
+        }
+    }
+
+    // ── Subpass 15: ConstParam value validation at call sites ─────────────
+
+    /// For each `Calls` edge with `type_arg_bindings`, check bindings that
+    /// correspond to a `ConstParam` declaration on the callee.
+    ///
+    /// A valid ConstParam value must be a decidable literal: a numeric string
+    /// (all digit characters) or a simple identifier (letters, digits, underscore).
+    ///
+    /// - Valid value → Proven (claim "const-param-value")
+    /// - Invalid value → Failed (E_CONST_PARAM_VALUE_INVALID)
+    fn check_const_param_call_bindings(
+        graph: &SemanticGraph,
+        ctx: &TypeContext<'_>,
+        entries: &mut Vec<VerificationEntry>,
+    ) {
+        for edge in &graph.edges {
+            if edge.kind != EdgeKind::Calls {
+                continue;
+            }
+            let Some(bindings) = &edge.type_arg_bindings else {
+                continue;
+            };
+            let Some(callee) = ctx.by_ref.get(&edge.target).copied() else {
+                continue;
+            };
+            let Some(generic_params) = &callee.generic_params else {
+                continue;
+            };
+
+            for binding in bindings {
+                // Only process ConstParam bindings.
+                let is_const = generic_params
+                    .iter()
+                    .any(|p| p.name == binding.param && p.kind == GenericParamKind::ConstParam);
+                if !is_const {
+                    continue;
+                }
+
+                let scope = format!(
+                    "{}→{}[{}={}]",
+                    edge.source.0, callee.name, binding.param, binding.ty
+                );
+
+                if is_const_param_value(&binding.ty) {
+                    entries.push(VerificationEntry {
+                        claim: "const-param-value".into(),
+                        state: VerificationState::Proven,
+                        scope,
+                        evidence: None,
+                        blocking: false,
+                    });
+                } else {
+                    entries.push(VerificationEntry {
+                        claim: "const-param-value".into(),
+                        state: VerificationState::Failed,
+                        scope,
+                        evidence: Some(format!(
+                            "{E_CONST_PARAM_VALUE_INVALID}: ConstParam '{}' on '{}' \
+                             bound to '{}' which is not a decidable literal; \
+                             only numeric strings or simple identifiers are permitted",
+                            binding.param, callee.name, binding.ty
+                        )),
+                        blocking: true,
+                    });
+                }
+            }
+        }
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -1353,6 +1794,64 @@ impl TypeChecker {
 /// letters, digits, or underscores only — no spaces, operators, or brackets.
 fn is_simple_identifier(name: &str) -> bool {
     !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Returns `true` when `ty` is a valid decidable ConstParam value:
+/// either an all-digit numeric literal (e.g., `"3"`, `"16"`) or a simple
+/// identifier (e.g., `"MAX_SIZE"`).
+fn is_const_param_value(ty: &str) -> bool {
+    if ty.is_empty() {
+        return false;
+    }
+    // Numeric literal: all digit characters.
+    if ty.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    // Simple identifier: alphanumeric + underscore, no operators/parens/spaces.
+    is_simple_identifier(ty)
+}
+
+/// Split an associated type reference `"Interface::AssocName"` into
+/// `("Interface", "AssocName")`.
+///
+/// Returns `(input, "")` if the input does not contain `"::"`.
+fn split_assoc_type(ty: &str) -> (&str, &str) {
+    if let Some(pos) = ty.find("::") {
+        (&ty[..pos], &ty[pos + 2..])
+    } else {
+        (ty, "")
+    }
+}
+
+/// Attempt to resolve an associated type for `arg_ty` by scanning the
+/// `interface_impls` of the corresponding node in `ctx`.
+///
+/// Looks for an `InterfaceImplMeta` whose `interface` starts with
+/// `interface_base` (handles both exact and generic interface names),
+/// then finds an `AssociatedTypeBinding` with `name == assoc_name`.
+///
+/// Returns `Some(concrete_ty)` on success, `None` if unresolvable.
+fn resolve_assoc_type<'a>(
+    ctx: &TypeContext<'a>,
+    arg_ty: &str,
+    interface_base: &str,
+    assoc_name: &str,
+) -> Option<String> {
+    let node = ctx.get_by_name(arg_ty)?;
+    let impls = node.interface_impls.as_ref()?;
+    impls.iter().find_map(|impl_meta| {
+        // Match if the impl's interface starts with the interface base
+        // (handles both "Repository" and "Repository<User>" forms).
+        if impl_meta.interface.starts_with(interface_base) {
+            impl_meta
+                .associated_types
+                .iter()
+                .find(|at| at.name == assoc_name)
+                .map(|at| at.ty.clone())
+        } else {
+            None
+        }
+    })
 }
 
 /// Split `"Base<Inner>"` into `("Base", "Inner")`.
@@ -1413,6 +1912,726 @@ fn structural_type_satisfies(ctx: &TypeContext<'_>, arg_ty: &str, required: &[St
                     .unwrap_or(false)
         })
     })
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ail_core::semantic_graph::{
+        AssociatedTypeBinding, CapabilityReqs, EffectRow, EdgeKind, GenericParamDecl,
+        GenericParamKind, GraphEdge, GraphNode, InterfaceImplMeta, NodeKind, NodeRef,
+        SemanticGraph, TypeArgBinding,
+    };
+
+    // ── helpers ───────────────────────────────────────────────────────────
+
+    fn make_node(id: u32, kind: NodeKind, name: &str) -> GraphNode {
+        GraphNode::new(NodeRef(id), kind, name)
+    }
+
+    fn make_edge(source: u32, target: u32) -> GraphEdge {
+        GraphEdge::new(NodeRef(source), NodeRef(target), EdgeKind::Calls)
+    }
+
+    fn entries_with_claim<'a>(
+        entries: &'a [VerificationEntry],
+        claim: &str,
+    ) -> Vec<&'a VerificationEntry> {
+        entries.iter().filter(|e| e.claim == claim).collect()
+    }
+
+    // ── Task B1 (RED): check_associated_type_resolution ──────────────────
+    // Tests written BEFORE the subpass exists — will fail to link at first.
+
+    // B1-1: Proven case — associated type resolved via impl binding.
+    // Spec scenario: "Associated type resolved via impl binding"
+    //   GIVEN callee Function with return_type="Repository::Error"
+    //   AND Type node "PostgresUserRepo" with interface_impls containing
+    //     interface "Repository<User>", associated_types [{ name: "Error", ty: "DbError" }]
+    //   AND Calls edge with call_args including "PostgresUserRepo"
+    //   THEN entry claim "assoc-type-resolution", state Proven, evidence contains "DbError"
+    #[test]
+    fn assoc_type_resolved_via_impl_binding_is_proven() {
+        let mut callee = make_node(1, NodeKind::Function, "load_user");
+        callee.return_type = Some("Repository::Error".to_string());
+
+        let mut impl_node = make_node(2, NodeKind::Type, "PostgresUserRepo");
+        impl_node.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "Repository<User>".to_string(),
+            associated_types: vec![AssociatedTypeBinding {
+                name: "Error".to_string(),
+                ty: "DbError".to_string(),
+            }],
+            is_adapter: false,
+        }]);
+
+        let mut caller = make_node(0, NodeKind::Function, "caller_fn");
+        caller.effect_row = None;
+
+        let mut edge = make_edge(0, 1);
+        edge.call_args = Some(vec!["PostgresUserRepo".to_string()]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee, impl_node],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let assoc = entries_with_claim(&report.entries, "assoc-type-resolution");
+        assert!(
+            !assoc.is_empty(),
+            "at least one assoc-type-resolution entry expected"
+        );
+        let proven = assoc
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "expected a Proven assoc-type-resolution entry, got: {:?}",
+            assoc
+        );
+        let ev = proven.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains("DbError"),
+            "evidence must contain the resolved type 'DbError', got: {ev}"
+        );
+    }
+
+    // B1-2: Unverified case — associated type with no impl binding.
+    // Spec scenario: "Associated type with no impl binding"
+    //   GIVEN callee with return_type="Repository::Error"
+    //   AND no matching impl in context
+    //   THEN entry claim "assoc-type-resolution", state Unverified, evidence E_ASSOC_TYPE_NOT_RESOLVED
+    #[test]
+    fn assoc_type_unresolvable_is_unverified() {
+        let mut callee = make_node(1, NodeKind::Function, "load_item");
+        callee.return_type = Some("Repository::Error".to_string());
+
+        let caller = make_node(0, NodeKind::Function, "no_impl_caller");
+
+        let mut edge = make_edge(0, 1);
+        // call_args references a type with NO interface_impls for Repository
+        edge.call_args = Some(vec!["UnknownType".to_string()]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let assoc = entries_with_claim(&report.entries, "assoc-type-resolution");
+        assert!(
+            !assoc.is_empty(),
+            "expected assoc-type-resolution entry for unresolvable case"
+        );
+        let unverified = assoc
+            .iter()
+            .find(|e| e.state == VerificationState::Unverified);
+        assert!(
+            unverified.is_some(),
+            "expected Unverified assoc-type-resolution entry, got: {:?}",
+            assoc
+        );
+        let ev = unverified.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_ASSOC_TYPE_NOT_RESOLVED),
+            "evidence must contain {E_ASSOC_TYPE_NOT_RESOLVED}, got: {ev}"
+        );
+    }
+
+    // B1-3 (TRIANGULATE): Function with return_type that does NOT contain "::"
+    // must NOT emit assoc-type-resolution entries.
+    #[test]
+    fn non_assoc_return_type_emits_no_assoc_type_resolution_entry() {
+        let mut callee = make_node(1, NodeKind::Function, "get_count");
+        callee.return_type = Some("Int".to_string()); // no "::"
+
+        let caller = make_node(0, NodeKind::Function, "caller");
+        let mut edge = make_edge(0, 1);
+        edge.call_args = Some(vec!["SomeType".to_string()]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let assoc = entries_with_claim(&report.entries, "assoc-type-resolution");
+        assert!(
+            assoc.is_empty(),
+            "non-assoc return type must emit no assoc-type-resolution entries, got: {:?}",
+            assoc
+        );
+    }
+
+    // ── Task C3 (RED): check_effect_capability_param_threading ───────────
+    // Tests written BEFORE the subpass exists.
+
+    // C3-1: EffectParam effect present in caller → Proven.
+    // Spec scenario: "EffectParam effect present in caller"
+    //   GIVEN caller with effect_row={effects:["IO"]}
+    //   AND Calls edge effect_arg_bindings=[{param:"e", effects:["IO"]}]
+    //   THEN entry claim "effect-param-threading", state Proven
+    #[test]
+    fn effect_param_present_in_caller_is_proven() {
+        use ail_core::semantic_graph::{EffectArgBinding, InferredFact};
+
+        let mut caller = make_node(0, NodeKind::Function, "caller_fn");
+        caller.effect_row = Some(EffectRow { effects: vec!["IO".to_string()] });
+
+        let callee = make_node(1, NodeKind::Function, "effect_fn");
+
+        let mut edge = make_edge(0, 1);
+        edge.effect_arg_bindings = Some(vec![EffectArgBinding {
+            param: "e".to_string(),
+            effects: vec!["IO".to_string()],
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let threading = entries_with_claim(&report.entries, "effect-param-threading");
+        assert!(
+            !threading.is_empty(),
+            "expected effect-param-threading entry"
+        );
+        let proven = threading.iter().find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "effect present in caller must be Proven, got: {:?}",
+            threading
+        );
+    }
+
+    // C3-2: EffectParam effect MISSING from caller → Failed.
+    // Spec scenario: "EffectParam effect missing from caller"
+    //   GIVEN caller with effect_row={effects:[]}
+    //   AND Calls edge effect_arg_bindings=[{param:"e", effects:["IO"]}]
+    //   THEN entry claim "effect-param-threading", state Failed, evidence E_EFFECT_PARAM_NOT_THREADED
+    #[test]
+    fn effect_param_missing_from_caller_fails() {
+        use ail_core::semantic_graph::EffectArgBinding;
+
+        let mut caller = make_node(0, NodeKind::Function, "pure_caller");
+        caller.effect_row = Some(EffectRow { effects: vec![] }); // empty
+
+        let callee = make_node(1, NodeKind::Function, "effect_fn");
+
+        let mut edge = make_edge(0, 1);
+        edge.effect_arg_bindings = Some(vec![EffectArgBinding {
+            param: "e".to_string(),
+            effects: vec!["IO".to_string()],
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let threading = entries_with_claim(&report.entries, "effect-param-threading");
+        let failed = threading.iter().find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "effect missing from caller must be Failed, got: {:?}",
+            threading
+        );
+        let ev = failed.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_EFFECT_PARAM_NOT_THREADED),
+            "evidence must contain {E_EFFECT_PARAM_NOT_THREADED}, got: {ev}"
+        );
+    }
+
+    // C3-3: CapabilityParam cap MISSING from caller → Failed.
+    // Spec scenario: "CapabilityParam cap missing from caller"
+    //   GIVEN caller with capability_reqs={caps:[]}
+    //   AND Calls edge capability_arg_bindings=[{param:"cap", caps:["net:read"]}]
+    //   THEN entry claim "capability-param-threading", state Failed, evidence E_CAPABILITY_PARAM_NOT_THREADED
+    #[test]
+    fn capability_param_missing_from_caller_fails() {
+        use ail_core::semantic_graph::CapabilityArgBinding;
+
+        let mut caller = make_node(0, NodeKind::Function, "no_cap_caller");
+        caller.capability_reqs = Some(CapabilityReqs { caps: vec![] }); // empty
+
+        let callee = make_node(1, NodeKind::Function, "cap_fn");
+
+        let mut edge = make_edge(0, 1);
+        edge.capability_arg_bindings = Some(vec![CapabilityArgBinding {
+            param: "cap".to_string(),
+            caps: vec!["net:read".to_string()],
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let threading = entries_with_claim(&report.entries, "capability-param-threading");
+        let failed = threading.iter().find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "cap missing from caller must be Failed, got: {:?}",
+            threading
+        );
+        let ev = failed.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_CAPABILITY_PARAM_NOT_THREADED),
+            "evidence must contain {E_CAPABILITY_PARAM_NOT_THREADED}, got: {ev}"
+        );
+    }
+
+    // C3-4 (TRIANGULATE): CapabilityParam cap PRESENT in caller → Proven.
+    #[test]
+    fn capability_param_present_in_caller_is_proven() {
+        use ail_core::semantic_graph::CapabilityArgBinding;
+
+        let mut caller = make_node(0, NodeKind::Function, "cap_caller");
+        caller.capability_reqs = Some(CapabilityReqs {
+            caps: vec!["net:read".to_string()],
+        });
+
+        let callee = make_node(1, NodeKind::Function, "cap_fn");
+
+        let mut edge = make_edge(0, 1);
+        edge.capability_arg_bindings = Some(vec![CapabilityArgBinding {
+            param: "cap".to_string(),
+            caps: vec!["net:read".to_string()],
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let threading = entries_with_claim(&report.entries, "capability-param-threading");
+        let proven = threading.iter().find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "cap present in caller must be Proven, got: {:?}",
+            threading
+        );
+    }
+
+    // ── Task F3 (RED): check_boundary_schema ─────────────────────────────
+    // Tests written BEFORE the subpass exists.
+
+    // F3-1: ForeignType return without boundary-schema fact → Failed.
+    // Spec scenario: "ForeignType without schema fails"
+    //   GIVEN Function node return_type="ForeignType(payments.external)"
+    //   AND no inferred fact of kind "boundary-schema"
+    //   THEN entry claim "boundary-schema", state Failed, evidence E_FOREIGN_TYPE_NO_SCHEMA
+    #[test]
+    fn foreign_type_without_schema_fails() {
+        let mut fn_node = make_node(0, NodeKind::Function, "fetch_payment");
+        fn_node.return_type = Some("ForeignType(payments.external)".to_string());
+        // no inferred facts
+
+        let graph = SemanticGraph {
+            nodes: vec![fn_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let schema_entries = entries_with_claim(&report.entries, "boundary-schema");
+        assert!(
+            !schema_entries.is_empty(),
+            "expected boundary-schema entry for ForeignType without schema"
+        );
+        let failed = schema_entries
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "ForeignType without boundary-schema must be Failed, got: {:?}",
+            schema_entries
+        );
+        let ev = failed.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_FOREIGN_TYPE_NO_SCHEMA),
+            "evidence must contain {E_FOREIGN_TYPE_NO_SCHEMA}, got: {ev}"
+        );
+    }
+
+    // F3-2: ForeignType return WITH boundary-schema inferred fact → Proven.
+    // Spec scenario: "ForeignType with schema passes"
+    //   GIVEN Function node return_type="ForeignType(payments.external)"
+    //   AND inferred fact { kind: "boundary-schema", value: "PaymentsJsonSchema" }
+    //   THEN entry claim "boundary-schema", state Proven
+    #[test]
+    fn foreign_type_with_schema_fact_is_proven() {
+        use ail_core::semantic_graph::InferredFact;
+
+        let mut fn_node = make_node(0, NodeKind::Function, "fetch_payment");
+        fn_node.return_type = Some("ForeignType(payments.external)".to_string());
+        fn_node.inferred = vec![InferredFact {
+            kind: "boundary-schema".to_string(),
+            value: "PaymentsJsonSchema".to_string(),
+        }];
+
+        let graph = SemanticGraph {
+            nodes: vec![fn_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let schema_entries = entries_with_claim(&report.entries, "boundary-schema");
+        let proven = schema_entries
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "ForeignType with boundary-schema fact must be Proven, got: {:?}",
+            schema_entries
+        );
+    }
+
+    // F3-3 (TRIANGULATE): Non-ForeignType return type must NOT emit boundary-schema entry.
+    #[test]
+    fn non_foreign_return_type_emits_no_boundary_schema_entry() {
+        let mut fn_node = make_node(0, NodeKind::Function, "get_count");
+        fn_node.return_type = Some("Int".to_string()); // not ForeignType
+
+        let graph = SemanticGraph {
+            nodes: vec![fn_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let schema_entries = entries_with_claim(&report.entries, "boundary-schema");
+        assert!(
+            schema_entries.is_empty(),
+            "non-ForeignType return must emit no boundary-schema entries, got: {:?}",
+            schema_entries
+        );
+    }
+
+    // ── Task D1 (RED): check_blanket_impl_coherence ───────────────────────
+    // Tests written BEFORE the subpass exists.
+
+    // D1-1: Two non-adapter Type nodes with same interface → E_BLANKET_IMPL_OVERLAP.
+    // Spec scenario: "Two conflicting blanket impls detected"
+    //   GIVEN two Type nodes both with interface_impls containing "Serializable<List<T>>" (non-adapter)
+    //   THEN entry claim "blanket-impl-coherence", state Failed, evidence E_BLANKET_IMPL_OVERLAP
+    #[test]
+    fn two_non_adapter_impls_for_same_interface_fails() {
+        let mut type_a = make_node(0, NodeKind::Type, "ConcreteListA");
+        type_a.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "Serializable<List<T>>".to_string(),
+            associated_types: vec![],
+            is_adapter: false,
+        }]);
+
+        let mut type_b = make_node(1, NodeKind::Type, "ConcreteListB");
+        type_b.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "Serializable<List<T>>".to_string(),
+            associated_types: vec![],
+            is_adapter: false,
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![type_a, type_b],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let blanket = entries_with_claim(&report.entries, "blanket-impl-coherence");
+        assert!(
+            !blanket.is_empty(),
+            "expected blanket-impl-coherence entry for overlapping impls"
+        );
+        let failed = blanket
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "overlapping non-adapter impls must fail, got: {:?}",
+            blanket
+        );
+        let ev = failed.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_BLANKET_IMPL_OVERLAP),
+            "evidence must contain {E_BLANKET_IMPL_OVERLAP}, got: {ev}"
+        );
+    }
+
+    // D1-2: Adapter impls are exempt from overlap rule.
+    // Spec scenario: "Adapter impls are exempt from overlap rule"
+    //   GIVEN two Type nodes with same interface_impls but both is_adapter=true
+    //   THEN no E_BLANKET_IMPL_OVERLAP entry emitted
+    #[test]
+    fn adapter_impls_exempt_from_blanket_impl_overlap() {
+        let mut type_a = make_node(0, NodeKind::Type, "AdapterA");
+        type_a.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "Serializable<List<T>>".to_string(),
+            associated_types: vec![],
+            is_adapter: true, // adapter exception
+        }]);
+
+        let mut type_b = make_node(1, NodeKind::Type, "AdapterB");
+        type_b.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "Serializable<List<T>>".to_string(),
+            associated_types: vec![],
+            is_adapter: true,
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![type_a, type_b],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let blanket = entries_with_claim(&report.entries, "blanket-impl-coherence");
+        let overlap = blanket
+            .iter()
+            .find(|e| e.evidence.as_deref().unwrap_or("").contains(E_BLANKET_IMPL_OVERLAP));
+        assert!(
+            overlap.is_none(),
+            "adapter impls must NOT trigger E_BLANKET_IMPL_OVERLAP, got: {:?}",
+            blanket
+        );
+    }
+
+    // D1-3: Orphan rule — Type with foreign interface impl and no Interface/Type node.
+    // Spec scenario: "Orphan impl detected"
+    //   GIVEN Type node "ExternalType" with interface_impls = [{ interface: "ForeignInterface", is_adapter: false }]
+    //   AND no Interface node for "ForeignInterface" in graph
+    //   THEN entry claim "orphan-rule", state Failed, evidence E_ORPHAN_RULE_VIOLATION
+    #[test]
+    fn orphan_impl_without_interface_node_fails() {
+        let mut type_node = make_node(0, NodeKind::Type, "ExternalType");
+        type_node.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "ForeignInterface".to_string(),
+            associated_types: vec![],
+            is_adapter: false,
+        }]);
+        // No Interface node for "ForeignInterface" in the graph
+
+        let graph = SemanticGraph {
+            nodes: vec![type_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let orphan = entries_with_claim(&report.entries, "orphan-rule");
+        assert!(
+            !orphan.is_empty(),
+            "expected orphan-rule entry for impl without Interface node"
+        );
+        let failed = orphan
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "orphan impl must be Failed, got: {:?}",
+            orphan
+        );
+        let ev = failed.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_ORPHAN_RULE_VIOLATION),
+            "evidence must contain {E_ORPHAN_RULE_VIOLATION}, got: {ev}"
+        );
+    }
+
+    // D1-4 (TRIANGULATE): Impl with Interface node present → no orphan violation.
+    #[test]
+    fn impl_with_local_interface_node_passes_orphan_rule() {
+        let iface_node = make_node(0, NodeKind::Interface, "LocalInterface");
+
+        let mut type_node = make_node(1, NodeKind::Type, "LocalType");
+        type_node.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "LocalInterface".to_string(),
+            associated_types: vec![],
+            is_adapter: false,
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![iface_node, type_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let orphan = entries_with_claim(&report.entries, "orphan-rule");
+        let violation = orphan
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
+        assert!(
+            violation.is_none(),
+            "impl with local Interface node must NOT trigger orphan-rule violation, got: {:?}",
+            orphan
+        );
+    }
+
+    // ── Task E1 (RED): ConstParam value validation ────────────────────────
+    // Tests written BEFORE the extension exists — verifying current behavior
+    // does NOT yet handle ConstParam.
+
+    // E1-1: Valid ConstParam value "3" passes.
+    // Spec scenario: "Valid ConstParam value passes"
+    //   GIVEN Calls edge type_arg_bindings=[{param:"N",ty:"3"}]
+    //   AND callee has ConstParam "N"
+    //   THEN entry claim "const-param-value", state Proven
+    #[test]
+    fn const_param_numeric_value_is_proven() {
+        let mut callee = make_node(1, NodeKind::Function, "buffer_fn");
+        callee.generic_params = Some(vec![GenericParamDecl {
+            name: "N".to_string(),
+            kind: GenericParamKind::ConstParam,
+            required_constraints: vec![],
+        }]);
+
+        let caller = make_node(0, NodeKind::Function, "caller");
+
+        let mut edge = make_edge(0, 1);
+        edge.type_arg_bindings = Some(vec![TypeArgBinding {
+            param: "N".to_string(),
+            ty: "3".to_string(),
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let const_entries = entries_with_claim(&report.entries, "const-param-value");
+        assert!(
+            !const_entries.is_empty(),
+            "expected const-param-value entry for numeric literal, got none"
+        );
+        let proven = const_entries
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "numeric ConstParam value '3' must be Proven, got: {:?}",
+            const_entries
+        );
+    }
+
+    // E1-2 (TRIANGULATE): Valid ConstParam value "16" also passes.
+    #[test]
+    fn const_param_larger_numeric_value_is_proven() {
+        let mut callee = make_node(1, NodeKind::Function, "vector_fn");
+        callee.generic_params = Some(vec![GenericParamDecl {
+            name: "N".to_string(),
+            kind: GenericParamKind::ConstParam,
+            required_constraints: vec![],
+        }]);
+
+        let caller = make_node(0, NodeKind::Function, "caller");
+
+        let mut edge = make_edge(0, 1);
+        edge.type_arg_bindings = Some(vec![TypeArgBinding {
+            param: "N".to_string(),
+            ty: "16".to_string(),
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let const_entries = entries_with_claim(&report.entries, "const-param-value");
+        let proven = const_entries
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "numeric ConstParam value '16' must be Proven"
+        );
+    }
+
+    // E1-3: Invalid ConstParam value "sizeof(T)" fails.
+    // Spec scenario: "Invalid ConstParam value fails"
+    //   GIVEN Calls edge type_arg_bindings=[{param:"N",ty:"sizeof(T)"}]
+    //   AND callee has ConstParam "N"
+    //   THEN entry claim "const-param-value", state Failed, evidence E_CONST_PARAM_VALUE_INVALID
+    #[test]
+    fn const_param_complex_expression_fails() {
+        let mut callee = make_node(1, NodeKind::Function, "array_fn");
+        callee.generic_params = Some(vec![GenericParamDecl {
+            name: "N".to_string(),
+            kind: GenericParamKind::ConstParam,
+            required_constraints: vec![],
+        }]);
+
+        let caller = make_node(0, NodeKind::Function, "caller");
+
+        let mut edge = make_edge(0, 1);
+        edge.type_arg_bindings = Some(vec![TypeArgBinding {
+            param: "N".to_string(),
+            ty: "sizeof(T)".to_string(),
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let const_entries = entries_with_claim(&report.entries, "const-param-value");
+        assert!(
+            !const_entries.is_empty(),
+            "expected const-param-value entry for invalid expression"
+        );
+        let failed = const_entries
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "sizeof(T) must be Failed, got: {:?}",
+            const_entries
+        );
+        let ev = failed.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_CONST_PARAM_VALUE_INVALID),
+            "evidence must contain {E_CONST_PARAM_VALUE_INVALID}, got: {ev}"
+        );
+    }
+
+    // E1-4 (TRIANGULATE): "n+1" is also an invalid ConstParam value.
+    #[test]
+    fn const_param_arithmetic_expression_fails() {
+        let mut callee = make_node(1, NodeKind::Function, "chunk_fn");
+        callee.generic_params = Some(vec![GenericParamDecl {
+            name: "N".to_string(),
+            kind: GenericParamKind::ConstParam,
+            required_constraints: vec![],
+        }]);
+
+        let caller = make_node(0, NodeKind::Function, "caller");
+
+        let mut edge = make_edge(0, 1);
+        edge.type_arg_bindings = Some(vec![TypeArgBinding {
+            param: "N".to_string(),
+            ty: "n+1".to_string(),
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let const_entries = entries_with_claim(&report.entries, "const-param-value");
+        let failed = const_entries
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "n+1 must be Failed as invalid ConstParam value"
+        );
+    }
 }
 
 /// Build `SummaryCounts` from the entry list.
