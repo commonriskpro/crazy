@@ -1,6 +1,6 @@
 # Compiler pipeline
 
-<!-- Implementation Status: graph-to-Core-IR-to-ANF-to-WASM is implemented with hash chains and source maps; WASM value ABI and native body lowering remain incomplete. -->
+<!-- Implementation Status: graph-to-Core-IR-to-ANF-to-WASM is implemented with hash chains and source maps. Native body lowering (Phase 8) complete for arithmetic, control-flow (If/Loop/Match), data structures (records/variants/lists/tuples), text literals, and EffectCall. Remaining stubs: concurrency primitives, channels, dynamic dispatch, resource acquire/release. -->
 
 > Full extracted design. Related: [Core IR](core-ir.md), [Verification](verification.md), [Runtime](runtime.md), [Storage](storage.md).
 
@@ -316,8 +316,26 @@ It produces platform-native ELF/Mach-O/COFF object files with:
 - Capability manifest (same schema as WASM backend).
 - Sealed hash chain: `native_hash = blake3(anf_ir_hash || native_bytes)`.
 
-In Phase 17 function bodies are `trap` stubs; expression lowering is deferred
-to Phase 8+. The WASM pipeline is unaffected.
+Phase 8 expression lowering is now implemented. The following ANF expression
+families produce real Cranelift IR (no longer trap stubs):
+- Extended arithmetic: `i64.div_s`, `i64.rem_s`, `i64.and`, `i64.or`, comparisons, `i64.neg`, `i64.eqz`
+- Control flow: `If`, `ShortCircuitAnd`, `ShortCircuitOr`, `Seq`, `RuntimeCheck`
+- Loops: `Loop`, `Break`, `Continue`, `WhileLoop`
+- Pattern matching: `Match` (i64/bool arms + wildcard)
+- Text literals: `Literal(Text)` via Cranelift data section + packed ptr/len
+- Memory: `RecordNew`, `FieldGet`, `FieldUpdate` (stack-allocated, 8 bytes/field)
+- Variants: `VariantNew` (16-byte stack slot, FNV tag discriminant, optional payload)
+- Collections: `ListNew` (length header + elements), `TupleNew` (elements only)
+- Effects: `EffectCall` (calls imported `host_call(I64×6)→I64`)
+
+Remaining as trap stubs (Phase 9+): `Lambda`, `TaskSpawn`, `ChannelSend`,
+`ChannelReceive`, `Dispatch`, `ResourceAcquire`, `ResourceRelease`, `TaskAwait`,
+`TaskCancel`, `TaskGroup`, and concurrency primitives.
+
+Records/lists/variants are stack-allocated (not heap). Returned pointers are
+invalid after function return. Full heap model deferred to Phase 9.
+
+The WASM pipeline is unaffected by native backend changes.
 
 WASM output:
 
@@ -508,12 +526,12 @@ Meaning: after optimization/codegen, validate output preserves ANF/Core semantic
 | WASM ABI layout | Exact encoding for records, variants, `Result`, `Option`, handles finalized during implementation |
 | Memory management | RC vs GC deferred to implementation spike — see [Risks](risks.md) V-08 |
 | Translation validation | Required for `prod`/`critical`; scope per profile. Cranelift source-map and capability-boundary preservation is a validation spike — see [Risks](risks.md) V-03 |
-| Native backend | Cranelift (Phase 17, implemented). `emit_native` produces ELF/Mach-O/COFF with provenance + capability manifest. Expression body lowering deferred to Phase 8+. |
+| Native backend | Cranelift (Phase 8, implemented). `emit_native` produces ELF/Mach-O/COFF with provenance + capability manifest. Phase 8 lowering complete for arithmetic, control-flow, loops, match, text literals, records/variants/lists/tuples, EffectCall. Remaining trap stubs: concurrency, dynamic dispatch, resource lifecycle (Phase 9+). |
 
 ### Implementation Notes
 
 - `emit_wasm` now emits executable bodies for simple integer/bool/control-flow expressions and can dispatch `AnfExpr::EffectCall` through the host runtime.
 - Rich records, variants, `Result`, `Option`, handles, and general memory layout are not fully encoded yet; the current ABI is deliberately narrower.
-- `emit_native` closes the provenance/native-object validation spike but emits trap stubs, not executable native function bodies.
+- `emit_native` (Phase 8) now emits real Cranelift IR for arithmetic, control-flow (If/Loop/Match/ShortCircuit/Seq/RuntimeCheck), text literals, memory (records/variants/lists/tuples via stack slots), and EffectCall (imported `host_call`). Concurrency and resource primitives remain as trap stubs.
 
 Code references: `crates/ail-compiler/src/expr_parser.rs`, `core_ir.rs`, `anf.rs`, `wasm.rs`, `native.rs`.
