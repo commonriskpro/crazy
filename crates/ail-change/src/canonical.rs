@@ -431,6 +431,118 @@ pub fn canonicalize(cs: ChangeSet) -> CanonicalChangeSet {
     }
 }
 
+// ── expand_infer_boundary ─────────────────────────────────────────────────
+
+/// Post-process canonical ops: for every `infer_boundary` op, synthesize
+/// explicit `SetReturnByName` and `AddEffectByName` ops so the canonical form
+/// is self-contained.
+///
+/// Sources consulted (in priority order):
+/// 1. `type=` / `effect=` args directly on the `infer_boundary` op.
+/// 2. `create_function id=<target> return=T` ops in the same changeset.
+/// 3. `set_return target=<target> type=T` ops in the same changeset.
+///
+/// The original `AddInferredFactByName` op is preserved as documentation.
+fn expand_infer_boundary(ops: Vec<CanonicalOp>) -> Vec<CanonicalOp> {
+    // Collect return-type info from create_function ops only.
+    // We intentionally skip explicit set_return ops — those already produce
+    // SetReturnByName via materialize_payload and must not be duplicated.
+    let return_map: BTreeMap<String, String> = ops
+        .iter()
+        .filter_map(|op| match (&op.kind, op.verb.as_str()) {
+            (ChangeSetOp::Create, "create_function") => {
+                let target = op.args.get("id")?.clone();
+                let ty = op.args.get("return")?.clone();
+                Some((target, ty))
+            }
+            _ => None,
+        })
+        .collect();
+
+    // Collect targets that already have an explicit set_return in this changeset
+    // so we don't synthesize a duplicate.
+    let explicit_return_targets: std::collections::BTreeSet<String> = ops
+        .iter()
+        .filter_map(|op| {
+            if matches!(op.kind, ChangeSetOp::Set) && op.verb == "set_return" {
+                op.args.get("target").cloned()
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Find all infer_boundary ops.
+    let infer_ops: Vec<CanonicalOp> = ops
+        .iter()
+        .filter(|op| op.kind == ChangeSetOp::Infer && op.verb == "infer_boundary")
+        .cloned()
+        .collect();
+
+    let mut extra: Vec<CanonicalOp> = Vec::new();
+
+    for infer_op in infer_ops {
+        let Some(target) = infer_op.args.get("target").cloned() else {
+            continue;
+        };
+        let base_idx = ops.len() + extra.len();
+
+        // Synthesize SetReturnByName: from explicit type= arg, then from create_function.
+        // Skip if an explicit set_return for this target already exists (avoid duplicates).
+        let return_ty = if explicit_return_targets.contains(&target) {
+            None
+        } else {
+            infer_op
+                .args
+                .get("type")
+                .cloned()
+                .or_else(|| return_map.get(&target).cloned())
+        };
+        if let Some(ty) = return_ty {
+            let block_hash = compute_block_hash(&ChangeSetOp::Set, base_idx);
+            extra.push(CanonicalOp {
+                kind: ChangeSetOp::Set,
+                verb: "set_return".to_string(),
+                args: {
+                    let mut a = BTreeMap::new();
+                    a.insert("target".to_string(), target.clone());
+                    a.insert("type".to_string(), ty.clone());
+                    a
+                },
+                payload: OpPayload::SetReturnByName {
+                    target: target.clone(),
+                    ty,
+                },
+                block_hash,
+            });
+        }
+
+        // Synthesize AddEffectByName: from explicit effect= arg on infer_boundary.
+        if let Some(effect) = infer_op.args.get("effect").cloned() {
+            let block_hash = compute_block_hash(&ChangeSetOp::Add, base_idx + extra.len());
+            extra.push(CanonicalOp {
+                kind: ChangeSetOp::Add,
+                verb: "add_effect".to_string(),
+                args: {
+                    let mut a = BTreeMap::new();
+                    a.insert("target".to_string(), target.clone());
+                    a.insert("effect".to_string(), effect.clone());
+                    a
+                },
+                payload: OpPayload::AddEffectByName {
+                    target: target.clone(),
+                    effect,
+                },
+                block_hash,
+            });
+        }
+    }
+
+    let mut result = ops;
+    result.extend(extra);
+    result
+}
+
 // ── canonicalize_parsed ───────────────────────────────────────────────────
 
 /// Transform a `ParsedChangeSet` (with full kv args) into canonical form.
@@ -445,6 +557,8 @@ pub fn canonicalize(cs: ChangeSet) -> CanonicalChangeSet {
 /// - Normalizes ID-valued args (`id`, `target`, `source`, `to`, `from`).
 /// - Marks `infer_*` ops with `infer_pending=true` for downstream expansion.
 /// - Stores full verb and materialized args on each `CanonicalOp`.
+/// - **Expands `infer_boundary`** into explicit `set_return` / `add_effect` ops
+///   so the canonical form is self-contained (see `expand_infer_boundary`).
 pub fn canonicalize_parsed(pcs: ParsedChangeSet) -> CanonicalChangeSet {
     // Step 1: materialize description default.
     let description = if pcs.changeset.meta.description.is_empty() {
@@ -497,6 +611,10 @@ pub fn canonicalize_parsed(pcs: ParsedChangeSet) -> CanonicalChangeSet {
             }
         })
         .collect();
+
+    // Expand infer_boundary ops: synthesize explicit set_return / add_effect ops
+    // so the canonical form is self-contained.
+    let canonical_ops = expand_infer_boundary(canonical_ops);
 
     CanonicalChangeSet {
         meta: CanonicalMeta {
@@ -1058,6 +1176,117 @@ end
                 .ops
                 .iter()
                 .any(|op| matches!(op.payload, OpPayload::RemoveNodeByName(_)))
+        );
+    }
+
+    // ── Gap 1: infer_boundary materialization tests ───────────────────────
+
+    // Scenario IB-1: infer_boundary with explicit type arg materializes set_return op.
+    //   GIVEN a changeset with `op infer_boundary target=fn.checkout type=OrderId`
+    //   WHEN canonicalize_parsed is called
+    //   THEN the canonical ops include both AddInferredFactByName AND SetReturnByName
+    #[test]
+    fn infer_boundary_with_type_emits_set_return_op() {
+        let parsed = parse_changeset(&minimal_change(
+            "infer_boundary target=fn.checkout type=OrderId",
+        ))
+        .expect("fixture must parse");
+
+        let canonical = canonicalize_parsed(parsed);
+
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::AddInferredFactByName { .. })),
+            "must retain AddInferredFactByName as documentation"
+        );
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::SetReturnByName { ref target, ref ty }
+                    if target == "fn.checkout" && ty == "OrderId")),
+            "must emit explicit SetReturnByName for the inferred return type"
+        );
+    }
+
+    // TRIANGULATE: infer_boundary with explicit effect arg materializes add_effect op.
+    #[test]
+    fn infer_boundary_with_effect_emits_add_effect_op() {
+        let parsed = parse_changeset(&minimal_change(
+            "infer_boundary target=fn.checkout effect=payment.charge",
+        ))
+        .expect("fixture must parse");
+
+        let canonical = canonicalize_parsed(parsed);
+
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::AddEffectByName { ref target, ref effect }
+                    if target == "fn.checkout" && effect == "payment.charge")),
+            "must emit explicit AddEffectByName for the inferred effect"
+        );
+    }
+
+    // Scenario IB-2: infer_boundary picks up return type from create_function in same changeset.
+    //   GIVEN a changeset with create_function + infer_boundary for the same target
+    //   WHEN canonicalize_parsed is called
+    //   THEN canonical ops include SetReturnByName derived from create_function's return arg
+    #[test]
+    fn infer_boundary_derives_return_from_create_function() {
+        let source = "\
+change e2e base=0
+author tester
+description e2e
+op create_function id=fn.checkout return=OrderId
+op infer_boundary target=fn.checkout
+end
+";
+        let canonical = canonicalize_parsed(parse_changeset(source).expect("fixture must parse"));
+
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::SetReturnByName { ref target, ref ty }
+                    if target == "fn.checkout" && ty == "OrderId")),
+            "must emit SetReturnByName derived from create_function return"
+        );
+    }
+
+    // TRIANGULATE: infer_boundary picks up effects from add_effect ops in same changeset.
+    #[test]
+    fn infer_boundary_derives_effects_from_add_effect_ops() {
+        let source = "\
+change e2e base=0
+author tester
+description e2e
+op create_function id=fn.checkout return=OrderId
+op add_effect target=fn.checkout effect=payment.charge
+op infer_boundary target=fn.checkout
+end
+";
+        let canonical = canonicalize_parsed(parse_changeset(source).expect("fixture must parse"));
+
+        // The AddInferredFactByName must still be present as documentation.
+        assert!(
+            canonical
+                .ops
+                .iter()
+                .any(|op| matches!(op.payload, OpPayload::AddInferredFactByName { .. })),
+            "must retain AddInferredFactByName"
+        );
+        // An explicit AddEffectByName must be synthesized (from add_effect scanning).
+        assert!(
+            canonical.ops.iter().any(|op| matches!(
+                op.payload,
+                OpPayload::AddEffectByName { ref target, ref effect }
+                    if target == "fn.checkout" && effect == "payment.charge"
+            )),
+            "must emit AddEffectByName derived from sibling add_effect op"
         );
     }
 
