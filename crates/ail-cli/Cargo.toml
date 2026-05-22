@@ -13,6 +13,7 @@ ail-change   = { workspace = true }
 ail-compiler = { workspace = true }
 ail-context  = { workspace = true }
 ail-core     = { workspace = true }
+ail-package  = { workspace = true }
 ail-runtime  = { workspace = true }
 ail-storage  = { workspace = true }
 ail-verify   = { workspace = true }
