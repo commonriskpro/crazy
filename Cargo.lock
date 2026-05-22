@@ -170,6 +170,7 @@ dependencies = [
  "ail-storage",
  "blake3",
  "ciborium",
+ "futures",
  "serde",
 ]
 
