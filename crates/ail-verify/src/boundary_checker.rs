@@ -49,6 +49,7 @@ pub const E_BOUNDARY_EXPIRED_ASSUMPTION: &str = "E_BOUNDARY_EXPIRED_ASSUMPTION";
 pub const E_BOUNDARY_NO_CONTRACT: &str = "E_BOUNDARY_NO_CONTRACT";
 pub const E_BOUNDARY_UNCHECKED_FFI: &str = "E_BOUNDARY_UNCHECKED_FFI";
 pub const E_BOUNDARY_INCOMPLETE: &str = "E_BOUNDARY_INCOMPLETE";
+pub const E_BOUNDARY_ASSUMPTION_REVOKED: &str = "E_BOUNDARY_ASSUMPTION_REVOKED";
 
 /// Required tags for a fully-declared boundary.
 const REQUIRED_TAGS: &[&str] = &[
@@ -102,7 +103,11 @@ impl BoundaryChecker {
                         .as_ref()
                         .map(|tm| tm.tags.as_slice())
                         .unwrap_or(&[]);
-                    let code = if has_tag(tags, "expired-assumption") {
+                    let code = if has_tag(tags, "has-assumption-expired")
+                        || has_tag(tags, "has-assumption-revoked")
+                    {
+                        E_BOUNDARY_ASSUMPTION_REVOKED
+                    } else if has_tag(tags, "expired-assumption") {
                         E_BOUNDARY_EXPIRED_ASSUMPTION
                     } else {
                         E_BOUNDARY_NO_CONTRACT
@@ -168,7 +173,33 @@ impl BoundaryChecker {
     }
 
     fn classify_boundary(tags: &[String], scope: &str) -> (VerificationState, Option<String>) {
-        // Expired assumption → Failed
+        // TASK-22: assumption lifecycle checks (before legacy checks)
+        // Revoked or expired assumption → Failed
+        if has_tag(tags, "has-assumption-expired") || has_tag(tags, "has-assumption-revoked") {
+            return (
+                VerificationState::Failed,
+                Some(format!(
+                    "{E_BOUNDARY_ASSUMPTION_REVOKED}: boundary '{}' assumption has been expired or revoked",
+                    scope
+                )),
+            );
+        }
+
+        // Proposed but not yet approved/active → Unverified
+        if has_tag(tags, "has-assumption-proposed")
+            && !has_tag(tags, "has-assumption-approved")
+            && !has_tag(tags, "has-assumption-active")
+        {
+            return (
+                VerificationState::Unverified,
+                Some(format!(
+                    "boundary '{}' assumption is proposed but not yet approved or active",
+                    scope
+                )),
+            );
+        }
+
+        // Expired assumption → Failed (legacy tag)
         if has_tag(tags, "expired-assumption") {
             return (
                 VerificationState::Failed,
