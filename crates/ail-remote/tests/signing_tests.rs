@@ -26,6 +26,7 @@ fn make_snapshot(tag: &[u8]) -> SnapshotEnvelope {
         parent_id: None,
         applied_change_id: None,
         created_at: 42_000,
+        verification_report_hash: None,
     }
 }
 

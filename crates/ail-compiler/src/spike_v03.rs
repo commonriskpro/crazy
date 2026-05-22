@@ -51,7 +51,10 @@ use crate::lower::{lower_to_anf, lower_to_core_ir};
 // ── helpers ──────────────────────────────────────────────────────────────
 
 fn proven_report() -> VerificationReport {
-    VerificationReport { entries: vec![], ..Default::default() }
+    VerificationReport {
+        entries: vec![],
+        ..Default::default()
+    }
 }
 
 /// Build a minimal `AnfIr` with `n` bindings named `fn_0`, `fn_1`, …

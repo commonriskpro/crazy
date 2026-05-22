@@ -183,6 +183,7 @@ async fn postgres_graph_store_roundtrip() {
         parent_id: Some(oid("postgres-graph-parent")),
         applied_change_id: Some(oid("postgres-graph-change")),
         created_at: 1_700_000_000_000_u64,
+        verification_report_hash: None,
     };
 
     let returned_id = graph.save_snapshot(&snap).await.expect("save must succeed");

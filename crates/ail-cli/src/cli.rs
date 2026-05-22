@@ -364,6 +364,7 @@ async fn cmd_apply(mode: OutputMode, change_id: &str, store: &StoreHandle) -> Re
                 parent_id,
                 applied_change_id: Some(change_oid),
                 created_at: unix_ms_now(),
+                verification_report_hash: None,
             };
             let new_id = store.save_snapshot(&new_envelope).await?;
             let new_id_hex = new_id.to_hex();
@@ -530,6 +531,7 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError>
             parent_id: None,
             applied_change_id: None,
             created_at: unix_ms_now(),
+            verification_report_hash: None,
         };
         store.save_snapshot(&genesis).await?
     } else {

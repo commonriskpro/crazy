@@ -45,6 +45,7 @@ fn snapshot_with_parent() -> SnapshotEnvelope {
         parent_id: Some(oid("parent-snapshot")),
         applied_change_id: Some(oid("change-1")),
         created_at: 1_700_000_000_000_u64,
+        verification_report_hash: None,
     }
 }
 
@@ -103,6 +104,7 @@ fn genesis_no_parent() {
         parent_id: None,
         applied_change_id: None,
         created_at: 0_u64,
+        verification_report_hash: None,
     };
 
     let returned_id = block_on(graph_store.save_snapshot(&snap)).expect("save must succeed");
@@ -175,6 +177,7 @@ fn save_then_load() {
         parent_id: None,
         applied_change_id: None,
         created_at: 42_000_u64,
+        verification_report_hash: None,
     };
 
     let returned_id = block_on(graph_store.save_snapshot(&snap)).expect("save must succeed");
@@ -212,6 +215,7 @@ fn save_then_load_by_envelope_id() {
         parent_id: Some(oid("direct-parent")),
         applied_change_id: Some(oid("direct-change")),
         created_at: 99_000_u64,
+        verification_report_hash: None,
     };
 
     block_on(graph_store.save_snapshot(&snap)).expect("save must succeed");
@@ -276,12 +280,80 @@ fn snapshot_envelope_encoding_is_deterministic() {
         parent_id: Some(oid("hashmap-check-parent")),
         applied_change_id: Some(oid("hashmap-check-change")),
         created_at: 1_234_567_890_u64,
+        verification_report_hash: None,
     };
     let bytes1 = codec.encode(&snap).expect("first encode must succeed");
     let bytes2 = codec.encode(&snap).expect("second encode must succeed");
     assert_eq!(
         bytes1, bytes2,
         "SnapshotEnvelope encoding must be deterministic — no HashMap fields allowed"
+    );
+}
+
+// ── verification_report_hash_round_trip ──────────────────────────────────
+// Spec scenario: "verification_report_hash preserved through GraphStore"
+//   GIVEN a SnapshotEnvelope with verification_report_hash = Some([42u8; 32])
+//   WHEN saved via GraphStore and loaded back by envelope.id
+//   THEN verification_report_hash equals Some([42u8; 32])
+#[test]
+fn verification_report_hash_round_trip() {
+    let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+    let snap = SnapshotEnvelope {
+        id: oid("vrh-snap"),
+        graph_root_hash: oid("vrh-root"),
+        parent_id: None,
+        applied_change_id: None,
+        created_at: 1_000,
+        verification_report_hash: Some([42u8; 32]),
+    };
+
+    block_on(graph_store.save_snapshot(&snap)).expect("save must succeed");
+
+    let loaded = block_on(graph_store.load_snapshot(&snap.id))
+        .expect("load must succeed")
+        .expect("snapshot must be present");
+
+    assert_eq!(
+        loaded.verification_report_hash,
+        Some([42u8; 32]),
+        "verification_report_hash must survive the GraphStore round-trip"
+    );
+}
+
+// ── verification_report_hash_none_omitted_from_cbor ───────────────────────
+// Spec: serde(skip_serializing_if) — None is not written to the CBOR bytes.
+//   GIVEN a SnapshotEnvelope with verification_report_hash = None
+//   WHEN encoded twice via CborCodec
+//   THEN both encodings are byte-identical (determinism) AND
+//        a second envelope with verification_report_hash = Some(…)
+//        produces DIFFERENT bytes (field is actually present when Some)
+#[test]
+fn verification_report_hash_none_omitted_from_cbor() {
+    let codec = CborCodec;
+    let none_snap = SnapshotEnvelope {
+        id: oid("vrh-none-id"),
+        graph_root_hash: oid("vrh-none-root"),
+        parent_id: None,
+        applied_change_id: None,
+        created_at: 500,
+        verification_report_hash: None,
+    };
+    let some_snap = SnapshotEnvelope {
+        verification_report_hash: Some([1u8; 32]),
+        ..none_snap.clone()
+    };
+
+    let bytes_none_1 = codec.encode(&none_snap).expect("encode none #1");
+    let bytes_none_2 = codec.encode(&none_snap).expect("encode none #2");
+    let bytes_some = codec.encode(&some_snap).expect("encode some");
+
+    assert_eq!(
+        bytes_none_1, bytes_none_2,
+        "None encoding must be deterministic"
+    );
+    assert_ne!(
+        bytes_none_1, bytes_some,
+        "Some encoding must differ from None (field is serialized when present)"
     );
 }
 
