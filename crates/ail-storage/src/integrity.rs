@@ -1,0 +1,912 @@
+// Storage integrity verification.
+//
+// # Design
+//
+// `verify_integrity` is a comprehensive read-only check that validates
+// referential integrity, content-hash correctness, and cross-domain link
+// consistency across the store.
+//
+// # Checks
+//
+// 1. **MissingObject**   — `graph_root_hash` in a snapshot does not exist in the
+//    object store.
+// 2. **HashMismatch**    — A raw object's stored bytes do not hash to its declared
+//    `ObjectId`.  This is now actively checked via `check_object_hashes`.
+// 3. **OrphanedSnapshot** — `parent_id` points to a non-existent snapshot.
+// 4. **ChangeMissingReport** — A ChangeSet id declared by a snapshot
+//    (`applied_change_id`) is not linked to any verification report id in the
+//    provided `change_report_index`.
+// 5. **ReportMissingArtifact** — A verification report hash is not backed by a
+//    corresponding artifact hash in the `report_artifact_index`.
+// 6. **ApprovalOrphanedChange** — An approval record references a
+//    `subject_change_id` that is not present in the ChangeSet id set.
+// 7. **AssumptionOrphanedBoundary** — An assumption record references a
+//    `boundary_id` that is not in the set of known boundary ids.
+// 8. **StaleIndex** — An index record does not match the current snapshot root
+//    and has not been explicitly marked as stale.
+//
+// # Report semantics
+//
+// `IntegrityReport.passed` is `true` iff `issues` is empty.  `issues` is
+// sorted by kind first, then by the primary `ObjectId` within the same kind.
+//
+// # Determinism
+//
+// All sorting is deterministic (BTreeSet/BTreeMap or explicit sort by bytes).
+// No HashMap is used in the hot path.
+
+use serde::{Deserialize, Serialize};
+
+use crate::approval::{ApprovalRecord, AssumptionRecord};
+use crate::error::StorageResult;
+use crate::graph::GraphStore;
+use crate::object::{ObjectId, ObjectStore, RawObject};
+
+// ── IntegrityIssue ────────────────────────────────────────────────────────
+
+/// A single problem detected by the integrity verifier.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IntegrityIssue {
+    /// A `graph_root_hash` in a snapshot points to an object that does not
+    /// exist in the object store.
+    MissingObject {
+        /// The `ObjectId` that was expected but not found.
+        id: ObjectId,
+    },
+    /// A stored object's content does not match its declared `ObjectId`.
+    ///
+    /// The object store is content-addressed: every object's id is the BLAKE3
+    /// hash of its bytes.  A hash mismatch indicates corruption.
+    HashMismatch {
+        /// The `ObjectId` whose content hash is inconsistent.
+        id: ObjectId,
+    },
+    /// A snapshot's `parent_id` points to a snapshot that is not present in
+    /// the store (orphaned chain link).
+    OrphanedSnapshot {
+        /// The `ObjectId` of the orphaned snapshot.
+        id: ObjectId,
+    },
+    /// A ChangeSet declared by a snapshot is not linked to a verification
+    /// report in the provided index.
+    ChangeMissingReport {
+        /// The ChangeSet `ObjectId` that has no linked report.
+        id: ObjectId,
+    },
+    /// A verification report hash is not backed by a corresponding artifact
+    /// hash in the provided index.
+    ReportMissingArtifact {
+        /// The verification report `ObjectId` that has no artifact hash entry.
+        id: ObjectId,
+    },
+    /// An approval record references a `subject_change_id` that is not in the
+    /// known ChangeSet id set.
+    ApprovalOrphanedChange {
+        /// The `ObjectId` of the approval record with the dangling reference.
+        id: ObjectId,
+    },
+    /// An assumption record references a `boundary_id` that is not in the
+    /// known boundary id set.
+    AssumptionOrphanedBoundary {
+        /// The `ObjectId` of the assumption record with the dangling reference.
+        id: ObjectId,
+    },
+    /// An index entry does not match the current snapshot root and has not
+    /// been marked as stale.
+    StaleIndex {
+        /// The `ObjectId` of the stale index entry.
+        id: ObjectId,
+    },
+}
+
+impl IntegrityIssue {
+    /// Numeric sort key for ordering issues by kind.
+    fn kind_ord(&self) -> u8 {
+        match self {
+            IntegrityIssue::MissingObject { .. } => 0,
+            IntegrityIssue::HashMismatch { .. } => 1,
+            IntegrityIssue::OrphanedSnapshot { .. } => 2,
+            IntegrityIssue::ChangeMissingReport { .. } => 3,
+            IntegrityIssue::ReportMissingArtifact { .. } => 4,
+            IntegrityIssue::ApprovalOrphanedChange { .. } => 5,
+            IntegrityIssue::AssumptionOrphanedBoundary { .. } => 6,
+            IntegrityIssue::StaleIndex { .. } => 7,
+        }
+    }
+
+    /// The primary `ObjectId` associated with this issue.
+    fn id(&self) -> &ObjectId {
+        match self {
+            IntegrityIssue::MissingObject { id }
+            | IntegrityIssue::HashMismatch { id }
+            | IntegrityIssue::OrphanedSnapshot { id }
+            | IntegrityIssue::ChangeMissingReport { id }
+            | IntegrityIssue::ReportMissingArtifact { id }
+            | IntegrityIssue::ApprovalOrphanedChange { id }
+            | IntegrityIssue::AssumptionOrphanedBoundary { id }
+            | IntegrityIssue::StaleIndex { id } => id,
+        }
+    }
+}
+
+// ── IntegrityInput ────────────────────────────────────────────────────────
+
+/// Cross-domain reference data required for full integrity verification.
+///
+/// These are injected rather than fetched from the store because they reside
+/// in domain-specific stores (`ApprovalStore`, `AssumptionStore`, etc.) that
+/// are not part of the base `GraphStore`/`ObjectStore` interface.
+#[derive(Default)]
+pub struct IntegrityInput {
+    /// Mapping from ChangeSet id → verification report id.
+    ///
+    /// Used for check 4: *changes link to reports*.
+    pub change_report_index: Vec<(ObjectId, ObjectId)>,
+    /// Mapping from verification report id → artifact hash.
+    ///
+    /// Used for check 5: *reports link to artifact hashes*.
+    pub report_artifact_index: Vec<(ObjectId, ObjectId)>,
+    /// All approval records to cross-check.
+    ///
+    /// Used for check 6: *approvals reference canonical changes*.
+    pub approvals: Vec<ApprovalRecord>,
+    /// All assumption records to cross-check.
+    ///
+    /// Used for check 7: *assumptions link to boundaries*.
+    pub assumptions: Vec<AssumptionRecord>,
+    /// All known boundary ids.
+    ///
+    /// Used for check 7: assumption `boundary_id` must be in this set.
+    pub known_boundary_ids: Vec<ObjectId>,
+    /// All raw objects to hash-verify (id, bytes pairs).
+    ///
+    /// Used for check 2: *object hashes match content*.
+    ///
+    /// Each entry is an `ObjectId` plus the raw bytes the store returned for
+    /// it.  The verifier recomputes the BLAKE3 hash of the bytes and compares
+    /// it to the id.
+    pub objects_to_verify: Vec<(ObjectId, RawObject)>,
+    /// Index entries as (index_id, expected_snapshot_root_hash) pairs.
+    ///
+    /// Used for check 8: *indexes match snapshot or are marked stale*.
+    /// `stale_index_ids` lists any index ids explicitly marked as stale.
+    pub index_entries: Vec<(ObjectId, ObjectId)>,
+    /// Index ids that have been explicitly marked as stale (and thus are
+    /// exempt from the staleness check).
+    pub stale_index_ids: Vec<ObjectId>,
+}
+
+// ── IntegrityReport ───────────────────────────────────────────────────────
+
+/// Summary of a storage integrity verification run.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct IntegrityReport {
+    /// All detected issues, sorted for determinism.
+    pub issues: Vec<IntegrityIssue>,
+    /// Number of snapshots examined.
+    pub snapshots_checked: u64,
+    /// `true` iff no issues were detected.
+    pub passed: bool,
+}
+
+// ── verify_integrity ──────────────────────────────────────────────────────
+
+/// Run integrity checks on `graph_store` against `object_store`.
+///
+/// # Checks performed
+///
+/// 1. **MissingObject**           — `graph_root_hash` does not exist in object store.
+/// 2. **HashMismatch**            — Stored bytes do not hash to declared id.
+/// 3. **OrphanedSnapshot**        — `parent_id` points to non-existent snapshot.
+/// 4. **ChangeMissingReport**     — ChangeSet has no linked verification report.
+/// 5. **ReportMissingArtifact**   — Verification report has no artifact hash.
+/// 6. **ApprovalOrphanedChange**  — Approval references unknown ChangeSet.
+/// 7. **AssumptionOrphanedBoundary** — Assumption references unknown boundary.
+/// 8. **StaleIndex**              — Index entry does not match snapshot root.
+///
+/// # Returns
+///
+/// An [`IntegrityReport`] describing all issues found.  Never mutates stores.
+///
+/// # Errors
+///
+/// Propagates any `StorageError` from `list_snapshots` or `exists`.
+pub async fn verify_integrity<G, O>(
+    graph_store: &G,
+    object_store: &O,
+    input: IntegrityInput,
+) -> StorageResult<IntegrityReport>
+where
+    G: GraphStore + Send + Sync,
+    O: ObjectStore + Send + Sync,
+{
+    let snapshots = graph_store.list_snapshots().await?;
+    let snapshots_checked = snapshots.len() as u64;
+
+    // Collect snapshot ids for parent-link and ChangeSet cross-checks.
+    let all_snapshot_ids: std::collections::BTreeSet<ObjectId> =
+        snapshots.iter().map(|s| s.id).collect();
+
+    // Collect all ChangeSet ids declared by snapshots.
+    let all_changeset_ids: std::collections::BTreeSet<ObjectId> = snapshots
+        .iter()
+        .filter_map(|s| s.applied_change_id)
+        .collect();
+
+    // Build change→report and report→artifact lookup sets.
+    let change_report_map: std::collections::BTreeMap<ObjectId, ObjectId> =
+        input.change_report_index.into_iter().collect();
+    let report_artifact_map: std::collections::BTreeMap<ObjectId, ObjectId> =
+        input.report_artifact_index.into_iter().collect();
+
+    let known_boundary_set: std::collections::BTreeSet<ObjectId> =
+        input.known_boundary_ids.into_iter().collect();
+
+    let stale_set: std::collections::BTreeSet<ObjectId> =
+        input.stale_index_ids.into_iter().collect();
+
+    let mut issues = Vec::new();
+
+    // ── Check 1 & 3: snapshot root exists, parent link valid ──────────────
+    for snap in &snapshots {
+        // Check 1: graph_root_hash must exist as a raw object.
+        let root_exists = object_store.exists(&snap.graph_root_hash).await?;
+        if !root_exists {
+            issues.push(IntegrityIssue::MissingObject {
+                id: snap.graph_root_hash,
+            });
+        }
+
+        // Check 3: parent_id (when Some) must reference a known snapshot.
+        if let Some(parent_id) = snap.parent_id {
+            if !all_snapshot_ids.contains(&parent_id) {
+                issues.push(IntegrityIssue::OrphanedSnapshot { id: snap.id });
+            }
+        }
+    }
+
+    // ── Check 2: object hashes match content ──────────────────────────────
+    for (declared_id, raw) in &input.objects_to_verify {
+        let actual_id = ObjectId::from_bytes(&raw.0);
+        if actual_id != *declared_id {
+            issues.push(IntegrityIssue::HashMismatch { id: *declared_id });
+        }
+    }
+
+    // ── Check 4: changes link to reports ──────────────────────────────────
+    for cs_id in &all_changeset_ids {
+        if !change_report_map.contains_key(cs_id) {
+            issues.push(IntegrityIssue::ChangeMissingReport { id: *cs_id });
+        }
+    }
+
+    // ── Check 5: reports link to artifact hashes ──────────────────────────
+    for (_cs_id, report_id) in &change_report_map {
+        if !report_artifact_map.contains_key(report_id) {
+            issues.push(IntegrityIssue::ReportMissingArtifact { id: *report_id });
+        }
+    }
+
+    // ── Check 6: approvals reference canonical changes ────────────────────
+    for approval in &input.approvals {
+        if !all_changeset_ids.contains(&approval.subject_change_id) {
+            issues.push(IntegrityIssue::ApprovalOrphanedChange { id: approval.id });
+        }
+    }
+
+    // ── Check 7: assumptions link to boundaries ───────────────────────────
+    for assumption in &input.assumptions {
+        if !known_boundary_set.contains(&assumption.boundary_id) {
+            issues.push(IntegrityIssue::AssumptionOrphanedBoundary {
+                id: assumption.id,
+            });
+        }
+    }
+
+    // ── Check 8: indexes match snapshot root or are marked stale ─────────
+    // Get the current canonical snapshot root by taking the latest snapshot.
+    let current_root: Option<ObjectId> = snapshots
+        .iter()
+        .max_by_key(|s| s.created_at)
+        .map(|s| s.graph_root_hash);
+
+    for (index_id, index_root) in &input.index_entries {
+        // If index is in the stale set, it is exempt from this check.
+        if stale_set.contains(index_id) {
+            continue;
+        }
+        // If no snapshot exists, no index can be valid.
+        match current_root {
+            None => {
+                issues.push(IntegrityIssue::StaleIndex { id: *index_id });
+            }
+            Some(root) => {
+                if *index_root != root {
+                    issues.push(IntegrityIssue::StaleIndex { id: *index_id });
+                }
+            }
+        }
+    }
+
+    // Sort issues for determinism: by kind first, then by id bytes.
+    issues.sort_by(|a, b| {
+        a.kind_ord()
+            .cmp(&b.kind_ord())
+            .then(a.id().as_bytes().cmp(b.id().as_bytes()))
+    });
+
+    let passed = issues.is_empty();
+    Ok(IntegrityReport {
+        issues,
+        snapshots_checked,
+        passed,
+    })
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::approval::{ApprovalRecord, AssumptionRecord, AssumptionStatus};
+    use crate::backends::memory::MemoryObjectStore;
+    use crate::graph::{GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
+    use crate::object::{ObjectStore, RawObject};
+
+    /// Compute the ObjectId that the MemoryObjectStore will assign when
+    /// `[seed; 32]` bytes are put.  Because `put` does `ObjectId::from_bytes(&object.0)`
+    /// (= BLAKE3 of the payload), the id for `[seed; 32]` bytes is
+    /// `BLAKE3([seed; 32])` = `ObjectId::from_bytes(&[seed; 32])`.
+    fn make_id(seed: u8) -> ObjectId {
+        ObjectId::from_bytes(&[seed; 32])
+    }
+
+    /// Store `[seed; 32]` bytes in the object store.
+    /// The CAS id assigned will be `ObjectId::from_bytes(&[seed; 32])` = `make_id(seed)`.
+    async fn put_seed_object(object_store: &MemoryObjectStore, seed: u8) -> ObjectId {
+        object_store
+            .put(RawObject(vec![seed; 32]))
+            .await
+            .expect("put seed object")
+    }
+
+    fn make_approval(id_seed: u8, change_id_seed: u8) -> ApprovalRecord {
+        ApprovalRecord {
+            id: make_id(id_seed),
+            subject_change_id: make_id(change_id_seed),
+            canonical_change_hash: make_id(id_seed + 50),
+            approver_role: "role:maintainer".to_owned(),
+            approves_scope: "public_api".to_owned(),
+            timestamp: 1000,
+        }
+    }
+
+    fn make_assumption(id_seed: u8, boundary_seed: u8, status: AssumptionStatus) -> AssumptionRecord {
+        AssumptionRecord {
+            id: make_id(id_seed),
+            boundary_id: make_id(boundary_seed),
+            status,
+            expires_at: None,
+            owner: "team.test".to_owned(),
+        }
+    }
+
+    // Scenario: valid store passes integrity check.
+    //   GIVEN snapshots whose graph_root_hash objects all exist
+    //   WHEN verify_integrity called
+    //   THEN report.passed = true and issues empty
+    #[tokio::test]
+    async fn valid_store_passes() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        // put_seed_object(seed) stores [seed;32] bytes → CAS id = make_id(seed)
+        let root1_id = put_seed_object(&obj_store, 10).await;
+        let root2_id = put_seed_object(&obj_store, 20).await;
+
+        let e1 = SnapshotEnvelope {
+            id: make_id(1),
+            graph_root_hash: root1_id,
+            parent_id: None,
+            applied_change_id: None,
+            created_at: 100,
+            verification_report_hash: None,
+        };
+        let e2 = SnapshotEnvelope {
+            id: make_id(2),
+            graph_root_hash: root2_id,
+            parent_id: None,
+            applied_change_id: None,
+            created_at: 200,
+            verification_report_hash: None,
+        };
+
+        graph_store.save_snapshot(&e1).await.expect("save e1");
+        graph_store.save_snapshot(&e2).await.expect("save e2");
+
+        let report = verify_integrity(&graph_store, &obj_store, IntegrityInput::default())
+            .await
+            .expect("verify");
+        assert!(report.passed, "report must pass");
+        assert!(report.issues.is_empty());
+        assert_eq!(report.snapshots_checked, 2);
+    }
+
+    // Scenario: missing graph_root_hash object produces MissingObject issue.
+    //   GIVEN snapshot whose graph_root_hash does not exist in object store
+    //   WHEN verify_integrity called
+    //   THEN report has MissingObject issue and passed=false
+    #[tokio::test]
+    async fn missing_root_object_produces_issue() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        // Use a root hash that we deliberately do NOT store in obj_store.
+        let missing_root = make_id(99);
+        let e = SnapshotEnvelope {
+            id: make_id(1),
+            graph_root_hash: missing_root,
+            parent_id: None,
+            applied_change_id: None,
+            created_at: 0,
+            verification_report_hash: None,
+        };
+        graph_store.save_snapshot(&e).await.expect("save");
+
+        let report = verify_integrity(&graph_store, &obj_store, IntegrityInput::default())
+            .await
+            .expect("verify");
+        assert!(!report.passed);
+        assert_eq!(report.issues.len(), 1);
+        assert!(
+            matches!(
+                &report.issues[0],
+                IntegrityIssue::MissingObject { id } if *id == missing_root
+            ),
+            "must have MissingObject for graph_root_hash"
+        );
+    }
+
+    // Scenario: empty store passes integrity check.
+    #[tokio::test]
+    async fn empty_store_passes() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+        let report = verify_integrity(&graph_store, &obj_store, IntegrityInput::default())
+            .await
+            .expect("verify");
+        assert!(report.passed);
+        assert_eq!(report.snapshots_checked, 0);
+    }
+
+    // Scenario: orphaned parent_id produces OrphanedSnapshot issue.
+    //   GIVEN snapshot whose parent_id points to a non-existent snapshot
+    //   WHEN verify_integrity called
+    //   THEN report has OrphanedSnapshot issue
+    #[tokio::test]
+    async fn orphaned_parent_produces_issue() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        // Store root object for the snapshot's graph_root_hash.
+        let root_id = put_seed_object(&obj_store, 10).await;
+        let ghost_parent = make_id(99); // this snapshot does not exist in store
+
+        let e = SnapshotEnvelope {
+            id: make_id(1),
+            graph_root_hash: root_id,
+            parent_id: Some(ghost_parent),
+            applied_change_id: None,
+            created_at: 0,
+            verification_report_hash: None,
+        };
+        graph_store.save_snapshot(&e).await.expect("save");
+
+        let report = verify_integrity(&graph_store, &obj_store, IntegrityInput::default())
+            .await
+            .expect("verify");
+        assert!(!report.passed);
+        let has_orphan = report.issues.iter().any(|i| {
+            matches!(i, IntegrityIssue::OrphanedSnapshot { id } if *id == e.id)
+        });
+        assert!(has_orphan, "must have OrphanedSnapshot issue");
+    }
+
+    // Scenario: snapshot with valid parent_id passes.
+    #[tokio::test]
+    async fn valid_parent_chain_passes() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        let root1_id = put_seed_object(&obj_store, 10).await;
+        let root2_id = put_seed_object(&obj_store, 20).await;
+
+        let e1 = SnapshotEnvelope {
+            id: make_id(1),
+            graph_root_hash: root1_id,
+            parent_id: None,
+            applied_change_id: None,
+            created_at: 100,
+            verification_report_hash: None,
+        };
+        let e2 = SnapshotEnvelope {
+            id: make_id(2),
+            graph_root_hash: root2_id,
+            parent_id: Some(e1.id), // valid parent
+            applied_change_id: None,
+            created_at: 200,
+            verification_report_hash: None,
+        };
+        graph_store.save_snapshot(&e1).await.expect("save e1");
+        graph_store.save_snapshot(&e2).await.expect("save e2");
+
+        let report = verify_integrity(&graph_store, &obj_store, IntegrityInput::default())
+            .await
+            .expect("verify");
+        assert!(report.passed);
+        assert!(report.issues.is_empty());
+    }
+
+    // ── Check 2: hash mismatch ────────────────────────────────────────────
+
+    // Scenario: hash mismatch produces HashMismatch issue.
+    //   GIVEN an object whose declared id does not match its bytes' BLAKE3
+    //   WHEN verify_integrity with objects_to_verify containing this pair
+    //   THEN report has HashMismatch issue
+    #[tokio::test]
+    async fn hash_mismatch_produces_issue() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        // Tamper: declare id = make_id(0) but bytes = [0xFF; 32].
+        let declared_id = make_id(0);
+        let tampered_bytes = RawObject(vec![0xFF; 32]);
+
+        let input = IntegrityInput {
+            objects_to_verify: vec![(declared_id, tampered_bytes)],
+            ..Default::default()
+        };
+
+        let report = verify_integrity(&graph_store, &obj_store, input)
+            .await
+            .expect("verify");
+        assert!(!report.passed);
+        let has_mismatch = report
+            .issues
+            .iter()
+            .any(|i| matches!(i, IntegrityIssue::HashMismatch { id } if *id == declared_id));
+        assert!(has_mismatch, "must have HashMismatch issue");
+    }
+
+    // Scenario: object whose bytes match id does NOT produce HashMismatch.
+    #[tokio::test]
+    async fn correct_hash_does_not_produce_issue() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+        let bytes = vec![0x42; 32];
+        let correct_id = ObjectId::from_bytes(&bytes);
+        let input = IntegrityInput {
+            objects_to_verify: vec![(correct_id, RawObject(bytes))],
+            ..Default::default()
+        };
+        let report = verify_integrity(&graph_store, &obj_store, input)
+            .await
+            .expect("verify");
+        assert!(report.passed);
+    }
+
+    // ── Check 4: changes link to reports ──────────────────────────────────
+
+    // Scenario: ChangeSet with no linked report produces ChangeMissingReport.
+    //   GIVEN snapshot with applied_change_id = CS
+    //   AND change_report_index does not contain CS
+    //   WHEN verify_integrity
+    //   THEN ChangeMissingReport for CS
+    #[tokio::test]
+    async fn change_missing_report_produces_issue() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        let root_id = put_seed_object(&obj_store, 10).await;
+        let cs_id = make_id(50);
+        let e = SnapshotEnvelope {
+            id: make_id(1),
+            graph_root_hash: root_id,
+            parent_id: None,
+            applied_change_id: Some(cs_id),
+            created_at: 0,
+            verification_report_hash: None,
+        };
+        graph_store.save_snapshot(&e).await.expect("save");
+
+        // Empty change_report_index → CS has no report.
+        let report = verify_integrity(&graph_store, &obj_store, IntegrityInput::default())
+            .await
+            .expect("verify");
+        assert!(!report.passed);
+        let has_issue = report.issues.iter().any(|i| {
+            matches!(i, IntegrityIssue::ChangeMissingReport { id } if *id == cs_id)
+        });
+        assert!(has_issue, "must have ChangeMissingReport");
+    }
+
+    // Scenario: ChangeSet with linked report does NOT produce issue.
+    #[tokio::test]
+    async fn change_with_report_passes() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        let root_id = put_seed_object(&obj_store, 10).await;
+        let cs_id = make_id(50);
+        let report_id = make_id(60);
+        let artifact_id = make_id(70);
+
+        let e = SnapshotEnvelope {
+            id: make_id(1),
+            graph_root_hash: root_id,
+            parent_id: None,
+            applied_change_id: Some(cs_id),
+            created_at: 0,
+            verification_report_hash: None,
+        };
+        graph_store.save_snapshot(&e).await.expect("save");
+
+        let input = IntegrityInput {
+            change_report_index: vec![(cs_id, report_id)],
+            report_artifact_index: vec![(report_id, artifact_id)],
+            ..Default::default()
+        };
+        let report = verify_integrity(&graph_store, &obj_store, input)
+            .await
+            .expect("verify");
+        assert!(report.passed, "issues: {:?}", report.issues);
+    }
+
+    // ── Check 5: reports link to artifact hashes ──────────────────────────
+
+    // Scenario: report with no artifact hash produces ReportMissingArtifact.
+    #[tokio::test]
+    async fn report_missing_artifact_produces_issue() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        let root_id = put_seed_object(&obj_store, 10).await;
+        let cs_id = make_id(50);
+        let report_id = make_id(60);
+
+        let e = SnapshotEnvelope {
+            id: make_id(1),
+            graph_root_hash: root_id,
+            parent_id: None,
+            applied_change_id: Some(cs_id),
+            created_at: 0,
+            verification_report_hash: None,
+        };
+        graph_store.save_snapshot(&e).await.expect("save");
+
+        // change → report, but no artifact for the report.
+        let input = IntegrityInput {
+            change_report_index: vec![(cs_id, report_id)],
+            report_artifact_index: vec![], // empty
+            ..Default::default()
+        };
+        let report = verify_integrity(&graph_store, &obj_store, input)
+            .await
+            .expect("verify");
+        assert!(!report.passed);
+        let has_issue = report.issues.iter().any(|i| {
+            matches!(i, IntegrityIssue::ReportMissingArtifact { id } if *id == report_id)
+        });
+        assert!(has_issue, "must have ReportMissingArtifact");
+    }
+
+    // ── Check 6: approvals reference canonical changes ────────────────────
+
+    // Scenario: approval referencing unknown ChangeSet produces ApprovalOrphanedChange.
+    //   GIVEN approval with subject_change_id = CS2
+    //   AND the store has no snapshot with applied_change_id = CS2
+    //   WHEN verify_integrity
+    //   THEN ApprovalOrphanedChange for the approval
+    #[tokio::test]
+    async fn approval_orphaned_change_produces_issue() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+        // No snapshots with changeset ids.
+
+        let approval = make_approval(1, 99); // subject_change_id = make_id(99), not in store
+        let input = IntegrityInput {
+            approvals: vec![approval.clone()],
+            ..Default::default()
+        };
+        let report = verify_integrity(&graph_store, &obj_store, input)
+            .await
+            .expect("verify");
+        assert!(!report.passed);
+        let has_issue = report.issues.iter().any(|i| {
+            matches!(i, IntegrityIssue::ApprovalOrphanedChange { id } if *id == approval.id)
+        });
+        assert!(has_issue, "must have ApprovalOrphanedChange");
+    }
+
+    // Scenario: approval referencing known ChangeSet passes.
+    #[tokio::test]
+    async fn approval_with_valid_change_passes() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        let root_id = put_seed_object(&obj_store, 10).await;
+        let cs_id = make_id(50);
+        let report_id = make_id(60);
+        let artifact_id = make_id(70);
+
+        let e = SnapshotEnvelope {
+            id: make_id(1),
+            graph_root_hash: root_id,
+            parent_id: None,
+            applied_change_id: Some(cs_id),
+            created_at: 0,
+            verification_report_hash: None,
+        };
+        graph_store.save_snapshot(&e).await.expect("save");
+
+        // Approval references cs_id (which is in the snapshot).
+        let approval = make_approval(1, 50); // subject_change_id = make_id(50) = cs_id
+        let input = IntegrityInput {
+            change_report_index: vec![(cs_id, report_id)],
+            report_artifact_index: vec![(report_id, artifact_id)],
+            approvals: vec![approval],
+            ..Default::default()
+        };
+        let report = verify_integrity(&graph_store, &obj_store, input)
+            .await
+            .expect("verify");
+        assert!(report.passed, "issues: {:?}", report.issues);
+    }
+
+    // ── Check 7: assumptions link to boundaries ───────────────────────────
+
+    // Scenario: assumption with unknown boundary_id produces AssumptionOrphanedBoundary.
+    #[tokio::test]
+    async fn assumption_orphaned_boundary_produces_issue() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        let assumption = make_assumption(1, 99, AssumptionStatus::Active);
+        // known_boundary_ids does not contain make_id(99).
+        let input = IntegrityInput {
+            assumptions: vec![assumption.clone()],
+            known_boundary_ids: vec![], // empty
+            ..Default::default()
+        };
+        let report = verify_integrity(&graph_store, &obj_store, input)
+            .await
+            .expect("verify");
+        assert!(!report.passed);
+        let has_issue = report.issues.iter().any(|i| {
+            matches!(i, IntegrityIssue::AssumptionOrphanedBoundary { id } if *id == assumption.id)
+        });
+        assert!(has_issue, "must have AssumptionOrphanedBoundary");
+    }
+
+    // Scenario: assumption with known boundary_id passes.
+    #[tokio::test]
+    async fn assumption_with_valid_boundary_passes() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        let assumption = make_assumption(1, 50, AssumptionStatus::Active);
+        let input = IntegrityInput {
+            assumptions: vec![assumption],
+            known_boundary_ids: vec![make_id(50)],
+            ..Default::default()
+        };
+        let report = verify_integrity(&graph_store, &obj_store, input)
+            .await
+            .expect("verify");
+        assert!(report.passed, "issues: {:?}", report.issues);
+    }
+
+    // ── Check 8: indexes match snapshot or are marked stale ───────────────
+
+    // Scenario: index entry with wrong root hash produces StaleIndex.
+    //   GIVEN snapshot with graph_root_hash = R1
+    //   AND index_entries contains (IX, R2) where R2 != R1
+    //   WHEN verify_integrity
+    //   THEN StaleIndex for IX
+    #[tokio::test]
+    async fn stale_index_produces_issue() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        let root_id = put_seed_object(&obj_store, 10).await;
+        let e = SnapshotEnvelope {
+            id: make_id(1),
+            graph_root_hash: root_id,
+            parent_id: None,
+            applied_change_id: None,
+            created_at: 100,
+            verification_report_hash: None,
+        };
+        graph_store.save_snapshot(&e).await.expect("save");
+
+        let index_id = make_id(200);
+        let wrong_root = make_id(99); // not root_id
+        let input = IntegrityInput {
+            index_entries: vec![(index_id, wrong_root)],
+            ..Default::default()
+        };
+        let report = verify_integrity(&graph_store, &obj_store, input)
+            .await
+            .expect("verify");
+        assert!(!report.passed);
+        let has_stale = report.issues.iter().any(|i| {
+            matches!(i, IntegrityIssue::StaleIndex { id } if *id == index_id)
+        });
+        assert!(has_stale, "must have StaleIndex issue");
+    }
+
+    // Scenario: index marked as stale is exempt from StaleIndex check.
+    //   GIVEN index_entries with wrong root but index_id in stale_index_ids
+    //   WHEN verify_integrity
+    //   THEN no StaleIndex issue
+    #[tokio::test]
+    async fn stale_marked_index_is_exempt() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        let root_id = put_seed_object(&obj_store, 10).await;
+        let e = SnapshotEnvelope {
+            id: make_id(1),
+            graph_root_hash: root_id,
+            parent_id: None,
+            applied_change_id: None,
+            created_at: 100,
+            verification_report_hash: None,
+        };
+        graph_store.save_snapshot(&e).await.expect("save");
+
+        let index_id = make_id(200);
+        let wrong_root = make_id(99);
+        let input = IntegrityInput {
+            index_entries: vec![(index_id, wrong_root)],
+            stale_index_ids: vec![index_id], // explicitly marked stale
+            ..Default::default()
+        };
+        let report = verify_integrity(&graph_store, &obj_store, input)
+            .await
+            .expect("verify");
+        // No StaleIndex for the exempt index.
+        let has_stale = report.issues.iter().any(|i| {
+            matches!(i, IntegrityIssue::StaleIndex { id } if *id == index_id)
+        });
+        assert!(!has_stale, "exempt stale index must not produce StaleIndex issue");
+    }
+
+    // Scenario: index with correct root hash passes.
+    #[tokio::test]
+    async fn index_with_correct_root_passes() {
+        let obj_store = MemoryObjectStore::new();
+        let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+
+        let root_id = put_seed_object(&obj_store, 10).await;
+        let e = SnapshotEnvelope {
+            id: make_id(1),
+            graph_root_hash: root_id,
+            parent_id: None,
+            applied_change_id: None,
+            created_at: 100,
+            verification_report_hash: None,
+        };
+        graph_store.save_snapshot(&e).await.expect("save");
+
+        let index_id = make_id(200);
+        let input = IntegrityInput {
+            index_entries: vec![(index_id, root_id)], // correct root
+            ..Default::default()
+        };
+        let report = verify_integrity(&graph_store, &obj_store, input)
+            .await
+            .expect("verify");
+        assert!(report.passed, "issues: {:?}", report.issues);
+    }
+}

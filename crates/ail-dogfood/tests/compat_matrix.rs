@@ -58,7 +58,7 @@ fn decode_schema_v0_fixture_succeeds() {
 
 // ── apply_migration_on_store_with_fixture_succeeds ───────────────────────────
 // Spec: After loading the v0 fixture into a MemoryObjectStore and running the
-//       V0ToV1Migration, the store must report schema version 1.
+//       default catalog (V0→V1→V2→V3), the store must report schema version 3.
 #[test]
 fn apply_migration_on_store_with_fixture_succeeds() {
     block_on(async {
@@ -74,21 +74,21 @@ fn apply_migration_on_store_with_fixture_succeeds() {
             .await
             .expect("putting fixture into store must succeed");
 
-        // Apply the default catalog: should advance to v1.
+        // Apply the default catalog: advances v0 → v3.
         let catalog = default_catalog();
         let new_version = catalog
             .apply(Arc::clone(&store))
             .await
             .expect("migration must succeed on store containing v0 fixture");
 
-        assert_eq!(new_version, 1, "migration must advance store to version 1");
+        assert_eq!(new_version, 3, "migration must advance store to version 3");
 
         // Verify current_version reflects the change.
         let current = catalog
             .current_version(Arc::clone(&store))
             .await
             .expect("current_version must succeed after migration");
-        assert_eq!(current, 1, "current_version must be 1 after migration");
+        assert_eq!(current, 3, "current_version must be 3 after migration");
     });
 }
 
