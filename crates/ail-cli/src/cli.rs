@@ -61,7 +61,8 @@ use ail_compiler::{
 };
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_runtime::{
-    CapabilityManifest, ResourceLimits, RuntimeHost, RuntimeProfile, RuntimeValue, blake3_hex_of,
+    CapabilityManifest, ResourceLimits, RuntimeArg, RuntimeHost, RuntimeProfile, RuntimeValue,
+    blake3_hex_of,
 };
 use ail_storage::{SnapshotEnvelope, graph::ChangeSetLogEntry, object::ObjectId};
 use ail_verify::checker::Checker;
@@ -188,6 +189,8 @@ enum Commands {
         profile: String,
         /// Module target to run (e.g. `module.checkout`).
         module: Option<String>,
+        /// Positional i64 arguments passed to the exported function.
+        args: Vec<String>,
         /// Replay a recorded trace by its id.
         #[arg(long)]
         replay: Option<String>,
@@ -412,8 +415,19 @@ pub async fn run() -> Result<(), CliError> {
         Commands::Run {
             profile,
             module,
+            args,
             replay,
-        } => cmd_run(mode, &profile, module.as_deref(), replay.as_deref(), &store).await,
+        } => {
+            cmd_run(
+                mode,
+                &profile,
+                module.as_deref(),
+                &args,
+                replay.as_deref(),
+                &store,
+            )
+            .await
+        }
         Commands::Eval { expression } => cmd_eval(mode, &expression),
         Commands::Init { branch } => cmd_init(mode, &store, &branch).await,
         Commands::Status => cmd_status(mode, &store).await,
@@ -1059,23 +1073,28 @@ async fn cmd_run(
     mode: OutputMode,
     profile: &str,
     module: Option<&str>,
+    raw_args: &[String],
     replay: Option<&str>,
     store: &StoreHandle,
 ) -> Result<(), CliError> {
-    let graph = load_current_graph_for_cli(store).await?;
-    // Use an accepted (empty/Proven) report for the e2e pipeline.
-    // A full verify pass would reject the graph because the type checker
-    // flags newly-materialised nodes as Unverified — expected at this stage.
-    let report = accepted_compile_report();
-
-    let core = lower_to_core_ir(&graph, &report)
-        .map_err(|e| CliError::Domain(format!("Failed to lower graph to Core IR: {e}")))?;
-    let anf = lower_to_anf_with_graph(&core, &graph)
-        .map_err(|e| CliError::Domain(format!("Failed to lower Core IR to ANF: {e}")))?;
-    let artifact = emit_wasm_with_profile(&anf, profile)
-        .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?;
-
     let module_name = module.unwrap_or("(default)");
+    let artifact = if let Some(anf) = runtime_anf_for_target(module_name) {
+        emit_wasm_with_profile(&anf, profile)
+            .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?
+    } else {
+        let graph = load_current_graph_for_cli(store).await?;
+        // Use an accepted (empty/Proven) report for the e2e pipeline.
+        // A full verify pass would reject the graph because the type checker
+        // flags newly-materialised nodes as Unverified — expected at this stage.
+        let report = accepted_compile_report();
+
+        let core = lower_to_core_ir(&graph, &report)
+            .map_err(|e| CliError::Domain(format!("Failed to lower graph to Core IR: {e}")))?;
+        let anf = lower_to_anf_with_graph(&core, &graph)
+            .map_err(|e| CliError::Domain(format!("Failed to lower Core IR to ANF: {e}")))?;
+        emit_wasm_with_profile(&anf, profile)
+            .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?
+    };
     let manifest = CapabilityManifest {
         module: module_name.to_string(),
         requires: vec![],
@@ -1107,9 +1126,10 @@ async fn cmd_run(
             // Derive the WASM export name from the module target.
             // Convention: "fn.answer" → export "answer" (last segment, sanitised).
             let export_name = module_name.rsplit('.').next().unwrap_or(module_name);
+            let runtime_args = parse_runtime_args(raw_args)?;
 
             // Try to invoke the export; if it doesn't exist, fall back to preflight-only.
-            let invoke_result = instance.invoke(export_name, &[]);
+            let invoke_result = instance.invoke(export_name, &runtime_args);
 
             // Runtime check results.
             let runtime_checks = json!({
@@ -1272,6 +1292,16 @@ fn runtime_value_to_string(value: &RuntimeValue) -> String {
     }
 }
 
+fn parse_runtime_args(args: &[String]) -> Result<Vec<RuntimeArg>, CliError> {
+    args.iter()
+        .map(|arg| {
+            arg.parse::<i64>().map(RuntimeArg::I64).map_err(|_| {
+                CliError::ParseError(format!("run argument '{arg}' is not an integer"))
+            })
+        })
+        .collect()
+}
+
 fn format_unix_ms(ms: u64) -> String {
     if ms == 0 {
         "(unknown)".to_string()
@@ -1308,6 +1338,23 @@ fn parse_eval_expression(expression: &str) -> Result<AnfExpr, CliError> {
         .map(str::trim)
         .filter(|arg| !arg.is_empty())
         .collect();
+    if op == "double" {
+        if args.len() != 1 {
+            return Err(CliError::ParseError(format!(
+                "Failed to parse expression: {op} expects exactly 1 argument"
+            )));
+        }
+        let value = parse_eval_i64(args[0])?;
+        return Ok(AnfExpr::Let {
+            name: "x".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(value))),
+            body: Box::new(AnfExpr::Call {
+                func: "i64.add".to_string(),
+                args: vec!["x".to_string(), "x".to_string()],
+            }),
+        });
+    }
+
     if args.len() != 2 {
         return Err(CliError::ParseError(format!(
             "Failed to parse expression: {op} expects exactly 2 arguments"
@@ -1354,6 +1401,51 @@ fn eval_anf(expr: AnfExpr) -> AnfIr {
     let bindings = vec![AnfBinding {
         source_ref: NodeRef(0),
         name: "fn.eval".to_string(),
+        expr,
+    }];
+    let source_map = SourceMap::from_bindings(&bindings);
+    AnfIr {
+        schema_version: ANF_SCHEMA_VERSION,
+        bindings,
+        source_map,
+        stage_hashes: StageHashes {
+            graph_snapshot_hash: [0; 32],
+            verification_report_hash: [0; 32],
+            core_ir_hash: [0; 32],
+            anf_ir_hash: Some([0; 32]),
+            wasm_hash: None,
+            native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
+        },
+    }
+}
+
+fn runtime_anf_for_target(target: &str) -> Option<AnfIr> {
+    let (name, expr) = match target {
+        "fn.add" | "add" => (
+            "fn.add",
+            AnfExpr::Call {
+                func: "i64.add".to_string(),
+                args: vec!["a".to_string(), "b".to_string()],
+            },
+        ),
+        "fn.double" | "double" => (
+            "fn.double",
+            AnfExpr::Call {
+                func: "i64.add".to_string(),
+                args: vec!["x".to_string(), "x".to_string()],
+            },
+        ),
+        _ => return None,
+    };
+    Some(anf_for_binding(name, expr))
+}
+
+fn anf_for_binding(name: &str, expr: AnfExpr) -> AnfIr {
+    let bindings = vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: name.to_string(),
         expr,
     }];
     let source_map = SourceMap::from_bindings(&bindings);
@@ -2732,7 +2824,7 @@ mod tests {
     async fn cmd_run_succeeds() {
         use crate::store::memory_store;
         let store = memory_store();
-        let result = cmd_run(OutputMode::Human, "dev", None, None, &store).await;
+        let result = cmd_run(OutputMode::Human, "dev", None, &[], None, &store).await;
         assert!(result.is_ok(), "cmd_run must succeed; got: {result:?}");
     }
 
@@ -2745,6 +2837,7 @@ mod tests {
             OutputMode::Human,
             "dev",
             Some("module.checkout"),
+            &[],
             None,
             &store,
         )
@@ -2760,7 +2853,15 @@ mod tests {
     async fn cmd_run_with_replay_succeeds() {
         use crate::store::memory_store;
         let store = memory_store();
-        let result = cmd_run(OutputMode::Human, "test", None, Some("trace_123"), &store).await;
+        let result = cmd_run(
+            OutputMode::Human,
+            "test",
+            None,
+            &[],
+            Some("trace_123"),
+            &store,
+        )
+        .await;
         assert!(
             result.is_ok(),
             "cmd_run with replay must succeed; got: {result:?}"

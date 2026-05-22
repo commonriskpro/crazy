@@ -20,7 +20,7 @@ use ail_compiler::{
 };
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_runtime::{
-    CapabilityManifest, PreflightFailure, ResourceLimits, RuntimeError, RuntimeHost,
+    CapabilityManifest, PreflightFailure, ResourceLimits, RuntimeArg, RuntimeError, RuntimeHost,
     RuntimeProfile, RuntimeValue, blake3_hex_of,
 };
 use ail_verify::report::VerificationReport;
@@ -87,6 +87,48 @@ fn compiler_wasm_for_expr(expr: AnfExpr, name: &str) -> Vec<u8> {
     };
     let anf = sealed_anf(vec![binding]);
     emit_wasm(&anf).expect("emit_wasm failed").wasm
+}
+
+fn instantiate_test_wasm(wasm: &[u8]) -> ail_runtime::RuntimeInstance {
+    let manifest = CapabilityManifest {
+        module: "invoke-test".to_string(),
+        requires: vec![],
+    };
+    let profile = matching_profile(wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    host.validate_and_instantiate(wasm, &manifest, &profile)
+        .expect("WASM must instantiate")
+}
+
+fn sum_wasm(param_count: u32) -> Vec<u8> {
+    let mut module = wasm_encoder::Module::new();
+    let mut types = wasm_encoder::TypeSection::new();
+    types.ty().function(
+        vec![wasm_encoder::ValType::I64; param_count as usize],
+        [wasm_encoder::ValType::I64],
+    );
+    module.section(&types);
+    let mut functions = wasm_encoder::FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut exports = wasm_encoder::ExportSection::new();
+    exports.export("sum", wasm_encoder::ExportKind::Func, 0);
+    module.section(&exports);
+    let mut codes = wasm_encoder::CodeSection::new();
+    let mut function = wasm_encoder::Function::new([]);
+    if param_count == 0 {
+        function.instruction(&wasm_encoder::Instruction::I64Const(42));
+    } else {
+        function.instruction(&wasm_encoder::Instruction::LocalGet(0));
+        for index in 1..param_count {
+            function.instruction(&wasm_encoder::Instruction::LocalGet(index));
+            function.instruction(&wasm_encoder::Instruction::I64Add);
+        }
+    }
+    function.instruction(&wasm_encoder::Instruction::End);
+    codes.function(&function);
+    module.section(&codes);
+    module.finish()
 }
 
 fn invoke_compiler_expr(expr: AnfExpr, name: &str) -> RuntimeValue {
@@ -280,6 +322,59 @@ fn exported_i64_function_can_be_invoked() {
 }
 
 #[test]
+fn invoke_export_with_zero_args_still_works() {
+    let wasm = sum_wasm(0);
+    let mut instance = instantiate_test_wasm(&wasm);
+
+    let value = instance.invoke("sum", &[]).expect("invoke must succeed");
+
+    assert_eq!(value, RuntimeValue::I64(42));
+}
+
+#[test]
+fn invoke_export_with_one_arg() {
+    let wasm = sum_wasm(1);
+    let mut instance = instantiate_test_wasm(&wasm);
+
+    let value = instance
+        .invoke("sum", &[RuntimeArg::I64(42)])
+        .expect("invoke must succeed");
+
+    assert_eq!(value, RuntimeValue::I64(42));
+}
+
+#[test]
+fn invoke_export_with_two_args() {
+    let wasm = sum_wasm(2);
+    let mut instance = instantiate_test_wasm(&wasm);
+
+    let value = instance
+        .invoke("sum", &[RuntimeArg::I64(20), RuntimeArg::I64(22)])
+        .expect("invoke must succeed");
+
+    assert_eq!(value, RuntimeValue::I64(42));
+}
+
+#[test]
+fn invoke_export_with_three_args() {
+    let wasm = sum_wasm(3);
+    let mut instance = instantiate_test_wasm(&wasm);
+
+    let value = instance
+        .invoke(
+            "sum",
+            &[
+                RuntimeArg::I64(10),
+                RuntimeArg::I64(12),
+                RuntimeArg::I64(20),
+            ],
+        )
+        .expect("invoke must succeed");
+
+    assert_eq!(value, RuntimeValue::I64(42));
+}
+
+#[test]
 fn compiler_if_else_function_returns_taken_branch() {
     let wasm = compiler_wasm_for_expr(
         AnfExpr::Let {
@@ -386,6 +481,34 @@ fn compiler_function_call_double_21_invokes_to_42() {
         .expect("WASM must instantiate");
 
     let value = instance.invoke("main", &[]).expect("main must invoke");
+    assert_eq!(value, RuntimeValue::I64(42));
+}
+
+#[test]
+fn compiler_function_with_param_invokes_with_runtime_arg() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.double".to_string(),
+        expr: AnfExpr::Call {
+            func: "i64.add".to_string(),
+            args: vec!["x".to_string(), "x".to_string()],
+        },
+    }]);
+    let wasm = emit_wasm(&anf).expect("emit_wasm failed").wasm;
+    let manifest = CapabilityManifest {
+        module: "param-function-call-test".to_string(),
+        requires: vec![],
+    };
+    let profile = matching_profile(&wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("WASM must instantiate");
+
+    let value = instance
+        .invoke("double", &[RuntimeArg::I64(21)])
+        .expect("double must invoke");
+
     assert_eq!(value, RuntimeValue::I64(42));
 }
 
