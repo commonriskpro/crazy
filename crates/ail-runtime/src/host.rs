@@ -41,6 +41,26 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+// ── CapabilityCallMode ────────────────────────────────────────────────────
+
+/// Dispatch mode for capability calls.
+///
+/// `Sync` — the default path.  The host dispatches the call on the calling
+/// thread and blocks until the handler returns.
+///
+/// `Async` — enables host-side async scheduling via
+/// [`invoke_async`](RuntimeInstance::invoke_async).  WASM execution itself
+/// is always synchronous; the variant signals that the Rust wrapper may
+/// offload the blocking call to a tokio thread via
+/// [`tokio::task::block_in_place`], keeping the async executor responsive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapabilityCallMode {
+    /// Synchronous host dispatch (default).
+    Sync,
+    /// Async host dispatch — use with `invoke_async`.
+    Async,
+}
+
 use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
 
 use ail_package::manifest::PackageManifest;
@@ -273,6 +293,44 @@ impl RuntimeInstance {
             .get_memory(&mut self.store, "memory")
             .map(|m| m.data_size(&self.store))
             .unwrap_or(0)
+    }
+
+    /// Invoke an exported WASM function asynchronously.
+    ///
+    /// Wraps the blocking [`invoke`](Self::invoke) call in
+    /// [`tokio::task::block_in_place`], allowing callers to `.await` the
+    /// result without blocking the tokio multi-thread executor.
+    ///
+    /// WASM execution itself is always synchronous.  The async wrapper yields
+    /// cooperative control to the scheduler while the blocking call runs on
+    /// the current thread, keeping other tasks responsive.
+    ///
+    /// # Mode note
+    ///
+    /// This method corresponds to [`CapabilityCallMode::Async`].  For
+    /// synchronous invocations use [`invoke`](Self::invoke) directly.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the same errors as [`invoke`](Self::invoke): missing
+    /// exports, arity mismatches, and WASM traps.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from a tokio `current_thread` runtime that cannot
+    /// support `block_in_place`.  Always use `flavor = "multi_thread"` or
+    /// the default multi-thread scheduler.
+    pub async fn invoke_async(
+        &mut self,
+        export_name: &str,
+        args: &[RuntimeArg],
+    ) -> RuntimeResult<RuntimeValue> {
+        let export_name = export_name.to_string();
+        let args = args.to_vec();
+        // `Store<HostState>` is !Send — we cannot move it into spawn_blocking.
+        // `block_in_place` runs the closure on the current (blocking-capable)
+        // thread without requiring Send, satisfying Wasmtime's constraint.
+        tokio::task::block_in_place(|| self.invoke(&export_name, &args))
     }
 
     /// Return a snapshot of the audit log from the shared log.

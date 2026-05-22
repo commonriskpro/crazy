@@ -226,6 +226,11 @@ impl TypeChecker {
     ///
     /// Two calls with identical input produce identical output.
     pub fn check(graph: &SemanticGraph) -> VerificationReport {
+        // Pre-pass: infer local return types for Function nodes without an
+        // explicit `return_type`.  Results feed into boundary-materialization
+        // so that inferred signatures suppress E_BOUNDARY_NOT_MATERIALIZED.
+        let inferred_returns = Self::infer_local_types(graph);
+
         let ctx = TypeContext::collect(graph);
         let mut entries: Vec<VerificationEntry> = Vec::new();
 
@@ -260,7 +265,7 @@ impl TypeChecker {
         Self::check_refinements(graph, &mut entries);
 
         // Subpass 8 — boundary/inference materialization.
-        Self::check_boundary_materialization(graph, &mut entries);
+        Self::check_boundary_materialization(graph, &inferred_returns, &mut entries);
 
         // Subpass 9 — null/absence policy.
         Self::check_null_policy(graph, &mut entries);
@@ -1033,10 +1038,21 @@ impl TypeChecker {
     /// all public boundaries.  A function with declared params but no return
     /// type has an incomplete boundary — it has not been materialized yet.
     ///
-    /// - `params` present and non-empty + `return_type` absent → Unverified (E_BOUNDARY_NOT_MATERIALIZED)
-    /// - `params` present and `return_type` present → Proven ("boundary-materialization")
+    /// **Inference integration**: when `inferred_returns` contains an entry for
+    /// a node (produced by [`infer_local_types`](Self::infer_local_types)), it
+    /// is treated as if `return_type` were declared.  This suppresses
+    /// `E_BOUNDARY_NOT_MATERIALIZED` for simple, locally-inferrable functions.
+    ///
+    /// - `params` present and non-empty + `return_type` absent + no inferred type
+    ///   → Unverified (E_BOUNDARY_NOT_MATERIALIZED)
+    /// - `params` present and (`return_type` present OR inferred type available)
+    ///   → Proven ("boundary-materialization")
     /// - No `params` → skipped (no boundary-materialization entry)
-    fn check_boundary_materialization(graph: &SemanticGraph, entries: &mut Vec<VerificationEntry>) {
+    fn check_boundary_materialization(
+        graph: &SemanticGraph,
+        inferred_returns: &BTreeMap<NodeRef, String>,
+        entries: &mut Vec<VerificationEntry>,
+    ) {
         for node in &graph.nodes {
             if node.kind != NodeKind::Function {
                 continue;
@@ -1048,7 +1064,12 @@ impl TypeChecker {
                 continue; // empty params list — skip
             }
             let scope = node.name.clone();
-            if node.return_type.is_none() {
+
+            // Accept either a declared return type or a locally-inferred one.
+            let has_return =
+                node.return_type.is_some() || inferred_returns.contains_key(&node.id);
+
+            if !has_return {
                 entries.push(VerificationEntry {
                     claim: "boundary-materialization".into(),
                     state: VerificationState::Unverified,
@@ -1071,6 +1092,43 @@ impl TypeChecker {
                 });
             }
         }
+    }
+
+    // ── Local type inference pre-pass ─────────────────────────────────────
+
+    /// Infer return types for `Function` nodes that lack an explicit
+    /// `return_type` but carry a `body_expr`.
+    ///
+    /// This is **local inference only** — no global unification or constraint
+    /// solving.  The following expression forms are recognized:
+    ///
+    /// - **Int literal** — any `i64`-parseable string → `"Int"`
+    /// - **Bool literal** — `"true"` or `"false"` → `"Bool"`
+    /// - **Call to known function** — a bare name (or `name(...)` prefix)
+    ///   whose return type is already declared in `ctx` → that return type
+    /// - **If expression** — `"if ... else { BODY }"` where the else branch
+    ///   is recursively inferrable → the else branch's type
+    ///
+    /// Inference is best-effort: if the body cannot be classified, the node
+    /// is omitted from the returned map.
+    fn infer_local_types(graph: &SemanticGraph) -> BTreeMap<NodeRef, String> {
+        let ctx = TypeContext::collect(graph);
+        let mut map: BTreeMap<NodeRef, String> = BTreeMap::new();
+
+        for node in &graph.nodes {
+            // Only infer for Function nodes without a declared return type.
+            if node.kind != NodeKind::Function || node.return_type.is_some() {
+                continue;
+            }
+            let Some(body) = &node.body_expr else {
+                continue;
+            };
+            if let Some(ty) = infer_expr_type(body.trim(), &ctx) {
+                map.insert(node.id, ty);
+            }
+        }
+
+        map
     }
 
     // ── Subpass 9: Null/absence policy ────────────────────────────────────
@@ -1789,6 +1847,71 @@ impl TypeChecker {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+// ── Local type inference ──────────────────────────────────────────────────
+
+/// Attempt to infer a return type from a `body_expr` string using local
+/// pattern matching.  Returns `None` when the expression form is unrecognized.
+fn infer_expr_type(body: &str, ctx: &TypeContext<'_>) -> Option<String> {
+    // Int literal: any valid i64 string (e.g. "42", "-1", "0").
+    if body.parse::<i64>().is_ok() {
+        return Some("Int".to_string());
+    }
+
+    // Bool literal.
+    if body == "true" || body == "false" {
+        return Some("Bool".to_string());
+    }
+
+    // If expression: look for the else branch and infer from it.
+    if body.starts_with("if ") || body.starts_with("if(") {
+        if let Some(inferred) = infer_if_expr_type(body, ctx) {
+            return Some(inferred);
+        }
+    }
+
+    // Call to a known function: bare name or "name(...)" prefix.
+    // Extract the identifier before the first "(" or whitespace.
+    let callee_name = body
+        .split(|c: char| c == '(' || c.is_whitespace())
+        .next()
+        .unwrap_or(body)
+        .trim();
+
+    if !callee_name.is_empty() {
+        if let Some(node) = ctx.get_by_name(callee_name) {
+            if let Some(rt) = &node.return_type {
+                return Some(rt.clone());
+            }
+        }
+    }
+
+    None
+}
+
+/// Infer the type of an if-expression by examining its else branch.
+///
+/// Handles the simple form `"if <cond> { <then> } else { <else> }"`.
+/// Returns the inferred type of the else branch, or `None` if the else
+/// branch cannot be located or its type cannot be inferred.
+fn infer_if_expr_type(body: &str, ctx: &TypeContext<'_>) -> Option<String> {
+    // Find the "else" keyword.
+    let else_pos = body.find("else")?;
+    let after_else = body[else_pos + 4..].trim();
+
+    // Strip surrounding braces if present: "{ BODY }" → "BODY".
+    let else_body = if after_else.starts_with('{') {
+        after_else
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .map(str::trim)
+            .unwrap_or(after_else)
+    } else {
+        after_else
+    };
+
+    infer_expr_type(else_body, ctx)
+}
 
 /// Returns `true` when `name` is a simple decidable identifier:
 /// letters, digits, or underscores only — no spaces, operators, or brackets.
@@ -2630,6 +2753,187 @@ mod tests {
         assert!(
             failed.is_some(),
             "n+1 must be Failed as invalid ConstParam value"
+        );
+    }
+
+    // ── Task G1 (RED): Local type inference pre-pass ──────────────────────
+    //
+    // Tests written BEFORE infer_local_types exists.
+    // Compile failure = RED state.
+
+    // G1-1: Int literal body_expr suppresses E_BOUNDARY_NOT_MATERIALIZED.
+    //
+    // Spec scenario: "Int literal body → boundary Proven"
+    //   GIVEN Function node with non-empty params, no return_type,
+    //   AND body_expr = "42"
+    //   THEN boundary-materialization entry state == Proven
+    //   (because inferred return type is "Int")
+    #[test]
+    fn int_literal_body_expr_makes_boundary_proven() {
+        use ail_core::semantic_graph::ParamDecl;
+
+        let mut fn_node = make_node(0, NodeKind::Function, "answer");
+        fn_node.params = Some(vec![ParamDecl {
+            name: "x".to_string(),
+            ty: "Int".to_string(),
+        }]);
+        fn_node.body_expr = Some("42".to_string()); // Int literal → infer "Int"
+        // no return_type
+
+        let graph = SemanticGraph {
+            nodes: vec![fn_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let boundary = entries_with_claim(&report.entries, "boundary-materialization");
+        assert!(!boundary.is_empty(), "expected boundary-materialization entry");
+
+        // Without inference: would be Unverified (E_BOUNDARY_NOT_MATERIALIZED).
+        // With inference: should be Proven because "42" → "Int".
+        let proven = boundary.iter().find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "Int literal body_expr must make boundary-materialization Proven, got: {:?}",
+            boundary
+        );
+    }
+
+    // G1-2 (TRIANGULATE): Bool literal body_expr also infers correctly.
+    //
+    // Spec scenario: "Bool literal body → boundary Proven"
+    #[test]
+    fn bool_literal_body_expr_makes_boundary_proven() {
+        use ail_core::semantic_graph::ParamDecl;
+
+        let mut fn_node = make_node(0, NodeKind::Function, "is_valid");
+        fn_node.params = Some(vec![ParamDecl {
+            name: "val".to_string(),
+            ty: "Text".to_string(),
+        }]);
+        fn_node.body_expr = Some("true".to_string());
+
+        let graph = SemanticGraph {
+            nodes: vec![fn_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let boundary = entries_with_claim(&report.entries, "boundary-materialization");
+        let proven = boundary.iter().find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "Bool literal body_expr must make boundary-materialization Proven, got: {:?}",
+            boundary
+        );
+    }
+
+    // G1-3 (TRIANGULATE): No body_expr → still Unverified.
+    //
+    // Spec scenario: "No body_expr → boundary Unverified"
+    //   Inference is only possible when body_expr is present.
+    #[test]
+    fn no_body_expr_keeps_boundary_unverified() {
+        use ail_core::semantic_graph::ParamDecl;
+
+        let mut fn_node = make_node(0, NodeKind::Function, "missing_body");
+        fn_node.params = Some(vec![ParamDecl {
+            name: "x".to_string(),
+            ty: "Int".to_string(),
+        }]);
+        // no body_expr, no return_type
+
+        let graph = SemanticGraph {
+            nodes: vec![fn_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let boundary = entries_with_claim(&report.entries, "boundary-materialization");
+        let unverified = boundary
+            .iter()
+            .find(|e| e.state == VerificationState::Unverified);
+        assert!(
+            unverified.is_some(),
+            "missing body_expr must keep boundary-materialization Unverified, got: {:?}",
+            boundary
+        );
+    }
+
+    // G1-4: Call-to-known-function body_expr infers callee's return type.
+    //
+    // Spec scenario: "Call body → infer callee return type"
+    //   GIVEN Function "caller" with no return_type, body_expr = "helper"
+    //   AND Function "helper" with return_type = "Text"
+    //   THEN caller's boundary-materialization is Proven
+    #[test]
+    fn call_body_expr_infers_callee_return_type() {
+        use ail_core::semantic_graph::ParamDecl;
+
+        let mut caller = make_node(0, NodeKind::Function, "caller");
+        caller.params = Some(vec![ParamDecl {
+            name: "x".to_string(),
+            ty: "Int".to_string(),
+        }]);
+        caller.body_expr = Some("helper".to_string()); // call to known function
+
+        let mut helper = make_node(1, NodeKind::Function, "helper");
+        helper.return_type = Some("Text".to_string());
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, helper],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let boundary = entries_with_claim(&report.entries, "boundary-materialization");
+
+        // Only caller has params + no return_type; helper already has return_type.
+        let caller_boundary: Vec<_> = boundary
+            .iter()
+            .filter(|e| e.scope == "caller")
+            .collect();
+        assert!(!caller_boundary.is_empty(), "expected boundary entry for caller");
+
+        let proven = caller_boundary
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "call body_expr pointing to known function must make boundary Proven, got: {:?}",
+            caller_boundary
+        );
+    }
+
+    // G1-5: Declared return_type always wins over inference.
+    //
+    // Spec scenario: "Declared type wins over inference"
+    //   GIVEN Function with return_type = "Int" AND body_expr = "true"
+    //   THEN boundary-materialization is Proven (not a conflict)
+    #[test]
+    fn declared_return_type_wins_over_inferred() {
+        use ail_core::semantic_graph::ParamDecl;
+
+        let mut fn_node = make_node(0, NodeKind::Function, "explicit");
+        fn_node.params = Some(vec![ParamDecl {
+            name: "x".to_string(),
+            ty: "Int".to_string(),
+        }]);
+        fn_node.return_type = Some("Int".to_string()); // declared
+        fn_node.body_expr = Some("true".to_string()); // would infer Bool
+
+        let graph = SemanticGraph {
+            nodes: vec![fn_node],
+            edges: vec![],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let boundary = entries_with_claim(&report.entries, "boundary-materialization");
+        let proven = boundary.iter().find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "function with declared return_type must always be Proven, got: {:?}",
+            boundary
         );
     }
 }
