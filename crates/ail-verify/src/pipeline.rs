@@ -167,20 +167,7 @@ impl VerificationPipeline {
         let package_entries = PackageTrustChecker::check(ctx.manifests, ctx.profile);
         all_entries.extend(package_entries);
 
-        // ── Stage 22: Codegen consistency ─────────────────────────────────
         let mut artifact_hashes = Vec::new();
-        if !ctx.artifacts.is_empty() {
-            let codegen_report = CodegenChecker::check_artifacts(ctx.artifacts);
-            all_entries.extend(codegen_report.entries);
-            all_diagnostics.extend(codegen_report.diagnostics);
-            artifact_hashes.extend(codegen_report.artifact_hashes);
-        }
-        if !ctx.manifest_caps.is_empty() {
-            let manifest_report =
-                CodegenChecker::check_manifest_consistency(ctx.graph, ctx.manifest_caps);
-            all_entries.extend(manifest_report.entries);
-            all_diagnostics.extend(manifest_report.diagnostics);
-        }
 
         // ── Compute summary counts ────────────────────────────────────────
         let summary_counts = crate::report::SummaryCounts {
@@ -230,14 +217,14 @@ impl VerificationPipeline {
             .collect();
 
         // ── Assemble pre-policy report ────────────────────────────────────
-        let pre_policy = VerificationReport {
+        let mut pre_policy = VerificationReport {
             entries: all_entries,
             diagnostics: all_diagnostics,
             schema_version: "verification/1.0".into(),
             summary_counts,
             proof_obligations,
             degradation_events,
-            artifact_hashes,
+            artifact_hashes: vec![],
             ..Default::default()
         };
 
@@ -252,6 +239,59 @@ impl VerificationPipeline {
             package_trust_metadata: ctx.package_trust_metadata,
         };
         let (policy_decision, policy_audit) = PolicyEngine::evaluate_with_audit(&policy_input);
+
+        // ── Stage 22: Codegen consistency ─────────────────────────────────
+        // verification.md orders policy before post-lowering/codegen checks.
+        // Codegen diagnostics are appended after policy evaluation so policy
+        // decisions are based on verifier facts rather than backend artifacts.
+        if !ctx.artifacts.is_empty() {
+            let codegen_report = CodegenChecker::check_artifacts(ctx.artifacts);
+            pre_policy.entries.extend(codegen_report.entries);
+            pre_policy.diagnostics.extend(codegen_report.diagnostics);
+            artifact_hashes.extend(codegen_report.artifact_hashes);
+        }
+        if !ctx.manifest_caps.is_empty() {
+            let manifest_report =
+                CodegenChecker::check_manifest_consistency(ctx.graph, ctx.manifest_caps);
+            pre_policy.entries.extend(manifest_report.entries);
+            pre_policy.diagnostics.extend(manifest_report.diagnostics);
+        }
+        pre_policy.artifact_hashes = artifact_hashes;
+        pre_policy.summary_counts = crate::report::SummaryCounts {
+            verified_count: pre_policy
+                .entries
+                .iter()
+                .filter(|e| {
+                    e.state == VerificationState::Proven
+                        || e.state == VerificationState::RuntimeChecked
+                })
+                .count(),
+            runtime_checked_count: pre_policy
+                .entries
+                .iter()
+                .filter(|e| e.state == VerificationState::RuntimeChecked)
+                .count(),
+            assumed_count: pre_policy
+                .entries
+                .iter()
+                .filter(|e| e.state == VerificationState::Assumed)
+                .count(),
+            unverified_count: pre_policy
+                .entries
+                .iter()
+                .filter(|e| e.state == VerificationState::Unverified)
+                .count(),
+            unsafe_count: pre_policy
+                .entries
+                .iter()
+                .filter(|e| e.state == VerificationState::Unsafe)
+                .count(),
+            failed_count: pre_policy
+                .entries
+                .iter()
+                .filter(|e| e.state == VerificationState::Failed)
+                .count(),
+        };
 
         VerificationReport {
             policy_decision: Some(policy_decision),

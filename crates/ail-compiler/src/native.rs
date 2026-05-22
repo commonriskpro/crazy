@@ -223,6 +223,14 @@ fn lower_binding(
 /// - `CompileError::NativeEncodingError` — `anf_ir_hash` is `None` (pre-condition
 ///   violated) or Cranelift codegen / object emission failed.
 pub fn emit_native(anf: &AnfIr) -> Result<NativeArtifact, CompileError> {
+    emit_native_with_profile(anf, "unspecified")
+}
+
+/// Emit a native object and bind the artifact manifest to `profile`.
+pub fn emit_native_with_profile(
+    anf: &AnfIr,
+    profile: &str,
+) -> Result<NativeArtifact, CompileError> {
     // Gate: anf_ir_hash must be sealed.
     let anf_ir_hash = anf
         .stage_hashes
@@ -269,7 +277,9 @@ pub fn emit_native(anf: &AnfIr) -> Result<NativeArtifact, CompileError> {
             ..entry.clone()
         })
         .collect();
-    let source_map = SourceMap { entries: source_map_entries };
+    let source_map = SourceMap {
+        entries: source_map_entries,
+    };
 
     // Seal: source_map_hash = blake3(source_map_cbor_bytes).
     let source_map_bytes = stable_cbor_bytes(&source_map)
@@ -297,11 +307,12 @@ pub fn emit_native(anf: &AnfIr) -> Result<NativeArtifact, CompileError> {
     hash_chain.source_map_hash = Some(source_map_hash);
 
     // Build ArtifactManifest from the complete hash chain.
-    //
-    // `profile` defaults to "unspecified" — the pipeline does not yet carry a
-    // target_profile input.  When profile threading is added, replace this.
+    let capabilities_manifest_bytes = stable_cbor_bytes(&capabilities_manifest).map_err(|e| {
+        CompileError::NativeEncodingError(format!("capabilities manifest encode: {e}"))
+    })?;
+    let capabilities_manifest_hash = hash_with_parent(&[], &capabilities_manifest_bytes);
     let artifact_manifest = ArtifactManifest {
-        profile: "unspecified".to_string(),
+        profile: profile.to_string(),
         compiler_version: env!("CARGO_PKG_VERSION").to_string(),
         graph_snapshot_hash: hash_chain.graph_snapshot_hash,
         verification_report_hash: hash_chain.verification_report_hash,
@@ -310,6 +321,7 @@ pub fn emit_native(anf: &AnfIr) -> Result<NativeArtifact, CompileError> {
         wasm_hash: None,
         native_hash: Some(native_hash),
         source_map_hash: Some(source_map_hash),
+        capabilities_manifest_hash: Some(capabilities_manifest_hash),
     };
 
     // Seal: artifact_manifest_hash = blake3(manifest_cbor_bytes).
@@ -321,10 +333,9 @@ pub fn emit_native(anf: &AnfIr) -> Result<NativeArtifact, CompileError> {
     // Serialize JSON sidecars.
     let source_map_json = serde_json::to_vec(&source_map)
         .map_err(|e| CompileError::NativeEncodingError(format!("source_map JSON encode: {e}")))?;
-    let artifact_manifest_json = serde_json::to_vec(&artifact_manifest)
-        .map_err(|e| {
-            CompileError::NativeEncodingError(format!("artifact_manifest JSON encode: {e}"))
-        })?;
+    let artifact_manifest_json = serde_json::to_vec(&artifact_manifest).map_err(|e| {
+        CompileError::NativeEncodingError(format!("artifact_manifest JSON encode: {e}"))
+    })?;
 
     Ok(NativeArtifact {
         native_bytes,

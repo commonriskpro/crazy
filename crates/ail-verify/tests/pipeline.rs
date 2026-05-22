@@ -4,15 +4,19 @@
 // Spec: verification-pipeline/spec §4 (full policy compliance integration)
 // Design: canonical verification facade that sequences all checkers.
 
-use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph, TrustMetadata};
+use ail_core::semantic_graph::{
+    GraphNode, NodeKind, NodeRef, RefinementRef, RefinementStatus, SemanticGraph, TrustMetadata,
+};
 use ail_verify::codegen_checker::ArtifactEntry;
 use ail_verify::pipeline::{PipelineContext, VerificationPipeline};
 use ail_verify::policy::{PolicyDecision, PolicyRule};
-use ail_verify::report::VerificationState;
 use ail_verify::solver::SimpleSolver;
 
 fn empty_graph() -> SemanticGraph {
-    SemanticGraph { nodes: vec![], edges: vec![] }
+    SemanticGraph {
+        nodes: vec![],
+        edges: vec![],
+    }
 }
 
 fn make_ctx<'a>(
@@ -127,7 +131,10 @@ fn pipeline_collects_entries_from_multiple_stages() {
 
     // At minimum, should have entries from resource checker and boundary checker
     // (2 stages × 1 node each = at least 2 entries, plus type/effect/capability entries)
-    assert!(report.entries.len() >= 2, "must have entries from multiple stages");
+    assert!(
+        report.entries.len() >= 2,
+        "must have entries from multiple stages"
+    );
 }
 
 // ── Scenario: pipeline stores proof_obligations in report ─────────────────
@@ -217,8 +224,93 @@ fn pipeline_checks_artifacts_when_provided() {
 
     let report = VerificationPipeline::run(&ctx);
 
-    assert!(!report.artifact_hashes.is_empty(), "artifact hashes must be in report");
+    assert!(
+        !report.artifact_hashes.is_empty(),
+        "artifact hashes must be in report"
+    );
     assert_eq!(report.artifact_hashes[0].artifact, "core_ir");
+}
+
+#[test]
+fn pipeline_generates_non_contract_obligations_for_refinement_resource_concurrency_boundary() {
+    let mut refined = GraphNode::new(NodeRef(0), NodeKind::Type, "PositiveInt");
+    refined.refinement_ref = Some(RefinementRef {
+        base_type: "Int".into(),
+        predicate: "value > 0".into(),
+        status: RefinementStatus::Unverified,
+        erased: false,
+    });
+    let mut resource = GraphNode::new(NodeRef(1), NodeKind::Type, "Lock");
+    resource.trust_metadata = Some(TrustMetadata {
+        level: "resource:linear".into(),
+        tags: vec![],
+    });
+    let mut concurrent = GraphNode::new(NodeRef(2), NodeKind::Function, "worker");
+    concurrent.trust_metadata = Some(TrustMetadata {
+        level: "verified".into(),
+        tags: vec!["concurrent".into()],
+    });
+    let boundary = GraphNode::new(NodeRef(3), NodeKind::Boundary, "ffi.stripe");
+    let graph = SemanticGraph {
+        nodes: vec![refined, resource, concurrent, boundary],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run(&ctx);
+    let stages: Vec<_> = report
+        .proof_obligations
+        .iter()
+        .map(|entry| entry.source_stage.as_str())
+        .collect();
+    assert!(stages.contains(&"refinement"));
+    assert!(stages.contains(&"resource"));
+    assert!(stages.contains(&"concurrency"));
+    assert!(stages.contains(&"boundary"));
+}
+
+#[test]
+fn pipeline_policy_audit_excludes_codegen_entries_but_final_report_keeps_them() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let artifacts = vec![ArtifactEntry {
+        name: "wasm".into(),
+        expected_hash: "expected".into(),
+        actual_hash: "actual".into(),
+    }];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &[],
+        profile: "test",
+        solver: &solver,
+        approvals: &[],
+        rules: &[],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &artifacts,
+        manifest_caps: &[],
+    };
+
+    let report = VerificationPipeline::run(&ctx);
+    assert!(
+        report
+            .entries
+            .iter()
+            .any(|entry| entry.claim == "codegen-consistency")
+    );
+    let audit = report
+        .policy_audit
+        .as_ref()
+        .expect("policy audit must be present");
+    assert!(
+        audit
+            .entries
+            .iter()
+            .all(|entry| entry.scope != "artifact:wasm")
+    );
 }
 
 // ── Scenario: pipeline is deterministic ───────────────────────────────────

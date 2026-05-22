@@ -37,7 +37,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use ail_core::semantic_graph::SemanticGraph;
+use ail_core::semantic_graph::{NodeKind, RefinementStatus, SemanticGraph};
 
 use crate::solver::{Solver, SolverOutcome};
 
@@ -171,6 +171,11 @@ pub struct ObligationLedgerEntry {
 /// All stages are pure — no I/O, no mutation of the graph.
 pub struct ProofObligationPipeline;
 
+struct GeneratedObligation {
+    obligation: ProofObligation,
+    source_stage: String,
+}
+
 impl ProofObligationPipeline {
     /// Run the full pipeline over `graph` using `solver` for SMT-style checks.
     ///
@@ -217,13 +222,13 @@ impl ProofObligationPipeline {
         graph: &SemanticGraph,
         solver: &dyn Solver,
     ) -> Vec<ObligationLedgerEntry> {
-        let obligations = Self::generate(graph);
+        let obligations = Self::generate_with_sources(graph);
         obligations
             .into_iter()
             .enumerate()
             .map(|(idx, ob)| {
                 let id = format!("po_{}", idx + 1);
-                Self::resolve_to_ledger(id, ob, graph, solver)
+                Self::resolve_to_ledger(id, ob.obligation, ob.source_stage, graph, solver)
             })
             .collect()
     }
@@ -231,24 +236,95 @@ impl ProofObligationPipeline {
     // ── Stage 1: Generate ─────────────────────────────────────────────────
 
     fn generate(graph: &SemanticGraph) -> Vec<ProofObligation> {
+        Self::generate_with_sources(graph)
+            .into_iter()
+            .filter(|generated| generated.source_stage == "contract")
+            .map(|generated| generated.obligation)
+            .collect()
+    }
+
+    fn generate_with_sources(graph: &SemanticGraph) -> Vec<GeneratedObligation> {
         let mut obligations = Vec::new();
         for node in &graph.nodes {
             if let Some(clauses) = &node.contract_clauses {
                 let scope = node.name.clone();
                 for predicate in &clauses.requires {
-                    obligations.push(ProofObligation {
-                        predicate: predicate.clone(),
-                        role: ClauseRole::Requires,
-                        scope: scope.clone(),
+                    obligations.push(GeneratedObligation {
+                        obligation: ProofObligation {
+                            predicate: predicate.clone(),
+                            role: ClauseRole::Requires,
+                            scope: scope.clone(),
+                        },
+                        source_stage: "contract".into(),
                     });
                 }
                 for predicate in &clauses.ensures {
-                    obligations.push(ProofObligation {
-                        predicate: predicate.clone(),
-                        role: ClauseRole::Ensures,
-                        scope: scope.clone(),
+                    obligations.push(GeneratedObligation {
+                        obligation: ProofObligation {
+                            predicate: predicate.clone(),
+                            role: ClauseRole::Ensures,
+                            scope: scope.clone(),
+                        },
+                        source_stage: "contract".into(),
                     });
                 }
+            }
+            if let Some(refinement) = &node.refinement_ref {
+                if !matches!(refinement.status, RefinementStatus::Proven) {
+                    obligations.push(GeneratedObligation {
+                        obligation: ProofObligation {
+                            predicate: refinement.predicate.clone(),
+                            role: ClauseRole::Ensures,
+                            scope: node.name.clone(),
+                        },
+                        source_stage: "refinement".into(),
+                    });
+                }
+            }
+            if node
+                .trust_metadata
+                .as_ref()
+                .map(|trust| trust.level.starts_with("resource:"))
+                .unwrap_or(false)
+            {
+                obligations.push(GeneratedObligation {
+                    obligation: ProofObligation {
+                        predicate: format!("resource_lifecycle({})", node.name),
+                        role: ClauseRole::Ensures,
+                        scope: node.name.clone(),
+                    },
+                    source_stage: "resource".into(),
+                });
+            }
+            if node
+                .trust_metadata
+                .as_ref()
+                .map(|trust| {
+                    trust
+                        .tags
+                        .iter()
+                        .any(|tag| tag == "concurrent" || tag == "shared")
+                })
+                .unwrap_or(false)
+            {
+                obligations.push(GeneratedObligation {
+                    obligation: ProofObligation {
+                        predicate: format!("concurrency_safe({})", node.name),
+                        role: ClauseRole::Ensures,
+                        scope: node.name.clone(),
+                    },
+                    source_stage: "concurrency".into(),
+                });
+            }
+            if node.kind == NodeKind::Boundary {
+                obligations.push(GeneratedObligation {
+                    obligation: ProofObligation {
+                        predicate: format!("boundary_trust({})", node.name),
+                        role: ClauseRole::Requires,
+                        scope: node.name.clone(),
+                    },
+                    source_stage: "boundary".into(),
+                });
             }
         }
         obligations
@@ -326,6 +402,7 @@ impl ProofObligationPipeline {
     fn resolve_to_ledger(
         id: String,
         obligation: ProofObligation,
+        source_stage: String,
         graph: &SemanticGraph,
         solver: &dyn Solver,
     ) -> ObligationLedgerEntry {
@@ -343,7 +420,7 @@ impl ProofObligationPipeline {
                 id,
                 obligation,
                 state: ObligationState::Proven,
-                source_stage: "contract".into(),
+                source_stage,
                 attempts,
                 degradation_reason: None,
                 repair_options: vec![],
@@ -359,7 +436,7 @@ impl ProofObligationPipeline {
                 id,
                 obligation,
                 state: ObligationState::Failed,
-                source_stage: "contract".into(),
+                source_stage,
                 attempts,
                 degradation_reason: Some("literal false clause".into()),
                 repair_options: vec![
@@ -383,7 +460,7 @@ impl ProofObligationPipeline {
                     id,
                     obligation,
                     state: ObligationState::Proven,
-                    source_stage: "contract".into(),
+                    source_stage,
                     attempts,
                     degradation_reason: None,
                     repair_options: vec![],
@@ -401,15 +478,13 @@ impl ProofObligationPipeline {
                     attempts.push(ObligationAttempt {
                         stage: "compose".into(),
                         outcome: "composed".into(),
-                        evidence: Some(
-                            "peer node ensures clause covers this predicate".into(),
-                        ),
+                        evidence: Some("peer node ensures clause covers this predicate".into()),
                     });
                     ObligationLedgerEntry {
                         id,
                         obligation,
                         state: ObligationState::RuntimeChecked,
-                        source_stage: "contract".into(),
+                        source_stage,
                         attempts,
                         degradation_reason: None,
                         repair_options: vec![],
@@ -425,7 +500,7 @@ impl ProofObligationPipeline {
                         id,
                         obligation,
                         state: ObligationState::Assumed(reason.clone()),
-                        source_stage: "contract".into(),
+                        source_stage,
                         attempts,
                         degradation_reason: Some(reason),
                         repair_options: vec![
@@ -447,23 +522,20 @@ impl ProofObligationPipeline {
                     attempts.push(ObligationAttempt {
                         stage: "compose".into(),
                         outcome: "composed".into(),
-                        evidence: Some(
-                            "peer node ensures clause covers this predicate".into(),
-                        ),
+                        evidence: Some("peer node ensures clause covers this predicate".into()),
                     });
                     ObligationLedgerEntry {
                         id,
                         obligation,
                         state: ObligationState::RuntimeChecked,
-                        source_stage: "contract".into(),
+                        source_stage,
                         attempts,
                         degradation_reason: None,
                         repair_options: vec![],
                     }
                 } else {
                     // Stage 5: Degrade — unsupported → Assumed
-                    let reason =
-                        "solver cannot evaluate predicate; accepted by policy".to_string();
+                    let reason = "solver cannot evaluate predicate; accepted by policy".to_string();
                     attempts.push(ObligationAttempt {
                         stage: "degrade".into(),
                         outcome: "degraded".into(),
@@ -473,7 +545,7 @@ impl ProofObligationPipeline {
                         id,
                         obligation,
                         state: ObligationState::Assumed(reason.clone()),
-                        source_stage: "contract".into(),
+                        source_stage,
                         attempts,
                         degradation_reason: Some(reason),
                         repair_options: vec![

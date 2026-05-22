@@ -85,6 +85,13 @@ pub struct ArtifactManifest {
     /// `None` when source map hashing is not yet performed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_map_hash: Option<[u8; 32]>,
+
+    /// `blake3(capabilities_manifest_cbor_bytes)` — capability manifest seal.
+    ///
+    /// `None` only for legacy artifacts or backends that do not emit capability
+    /// sidecars yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities_manifest_hash: Option<[u8; 32]>,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -108,6 +115,7 @@ mod tests {
             wasm_hash: None,
             native_hash: None,
             source_map_hash: None,
+            capabilities_manifest_hash: None,
         };
         assert_eq!(m.profile, "draft");
         assert_eq!(m.compiler_version, "0.1.0");
@@ -126,6 +134,7 @@ mod tests {
             wasm_hash: Some([20u8; 32]),
             native_hash: Some([21u8; 32]),
             source_map_hash: Some([22u8; 32]),
+            capabilities_manifest_hash: Some([23u8; 32]),
         };
         assert_eq!(m.wasm_hash, Some([20u8; 32]));
         assert_eq!(m.native_hash, Some([21u8; 32]));
@@ -145,6 +154,7 @@ mod tests {
             wasm_hash: None,
             native_hash: None,
             source_map_hash: None,
+            capabilities_manifest_hash: None,
         };
         let b1 = stable_cbor_bytes(&m).expect("first encode");
         let b2 = stable_cbor_bytes(&m).expect("second encode");
@@ -164,6 +174,7 @@ mod tests {
             wasm_hash: None,
             native_hash: None,
             source_map_hash: None,
+            capabilities_manifest_hash: None,
         };
         let mut m2 = m1.clone();
         m2.profile = "prod".to_string();
@@ -185,10 +196,10 @@ mod tests {
             wasm_hash: Some([50u8; 32]),
             native_hash: None,
             source_map_hash: Some([51u8; 32]),
+            capabilities_manifest_hash: None,
         };
         let bytes = stable_cbor_bytes(&m).expect("encode");
-        let decoded: ArtifactManifest =
-            ciborium::from_reader(bytes.as_slice()).expect("decode");
+        let decoded: ArtifactManifest = ciborium::from_reader(bytes.as_slice()).expect("decode");
         assert_eq!(m, decoded, "ArtifactManifest must round-trip through CBOR");
     }
 
@@ -206,6 +217,7 @@ mod tests {
             wasm_hash: None,
             native_hash: None,
             source_map_hash: None,
+            capabilities_manifest_hash: None,
         };
         let mut full = minimal.clone();
         full.wasm_hash = Some([99u8; 32]);

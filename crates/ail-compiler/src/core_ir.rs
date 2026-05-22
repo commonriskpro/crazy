@@ -163,7 +163,6 @@ pub enum CoreExpr {
     ListNew(Vec<CoreExpr>),
 
     // ── Semantic effect / concurrency / runtime-check variants ────────────
-
     /// Short-circuit boolean AND: `left && right`.
     ///
     /// MUST lower to conditional branching in ANF — `right` is NOT evaluated
@@ -208,10 +207,7 @@ pub enum CoreExpr {
     ///
     /// `func` is the task entry-point name.
     /// `args` are the arguments passed to the task.
-    TaskSpawn {
-        func: String,
-        args: Vec<CoreExpr>,
-    },
+    TaskSpawn { func: String, args: Vec<CoreExpr> },
 
     /// Send a value on a channel.
     ///
@@ -252,7 +248,6 @@ pub enum CoreExpr {
     ResourceRelease { handle: Box<CoreExpr> },
 
     // ── G23: missing concurrency and cell primitives ──────────────────────
-
     /// Await a previously spawned task, blocking until it completes.
     ///
     /// `task` is the task handle expression; must be atomic in ANF.

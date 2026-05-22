@@ -594,6 +594,11 @@ fn code_entry_offsets(wasm: &[u8]) -> Vec<u32> {
 /// - `CompileError::EncodingError` — `anf_ir_hash` is `None` (pre-condition
 ///   violated) or WASM binary assembly failed.
 pub fn emit_wasm(anf: &AnfIr) -> Result<WasmArtifact, CompileError> {
+    emit_wasm_with_profile(anf, "unspecified")
+}
+
+/// Emit a WASM module and bind the artifact manifest to `profile`.
+pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact, CompileError> {
     // Gate: anf_ir_hash must be sealed.
     let anf_ir_hash = anf
         .stage_hashes
@@ -664,14 +669,9 @@ pub fn emit_wasm(anf: &AnfIr) -> Result<WasmArtifact, CompileError> {
     hash_chain.source_map_hash = Some(source_map_hash);
 
     // Build ArtifactManifest from the complete hash chain.
-    //
-    // `profile` defaults to "unspecified" — the pipeline does not yet carry a
-    // target_profile input.  When profile threading is added, replace this.
-    // `capabilities_manifest_hash` (listed in compiler.md §Profile-bound
-    // artifacts) is not yet wired through; it will be added when the
-    // capability manifest emission is wired into the pipeline.
+    let capabilities_manifest_hash = hash_with_parent(&[], b"[]");
     let artifact_manifest = ArtifactManifest {
-        profile: "unspecified".to_string(),
+        profile: profile.to_string(),
         compiler_version: env!("CARGO_PKG_VERSION").to_string(),
         graph_snapshot_hash: hash_chain.graph_snapshot_hash,
         verification_report_hash: hash_chain.verification_report_hash,
@@ -680,6 +680,7 @@ pub fn emit_wasm(anf: &AnfIr) -> Result<WasmArtifact, CompileError> {
         wasm_hash: Some(wasm_hash),
         native_hash: None,
         source_map_hash: Some(source_map_hash),
+        capabilities_manifest_hash: Some(capabilities_manifest_hash),
     };
 
     // Seal: artifact_manifest_hash = blake3(manifest_cbor_bytes).
