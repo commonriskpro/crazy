@@ -263,6 +263,29 @@ fn compiler_if_else_function_returns_taken_branch() {
 }
 
 #[test]
+fn compiler_bool_literal_function_returns_i64_boolean() {
+    assert_eq!(
+        invoke_compiler_expr(AnfExpr::Literal(LiteralValue::Bool(true)), "fn.flag"),
+        RuntimeValue::I64(1)
+    );
+}
+
+#[test]
+fn compiler_loop_break_with_value_returns_value() {
+    assert_eq!(
+        invoke_compiler_expr(
+            AnfExpr::Loop {
+                body: Box::new(AnfExpr::Break {
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+                }),
+            },
+            "fn.count_to_ten",
+        ),
+        RuntimeValue::I64(10)
+    );
+}
+
+#[test]
 fn compiler_function_call_double_21_invokes_to_42() {
     let anf = sealed_anf(vec![
         AnfBinding {

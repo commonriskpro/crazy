@@ -119,6 +119,44 @@ fn literal_produces_no_synthetic_bindings() {
     );
 }
 
+#[test]
+fn loop_break_continue_lower_to_anf_loop_variants() {
+    let expr = CoreExpr::Loop {
+        body: Box::new(CoreExpr::Break {
+            value: Box::new(CoreExpr::Literal(LiteralValue::Int(10))),
+        }),
+    };
+
+    let anf = lower_expr(&expr);
+
+    assert_eq!(
+        anf,
+        AnfExpr::Loop {
+            body: Box::new(AnfExpr::Break {
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+            }),
+        }
+    );
+    assert_eq!(lower_expr(&CoreExpr::Continue), AnfExpr::Continue);
+}
+
+#[test]
+fn while_loop_condition_is_atomized() {
+    let expr = CoreExpr::WhileLoop {
+        cond: Box::new(CoreExpr::Call {
+            func: "is_ready".to_string(),
+            args: vec![],
+        }),
+        body: Box::new(CoreExpr::Continue),
+    };
+
+    let (synth, root) = lower_and_collect(&expr);
+
+    assert_eq!(synth.len(), 1, "while condition call must be let-bound");
+    assert!(matches!(synth[0].expr, AnfExpr::Call { .. }));
+    assert!(matches!(root, AnfExpr::WhileLoop { cond, .. } if cond == "anf_0"));
+}
+
 // ── S2: Var lowers trivially ─────────────────────────────────────────────
 
 #[test]

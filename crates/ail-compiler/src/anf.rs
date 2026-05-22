@@ -178,6 +178,15 @@ pub enum AnfExpr {
     /// Elements may be any `AnfExpr` (lowered recursively).
     ListNew(Vec<AnfExpr>),
 
+    /// Infinite loop expression. Exits through `Break`.
+    Loop { body: Box<AnfExpr> },
+    /// Exit the nearest enclosing loop with a value.
+    Break { value: Box<AnfExpr> },
+    /// Continue at the nearest enclosing loop header.
+    Continue,
+    /// Structured while loop with an atomic condition name.
+    WhileLoop { cond: String, body: Box<AnfExpr> },
+
     // ── G20 R2: semantic effect / concurrency / runtime-check variants ────
     /// Short-circuit AND lowered to conditional branching.
     ///
@@ -525,6 +534,19 @@ mod tests {
             payload: Some(Box::new(AnfExpr::Var("x".to_string()))),
         };
         let _list = AnfExpr::ListNew(vec![AnfExpr::Literal(LiteralValue::Int(1))]);
+        let _loop = AnfExpr::Loop {
+            body: Box::new(AnfExpr::Break {
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+            }),
+        };
+        let _break = AnfExpr::Break {
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+        };
+        let _continue = AnfExpr::Continue;
+        let _while_loop = AnfExpr::WhileLoop {
+            cond: "flag".to_string(),
+            body: Box::new(AnfExpr::Continue),
+        };
     }
 
     // G23: AnfSelectClause is constructible with correct fields.

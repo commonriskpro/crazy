@@ -259,6 +259,34 @@ pub fn lower_core_expr_to_anf(
             AnfExpr::ListNew(anf_elems)
         }
 
+        // Loop: body is lowered recursively; exits through Break.
+        CoreExpr::Loop { body } => {
+            let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
+            AnfExpr::Loop {
+                body: Box::new(anf_body),
+            }
+        }
+
+        // Break: value is lowered recursively so it can be emitted before br.
+        CoreExpr::Break { value } => {
+            let anf_value = lower_core_expr_to_anf(value, fresh, source_ref, out);
+            AnfExpr::Break {
+                value: Box::new(anf_value),
+            }
+        }
+
+        CoreExpr::Continue => AnfExpr::Continue,
+
+        // WhileLoop: condition must be atomic; body is lowered recursively.
+        CoreExpr::WhileLoop { cond, body } => {
+            let cond_name = atomize(cond, fresh, source_ref, out);
+            let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
+            AnfExpr::WhileLoop {
+                cond: cond_name,
+                body: Box::new(anf_body),
+            }
+        }
+
         // ── G20 R2: new semantic variants ────────────────────────────────
 
         // And: short-circuit — lower left; result is Var(left_name); right

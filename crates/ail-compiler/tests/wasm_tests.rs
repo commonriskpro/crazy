@@ -84,6 +84,114 @@ fn operators(wasm: &[u8]) -> Vec<String> {
     names
 }
 
+fn emit_valid_wasm(expr: AnfExpr, name: &str) -> Vec<String> {
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: name.to_string(),
+        expr,
+    };
+    let artifact = emit_wasm(&sealed_anf(binding)).expect("emit_wasm failed");
+    wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+    operators(&artifact.wasm)
+}
+
+#[test]
+fn bool_literals_emit_i64_constants() {
+    let ops = emit_valid_wasm(AnfExpr::Literal(LiteralValue::Bool(true)), "fn.flag");
+
+    assert!(
+        ops.iter().any(|op| op == "I64Const { value: 1 }"),
+        "bool true must lower to i64.const 1, got {ops:?}"
+    );
+}
+
+#[test]
+fn bool_literal_can_drive_if_condition() {
+    let ops = emit_valid_wasm(
+        AnfExpr::Let {
+            name: "flag".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Bool(false))),
+            body: Box::new(AnfExpr::If {
+                cond: "flag".to_string(),
+                then_branch: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                else_branch: Box::new(AnfExpr::Literal(LiteralValue::Int(2))),
+            }),
+        },
+        "fn.branch",
+    );
+
+    assert!(
+        ops.iter().any(|op| op.starts_with("If")),
+        "expected WASM if"
+    );
+    assert!(
+        ops.iter().any(|op| op == "I64Const { value: 0 }"),
+        "bool false must lower to i64.const 0, got {ops:?}"
+    );
+}
+
+#[test]
+fn loop_break_with_value_emits_valid_wasm_br_to_outer_block() {
+    let ops = emit_valid_wasm(
+        AnfExpr::Loop {
+            body: Box::new(AnfExpr::Break {
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+            }),
+        },
+        "fn.count_to_ten",
+    );
+
+    assert!(
+        ops.iter().any(|op| op.starts_with("Block")),
+        "expected block"
+    );
+    assert!(ops.iter().any(|op| op.starts_with("Loop")), "expected loop");
+    assert!(
+        ops.iter().any(|op| op == "Br { relative_depth: 1 }"),
+        "break must branch to outer block, got {ops:?}"
+    );
+}
+
+#[test]
+fn continue_emits_valid_wasm_br_to_loop_header() {
+    let ops = emit_valid_wasm(
+        AnfExpr::Loop {
+            body: Box::new(AnfExpr::Continue),
+        },
+        "fn.spin",
+    );
+
+    assert!(
+        ops.iter().any(|op| op == "Br { relative_depth: 0 }"),
+        "continue must branch to loop header, got {ops:?}"
+    );
+}
+
+#[test]
+fn while_loop_emits_valid_wasm_loop_with_exit_branch() {
+    let ops = emit_valid_wasm(
+        AnfExpr::Let {
+            name: "keep_going".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Bool(false))),
+            body: Box::new(AnfExpr::WhileLoop {
+                cond: "keep_going".to_string(),
+                body: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+            }),
+        },
+        "fn.while_loop",
+    );
+
+    assert!(ops.iter().any(|op| op.starts_with("Loop")), "expected loop");
+    assert!(
+        ops.iter().any(|op| op == "BrIf { relative_depth: 1 }"),
+        "while false condition must branch out of outer block, got {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| op == "Br { relative_depth: 0 }"),
+        "while body must branch back to loop header, got {ops:?}"
+    );
+}
+
 // ── Task 3.1: wasmparser validates emitted modules ────────────────────────
 
 // Scenario: zero-binding graph → minimal valid WASM module.

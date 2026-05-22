@@ -148,8 +148,8 @@ fn build_type_section_with_host_call(signatures: &[WasmSignature]) -> TypeSectio
 
 fn literal_type(lit: &LiteralValue) -> ValType {
     match lit {
-        LiteralValue::Int(_) => ValType::I64,
-        LiteralValue::Bool(_) | LiteralValue::Text(_) | LiteralValue::Unit => ValType::I32,
+        LiteralValue::Int(_) | LiteralValue::Bool(_) => ValType::I64,
+        LiteralValue::Text(_) | LiteralValue::Unit => ValType::I32,
         LiteralValue::Float(_) => ValType::F64,
     }
 }
@@ -192,7 +192,10 @@ fn infer_expr_type(expr: &AnfExpr, locals: &mut Vec<(String, ValType)>) -> Optio
             }
         }
         AnfExpr::Return(inner) => infer_expr_type(inner, locals),
-        AnfExpr::ShortCircuitAnd { .. } | AnfExpr::ShortCircuitOr { .. } => Some(ValType::I32),
+        AnfExpr::ShortCircuitAnd { .. } | AnfExpr::ShortCircuitOr { .. } => Some(ValType::I64),
+        AnfExpr::Loop { body } => infer_expr_type(body, locals),
+        AnfExpr::Break { value } => infer_expr_type(value, locals),
+        AnfExpr::Continue | AnfExpr::WhileLoop { .. } => None,
         AnfExpr::FieldGet { .. }
         | AnfExpr::RecordNew { .. }
         | AnfExpr::TupleNew(_)
@@ -359,7 +362,17 @@ fn collect_free_vars<'a>(expr: &'a AnfExpr, bound: &mut Vec<&'a str>, out: &mut 
         AnfExpr::Return(inner)
         | AnfExpr::ShortCircuitAnd { right: inner, .. }
         | AnfExpr::ShortCircuitOr { right: inner, .. }
+        | AnfExpr::Loop { body: inner }
+        | AnfExpr::Break { value: inner }
         | AnfExpr::FieldUpdate { value: inner, .. } => collect_free_vars(inner, bound, out),
+        AnfExpr::WhileLoop { cond, body } => {
+            if !bound.iter().rev().any(|bound_name| *bound_name == cond)
+                && !out.iter().any(|existing| *existing == cond)
+            {
+                out.push(cond);
+            }
+            collect_free_vars(body, bound, out);
+        }
         AnfExpr::Seq(exprs) | AnfExpr::TupleNew(exprs) | AnfExpr::ListNew(exprs) => {
             for expr in exprs {
                 collect_free_vars(expr, bound, out);
@@ -420,6 +433,14 @@ struct WasmCodegenCtx<'a> {
     next_local: u32,
     local_types: Vec<ValType>,
     effect_data: &'a EffectDataLayout,
+    labels: Vec<LabelKind>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LabelKind {
+    Other,
+    LoopBreak,
+    LoopContinue,
 }
 
 impl<'a> WasmCodegenCtx<'a> {
@@ -434,6 +455,7 @@ impl<'a> WasmCodegenCtx<'a> {
             next_local: param_count,
             local_types: Vec::new(),
             effect_data,
+            labels: Vec::new(),
         }
     }
 
@@ -464,6 +486,13 @@ impl<'a> WasmCodegenCtx<'a> {
             .map(|(name, _, ty)| ((*name).to_string(), *ty))
             .collect();
         infer_expr_type(expr, &mut locals)
+    }
+
+    fn branch_depth(&self, target: LabelKind) -> Option<u32> {
+        self.labels
+            .iter()
+            .rposition(|label| *label == target)
+            .map(|idx| (self.labels.len() - 1 - idx) as u32)
     }
 }
 
@@ -511,7 +540,10 @@ impl EffectDataLayout {
             AnfExpr::Return(inner)
             | AnfExpr::ShortCircuitAnd { right: inner, .. }
             | AnfExpr::ShortCircuitOr { right: inner, .. }
+            | AnfExpr::Loop { body: inner }
+            | AnfExpr::Break { value: inner }
             | AnfExpr::FieldUpdate { value: inner, .. } => self.collect_expr(inner),
+            AnfExpr::WhileLoop { body, .. } => self.collect_expr(body),
             AnfExpr::Seq(exprs) | AnfExpr::TupleNew(exprs) | AnfExpr::ListNew(exprs) => {
                 for expr in exprs {
                     self.collect_expr(expr);
@@ -710,11 +742,19 @@ fn emit_match_arms<'a>(
     }
 
     let can_match = match scrutinee_ty {
-        ValType::I64 => parse_i64_pattern(&first.pattern).map(|value| {
-            emit_local_get(ctx, scrutinee, insns);
-            insns.push(Instruction::I64Const(value));
-            insns.push(Instruction::I64Eq);
-        }),
+        ValType::I64 => parse_i64_pattern(&first.pattern)
+            .map(|value| {
+                emit_local_get(ctx, scrutinee, insns);
+                insns.push(Instruction::I64Const(value));
+                insns.push(Instruction::I64Eq);
+            })
+            .or_else(|| {
+                parse_bool_pattern(&first.pattern).map(|value| {
+                    emit_local_get(ctx, scrutinee, insns);
+                    insns.push(Instruction::I64Const(if value { 1 } else { 0 }));
+                    insns.push(Instruction::I64Eq);
+                })
+            }),
         ValType::I32 => parse_bool_pattern(&first.pattern).map(|value| {
             emit_local_get(ctx, scrutinee, insns);
             insns.push(Instruction::I32Const(if value { 1 } else { 0 }));
@@ -739,6 +779,7 @@ fn emit_match_arms<'a>(
     }
 
     insns.push(Instruction::If(block_type(result_ty)));
+    ctx.labels.push(LabelKind::Other);
     emit_branch_expr(&first.body, result_ty, ctx, functions, insns);
     insns.push(Instruction::Else);
     emit_match_arms(
@@ -750,6 +791,7 @@ fn emit_match_arms<'a>(
         functions,
         insns,
     );
+    ctx.labels.pop();
     insns.push(Instruction::End);
     result_ty
 }
@@ -778,8 +820,8 @@ fn emit_anf_expr<'a>(
                 Some(ValType::I64)
             }
             LiteralValue::Bool(b) => {
-                insns.push(Instruction::I32Const(if *b { 1 } else { 0 }));
-                Some(ValType::I32)
+                insns.push(Instruction::I64Const(if *b { 1 } else { 0 }));
+                Some(ValType::I64)
             }
             LiteralValue::Float(f) => {
                 // wasm_encoder 0.244 requires Ieee64 for F64Const.
@@ -828,9 +870,11 @@ fn emit_anf_expr<'a>(
                 .expr_type(then_branch)
                 .filter(|ty| Some(*ty) == ctx.expr_type(else_branch));
             insns.push(Instruction::If(block_type(result_ty)));
+            ctx.labels.push(LabelKind::Other);
             emit_branch_expr(then_branch, result_ty, ctx, functions, insns);
             insns.push(Instruction::Else);
             emit_branch_expr(else_branch, result_ty, ctx, functions, insns);
+            ctx.labels.pop();
             insns.push(Instruction::End);
             result_ty
         }
@@ -839,24 +883,88 @@ fn emit_anf_expr<'a>(
         // if left { right } else { false }
         AnfExpr::ShortCircuitAnd { left, right } => {
             emit_condition_get(ctx, left, insns);
-            insns.push(Instruction::If(BlockType::Result(ValType::I32)));
+            insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+            ctx.labels.push(LabelKind::Other);
             emit_anf_expr(right, ctx, functions, insns);
             insns.push(Instruction::Else);
-            insns.push(Instruction::I32Const(0));
+            insns.push(Instruction::I64Const(0));
+            ctx.labels.pop();
             insns.push(Instruction::End);
-            Some(ValType::I32)
+            Some(ValType::I64)
         }
 
         // ── Short-circuit OR ──────────────────────────────────────────────
         // if left { true } else { right }
         AnfExpr::ShortCircuitOr { left, right } => {
             emit_condition_get(ctx, left, insns);
-            insns.push(Instruction::If(BlockType::Result(ValType::I32)));
-            insns.push(Instruction::I32Const(1));
+            insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+            ctx.labels.push(LabelKind::Other);
+            insns.push(Instruction::I64Const(1));
             insns.push(Instruction::Else);
             emit_anf_expr(right, ctx, functions, insns);
+            ctx.labels.pop();
             insns.push(Instruction::End);
-            Some(ValType::I32)
+            Some(ValType::I64)
+        }
+
+        AnfExpr::Loop { body } => {
+            let result_ty = ctx.expr_type(body);
+            insns.push(Instruction::Block(block_type(result_ty)));
+            ctx.labels.push(LabelKind::LoopBreak);
+            insns.push(Instruction::Loop(BlockType::Empty));
+            ctx.labels.push(LabelKind::LoopContinue);
+            let emitted_ty = emit_anf_expr(body, ctx, functions, insns);
+            if result_ty.is_none() && emitted_ty.is_some() {
+                insns.push(Instruction::Drop);
+            }
+            insns.push(Instruction::Br(1));
+            ctx.labels.pop();
+            insns.push(Instruction::End);
+            if result_ty.is_some() {
+                insns.push(Instruction::Unreachable);
+            }
+            ctx.labels.pop();
+            insns.push(Instruction::End);
+            result_ty
+        }
+
+        AnfExpr::Break { value } => {
+            emit_anf_expr(value, ctx, functions, insns);
+            if let Some(depth) = ctx.branch_depth(LabelKind::LoopBreak) {
+                insns.push(Instruction::Br(depth));
+            } else {
+                insns.push(Instruction::Unreachable);
+            }
+            None
+        }
+
+        AnfExpr::Continue => {
+            if let Some(depth) = ctx.branch_depth(LabelKind::LoopContinue) {
+                insns.push(Instruction::Br(depth));
+            } else {
+                insns.push(Instruction::Unreachable);
+            }
+            None
+        }
+
+        AnfExpr::WhileLoop { cond, body } => {
+            insns.push(Instruction::Block(BlockType::Empty));
+            ctx.labels.push(LabelKind::LoopBreak);
+            insns.push(Instruction::Loop(BlockType::Empty));
+            ctx.labels.push(LabelKind::LoopContinue);
+            emit_condition_get(ctx, cond, insns);
+            insns.push(Instruction::I32Eqz);
+            insns.push(Instruction::BrIf(1));
+            let emitted_ty = emit_anf_expr(body, ctx, functions, insns);
+            if emitted_ty.is_some() {
+                insns.push(Instruction::Drop);
+            }
+            insns.push(Instruction::Br(0));
+            ctx.labels.pop();
+            insns.push(Instruction::End);
+            ctx.labels.pop();
+            insns.push(Instruction::End);
+            None
         }
 
         // ── Sequence ──────────────────────────────────────────────────────

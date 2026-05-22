@@ -162,6 +162,18 @@ pub enum CoreExpr {
     /// Construct a list from element expressions.
     ListNew(Vec<CoreExpr>),
 
+    /// Infinite loop expression. Exits through `Break`.
+    Loop { body: Box<CoreExpr> },
+    /// Exit the nearest enclosing loop with a value.
+    Break { value: Box<CoreExpr> },
+    /// Continue at the nearest enclosing loop header.
+    Continue,
+    /// Structured while loop: `while cond { body }`.
+    WhileLoop {
+        cond: Box<CoreExpr>,
+        body: Box<CoreExpr>,
+    },
+
     // ── Semantic effect / concurrency / runtime-check variants ────────────
     /// Short-circuit boolean AND: `left && right`.
     ///
@@ -722,6 +734,19 @@ mod tests {
             payload: Some(Box::new(CoreExpr::Literal(LiteralValue::Unit))),
         };
         let _list = CoreExpr::ListNew(vec![CoreExpr::Literal(LiteralValue::Int(1))]);
+        let _loop = CoreExpr::Loop {
+            body: Box::new(CoreExpr::Break {
+                value: Box::new(CoreExpr::Literal(LiteralValue::Int(10))),
+            }),
+        };
+        let _break = CoreExpr::Break {
+            value: Box::new(CoreExpr::Literal(LiteralValue::Int(1))),
+        };
+        let _continue = CoreExpr::Continue;
+        let _while_loop = CoreExpr::WhileLoop {
+            cond: Box::new(CoreExpr::Literal(LiteralValue::Bool(false))),
+            body: Box::new(CoreExpr::Continue),
+        };
         let _placeholder = CoreExpr::Placeholder;
         // All constructed without panic — test passes.
     }
