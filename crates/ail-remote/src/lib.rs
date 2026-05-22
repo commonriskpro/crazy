@@ -22,13 +22,20 @@
 // - [`identity`] — `AgentIdentity`, `AgentKeypair`, `SigningError`.
 // - [`bundle`]   — `ObjectBundle`, `BundleError`.
 // - [`signing`]  — `SignedContextSlice`, `RemoteChangeSet`.
+// - [`crypto`]   — AES-256-GCM, Argon2id, X25519 primitives (feature = "crypto").
 
 pub mod bundle;
+#[cfg(feature = "crypto")]
+pub mod crypto;
 pub mod error;
 pub mod identity;
 pub mod signing;
 
 pub use bundle::{BundleError, ObjectBundle};
+#[cfg(feature = "crypto")]
+pub use crypto::{
+    CryptoError, decrypt_aes256gcm, derive_key_argon2, encrypt_aes256gcm, x25519_shared_secret,
+};
 pub use error::RemoteError;
 pub use identity::{AgentIdentity, AgentKeypair, SigningError};
 pub use signing::{RemoteChangeSet, SignedContextSlice};
