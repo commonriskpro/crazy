@@ -1239,7 +1239,7 @@ async fn cmd_verify(
 async fn cmd_apply(
     mode: OutputMode,
     change_id: &str,
-    _yes: bool,
+    yes: bool,
     policy_profile: Option<&str>,
     store: &StoreHandle,
 ) -> Result<(), CliError> {
@@ -1260,8 +1260,15 @@ async fn cmd_apply(
         .map(|s| s.id.to_hex())
         .unwrap_or_else(|| "(genesis)".to_string());
 
-    // Pre-apply gate display.
+    // Pre-apply gate: enforce policy approval for prod profile.
+    // Per tooling.md: prod apply requires explicit approval; --yes signals it.
     let profile = policy_profile.unwrap_or("dev");
+    if profile == "prod" && !yes {
+        return Err(CliError::Domain(
+            "apply blocked: prod profile requires approval; rerun with --yes to confirm"
+                .to_string(),
+        ));
+    }
     let pre_apply_gate = json!({
         "canonical_change_hash": change_id,
         "structural_diff": {
@@ -4759,6 +4766,38 @@ mod tests {
         let store = memory_store();
         let result = cmd_apply(OutputMode::Human, &"a".repeat(63), false, None, &store).await;
         assert!(matches!(result, Err(CliError::NotFound(_))));
+    }
+
+    // Scenario: cmd_apply blocks on prod profile without --yes.
+    //   GIVEN a valid change-id and profile=prod
+    //   WHEN yes=false
+    //   THEN cmd_apply returns a Domain error mentioning approval
+    #[tokio::test]
+    async fn cmd_apply_blocks_prod_without_yes() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let id = "c".repeat(64);
+        let result = cmd_apply(OutputMode::Human, &id, false, Some("prod"), &store).await;
+        match &result {
+            Err(CliError::Domain(msg)) => assert!(
+                msg.contains("approval"),
+                "error must mention approval; got: {msg}"
+            ),
+            other => panic!("expected Domain error; got: {other:?}"),
+        }
+    }
+
+    // Scenario: cmd_apply allows prod profile when --yes is set.
+    //   GIVEN a valid change-id and profile=prod
+    //   WHEN yes=true
+    //   THEN cmd_apply proceeds (does not return a policy error)
+    #[tokio::test]
+    async fn cmd_apply_allows_prod_with_yes() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let id = "d".repeat(64);
+        let result = cmd_apply(OutputMode::Human, &id, true, Some("prod"), &store).await;
+        assert!(result.is_ok(), "prod with --yes must succeed; got: {result:?}");
     }
 
     // Scenario: preflight fails on module hash mismatch.
