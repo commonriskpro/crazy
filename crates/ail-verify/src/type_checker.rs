@@ -1139,6 +1139,7 @@ impl TypeChecker {
                          Core IR requires PatchField<T> where T is a non-empty concrete type",
                         node.name
                     )),
+                    blocking: true,
                 });
             } else {
                 entries.push(VerificationEntry {
@@ -1146,6 +1147,7 @@ impl TypeChecker {
                     state: VerificationState::Proven,
                     scope,
                     evidence: None,
+                    blocking: false,
                 });
             }
         }
@@ -1180,6 +1182,7 @@ impl TypeChecker {
                     state: VerificationState::Proven,
                     scope,
                     evidence: None,
+                    blocking: false,
                 });
             } else if !cs.has_ord {
                 entries.push(VerificationEntry {
@@ -1192,6 +1195,7 @@ impl TypeChecker {
                          ordering is available, which may be insufficient",
                         node.name
                     )),
+                    blocking: false,
                 });
             }
         }
@@ -1227,6 +1231,7 @@ impl TypeChecker {
                         state: VerificationState::Proven,
                         scope,
                         evidence: None,
+                        blocking: false,
                     });
                 } else {
                     entries.push(VerificationEntry {
@@ -1239,6 +1244,7 @@ impl TypeChecker {
                              '{declared}' on '{}'",
                             node.name
                         )),
+                        blocking: true,
                     });
                 }
             }
