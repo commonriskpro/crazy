@@ -86,6 +86,7 @@ version = "0.1.0"
 dependencies = [
  "ail-change",
  "ail-compiler",
+ "ail-context",
  "ail-core",
  "ail-runtime",
  "ail-storage",
@@ -136,6 +137,7 @@ dependencies = [
  "ciborium",
  "futures",
  "serde",
+ "tempfile",
  "tracing",
 ]
 

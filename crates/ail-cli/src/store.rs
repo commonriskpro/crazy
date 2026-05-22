@@ -146,6 +146,16 @@ impl StoreHandle {
         matches!(self, StoreHandle::File { .. } | StoreHandle::Postgres(_))
     }
 
+    /// Return the file-backed context index cache path when available.
+    pub fn context_index_path(&self) -> Option<PathBuf> {
+        match self {
+            StoreHandle::File { ail_dir, .. } => {
+                Some(ail_dir.join("index").join("context-indexes.cbor"))
+            }
+            _ => None,
+        }
+    }
+
     /// Store a semantic graph as a content-addressed object and return its root hash.
     pub async fn save_graph(&self, graph: &SemanticGraph) -> Result<ObjectId, CliError> {
         let mut bytes = Vec::new();

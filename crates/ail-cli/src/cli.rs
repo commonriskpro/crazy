@@ -59,11 +59,17 @@ use ail_compiler::{
     ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, LiteralValue, SourceMap, StageHashes,
     emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir,
 };
+use ail_context::{
+    AuthSession, ContextQuery, ContextRequest, ContextServer, ContextServerConfig,
+    DerivedIndexCache, FieldRedactionRule, InMemoryContextSource, QueryScope, SnapshotSelector,
+    TrustLevel,
+};
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_runtime::{
     CapabilityManifest, ResourceLimits, RuntimeArg, RuntimeHost, RuntimeProfile, RuntimeValue,
     blake3_hex_of,
 };
+use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::{SnapshotEnvelope, graph::ChangeSetLogEntry, object::ObjectId};
 use ail_verify::checker::Checker;
 use ail_verify::report::VerificationReport;
@@ -108,8 +114,8 @@ enum Commands {
     /// Return a hash-bound semantic context slice for a target node/module/function.
     /// Without a target, lists the current snapshot envelope.
     Context {
-        /// Target node (e.g. `fn.checkout`, `module.cart`, `type.CartItem`).
-        target: Option<String>,
+        /// Either `<target>`, `query <type> [params]`, or `index rebuild`.
+        args: Vec<String>,
     },
 
     /// Show impact analysis for a target: which nodes are affected by changes to it.
@@ -384,7 +390,7 @@ pub async fn run() -> Result<(), CliError> {
     let store = build_store(cli.database_url.as_deref()).await?;
 
     match cli.command {
-        Commands::Context { target } => cmd_context(mode, target.as_deref(), &store).await,
+        Commands::Context { args } => cmd_context(mode, &args, &store).await,
         Commands::Impact { target } => cmd_impact(mode, &target, &store).await,
         Commands::Callers { target } => cmd_callers(mode, &target, &store).await,
         Commands::Effects { target } => cmd_effects(mode, &target, &store).await,
@@ -465,76 +471,288 @@ pub async fn run() -> Result<(), CliError> {
 /// 3. Context can be used in ChangeSet requires via assert_context.
 async fn cmd_context(
     mode: OutputMode,
-    target: Option<&str>,
+    args: &[String],
     store: &StoreHandle,
 ) -> Result<(), CliError> {
     let snapshots = store.list_snapshots().await?;
-    let current_snap = snapshots.last();
-    let snapshot_id = current_snap
-        .map(|s| s.id.to_hex())
-        .unwrap_or_else(|| "(no snapshot)".to_string());
-    let snapshot_hash = current_snap
-        .map(|s| s.graph_root_hash.to_hex())
-        .unwrap_or_else(|| "(no hash)".to_string());
-
-    match target {
-        Some(t) => {
-            // Semantic context slice — hash-bound to current snapshot.
-            // Context is empty graph slice (graph is in-memory only at this stage).
-            let context_slice = json!({
-                "target": t,
-                "snapshot_id": snapshot_id,
-                "snapshot_hash": snapshot_hash,
-                "nodes": [],
-                "edges": [],
-                "requires": [],
-            });
-            let human_msg = format!(
-                "target: {t}\nsnapshot: {snapshot_id}\nhash: {snapshot_hash}\nnodes: 0\nedges: 0"
-            );
-            print_response(mode, &human_msg, json!({ "context": context_slice }));
-        }
-        None => {
-            // No target: list snapshot envelopes (backward-compatible).
-            if snapshots.is_empty() {
-                print_response(
-                    mode,
-                    "(no snapshots in local store)",
-                    json!({ "snapshots": [] }),
-                );
-                return Ok(());
-            }
-            let human_lines: Vec<String> = snapshots
-                .iter()
-                .map(|s| {
-                    let parent = s
-                        .parent_id
-                        .map(|p| p.to_hex())
-                        .unwrap_or_else(|| "(genesis)".to_string());
-                    format!(
-                        "id: {}  parent: {}  created: {}",
-                        s.id, parent, s.created_at
-                    )
-                })
-                .collect();
-            let json_snaps: Vec<Value> = snapshots
-                .iter()
-                .map(|s| {
-                    json!({
-                        "id": s.id.to_hex(),
-                        "parent_id": s.parent_id.map(|p| p.to_hex()),
-                        "created_at": s.created_at,
-                    })
-                })
-                .collect();
+    if args.is_empty() {
+        // No target: list snapshot envelopes (backward-compatible).
+        if snapshots.is_empty() {
             print_response(
                 mode,
-                &human_lines.join("\n"),
-                json!({ "snapshots": json_snaps }),
+                "(no snapshots in local store)",
+                json!({ "snapshots": [] }),
             );
+            return Ok(());
         }
+        let human_lines: Vec<String> = snapshots
+            .iter()
+            .map(|s| {
+                let parent = s
+                    .parent_id
+                    .map(|p| p.to_hex())
+                    .unwrap_or_else(|| "(genesis)".to_string());
+                format!(
+                    "id: {}  parent: {}  created: {}",
+                    s.id, parent, s.created_at
+                )
+            })
+            .collect();
+        let json_snaps: Vec<Value> = snapshots
+            .iter()
+            .map(|s| {
+                json!({
+                    "id": s.id.to_hex(),
+                    "parent_id": s.parent_id.map(|p| p.to_hex()),
+                    "created_at": s.created_at,
+                })
+            })
+            .collect();
+        print_response(
+            mode,
+            &human_lines.join("\n"),
+            json!({ "snapshots": json_snaps }),
+        );
+        return Ok(());
     }
+
+    if args.first().is_some_and(|arg| arg == "index") {
+        if args.get(1).is_none_or(|arg| arg != "rebuild") {
+            return Err(CliError::ParseError(
+                "Expected `ail context index rebuild`".to_string(),
+            ));
+        }
+        let (server, snapshot) = context_server_for_cli(store, &snapshots).await?;
+        let indexes = server
+            .rebuild_indexes(&SnapshotSelector::ById(snapshot.id))
+            .await
+            .map_err(|e| CliError::Domain(format!("context index rebuild: {e}")))?;
+        let human_msg = format!(
+            "snapshot: {}\nhash: {}\nindexes_rebuilt: {}",
+            indexes.snapshot_id,
+            indexes.snapshot_hash,
+            indexes.indexes.len()
+        );
+        print_response(
+            mode,
+            &human_msg,
+            json!({
+                "snapshot_id": indexes.snapshot_id.to_hex(),
+                "snapshot_hash": indexes.snapshot_hash.to_hex(),
+                "indexes_rebuilt": indexes.indexes.len(),
+                "indexes": indexes.indexes,
+            }),
+        );
+        return Ok(());
+    }
+
+    let (query_kind, query_args) = if args.first().is_some_and(|arg| arg == "query") {
+        let Some(kind) = args.get(1) else {
+            return Err(CliError::ParseError(
+                "Expected `ail context query <type> [params]`".to_string(),
+            ));
+        };
+        (kind.as_str(), &args[2..])
+    } else {
+        ("context", args)
+    };
+    let target_label = query_args.first().map(String::as_str).unwrap_or(query_kind);
+
+    let (server, snapshot) = context_server_for_cli(store, &snapshots).await?;
+    let query = parse_context_query_for_cli(query_kind, query_args, store).await?;
+    let session = AuthSession {
+        principal: "cli".to_string(),
+        trust_level: TrustLevel::Internal,
+    };
+    let response = match server
+        .handle(ContextRequest::Query {
+            query,
+            snapshot: SnapshotSelector::ById(snapshot.id),
+            session: Some(session),
+        })
+        .await
+    {
+        ail_context::ServerContextResponse::Result(response) => response,
+        ail_context::ServerContextResponse::Error(err) => {
+            return Err(CliError::Domain(format!("context query: {err}")));
+        }
+        other => {
+            return Err(CliError::Domain(format!(
+                "unexpected context server response: {other:?}"
+            )));
+        }
+    };
+
+    let human_msg = format!(
+        "snapshot: {}\nhash: {}\ncontext_hash: {}\nnodes: {}\nredaction: {:?}",
+        response.snapshot.id,
+        response.graph_root_hash,
+        bytes_to_hex(&response.context_hash),
+        response.structured.len(),
+        response.redaction_state
+    );
+    print_response(
+        mode,
+        &human_msg,
+        json!({
+            "context": {
+                "target": target_label,
+                "snapshot_id": response.snapshot.id.to_hex(),
+                "snapshot_hash": response.graph_root_hash.to_hex(),
+                "nodes": response.structured.clone(),
+                "response": response.clone(),
+            },
+            "snapshot_id": response.snapshot.id.to_hex(),
+            "snapshot_hash": response.graph_root_hash.to_hex(),
+        }),
+    );
     Ok(())
+}
+
+async fn context_server_for_cli(
+    store: &StoreHandle,
+    snapshots: &[SnapshotEnvelope],
+) -> Result<(ContextServer<InMemoryContextSource>, SnapshotEnvelope), CliError> {
+    let graph = load_current_graph_for_cli(store).await?;
+    let snapshot = match store
+        .head_snapshot()
+        .await?
+        .or_else(|| latest_snapshot(snapshots).cloned())
+    {
+        Some(snapshot) => snapshot,
+        None => synthetic_context_snapshot(&graph)?,
+    };
+    let source = InMemoryContextSource::new();
+    source.insert_snapshot(snapshot.clone());
+    source.insert_graph(snapshot.graph_root_hash, graph);
+
+    let config = ContextServerConfig {
+        redaction_rules: vec![
+            FieldRedactionRule {
+                field: "body_expr".to_string(),
+                min_trust: TrustLevel::Privileged,
+                category: "restricted business logic".to_string(),
+            },
+            FieldRedactionRule {
+                field: "runtime_checks".to_string(),
+                min_trust: TrustLevel::Internal,
+                category: "runtime payloads".to_string(),
+            },
+        ],
+        ..Default::default()
+    };
+    let mut server = ContextServer::new(source).with_config(config);
+    if let Some(path) = store.context_index_path() {
+        server = server.with_index_cache(DerivedIndexCache::new(path));
+    }
+    Ok((server, snapshot))
+}
+
+fn synthetic_context_snapshot(graph: &SemanticGraph) -> Result<SnapshotEnvelope, CliError> {
+    let bytes = CborCodec
+        .encode(graph)
+        .map_err(|e| CliError::Domain(format!("graph encoding failed: {e}")))?;
+    let root = ObjectId::from_bytes(&bytes);
+    Ok(SnapshotEnvelope {
+        id: ObjectId::from_bytes(b"synthetic-context-snapshot"),
+        graph_root_hash: root,
+        parent_id: None,
+        applied_change_id: None,
+        created_at: unix_ms_now(),
+        verification_report_hash: None,
+    })
+}
+
+async fn parse_context_query_for_cli(
+    kind: &str,
+    args: &[String],
+    store: &StoreHandle,
+) -> Result<ContextQuery, CliError> {
+    let graph = load_current_graph_for_cli(store).await?;
+    let budget = usize::MAX;
+    let target = || -> Result<NodeRef, CliError> {
+        let raw = args.first().map(String::as_str).unwrap_or("0");
+        node_ref_for_cli_target(raw, &graph)
+    };
+    match kind {
+        "context" => Ok(ContextQuery::Node {
+            target: target()?,
+            scope: QueryScope::Full,
+            budget,
+        }),
+        "graph" => Ok(ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget,
+        }),
+        "impact" => Ok(ContextQuery::Impact {
+            target: target()?,
+            budget,
+        }),
+        "callers" => Ok(ContextQuery::Callers {
+            target: target()?,
+            transitive: true,
+            budget,
+        }),
+        "callees" => Ok(ContextQuery::Callees {
+            target: target()?,
+            transitive: true,
+            budget,
+        }),
+        "effects" => Ok(ContextQuery::Effects {
+            target: target()?,
+            budget,
+        }),
+        "contracts" => Ok(ContextQuery::Contracts {
+            target: target()?,
+            budget,
+        }),
+        "history" => Ok(ContextQuery::History {
+            target: target()?,
+            budget,
+        }),
+        "why" => Ok(ContextQuery::Why {
+            target: target()?,
+            budget,
+        }),
+        "proofs" | "obligations" => Ok(ContextQuery::Proofs {
+            target: target()?,
+            budget,
+        }),
+        "resources" => Ok(ContextQuery::Resources {
+            target: target()?,
+            budget,
+        }),
+        "boundaries" => Ok(ContextQuery::Boundaries {
+            target: target()?,
+            budget,
+        }),
+        "refactor_context" => Ok(ContextQuery::RefactorContext {
+            target: target()?,
+            budget,
+        }),
+        "runtime" => Ok(ContextQuery::Runtime {
+            target: target()?,
+            profile: "dev".to_string(),
+            budget,
+        }),
+        other => Err(CliError::ParseError(format!(
+            "unsupported context query type: {other}"
+        ))),
+    }
+}
+
+fn node_ref_for_cli_target(target: &str, graph: &SemanticGraph) -> Result<NodeRef, CliError> {
+    if let Ok(id) = target.parse::<u32>() {
+        return Ok(NodeRef(id));
+    }
+    if let Some(node) = graph.nodes.iter().find(|node| node.name == target) {
+        return Ok(node.id);
+    }
+    graph
+        .nodes
+        .first()
+        .map(|node| node.id)
+        .ok_or_else(|| CliError::NotFound(format!("node not found: {target}")))
 }
 
 /// `ail impact <target>` — show impact analysis for a target node.
@@ -2889,7 +3107,7 @@ mod tests {
     async fn cmd_context_memory_store_no_target_succeeds() {
         use crate::store::memory_store;
         let store = memory_store();
-        let result = cmd_context(OutputMode::Human, None, &store).await;
+        let result = cmd_context(OutputMode::Human, &[], &store).await;
         assert!(result.is_ok(), "cmd_context must succeed; got: {result:?}");
     }
 
@@ -2898,7 +3116,8 @@ mod tests {
     async fn cmd_context_with_target_returns_context_slice() {
         use crate::store::memory_store;
         let store = memory_store();
-        let result = cmd_context(OutputMode::Human, Some("fn.checkout"), &store).await;
+        let args = vec!["fn.checkout".to_string()];
+        let result = cmd_context(OutputMode::Human, &args, &store).await;
         assert!(
             result.is_ok(),
             "cmd_context with target must succeed; got: {result:?}"
