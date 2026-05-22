@@ -19,6 +19,43 @@ use serde::{Deserialize, Serialize};
 /// this wire-format generation.
 pub const CONTEXT_SCHEMA_V1: &str = "context/1.0";
 
+// ── FreshnessStatus ───────────────────────────────────────────────────────
+
+/// The freshness state of a context response relative to the current graph.
+///
+/// Mirrors the `freshness fresh | stale | unknown` field in the protocol doc.
+/// `Unknown` is returned when the server cannot determine whether the snapshot
+/// is current (e.g., the index version is unavailable).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FreshnessStatus {
+    #[default]
+    /// The snapshot is the current graph root — no invalidation has occurred.
+    Fresh,
+    /// A newer snapshot exists; this response may describe stale state.
+    Stale,
+    /// Freshness cannot be determined (e.g., index not available).
+    Unknown,
+}
+
+// ── RedactionPolicy ───────────────────────────────────────────────────────
+
+/// Caller-supplied redaction policy that describes which node categories
+/// are withheld and why.
+///
+/// The `RedactionPolicy` accompanies the `redacted_refs` set passed to
+/// `ResponseBuilder`: it documents intent rather than driving the filter
+/// (the `BTreeSet<NodeRef>` is still the operative list).  Responses include
+/// this policy in their audit trail so consumers understand what was omitted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedactionPolicy {
+    /// Human-readable label for this policy (e.g., `"PII"`, `"restricted"`).
+    pub label: String,
+    /// Categories withheld (e.g., `["secrets", "PII", "audit_logs"]`).
+    pub categories: Vec<String>,
+    /// Whether a session capability is required to lift this policy.
+    pub requires_approval: bool,
+}
+
 // ── SnapshotSelector ──────────────────────────────────────────────────────
 
 /// Identifies which `SnapshotEnvelope` to materialise.
@@ -53,16 +90,22 @@ pub enum QueryScope {
 ///
 /// # Query kinds
 ///
-/// | Variant     | Doc query kind  | Description                                 |
-/// |-------------|-----------------|---------------------------------------------|
-/// | `Node`      | `context`       | General slice for a single node             |
-/// | `Graph`     | —               | Whole-graph dump (bounded by budget)        |
-/// | `Impact`    | `impact`        | What breaks if `target` changes             |
-/// | `Callers`   | `callers`       | Who calls `target` (optionally transitive)  |
-/// | `Callees`   | `callees`       | What `target` calls (optionally transitive) |
-/// | `Effects`   | `effects`       | Effect/capability declarations on `target`  |
-/// | `Contracts` | `contracts`     | Requires/ensures clauses on `target`        |
-/// | `History`   | `history`       | ChangeSet provenance chain for `target`     |
+/// | Variant          | Doc query kind    | Description                                       |
+/// |------------------|-------------------|---------------------------------------------------|
+/// | `Node`           | `context`         | General slice for a single node                   |
+/// | `Graph`          | —                 | Whole-graph dump (bounded by budget)              |
+/// | `Impact`         | `impact`          | What breaks if `target` changes                   |
+/// | `Callers`        | `callers`         | Who calls `target` (optionally transitive)        |
+/// | `Callees`        | `callees`         | What `target` calls (optionally transitive)       |
+/// | `Effects`        | `effects`         | Effect/capability declarations on `target`        |
+/// | `Contracts`      | `contracts`       | Requires/ensures clauses on `target`              |
+/// | `History`        | `history`         | ChangeSet provenance chain for `target`           |
+/// | `Proofs`         | `proofs`          | Proof obligations and status for `target`         |
+/// | `Resources`      | `resources`       | Resource handles, ownership, concurrency info     |
+/// | `Boundaries`     | `boundaries`      | Architectural boundaries and trust levels         |
+/// | `Why`            | `why`             | Provenance trace explaining a claim or edge       |
+/// | `RefactorContext`| `refactor_context`| Safe-refactor prerequisites for `target`         |
+/// | `Runtime`        | `runtime`         | Runtime profile grants and limits for `target`   |
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextQuery {
     /// Context centered on a single node.
@@ -155,6 +198,86 @@ pub enum ContextQuery {
         /// Maximum total bytes for the structured layer (must be > 0).
         budget: usize,
     },
+    /// Proofs query: returns proof obligations and their current status for
+    /// `target`.
+    ///
+    /// The response `structured` slice contains the target node (with
+    /// `contract_clauses` populated) plus nodes reachable via `EdgeKind::Proves`
+    /// edges (proof witnesses).  This covers the `proofs` and `obligations`
+    /// doc query kinds.
+    Proofs {
+        /// The node whose proof obligations are requested.
+        target: NodeRef,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// Resources query: returns resource handles, ownership modes, and
+    /// concurrency information for `target`.
+    ///
+    /// The response `structured` slice contains the target node plus nodes
+    /// reachable via `EdgeKind::Reads` and `EdgeKind::Writes` edges (data
+    /// dependencies that imply resource acquisition).
+    Resources {
+        /// The node whose resource usage is requested.
+        target: NodeRef,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// Boundaries query: returns architectural boundary nodes and trust
+    /// metadata for `target`.
+    ///
+    /// The response `structured` slice contains nodes with `NodeKind::Boundary`
+    /// reachable from `target` via any edge, plus the target itself.  Trust
+    /// metadata (`trust_metadata` field on `GraphNode`) is preserved in the
+    /// returned nodes.
+    Boundaries {
+        /// The node or module whose boundaries are requested.
+        target: NodeRef,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// Why query: returns a provenance trace explaining why a claim or edge
+    /// exists for `target`.
+    ///
+    /// The response `structured` slice contains the target node plus nodes
+    /// reachable via `EdgeKind::Proves` edges (proof witnesses) and
+    /// `EdgeKind::BreaksIfChanged` edges (change-impact dependencies).
+    /// The `history_entries` field carries the snapshot chain as provenance
+    /// context (same as `History`).
+    Why {
+        /// The node whose existence/behaviour is being traced.
+        target: NodeRef,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// RefactorContext query: returns prerequisites and risk analysis for
+    /// safely refactoring `target`.
+    ///
+    /// The response `structured` slice contains the target node plus:
+    /// - Callers (via `EdgeKind::Calls` reverse BFS) — nodes to update.
+    /// - Contract nodes (via `EdgeKind::Proves`) — proofs to rerun.
+    /// - Effect nodes (via `EdgeKind::Emits`) — effects to preserve.
+    RefactorContext {
+        /// The node to be refactored.
+        target: NodeRef,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
+    /// Runtime query: returns runtime profile grants, limits, and audit
+    /// availability for `target`.
+    ///
+    /// The response `structured` slice contains the target node (with
+    /// `capability_reqs` and `effect_row` populated if available) plus
+    /// nodes reachable via `EdgeKind::Emits` (runtime effects).
+    /// The `profile` label is stored in the response summary for traceability.
+    Runtime {
+        /// The node whose runtime profile is requested.
+        target: NodeRef,
+        /// Runtime profile identifier (e.g., `"prod"`, `"dev"`, `"test"`).
+        profile: String,
+        /// Maximum total bytes for the structured layer (must be > 0).
+        budget: usize,
+    },
 }
 
 impl ContextQuery {
@@ -168,7 +291,13 @@ impl ContextQuery {
             | ContextQuery::Callees { budget, .. }
             | ContextQuery::Effects { budget, .. }
             | ContextQuery::Contracts { budget, .. }
-            | ContextQuery::History { budget, .. } => *budget,
+            | ContextQuery::History { budget, .. }
+            | ContextQuery::Proofs { budget, .. }
+            | ContextQuery::Resources { budget, .. }
+            | ContextQuery::Boundaries { budget, .. }
+            | ContextQuery::Why { budget, .. }
+            | ContextQuery::RefactorContext { budget, .. }
+            | ContextQuery::Runtime { budget, .. } => *budget,
         }
     }
 
@@ -183,7 +312,13 @@ impl ContextQuery {
             | ContextQuery::Callees { target, .. }
             | ContextQuery::Effects { target, .. }
             | ContextQuery::Contracts { target, .. }
-            | ContextQuery::History { target, .. } => Some(*target),
+            | ContextQuery::History { target, .. }
+            | ContextQuery::Proofs { target, .. }
+            | ContextQuery::Resources { target, .. }
+            | ContextQuery::Boundaries { target, .. }
+            | ContextQuery::Why { target, .. }
+            | ContextQuery::RefactorContext { target, .. }
+            | ContextQuery::Runtime { target, .. } => Some(*target),
             ContextQuery::Graph { .. } => None,
         }
     }
@@ -252,10 +387,24 @@ pub struct ContextResponse {
     pub truncated: bool,
     /// Budget accounting for this response.
     pub limits: ResponseLimits,
-    /// Snapshot provenance chain for `History` queries.
+    /// Snapshot provenance chain for `History` and `Why` queries.
     ///
     /// Empty for all other query kinds.  Ordered oldest-first.
     pub history_entries: Vec<SnapshotEnvelope>,
+    /// Freshness status relative to the current graph.
+    ///
+    /// `Fresh` when this response was built from the current snapshot.
+    /// `Stale` when a newer snapshot exists.  `Unknown` when the server
+    /// cannot determine currency (e.g., index unavailable).
+    ///
+    /// Serialized only when not `Fresh` (additive; pre-G27 decoders see
+    /// `None` and may treat absence as fresh).
+    #[serde(default, skip_serializing_if = "is_fresh")]
+    pub freshness_status: FreshnessStatus,
+}
+
+fn is_fresh(s: &FreshnessStatus) -> bool {
+    *s == FreshnessStatus::Fresh
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -313,6 +462,7 @@ mod tests {
             truncated: false,
             limits: make_limits(usize::MAX, bytes_used),
             history_entries: Vec::new(),
+            freshness_status: FreshnessStatus::Fresh,
         }
     }
 
@@ -508,6 +658,161 @@ mod tests {
         assert_eq!(
             decoded, limits,
             "ResponseLimits must survive CBOR roundtrip"
+        );
+    }
+
+    // ── g27_new_query_variants_cbor_roundtrip ────────────────────────────
+    // Spec: all G27 ContextQuery variants must survive CBOR roundtrip.
+    //
+    // RED: Proofs/Resources/Boundaries/Why/RefactorContext/Runtime did not exist.
+    // GREEN: enum variants + serde derive makes them compile and roundtrip.
+    #[test]
+    fn g27_new_query_variants_cbor_roundtrip() {
+        let codec = CborCodec;
+        let variants: Vec<ContextQuery> = vec![
+            ContextQuery::Proofs {
+                target: NodeRef(10),
+                budget: 1024,
+            },
+            ContextQuery::Resources {
+                target: NodeRef(11),
+                budget: 2048,
+            },
+            ContextQuery::Boundaries {
+                target: NodeRef(12),
+                budget: 4096,
+            },
+            ContextQuery::Why {
+                target: NodeRef(13),
+                budget: 512,
+            },
+            ContextQuery::RefactorContext {
+                target: NodeRef(14),
+                budget: 8192,
+            },
+            ContextQuery::Runtime {
+                target: NodeRef(15),
+                profile: "prod".to_string(),
+                budget: 16384,
+            },
+        ];
+        for q in &variants {
+            let bytes = codec.encode(q).expect("encode must succeed");
+            let decoded: ContextQuery = codec.decode(&bytes).expect("decode must succeed");
+            assert_eq!(decoded, *q, "{q:?} must survive CBOR roundtrip");
+        }
+    }
+
+    // ── g27_budget_accessor_for_new_variants ─────────────────────────────
+    // All new G27 variants expose .budget().
+    #[test]
+    fn g27_budget_accessor_for_new_variants() {
+        assert_eq!(
+            ContextQuery::Proofs { target: NodeRef(0), budget: 111 }.budget(),
+            111
+        );
+        assert_eq!(
+            ContextQuery::Resources { target: NodeRef(0), budget: 222 }.budget(),
+            222
+        );
+        assert_eq!(
+            ContextQuery::Boundaries { target: NodeRef(0), budget: 333 }.budget(),
+            333
+        );
+        assert_eq!(
+            ContextQuery::Why { target: NodeRef(0), budget: 444 }.budget(),
+            444
+        );
+        assert_eq!(
+            ContextQuery::RefactorContext { target: NodeRef(0), budget: 555 }.budget(),
+            555
+        );
+        assert_eq!(
+            ContextQuery::Runtime { target: NodeRef(0), profile: "dev".to_string(), budget: 666 }.budget(),
+            666
+        );
+    }
+
+    // ── g27_target_accessor_for_new_variants ─────────────────────────────
+    // All new G27 variants expose .target() → Some(NodeRef).
+    #[test]
+    fn g27_target_accessor_for_new_variants() {
+        assert_eq!(
+            ContextQuery::Proofs { target: NodeRef(10), budget: 1 }.target(),
+            Some(NodeRef(10))
+        );
+        assert_eq!(
+            ContextQuery::Resources { target: NodeRef(11), budget: 1 }.target(),
+            Some(NodeRef(11))
+        );
+        assert_eq!(
+            ContextQuery::Runtime { target: NodeRef(15), profile: "test".to_string(), budget: 1 }.target(),
+            Some(NodeRef(15))
+        );
+    }
+
+    // ── freshness_status_cbor_roundtrip ──────────────────────────────────
+    // Spec: FreshnessStatus must survive CBOR roundtrip.
+    //
+    // RED: FreshnessStatus did not exist → compile error.
+    // GREEN: enum + serde derive makes it compile and roundtrip.
+    #[test]
+    fn freshness_status_cbor_roundtrip() {
+        let codec = CborCodec;
+        for status in [FreshnessStatus::Fresh, FreshnessStatus::Stale, FreshnessStatus::Unknown] {
+            let bytes = codec.encode(&status).expect("encode must succeed");
+            let decoded: FreshnessStatus = codec.decode(&bytes).expect("decode must succeed");
+            assert_eq!(decoded, status, "{status:?} must survive CBOR roundtrip");
+        }
+    }
+
+    // ── freshness_status_fresh_is_default ────────────────────────────────
+    // Fresh is the default — not serialized (additive wire compat).
+    #[test]
+    fn freshness_status_fresh_is_default() {
+        let snapshot = make_snapshot();
+        let resp = make_response(snapshot, Vec::new());
+        assert_eq!(
+            resp.freshness_status,
+            FreshnessStatus::Fresh,
+            "default response must have FreshnessStatus::Fresh"
+        );
+    }
+
+    // ── redaction_policy_cbor_roundtrip ──────────────────────────────────
+    // Spec: RedactionPolicy must survive CBOR roundtrip.
+    //
+    // RED: RedactionPolicy did not exist → compile error.
+    // GREEN: struct + serde derive makes it compile and roundtrip.
+    #[test]
+    fn redaction_policy_cbor_roundtrip() {
+        let codec = CborCodec;
+        let policy = RedactionPolicy {
+            label: "PII".to_string(),
+            categories: vec!["secrets".to_string(), "audit_logs".to_string()],
+            requires_approval: true,
+        };
+        let bytes = codec.encode(&policy).expect("encode must succeed");
+        let decoded: RedactionPolicy = codec.decode(&bytes).expect("decode must succeed");
+        assert_eq!(decoded, policy, "RedactionPolicy must survive CBOR roundtrip");
+    }
+
+    // ── context_response_with_stale_status_roundtrip ─────────────────────
+    // TRIANGULATE: ContextResponse with Stale freshness_status must roundtrip.
+    #[test]
+    fn context_response_with_stale_status_roundtrip() {
+        let codec = CborCodec;
+        let snapshot = make_snapshot();
+        let resp = ContextResponse {
+            freshness_status: FreshnessStatus::Stale,
+            ..make_response(snapshot, Vec::new())
+        };
+        let bytes = codec.encode(&resp).expect("encode must succeed");
+        let decoded: ContextResponse = codec.decode(&bytes).expect("decode must succeed");
+        assert_eq!(
+            decoded.freshness_status,
+            FreshnessStatus::Stale,
+            "Stale freshness_status must survive CBOR roundtrip"
         );
     }
 }
