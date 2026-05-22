@@ -44,7 +44,7 @@ use std::collections::BTreeMap;
 use ail_core::semantic_graph::NodeRef;
 use cranelift_codegen::{
     Context,
-    ir::{Function, InstBuilder, Signature, UserFuncName},
+    ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName},
     isa::CallConv,
     settings,
 };
@@ -151,21 +151,189 @@ fn build_object_module(
     Ok(ObjectModule::new(obj_builder))
 }
 
+// ── LowerResult ───────────────────────────────────────────────────────────
+
+/// Result of lowering one `AnfExpr` into Cranelift IR.
+enum LowerResult {
+    /// The expression produced a Cranelift SSA value; the current block is
+    /// NOT yet terminated — caller must emit `return_(&[val])`.
+    Value(cranelift_codegen::ir::Value),
+    /// The expression produces no value (unit); the current block is NOT
+    /// yet terminated — caller must emit `return_(&[])`.
+    Unit,
+    /// The expression emitted a terminating instruction (`trap`); the current
+    /// block IS terminated — caller must NOT emit another terminator.
+    Terminated,
+}
+
+// ── NativeCodegenCtx ──────────────────────────────────────────────────────
+
+/// Per-function compilation context for `lower_anf_expr_cranelift`.
+struct NativeCodegenCtx<'a> {
+    /// Maps ANF let-binding names to their Cranelift SSA `Value`.
+    locals: BTreeMap<&'a str, cranelift_codegen::ir::Value>,
+}
+
+impl<'a> NativeCodegenCtx<'a> {
+    fn new() -> Self {
+        Self {
+            locals: BTreeMap::new(),
+        }
+    }
+}
+
+// ── infer_cranelift_return_type ───────────────────────────────────────────
+
+/// Infer the Cranelift return type for an `AnfExpr` without compiling it.
+///
+/// Returns `None` when the expression produces no value (unit, trap stub,
+/// or unsupported variant).
+fn infer_cranelift_return_type(
+    expr: &crate::anf::AnfExpr,
+) -> Option<cranelift_codegen::ir::types::Type> {
+    use crate::anf::AnfExpr;
+    use crate::core_ir::LiteralValue;
+    use cranelift_codegen::ir::types;
+
+    match expr {
+        AnfExpr::Literal(LiteralValue::Int(_)) => Some(types::I64),
+        AnfExpr::Literal(LiteralValue::Bool(_)) => Some(types::I8),
+        AnfExpr::Literal(LiteralValue::Float(_)) => Some(types::F64),
+        AnfExpr::Let { body, .. } => infer_cranelift_return_type(body),
+        AnfExpr::Return(inner) => infer_cranelift_return_type(inner),
+        AnfExpr::Call { func, .. } => match func.as_str() {
+            "i64.add" | "i64.sub" | "i64.mul" => Some(types::I64),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+// ── lower_anf_expr_cranelift ──────────────────────────────────────────────
+
+/// Lower one `AnfExpr` into Cranelift IR instructions.
+///
+/// Returns a [`LowerResult`] indicating whether a value was produced and
+/// whether the current basic block has been terminated.
+///
+/// Supported:
+/// - `Literal(Int)` → `iconst(I64, n)` → [`LowerResult::Value`]
+/// - `Literal(Bool)` → `iconst(I8, b)` → [`LowerResult::Value`]
+/// - `Literal(Float)` → `f64const(f)` → [`LowerResult::Value`]
+/// - `Literal(Unit)` → [`LowerResult::Unit`] (no instructions emitted)
+/// - `Var(name)` → look up in `ctx.locals`
+/// - `Let { name, value, body }` → lower value, bind name, lower body
+/// - `Return(inner)` → lower inner, propagate result
+/// - `Call { func: "i64.add"|"i64.sub"|"i64.mul", args: [a, b] }` → arithmetic
+///
+/// All other variants emit `trap(user(1))` → [`LowerResult::Terminated`].
+fn lower_anf_expr_cranelift<'a>(
+    expr: &'a crate::anf::AnfExpr,
+    ctx: &mut NativeCodegenCtx<'a>,
+    builder: &mut FunctionBuilder<'_>,
+) -> LowerResult {
+    use crate::anf::AnfExpr;
+    use crate::core_ir::LiteralValue;
+    use cranelift_codegen::ir::{TrapCode, types};
+
+    match expr {
+        AnfExpr::Literal(lit) => match lit {
+            LiteralValue::Int(n) => {
+                LowerResult::Value(builder.ins().iconst(types::I64, *n))
+            }
+            LiteralValue::Bool(b) => {
+                LowerResult::Value(builder.ins().iconst(types::I8, *b as i64))
+            }
+            LiteralValue::Float(f) => {
+                LowerResult::Value(builder.ins().f64const(*f))
+            }
+            LiteralValue::Unit => LowerResult::Unit,
+            LiteralValue::Text(_) => {
+                // Text encoding requires data section support — deferred.
+                builder.ins().trap(TrapCode::user(1).unwrap());
+                LowerResult::Terminated
+            }
+        },
+
+        AnfExpr::Var(name) => match ctx.locals.get(name.as_str()).copied() {
+            Some(val) => LowerResult::Value(val),
+            None => {
+                builder.ins().trap(TrapCode::user(1).unwrap());
+                LowerResult::Terminated
+            }
+        },
+
+        AnfExpr::Let { name, value, body } => {
+            match lower_anf_expr_cranelift(value, ctx, builder) {
+                LowerResult::Value(val) => {
+                    ctx.locals.insert(name.as_str(), val);
+                    lower_anf_expr_cranelift(body, ctx, builder)
+                }
+                LowerResult::Unit => lower_anf_expr_cranelift(body, ctx, builder),
+                LowerResult::Terminated => LowerResult::Terminated,
+            }
+        }
+
+        AnfExpr::Return(inner) => lower_anf_expr_cranelift(inner, ctx, builder),
+
+        AnfExpr::Call { func, args } => match func.as_str() {
+            "i64.add" | "i64.sub" | "i64.mul" if args.len() == 2 => {
+                let lhs = ctx.locals.get(args[0].as_str()).copied();
+                let rhs = ctx.locals.get(args[1].as_str()).copied();
+                match (lhs, rhs) {
+                    (Some(l), Some(r)) => {
+                        let val = if func == "i64.add" {
+                            builder.ins().iadd(l, r)
+                        } else if func == "i64.sub" {
+                            builder.ins().isub(l, r)
+                        } else {
+                            builder.ins().imul(l, r)
+                        };
+                        LowerResult::Value(val)
+                    }
+                    _ => {
+                        builder.ins().trap(TrapCode::user(1).unwrap());
+                        LowerResult::Terminated
+                    }
+                }
+            }
+            _ => {
+                builder.ins().trap(TrapCode::user(1).unwrap());
+                LowerResult::Terminated
+            }
+        },
+
+        _ => {
+            builder.ins().trap(TrapCode::user(1).unwrap());
+            LowerResult::Terminated
+        }
+    }
+}
+
 // ── lower_binding ─────────────────────────────────────────────────────────
 
 /// Lower one `AnfBinding` into a compiled Cranelift function inside `module`.
 ///
-/// Returns `(cumulative_offset_before, code_size_in_bytes)` so the caller
-/// can record the provenance entry and advance the offset accumulator.
+/// Returns the compiled code size in bytes so the caller can advance the
+/// cumulative offset accumulator.
 ///
-/// Body is a single `trap` instruction (user trap code 1), matching the WASM
-/// phase's `unreachable` stub strategy.
+/// The function signature and body are inferred from `expr`:
+/// - `Literal(Int)` / arithmetic → `() -> i64` with computed return value.
+/// - `Literal(Unit)` → `() -> ()` with empty return.
+/// - `Placeholder` / unsupported → `() -> ()` with `trap` body.
 fn lower_binding(
     module: &mut ObjectModule,
     name: &str,
+    expr: &crate::anf::AnfExpr,
     cumulative_offset: u64,
 ) -> Result<u64, CompileError> {
-    let sig = Signature::new(CallConv::SystemV);
+    // Infer return type from the expression before building the function.
+    let ret_ty = infer_cranelift_return_type(expr);
+
+    let mut sig = Signature::new(CallConv::SystemV);
+    if let Some(ty) = ret_ty {
+        sig.returns.push(AbiParam::new(ty));
+    }
 
     let func_id = module
         .declare_function(name, Linkage::Export, &sig)
@@ -179,10 +347,20 @@ fn lower_binding(
         let block = builder.create_block();
         builder.switch_to_block(block);
         builder.seal_block(block);
-        // IMPORTANT: TrapCode::user(0) returns None — use user(1).unwrap()
-        builder
-            .ins()
-            .trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());
+
+        let mut codegen_ctx = NativeCodegenCtx::new();
+        match lower_anf_expr_cranelift(expr, &mut codegen_ctx, &mut builder) {
+            LowerResult::Value(val) => {
+                builder.ins().return_(&[val]);
+            }
+            LowerResult::Unit => {
+                builder.ins().return_(&[]);
+            }
+            LowerResult::Terminated => {
+                // Block already has a terminator — finalize only.
+            }
+        }
+
         builder.finalize();
     }
 
@@ -251,7 +429,7 @@ pub fn emit_native_with_profile(
         native_offsets.push(cumulative_offset);
 
         // Lower the binding and get its compiled code size.
-        let code_size = lower_binding(&mut module, &binding.name, cumulative_offset)?;
+        let code_size = lower_binding(&mut module, &binding.name, &binding.expr, cumulative_offset)?;
         cumulative_offset += code_size;
     }
 
@@ -459,6 +637,108 @@ mod tests {
         assert!(
             artifact.provenance.is_empty(),
             "empty AnfIr must produce empty provenance map"
+        );
+    }
+
+    // ── TASK-B1: Native expression lowering tests (TDD RED) ───────────────
+    // Spec scenarios C-5a, C-5b, C-5c, and C-5d.
+
+    fn anf_for_binding(binding: crate::anf::AnfBinding) -> AnfIr {
+        use crate::anf::SourceMap;
+        AnfIr {
+            schema_version: crate::anf::ANF_SCHEMA_VERSION,
+            source_map: SourceMap::from_bindings(std::slice::from_ref(&binding)),
+            bindings: vec![binding],
+            stage_hashes: StageHashes {
+                graph_snapshot_hash: [0u8; 32],
+                verification_report_hash: [0u8; 32],
+                core_ir_hash: [1u8; 32],
+                anf_ir_hash: Some([2u8; 32]),
+                wasm_hash: None,
+                native_hash: None,
+                source_map_hash: None,
+                artifact_manifest_hash: None,
+            },
+        }
+    }
+
+    // Helper: emit native for a single Int literal binding with a FIXED name
+    // so that two calls with different values produce identical symbol tables
+    // and any byte difference is purely from code content.
+    fn anf_with_int_literal(n: i64) -> AnfIr {
+        use crate::anf::AnfBinding;
+        use crate::core_ir::LiteralValue;
+        anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_lit".to_string(), // fixed name — code difference is the only variable
+            expr: crate::anf::AnfExpr::Literal(LiteralValue::Int(n)),
+        })
+    }
+
+    // C-5a: Two different Int literals must produce different native_bytes.
+    // RED: currently both are trap stubs → byte-identical object files.
+    #[test]
+    fn two_int_literal_bindings_produce_different_native_bytes() {
+        let art1 = emit_native(&anf_with_int_literal(1)).unwrap();
+        let art2 = emit_native(&anf_with_int_literal(2)).unwrap();
+        assert_ne!(
+            art1.native_bytes, art2.native_bytes,
+            "Literal(Int(1)) and Literal(Int(2)) must produce different native code bytes"
+        );
+    }
+
+    // C-5b: Int literal binding must produce different bytes than a Placeholder.
+    // RED: currently both are trap stubs → same bytes (same name, same trap code).
+    #[test]
+    fn emit_native_int_literal_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        let lit_art = emit_native(&anf_with_int_literal(42)).unwrap();
+        let placeholder_anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_lit".to_string(), // same name → only code differs
+            expr: AnfExpr::Placeholder,
+        });
+        let placeholder_art = emit_native(&placeholder_anf).unwrap();
+        assert_ne!(
+            lit_art.native_bytes, placeholder_art.native_bytes,
+            "Literal(Int(42)) must produce different native code than Placeholder (trap stub)"
+        );
+    }
+
+    // C-5c: Let{x=Int(3), y=Int(4), body=Call{"i64.add",[x,y]}} must produce
+    // different bytes than a plain Placeholder stub with the same function name.
+    // RED: currently Let+Add → trap stub → same bytes as Placeholder.
+    #[test]
+    fn native_lowering_let_int_add_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let add_binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_add".to_string(),
+            expr: AnfExpr::Let {
+                name: "x".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(3))),
+                body: Box::new(AnfExpr::Let {
+                    name: "y".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(4))),
+                    body: Box::new(AnfExpr::Call {
+                        func: "i64.add".to_string(),
+                        args: vec!["x".to_string(), "y".to_string()],
+                    }),
+                }),
+            },
+        };
+        let placeholder_binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_add".to_string(), // same name to isolate code difference
+            expr: AnfExpr::Placeholder,
+        };
+        let add_art = emit_native(&anf_for_binding(add_binding)).unwrap();
+        let placeholder_art = emit_native(&anf_for_binding(placeholder_binding)).unwrap();
+        assert!(!add_art.native_bytes.is_empty(), "native_bytes must be non-empty");
+        assert_ne!(
+            add_art.native_bytes, placeholder_art.native_bytes,
+            "Let+Add must produce different code than a Placeholder trap stub"
         );
     }
 }

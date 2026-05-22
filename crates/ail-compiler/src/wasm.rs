@@ -148,8 +148,8 @@ fn build_type_section_with_host_call(signatures: &[WasmSignature]) -> TypeSectio
 
 fn literal_type(lit: &LiteralValue) -> ValType {
     match lit {
-        LiteralValue::Int(_) | LiteralValue::Bool(_) => ValType::I64,
-        LiteralValue::Text(_) | LiteralValue::Unit => ValType::I32,
+        LiteralValue::Int(_) | LiteralValue::Bool(_) | LiteralValue::Text(_) => ValType::I64,
+        LiteralValue::Unit => ValType::I32,
         LiteralValue::Float(_) => ValType::F64,
     }
 }
@@ -434,6 +434,10 @@ struct WasmCodegenCtx<'a> {
     effect_data: &'a EffectDataLayout,
     labels: Vec<LabelKind>,
     record_layouts: BTreeMap<String, Vec<String>>,
+    /// Stable discriminant table: tag name → assigned u32 id.
+    variant_tags: BTreeMap<String, u32>,
+    /// Counter for the next unassigned variant discriminant.
+    next_variant_tag: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -457,6 +461,23 @@ impl<'a> WasmCodegenCtx<'a> {
             effect_data,
             labels: Vec::new(),
             record_layouts: BTreeMap::new(),
+            variant_tags: BTreeMap::new(),
+            next_variant_tag: 0,
+        }
+    }
+
+    /// Assign a stable discriminant to `tag` within this function context.
+    ///
+    /// The same tag name always returns the same u32 within one codegen
+    /// context.  New tags are assigned in first-encounter order (0, 1, 2, …).
+    fn assign_tag(&mut self, tag: &str) -> u32 {
+        if let Some(&existing) = self.variant_tags.get(tag) {
+            existing
+        } else {
+            let id = self.next_variant_tag;
+            self.next_variant_tag += 1;
+            self.variant_tags.insert(tag.to_string(), id);
+            id
         }
     }
 
@@ -532,6 +553,10 @@ impl EffectDataLayout {
 
     fn collect_expr(&mut self, expr: &AnfExpr) {
         match expr {
+            AnfExpr::Literal(LiteralValue::Text(s)) => {
+                self.intern(s);
+                self.needs_memory = true;
+            }
             AnfExpr::EffectCall {
                 capability, func, ..
             } => {
@@ -655,7 +680,7 @@ fn align_to_i64(offset: i32) -> i32 {
 }
 
 fn build_data_section(layout: &EffectDataLayout) -> Option<DataSection> {
-    if !layout.needs_host_call {
+    if layout.strings.is_empty() {
         return None;
     }
     let mut data = DataSection::new();
@@ -915,8 +940,14 @@ fn emit_anf_expr<'a>(
                 insns.push(Instruction::F64Const(wasm_encoder::Ieee64::from(*f)));
                 Some(ValType::F64)
             }
-            // Text, Unit → opaque i32(0) placeholder (no runtime value).
-            LiteralValue::Text(_) | LiteralValue::Unit => {
+            LiteralValue::Text(s) => {
+                // Encode as: i64 = (len as u64) << 32 | (ptr as u64)
+                let (ptr, len) = ctx.effect_data.string(s);
+                let packed = ((len as i64) << 32) | (ptr as i64);
+                insns.push(Instruction::I64Const(packed));
+                Some(ValType::I64)
+            }
+            LiteralValue::Unit => {
                 insns.push(Instruction::I32Const(0));
                 Some(ValType::I32)
             }
@@ -1115,8 +1146,13 @@ fn emit_anf_expr<'a>(
                 insns.push(Instruction::I32Const(
                     ctx.effect_data.args_offset + (idx as i32 * 8),
                 ));
-                if let Some((local_idx, _)) = ctx.lookup(arg_name) {
+                if let Some((local_idx, arg_ty)) = ctx.lookup(arg_name) {
                     insns.push(Instruction::LocalGet(local_idx));
+                    // Zero-extend I32 args to I64 before storing in the args buffer.
+                    // I64 args are already the right width and need no extension.
+                    if arg_ty == ValType::I32 {
+                        insns.push(Instruction::I64ExtendI32U);
+                    }
                     insns.push(Instruction::I64Store(wasm_encoder::MemArg {
                         offset: 0,
                         align: 3,
@@ -1207,14 +1243,11 @@ fn emit_anf_expr<'a>(
             let ptr = ctx.bind("__variant_ptr", ValType::I32);
             insns.push(Instruction::LocalSet(ptr));
             insns.push(Instruction::LocalGet(ptr));
-            let tag_byte = tag
-                .as_bytes()
-                .iter()
-                .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
-            insns.push(Instruction::I32Const(i32::from(tag_byte)));
-            insns.push(Instruction::I32Store8(wasm_encoder::MemArg {
+            let tag_id = ctx.assign_tag(tag) as i32;
+            insns.push(Instruction::I32Const(tag_id));
+            insns.push(Instruction::I32Store(wasm_encoder::MemArg {
                 offset: 0,
-                align: 0,
+                align: 2,
                 memory_index: 0,
             }));
             if let Some(p) = payload {
@@ -1288,10 +1321,20 @@ fn emit_anf_expr<'a>(
         | AnfExpr::CellNew { .. }
         | AnfExpr::CellGet { .. }
         | AnfExpr::CellSet { .. }
-        | AnfExpr::RuntimeCheck { .. }
         | AnfExpr::ResourceAcquire { .. }
         | AnfExpr::ResourceRelease { .. } => {
             insns.push(Instruction::Unreachable);
+            None
+        }
+
+        // ── RuntimeCheck ─────────────────────────────────────────────────
+        // Emit a conditional trap: if `cond` is non-zero (violation detected)
+        // → Unreachable.  If `cond` is zero → continue silently.
+        AnfExpr::RuntimeCheck { cond, .. } => {
+            emit_condition_get(ctx, cond, insns);
+            insns.push(Instruction::If(wasm_encoder::BlockType::Empty));
+            insns.push(Instruction::Unreachable);
+            insns.push(Instruction::End);
             None
         }
 
@@ -1993,7 +2036,7 @@ mod tests {
                 let mut reader = body.get_operators_reader().unwrap();
                 while !reader.eof() {
                     match reader.read().unwrap() {
-                        Operator::I32Store8 { .. } => saw_tag_store = true,
+                        Operator::I32Store { .. } => saw_tag_store = true,
                         Operator::I64Store { .. } => i64_store_count += 1,
                         _ => {}
                     }
@@ -2001,10 +2044,337 @@ mod tests {
             }
         }
 
-        assert!(saw_tag_store, "variant construction must store a tag byte");
+        assert!(saw_tag_store, "variant construction must store a tag discriminant (I32Store)");
         assert!(
             i64_store_count >= 6,
             "tuple/list/variant constructors must store i64 payloads"
+        );
+    }
+
+    // ── TASK-A3: stable VariantNew discriminant tests (TDD RED) ──────────
+    // Spec scenarios C-2a, C-2b, C-2c.
+
+    fn emit_two_variant_anf(tag_a: &str, tag_b: &str) -> AnfIr {
+        use crate::anf::AnfBinding;
+        // One function body with two sequential VariantNew lets.
+        let binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.variants".to_string(),
+            expr: AnfExpr::Let {
+                name: "v1".to_string(),
+                value: Box::new(AnfExpr::VariantNew {
+                    tag: tag_a.to_string(),
+                    payload: None,
+                }),
+                body: Box::new(AnfExpr::Let {
+                    name: "v2".to_string(),
+                    value: Box::new(AnfExpr::VariantNew {
+                        tag: tag_b.to_string(),
+                        payload: None,
+                    }),
+                    body: Box::new(AnfExpr::Var("v1".to_string())),
+                }),
+            },
+        };
+        sealed_anf(vec![binding])
+    }
+
+    /// Extract all I32Const values seen in the code section of a WASM binary.
+    fn i32_const_values_in_code(wasm: &[u8]) -> Vec<i32> {
+        use wasmparser::{Operator, Parser, Payload};
+        let mut values = Vec::new();
+        for payload in Parser::new(0).parse_all(wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    if let Operator::I32Const { value } = reader.read().unwrap() {
+                        values.push(value);
+                    }
+                }
+            }
+        }
+        values
+    }
+
+    // ── TASK-A7: EffectCall I32 arg zero-extension tests (TDD RED) ───────
+    // Spec scenarios C-4a, C-4b.
+
+    fn emit_effect_call_with_i32_arg_wasm() -> Vec<u8> {
+        use crate::anf::AnfBinding;
+        // Let "rec" = VariantNew (I32) in EffectCall { cap: "test", args: ["rec"] }
+        let binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.effect_call_i32".to_string(),
+            expr: AnfExpr::Let {
+                name: "rec".to_string(),
+                value: Box::new(AnfExpr::VariantNew {
+                    tag: "Tag".to_string(),
+                    payload: None,
+                }),
+                body: Box::new(AnfExpr::EffectCall {
+                    capability: "test.cap".to_string(),
+                    func: "op".to_string(),
+                    args: vec!["rec".to_string()],
+                }),
+            },
+        };
+        // Note: before A8 the WASM is invalid (I32 stored where I64 is needed).
+        // We emit without validation here so we can inspect the instructions.
+        emit_wasm(&sealed_anf(vec![binding])).expect("emit_wasm must succeed").wasm
+    }
+
+    // C-4a: I32 arg to EffectCall must be zero-extended (I64ExtendI32U emitted).
+    // Before A8: the WASM is either invalid OR missing I64ExtendI32U.
+    // After A8: WASM validates AND has I64ExtendI32U → I64Store sequence.
+    #[test]
+    fn effect_call_i32_arg_emits_i64_extend_before_store() {
+        use wasmparser::{Operator, Parser, Payload};
+
+        let wasm = emit_effect_call_with_i32_arg_wasm();
+
+        // First: assert the WASM is valid (after A8 this must pass).
+        wasmparser::validate(&wasm).expect("EffectCall with I32 arg must produce valid WASM");
+
+        let mut saw_extend = false;
+        let mut extend_before_store = false;
+
+        for payload in Parser::new(0).parse_all(&wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    match reader.read().unwrap() {
+                        Operator::I64ExtendI32U => {
+                            saw_extend = true;
+                        }
+                        Operator::I64Store { .. } if saw_extend => {
+                            extend_before_store = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(
+            extend_before_store,
+            "EffectCall with I32 arg must emit I64ExtendI32U before I64Store"
+        );
+    }
+
+    // C-4b: I64 arg to EffectCall must NOT emit I64ExtendI32U (already 64-bit).
+    #[test]
+    fn effect_call_i64_arg_does_not_emit_extend() {
+        use crate::anf::AnfBinding;
+        use wasmparser::{Operator, Parser, Payload};
+
+        // Let "n" = Int(42) (I64) in EffectCall { args: ["n"] }
+        let binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.effect_call_i64".to_string(),
+            expr: AnfExpr::Let {
+                name: "n".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
+                body: Box::new(AnfExpr::EffectCall {
+                    capability: "test.cap".to_string(),
+                    func: "op".to_string(),
+                    args: vec!["n".to_string()],
+                }),
+            },
+        };
+        let artifact = emit_wasm(&sealed_anf(vec![binding])).expect("emit_wasm");
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let mut extend_count = 0usize;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    if let Operator::I64ExtendI32U = reader.read().unwrap() {
+                        extend_count += 1;
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            extend_count, 0,
+            "EffectCall with I64 arg must NOT emit I64ExtendI32U (got {extend_count})"
+        );
+    }
+
+    // C-2a: Different tag names produce different discriminants.
+    #[test]
+    fn variant_tag_ok_and_err_produce_different_discriminants() {
+        let anf = emit_two_variant_anf("Ok", "Err");
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let consts = i32_const_values_in_code(&artifact.wasm);
+        // There must be at least two I32Const values (one per VariantNew).
+        assert!(
+            consts.len() >= 2,
+            "must have at least two i32.const (one per variant tag), got: {consts:?}"
+        );
+        // The two tag discriminants must differ.
+        let first = consts[0];
+        let second = consts.iter().find(|&&v| v != first);
+        assert!(
+            second.is_some(),
+            "Ok and Err must produce different discriminants, got all equal: {consts:?}"
+        );
+    }
+
+    // C-2b: Same tag name always produces the same discriminant.
+    // Verified by emitting the same single-variant binding twice and asserting
+    // that the resulting WASM bytes are byte-identical (deterministic discriminant).
+    #[test]
+    fn same_tag_name_produces_same_discriminant_across_calls() {
+        use crate::anf::AnfBinding;
+        let make_anf = || {
+            let binding = AnfBinding {
+                source_ref: NodeRef(0),
+                name: "fn.v".to_string(),
+                expr: AnfExpr::VariantNew {
+                    tag: "Some".to_string(),
+                    payload: None,
+                },
+            };
+            sealed_anf(vec![binding])
+        };
+        let art1 = emit_wasm(&make_anf()).unwrap();
+        let art2 = emit_wasm(&make_anf()).unwrap();
+        wasmparser::validate(&art1.wasm).expect("wasm1 must validate");
+        wasmparser::validate(&art2.wasm).expect("wasm2 must validate");
+        assert_eq!(
+            art1.wasm, art2.wasm,
+            "same AnfIr must produce byte-identical WASM (stable discriminant)"
+        );
+    }
+
+    // ── TASK-A5: RuntimeCheck conditional trap tests (TDD RED) ───────────
+    // Spec scenarios C-3a, C-3b.
+    // These tests are structural (wasmparser) — they verify the emitted WASM
+    // instruction sequence for RuntimeCheck without requiring runtime execution.
+
+    fn emit_runtime_check_wasm(cond_name: &str) -> Vec<u8> {
+        use crate::anf::AnfBinding;
+        // Let "ok" = Int(1); RuntimeCheck { cond: "ok", .. }
+        let binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.guarded".to_string(),
+            expr: AnfExpr::Let {
+                name: cond_name.to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                body: Box::new(AnfExpr::RuntimeCheck {
+                    check_ref: "rtcheck.test".to_string(),
+                    cond: cond_name.to_string(),
+                    msg: "check failed".to_string(),
+                }),
+            },
+        };
+        let artifact = emit_wasm(&sealed_anf(vec![binding])).expect("emit_wasm");
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+        artifact.wasm
+    }
+
+    // C-3a: RuntimeCheck emits a conditional trap (If+Unreachable+End),
+    // not an unconditional Unreachable.
+    // This test is RED with the current unconditional-Unreachable implementation.
+    #[test]
+    fn runtime_check_emits_conditional_trap_not_unconditional() {
+        use wasmparser::{Operator, Parser, Payload};
+
+        let wasm = emit_runtime_check_wasm("ok");
+
+        let mut saw_if = false;
+        let mut saw_unreachable_in_if = false;
+        let mut in_if_block = false;
+
+        for payload in Parser::new(0).parse_all(&wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    match reader.read().unwrap() {
+                        Operator::If { .. } => {
+                            saw_if = true;
+                            in_if_block = true;
+                        }
+                        Operator::Unreachable if in_if_block => {
+                            saw_unreachable_in_if = true;
+                        }
+                        Operator::End if in_if_block => {
+                            in_if_block = false;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_if,
+            "RuntimeCheck must emit an If instruction for the conditional trap"
+        );
+        assert!(
+            saw_unreachable_in_if,
+            "RuntimeCheck must emit Unreachable inside an If block"
+        );
+    }
+
+    // C-3b: A RuntimeCheck-returning function must NOT be exported
+    // (binding_result returns None for RuntimeCheck → not exported).
+    #[test]
+    fn runtime_check_function_is_not_exported() {
+        use wasmparser::{ExternalKind, Parser, Payload};
+
+        let wasm = emit_runtime_check_wasm("ok");
+
+        let mut export_names: Vec<String> = Vec::new();
+        for payload in Parser::new(0).parse_all(&wasm) {
+            if let Payload::ExportSection(exports) = payload.unwrap() {
+                for export in exports {
+                    let e = export.unwrap();
+                    if e.kind == ExternalKind::Func {
+                        export_names.push(e.name.to_string());
+                    }
+                }
+            }
+        }
+
+        // RuntimeCheck returns None → binding_result returns None → not exported.
+        assert!(
+            !export_names.contains(&"guarded".to_string()),
+            "RuntimeCheck-only function must not be exported (returns no value); exports: {export_names:?}"
+        );
+    }
+
+    // C-2c: Tag discriminant is stored as a full i32 (not i8) at offset 0.
+    // This test is RED with the current I32Store8 implementation.
+    #[test]
+    fn variant_discriminant_stored_as_i32_at_offset_0() {
+        use wasmparser::{Operator, Parser, Payload};
+
+        let anf = emit_two_variant_anf("Tag", "Tag");
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let mut saw_i32_store_at_0 = false;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    if let Operator::I32Store { memarg } = reader.read().unwrap() {
+                        if memarg.offset == 0 {
+                            saw_i32_store_at_0 = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_i32_store_at_0,
+            "VariantNew tag must be stored as a full i32 (I32Store at offset 0), not I32Store8"
         );
     }
 }
