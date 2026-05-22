@@ -1564,6 +1564,50 @@ mod tests {
         assert!(emit_native(&anf).is_ok(), "Loop{{Continue; Break}} must compile without panic");
     }
 
+    // ── TASK-F0: Literal(Text) + NativeDataLayout — RED ──────────────────
+
+    #[test]
+    fn native_text_literal_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Literal(LiteralValue::Text("hello".to_string())),
+        });
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        let art = emit_native(&anf).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "Literal(Text(\"hello\")) must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_text_literal_two_strings_differ() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let make = |s: &str| anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Literal(LiteralValue::Text(s.to_string())),
+        });
+        let art_hello = emit_native(&make("hello")).unwrap();
+        let art_world = emit_native(&make("world")).unwrap();
+        assert_ne!(art_hello.native_bytes, art_world.native_bytes,
+            "Literal(Text(\"hello\")) and Literal(Text(\"world\")) must produce different bytes");
+    }
+
+    #[test]
+    fn native_text_literal_same_string_deduplicated() {
+        // Two bindings both using the same string literal should intern it once.
+        // Test: NativeDataLayout interns the same string to same index.
+        // RED: NativeDataLayout doesn't exist yet.
+        let mut layout = NativeDataLayout::default();
+        let idx1 = layout.intern("hello");
+        let idx2 = layout.intern("hello");
+        assert_eq!(idx1, idx2, "Same string must intern to same index");
+        assert_eq!(layout.ordered.len(), 1, "Only one data object should exist");
+    }
+
     // ── TASK-E0: Match — RED ──────────────────────────────────────────────
 
     #[test]
