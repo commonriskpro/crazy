@@ -461,4 +461,106 @@ mod tests {
             "empty AnfIr must produce empty provenance map"
         );
     }
+
+    // ── TASK-B1: Native expression lowering tests (TDD RED) ───────────────
+    // Spec scenarios C-5a, C-5b, C-5c, and C-5d.
+
+    fn anf_for_binding(binding: crate::anf::AnfBinding) -> AnfIr {
+        use crate::anf::SourceMap;
+        AnfIr {
+            schema_version: crate::anf::ANF_SCHEMA_VERSION,
+            source_map: SourceMap::from_bindings(std::slice::from_ref(&binding)),
+            bindings: vec![binding],
+            stage_hashes: StageHashes {
+                graph_snapshot_hash: [0u8; 32],
+                verification_report_hash: [0u8; 32],
+                core_ir_hash: [1u8; 32],
+                anf_ir_hash: Some([2u8; 32]),
+                wasm_hash: None,
+                native_hash: None,
+                source_map_hash: None,
+                artifact_manifest_hash: None,
+            },
+        }
+    }
+
+    // Helper: emit native for a single Int literal binding with a FIXED name
+    // so that two calls with different values produce identical symbol tables
+    // and any byte difference is purely from code content.
+    fn anf_with_int_literal(n: i64) -> AnfIr {
+        use crate::anf::AnfBinding;
+        use crate::core_ir::LiteralValue;
+        anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_lit".to_string(), // fixed name — code difference is the only variable
+            expr: crate::anf::AnfExpr::Literal(LiteralValue::Int(n)),
+        })
+    }
+
+    // C-5a: Two different Int literals must produce different native_bytes.
+    // RED: currently both are trap stubs → byte-identical object files.
+    #[test]
+    fn two_int_literal_bindings_produce_different_native_bytes() {
+        let art1 = emit_native(&anf_with_int_literal(1)).unwrap();
+        let art2 = emit_native(&anf_with_int_literal(2)).unwrap();
+        assert_ne!(
+            art1.native_bytes, art2.native_bytes,
+            "Literal(Int(1)) and Literal(Int(2)) must produce different native code bytes"
+        );
+    }
+
+    // C-5b: Int literal binding must produce different bytes than a Placeholder.
+    // RED: currently both are trap stubs → same bytes (same name, same trap code).
+    #[test]
+    fn emit_native_int_literal_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        let lit_art = emit_native(&anf_with_int_literal(42)).unwrap();
+        let placeholder_anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_lit".to_string(), // same name → only code differs
+            expr: AnfExpr::Placeholder,
+        });
+        let placeholder_art = emit_native(&placeholder_anf).unwrap();
+        assert_ne!(
+            lit_art.native_bytes, placeholder_art.native_bytes,
+            "Literal(Int(42)) must produce different native code than Placeholder (trap stub)"
+        );
+    }
+
+    // C-5c: Let{x=Int(3), y=Int(4), body=Call{"i64.add",[x,y]}} must produce
+    // different bytes than a plain Placeholder stub with the same function name.
+    // RED: currently Let+Add → trap stub → same bytes as Placeholder.
+    #[test]
+    fn native_lowering_let_int_add_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let add_binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_add".to_string(),
+            expr: AnfExpr::Let {
+                name: "x".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(3))),
+                body: Box::new(AnfExpr::Let {
+                    name: "y".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(4))),
+                    body: Box::new(AnfExpr::Call {
+                        func: "i64.add".to_string(),
+                        args: vec!["x".to_string(), "y".to_string()],
+                    }),
+                }),
+            },
+        };
+        let placeholder_binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_add".to_string(), // same name to isolate code difference
+            expr: AnfExpr::Placeholder,
+        };
+        let add_art = emit_native(&anf_for_binding(add_binding)).unwrap();
+        let placeholder_art = emit_native(&anf_for_binding(placeholder_binding)).unwrap();
+        assert!(!add_art.native_bytes.is_empty(), "native_bytes must be non-empty");
+        assert_ne!(
+            add_art.native_bytes, placeholder_art.native_bytes,
+            "Let+Add must produce different code than a Placeholder trap stub"
+        );
+    }
 }
