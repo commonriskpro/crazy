@@ -810,6 +810,121 @@ mod tests {
             "i64.eqz must produce different bytes than Placeholder");
     }
 
+    // ── TASK-B0: If + ShortCircuit tests — RED ────────────────────────────
+    // These hit the catch-all `_ =>` trap arm until B1 lands.
+
+    fn anf_with_if(cond_val: bool, then_val: i64, else_val: i64) -> AnfIr {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "c".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Bool(cond_val))),
+                body: Box::new(AnfExpr::If {
+                    cond: "c".to_string(),
+                    then_branch: Box::new(AnfExpr::Literal(LiteralValue::Int(then_val))),
+                    else_branch: Box::new(AnfExpr::Literal(LiteralValue::Int(else_val))),
+                }),
+            },
+        })
+    }
+
+    #[test]
+    fn native_if_true_returns_then_branch() {
+        let art = emit_native(&anf_with_if(true, 1, 2)).unwrap();
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "If with Bool(true) cond must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_if_false_returns_else_branch() {
+        let art_true = emit_native(&anf_with_if(true, 1, 2)).unwrap();
+        let art_false = emit_native(&anf_with_if(false, 1, 2)).unwrap();
+        assert_ne!(art_true.native_bytes, art_false.native_bytes,
+            "If with Bool(true) and Bool(false) cond must produce different bytes");
+    }
+
+    #[test]
+    fn native_if_no_result_compiles() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "c".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Bool(false))),
+                body: Box::new(AnfExpr::If {
+                    cond: "c".to_string(),
+                    then_branch: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+                    else_branch: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+                }),
+            },
+        });
+        assert!(emit_native(&anf).is_ok(), "If with Unit branches must compile without panic");
+    }
+
+    #[test]
+    fn native_if_infer_return_type_is_i64() {
+        use crate::anf::AnfExpr;
+        use crate::core_ir::LiteralValue;
+        use cranelift_codegen::ir::types;
+        let expr = AnfExpr::If {
+            cond: "c".to_string(),
+            then_branch: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+            else_branch: Box::new(AnfExpr::Literal(LiteralValue::Int(2))),
+        };
+        assert_eq!(infer_cranelift_return_type(&expr), Some(types::I64),
+            "infer_cranelift_return_type for If{{Int, Int}} must return Some(I64)");
+    }
+
+    #[test]
+    fn native_short_circuit_and_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "t".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Bool(true))),
+                body: Box::new(AnfExpr::ShortCircuitAnd {
+                    left: "t".to_string(),
+                    right: Box::new(AnfExpr::Literal(LiteralValue::Int(7))),
+                }),
+            },
+        });
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        let art = emit_native(&anf).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "ShortCircuitAnd must produce different bytes than Placeholder");
+    }
+
+    #[test]
+    fn native_short_circuit_or_differs_from_placeholder() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let anf = anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "f".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Bool(false))),
+                body: Box::new(AnfExpr::ShortCircuitOr {
+                    left: "f".to_string(),
+                    right: Box::new(AnfExpr::Literal(LiteralValue::Int(3))),
+                }),
+            },
+        });
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        let art = emit_native(&anf).unwrap();
+        assert_ne!(art.native_bytes, ph.native_bytes,
+            "ShortCircuitOr must produce different bytes than Placeholder");
+    }
+
     // ── TASK-B1: Native expression lowering tests (TDD RED) ───────────────
     // Spec scenarios C-5a, C-5b, C-5c, and C-5d.
 
