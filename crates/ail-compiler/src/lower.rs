@@ -160,17 +160,89 @@ pub fn lower_core_expr_to_anf(
             }
         }
 
-        // Complex CoreExpr variants not yet lowered to ANF → Placeholder.
-        // Future phases will handle Match, Lambda, RecordNew, FieldUpdate,
-        // TupleNew, VariantNew, ListNew.
-        CoreExpr::Match { .. }
-        | CoreExpr::Lambda { .. }
-        | CoreExpr::RecordNew { .. }
-        | CoreExpr::FieldUpdate { .. }
-        | CoreExpr::TupleNew(_)
-        | CoreExpr::VariantNew { .. }
-        | CoreExpr::ListNew(_)
-        | CoreExpr::Placeholder => AnfExpr::Placeholder,
+        // ── G20: Expression body lowering ────────────────────────────────
+
+        // Match: scrutinee must be atomic (atomize if non-Var).
+        // Each arm body is lowered recursively.
+        CoreExpr::Match { scrutinee, arms } => {
+            let scrutinee_name = atomize(scrutinee, fresh, source_ref, out);
+            let anf_arms = arms
+                .iter()
+                .map(|arm| crate::anf::AnfMatchArm {
+                    pattern: arm.pattern.clone(),
+                    body: lower_core_expr_to_anf(&arm.body, fresh, source_ref, out),
+                })
+                .collect();
+            AnfExpr::Match {
+                scrutinee: scrutinee_name,
+                arms: anf_arms,
+            }
+        }
+
+        // Lambda: params are already names; lower body recursively.
+        CoreExpr::Lambda { params, body } => {
+            let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
+            AnfExpr::Lambda {
+                params: params.clone(),
+                body: Box::new(anf_body),
+            }
+        }
+
+        // RecordNew: lower each field value recursively.
+        // Field values are not atomized — they may be arbitrary AnfExprs.
+        CoreExpr::RecordNew { fields } => {
+            let anf_fields = fields
+                .iter()
+                .map(|(name, val)| {
+                    let anf_val = lower_core_expr_to_anf(val, fresh, source_ref, out);
+                    (name.clone(), anf_val)
+                })
+                .collect();
+            AnfExpr::RecordNew { fields: anf_fields }
+        }
+
+        // FieldUpdate: record expression must be atomic; value is lowered recursively.
+        CoreExpr::FieldUpdate { record, field, value } => {
+            let record_name = atomize(record, fresh, source_ref, out);
+            let anf_value = lower_core_expr_to_anf(value, fresh, source_ref, out);
+            AnfExpr::FieldUpdate {
+                record: record_name,
+                field: field.clone(),
+                value: Box::new(anf_value),
+            }
+        }
+
+        // TupleNew: lower each element recursively.
+        CoreExpr::TupleNew(elems) => {
+            let anf_elems = elems
+                .iter()
+                .map(|e| lower_core_expr_to_anf(e, fresh, source_ref, out))
+                .collect();
+            AnfExpr::TupleNew(anf_elems)
+        }
+
+        // VariantNew: lower payload recursively if present.
+        CoreExpr::VariantNew { tag, payload } => {
+            let anf_payload = payload.as_ref().map(|p| {
+                Box::new(lower_core_expr_to_anf(p, fresh, source_ref, out))
+            });
+            AnfExpr::VariantNew {
+                tag: tag.clone(),
+                payload: anf_payload,
+            }
+        }
+
+        // ListNew: lower each element recursively.
+        CoreExpr::ListNew(elems) => {
+            let anf_elems = elems
+                .iter()
+                .map(|e| lower_core_expr_to_anf(e, fresh, source_ref, out))
+                .collect();
+            AnfExpr::ListNew(anf_elems)
+        }
+
+        // CoreExpr::Placeholder → AnfExpr::Placeholder (no expression body).
+        CoreExpr::Placeholder => AnfExpr::Placeholder,
     }
 }
 
@@ -634,5 +706,237 @@ mod tests {
             core.nodes[0].expr.is_none(),
             "expr must be None after lower_to_core_ir (deferred to expression lowering)"
         );
+    }
+
+    // ── G20: Expression body lowering tests ──────────────────────────────
+
+    // Helper: lower a single CoreExpr to AnfExpr (no prior bindings).
+    fn lower_single(expr: &CoreExpr) -> (AnfExpr, Vec<AnfBinding>) {
+        let mut fresh = 0u32;
+        let mut out: Vec<AnfBinding> = Vec::new();
+        let result = lower_core_expr_to_anf(expr, &mut fresh, NodeRef(0), &mut out);
+        (result, out)
+    }
+
+    // S1: Match — scrutinee Var is preserved as atomic name.
+    #[test]
+    fn lower_match_var_scrutinee_is_preserved() {
+        use crate::core_ir::MatchArm;
+        let expr = CoreExpr::Match {
+            scrutinee: Box::new(CoreExpr::Var("payment".to_string())),
+            arms: vec![MatchArm {
+                pattern: "Ok(r)".to_string(),
+                body: CoreExpr::Var("r".to_string()),
+            }],
+        };
+        let (result, out) = lower_single(&expr);
+        // Scrutinee is already Var, so no extra bindings emitted.
+        assert!(out.is_empty(), "Var scrutinee must not produce extra bindings");
+        match result {
+            crate::anf::AnfExpr::Match { scrutinee, arms } => {
+                assert_eq!(scrutinee, "payment");
+                assert_eq!(arms.len(), 1);
+                assert_eq!(arms[0].pattern, "Ok(r)");
+            }
+            other => panic!("expected AnfExpr::Match, got {other:?}"),
+        }
+    }
+
+    // S1b: Match — non-Var scrutinee is atomized (produces synthetic binding).
+    #[test]
+    fn lower_match_complex_scrutinee_is_atomized() {
+        use crate::core_ir::MatchArm;
+        let expr = CoreExpr::Match {
+            scrutinee: Box::new(CoreExpr::Literal(LiteralValue::Int(42))),
+            arms: vec![MatchArm {
+                pattern: "_".to_string(),
+                body: CoreExpr::Literal(LiteralValue::Unit),
+            }],
+        };
+        let (result, out) = lower_single(&expr);
+        // Literal scrutinee must be atomized → one synthetic binding.
+        assert!(!out.is_empty(), "Literal scrutinee must produce a synthetic binding");
+        match result {
+            crate::anf::AnfExpr::Match { scrutinee, .. } => {
+                // scrutinee must be the synthetic name, not "42"
+                assert!(scrutinee.starts_with("anf_"), "scrutinee must be synthetic name, got {scrutinee}");
+            }
+            other => panic!("expected AnfExpr::Match, got {other:?}"),
+        }
+    }
+
+    // S2: Lambda — params and body lowered correctly.
+    #[test]
+    fn lower_lambda_params_and_body() {
+        let expr = CoreExpr::Lambda {
+            params: vec!["x".to_string(), "y".to_string()],
+            body: Box::new(CoreExpr::Var("x".to_string())),
+        };
+        let (result, out) = lower_single(&expr);
+        assert!(out.is_empty(), "Lambda body Var must not produce extra bindings");
+        match result {
+            crate::anf::AnfExpr::Lambda { params, body } => {
+                assert_eq!(params, vec!["x", "y"]);
+                assert_eq!(*body, crate::anf::AnfExpr::Var("x".to_string()));
+            }
+            other => panic!("expected AnfExpr::Lambda, got {other:?}"),
+        }
+    }
+
+    // S3: RecordNew — field values are lowered recursively.
+    #[test]
+    fn lower_record_new_field_values() {
+        let expr = CoreExpr::RecordNew {
+            fields: vec![
+                ("amount".to_string(), CoreExpr::Literal(LiteralValue::Int(10))),
+                ("label".to_string(), CoreExpr::Var("lbl".to_string())),
+            ],
+        };
+        let (result, out) = lower_single(&expr);
+        assert!(out.is_empty(), "simple RecordNew must not produce synthetic bindings");
+        match result {
+            crate::anf::AnfExpr::RecordNew { fields } => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].0, "amount");
+                assert_eq!(fields[0].1, crate::anf::AnfExpr::Literal(LiteralValue::Int(10)));
+                assert_eq!(fields[1].0, "label");
+                assert_eq!(fields[1].1, crate::anf::AnfExpr::Var("lbl".to_string()));
+            }
+            other => panic!("expected AnfExpr::RecordNew, got {other:?}"),
+        }
+    }
+
+    // S4: FieldUpdate — record Var is preserved as atomic name.
+    #[test]
+    fn lower_field_update_var_record_is_preserved() {
+        let expr = CoreExpr::FieldUpdate {
+            record: Box::new(CoreExpr::Var("order".to_string())),
+            field: "status".to_string(),
+            value: Box::new(CoreExpr::Literal(LiteralValue::Text("Paid".to_string()))),
+        };
+        let (result, out) = lower_single(&expr);
+        assert!(out.is_empty(), "Var record must not produce extra bindings");
+        match result {
+            crate::anf::AnfExpr::FieldUpdate { record, field, value } => {
+                assert_eq!(record, "order");
+                assert_eq!(field, "status");
+                assert_eq!(*value, crate::anf::AnfExpr::Literal(LiteralValue::Text("Paid".to_string())));
+            }
+            other => panic!("expected AnfExpr::FieldUpdate, got {other:?}"),
+        }
+    }
+
+    // S5: TupleNew — elements are lowered recursively.
+    #[test]
+    fn lower_tuple_new_elements() {
+        let expr = CoreExpr::TupleNew(vec![
+            CoreExpr::Var("a".to_string()),
+            CoreExpr::Var("b".to_string()),
+        ]);
+        let (result, _out) = lower_single(&expr);
+        match result {
+            crate::anf::AnfExpr::TupleNew(elems) => {
+                assert_eq!(elems.len(), 2);
+                assert_eq!(elems[0], crate::anf::AnfExpr::Var("a".to_string()));
+                assert_eq!(elems[1], crate::anf::AnfExpr::Var("b".to_string()));
+            }
+            other => panic!("expected AnfExpr::TupleNew, got {other:?}"),
+        }
+    }
+
+    // S6: VariantNew with payload.
+    #[test]
+    fn lower_variant_new_with_payload() {
+        let expr = CoreExpr::VariantNew {
+            tag: "Ok".to_string(),
+            payload: Some(Box::new(CoreExpr::Var("x".to_string()))),
+        };
+        let (result, out) = lower_single(&expr);
+        assert!(out.is_empty(), "Var payload must not produce extra bindings");
+        match result {
+            crate::anf::AnfExpr::VariantNew { tag, payload } => {
+                assert_eq!(tag, "Ok");
+                assert_eq!(*payload.unwrap(), crate::anf::AnfExpr::Var("x".to_string()));
+            }
+            other => panic!("expected AnfExpr::VariantNew, got {other:?}"),
+        }
+    }
+
+    // S6b: VariantNew without payload.
+    #[test]
+    fn lower_variant_new_no_payload() {
+        let expr = CoreExpr::VariantNew {
+            tag: "None".to_string(),
+            payload: None,
+        };
+        let (result, _out) = lower_single(&expr);
+        match result {
+            crate::anf::AnfExpr::VariantNew { tag, payload } => {
+                assert_eq!(tag, "None");
+                assert!(payload.is_none());
+            }
+            other => panic!("expected AnfExpr::VariantNew, got {other:?}"),
+        }
+    }
+
+    // S7: ListNew — elements are lowered recursively.
+    #[test]
+    fn lower_list_new_elements() {
+        let expr = CoreExpr::ListNew(vec![
+            CoreExpr::Literal(LiteralValue::Int(1)),
+            CoreExpr::Var("x".to_string()),
+        ]);
+        let (result, _out) = lower_single(&expr);
+        match result {
+            crate::anf::AnfExpr::ListNew(elems) => {
+                assert_eq!(elems.len(), 2);
+                assert_eq!(elems[0], crate::anf::AnfExpr::Literal(LiteralValue::Int(1)));
+                assert_eq!(elems[1], crate::anf::AnfExpr::Var("x".to_string()));
+            }
+            other => panic!("expected AnfExpr::ListNew, got {other:?}"),
+        }
+    }
+
+    // S8: No Placeholder produced for real CoreExpr variants.
+    #[test]
+    fn real_core_exprs_do_not_produce_placeholder() {
+        use crate::core_ir::MatchArm;
+        let real_exprs = vec![
+            CoreExpr::Match {
+                scrutinee: Box::new(CoreExpr::Var("x".to_string())),
+                arms: vec![MatchArm {
+                    pattern: "_".to_string(),
+                    body: CoreExpr::Literal(LiteralValue::Unit),
+                }],
+            },
+            CoreExpr::Lambda {
+                params: vec![],
+                body: Box::new(CoreExpr::Literal(LiteralValue::Unit)),
+            },
+            CoreExpr::RecordNew { fields: vec![] },
+            CoreExpr::FieldUpdate {
+                record: Box::new(CoreExpr::Var("r".to_string())),
+                field: "f".to_string(),
+                value: Box::new(CoreExpr::Literal(LiteralValue::Unit)),
+            },
+            CoreExpr::TupleNew(vec![]),
+            CoreExpr::VariantNew { tag: "A".to_string(), payload: None },
+            CoreExpr::ListNew(vec![]),
+        ];
+        for expr in &real_exprs {
+            let (result, _out) = lower_single(expr);
+            assert_ne!(
+                result,
+                crate::anf::AnfExpr::Placeholder,
+                "CoreExpr::{expr:?} must NOT produce Placeholder"
+            );
+        }
+    }
+
+    // S9: CoreExpr::Placeholder still produces AnfExpr::Placeholder.
+    #[test]
+    fn placeholder_still_maps_to_placeholder() {
+        let (result, _out) = lower_single(&CoreExpr::Placeholder);
+        assert_eq!(result, crate::anf::AnfExpr::Placeholder);
     }
 }
