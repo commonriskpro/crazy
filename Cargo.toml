@@ -69,6 +69,7 @@ blake3          = "1.5"
 ciborium        = "0.2"
 ed25519-dalek   = { version = "2", features = ["rand_core"] }
 rand            = "0.8"
+unicode-segmentation = "1"
 x25519-dalek    = { version = "2", features = ["static_secrets"] }
 clap        = { version = "4.5", features = ["derive"] }
 futures     = "0.3"

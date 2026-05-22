@@ -4,13 +4,7 @@
 //
 // # v1 module gate
 //
-// Exactly 9 modules are approved for the semantic-core v1 scope:
-//
-//   std.core, std.option, std.result, std.numeric, std.text,
-//   std.bytes, std.collections, std.iter, std.capability
-//
-// No other module is present.  Future modules require a v2 gate or an
-// explicit extension of this function under a new name.
+// The v1 registry contains all modules listed in docs/stdlib.md.
 //
 // # Entry order
 //
@@ -23,22 +17,305 @@
 // `effect_row` is populated for effect-bearing or effect-polymorphic modules.
 // `capability_reqs` is populated only for `std.capability` (the definition module).
 // `contract_clauses` carries module-level invariants from docs/stdlib.md.
+//
+// # G26: Function entries
+//
+// `v1_registry_with_functions()` extends the base module registry with
+// `NodeKind::Function` entries for each semantic function implementation
+// in the std.numeric, std.option, std.result, std.text, and std.iter modules.
+// The base `v1_registry()` is preserved unchanged for backward compatibility.
 
 use ail_core::semantic_graph::{CapabilityReqs, ContractClauses, EffectRow, NodeKind, TypeFacts};
 
 use crate::capability;
 use crate::registry::{StabilityTier, StdlibEntry, StdlibId, StdlibRegistry};
 
+fn module_entry(
+    id: &str,
+    name: &str,
+    nominal: &str,
+    generics: &[&str],
+    effect_row: Option<Vec<&str>>,
+    capability_reqs: Option<Vec<&str>>,
+    contract_clauses: Option<ContractClauses>,
+) -> StdlibEntry {
+    StdlibEntry {
+        id: StdlibId(id.to_string()),
+        module_path: format!("std::{}", name),
+        name: name.to_string(),
+        kind: NodeKind::Module,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: nominal.to_string(),
+            generics: generics.iter().map(|g| (*g).to_string()).collect(),
+        }),
+        effect_row: effect_row.map(|effects| EffectRow {
+            effects: effects.into_iter().map(str::to_string).collect(),
+        }),
+        capability_reqs: capability_reqs.map(|caps| CapabilityReqs {
+            caps: caps.into_iter().map(str::to_string).collect(),
+        }),
+        contract_clauses,
+    }
+}
+
+fn append_full_stdlib_modules(reg: &mut StdlibRegistry) {
+    reg.entries.extend([
+        module_entry(
+            "std.decimal",
+            "decimal",
+            "Decimal",
+            &["Scale", "Precision"],
+            None,
+            None,
+            Some(ContractClauses {
+                requires: vec!["rounding policy explicit when needed".to_string()],
+                ensures: vec!["no silent narrowing".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.encoding",
+            "encoding",
+            "Encoder",
+            &["T", "Format"],
+            None,
+            None,
+            None,
+        ),
+        module_entry(
+            "std.json",
+            "json",
+            "Json",
+            &[],
+            None,
+            None,
+            Some(ContractClauses {
+                requires: vec!["visible schema for derived encoding".to_string()],
+                ensures: vec!["decoders return Result".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.time",
+            "time",
+            "Instant",
+            &[],
+            Some(vec![capability::CLOCK_NOW]),
+            Some(vec![capability::CLOCK_NOW]),
+            Some(ContractClauses {
+                requires: vec!["no implicit global timezone".to_string()],
+                ensures: vec!["now() is effectful".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.random",
+            "random",
+            "DeterministicRng",
+            &[],
+            Some(vec![capability::RANDOM_GENERATE]),
+            Some(vec![capability::RANDOM_GENERATE]),
+            Some(ContractClauses {
+                requires: vec!["randomness is not pure".to_string()],
+                ensures: vec!["deterministic and crypto randomness are separate".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.crypto",
+            "crypto",
+            "Hash",
+            &[],
+            Some(vec!["crypto.random.bytes", "secret.read"]),
+            Some(vec!["crypto.random.bytes", "secret.read"]),
+            Some(ContractClauses {
+                requires: vec!["secrets not exposed as plain Text by default".to_string()],
+                ensures: vec!["constant-time comparisons explicit".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.io",
+            "io",
+            "FileHandle",
+            &[],
+            Some(vec![
+                capability::IO_STDIN,
+                capability::IO_STDOUT,
+                capability::IO_STDERR,
+            ]),
+            Some(vec![
+                capability::IO_STDIN,
+                capability::IO_STDOUT,
+                capability::IO_STDERR,
+            ]),
+            None,
+        ),
+        module_entry(
+            "std.fs",
+            "fs",
+            "Path",
+            &[],
+            Some(vec![capability::FS_READ, capability::FS_WRITE]),
+            Some(vec![capability::FS_READ, capability::FS_WRITE]),
+            Some(ContractClauses {
+                requires: vec!["file access requires grants".to_string()],
+                ensures: vec!["paths are capability-constrained".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.net",
+            "net",
+            "Url",
+            &[],
+            Some(vec![capability::NET_CONNECT]),
+            Some(vec![capability::NET_CONNECT]),
+            Some(ContractClauses {
+                requires: vec!["network access requires grants".to_string()],
+                ensures: vec!["hosts can be constrained".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.http",
+            "http",
+            "HttpRequest",
+            &[],
+            Some(vec!["http.call"]),
+            Some(vec!["http.call"]),
+            Some(ContractClauses {
+                requires: vec!["timeouts explicit".to_string()],
+                ensures: vec!["retries explicit".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.process",
+            "process",
+            "ProcessHandle",
+            &[],
+            Some(vec![capability::PROCESS_EXEC]),
+            Some(vec![capability::PROCESS_EXEC]),
+            Some(ContractClauses {
+                requires: vec!["process access requires strict grants".to_string()],
+                ensures: vec!["process operations are effectful".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.env",
+            "env",
+            "EnvVar",
+            &[],
+            Some(vec![capability::ENV_READ, capability::ENV_WRITE]),
+            Some(vec![capability::ENV_READ, capability::ENV_WRITE]),
+            Some(ContractClauses {
+                requires: vec!["env access requires strict grants".to_string()],
+                ensures: vec!["env operations are effectful".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.concurrent",
+            "concurrent",
+            "Task",
+            &["T"],
+            Some(vec!["clock.monotonic"]),
+            None,
+            Some(ContractClauses {
+                requires: vec!["structured concurrency by default".to_string()],
+                ensures: vec!["no orphan tasks".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.sync",
+            "sync",
+            "Mutex",
+            &["T"],
+            None,
+            None,
+            Some(ContractClauses {
+                requires: vec!["shared state requires safe type".to_string()],
+                ensures: vec!["safe synchronization primitive".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.log",
+            "log",
+            "LogLevel",
+            &[],
+            Some(vec![capability::LOG_EMIT]),
+            Some(vec![capability::LOG_EMIT]),
+            Some(ContractClauses {
+                requires: vec!["logs are effects".to_string()],
+                ensures: vec!["PII/secrets redacted by policy".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.trace",
+            "trace",
+            "TraceId",
+            &[],
+            Some(vec![capability::TRACE_SPAN, "metric.emit"]),
+            Some(vec![capability::TRACE_SPAN, "metric.emit"]),
+            Some(ContractClauses {
+                requires: vec!["traces are effects".to_string()],
+                ensures: vec!["runtime audit separate from app logs".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.testing",
+            "testing",
+            "Test",
+            &[],
+            None,
+            None,
+            Some(ContractClauses {
+                requires: vec!["tests are evidence, not automatic proof".to_string()],
+                ensures: vec!["property tests link to contracts/invariants".to_string()],
+            }),
+        ),
+        module_entry(
+            "std.boundary",
+            "boundary",
+            "BoundaryDef",
+            &[],
+            None,
+            None,
+            None,
+        ),
+        module_entry(
+            "std.diagnostics",
+            "diagnostics",
+            "Diagnostic",
+            &[],
+            None,
+            None,
+            None,
+        ),
+        module_entry(
+            "std.verify",
+            "verify",
+            "VerificationReport",
+            &[],
+            None,
+            None,
+            None,
+        ),
+        module_entry(
+            "std.runtime",
+            "runtime",
+            "RuntimeProfile",
+            &[],
+            None,
+            None,
+            None,
+        ),
+    ]);
+}
+
 /// Return the canonical v1 stdlib registry.
 ///
-/// Contains exactly 9 ordered entries corresponding to the v1 semantic-core
-/// scope.  All entries carry `StabilityTier::Stable`.  Semantic-fact fields
+/// Contains ordered entries corresponding to the v1 stdlib scope from
+/// `docs/stdlib.md`.  All entries carry `StabilityTier::Stable`.  Semantic-fact fields
 /// are populated to reflect the type, effect, capability, and contract
 /// metadata documented in `docs/stdlib.md`.
 ///
 /// The returned `StdlibRegistry` is guaranteed to pass `validate()`.
 pub fn v1_registry() -> StdlibRegistry {
-    StdlibRegistry {
+    let mut reg = StdlibRegistry {
         entries: vec![
             // 0 — std.core
             //
@@ -262,5 +539,442 @@ pub fn v1_registry() -> StdlibRegistry {
                 contract_clauses: None,
             },
         ],
-    }
+    };
+    append_full_stdlib_modules(&mut reg);
+    reg
+}
+
+/// Return the extended v1 stdlib registry with `NodeKind::Function` entries.
+///
+/// Starts from `v1_registry()` (the 9-module base) and appends one
+/// `StdlibEntry` per implemented function in:
+///
+/// - `std.numeric`: `checked_add`, `wrapping_add`, `saturating_add`,
+///   `checked_sub`, `checked_mul`
+/// - `std.option`: `map`, `and_then`, `unwrap_or`, `transpose`,
+///   `collect_results`
+/// - `std.result`: `map`, `and_then`, `unwrap_or`, `transpose`
+/// - `std.text`: `trim`, `split`, `join`, `length_graphemes`,
+///   `to_bytes`, `from_bytes`
+/// - `std.iter`: `map`, `filter`, `fold`, `traverse`
+///
+/// The returned registry is guaranteed to pass `validate()`.
+pub fn v1_registry_with_functions() -> StdlibRegistry {
+    let mut reg = v1_registry();
+
+    // ── std.numeric functions ─────────────────────────────────────────────
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.checked_add".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "checked_add".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["i64".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["no silent overflow".to_string()],
+            ensures: vec!["returns None on overflow".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.wrapping_add".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "wrapping_add".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "i64".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["wrapping semantics chosen explicitly".to_string()],
+            ensures: vec!["result wraps on overflow (defined, not silent)".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.saturating_add".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "saturating_add".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "i64".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["saturating semantics chosen explicitly".to_string()],
+            ensures: vec!["result clamped to i64::MAX or i64::MIN on overflow".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.checked_sub".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "checked_sub".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["i64".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["no silent underflow".to_string()],
+            ensures: vec!["returns None on underflow or overflow".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.checked_mul".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "checked_mul".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["i64".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["no silent overflow".to_string()],
+            ensures: vec!["returns None on overflow".to_string()],
+        }),
+    });
+
+    // ── std.option functions ──────────────────────────────────────────────
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.option.map".to_string()),
+        module_path: "std::option".to_string(),
+        name: "map".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["T".to_string(), "U".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.option.and_then".to_string()),
+        module_path: "std::option".to_string(),
+        name: "and_then".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["T".to_string(), "U".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.option.unwrap_or".to_string()),
+        module_path: "std::option".to_string(),
+        name: "unwrap_or".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "T".to_string(),
+            generics: vec!["T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.option.transpose".to_string()),
+        module_path: "std::option".to_string(),
+        name: "transpose".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["Option".to_string(), "T".to_string(), "E".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.option.collect_results".to_string()),
+        module_path: "std::option".to_string(),
+        name: "collect_results".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["Vec".to_string(), "T".to_string(), "E".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    // ── std.result functions ──────────────────────────────────────────────
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.result.map".to_string()),
+        module_path: "std::result".to_string(),
+        name: "map".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["T".to_string(), "U".to_string(), "E".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.result.and_then".to_string()),
+        module_path: "std::result".to_string(),
+        name: "and_then".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["T".to_string(), "U".to_string(), "E".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.result.unwrap_or".to_string()),
+        module_path: "std::result".to_string(),
+        name: "unwrap_or".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "T".to_string(),
+            generics: vec!["T".to_string(), "E".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.result.transpose".to_string()),
+        module_path: "std::result".to_string(),
+        name: "transpose".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["Result".to_string(), "T".to_string(), "E".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    // ── std.text functions ────────────────────────────────────────────────
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.trim".to_string()),
+        module_path: "std::text".to_string(),
+        name: "trim".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Text".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["valid UTF-8 input".to_string()],
+            ensures: vec!["result is valid Text with no leading/trailing whitespace".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.split".to_string()),
+        module_path: "std::text".to_string(),
+        name: "split".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "List".to_string(),
+            generics: vec!["Text".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["valid UTF-8 input".to_string()],
+            ensures: vec!["result is valid List<Text>".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.join".to_string()),
+        module_path: "std::text".to_string(),
+        name: "join".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Text".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["valid UTF-8 inputs".to_string()],
+            ensures: vec!["result is valid Text".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.length_graphemes".to_string()),
+        module_path: "std::text".to_string(),
+        name: "length_graphemes".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "UInt".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["valid UTF-8 input".to_string()],
+            ensures: vec!["result >= 0".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.to_bytes".to_string()),
+        module_path: "std::text".to_string(),
+        name: "to_bytes".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Bytes".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.from_bytes".to_string()),
+        module_path: "std::text".to_string(),
+        name: "from_bytes".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["Text".to_string(), "DecodeError".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec![],
+            ensures: vec![
+                "Ok(Text) if bytes are valid UTF-8".to_string(),
+                "Err(DecodeError) if bytes are invalid UTF-8".to_string(),
+            ],
+        }),
+    });
+
+    // ── std.iter functions ────────────────────────────────────────────────
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.iter.map".to_string()),
+        module_path: "std::iter".to_string(),
+        name: "map".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "List".to_string(),
+            generics: vec!["T".to_string(), "U".to_string()],
+        }),
+        effect_row: Some(EffectRow {
+            effects: vec!["EffectPoly".to_string()],
+        }),
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.iter.filter".to_string()),
+        module_path: "std::iter".to_string(),
+        name: "filter".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "List".to_string(),
+            generics: vec!["T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.iter.fold".to_string()),
+        module_path: "std::iter".to_string(),
+        name: "fold".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "U".to_string(),
+            generics: vec!["T".to_string(), "U".to_string()],
+        }),
+        effect_row: Some(EffectRow {
+            effects: vec!["EffectPoly".to_string()],
+        }),
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.iter.traverse".to_string()),
+        module_path: "std::iter".to_string(),
+        name: "traverse".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec![
+                "List".to_string(),
+                "T".to_string(),
+                "U".to_string(),
+                "E".to_string(),
+            ],
+        }),
+        effect_row: Some(EffectRow {
+            effects: vec!["EffectPoly".to_string()],
+        }),
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg
 }

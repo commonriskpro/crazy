@@ -20,16 +20,14 @@ use ail_storage::{
 use futures::executor::block_on;
 
 /// Path to the frozen v0 fixture, relative to the workspace root.
-const FIXTURE_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/schema_v0.cbor");
+const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/schema_v0.cbor");
 
 /// Pinned BLAKE3 hex hash of `schema_v0.cbor`.
 ///
 /// Update this constant if the fixture is intentionally regenerated.
 /// NEVER update it due to an accidental codec change — that would hide a
 /// compatibility regression.
-const FIXTURE_BLAKE3_HEX: &str =
-    "352887189aff91d2878b52438f02b3e344d5a62ac055e5b81779ffa959bed332";
+const FIXTURE_BLAKE3_HEX: &str = "352887189aff91d2878b52438f02b3e344d5a62ac055e5b81779ffa959bed332";
 
 // ── decode_schema_v0_fixture_succeeds ────────────────────────────────────────
 // Spec: The frozen v0 CBOR fixture must decode successfully with the current
@@ -51,7 +49,10 @@ fn decode_schema_v0_fixture_succeeds() {
         .decode(&bytes)
         .expect("current codec must decode v0 fixture without error");
 
-    assert_eq!(record.label, "schema_v0_fixture", "decoded label must match");
+    assert_eq!(
+        record.label, "schema_v0_fixture",
+        "decoded label must match"
+    );
     assert_eq!(record.value, 0, "decoded value must match v0 sentinel");
 }
 

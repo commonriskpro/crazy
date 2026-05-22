@@ -10,9 +10,7 @@
 use std::sync::Arc;
 
 use ail_storage::{
-    MigrationError,
-    backends::memory::MemoryObjectStore,
-    migration::default_catalog,
+    MigrationError, backends::memory::MemoryObjectStore, migration::default_catalog,
 };
 use futures::executor::block_on;
 
@@ -45,7 +43,10 @@ fn default_catalog_has_v0_to_v1() {
             "default_catalog must successfully apply on a v0 store: {result:?}"
         );
         let new_version = result.unwrap();
-        assert_eq!(new_version, 1, "default_catalog must advance store to version 1");
+        assert_eq!(
+            new_version, 1,
+            "default_catalog must advance store to version 1"
+        );
     });
 }
 
@@ -68,7 +69,10 @@ fn migration_on_fresh_store_writes_version_1() {
             .current_version(Arc::clone(&store))
             .await
             .expect("current_version must succeed after migration");
-        assert_eq!(stored, 1, "current_version must return 1 after successful migration");
+        assert_eq!(
+            stored, 1,
+            "current_version must return 1 after successful migration"
+        );
     });
 }
 
@@ -93,9 +97,7 @@ fn migration_on_v1_store_returns_already_at_version() {
             Err(MigrationError::AlreadyAtVersion(v)) => {
                 assert_eq!(v, 1, "AlreadyAtVersion must report the current version");
             }
-            other => panic!(
-                "expected Err(AlreadyAtVersion(1)), got {other:?}"
-            ),
+            other => panic!("expected Err(AlreadyAtVersion(1)), got {other:?}"),
         }
     });
 }
@@ -117,7 +119,10 @@ fn current_version_after_migration_is_one() {
         assert_eq!(before, 0, "before migration version must be 0");
 
         // Apply migration
-        catalog.apply(Arc::clone(&store)).await.expect("apply must succeed");
+        catalog
+            .apply(Arc::clone(&store))
+            .await
+            .expect("apply must succeed");
 
         // After migration: v1
         let after = catalog

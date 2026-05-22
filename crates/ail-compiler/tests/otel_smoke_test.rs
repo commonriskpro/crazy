@@ -16,7 +16,10 @@ fn minimal_graph() -> SemanticGraph {
 }
 
 fn proven_report() -> VerificationReport {
-    VerificationReport { entries: vec![], ..Default::default() }
+    VerificationReport {
+        entries: vec![],
+        ..Default::default()
+    }
 }
 
 /// Instruments a `compile_incremental` call inside a tracing span and asserts
@@ -37,5 +40,8 @@ fn compile_incremental_does_not_panic_inside_span() {
     let result = compile_incremental(&graph, &report, &cache, &prev_hashes);
 
     // The call must succeed (proven report, valid graph).
-    assert!(result.is_ok(), "compile_incremental failed inside span: {result:?}");
+    assert!(
+        result.is_ok(),
+        "compile_incremental failed inside span: {result:?}"
+    );
 }

@@ -20,8 +20,8 @@ pub mod object;
 pub mod retention;
 
 pub use backends::postgres::PostgresGraphStore;
-pub use migration::{Migration, MigrationCatalog, MigrationError};
 pub use graph::{ChangeSetLogEntry, GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
+pub use migration::{Migration, MigrationCatalog, MigrationError};
 pub use retention::{
     CompactionReport, GcReport, MutableGraphStore, RetentionPolicy, compact_snapshots,
     gc_unreferenced,
