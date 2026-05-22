@@ -46,6 +46,16 @@ pub enum CoreNodeKind {
     Impl,
     /// Effect alias definition — mirrors `NodeKind::EffectAlias`.
     EffectAlias,
+    /// Import declaration — mirrors `NodeKind::Import`.
+    Import,
+    /// Export declaration — mirrors `NodeKind::Export`.
+    Export,
+    /// Version constraint — mirrors `NodeKind::VersionConstraint`.
+    VersionConstraint,
+    /// Capability export — mirrors `NodeKind::CapabilityExport`.
+    CapabilityExport,
+    /// Contract export — mirrors `NodeKind::ContractExport`.
+    ContractExport,
 }
 
 // ── LiteralValue ──────────────────────────────────────────────────────────

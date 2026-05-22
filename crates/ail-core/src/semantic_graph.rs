@@ -73,6 +73,28 @@ pub enum NodeKind {
     /// Names a set of effects under a single alias so functions can
     /// declare the alias rather than enumerating individual effects.
     EffectAlias,
+
+    // ── doc-alignment: module/package node kinds from §14 ─────────────────
+    /// An import declaration node.
+    ///
+    /// Represents a semantic import of types, functions, or capabilities
+    /// from another module or package.
+    Import,
+    /// An export declaration node.
+    ///
+    /// Represents a semantic export of types, functions, or capabilities
+    /// from the current module or package.
+    Export,
+    /// A version constraint on a package dependency.
+    VersionConstraint,
+    /// A capability export declaration.
+    ///
+    /// Declares that a package exports a named capability.
+    CapabilityExport,
+    /// A contract export declaration.
+    ///
+    /// Declares that a package exports a named contract.
+    ContractExport,
 }
 
 // ── EdgeKind ──────────────────────────────────────────────────────────────

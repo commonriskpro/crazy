@@ -73,6 +73,11 @@ pub(crate) fn map_node_kind(kind: NodeKind) -> CoreNodeKind {
         NodeKind::Interface => CoreNodeKind::Interface,
         NodeKind::Impl => CoreNodeKind::Impl,
         NodeKind::EffectAlias => CoreNodeKind::EffectAlias,
+        NodeKind::Import => CoreNodeKind::Import,
+        NodeKind::Export => CoreNodeKind::Export,
+        NodeKind::VersionConstraint => CoreNodeKind::VersionConstraint,
+        NodeKind::CapabilityExport => CoreNodeKind::CapabilityExport,
+        NodeKind::ContractExport => CoreNodeKind::ContractExport,
     }
 }
 
