@@ -11,9 +11,10 @@
 //  - wasm_hash is sealed in hash_chain after emit_wasm.
 //  - Determinism: same AnfIr → identical wasm bytes across two calls.
 
+use ail_compiler::core_ir::{CoreExpr, LiteralValue, MatchArm, StageHashes};
 use ail_compiler::{
-    emit_wasm,
-    lower::{lower_to_anf, lower_to_core_ir},
+    AnfBinding, AnfExpr, AnfIr, SourceMap, emit_wasm,
+    lower::{lower_core_expr_to_anf, lower_to_anf, lower_to_core_ir},
 };
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_verify::report::VerificationReport;
@@ -46,6 +47,41 @@ fn proven_report() -> VerificationReport {
 fn anf_for_graph(graph: &SemanticGraph) -> ail_compiler::AnfIr {
     let core = lower_to_core_ir(graph, &proven_report()).expect("lower_to_core_ir failed");
     lower_to_anf(&core).expect("lower_to_anf failed")
+}
+
+fn sealed_anf(binding: AnfBinding) -> AnfIr {
+    AnfIr {
+        schema_version: ail_compiler::anf::ANF_SCHEMA_VERSION,
+        source_map: SourceMap::from_bindings(std::slice::from_ref(&binding)),
+        bindings: vec![binding],
+        stage_hashes: StageHashes {
+            graph_snapshot_hash: [0u8; 32],
+            verification_report_hash: [0u8; 32],
+            core_ir_hash: [1u8; 32],
+            anf_ir_hash: Some([2u8; 32]),
+            wasm_hash: None,
+            native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
+        },
+    }
+}
+
+fn operators(wasm: &[u8]) -> Vec<String> {
+    use wasmparser::{Parser, Payload};
+
+    let mut names = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.expect("payload must parse") {
+            let mut reader = body
+                .get_operators_reader()
+                .expect("operators reader must build");
+            while !reader.eof() {
+                names.push(format!("{:?}", reader.read().expect("operator must read")));
+            }
+        }
+    }
+    names
 }
 
 // ── Task 3.1: wasmparser validates emitted modules ────────────────────────
@@ -321,4 +357,166 @@ fn wasm_hash_chain_matches_explicit_recomputation() {
         Some(expected_hash),
         "wasm_hash must equal blake3(anf_ir_hash || wasm_binary)"
     );
+}
+
+#[test]
+fn anf_if_emits_real_wasm_if_else() {
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.branch".to_string(),
+        expr: AnfExpr::Let {
+            name: "flag".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Bool(true))),
+            body: Box::new(AnfExpr::If {
+                cond: "flag".to_string(),
+                then_branch: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+                else_branch: Box::new(AnfExpr::Literal(LiteralValue::Int(20))),
+            }),
+        },
+    };
+    let artifact = emit_wasm(&sealed_anf(binding)).expect("emit_wasm failed");
+
+    wasmparser::validate(&artifact.wasm).expect("if wasm must validate");
+    let ops = operators(&artifact.wasm);
+    assert!(
+        ops.iter().any(|op| op.starts_with("If")),
+        "expected If in {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| op == "Else"),
+        "expected Else in {ops:?}"
+    );
+    assert!(
+        !ops.iter().any(|op| op == "Unreachable"),
+        "if must not emit unreachable: {ops:?}"
+    );
+}
+
+#[test]
+fn core_if_lowers_to_anf_if_and_emits_valid_wasm() {
+    let core = CoreExpr::If {
+        cond: Box::new(CoreExpr::Literal(LiteralValue::Bool(false))),
+        then_: Box::new(CoreExpr::Literal(LiteralValue::Int(1))),
+        else_: Box::new(CoreExpr::Literal(LiteralValue::Int(2))),
+    };
+    let mut fresh = 0;
+    let mut synthetic = Vec::new();
+    let expr = lower_core_expr_to_anf(&core, &mut fresh, NodeRef(0), &mut synthetic);
+    assert!(matches!(expr, AnfExpr::If { .. }));
+
+    let mut bindings = synthetic;
+    bindings.push(AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.core_branch".to_string(),
+        expr,
+    });
+    let anf = AnfIr {
+        schema_version: ail_compiler::anf::ANF_SCHEMA_VERSION,
+        source_map: SourceMap::from_bindings(&bindings),
+        bindings,
+        stage_hashes: StageHashes {
+            graph_snapshot_hash: [0u8; 32],
+            verification_report_hash: [0u8; 32],
+            core_ir_hash: [1u8; 32],
+            anf_ir_hash: Some([2u8; 32]),
+            wasm_hash: None,
+            native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
+        },
+    };
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm failed");
+    wasmparser::validate(&artifact.wasm).expect("core if wasm must validate");
+}
+
+#[test]
+fn anf_match_on_i64_literal_emits_real_branching() {
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.match_value".to_string(),
+        expr: AnfExpr::Let {
+            name: "tag".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(2))),
+            body: Box::new(AnfExpr::Match {
+                scrutinee: "tag".to_string(),
+                arms: vec![
+                    ail_compiler::anf::AnfMatchArm {
+                        pattern: "1".to_string(),
+                        body: AnfExpr::Literal(LiteralValue::Int(10)),
+                    },
+                    ail_compiler::anf::AnfMatchArm {
+                        pattern: "2".to_string(),
+                        body: AnfExpr::Literal(LiteralValue::Int(20)),
+                    },
+                    ail_compiler::anf::AnfMatchArm {
+                        pattern: "_".to_string(),
+                        body: AnfExpr::Literal(LiteralValue::Int(30)),
+                    },
+                ],
+            }),
+        },
+    };
+    let artifact = emit_wasm(&sealed_anf(binding)).expect("emit_wasm failed");
+
+    wasmparser::validate(&artifact.wasm).expect("match wasm must validate");
+    let ops = operators(&artifact.wasm);
+    assert!(
+        ops.iter().any(|op| op == "I64Eq"),
+        "expected i64 equality in {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| op.starts_with("If")),
+        "expected If cascade in {ops:?}"
+    );
+    assert!(
+        !ops.iter().any(|op| op == "Unreachable"),
+        "match must not emit unreachable: {ops:?}"
+    );
+}
+
+#[test]
+fn core_match_lowers_to_anf_match_and_emits_valid_wasm() {
+    let core = CoreExpr::Match {
+        scrutinee: Box::new(CoreExpr::Literal(LiteralValue::Int(1))),
+        arms: vec![
+            MatchArm {
+                pattern: "1".to_string(),
+                body: CoreExpr::Literal(LiteralValue::Int(11)),
+            },
+            MatchArm {
+                pattern: "_".to_string(),
+                body: CoreExpr::Literal(LiteralValue::Int(22)),
+            },
+        ],
+    };
+    let mut fresh = 0;
+    let mut synthetic = Vec::new();
+    let expr = lower_core_expr_to_anf(&core, &mut fresh, NodeRef(0), &mut synthetic);
+    assert!(matches!(expr, AnfExpr::Match { .. }));
+
+    let mut bindings = synthetic;
+    bindings.push(AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.core_match".to_string(),
+        expr,
+    });
+    let anf = AnfIr {
+        schema_version: ail_compiler::anf::ANF_SCHEMA_VERSION,
+        source_map: SourceMap::from_bindings(&bindings),
+        bindings,
+        stage_hashes: StageHashes {
+            graph_snapshot_hash: [0u8; 32],
+            verification_report_hash: [0u8; 32],
+            core_ir_hash: [1u8; 32],
+            anf_ir_hash: Some([2u8; 32]),
+            wasm_hash: None,
+            native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
+        },
+    };
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm failed");
+    wasmparser::validate(&artifact.wasm).expect("core match wasm must validate");
 }

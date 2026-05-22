@@ -8,8 +8,12 @@
 //  - Failed preflight (hash mismatch) blocks Wasmtime invocation.
 //  - RuntimeHost::new() succeeds (engine initialization is infallible from caller's view).
 
-use ail_compiler::{emit_wasm, lower_to_anf, lower_to_core_ir};
-use ail_core::semantic_graph::SemanticGraph;
+use ail_compiler::{
+    AnfBinding, AnfExpr, AnfIr, SourceMap,
+    core_ir::{LiteralValue, StageHashes},
+    emit_wasm, lower_to_anf, lower_to_core_ir,
+};
+use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_runtime::{
     CapabilityManifest, PreflightFailure, ResourceLimits, RuntimeError, RuntimeHost,
     RuntimeProfile, RuntimeValue, blake3_hex_of,
@@ -50,6 +54,31 @@ fn matching_profile(wasm: &[u8], manifest: &CapabilityManifest) -> RuntimeProfil
             max_fuel: None,
         },
     )
+}
+
+fn compiler_wasm_for_expr(expr: AnfExpr, name: &str) -> Vec<u8> {
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: name.to_string(),
+        expr,
+    };
+    let anf = AnfIr {
+        schema_version: ail_compiler::anf::ANF_SCHEMA_VERSION,
+        source_map: SourceMap::from_bindings(std::slice::from_ref(&binding)),
+        bindings: vec![binding],
+        stage_hashes: StageHashes {
+            graph_snapshot_hash: [0u8; 32],
+            verification_report_hash: [0u8; 32],
+            core_ir_hash: [1u8; 32],
+            anf_ir_hash: Some([2u8; 32]),
+            wasm_hash: None,
+            native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
+        },
+    };
+
+    emit_wasm(&anf).expect("emit_wasm failed").wasm
 }
 
 // ── Scenario 1: Malformed WASM is rejected ────────────────────────────────
@@ -169,6 +198,35 @@ fn exported_i64_function_can_be_invoked() {
     let value = instance.invoke("answer", &[]).expect("invoke must succeed");
 
     assert_eq!(value, RuntimeValue::I64(42));
+}
+
+#[test]
+fn compiler_if_else_function_returns_taken_branch() {
+    let wasm = compiler_wasm_for_expr(
+        AnfExpr::Let {
+            name: "flag".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Bool(false))),
+            body: Box::new(AnfExpr::If {
+                cond: "flag".to_string(),
+                then_branch: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+                else_branch: Box::new(AnfExpr::Literal(LiteralValue::Int(20))),
+            }),
+        },
+        "fn.branch",
+    );
+    let manifest = CapabilityManifest {
+        module: "compiler-if-test".to_string(),
+        requires: vec![],
+    };
+    let profile = matching_profile(&wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("compiler WASM must instantiate");
+
+    let value = instance.invoke("branch", &[]).expect("invoke must succeed");
+
+    assert_eq!(value, RuntimeValue::I64(20));
 }
 
 // TRIANGULATE: the 8-byte WASM header (minimal valid module) also succeeds.
