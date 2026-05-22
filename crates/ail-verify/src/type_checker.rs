@@ -268,12 +268,14 @@ impl TypeChecker {
                 state: VerificationState::Unverified,
                 scope,
                 evidence: None,
+                blocking: false,
             },
             Some(tf) if tf.nominal.is_empty() => VerificationEntry {
                 claim: "type-check".into(),
                 state: VerificationState::Unverified,
                 scope,
                 evidence: None,
+                blocking: false,
             },
             Some(tf) => {
                 let bad_generic = tf.generics.iter().any(|g| g.is_empty());
@@ -283,6 +285,7 @@ impl TypeChecker {
                         state: VerificationState::Failed,
                         scope,
                         evidence: Some("E_GENERIC_ARITY: generic parameter name is empty".into()),
+                        blocking: true,
                     }
                 } else {
                     VerificationEntry {
@@ -290,6 +293,7 @@ impl TypeChecker {
                         state: VerificationState::Proven,
                         scope,
                         evidence: None,
+                        blocking: true,
                     }
                 }
             }
@@ -326,6 +330,7 @@ impl TypeChecker {
                         state: VerificationState::Proven,
                         scope,
                         evidence: None,
+                        blocking: false,
                     });
                 } else {
                     entries.push(VerificationEntry {
@@ -337,6 +342,7 @@ impl TypeChecker {
                              at param '{}' of '{}'",
                             param.ty, param.name, callee.name
                         )),
+                        blocking: true,
                     });
                 }
             }
@@ -364,6 +370,7 @@ impl TypeChecker {
                              on node '{}'",
                             node.name
                         )),
+                        blocking: true,
                     });
                     continue;
                 }
@@ -443,6 +450,7 @@ impl TypeChecker {
                     state: state_and_evidence.0,
                     scope,
                     evidence: state_and_evidence.1,
+                    blocking: false,
                 });
             }
         }
@@ -486,6 +494,7 @@ impl TypeChecker {
                         "{E_GENERIC_BINDING_ARITY}: call binds unknown generic '{}' on '{}'",
                         binding.param, callee.name
                     )),
+                    blocking: true,
                 });
                 continue;
             }
@@ -501,6 +510,7 @@ impl TypeChecker {
                         declared.len(),
                         bindings.len()
                     )),
+                    blocking: true,
                 });
             } else {
                 entries.push(VerificationEntry {
@@ -508,6 +518,7 @@ impl TypeChecker {
                     state: VerificationState::Proven,
                     scope,
                     evidence: None,
+                    blocking: false,
                 });
             }
         }
@@ -549,6 +560,7 @@ impl TypeChecker {
                             "{E_EFFECT_NOT_PROPAGATED}: callee effect '{}' from '{}' is missing from caller '{}'",
                             missing, callee.name, caller.name
                         )),
+                        blocking: true,
                     });
                 } else if !callee_effects.effects.is_empty() {
                     entries.push(VerificationEntry {
@@ -556,6 +568,7 @@ impl TypeChecker {
                         state: VerificationState::Proven,
                         scope: scope.clone(),
                         evidence: None,
+                        blocking: false,
                     });
                 }
             }
@@ -579,6 +592,7 @@ impl TypeChecker {
                             "{E_CAPABILITY_NOT_PROPAGATED}: callee capability '{}' from '{}' is missing from caller '{}'",
                             missing, callee.name, caller.name
                         )),
+                        blocking: true,
                     });
                 } else if !callee_caps.caps.is_empty() {
                     entries.push(VerificationEntry {
@@ -586,6 +600,7 @@ impl TypeChecker {
                         state: VerificationState::Proven,
                         scope: scope.clone(),
                         evidence: None,
+                        blocking: false,
                     });
                 }
             }
@@ -641,6 +656,7 @@ impl TypeChecker {
                              use an explicit adapter/constraint instead",
                             param.ty
                         )),
+                        blocking: true,
                     });
                 }
             }
@@ -675,6 +691,7 @@ impl TypeChecker {
                             state: VerificationState::Proven,
                             scope: scope.clone(),
                             evidence: None,
+                            blocking: false,
                         });
                     } else {
                         entries.push(VerificationEntry {
@@ -685,6 +702,7 @@ impl TypeChecker {
                                 "{E_STRUCTURAL_TYPE_MISMATCH}: argument type '{}' does not satisfy structural requirement '{}'",
                                 arg_ty, param.ty
                             )),
+                            blocking: true,
                         });
                     }
                 }
@@ -695,13 +713,14 @@ impl TypeChecker {
                         .and_then(|node| node.interface_impls.as_ref())
                         .map(|impls| impls.iter().any(|impl_| impl_.interface == interface))
                         .unwrap_or(false);
+                    let dyn_state = if implements {
+                        VerificationState::Proven
+                    } else {
+                        VerificationState::Failed
+                    };
                     entries.push(VerificationEntry {
                         claim: "dyn-interface".into(),
-                        state: if implements {
-                            VerificationState::Proven
-                        } else {
-                            VerificationState::Failed
-                        },
+                        state: dyn_state,
                         scope,
                         evidence: if implements {
                             None
@@ -711,6 +730,7 @@ impl TypeChecker {
                                 arg_ty, interface
                             ))
                         },
+                        blocking: !implements,
                     });
                 }
             }
@@ -740,6 +760,7 @@ impl TypeChecker {
                                  has empty name in impl of '{}' on '{}'",
                                 impl_.interface, node.name
                             )),
+                            blocking: true,
                         });
                     }
                     if at.ty.is_empty() {
@@ -753,6 +774,7 @@ impl TypeChecker {
                                  associated types must be explicit in the IR",
                                 at.name, impl_.interface, node.name
                             )),
+                            blocking: true,
                         });
                     }
                 }
@@ -774,6 +796,7 @@ impl TypeChecker {
                              ambiguous impl must fail deterministically",
                             impl_.interface, node.name
                         )),
+                        blocking: true,
                     });
                 } else {
                     seen_non_adapter.insert(&impl_.interface, idx);
@@ -920,6 +943,7 @@ impl TypeChecker {
                 state: VerificationState::Proven,
                 scope: scope.to_string(),
                 evidence: None,
+                blocking: false,
             });
         } else {
             entries.push(VerificationEntry {
@@ -927,6 +951,7 @@ impl TypeChecker {
                 state: VerificationState::Failed,
                 scope: scope.to_string(),
                 evidence: Some(evidence_parts.join("; ")),
+                blocking: true,
             });
         }
     }
@@ -965,6 +990,7 @@ impl TypeChecker {
                          in the canonical graph",
                         node.name
                     )),
+                    blocking: false,
                 });
             } else {
                 entries.push(VerificationEntry {
@@ -972,6 +998,7 @@ impl TypeChecker {
                     state: VerificationState::Proven,
                     scope,
                     evidence: None,
+                    blocking: false,
                 });
             }
         }
@@ -1004,6 +1031,7 @@ impl TypeChecker {
                          Core IR prohibits null — use Option<T>, Result<T,E>, or PatchField<T>",
                         return_type, node.name
                     )),
+                    blocking: true,
                 });
             }
         }
@@ -1046,6 +1074,7 @@ impl TypeChecker {
                          or a domain-specific comparator) — not implicit `==`",
                         node.name
                     )),
+                    blocking: true,
                 });
             }
             if cs.has_ord {
@@ -1059,6 +1088,7 @@ impl TypeChecker {
                          use NonNaNFloat or an explicit comparator/wrapper instead",
                         node.name
                     )),
+                    blocking: true,
                 });
             }
         }
@@ -1138,6 +1168,7 @@ impl TypeChecker {
                 state,
                 scope: node.name.clone(),
                 evidence: Some(evidence),
+                blocking: false,
             });
 
             // Emit explicit erasure entry if the refinement was downgraded.
@@ -1152,6 +1183,7 @@ impl TypeChecker {
                          erasure is explicit and tracked",
                         rf.predicate, rf.base_type
                     )),
+                    blocking: false,
                 });
             }
         }

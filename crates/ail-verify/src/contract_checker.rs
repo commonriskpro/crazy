@@ -114,6 +114,7 @@ impl<'s> ContractChecker<'s> {
                 state: VerificationState::Failed,
                 scope: scope.to_string(),
                 evidence: None,
+                blocking: true,
             };
         }
 
@@ -135,11 +136,13 @@ impl<'s> ContractChecker<'s> {
             SolverOutcome::Assumed(reason) => (VerificationState::Assumed, Some(reason)),
         };
 
+        let blocking = matches!(state, VerificationState::Failed | VerificationState::Unsafe);
         VerificationEntry {
             claim: format!("{}: {}", role_label(role), predicate),
             state,
             scope: scope.to_string(),
             evidence,
+            blocking,
         }
     }
 }

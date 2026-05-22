@@ -131,11 +131,14 @@ impl ConcurrencyChecker {
                 _ => {}
             }
 
+            let blocking =
+                matches!(state, VerificationState::Failed | VerificationState::Unsafe);
             entries.push(VerificationEntry {
                 claim,
                 state,
                 scope,
                 evidence,
+                blocking,
             });
         }
 

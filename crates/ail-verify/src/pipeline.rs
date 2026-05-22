@@ -470,11 +470,13 @@ fn stage_entry(
     scope: impl Into<String>,
     evidence: Option<String>,
 ) -> VerificationEntry {
+    let blocking = matches!(state, VerificationState::Failed | VerificationState::Unsafe);
     VerificationEntry {
         claim: claim.into(),
         state,
         scope: scope.into(),
         evidence,
+        blocking,
     }
 }
 

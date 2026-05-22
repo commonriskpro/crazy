@@ -96,6 +96,7 @@ impl EffectChecker {
                         state: VerificationState::Failed,
                         scope,
                         evidence: Some(format!("E_EFFECT_UNDECLARED: {}", names.join(", "))),
+                        blocking: true,
                     };
                 }
 
@@ -108,6 +109,7 @@ impl EffectChecker {
                         state: VerificationState::Assumed,
                         scope,
                         evidence: Some(format!("E_EFFECT_UNUSED: {}", names.join(", "))),
+                        blocking: false,
                     };
                 }
 
@@ -118,6 +120,7 @@ impl EffectChecker {
                     state: VerificationState::Proven,
                     scope,
                     evidence: None,
+                    blocking: false,
                 }
             })
             .collect();

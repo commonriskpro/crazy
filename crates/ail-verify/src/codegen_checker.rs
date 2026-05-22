@@ -90,11 +90,14 @@ impl CodegenChecker {
                     )
                 };
 
+            let blocking =
+                matches!(state, VerificationState::Failed | VerificationState::Unsafe);
             entries.push(VerificationEntry {
                 claim,
                 state,
                 scope,
                 evidence,
+                blocking,
             });
         }
 
@@ -156,11 +159,14 @@ impl CodegenChecker {
                 )
             };
 
+            let blocking =
+                matches!(state, VerificationState::Failed | VerificationState::Unsafe);
             entries.push(VerificationEntry {
                 claim,
                 state,
                 scope,
                 evidence,
+                blocking,
             });
         }
 
@@ -174,6 +180,7 @@ impl CodegenChecker {
                     "capability '{}' is in capabilities manifest but not declared in the semantic graph; manifest mismatch",
                     extra_cap
                 )),
+                blocking: true,
             });
         }
 
