@@ -616,21 +616,109 @@ pub fn lower_core_expr_to_anf(
         // CoreExpr::Placeholder → AnfExpr::Placeholder (no expression body).
         CoreExpr::Placeholder => AnfExpr::Placeholder,
 
-        // ola3-core-ir-types: new expression primitives not yet lowered to ANF.
-        // These are kept as Placeholder until the expression-lowering phase
-        // handles them explicitly.
-        CoreExpr::ForEach { .. }
-        | CoreExpr::Fold { .. }
-        | CoreExpr::Return { .. }
-        | CoreExpr::MapNew { .. }
-        | CoreExpr::SetNew { .. }
-        | CoreExpr::IndexGet { .. }
-        | CoreExpr::BoundaryCall { .. }
-        | CoreExpr::Assume { .. }
-        | CoreExpr::Abort { .. }
-        // ola4-type-formalism: DynCall not yet lowered to ANF — deferred to
-        // the expression-lowering phase.
-        | CoreExpr::DynCall { .. } => AnfExpr::Placeholder,
+        // ── ola5-compiler-core: Gap 2 — real ANF lowering ────────────────
+
+        // Return: atomize the value, wrap in AnfExpr::Return.
+        CoreExpr::Return { value } => {
+            let val_name = atomize(value, fresh, source_ref, out);
+            AnfExpr::Return(Box::new(AnfExpr::Var(val_name)))
+        }
+
+        // Assume: no runtime effect — produces unit.  Predicate and reason
+        // are preserved for static analysis / documentation purposes.
+        CoreExpr::Assume { predicate, reason } => AnfExpr::Assume {
+            predicate: predicate.clone(),
+            reason: reason.clone(),
+        },
+
+        // Abort: always traps — diagnostic message preserved.
+        CoreExpr::Abort { message } => AnfExpr::Abort {
+            message: message.clone(),
+        },
+
+        // BoundaryCall: atomize all args; encode boundary + func as a
+        // namespaced call so backends can route to the trust boundary.
+        CoreExpr::BoundaryCall { boundary, func, args } => {
+            let atomic_args: Vec<String> = args
+                .iter()
+                .map(|a| atomize(a, fresh, source_ref, out))
+                .collect();
+            AnfExpr::Call {
+                func: format!("{boundary}::{func}"),
+                args: atomic_args,
+            }
+        }
+
+        // DynCall: atomize all args; encode interface + method as a
+        // namespaced call for dynamic dispatch through Dyn<Interface>.
+        CoreExpr::DynCall { interface, method, args } => {
+            let atomic_args: Vec<String> = args
+                .iter()
+                .map(|a| atomize(a, fresh, source_ref, out))
+                .collect();
+            AnfExpr::Call {
+                func: format!("dyn::{interface}::{method}"),
+                args: atomic_args,
+            }
+        }
+
+        // IndexGet: atomize both collection and index.
+        CoreExpr::IndexGet { collection, index } => {
+            let col_name = atomize(collection, fresh, source_ref, out);
+            let idx_name = atomize(index, fresh, source_ref, out);
+            AnfExpr::IndexGet {
+                collection: col_name,
+                index: idx_name,
+            }
+        }
+
+        // MapNew: atomize all keys and values; preserve declaration order.
+        CoreExpr::MapNew { entries } => {
+            let atomic_entries: Vec<(String, String)> = entries
+                .iter()
+                .map(|(k, v)| {
+                    let k_name = atomize(k, fresh, source_ref, out);
+                    let v_name = atomize(v, fresh, source_ref, out);
+                    (k_name, v_name)
+                })
+                .collect();
+            AnfExpr::MapNew { entries: atomic_entries }
+        }
+
+        // SetNew: atomize all elements; preserve declaration order.
+        CoreExpr::SetNew { elements } => {
+            let atomic_elems: Vec<String> = elements
+                .iter()
+                .map(|e| atomize(e, fresh, source_ref, out))
+                .collect();
+            AnfExpr::SetNew { elements: atomic_elems }
+        }
+
+        // ForEach: atomize the collection; body is lowered recursively.
+        CoreExpr::ForEach { binding, collection, body } => {
+            let col_name = atomize(collection, fresh, source_ref, out);
+            let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
+            AnfExpr::ForEach {
+                binding: binding.clone(),
+                collection: col_name,
+                body: Box::new(anf_body),
+            }
+        }
+
+        // Fold: atomize init, list, and func; all three become atomic names.
+        CoreExpr::Fold { init, list, func } => {
+            let init_name = atomize(init, fresh, source_ref, out);
+            let list_name = atomize(list, fresh, source_ref, out);
+            let func_name = atomize(func, fresh, source_ref, out);
+            AnfExpr::Fold {
+                init: init_name,
+                list: list_name,
+                func: func_name,
+            }
+        }
+
+        // CoreExpr::Placeholder → AnfExpr::Placeholder (no expression body).
+        // (kept last for clarity — already handled above)
     }
 }
 
