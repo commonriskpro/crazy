@@ -95,6 +95,8 @@ pub const E_MISSING_HASH: &str = "E_MISSING_HASH";
 pub const E_MISSING_ORD: &str = "E_MISSING_ORD";
 /// Refinement erasure to base type occurred and is explicitly reported.
 pub const E_REFINEMENT_ERASURE: &str = "E_REFINEMENT_ERASURE";
+/// ConstParam name contains a complex/undecidable expression.
+pub const E_CONST_PARAM_UNDECIDABLE: &str = "E_CONST_PARAM_UNDECIDABLE";
 
 // ── Collection constraint table ───────────────────────────────────────────
 
@@ -355,11 +357,29 @@ impl TypeChecker {
                             )
                         }
                     }
-                    GenericParamKind::TypeParam | GenericParamKind::ConstParam => {
-                        // TypeParam/ConstParam: no additional validation at
-                        // the declaration site (constraint requirements are
-                        // checked at call sites in subpass 6).
+                    GenericParamKind::TypeParam => {
+                        // TypeParam: no additional validation at the declaration
+                        // site (constraint requirements are checked at call
+                        // sites in subpass 6).
                         (VerificationState::Proven, None)
+                    }
+                    GenericParamKind::ConstParam => {
+                        // ConstParam must stay decidable: the name must be a
+                        // simple identifier (letters, digits, underscore — no
+                        // spaces, operators, or function-call syntax).
+                        if is_simple_identifier(&gp.name) {
+                            (VerificationState::Proven, None)
+                        } else {
+                            (
+                                VerificationState::Failed,
+                                Some(format!(
+                                    "{E_CONST_PARAM_UNDECIDABLE}: ConstParam '{}' \
+                                     contains a complex expression; only simple \
+                                     decidable identifiers are permitted",
+                                    gp.name
+                                )),
+                            )
+                        }
                     }
                 };
 
@@ -674,6 +694,15 @@ impl TypeChecker {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+/// Returns `true` when `name` is a simple decidable identifier:
+/// letters, digits, or underscores only — no spaces, operators, or brackets.
+fn is_simple_identifier(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_')
+}
 
 /// Split `"Base<Inner>"` into `("Base", "Inner")`.
 ///

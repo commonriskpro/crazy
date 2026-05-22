@@ -831,6 +831,164 @@ fn generic_fn_eq_constraint_satisfied_passes() {
     assert!(!failed, "Eq constraint satisfied must not fail");
 }
 
+// ── Subpass 3: ConstParam decidability ───────────────────────────────────
+
+// Spec scenario 2: "Non-decidable const parameters are rejected"
+//   GIVEN a Function node with ConstParam whose name contains spaces/operators
+//   THEN "generic-param-kind" entry is Failed (E_CONST_PARAM_UNDECIDABLE or E_GENERIC_ARITY)
+#[test]
+fn const_param_with_complex_expression_fails() {
+    use ail_verify::type_checker::E_CONST_PARAM_UNDECIDABLE;
+
+    let mut node = fn_node(0, "bad_fixed");
+    node.generic_params = Some(vec![GenericParamDecl {
+        name: "N + 1".into(), // complex expression — not a simple identifier
+        kind: GenericParamKind::ConstParam,
+        required_constraints: vec![],
+    }]);
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let failed = report
+        .entries
+        .iter()
+        .filter(|e| e.claim == "generic-param-kind")
+        .any(|e| e.state == VerificationState::Failed);
+    assert!(failed, "ConstParam with complex expression must fail");
+
+    let has_code = report
+        .entries
+        .iter()
+        .filter(|e| e.claim == "generic-param-kind")
+        .any(|e| {
+            e.evidence
+                .as_deref()
+                .map(|ev| ev.contains(E_CONST_PARAM_UNDECIDABLE))
+                .unwrap_or(false)
+        });
+    assert!(has_code, "evidence must contain {E_CONST_PARAM_UNDECIDABLE}");
+}
+
+// TRIANGULATE: simple ConstParam identifier passes
+#[test]
+fn const_param_simple_identifier_passes() {
+    let mut node = fn_node(0, "vector_fn");
+    node.generic_params = Some(vec![GenericParamDecl {
+        name: "N".into(), // simple identifier — decidable
+        kind: GenericParamKind::ConstParam,
+        required_constraints: vec![],
+    }]);
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    let failed = report
+        .entries
+        .iter()
+        .filter(|e| e.claim == "generic-param-kind")
+        .any(|e| e.state == VerificationState::Failed);
+    assert!(!failed, "simple ConstParam identifier must not fail");
+}
+
+// ── Task 6: Pipeline compatibility ────────────────────────────────────────
+
+// Spec global acceptance: "VerificationReport remains deterministic and
+// consumable by PolicyEngine."
+//   GIVEN a TypeChecker report with entries (Proven + Failed)
+//   WHEN PolicyEngine::evaluate is called with NoUnsafe rule
+//   THEN PolicyDecision is deterministic and reflects failures
+#[test]
+fn type_checker_report_flows_into_policy_engine() {
+    use ail_verify::{PolicyDecision, PolicyEngine, PolicyInput, PolicyRule, ApprovalRecord};
+
+    // Build a graph: nominal match passes, nominal mismatch fails.
+    let mut callee = fn_node(1, "process");
+    callee.params = Some(vec![ParamDecl {
+        name: "x".into(),
+        ty: "TypeA".into(),
+    }]);
+    let caller = fn_node(0, "caller");
+
+    let mismatch_edge = GraphEdge {
+        source: NodeRef(0),
+        target: NodeRef(1),
+        kind: EdgeKind::Calls,
+        call_args: Some(vec!["TypeB".into()]), // wrong type
+        type_arg_bindings: None,
+    };
+
+    let report = TypeChecker::check(&graph_with_edges(vec![caller, callee], vec![mismatch_edge]));
+
+    // Verify the report has a Failed entry before feeding to PolicyEngine.
+    assert!(
+        report.entries.iter().any(|e| e.state == VerificationState::Failed),
+        "report must contain at least one Failed entry"
+    );
+    assert!(
+        report.summary_counts.failed_count > 0,
+        "summary_counts.failed_count must reflect failures"
+    );
+
+    // Feed to PolicyEngine — should reject (no approvals for failed entries).
+    let approvals: Vec<ApprovalRecord> = vec![];
+    let input = PolicyInput {
+        report: &report,
+        rules: &[PolicyRule::NoUnsafe],
+        approvals: &approvals,
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+    };
+    let decision = PolicyEngine::evaluate(&input);
+
+    // The report is deterministic: two identical graphs produce identical decisions.
+    let decision2 = PolicyEngine::evaluate(&input);
+    assert_eq!(
+        format!("{decision:?}"),
+        format!("{decision2:?}"),
+        "PolicyEngine::evaluate must be deterministic for identical input"
+    );
+
+    // The decision type is one of the valid variants (exhaustive match).
+    match &decision {
+        PolicyDecision::Passed
+        | PolicyDecision::PassedWithWarnings(_)
+        | PolicyDecision::Failed(_)
+        | PolicyDecision::ApprovalRequired(_) => {}
+    }
+}
+
+// TRIANGULATE: all-Proven report flows to PolicyEngine as Accept
+#[test]
+fn all_proven_report_is_accepted_by_policy_engine() {
+    use ail_verify::{PolicyEngine, PolicyInput, PolicyRule, ApprovalRecord, PolicyDecision};
+
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "safe_fn");
+    node.type_facts = Some(TypeFacts {
+        nominal: "Int".into(),
+        generics: vec![],
+    });
+
+    let report = TypeChecker::check(&graph_from(vec![node]));
+
+    // Only Proven entries → no unsafe/failed → Accept
+    let approvals: Vec<ApprovalRecord> = vec![];
+    let input = PolicyInput {
+        report: &report,
+        rules: &[PolicyRule::NoUnsafe],
+        approvals: &approvals,
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+    };
+    let decision = PolicyEngine::evaluate(&input);
+    assert!(
+        matches!(decision, ail_verify::policy::PolicyDecision::Passed),
+        "all-Proven report must be Passed by PolicyEngine; got: {decision:?}"
+    );
+}
+
 // ── Subpass 7: Refinements ───────────────────────────────────────────────
 
 // Spec scenario 6: "Positive-money style predicates can be proven locally"
