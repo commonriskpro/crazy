@@ -17,6 +17,7 @@
 //! - No expression / body codegen (deferred to Phase 8).
 
 pub mod anf;
+pub mod artifact_manifest;
 pub mod cache;
 pub mod core_ir;
 pub mod error;
@@ -31,6 +32,7 @@ mod spike_v03;
 
 pub use anf::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, SourceMap, SourceMapEntry};
 pub use anf::AnfMatchArm;
+pub use artifact_manifest::ArtifactManifest;
 pub use cache::{ArtifactCache, ArtifactEntry, MemoryArtifactCache};
 pub use core_ir::{
     CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, MatchArm, StageHashes,
