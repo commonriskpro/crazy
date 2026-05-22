@@ -23,7 +23,9 @@
 // `AnfBinding.expr` holds the normalised expression for this binding.
 // Nodes without a `CoreExpr` body default to `AnfExpr::Literal(Unit)`.
 
-use ail_core::semantic_graph::NodeRef;
+use ail_core::semantic_graph::{
+    BlockRef, ContractRef, EffectRef, NodeRef, ProofObligationRef, RuntimeCheckRef,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::core_ir::{LiteralValue, StageHashes};
@@ -287,22 +289,22 @@ pub struct SourceMapEntry {
     pub node_id: NodeRef,
     /// The `BlockRef` (block identity) in the semantic graph, if applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub block_ref: Option<String>,
-    /// The `ChangeSet` provenance identifier.
+    pub block_ref: Option<BlockRef>,
+    /// The `ChangeSet` provenance identifier (opaque string).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change_set: Option<String>,
     /// The `ContractRef` for the contract that governs this node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contract_ref: Option<String>,
+    pub contract_ref: Option<ContractRef>,
     /// The `EffectRef` for the effect associated with this node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect_ref: Option<String>,
+    pub effect_ref: Option<EffectRef>,
     /// The `ProofObligationRef` for the proof obligation at this node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proof_obligation_ref: Option<String>,
+    pub proof_obligation_ref: Option<ProofObligationRef>,
     /// The `RuntimeCheckRef` for any runtime check inserted at this node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_check_ref: Option<String>,
+    pub runtime_check_ref: Option<RuntimeCheckRef>,
     /// Byte offset in the emitted WASM binary (code section), if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wasm_offset: Option<u32>,
@@ -770,6 +772,115 @@ mod tests {
             b_a, b_b,
             "different AnfBinding lists must produce different CBOR"
         );
+    }
+
+    // ── G32: SourceMapEntry typed ref fields ──────────────────────────────
+
+    // Spec: SourceMapEntry uses typed ref newtypes for provenance fields.
+    // RED: written after types exist; GREEN from the start of this change.
+    #[test]
+    fn source_map_entry_with_typed_refs_is_constructible() {
+        use ail_core::semantic_graph::{BlockRef, ContractRef, EffectRef, ProofObligationRef, RuntimeCheckRef};
+
+        let entry = SourceMapEntry {
+            binding_name: "fn_checkout".to_string(),
+            node_id: NodeRef(0),
+            block_ref: Some(BlockRef("block_checkout".to_string())),
+            change_set: Some("change.add_checkout".to_string()),
+            contract_ref: Some(ContractRef("contract.payment".to_string())),
+            effect_ref: Some(EffectRef("effect.db.read".to_string())),
+            proof_obligation_ref: Some(ProofObligationRef("proof.no_negative_balance".to_string())),
+            runtime_check_ref: Some(RuntimeCheckRef("rtcheck.null_guard".to_string())),
+            wasm_offset: None,
+            native_offset: None,
+        };
+        assert_eq!(entry.block_ref.as_ref().unwrap().0, "block_checkout");
+        assert_eq!(entry.contract_ref.as_ref().unwrap().0, "contract.payment");
+        assert_eq!(entry.effect_ref.as_ref().unwrap().0, "effect.db.read");
+        assert_eq!(entry.proof_obligation_ref.as_ref().unwrap().0, "proof.no_negative_balance");
+        assert_eq!(entry.runtime_check_ref.as_ref().unwrap().0, "rtcheck.null_guard");
+    }
+
+    // TRIANGULATE: SourceMapEntry with typed refs survives CBOR round-trip.
+    #[test]
+    fn source_map_entry_typed_refs_cbor_round_trip() {
+        use ail_core::semantic_graph::{BlockRef, ContractRef};
+
+        let entry = SourceMapEntry {
+            binding_name: "fn_pay".to_string(),
+            node_id: NodeRef(3),
+            block_ref: Some(BlockRef("block_pay".to_string())),
+            change_set: Some("change.add_payment".to_string()),
+            contract_ref: Some(ContractRef("contract.payment.verify".to_string())),
+            effect_ref: None,
+            proof_obligation_ref: None,
+            runtime_check_ref: None,
+            wasm_offset: None,
+            native_offset: None,
+        };
+        let bytes = stable_cbor_bytes(&entry).expect("encode");
+        let decoded: SourceMapEntry = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, entry, "SourceMapEntry with typed refs must survive CBOR round-trip");
+    }
+
+    // Spec: SourceMap from_bindings builds entries with None for all optional fields.
+    #[test]
+    fn source_map_from_bindings_sets_all_optional_fields_to_none() {
+        let bindings = vec![
+            AnfBinding {
+                source_ref: NodeRef(0),
+                name: "fn_a".to_string(),
+                expr: AnfExpr::Placeholder,
+            },
+            AnfBinding {
+                source_ref: NodeRef(1),
+                name: "fn_b".to_string(),
+                expr: AnfExpr::Placeholder,
+            },
+        ];
+        let sm = SourceMap::from_bindings(&bindings);
+        assert_eq!(sm.entries.len(), 2);
+        for entry in &sm.entries {
+            assert!(entry.block_ref.is_none(), "block_ref must be None from from_bindings");
+            assert!(entry.change_set.is_none(), "change_set must be None from from_bindings");
+            assert!(entry.contract_ref.is_none(), "contract_ref must be None from from_bindings");
+            assert!(entry.effect_ref.is_none(), "effect_ref must be None from from_bindings");
+            assert!(entry.proof_obligation_ref.is_none(), "proof_obligation_ref must be None from from_bindings");
+            assert!(entry.runtime_check_ref.is_none(), "runtime_check_ref must be None from from_bindings");
+            assert!(entry.wasm_offset.is_none(), "wasm_offset must be None from from_bindings");
+            assert!(entry.native_offset.is_none(), "native_offset must be None from from_bindings");
+        }
+    }
+
+    // Spec: source_map has one entry per binding (including synthetic ones).
+    #[test]
+    fn source_map_preserves_duplicate_node_refs_for_synthetic_bindings() {
+        // Two bindings with the same source_ref simulate G20 synthetic expansion.
+        let bindings = vec![
+            AnfBinding {
+                source_ref: NodeRef(5),
+                name: "fn_x".to_string(),
+                expr: AnfExpr::Placeholder,
+            },
+            AnfBinding {
+                source_ref: NodeRef(5), // duplicate NodeRef (synthetic)
+                name: "anf_0".to_string(),
+                expr: AnfExpr::Placeholder,
+            },
+        ];
+        let sm = SourceMap::from_bindings(&bindings);
+        assert_eq!(sm.entries.len(), 2, "duplicate NodeRefs must NOT be collapsed");
+        assert_eq!(sm.entries[0].node_id, NodeRef(5));
+        assert_eq!(sm.entries[1].node_id, NodeRef(5));
+        assert_eq!(sm.entries[0].binding_name, "fn_x");
+        assert_eq!(sm.entries[1].binding_name, "anf_0");
+    }
+
+    // Spec: empty input yields empty source map.
+    #[test]
+    fn source_map_from_empty_bindings_is_empty() {
+        let sm = SourceMap::from_bindings(&[]);
+        assert!(sm.entries.is_empty(), "empty bindings must produce empty source map");
     }
 
     // Scenario: source_ref is not dropped when name is the same.

@@ -5,6 +5,7 @@ pub mod graph_index;
 pub mod semantic_graph;
 
 pub use graph_index::GraphIndex;
+pub use semantic_graph::{BlockRef, ContractRef, EffectRef, ProofObligationRef, RuntimeCheckRef};
 
 #[cfg(test)]
 mod tests {

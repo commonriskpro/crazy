@@ -30,6 +30,7 @@ pub mod wasm;
 mod spike_v03;
 
 pub use anf::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, SourceMap, SourceMapEntry};
+pub use anf::AnfMatchArm;
 pub use cache::{ArtifactCache, ArtifactEntry, MemoryArtifactCache};
 pub use core_ir::{
     CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, MatchArm, StageHashes,
