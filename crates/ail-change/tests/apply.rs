@@ -96,6 +96,11 @@ fn matching_base_snapshot_returns_applied_and_graph_reflects_ops() {
             create_op(graph_node(1, NodeKind::Function, "fn_b")),
             connect_op(graph_edge(0, 1, EdgeKind::DependsOn)),
         ],
+        expect: None,
+        approval: None,
+        composition: Default::default(),
+        blocks: vec![],
+        verify: vec![],
     };
 
     let outcome = apply(cs, &mut graph, &bridge);
@@ -126,6 +131,11 @@ fn matching_base_with_no_ops_returns_applied() {
         acl_version: "1.0".to_string(),
         preconditions: vec![],
         ops: vec![],
+        expect: None,
+        approval: None,
+        composition: Default::default(),
+        blocks: vec![],
+        verify: vec![],
     };
 
     let outcome = apply(cs, &mut graph, &bridge);
@@ -152,6 +162,11 @@ fn stale_base_snapshot_returns_rebase_required_with_graph_unmodified() {
             NodeKind::Module,
             "should_not_appear",
         ))],
+        expect: None,
+        approval: None,
+        composition: Default::default(),
+        blocks: vec![],
+        verify: vec![],
     };
 
     let pre_graph = graph.clone();
@@ -182,6 +197,11 @@ fn stale_base_zero_vs_nonzero_also_returns_rebase_required() {
         acl_version: "1.0".to_string(),
         preconditions: vec![],
         ops: vec![],
+        expect: None,
+        approval: None,
+        composition: Default::default(),
+        blocks: vec![],
+        verify: vec![],
     };
 
     let outcome = apply(cs, &mut graph, &bridge);
@@ -214,6 +234,11 @@ fn mid_apply_op_failure_returns_failed_and_graph_is_rolled_back() {
             // Op 3: duplicate NodeRef(1) — violates graph invariants
             create_op(graph_node(1, NodeKind::Type, "duplicate_id")),
         ],
+        expect: None,
+        approval: None,
+        composition: Default::default(),
+        blocks: vec![],
+        verify: vec![],
     };
 
     let pre_apply_graph = graph.clone();
@@ -251,6 +276,11 @@ fn assert_exists_on_missing_node_triggers_failed_and_rollback() {
             NodeKind::Module,
             "should_not_be_created",
         ))],
+        expect: None,
+        approval: None,
+        composition: Default::default(),
+        blocks: vec![],
+        verify: vec![],
     };
 
     let pre_graph = graph.clone();
@@ -282,6 +312,11 @@ fn assert_exists_on_present_node_allows_apply_to_proceed() {
             node_id: NodeRef(0),
         })],
         ops: vec![create_op(graph_node(1, NodeKind::Function, "fn_new"))],
+        expect: None,
+        approval: None,
+        composition: Default::default(),
+        blocks: vec![],
+        verify: vec![],
     };
 
     let outcome = apply(cs, &mut graph, &bridge);

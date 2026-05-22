@@ -87,7 +87,7 @@ pub struct ParsedOp {
 /// Cross-changeset composition relationships.
 ///
 /// All fields default to empty vecs; absent directives produce no entries.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ChangeComposition {
     /// ChangeSet IDs that must be applied before this one.
     pub depends_on: Vec<String>,
@@ -101,13 +101,32 @@ pub struct ChangeComposition {
     pub blocks: Vec<String>,
 }
 
+// ── ParsedBlock ───────────────────────────────────────────────────────────
+
+/// A typed block section (`block <kind> @ref ... end`).
+///
+/// Blocks carry free-form content (expressions, schemas, docs, ranges) that
+/// is parsed by a subgrammar downstream. The canonicalizer carries them
+/// through intact and records their blake3 hash.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ParsedBlock {
+    /// Block type: `expr`, `schema`, `doc`, `range`, `policy`, `test`.
+    pub kind: String,
+    /// The `@ref` identifier for this block (e.g. `@expr.checkout_body`).
+    pub block_ref: String,
+    /// Raw content lines between the block header and `end`.
+    pub content: String,
+    /// Optional hash declared inline on the block header (`hash=<value>`).
+    pub hash: Option<String>,
+}
+
 // ── ExpectClaims ─────────────────────────────────────────────────────────
 
 /// Claims about the expected diff, written by the LLM in the `expect` section.
 ///
 /// These are verifiable claims (not authoritative policy) — the toolchain
 /// checks them against the actual structural diff.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ExpectClaims(pub Vec<String>);
 
 // ── ApprovalRequirements ─────────────────────────────────────────────────
@@ -115,7 +134,7 @@ pub struct ExpectClaims(pub Vec<String>);
 /// Approval requirements declared in the `approval` section.
 ///
 /// Each string is a raw `require_if <condition>` directive.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ApprovalRequirements(pub Vec<String>);
 
 use crate::{
@@ -154,6 +173,10 @@ pub struct ParsedChangeSet {
     pub approval: Option<ApprovalRequirements>,
     /// Cross-changeset composition relationships (from `metadata` section).
     pub composition: ChangeComposition,
+    /// Typed block sections (`block <kind> @ref ... end`).
+    pub blocks: Vec<ParsedBlock>,
+    /// Verify directives: short form lines and block form lines combined.
+    pub verify: Vec<String>,
 }
 
 // ── Section state ─────────────────────────────────────────────────────────
@@ -166,6 +189,8 @@ enum Section {
     Ops,
     Expect,
     Approval,
+    Block,
+    Verify,
 }
 
 // ── parse_changeset ───────────────────────────────────────────────────────
@@ -194,6 +219,13 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
     let mut expect_claims: Vec<String> = Vec::new();
     let mut approval_reqs: Vec<String> = Vec::new();
     let mut composition = ChangeComposition::default();
+    let mut blocks: Vec<ParsedBlock> = Vec::new();
+    let mut verify_lines: Vec<String> = Vec::new();
+
+    // In-progress block being collected.
+    let mut current_block: Option<ParsedBlock> = None;
+    // Whether we are inside a `verify ... end` block form.
+    let mut in_verify_block = false;
 
     let mut section = Section::TopLevel;
     let mut line_num: usize = 0;
@@ -206,8 +238,18 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
         line_num += 1;
         let line = raw.trim();
 
-        // Always skip blanks and comments.
+        // Always skip blanks and comments — except inside block content
+        // (blocks may contain blank lines as semantic content; we skip them
+        // here for simplicity since the spec treats content as opaque free text).
         if line.is_empty() || line.starts_with('#') {
+            // Collect blank lines inside block content.
+            if let Some(ref mut blk) = current_block {
+                if !line.is_empty() {
+                    // comment inside block — skip
+                } else {
+                    blk.content.push('\n');
+                }
+            }
             continue;
         }
 
@@ -231,14 +273,27 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
             continue;
         }
 
-        // Top-level `end` closes the change block.
+        // `end` closes the innermost open context.
         if line == "end" {
+            // Close an in-progress block first.
+            if let Some(blk) = current_block.take() {
+                blocks.push(blk);
+                continue;
+            }
+            // Close a verify block.
+            if in_verify_block {
+                in_verify_block = false;
+                section = Section::TopLevel;
+                continue;
+            }
             match section {
                 Section::Metadata
                 | Section::Requires
                 | Section::Ops
                 | Section::Expect
-                | Section::Approval => {
+                | Section::Approval
+                | Section::Block
+                | Section::Verify => {
                     // Closes the current inner section.
                     section = Section::TopLevel;
                 }
@@ -247,6 +302,45 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
                     in_change = false;
                 }
             }
+            continue;
+        }
+
+        // If we are inside a block body, collect content lines.
+        if let Some(ref mut blk) = current_block {
+            if !blk.content.is_empty() {
+                blk.content.push('\n');
+            }
+            blk.content.push_str(line);
+            continue;
+        }
+
+        // `block <kind> @ref [attrs]` opener — only at top level or inside change body.
+        if line.starts_with("block ") && section == Section::TopLevel {
+            let rest = &line["block ".len()..];
+            let blk = parse_block_header(rest, line_num)?;
+            current_block = Some(blk);
+            continue;
+        }
+
+        // `verify` forms at top level.
+        if section == Section::TopLevel || section == Section::Verify {
+            // `verify` alone → block form opener.
+            if line == "verify" {
+                in_verify_block = true;
+                section = Section::Verify;
+                continue;
+            }
+            // `verify <kv or bare words>` → short form; collect the whole line.
+            if line.starts_with("verify ") {
+                // Short form: collect the tail as a single verify entry.
+                verify_lines.push(line["verify ".len()..].trim().to_string());
+                continue;
+            }
+        }
+
+        // Inside verify block form: collect lines.
+        if section == Section::Verify {
+            verify_lines.push(line.to_string());
             continue;
         }
 
@@ -313,10 +407,16 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
                 // Collect raw approval requirement lines.
                 approval_reqs.push(line.to_string());
             }
+            Section::Block | Section::Verify => {
+                // These are handled above; this branch is unreachable in practice.
+            }
         }
     }
 
     // Check for unclosed sections.
+    if current_block.is_some() {
+        return Err("unclosed block section".to_string());
+    }
     if section != Section::TopLevel {
         return Err(format!(
             "unclosed section: {}",
@@ -326,6 +426,8 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
                 Section::Ops => "ops",
                 Section::Expect => "expect",
                 Section::Approval => "approval",
+                Section::Block => "block",
+                Section::Verify => "verify",
                 Section::TopLevel => unreachable!(),
             }
         ));
@@ -360,6 +462,8 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
             Some(ApprovalRequirements(approval_reqs))
         },
         composition,
+        blocks,
+        verify: verify_lines,
     })
 }
 
@@ -367,7 +471,7 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
 
 /// Parse inline attrs from the `change <id> <attrs>` header line.
 ///
-/// Recognises `acl=<version>` and `base=<u64>`.
+/// Recognises `acl=<version>` and `base=<u64|snapshot_NNN>`.
 fn parse_change_line_attrs(
     attrs: &str,
     line_num: usize,
@@ -378,14 +482,66 @@ fn parse_change_line_attrs(
         if let Some(v) = token.strip_prefix("acl=") {
             *acl_version = v.to_string();
         } else if let Some(v) = token.strip_prefix("base=") {
-            let id: u64 = v
-                .parse()
-                .map_err(|_| format!("line {line_num}: invalid base snapshot id in change line: '{v}'"))?;
-            *base = Some(SnapshotId(id));
+            *base = Some(parse_snapshot_id(v, line_num)?);
         }
         // Unknown attrs are silently ignored (forward-compatible).
     }
     Ok(())
+}
+
+// ── parse_snapshot_id ─────────────────────────────────────────────────────
+
+/// Parse a snapshot id that is either a plain `u64` or `snapshot_<u64>`.
+///
+/// The doc-style form `snapshot_123` is accepted everywhere a base id appears.
+fn parse_snapshot_id(raw: &str, line_num: usize) -> Result<SnapshotId, String> {
+    let numeric = if let Some(n) = raw.strip_prefix("snapshot_") {
+        n
+    } else {
+        raw
+    };
+    numeric
+        .parse::<u64>()
+        .map(SnapshotId)
+        .map_err(|_| format!("line {line_num}: invalid base snapshot id: '{raw}'"))
+}
+
+// ── parse_block_header ────────────────────────────────────────────────────
+
+/// Parse the header portion of a `block <kind> @ref [attrs]` line.
+///
+/// Returns a `ParsedBlock` with empty content (content is collected by
+/// the caller as subsequent lines).
+fn parse_block_header(rest: &str, line_num: usize) -> Result<ParsedBlock, String> {
+    // rest = "<kind> @ref [key=value ...]"
+    let mut tokens = rest.splitn(3, ' ');
+    let kind = tokens
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("line {line_num}: block requires a kind (e.g. 'expr')"))?
+        .to_string();
+    let block_ref = tokens
+        .next()
+        .filter(|s| s.starts_with('@'))
+        .ok_or_else(|| format!("line {line_num}: block requires a @ref identifier"))?
+        .to_string();
+    let attrs_str = tokens.next().unwrap_or("").trim();
+
+    let hash = if attrs_str.is_empty() {
+        None
+    } else {
+        // Look for `hash=<value>` in remaining attrs.
+        attrs_str.split_whitespace().find_map(|tok| {
+            tok.strip_prefix("hash=").map(|v| extract_string_value(v).to_string())
+        })
+    };
+
+    Ok(ParsedBlock {
+        kind,
+        block_ref,
+        content: String::new(),
+        hash,
+    })
 }
 
 // ── parse_metadata_line ───────────────────────────────────────────────────
@@ -410,11 +566,7 @@ fn parse_metadata_line(
     } else if let Some(v) = line.strip_prefix("intent ") {
         *description = Some(extract_string_value(v.trim()));
     } else if let Some(v) = line.strip_prefix("base ") {
-        let raw = v.trim();
-        let id: u64 = raw
-            .parse()
-            .map_err(|_| format!("line {line_num}: invalid base snapshot id: '{raw}'"))?;
-        *base = Some(SnapshotId(id));
+        *base = Some(parse_snapshot_id(v.trim(), line_num)?);
     } else if let Some(v) = line.strip_prefix("language ") {
         // `language acl/1.0` → extract "1.0"
         let v = v.trim();

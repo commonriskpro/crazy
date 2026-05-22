@@ -277,6 +277,8 @@ fn minimal_parsed_changeset(parsed_ops: Vec<ParsedOp>) -> ParsedChangeSet {
         expect: None,
         approval: None,
         composition: ChangeComposition::default(),
+        blocks: vec![],
+        verify: vec![],
     }
 }
 

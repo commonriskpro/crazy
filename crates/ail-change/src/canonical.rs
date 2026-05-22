@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 use crate::model::{
     AssertExists, AssertHash, BlockHash, ChangeSet, ChangeSetOp, SnapshotId, Timestamp,
 };
-use crate::parser::{OpArgs, ParsedChangeSet};
+use crate::parser::{
+    ApprovalRequirements, ChangeComposition, ExpectClaims, OpArgs, ParsedBlock, ParsedChangeSet,
+};
 
 // ── Phase ordering ────────────────────────────────────────────────────────
 
@@ -152,6 +154,11 @@ pub enum Precondition {
 ///
 /// Constructed either via `canonicalize(ChangeSet)` / `canonicalize_parsed`
 /// or directly in tests when explicit payloads are required.
+///
+/// All optional sections from the submitted form (`expect`, `approval`,
+/// `composition`, `blocks`, `verify`) are carried through so downstream
+/// consumers (verifier, policy engine) can inspect them without re-parsing
+/// the submitted text.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalChangeSet {
     /// Canonicalized authorship and intent metadata.
@@ -165,10 +172,95 @@ pub struct CanonicalChangeSet {
     pub preconditions: Vec<Precondition>,
     /// Phase-ordered, hash-stamped operations.
     pub ops: Vec<CanonicalOp>,
+    /// AI-written claims about the expected diff (carried for verifier).
+    #[serde(default)]
+    pub expect: Option<ExpectClaims>,
+    /// Approval requirements declared in the submitted form.
+    #[serde(default)]
+    pub approval: Option<ApprovalRequirements>,
+    /// Cross-changeset composition relationships.
+    #[serde(default)]
+    pub composition: ChangeComposition,
+    /// Typed block sections (expressions, schemas, docs, etc.).
+    #[serde(default)]
+    pub blocks: Vec<ParsedBlock>,
+    /// Verify directives (short form and block form lines combined).
+    #[serde(default)]
+    pub verify: Vec<String>,
 }
 
 fn default_acl_version() -> String {
     "1.0".to_string()
+}
+
+// ── normalize_id ──────────────────────────────────────────────────────────
+
+/// Normalize an ACL identifier to canonical lower_snake form.
+///
+/// Rules (from spec):
+/// - `Fn.CartTotal`    → `fn.cart_total`   (upper namespace + PascalCase → lower.snake)
+/// - `fn.cart-total`   → `fn.cart_total`   (kebab → snake)
+/// - `fn.cart_total`   → `fn.cart_total`   (already canonical)
+/// - `type.CartItem`   → `type.CartItem`   (type. namespace: PascalCase preserved)
+/// - `handler.StripePayment` → `handler.StripePayment` (handler. namespace preserved)
+///
+/// Namespaces that use PascalCase by convention (`type.`, `handler.`,
+/// `boundary.`) are left with their original casing in the local part.
+/// All other namespaces are lowercased with underscores.
+pub fn normalize_id(id: &str) -> String {
+    let dot = match id.find('.') {
+        Some(p) => p,
+        None => return id.to_string(), // no namespace — return as-is
+    };
+    let ns = &id[..dot];
+    let local = &id[dot + 1..];
+
+    // Namespaces whose local part keeps PascalCase by spec convention.
+    const PASCAL_NAMESPACES: &[&str] = &["type", "handler", "boundary"];
+
+    let ns_lower = ns.to_lowercase();
+    let local_normalized = if PASCAL_NAMESPACES.contains(&ns_lower.as_str()) {
+        // Preserve PascalCase in the local part; still normalize kebab → snake.
+        local.replace('-', "_")
+    } else {
+        // Lower namespace + snake_case local part.
+        pascal_to_snake(local).replace('-', "_")
+    };
+
+    format!("{}.{}", ns_lower, local_normalized)
+}
+
+/// Convert a PascalCase string to lower_snake_case.
+///
+/// `CartTotal` → `cart_total`
+/// `cart_total` → `cart_total` (already snake)
+fn pascal_to_snake(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for (i, ch) in s.char_indices() {
+        if ch.is_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.extend(ch.to_lowercase());
+    }
+    out
+}
+
+// ── normalize_op_args ─────────────────────────────────────────────────────
+
+/// Normalize ID-valued op arguments in place.
+///
+/// Keys that conventionally carry node identifiers (`id`, `target`, `source`,
+/// `to`, `from`) are normalized via `normalize_id`. Other values (type
+/// expressions, free strings) are left as-is.
+const ID_ARG_KEYS: &[&str] = &["id", "target", "source", "to", "from"];
+
+fn normalize_op_args(args: &mut OpArgs) {
+    for key in ID_ARG_KEYS {
+        if let Some(v) = args.get_mut(*key) {
+            let normalized = normalize_id(v);
+            *v = normalized;
+        }
+    }
 }
 
 // ── canonicalize ──────────────────────────────────────────────────────────
@@ -221,6 +313,11 @@ pub fn canonicalize(cs: ChangeSet) -> CanonicalChangeSet {
         acl_version: "1.0".to_string(),
         preconditions: vec![],
         ops: canonical_ops,
+        expect: None,
+        approval: None,
+        composition: ChangeComposition::default(),
+        blocks: vec![],
+        verify: vec![],
     }
 }
 
@@ -231,8 +328,12 @@ pub fn canonicalize(cs: ChangeSet) -> CanonicalChangeSet {
 /// Additional steps beyond `canonicalize`:
 /// - Carries preconditions from `ParsedChangeSet.preconditions`.
 /// - Carries `acl_version` from the parsed document.
+/// - Carries `expect`, `approval`, `composition`, `blocks`, `verify`.
 /// - Materializes safe defaults:
 ///   - `create_function` / `create_type` without `visibility` → `"private"`.
+///   - `create_type` without `derive` → `"none"`.
+/// - Normalizes ID-valued args (`id`, `target`, `source`, `to`, `from`).
+/// - Marks `infer_*` ops with `infer_pending=true` for downstream expansion.
 /// - Stores full verb and materialized args on each `CanonicalOp`.
 pub fn canonicalize_parsed(pcs: ParsedChangeSet) -> CanonicalChangeSet {
     // Step 1: materialize description default.
@@ -261,12 +362,20 @@ pub fn canonicalize_parsed(pcs: ParsedChangeSet) -> CanonicalChangeSet {
     // Stable-sort by canonical phase order.
     op_pairs.sort_by(|a, b| phase_order(&a.0).cmp(&phase_order(&b.0)));
 
-    // Materialize defaults and compute per-block hashes.
+    // Materialize defaults, normalize IDs, mark infer ops, compute hashes.
     let canonical_ops: Vec<CanonicalOp> = op_pairs
         .into_iter()
         .enumerate()
         .map(|(idx, (kind, verb, mut args))| {
+            // Normalize ID-valued arguments.
+            normalize_op_args(&mut args);
+            // Materialize safe defaults for this op.
             materialize_defaults(&kind, &verb, &mut args);
+            // Mark infer_* verbs as pending expansion.
+            if kind == ChangeSetOp::Infer && verb.starts_with("infer_") {
+                args.entry("infer_pending".to_string())
+                    .or_insert_with(|| "true".to_string());
+            }
             let block_hash = compute_block_hash(&kind, idx);
             CanonicalOp {
                 kind,
@@ -288,6 +397,11 @@ pub fn canonicalize_parsed(pcs: ParsedChangeSet) -> CanonicalChangeSet {
         acl_version: pcs.acl_version,
         preconditions: pcs.preconditions,
         ops: canonical_ops,
+        expect: pcs.expect,
+        approval: pcs.approval,
+        composition: pcs.composition,
+        blocks: pcs.blocks,
+        verify: pcs.verify,
     }
 }
 
@@ -297,6 +411,7 @@ pub fn canonicalize_parsed(pcs: ParsedChangeSet) -> CanonicalChangeSet {
 ///
 /// Defaults applied:
 /// - `create_function` / `create_type` without `visibility` → `"private"`.
+/// - `create_type` without `derive` → `"none"`.
 ///
 /// Rules (from spec):
 /// 1. Defaults must be safe (never public/unsafe/assumed).
@@ -308,6 +423,10 @@ fn materialize_defaults(kind: &ChangeSetOp, verb: &str, args: &mut OpArgs) {
             if matches!(verb, "create_function" | "create_type") {
                 args.entry("visibility".to_string())
                     .or_insert_with(|| "private".to_string());
+            }
+            if verb == "create_type" {
+                args.entry("derive".to_string())
+                    .or_insert_with(|| "none".to_string());
             }
         }
         _ => {}
