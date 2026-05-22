@@ -21,7 +21,13 @@
 // This matches the spec requirement: every `--json` response MUST have
 // top-level `status` and `data` fields.
 
-use serde_json::Value;
+use serde_json::{Value, json};
+
+/// The JSON output schema version injected into every `--json` response.
+///
+/// Satisfies spec requirement JV-1: every `--json` output MUST include
+/// `"schema_version": "1"` inside the `data` object.
+pub const JSON_OUTPUT_VERSION: &str = "1";
 
 // ── OutputMode ────────────────────────────────────────────────────────────
 
@@ -49,7 +55,18 @@ pub enum OutputMode {
 pub fn format_response(mode: OutputMode, human_msg: &str, data: Value) -> String {
     match mode {
         OutputMode::Human => human_msg.to_string(),
-        OutputMode::Json => serde_json::json!({ "status": "ok", "data": data }).to_string(),
+        OutputMode::Json => {
+            // Inject schema_version into the data object before serializing.
+            // This satisfies spec JV-1: every --json response has schema_version in data.
+            let mut data_obj = data;
+            if let Some(obj) = data_obj.as_object_mut() {
+                obj.insert(
+                    "schema_version".to_string(),
+                    json!(JSON_OUTPUT_VERSION),
+                );
+            }
+            json!({ "status": "ok", "data": data_obj }).to_string()
+        }
     }
 }
 
@@ -83,14 +100,55 @@ mod tests {
         );
     }
 
-    // TRIANGULATE: Json mode returns valid JSON with status and data fields.
+    // Scenario JV-1a/JV-1b: Json mode injects schema_version = "1" into data.
+    //   GIVEN OutputMode::Json
+    //   WHEN format_response is called
+    //   THEN data["schema_version"] == "1" (string, not number)
+    #[test]
+    fn json_mode_injects_schema_version() {
+        let data = json!({ "hash": "abc123" });
+        let result = format_response(OutputMode::Json, "ignored", data);
+
+        let parsed: Value =
+            serde_json::from_str(&result).expect("Json mode output must be valid JSON");
+
+        assert_eq!(
+            parsed["data"]["schema_version"], "1",
+            "JSON data must contain schema_version == \"1\""
+        );
+    }
+
+    // TRIANGULATE: schema_version is a string, not a number.
+    //   GIVEN OutputMode::Json with a different payload
+    //   WHEN format_response is called
+    //   THEN data["schema_version"] is the string "1", not integer 1
+    #[test]
+    fn json_mode_schema_version_is_string_not_number() {
+        let data = json!({ "nodes": [] });
+        let result = format_response(OutputMode::Json, "ignored", data);
+
+        let parsed: Value =
+            serde_json::from_str(&result).expect("Json mode output must be valid JSON");
+
+        assert!(
+            parsed["data"]["schema_version"].is_string(),
+            "schema_version must be a JSON string, not a number"
+        );
+        assert_eq!(
+            parsed["data"]["schema_version"].as_str().unwrap(),
+            "1",
+            "schema_version string value must be \"1\""
+        );
+    }
+
+    // Scenario: Json mode produces valid envelope with status "ok" and preserves data fields.
     //   GIVEN OutputMode::Json and a non-null data payload
     //   WHEN format_response is called
-    //   THEN the result parses as JSON with "status" == "ok" and "data" set
+    //   THEN status == "ok" and the original data fields are accessible
     #[test]
     fn json_mode_produces_envelope_with_status_and_data() {
         let data = json!({ "hash": "abc123" });
-        let result = format_response(OutputMode::Json, "ignored", data.clone());
+        let result = format_response(OutputMode::Json, "ignored", data);
 
         let parsed: Value =
             serde_json::from_str(&result).expect("Json mode output must be valid JSON");
@@ -99,9 +157,10 @@ mod tests {
             parsed["status"], "ok",
             "JSON envelope must have status == \"ok\""
         );
+        // Original data fields are preserved alongside schema_version.
         assert_eq!(
-            parsed["data"], data,
-            "JSON envelope must preserve the data payload"
+            parsed["data"]["hash"], "abc123",
+            "JSON envelope must preserve the original data fields"
         );
     }
 
