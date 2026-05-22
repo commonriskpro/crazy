@@ -154,6 +154,7 @@ impl ResponseBuilder {
             truncated,
             limits,
             history_entries,
+            freshness_status: crate::dto::FreshnessStatus::Fresh,
         })
     }
 }
@@ -296,6 +297,136 @@ fn collect_candidates_with_history(
             // building oldest-first order.
             let history = build_history_chain(snapshot, all_snapshots);
             Ok((vec![target_node], history))
+        }
+
+        // ── Proofs ────────────────────────────────────────────────────────
+        // Returns the target node plus proof-witness nodes reachable via
+        // EdgeKind::Proves edges.
+        ContextQuery::Proofs { target, .. } => {
+            let target_node = node_map
+                .get(target)
+                .copied()
+                .ok_or(ContextError::NodeNotFound)?
+                .clone();
+
+            let mut proves_nodes = bfs_filtered(graph, &node_map, *target, &[EdgeKind::Proves]);
+            // Prepend the target node itself (bfs_filtered excludes seed).
+            proves_nodes.insert(0, target_node);
+            proves_nodes.dedup_by_key(|n| n.id);
+            proves_nodes.sort_by_key(|n| n.id);
+            Ok((proves_nodes, Vec::new()))
+        }
+
+        // ── Resources ─────────────────────────────────────────────────────
+        // Returns the target node plus resource-dependency nodes reachable
+        // via EdgeKind::Reads and EdgeKind::Writes edges.
+        ContextQuery::Resources { target, .. } => {
+            let target_node = node_map
+                .get(target)
+                .copied()
+                .ok_or(ContextError::NodeNotFound)?
+                .clone();
+
+            let mut resource_nodes =
+                bfs_filtered(graph, &node_map, *target, &[EdgeKind::Reads, EdgeKind::Writes]);
+            resource_nodes.insert(0, target_node);
+            resource_nodes.dedup_by_key(|n| n.id);
+            resource_nodes.sort_by_key(|n| n.id);
+            Ok((resource_nodes, Vec::new()))
+        }
+
+        // ── Boundaries ────────────────────────────────────────────────────
+        // Returns the target node plus boundary nodes (NodeKind::Boundary)
+        // reachable via any edge from the target.
+        ContextQuery::Boundaries { target, .. } => {
+            let target_node = node_map
+                .get(target)
+                .copied()
+                .ok_or(ContextError::NodeNotFound)?
+                .clone();
+
+            // BFS from target following all edge kinds; filter to Boundary nodes.
+            let all_reachable = bfs_forward(graph, &node_map, *target);
+            let mut boundary_nodes: Vec<GraphNode> = all_reachable
+                .into_iter()
+                .filter(|n| n.kind == ail_core::semantic_graph::NodeKind::Boundary)
+                .collect();
+            // Always include the target itself.
+            boundary_nodes.insert(0, target_node);
+            boundary_nodes.dedup_by_key(|n| n.id);
+            boundary_nodes.sort_by_key(|n| n.id);
+            Ok((boundary_nodes, Vec::new()))
+        }
+
+        // ── Why ───────────────────────────────────────────────────────────
+        // Returns the target node plus provenance-related nodes (Proves and
+        // BreaksIfChanged edges) and the snapshot history chain.
+        ContextQuery::Why { target, .. } => {
+            let target_node = node_map
+                .get(target)
+                .copied()
+                .ok_or(ContextError::NodeNotFound)?
+                .clone();
+
+            let mut why_nodes = bfs_filtered(
+                graph,
+                &node_map,
+                *target,
+                &[EdgeKind::Proves, EdgeKind::BreaksIfChanged],
+            );
+            why_nodes.insert(0, target_node);
+            why_nodes.dedup_by_key(|n| n.id);
+            why_nodes.sort_by_key(|n| n.id);
+
+            // Reuse the history chain for provenance context.
+            let history = build_history_chain(snapshot, all_snapshots);
+            Ok((why_nodes, history))
+        }
+
+        // ── RefactorContext ───────────────────────────────────────────────
+        // Returns the target node plus callers (reverse Calls BFS), proof
+        // witnesses (Proves), and effect nodes (Emits).
+        ContextQuery::RefactorContext { target, .. } => {
+            let target_node = node_map
+                .get(target)
+                .copied()
+                .ok_or(ContextError::NodeNotFound)?
+                .clone();
+
+            // Callers (nodes to update after refactor) — reverse BFS.
+            let callers = reverse_bfs(graph, &node_map, *target, &[EdgeKind::Calls]);
+            // Proofs to rerun.
+            let proves = bfs_filtered(graph, &node_map, *target, &[EdgeKind::Proves]);
+            // Effects to preserve.
+            let effects = bfs_filtered(graph, &node_map, *target, &[EdgeKind::Emits]);
+
+            // Merge: target + callers + proves + effects, deduplicated, sorted.
+            let mut all_nodes: Vec<GraphNode> = Vec::new();
+            all_nodes.push(target_node);
+            all_nodes.extend(callers);
+            all_nodes.extend(proves);
+            all_nodes.extend(effects);
+            all_nodes.sort_by_key(|n| n.id);
+            all_nodes.dedup_by_key(|n| n.id);
+            Ok((all_nodes, Vec::new()))
+        }
+
+        // ── Runtime ───────────────────────────────────────────────────────
+        // Returns the target node (with capability_reqs and effect_row) plus
+        // runtime-effect nodes reachable via EdgeKind::Emits.
+        ContextQuery::Runtime { target, .. } => {
+            let target_node = node_map
+                .get(target)
+                .copied()
+                .ok_or(ContextError::NodeNotFound)?
+                .clone();
+
+            let mut runtime_nodes =
+                bfs_filtered(graph, &node_map, *target, &[EdgeKind::Emits]);
+            runtime_nodes.insert(0, target_node);
+            runtime_nodes.dedup_by_key(|n| n.id);
+            runtime_nodes.sort_by_key(|n| n.id);
+            Ok((runtime_nodes, Vec::new()))
         }
     }
 }
@@ -1281,5 +1412,443 @@ mod tests {
             &[],
         );
         assert_eq!(result, Err(ContextError::NodeNotFound));
+    }
+
+    // ── proofs_query_returns_target_and_proves_nodes ──────────────────────
+    // Spec: Proofs query returns the target node plus Proves-edge reachable nodes.
+    //
+    // Graph: fn.checkout --Proves--> invariant.stock_never_negative
+    // Proofs(fn.checkout) = {fn.checkout, invariant.stock_never_negative}
+    //
+    // RED: ContextQuery::Proofs did not exist → compile error.
+    // GREEN: variant + builder arm makes it compile and pass.
+    #[test]
+    fn proofs_query_returns_target_and_proves_nodes() {
+        let graph = SemanticGraph {
+            nodes: vec![
+                GraphNode::new(NodeRef(0), NodeKind::Function, "checkout"),
+                GraphNode::new(NodeRef(1), NodeKind::Invariant, "stock_never_negative"),
+                GraphNode::new(NodeRef(2), NodeKind::Module, "unrelated"),
+            ],
+            edges: vec![
+                GraphEdge {
+                    source: NodeRef(0),
+                    target: NodeRef(1),
+                    kind: EdgeKind::Proves,
+                },
+            ],
+        };
+        let snapshot = make_snapshot();
+        let query = ContextQuery::Proofs {
+            target: NodeRef(0),
+            budget: usize::MAX,
+        };
+        let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
+            .expect("proofs build must succeed");
+        let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
+        assert!(
+            ids.contains(&0),
+            "target checkout must be in proofs result; got: {ids:?}"
+        );
+        assert!(
+            ids.contains(&1),
+            "invariant stock_never_negative must be in proofs; got: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&2),
+            "unrelated module must not appear; got: {ids:?}"
+        );
+    }
+
+    // ── proofs_missing_target_returns_node_not_found ──────────────────────
+    #[test]
+    fn proofs_missing_target_returns_node_not_found() {
+        let graph = make_graph();
+        let snapshot = make_snapshot();
+        let result = ResponseBuilder::build(
+            &ContextQuery::Proofs {
+                target: NodeRef(99),
+                budget: usize::MAX,
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
+        );
+        assert_eq!(result, Err(ContextError::NodeNotFound));
+    }
+
+    // ── resources_query_returns_target_and_rw_nodes ───────────────────────
+    // Spec: Resources query returns target plus Reads/Writes-reachable nodes.
+    //
+    // Graph: fn.process_file --Reads--> file.handle, --Writes--> file.output
+    // Resources(fn.process_file) = {fn.process_file, file.handle, file.output}
+    //
+    // RED: ContextQuery::Resources did not exist → compile error.
+    // GREEN: variant + builder arm makes it compile and pass.
+    #[test]
+    fn resources_query_returns_target_and_rw_nodes() {
+        let graph = SemanticGraph {
+            nodes: vec![
+                GraphNode::new(NodeRef(0), NodeKind::Function, "process_file"),
+                GraphNode::new(NodeRef(1), NodeKind::Type, "file.handle"),
+                GraphNode::new(NodeRef(2), NodeKind::Type, "file.output"),
+                GraphNode::new(NodeRef(3), NodeKind::Module, "unrelated"),
+            ],
+            edges: vec![
+                GraphEdge {
+                    source: NodeRef(0),
+                    target: NodeRef(1),
+                    kind: EdgeKind::Reads,
+                },
+                GraphEdge {
+                    source: NodeRef(0),
+                    target: NodeRef(2),
+                    kind: EdgeKind::Writes,
+                },
+            ],
+        };
+        let snapshot = make_snapshot();
+        let query = ContextQuery::Resources {
+            target: NodeRef(0),
+            budget: usize::MAX,
+        };
+        let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
+            .expect("resources build must succeed");
+        let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
+        assert!(ids.contains(&0), "target must be in result; got: {ids:?}");
+        assert!(ids.contains(&1), "read dep must be in result; got: {ids:?}");
+        assert!(ids.contains(&2), "write dep must be in result; got: {ids:?}");
+        assert!(
+            !ids.contains(&3),
+            "unrelated must not appear; got: {ids:?}"
+        );
+    }
+
+    // ── resources_missing_target_returns_node_not_found ───────────────────
+    #[test]
+    fn resources_missing_target_returns_node_not_found() {
+        let graph = make_graph();
+        let snapshot = make_snapshot();
+        let result = ResponseBuilder::build(
+            &ContextQuery::Resources {
+                target: NodeRef(99),
+                budget: usize::MAX,
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
+        );
+        assert_eq!(result, Err(ContextError::NodeNotFound));
+    }
+
+    // ── boundaries_query_returns_target_and_boundary_nodes ───────────────
+    // Spec: Boundaries query returns target plus Boundary-kind nodes reachable
+    // from it.
+    //
+    // Graph: module.checkout --DependsOn--> boundary.Stripe, --Calls--> fn.pay
+    // Boundaries(module.checkout) = {module.checkout, boundary.Stripe}
+    //                               (fn.pay is not a Boundary node)
+    //
+    // RED: ContextQuery::Boundaries did not exist → compile error.
+    // GREEN: variant + builder arm makes it compile and pass.
+    #[test]
+    fn boundaries_query_returns_target_and_boundary_nodes() {
+        use ail_core::semantic_graph::NodeKind;
+        let graph = SemanticGraph {
+            nodes: vec![
+                GraphNode::new(NodeRef(0), NodeKind::Module, "checkout"),
+                GraphNode::new(NodeRef(1), NodeKind::Boundary, "Stripe"),
+                GraphNode::new(NodeRef(2), NodeKind::Function, "pay"), // not boundary
+            ],
+            edges: vec![
+                GraphEdge {
+                    source: NodeRef(0),
+                    target: NodeRef(1),
+                    kind: EdgeKind::DependsOn,
+                },
+                GraphEdge {
+                    source: NodeRef(0),
+                    target: NodeRef(2),
+                    kind: EdgeKind::Calls,
+                },
+            ],
+        };
+        let snapshot = make_snapshot();
+        let query = ContextQuery::Boundaries {
+            target: NodeRef(0),
+            budget: usize::MAX,
+        };
+        let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
+            .expect("boundaries build must succeed");
+        let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
+        assert!(ids.contains(&0), "target module must be in result; got: {ids:?}");
+        assert!(
+            ids.contains(&1),
+            "Stripe boundary must be in result; got: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&2),
+            "non-boundary fn.pay must not appear; got: {ids:?}"
+        );
+    }
+
+    // ── boundaries_missing_target_returns_node_not_found ─────────────────
+    #[test]
+    fn boundaries_missing_target_returns_node_not_found() {
+        let graph = make_graph();
+        let snapshot = make_snapshot();
+        let result = ResponseBuilder::build(
+            &ContextQuery::Boundaries {
+                target: NodeRef(99),
+                budget: usize::MAX,
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
+        );
+        assert_eq!(result, Err(ContextError::NodeNotFound));
+    }
+
+    // ── why_query_returns_target_proves_breaks_and_history ───────────────
+    // Spec: Why query traces provenance via Proves and BreaksIfChanged edges
+    // and returns the snapshot history chain.
+    //
+    // Graph: fn.checkout --Proves--> invariant.paid, --BreaksIfChanged--> type.Cart
+    // Why(fn.checkout) = {fn.checkout, invariant.paid, type.Cart} + history
+    //
+    // RED: ContextQuery::Why did not exist → compile error.
+    // GREEN: variant + builder arm makes it compile and pass.
+    #[test]
+    fn why_query_returns_target_proves_breaks_and_history() {
+        let graph = SemanticGraph {
+            nodes: vec![
+                GraphNode::new(NodeRef(0), NodeKind::Function, "checkout"),
+                GraphNode::new(NodeRef(1), NodeKind::Invariant, "paid"),
+                GraphNode::new(NodeRef(2), NodeKind::Type, "Cart"),
+                GraphNode::new(NodeRef(3), NodeKind::Module, "unrelated"),
+            ],
+            edges: vec![
+                GraphEdge {
+                    source: NodeRef(0),
+                    target: NodeRef(1),
+                    kind: EdgeKind::Proves,
+                },
+                GraphEdge {
+                    source: NodeRef(0),
+                    target: NodeRef(2),
+                    kind: EdgeKind::BreaksIfChanged,
+                },
+            ],
+        };
+        let snapshot = make_snapshot();
+        let query = ContextQuery::Why {
+            target: NodeRef(0),
+            budget: usize::MAX,
+        };
+        let resp =
+            ResponseBuilder::build_with_history(&query, &graph, &snapshot, &no_redactions(), &[])
+                .expect("why build must succeed");
+        let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
+        assert!(ids.contains(&0), "target must be in result; got: {ids:?}");
+        assert!(
+            ids.contains(&1),
+            "invariant.paid (Proves) must be in result; got: {ids:?}"
+        );
+        assert!(
+            ids.contains(&2),
+            "type.Cart (BreaksIfChanged) must be in result; got: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&3),
+            "unrelated must not appear; got: {ids:?}"
+        );
+        // Why query also returns the history chain (even if 1 entry for genesis).
+        assert_eq!(
+            resp.history_entries.len(),
+            1,
+            "why query must carry history_entries; got: {:?}",
+            resp.history_entries.len()
+        );
+    }
+
+    // ── why_missing_target_returns_node_not_found ────────────────────────
+    #[test]
+    fn why_missing_target_returns_node_not_found() {
+        let graph = make_graph();
+        let snapshot = make_snapshot();
+        let result = ResponseBuilder::build(
+            &ContextQuery::Why {
+                target: NodeRef(99),
+                budget: usize::MAX,
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
+        );
+        assert_eq!(result, Err(ContextError::NodeNotFound));
+    }
+
+    // ── refactor_context_query_returns_callers_proves_effects ─────────────
+    // Spec: RefactorContext returns target + callers (to update) + proofs (to
+    // rerun) + effects (to preserve).
+    //
+    // Graph: A --Calls--> B --Proves--> C, B --Emits--> D
+    // RefactorContext(B) = {B, A(caller), C(proof), D(effect)}
+    //
+    // RED: ContextQuery::RefactorContext did not exist → compile error.
+    // GREEN: variant + builder arm makes it compile and pass.
+    #[test]
+    fn refactor_context_query_returns_callers_proves_effects() {
+        // A=0, B=1, C=2, D=3
+        let graph = SemanticGraph {
+            nodes: vec![
+                GraphNode::new(NodeRef(0), NodeKind::Function, "A"),
+                GraphNode::new(NodeRef(1), NodeKind::Function, "B"),
+                GraphNode::new(NodeRef(2), NodeKind::Invariant, "C"),
+                GraphNode::new(NodeRef(3), NodeKind::Effect, "D"),
+                GraphNode::new(NodeRef(4), NodeKind::Module, "unrelated"),
+            ],
+            edges: vec![
+                GraphEdge {
+                    source: NodeRef(0),
+                    target: NodeRef(1),
+                    kind: EdgeKind::Calls, // A calls B → A is a caller
+                },
+                GraphEdge {
+                    source: NodeRef(1),
+                    target: NodeRef(2),
+                    kind: EdgeKind::Proves, // B proves C → C is a proof
+                },
+                GraphEdge {
+                    source: NodeRef(1),
+                    target: NodeRef(3),
+                    kind: EdgeKind::Emits, // B emits D → D is an effect
+                },
+            ],
+        };
+        let snapshot = make_snapshot();
+        let query = ContextQuery::RefactorContext {
+            target: NodeRef(1), // B
+            budget: usize::MAX,
+        };
+        let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
+            .expect("refactor_context build must succeed");
+        let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
+        assert!(ids.contains(&0), "caller A must be in result; got: {ids:?}");
+        assert!(ids.contains(&1), "target B must be in result; got: {ids:?}");
+        assert!(ids.contains(&2), "proof C must be in result; got: {ids:?}");
+        assert!(ids.contains(&3), "effect D must be in result; got: {ids:?}");
+        assert!(
+            !ids.contains(&4),
+            "unrelated must not appear; got: {ids:?}"
+        );
+    }
+
+    // ── refactor_context_missing_target_returns_node_not_found ───────────
+    #[test]
+    fn refactor_context_missing_target_returns_node_not_found() {
+        let graph = make_graph();
+        let snapshot = make_snapshot();
+        let result = ResponseBuilder::build(
+            &ContextQuery::RefactorContext {
+                target: NodeRef(99),
+                budget: usize::MAX,
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
+        );
+        assert_eq!(result, Err(ContextError::NodeNotFound));
+    }
+
+    // ── runtime_query_returns_target_and_emits_nodes ─────────────────────
+    // Spec: Runtime query returns target (with capability_reqs/effect_row) plus
+    // effect nodes reachable via Emits edges.
+    //
+    // Graph: fn.checkout --Emits--> effect.payment, fn.checkout --Calls--> fn.pay
+    // Runtime(fn.checkout) = {fn.checkout, effect.payment}
+    //                        (fn.pay not via Emits, excluded)
+    //
+    // RED: ContextQuery::Runtime did not exist → compile error.
+    // GREEN: variant + builder arm makes it compile and pass.
+    #[test]
+    fn runtime_query_returns_target_and_emits_nodes() {
+        let graph = SemanticGraph {
+            nodes: vec![
+                GraphNode::new(NodeRef(0), NodeKind::Function, "checkout"),
+                GraphNode::new(NodeRef(1), NodeKind::Effect, "payment"),
+                GraphNode::new(NodeRef(2), NodeKind::Function, "pay"), // Calls, not Emits
+            ],
+            edges: vec![
+                GraphEdge {
+                    source: NodeRef(0),
+                    target: NodeRef(1),
+                    kind: EdgeKind::Emits,
+                },
+                GraphEdge {
+                    source: NodeRef(0),
+                    target: NodeRef(2),
+                    kind: EdgeKind::Calls,
+                },
+            ],
+        };
+        let snapshot = make_snapshot();
+        let query = ContextQuery::Runtime {
+            target: NodeRef(0),
+            profile: "prod".to_string(),
+            budget: usize::MAX,
+        };
+        let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
+            .expect("runtime build must succeed");
+        let ids: Vec<u32> = resp.structured.iter().map(|n| n.id.0).collect();
+        assert!(ids.contains(&0), "target checkout must be in result; got: {ids:?}");
+        assert!(
+            ids.contains(&1),
+            "effect.payment (Emits) must be in result; got: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&2),
+            "fn.pay (Calls, not Emits) must not appear; got: {ids:?}"
+        );
+    }
+
+    // ── runtime_missing_target_returns_node_not_found ────────────────────
+    #[test]
+    fn runtime_missing_target_returns_node_not_found() {
+        let graph = make_graph();
+        let snapshot = make_snapshot();
+        let result = ResponseBuilder::build(
+            &ContextQuery::Runtime {
+                target: NodeRef(99),
+                profile: "prod".to_string(),
+                budget: usize::MAX,
+            },
+            &graph,
+            &snapshot,
+            &no_redactions(),
+        );
+        assert_eq!(result, Err(ContextError::NodeNotFound));
+    }
+
+    // ── g27_freshness_status_is_fresh_by_default ──────────────────────────
+    // Spec: ResponseBuilder always sets freshness_status = Fresh (the default).
+    //
+    // TRIANGULATE: forces the builder to set the field.
+    #[test]
+    fn g27_freshness_status_is_fresh_by_default() {
+        use crate::dto::FreshnessStatus;
+        let graph = make_graph();
+        let snapshot = make_snapshot();
+        let query = ContextQuery::Graph {
+            scope: QueryScope::Full,
+            budget: usize::MAX,
+        };
+        let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
+            .expect("build must succeed");
+        assert_eq!(
+            resp.freshness_status,
+            FreshnessStatus::Fresh,
+            "builder must set freshness_status = Fresh"
+        );
     }
 }
