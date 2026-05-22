@@ -165,3 +165,38 @@ fn compute_node_hash(node: &ail_core::semantic_graph::GraphNode) -> BlockHash {
     ciborium::into_writer(node, &mut bytes).expect("GraphNode serialization must not fail");
     BlockHash(*blake3::hash(&bytes).as_bytes())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{canonical::canonicalize_parsed, parser::parse_changeset};
+    use ail_core::semantic_graph::{NodeKind, SemanticGraph};
+
+    struct TestBridge;
+
+    impl SnapshotBridge for TestBridge {
+        fn current_snapshot_id(&self) -> SnapshotId {
+            SnapshotId(0)
+        }
+    }
+
+    #[test]
+    fn apply_parsed_function_create_payload_inserts_graph_node() {
+        let parsed = parse_changeset(
+            "change e2e base=0\nauthor tester\ndescription e2e\nop create_function id=fn.answer return=Int value=42\nend\n",
+        )
+        .expect("fixture must parse");
+        let canonical = canonicalize_parsed(parsed);
+        let mut graph = SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
+
+        let outcome = apply(canonical, &mut graph, &TestBridge);
+
+        assert_eq!(outcome, ChangeSetOutcome::Applied);
+        assert_eq!(graph.nodes.len(), 1);
+        assert_eq!(graph.nodes[0].kind, NodeKind::Function);
+        assert_eq!(graph.nodes[0].name, "fn.answer");
+    }
+}

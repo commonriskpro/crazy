@@ -21,7 +21,9 @@
 
 use std::collections::BTreeMap;
 
-use ail_core::semantic_graph::{GraphEdge, GraphNode, NodeRef};
+use ail_core::semantic_graph::{
+    CapabilityReqs, GraphEdge, GraphNode, NodeKind, NodeRef, RuntimeCheckMeta, TypeFacts,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
@@ -410,11 +412,12 @@ pub fn canonicalize_parsed(pcs: ParsedChangeSet) -> CanonicalChangeSet {
                     .or_insert_with(|| "true".to_string());
             }
             let block_hash = compute_block_hash(&kind, idx);
+            let payload = materialize_payload(idx, &kind, &verb, &args);
             CanonicalOp {
                 kind,
                 verb,
                 args,
-                payload: OpPayload::Noop,
+                payload,
                 block_hash,
             }
         })
@@ -466,6 +469,58 @@ fn materialize_defaults(kind: &ChangeSetOp, verb: &str, args: &mut OpArgs) {
     }
 }
 
+fn materialize_payload(idx: usize, kind: &ChangeSetOp, verb: &str, args: &OpArgs) -> OpPayload {
+    if kind != &ChangeSetOp::Create {
+        return OpPayload::Noop;
+    }
+
+    match verb {
+        "create_type" => args
+            .get("id")
+            .map(|id| OpPayload::CreateNode(Box::new(type_node(idx, id))))
+            .unwrap_or(OpPayload::Noop),
+        "create_function" => args
+            .get("id")
+            .map(|id| OpPayload::CreateNode(Box::new(function_node(idx, id, args))))
+            .unwrap_or(OpPayload::Noop),
+        "create_capability" => args
+            .get("id")
+            .map(|id| OpPayload::CreateNode(Box::new(capability_node(idx, id))))
+            .unwrap_or(OpPayload::Noop),
+        _ => OpPayload::Noop,
+    }
+}
+
+fn type_node(idx: usize, id: &str) -> GraphNode {
+    let mut node = GraphNode::new(NodeRef(idx as u32), NodeKind::Type, id);
+    node.type_facts = Some(TypeFacts {
+        nominal: id.rsplit('.').next().unwrap_or(id).to_string(),
+        generics: vec![],
+    });
+    node
+}
+
+fn function_node(idx: usize, id: &str, args: &OpArgs) -> GraphNode {
+    let mut node = GraphNode::new(NodeRef(idx as u32), NodeKind::Function, id);
+    node.return_type = args.get("return").cloned();
+    if let Some(value) = args.get("value") {
+        let predicate = format!("literal:i64={value}");
+        node.runtime_checks = Some(vec![RuntimeCheckMeta {
+            hash: blake3::hash(predicate.as_bytes()).to_hex().to_string(),
+            predicate,
+        }]);
+    }
+    node
+}
+
+fn capability_node(idx: usize, id: &str) -> GraphNode {
+    let mut node = GraphNode::new(NodeRef(idx as u32), NodeKind::Capability, id);
+    node.capability_reqs = Some(CapabilityReqs {
+        caps: vec![id.to_string()],
+    });
+    node
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────
 
 /// Compute blake3 hash of `(op CBOR encoding | phase ordinal | index)`.
@@ -482,4 +537,60 @@ fn compute_block_hash(op: &ChangeSetOp, idx: usize) -> BlockHash {
     hasher.update(&(idx as u64).to_le_bytes());
 
     BlockHash(*hasher.finalize().as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_changeset;
+    use ail_core::semantic_graph::NodeKind;
+
+    fn minimal_change(op: &str) -> String {
+        format!("change e2e base=0\nauthor tester\ndescription e2e\nop {op}\nend\n")
+    }
+
+    #[test]
+    fn canonicalize_parsed_materializes_function_create_payload() {
+        let parsed = parse_changeset(&minimal_change(
+            "create_function id=fn.answer return=Int value=42",
+        ))
+        .expect("fixture must parse");
+
+        let canonical = canonicalize_parsed(parsed);
+
+        match &canonical.ops[0].payload {
+            OpPayload::CreateNode(node) => {
+                assert_eq!(node.kind, NodeKind::Function);
+                assert_eq!(node.name, "fn.answer");
+                assert_eq!(node.return_type.as_deref(), Some("Int"));
+                assert_eq!(
+                    node.runtime_checks
+                        .as_ref()
+                        .map(|checks| checks[0].predicate.as_str()),
+                    Some("literal:i64=42")
+                );
+            }
+            other => panic!("expected function CreateNode payload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn canonicalize_parsed_materializes_type_create_payload() {
+        let parsed = parse_changeset(&minimal_change("create_type id=type.Answer"))
+            .expect("fixture must parse");
+
+        let canonical = canonicalize_parsed(parsed);
+
+        match &canonical.ops[0].payload {
+            OpPayload::CreateNode(node) => {
+                assert_eq!(node.kind, NodeKind::Type);
+                assert_eq!(node.name, "type.Answer");
+                assert_eq!(
+                    node.type_facts.as_ref().map(|facts| facts.nominal.as_str()),
+                    Some("Answer")
+                );
+            }
+            other => panic!("expected type CreateNode payload, got {other:?}"),
+        }
+    }
 }
