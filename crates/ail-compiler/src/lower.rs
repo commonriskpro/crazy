@@ -667,6 +667,105 @@ pub fn lower_core_expr_to_anf(
             }
         }
 
+        // ── doc-alignment: new CoreExpr variant lowering ─────────────────────
+
+        // CapabilityUse: lower as an EffectCall-like call.
+        CoreExpr::CapabilityUse { capability, args } => {
+            let atomic_args: Vec<String> = args
+                .iter()
+                .map(|a| atomize(a, fresh, source_ref, out))
+                .collect();
+            AnfExpr::EffectCall {
+                capability: capability.clone(),
+                func: capability.clone(),
+                args: atomic_args,
+            }
+        }
+
+        // ResourceUse: atomize handle, lower body.
+        CoreExpr::ResourceUse { handle, body } => {
+            let _h = atomize(handle, fresh, source_ref, out);
+            lower_core_expr_to_anf(body, fresh, source_ref, out)
+        }
+
+        // ResourceUsing: acquire, bind, use, release — lowered as let + body.
+        CoreExpr::ResourceUsing { resource, binding, body } => {
+            let res_name = atomize(resource, fresh, source_ref, out);
+            // Emit acquire binding.
+            out.push(AnfBinding {
+                source_ref,
+                name: binding.clone(),
+                expr: AnfExpr::ResourceAcquire {
+                    resource: res_name,
+                    args: vec![],
+                },
+            });
+            let result = lower_core_expr_to_anf(body, fresh, source_ref, out);
+            // Emit implicit release after body.
+            let release_tmp = format!("anf_{}", *fresh);
+            *fresh += 1;
+            out.push(AnfBinding {
+                source_ref,
+                name: release_tmp,
+                expr: AnfExpr::ResourceRelease {
+                    handle: binding.clone(),
+                },
+            });
+            result
+        }
+
+        // ResourceTransfer: atomize both operands.
+        CoreExpr::ResourceTransfer { handle, target } => {
+            let h = atomize(handle, fresh, source_ref, out);
+            let t = atomize(target, fresh, source_ref, out);
+            AnfExpr::Call {
+                func: "__resource_transfer".to_string(),
+                args: vec![h, t],
+            }
+        }
+
+        // ForeignFunctionCall: lower as a boundary-style call.
+        CoreExpr::ForeignFunctionCall { func, args } => {
+            let atomic_args: Vec<String> = args
+                .iter()
+                .map(|a| atomize(a, fresh, source_ref, out))
+                .collect();
+            AnfExpr::Call {
+                func: format!("__foreign::{func}"),
+                args: atomic_args,
+            }
+        }
+
+        // PatchFieldConstruct: lower as a variant construction.
+        CoreExpr::PatchFieldConstruct { state, value } => {
+            let payload = value
+                .as_ref()
+                .map(|v| {
+                    let name = atomize(v, fresh, source_ref, out);
+                    Box::new(AnfExpr::Var(name))
+                });
+            AnfExpr::VariantNew {
+                tag: state.clone(),
+                payload,
+            }
+        }
+
+        // PatchFieldMatch: lower as a standard match.
+        CoreExpr::PatchFieldMatch { scrutinee, arms } => {
+            let scrutinee_name = atomize(scrutinee, fresh, source_ref, out);
+            let anf_arms: Vec<crate::anf::AnfMatchArm> = arms
+                .iter()
+                .map(|arm| crate::anf::AnfMatchArm {
+                    pattern: arm.pattern.clone(),
+                    body: lower_core_expr_to_anf(&arm.body, fresh, source_ref, out),
+                })
+                .collect();
+            AnfExpr::Match {
+                scrutinee: scrutinee_name,
+                arms: anf_arms,
+            }
+        }
+
         // IndexGet: atomize both collection and index.
         CoreExpr::IndexGet { collection, index } => {
             let col_name = atomize(collection, fresh, source_ref, out);

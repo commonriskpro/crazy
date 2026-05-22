@@ -489,6 +489,81 @@ pub enum CoreExpr {
         /// Call arguments — may be non-atomic; atomized during ANF lowering.
         args: Vec<CoreExpr>,
     },
+
+    // ── doc-alignment: missing CoreExpr variants from core-ir.md ──────────
+
+    /// Use of a declared capability.
+    ///
+    /// Corresponds to `docs/core-ir.md §9 — CapabilityUse`.
+    /// `capability` names the capability being used (e.g., `"database.read"`).
+    CapabilityUse {
+        /// Capability name.
+        capability: String,
+        /// Arguments to the capability operation.
+        args: Vec<CoreExpr>,
+    },
+
+    /// Resource use expression — access a resource within a scope.
+    ///
+    /// Corresponds to `docs/core-ir.md §11 — Use`.
+    ResourceUse {
+        /// The resource handle expression.
+        handle: Box<CoreExpr>,
+        /// The body that uses the resource.
+        body: Box<CoreExpr>,
+    },
+
+    /// Scoped resource usage — acquire, use, and release within a block.
+    ///
+    /// Corresponds to `docs/core-ir.md §11 — Using`.
+    ResourceUsing {
+        /// The resource acquisition expression.
+        resource: Box<CoreExpr>,
+        /// Name to bind the acquired handle to.
+        binding: String,
+        /// Body expression with the resource in scope.
+        body: Box<CoreExpr>,
+    },
+
+    /// Transfer ownership of a resource handle to another scope.
+    ///
+    /// Corresponds to `docs/core-ir.md §11 — Transfer`.
+    ResourceTransfer {
+        /// The resource handle to transfer.
+        handle: Box<CoreExpr>,
+        /// The target scope or recipient expression.
+        target: Box<CoreExpr>,
+    },
+
+    /// Foreign function call — invocation of an externally-defined function.
+    ///
+    /// Corresponds to `docs/core-ir.md §13 — ForeignFunction`.
+    ForeignFunctionCall {
+        /// Fully qualified foreign function name.
+        func: String,
+        /// Call arguments.
+        args: Vec<CoreExpr>,
+    },
+
+    /// Construct a `PatchField<T>` value — one of `Unchanged`, `Set(T)`, or `Clear`.
+    ///
+    /// Corresponds to `docs/core-ir.md` PatchField construction.
+    PatchFieldConstruct {
+        /// The PatchField state: `"Unchanged"`, `"Set"`, or `"Clear"`.
+        state: String,
+        /// Optional payload (present only for the `Set` state).
+        value: Option<Box<CoreExpr>>,
+    },
+
+    /// Pattern match on a `PatchField<T>` value.
+    ///
+    /// Corresponds to `docs/core-ir.md` PatchField matching.
+    PatchFieldMatch {
+        /// The PatchField expression to match on.
+        scrutinee: Box<CoreExpr>,
+        /// Arms: each MatchArm pattern is `"Unchanged"`, `"Set(x)"`, or `"Clear"`.
+        arms: Vec<MatchArm>,
+    },
 }
 
 // ── CoreType ──────────────────────────────────────────────────────────────
@@ -645,6 +720,15 @@ pub enum CoreType {
     /// `BoundarySchema("UserInputJsonSchema")` identifies the schema governing
     /// how a value crossing a boundary must be encoded/decoded.
     BoundarySchema(String),
+
+    // ── doc-alignment: missing CoreType variants from core-ir.md ──────────
+
+    /// Adapter contract type — wraps a foreign boundary with type-level
+    /// contract metadata.
+    ///
+    /// Corresponds to `docs/core-ir.md §13 — AdapterContract`.
+    /// The `String` payload carries the adapter name (e.g., `"StripePaymentAdapter"`).
+    AdapterContract(String),
 }
 
 // ── CoreNode ──────────────────────────────────────────────────────────────
