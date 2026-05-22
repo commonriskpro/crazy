@@ -35,6 +35,7 @@ use crate::core_ir::{
 use crate::error::CompileError;
 use crate::expr_parser::parse_expr;
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
+use crate::optimize::optimize_bindings;
 
 // ── is_report_accepted ────────────────────────────────────────────────────
 
@@ -898,6 +899,7 @@ fn lower_to_anf_impl(
     for node in &core.nodes {
         map_core_node_to_anf(node, &mut fresh, &mut bindings);
     }
+    let bindings = optimize_bindings(bindings);
 
     // Build semantic source map, optionally enriched with provenance.
     let source_map = match provenance_lookup {

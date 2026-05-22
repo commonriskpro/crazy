@@ -26,6 +26,7 @@ pub mod hash;
 pub mod incremental;
 pub mod lower;
 pub mod native;
+pub mod optimize;
 pub mod wasm;
 
 #[cfg(test)]
@@ -51,4 +52,5 @@ pub use lower::{
 pub use native::{
     CapabilitiesManifest, CapabilityEntry, NativeArtifact, emit_native, emit_native_with_profile,
 };
+pub use optimize::optimize_bindings;
 pub use wasm::{WasmArtifact, emit_wasm, emit_wasm_with_profile};

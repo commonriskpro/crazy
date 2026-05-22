@@ -47,8 +47,8 @@ use std::collections::BTreeMap;
 use ail_core::semantic_graph::NodeRef;
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, EntityType, ExportKind, ExportSection,
-    Function, FunctionSection, ImportSection, Instruction, MemorySection, MemoryType, Module,
-    TypeSection, ValType,
+    Function, FunctionSection, GlobalSection, GlobalType, ImportSection, Instruction,
+    MemorySection, MemoryType, Module, TypeSection, ValType,
 };
 
 use crate::anf::{AnfExpr, AnfIr, SourceMap, SourceMapEntry};
@@ -196,14 +196,13 @@ fn infer_expr_type(expr: &AnfExpr, locals: &mut Vec<(String, ValType)>) -> Optio
         AnfExpr::Loop { body } => infer_expr_type(body, locals),
         AnfExpr::Break { value } => infer_expr_type(value, locals),
         AnfExpr::Continue | AnfExpr::WhileLoop { .. } => None,
-        AnfExpr::FieldGet { .. }
-        | AnfExpr::RecordNew { .. }
+        AnfExpr::RecordNew { .. }
         | AnfExpr::TupleNew(_)
         | AnfExpr::VariantNew { .. }
         | AnfExpr::ListNew(_)
         | AnfExpr::Lambda { .. }
         | AnfExpr::Seq(_) => Some(ValType::I32),
-        AnfExpr::Call { .. } => Some(ValType::I64),
+        AnfExpr::FieldGet { .. } | AnfExpr::Call { .. } => Some(ValType::I64),
         AnfExpr::EffectCall { .. } => Some(ValType::I64),
         AnfExpr::Placeholder
         | AnfExpr::Dispatch { .. }
@@ -434,6 +433,7 @@ struct WasmCodegenCtx<'a> {
     local_types: Vec<ValType>,
     effect_data: &'a EffectDataLayout,
     labels: Vec<LabelKind>,
+    record_layouts: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -456,6 +456,7 @@ impl<'a> WasmCodegenCtx<'a> {
             local_types: Vec::new(),
             effect_data,
             labels: Vec::new(),
+            record_layouts: BTreeMap::new(),
         }
     }
 
@@ -477,6 +478,18 @@ impl<'a> WasmCodegenCtx<'a> {
         self.locals.push((name, idx, ty));
         self.local_types.push(ty);
         idx
+    }
+
+    fn bind_record_layout(&mut self, name: &str, fields: Vec<String>) {
+        self.record_layouts.insert(name.to_string(), fields);
+    }
+
+    fn field_offset(&self, record: &str, field: &str) -> u64 {
+        self.record_layouts
+            .get(record)
+            .and_then(|fields| fields.iter().position(|candidate| candidate == field))
+            .unwrap_or_else(|| field.parse::<usize>().unwrap_or(0)) as u64
+            * 8
     }
 
     fn expr_type(&self, expr: &AnfExpr) -> Option<ValType> {
@@ -502,6 +515,7 @@ struct EffectDataLayout {
     next_offset: i32,
     args_offset: i32,
     needs_host_call: bool,
+    needs_memory: bool,
 }
 
 impl EffectDataLayout {
@@ -529,6 +543,13 @@ impl EffectDataLayout {
                 self.collect_expr(value);
                 self.collect_expr(body);
             }
+            AnfExpr::FieldGet { .. } => {
+                self.needs_memory = true;
+            }
+            AnfExpr::FieldUpdate { value, .. } => {
+                self.needs_memory = true;
+                self.collect_expr(value);
+            }
             AnfExpr::If {
                 then_branch,
                 else_branch,
@@ -541,10 +562,12 @@ impl EffectDataLayout {
             | AnfExpr::ShortCircuitAnd { right: inner, .. }
             | AnfExpr::ShortCircuitOr { right: inner, .. }
             | AnfExpr::Loop { body: inner }
-            | AnfExpr::Break { value: inner }
-            | AnfExpr::FieldUpdate { value: inner, .. } => self.collect_expr(inner),
+            | AnfExpr::Break { value: inner } => self.collect_expr(inner),
             AnfExpr::WhileLoop { body, .. } => self.collect_expr(body),
             AnfExpr::Seq(exprs) | AnfExpr::TupleNew(exprs) | AnfExpr::ListNew(exprs) => {
+                if !matches!(expr, AnfExpr::Seq(_)) {
+                    self.needs_memory = true;
+                }
                 for expr in exprs {
                     self.collect_expr(expr);
                 }
@@ -556,11 +579,13 @@ impl EffectDataLayout {
             }
             AnfExpr::Lambda { body, .. } => self.collect_expr(body),
             AnfExpr::RecordNew { fields } => {
+                self.needs_memory = true;
                 for (_, expr) in fields {
                     self.collect_expr(expr);
                 }
             }
             AnfExpr::VariantNew { payload, .. } => {
+                self.needs_memory = true;
                 if let Some(payload) = payload {
                     self.collect_expr(payload);
                 }
@@ -593,8 +618,8 @@ fn build_import_section(needs_host_call: bool) -> Option<ImportSection> {
     Some(imports)
 }
 
-fn build_memory_section(needs_host_call: bool) -> Option<MemorySection> {
-    if !needs_host_call {
+fn build_memory_section(needs_memory: bool) -> Option<MemorySection> {
+    if !needs_memory {
         return None;
     }
     let mut memories = MemorySection::new();
@@ -606,6 +631,27 @@ fn build_memory_section(needs_host_call: bool) -> Option<MemorySection> {
         page_size_log2: None,
     });
     Some(memories)
+}
+
+fn build_global_section(needs_memory: bool, heap_start: i32) -> Option<GlobalSection> {
+    if !needs_memory {
+        return None;
+    }
+    let mut globals = GlobalSection::new();
+    globals.global(
+        GlobalType {
+            val_type: ValType::I32,
+            mutable: true,
+            shared: false,
+        },
+        &ConstExpr::i32_const(heap_start),
+    );
+    Some(globals)
+}
+
+fn align_to_i64(offset: i32) -> i32 {
+    let offset = offset.max(8);
+    ((offset + 7) / 8) * 8
 }
 
 fn build_data_section(layout: &EffectDataLayout) -> Option<DataSection> {
@@ -621,6 +667,47 @@ fn build_data_section(layout: &EffectDataLayout) -> Option<DataSection> {
         );
     }
     Some(data)
+}
+
+fn emit_alloc<'a>(size: i32, insns: &mut Vec<Instruction<'a>>) {
+    insns.push(Instruction::GlobalGet(0));
+    insns.push(Instruction::GlobalGet(0));
+    insns.push(Instruction::I32Const(size));
+    insns.push(Instruction::I32Add);
+    insns.push(Instruction::GlobalSet(0));
+}
+
+fn emit_i64_value<'a>(
+    expr: &'a AnfExpr,
+    ctx: &mut WasmCodegenCtx<'a>,
+    functions: &BTreeMap<String, u32>,
+    insns: &mut Vec<Instruction<'a>>,
+) {
+    match emit_anf_expr(expr, ctx, functions, insns) {
+        Some(ValType::I64) => {}
+        Some(ValType::I32) => insns.push(Instruction::I64ExtendI32U),
+        Some(_) => {
+            insns.push(Instruction::Drop);
+            insns.push(Instruction::I64Const(0));
+        }
+        None => insns.push(Instruction::I64Const(0)),
+    }
+}
+
+fn store_i64_at<'a>(offset: u64, insns: &mut Vec<Instruction<'a>>) {
+    insns.push(Instruction::I64Store(wasm_encoder::MemArg {
+        offset,
+        align: 3,
+        memory_index: 0,
+    }));
+}
+
+fn load_i64_at<'a>(offset: u64, insns: &mut Vec<Instruction<'a>>) {
+    insns.push(Instruction::I64Load(wasm_encoder::MemArg {
+        offset,
+        align: 3,
+        memory_index: 0,
+    }));
 }
 
 fn block_type(result_ty: Option<ValType>) -> BlockType {
@@ -854,6 +941,12 @@ fn emit_anf_expr<'a>(
             // Allocate a fresh local and set it.
             let idx = ctx.bind(name, value_ty);
             insns.push(Instruction::LocalSet(idx));
+            if let AnfExpr::RecordNew { fields } = value.as_ref() {
+                ctx.bind_record_layout(
+                    name,
+                    fields.iter().map(|(field, _)| field.clone()).collect(),
+                );
+            }
             // Emit the body with the new binding in scope.
             emit_anf_expr(body, ctx, functions, insns)
         }
@@ -1048,71 +1141,105 @@ fn emit_anf_expr<'a>(
         }
 
         // ── FieldGet ──────────────────────────────────────────────────────
-        AnfExpr::FieldGet { record, .. } => {
+        AnfExpr::FieldGet { record, field } => {
+            if let Some((idx, _)) = ctx.lookup(record) {
+                insns.push(Instruction::LocalGet(idx));
+                load_i64_at(ctx.field_offset(record, field), insns);
+                Some(ValType::I64)
+            } else {
+                insns.push(Instruction::Unreachable);
+                None
+            }
+        }
+
+        // ── FieldUpdate ───────────────────────────────────────────────────
+        AnfExpr::FieldUpdate {
+            record,
+            field,
+            value,
+        } => {
+            let Some((idx, _)) = ctx.lookup(record) else {
+                insns.push(Instruction::Unreachable);
+                return None;
+            };
+            insns.push(Instruction::LocalGet(idx));
+            emit_i64_value(value, ctx, functions, insns);
+            store_i64_at(ctx.field_offset(record, field), insns);
             if let Some((idx, ty)) = ctx.lookup(record) {
                 insns.push(Instruction::LocalGet(idx));
                 Some(ty)
             } else {
                 None
             }
-            // TODO: emit field-accessor logic (memory read).
-            // For now the record value is left on the stack as a proxy.
-        }
-
-        // ── FieldUpdate ───────────────────────────────────────────────────
-        AnfExpr::FieldUpdate { record, value, .. } => {
-            let record_ty = if let Some((idx, ty)) = ctx.lookup(record) {
-                insns.push(Instruction::LocalGet(idx));
-                Some(ty)
-            } else {
-                None
-            };
-            // Emit the replacement value.
-            emit_anf_expr(value, ctx, functions, insns);
-            insns.push(Instruction::Drop); // consume value (TODO: actual update)
-            // Return the (unchanged, pending real update) record reference.
-            record_ty
         }
 
         // ── RecordNew ─────────────────────────────────────────────────────
         AnfExpr::RecordNew { fields } => {
-            // Emit all field values (they are all Var refs after full ANF normalization).
-            for (_, v) in fields {
-                emit_anf_expr(v, ctx, functions, insns);
-                insns.push(Instruction::Drop); // TODO: pack into record struct
+            emit_alloc((fields.len() * 8).max(1) as i32, insns);
+            let ptr = ctx.bind("__record_ptr", ValType::I32);
+            insns.push(Instruction::LocalSet(ptr));
+            for (idx, (_, v)) in fields.iter().enumerate() {
+                insns.push(Instruction::LocalGet(ptr));
+                emit_i64_value(v, ctx, functions, insns);
+                store_i64_at((idx * 8) as u64, insns);
             }
-            // Return opaque i32(0) as the record handle placeholder.
-            insns.push(Instruction::I32Const(0));
+            insns.push(Instruction::LocalGet(ptr));
             Some(ValType::I32)
         }
 
         // ── TupleNew ─────────────────────────────────────────────────────
         AnfExpr::TupleNew(elems) => {
-            for e in elems {
-                emit_anf_expr(e, ctx, functions, insns);
-                insns.push(Instruction::Drop); // TODO: pack tuple
+            emit_alloc((elems.len() * 8).max(1) as i32, insns);
+            let ptr = ctx.bind("__tuple_ptr", ValType::I32);
+            insns.push(Instruction::LocalSet(ptr));
+            for (idx, e) in elems.iter().enumerate() {
+                insns.push(Instruction::LocalGet(ptr));
+                emit_i64_value(e, ctx, functions, insns);
+                store_i64_at((idx * 8) as u64, insns);
             }
-            insns.push(Instruction::I32Const(0));
+            insns.push(Instruction::LocalGet(ptr));
             Some(ValType::I32)
         }
 
         // ── VariantNew ───────────────────────────────────────────────────
-        AnfExpr::VariantNew { payload, .. } => {
+        AnfExpr::VariantNew { tag, payload } => {
+            emit_alloc(16, insns);
+            let ptr = ctx.bind("__variant_ptr", ValType::I32);
+            insns.push(Instruction::LocalSet(ptr));
+            insns.push(Instruction::LocalGet(ptr));
+            let tag_byte = tag
+                .as_bytes()
+                .iter()
+                .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+            insns.push(Instruction::I32Const(i32::from(tag_byte)));
+            insns.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                offset: 0,
+                align: 0,
+                memory_index: 0,
+            }));
             if let Some(p) = payload {
-                emit_anf_expr(p, ctx, functions, insns);
-                insns.push(Instruction::Drop); // TODO: tag the variant
+                insns.push(Instruction::LocalGet(ptr));
+                emit_i64_value(p, ctx, functions, insns);
+                store_i64_at(8, insns);
             }
-            insns.push(Instruction::I32Const(0));
+            insns.push(Instruction::LocalGet(ptr));
             Some(ValType::I32)
         }
 
         // ── ListNew ──────────────────────────────────────────────────────
         AnfExpr::ListNew(elems) => {
-            for e in elems {
-                emit_anf_expr(e, ctx, functions, insns);
-                insns.push(Instruction::Drop); // TODO: append to list
+            emit_alloc((8 + elems.len() * 8) as i32, insns);
+            let ptr = ctx.bind("__list_ptr", ValType::I32);
+            insns.push(Instruction::LocalSet(ptr));
+            insns.push(Instruction::LocalGet(ptr));
+            insns.push(Instruction::I64Const(elems.len() as i64));
+            store_i64_at(0, insns);
+            for (idx, e) in elems.iter().enumerate() {
+                insns.push(Instruction::LocalGet(ptr));
+                emit_i64_value(e, ctx, functions, insns);
+                store_i64_at(8 + (idx * 8) as u64, insns);
             }
-            insns.push(Instruction::I32Const(0));
+            insns.push(Instruction::LocalGet(ptr));
             Some(ValType::I32)
         }
 
@@ -1315,6 +1442,7 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     let signatures = binding_signatures(&anf.bindings);
     let effect_data = EffectDataLayout::for_bindings(&anf.bindings);
     let needs_host_call = effect_data.needs_host_call;
+    let needs_memory = effect_data.needs_host_call || effect_data.needs_memory;
     let type_offset = u32::from(needs_host_call);
     let function_offset = u32::from(needs_host_call);
 
@@ -1331,11 +1459,15 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     if let Some(functions) = build_function_section(&signatures, type_offset) {
         module.section(&functions);
     }
-    if let Some(memory) = build_memory_section(needs_host_call) {
+    if let Some(memory) = build_memory_section(needs_memory) {
         module.section(&memory);
     }
+    if let Some(globals) = build_global_section(needs_memory, align_to_i64(effect_data.next_offset))
+    {
+        module.section(&globals);
+    }
     if let Some(exports) =
-        build_export_section_with_memory(&anf.bindings, function_offset, needs_host_call)
+        build_export_section_with_memory(&anf.bindings, function_offset, needs_memory)
     {
         module.section(&exports);
     }
@@ -1393,7 +1525,8 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     hash_chain.source_map_hash = Some(source_map_hash);
 
     // Build ArtifactManifest from the complete hash chain.
-    let capabilities_manifest_hash = hash_with_parent(&[], b"[]");
+    let capabilities_manifest_bytes = stable_cbor_bytes(&anf.bindings)?;
+    let capabilities_manifest_hash = hash_with_parent(&[], &capabilities_manifest_bytes);
     let artifact_manifest = ArtifactManifest {
         profile: profile.to_string(),
         compiler_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1760,5 +1893,118 @@ mod tests {
         }
 
         assert!(found, "expected function export named answer");
+    }
+
+    #[test]
+    fn emit_wasm_record_new_and_field_get_use_linear_memory() {
+        use crate::anf::AnfBinding;
+        use wasmparser::{Operator, Parser, Payload};
+
+        let anf = sealed_anf(vec![AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.main".to_string(),
+            expr: AnfExpr::Let {
+                name: "rec".to_string(),
+                value: Box::new(AnfExpr::RecordNew {
+                    fields: vec![
+                        ("a".to_string(), AnfExpr::Literal(LiteralValue::Int(10))),
+                        ("b".to_string(), AnfExpr::Literal(LiteralValue::Int(32))),
+                    ],
+                }),
+                body: Box::new(AnfExpr::FieldGet {
+                    record: "rec".to_string(),
+                    field: "b".to_string(),
+                }),
+            },
+        }]);
+
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let mut saw_memory = false;
+        let mut saw_store_b = false;
+        let mut saw_load_b = false;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            match payload.unwrap() {
+                Payload::MemorySection(_) => saw_memory = true,
+                Payload::CodeSectionEntry(body) => {
+                    let mut reader = body.get_operators_reader().unwrap();
+                    while !reader.eof() {
+                        match reader.read().unwrap() {
+                            Operator::I64Store { memarg } if memarg.offset == 8 => {
+                                saw_store_b = true
+                            }
+                            Operator::I64Load { memarg } if memarg.offset == 8 => saw_load_b = true,
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_memory, "record codegen must declare linear memory");
+        assert!(
+            saw_store_b,
+            "record construction must store field b at offset 8"
+        );
+        assert!(saw_load_b, "field get must load field b from offset 8");
+    }
+
+    #[test]
+    fn emit_wasm_tuple_list_variant_constructors_store_payloads() {
+        use crate::anf::AnfBinding;
+        use wasmparser::{Operator, Parser, Payload};
+
+        let anf = sealed_anf(vec![
+            AnfBinding {
+                source_ref: NodeRef(0),
+                name: "fn.tuple".to_string(),
+                expr: AnfExpr::TupleNew(vec![
+                    AnfExpr::Literal(LiteralValue::Int(1)),
+                    AnfExpr::Literal(LiteralValue::Int(2)),
+                ]),
+            },
+            AnfBinding {
+                source_ref: NodeRef(1),
+                name: "fn.list".to_string(),
+                expr: AnfExpr::ListNew(vec![
+                    AnfExpr::Literal(LiteralValue::Int(3)),
+                    AnfExpr::Literal(LiteralValue::Int(4)),
+                ]),
+            },
+            AnfBinding {
+                source_ref: NodeRef(2),
+                name: "fn.variant".to_string(),
+                expr: AnfExpr::VariantNew {
+                    tag: "Some".to_string(),
+                    payload: Some(Box::new(AnfExpr::Literal(LiteralValue::Int(5)))),
+                },
+            },
+        ]);
+
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let mut saw_tag_store = false;
+        let mut i64_store_count = 0usize;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    match reader.read().unwrap() {
+                        Operator::I32Store8 { .. } => saw_tag_store = true,
+                        Operator::I64Store { .. } => i64_store_count += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(saw_tag_store, "variant construction must store a tag byte");
+        assert!(
+            i64_store_count >= 6,
+            "tuple/list/variant constructors must store i64 payloads"
+        );
     }
 }
