@@ -78,3 +78,53 @@ jobs:
 
       - name: Run cargo audit
         run: cargo audit --config .cargo/audit.toml
+
+  fuzz:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install nightly Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo bin (fuzz tools)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-bin-fuzz-v1
+
+      - name: Install cargo-fuzz
+        run: |
+          if ! command -v cargo-fuzz &> /dev/null; then
+            cargo install cargo-fuzz --locked
+          fi
+
+      - name: Build fuzz targets
+        run: cargo +nightly fuzz build
+        working-directory: ${{ github.workspace }}
+
+      - name: Fuzz fuzz_parser
+        run: cargo +nightly fuzz run fuzz_parser -- -max_total_time=30
+        working-directory: ${{ github.workspace }}
+
+      - name: Fuzz fuzz_cbor
+        run: cargo +nightly fuzz run fuzz_cbor -- -max_total_time=30
+        working-directory: ${{ github.workspace }}
+
+      - name: Fuzz fuzz_runtime
+        run: cargo +nightly fuzz run fuzz_runtime -- -max_total_time=30
+        working-directory: ${{ github.workspace }}

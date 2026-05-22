@@ -1,0 +1,35 @@
+[package]
+name = "ail-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ail-change = { path = "../crates/ail-change" }
+ail-storage = { path = "../crates/ail-storage" }
+ail-runtime = { path = "../crates/ail-runtime" }
+
+# Fuzzer binaries — each must be a [[bin]] with path under fuzz_targets/
+# and must NOT be published.
+
+[[bin]]
+name = "fuzz_parser"
+path = "fuzz_targets/fuzz_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_cbor"
+path = "fuzz_targets/fuzz_cbor.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_runtime"
+path = "fuzz_targets/fuzz_runtime.rs"
+test = false
+doc = false

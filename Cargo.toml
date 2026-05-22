@@ -14,6 +14,23 @@ members = [
     "crates/ail-stdlib",
     "crates/ail-testkit",
     "crates/ail-verify",
+    "fuzz",
+]
+default-members = [
+    "crates/ail-change",
+    "crates/ail-cli",
+    "crates/ail-compiler",
+    "crates/ail-context",
+    "crates/ail-coordinator",
+    "crates/ail-core",
+    "crates/ail-dogfood",
+    "crates/ail-package",
+    "crates/ail-remote",
+    "crates/ail-runtime",
+    "crates/ail-storage",
+    "crates/ail-stdlib",
+    "crates/ail-testkit",
+    "crates/ail-verify",
 ]
 resolver = "3"
 
