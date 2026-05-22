@@ -38,6 +38,7 @@ use crate::error::{PreflightFailure, RuntimeError, RuntimeResult};
 use crate::handler::Handler;
 use crate::manifest::{CapabilityManifest, blake3_hex_of};
 use crate::profile::{CapabilityId, RuntimeProfile};
+use crate::report::{CapabilityCallSummary, RuntimeReport, RuntimeReportStatus};
 
 // ── HostState ─────────────────────────────────────────────────────────────
 
@@ -307,6 +308,62 @@ impl RuntimeHost {
         });
 
         result
+    }
+
+    /// Emit a [`RuntimeReport`] summarising the current execution.
+    ///
+    /// Aggregates capability call statistics from the audit log.
+    /// Must be called after [`validate_and_instantiate`] has stored the
+    /// active profile; if no profile is stored yet, profile fields are empty.
+    ///
+    /// `status` — the caller-supplied execution outcome.
+    /// `id` — caller-supplied report identifier (e.g. a trace ID).
+    ///
+    /// [`validate_and_instantiate`]: RuntimeHost::validate_and_instantiate
+    pub fn emit_report(
+        &self,
+        status: RuntimeReportStatus,
+        id: impl Into<String>,
+    ) -> RuntimeReport {
+        let (profile_name, module_hash) = self
+            .current_profile
+            .as_ref()
+            .map(|p| (p.name().to_string(), p.module_hash().to_string()))
+            .unwrap_or_default();
+
+        // Build per-capability summaries from CapabilityCallExecuted events.
+        use std::collections::HashMap;
+        let mut totals: HashMap<String, (u32, u32, u32)> = HashMap::new(); // cap -> (total, ok, err)
+
+        for event in self.audit_log.events() {
+            if let AuditEvent::CapabilityCallExecuted {
+                capability,
+                succeeded,
+                ..
+            } = event
+            {
+                let entry = totals.entry(capability.as_str().to_string()).or_default();
+                entry.0 += 1;
+                if *succeeded {
+                    entry.1 += 1;
+                } else {
+                    entry.2 += 1;
+                }
+            }
+        }
+
+        let summaries: Vec<CapabilityCallSummary> = totals
+            .into_iter()
+            .map(|(cap_str, (total, ok, err))| CapabilityCallSummary {
+                capability: CapabilityId::new(cap_str),
+                total_calls: total,
+                succeeded: ok,
+                failed: err,
+            })
+            .collect();
+
+        let report = RuntimeReport::new(id.into(), profile_name, module_hash, status);
+        report.with_summaries(summaries)
     }
 
     // ── private ──────────────────────────────────────────────────────────

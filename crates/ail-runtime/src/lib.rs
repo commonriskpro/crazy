@@ -42,6 +42,10 @@ pub mod handler;
 pub mod host;
 pub mod manifest;
 pub mod profile;
+pub mod replay;
+pub mod report;
+pub mod schema;
+pub mod transaction;
 
 pub use ail_package::manifest::PackageManifest;
 pub use ail_package::trust::TrustLevel;
@@ -53,3 +57,10 @@ pub use handler::{Handler, InMemoryHandler};
 pub use host::{RuntimeHost, RuntimeInstance};
 pub use manifest::{CapabilityManifest, blake3_hex_of};
 pub use profile::{CapabilityGrant, CapabilityId, ResourceLimits, RuntimeProfile};
+pub use replay::{FakePayment, FixedClock, InMemoryDb, RecordedHttp, ReplayEngine, SeededRandom};
+pub use report::{CapabilityCallSummary, RuntimeReport, RuntimeReportStatus};
+pub use schema::{
+    CapabilityErrorSchema, CapabilityInputSchema, CapabilityOutputSchema, CapabilitySchema,
+    SchemaField,
+};
+pub use transaction::{TransactionEntry, TransactionGroup, TransactionPolicy, TransactionStatus};
