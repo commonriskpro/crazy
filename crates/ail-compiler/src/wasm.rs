@@ -46,8 +46,8 @@ use std::collections::BTreeMap;
 
 use ail_core::semantic_graph::NodeRef;
 use wasm_encoder::{
-    CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, Module,
-    TypeSection, ValType,
+    BlockType, CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction,
+    Module, TypeSection, ValType,
 };
 
 use crate::anf::{AnfExpr, AnfIr, SourceMap, SourceMapEntry};
@@ -117,21 +117,90 @@ fn build_type_section(n_functions: usize) -> Option<TypeSection> {
     Some(types)
 }
 
+fn literal_type(lit: &LiteralValue) -> ValType {
+    match lit {
+        LiteralValue::Int(_) => ValType::I64,
+        LiteralValue::Bool(_) | LiteralValue::Text(_) | LiteralValue::Unit => ValType::I32,
+        LiteralValue::Float(_) => ValType::F64,
+    }
+}
+
+fn infer_expr_type(expr: &AnfExpr, locals: &mut Vec<(String, ValType)>) -> Option<ValType> {
+    match expr {
+        AnfExpr::Literal(lit) => Some(literal_type(lit)),
+        AnfExpr::Var(name) => locals
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, ty)| *ty),
+        AnfExpr::Let { name, value, body } => {
+            let value_ty = infer_expr_type(value, locals).unwrap_or(ValType::I32);
+            locals.push((name.clone(), value_ty));
+            let body_ty = infer_expr_type(body, locals);
+            locals.pop();
+            body_ty
+        }
+        AnfExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            let then_ty = infer_expr_type(then_branch, locals);
+            let else_ty = infer_expr_type(else_branch, locals);
+            if then_ty == else_ty { then_ty } else { None }
+        }
+        AnfExpr::Match { arms, .. } => {
+            let first_ty = arms
+                .first()
+                .and_then(|arm| infer_expr_type(&arm.body, locals));
+            if arms
+                .iter()
+                .all(|arm| infer_expr_type(&arm.body, locals) == first_ty)
+            {
+                first_ty
+            } else {
+                None
+            }
+        }
+        AnfExpr::Return(inner) => infer_expr_type(inner, locals),
+        AnfExpr::ShortCircuitAnd { .. } | AnfExpr::ShortCircuitOr { .. } => Some(ValType::I32),
+        AnfExpr::FieldGet { .. }
+        | AnfExpr::RecordNew { .. }
+        | AnfExpr::TupleNew(_)
+        | AnfExpr::VariantNew { .. }
+        | AnfExpr::ListNew(_)
+        | AnfExpr::Lambda { .. }
+        | AnfExpr::Seq(_) => Some(ValType::I32),
+        AnfExpr::Placeholder
+        | AnfExpr::Call { .. }
+        | AnfExpr::EffectCall { .. }
+        | AnfExpr::Dispatch { .. }
+        | AnfExpr::TaskSpawn { .. }
+        | AnfExpr::TaskAwait { .. }
+        | AnfExpr::TaskCancel { .. }
+        | AnfExpr::TaskGroup { .. }
+        | AnfExpr::ChannelNew { .. }
+        | AnfExpr::ChannelSend { .. }
+        | AnfExpr::ChannelReceive { .. }
+        | AnfExpr::Select { .. }
+        | AnfExpr::Timeout { .. }
+        | AnfExpr::CellNew { .. }
+        | AnfExpr::CellGet { .. }
+        | AnfExpr::CellSet { .. }
+        | AnfExpr::RuntimeCheck { .. }
+        | AnfExpr::ResourceAcquire { .. }
+        | AnfExpr::ResourceRelease { .. } => None,
+        AnfExpr::FieldUpdate { value, .. } => infer_expr_type(value, locals).or(Some(ValType::I32)),
+    }
+}
+
 // ── build_function_section ────────────────────────────────────────────────
 
 /// Build a function section referencing type index 0 for every function.
 ///
 /// Returns `None` when `n_functions == 0`.
 fn binding_result(binding: &crate::anf::AnfBinding) -> Option<ValType> {
-    match &binding.expr {
-        AnfExpr::Literal(LiteralValue::Int(_)) => Some(ValType::I64),
-        AnfExpr::Return(inner)
-            if matches!(inner.as_ref(), AnfExpr::Literal(LiteralValue::Int(_))) =>
-        {
-            Some(ValType::I64)
-        }
-        _ => None,
-    }
+    infer_expr_type(&binding.expr, &mut Vec::new()).filter(|ty| *ty == ValType::I64)
 }
 
 fn build_function_section(bindings: &[crate::anf::AnfBinding]) -> Option<FunctionSection> {
@@ -184,9 +253,10 @@ fn build_export_section(bindings: &[crate::anf::AnfBinding]) -> Option<ExportSec
 /// as `local.get <idx>`.
 struct WasmCodegenCtx<'a> {
     /// Maps let-bound name → WASM local index (0-based, after params).
-    locals: Vec<(&'a str, u32)>,
+    locals: Vec<(&'a str, u32, ValType)>,
     /// Counter for allocating fresh local indices.
     next_local: u32,
+    local_types: Vec<ValType>,
 }
 
 impl<'a> WasmCodegenCtx<'a> {
@@ -194,27 +264,121 @@ impl<'a> WasmCodegenCtx<'a> {
         WasmCodegenCtx {
             locals: Vec::new(),
             next_local: 0,
+            local_types: Vec::new(),
         }
     }
 
     /// Look up a variable name and return its local index.
     /// Returns `None` if the name is not in scope.
-    fn lookup(&self, name: &str) -> Option<u32> {
+    fn lookup(&self, name: &str) -> Option<(u32, ValType)> {
         // Search from the most-recently-bound end (innermost scope).
         self.locals
             .iter()
             .rev()
-            .find(|(n, _)| *n == name)
-            .map(|(_, i)| *i)
+            .find(|(n, _, _)| *n == name)
+            .map(|(_, i, ty)| (*i, *ty))
     }
 
     /// Bind a new name to a fresh local slot and return the slot index.
-    fn bind(&mut self, name: &'a str) -> u32 {
+    fn bind(&mut self, name: &'a str, ty: ValType) -> u32 {
         let idx = self.next_local;
         self.next_local += 1;
-        self.locals.push((name, idx));
+        self.locals.push((name, idx, ty));
+        self.local_types.push(ty);
         idx
     }
+
+    fn expr_type(&self, expr: &AnfExpr) -> Option<ValType> {
+        let mut locals = self
+            .locals
+            .iter()
+            .map(|(name, _, ty)| ((*name).to_string(), *ty))
+            .collect();
+        infer_expr_type(expr, &mut locals)
+    }
+}
+
+fn block_type(result_ty: Option<ValType>) -> BlockType {
+    result_ty.map(BlockType::Result).unwrap_or(BlockType::Empty)
+}
+
+fn emit_branch_expr<'a>(
+    expr: &'a AnfExpr,
+    result_ty: Option<ValType>,
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let emitted_ty = emit_anf_expr(expr, ctx, insns);
+    if result_ty.is_none() && emitted_ty.is_some() {
+        insns.push(Instruction::Drop);
+    }
+    emitted_ty
+}
+
+fn emit_local_get<'a>(ctx: &WasmCodegenCtx<'a>, name: &str, insns: &mut Vec<Instruction<'a>>) {
+    if let Some((idx, _)) = ctx.lookup(name) {
+        insns.push(Instruction::LocalGet(idx));
+    } else {
+        insns.push(Instruction::Unreachable);
+    }
+}
+
+fn parse_i64_pattern(pattern: &str) -> Option<i64> {
+    pattern.trim().parse::<i64>().ok()
+}
+
+fn parse_bool_pattern(pattern: &str) -> Option<bool> {
+    match pattern.trim() {
+        "true" | "True" => Some(true),
+        "false" | "False" => Some(false),
+        _ => None,
+    }
+}
+
+fn emit_match_arms<'a>(
+    scrutinee: &str,
+    scrutinee_ty: ValType,
+    arms: &'a [crate::anf::AnfMatchArm],
+    result_ty: Option<ValType>,
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let Some((first, rest)) = arms.split_first() else {
+        insns.push(Instruction::Unreachable);
+        return result_ty;
+    };
+
+    if first.pattern.trim() == "_" {
+        return emit_branch_expr(&first.body, result_ty, ctx, insns);
+    }
+
+    let can_match = match scrutinee_ty {
+        ValType::I64 => parse_i64_pattern(&first.pattern).map(|value| {
+            emit_local_get(ctx, scrutinee, insns);
+            insns.push(Instruction::I64Const(value));
+            insns.push(Instruction::I64Eq);
+        }),
+        ValType::I32 => parse_bool_pattern(&first.pattern).map(|value| {
+            emit_local_get(ctx, scrutinee, insns);
+            insns.push(Instruction::I32Const(if value { 1 } else { 0 }));
+            insns.push(Instruction::I32Eq);
+        }),
+        _ => None,
+    };
+
+    if can_match.is_none() {
+        if rest.is_empty() {
+            return emit_branch_expr(&first.body, result_ty, ctx, insns);
+        }
+        return emit_match_arms(scrutinee, scrutinee_ty, rest, result_ty, ctx, insns);
+    }
+
+    insns.push(Instruction::If(block_type(result_ty)));
+    emit_branch_expr(&first.body, result_ty, ctx, insns);
+    insns.push(Instruction::Else);
+    emit_match_arms(scrutinee, scrutinee_ty, rest, result_ty, ctx, insns);
+    insns.push(Instruction::End);
+    result_ty
 }
 
 // ── emit_anf_expr ─────────────────────────────────────────────────────────
@@ -231,45 +395,51 @@ fn emit_anf_expr<'a>(
     expr: &'a AnfExpr,
     ctx: &mut WasmCodegenCtx<'a>,
     insns: &mut Vec<Instruction<'a>>,
-) {
+) -> Option<ValType> {
     match expr {
         // ── Literals ──────────────────────────────────────────────────────
         AnfExpr::Literal(lit) => match lit {
             LiteralValue::Int(n) => {
                 insns.push(Instruction::I64Const(*n));
+                Some(ValType::I64)
             }
             LiteralValue::Bool(b) => {
                 insns.push(Instruction::I32Const(if *b { 1 } else { 0 }));
+                Some(ValType::I32)
             }
             LiteralValue::Float(f) => {
                 // wasm_encoder 0.244 requires Ieee64 for F64Const.
                 insns.push(Instruction::F64Const(wasm_encoder::Ieee64::from(*f)));
+                Some(ValType::F64)
             }
             // Text, Unit → opaque i32(0) placeholder (no runtime value).
             LiteralValue::Text(_) | LiteralValue::Unit => {
                 insns.push(Instruction::I32Const(0));
+                Some(ValType::I32)
             }
         },
 
         // ── Variable reference ────────────────────────────────────────────
         AnfExpr::Var(name) => {
-            if let Some(idx) = ctx.lookup(name) {
+            if let Some((idx, ty)) = ctx.lookup(name) {
                 insns.push(Instruction::LocalGet(idx));
+                Some(ty)
             } else {
                 // Unbound variable — emit unreachable (catches missing bindings).
                 insns.push(Instruction::Unreachable);
+                None
             }
         }
 
         // ── Let binding ───────────────────────────────────────────────────
         AnfExpr::Let { name, value, body } => {
             // Emit value expression (leaves one value on stack).
-            emit_anf_expr(value, ctx, insns);
+            let value_ty = emit_anf_expr(value, ctx, insns).unwrap_or(ValType::I32);
             // Allocate a fresh local and set it.
-            let idx = ctx.bind(name);
+            let idx = ctx.bind(name, value_ty);
             insns.push(Instruction::LocalSet(idx));
             // Emit the body with the new binding in scope.
-            emit_anf_expr(body, ctx, insns);
+            emit_anf_expr(body, ctx, insns)
         }
 
         // ── Conditional (short-circuit AND/OR) ────────────────────────────
@@ -279,59 +449,59 @@ fn emit_anf_expr<'a>(
             else_branch,
         } => {
             // Condition: look up the atomic variable.
-            if let Some(idx) = ctx.lookup(cond) {
+            if let Some((idx, _)) = ctx.lookup(cond) {
                 insns.push(Instruction::LocalGet(idx));
             } else {
                 insns.push(Instruction::I32Const(0));
             }
-            // WASM if/else/end block (type: i32 result).
-            insns.push(Instruction::If(wasm_encoder::BlockType::Result(
-                ValType::I32,
-            )));
-            emit_anf_expr(then_branch, ctx, insns);
+            let result_ty = ctx
+                .expr_type(then_branch)
+                .filter(|ty| Some(*ty) == ctx.expr_type(else_branch));
+            insns.push(Instruction::If(block_type(result_ty)));
+            emit_branch_expr(then_branch, result_ty, ctx, insns);
             insns.push(Instruction::Else);
-            emit_anf_expr(else_branch, ctx, insns);
+            emit_branch_expr(else_branch, result_ty, ctx, insns);
             insns.push(Instruction::End);
+            result_ty
         }
 
         // ── Short-circuit AND ─────────────────────────────────────────────
         // if left { right } else { false }
         AnfExpr::ShortCircuitAnd { left, right } => {
-            if let Some(idx) = ctx.lookup(left) {
+            if let Some((idx, _)) = ctx.lookup(left) {
                 insns.push(Instruction::LocalGet(idx));
             } else {
                 insns.push(Instruction::I32Const(0));
             }
-            insns.push(Instruction::If(wasm_encoder::BlockType::Result(
-                ValType::I32,
-            )));
+            insns.push(Instruction::If(BlockType::Result(ValType::I32)));
             emit_anf_expr(right, ctx, insns);
             insns.push(Instruction::Else);
             insns.push(Instruction::I32Const(0));
             insns.push(Instruction::End);
+            Some(ValType::I32)
         }
 
         // ── Short-circuit OR ──────────────────────────────────────────────
         // if left { true } else { right }
         AnfExpr::ShortCircuitOr { left, right } => {
-            if let Some(idx) = ctx.lookup(left) {
+            if let Some((idx, _)) = ctx.lookup(left) {
                 insns.push(Instruction::LocalGet(idx));
             } else {
                 insns.push(Instruction::I32Const(0));
             }
-            insns.push(Instruction::If(wasm_encoder::BlockType::Result(
-                ValType::I32,
-            )));
+            insns.push(Instruction::If(BlockType::Result(ValType::I32)));
             insns.push(Instruction::I32Const(1));
             insns.push(Instruction::Else);
             emit_anf_expr(right, ctx, insns);
             insns.push(Instruction::End);
+            Some(ValType::I32)
         }
 
         // ── Sequence ──────────────────────────────────────────────────────
         AnfExpr::Seq(exprs) => {
+            let mut last_ty = Some(ValType::I32);
             for (i, e) in exprs.iter().enumerate() {
-                emit_anf_expr(e, ctx, insns);
+                last_ty = emit_anf_expr(e, ctx, insns);
                 // Drop intermediate results (all but the last).
                 if i + 1 < exprs.len() {
                     insns.push(Instruction::Drop);
@@ -341,12 +511,14 @@ fn emit_anf_expr<'a>(
             if exprs.is_empty() {
                 insns.push(Instruction::I32Const(0));
             }
+            last_ty
         }
 
         // ── Return ────────────────────────────────────────────────────────
         AnfExpr::Return(inner) => {
             emit_anf_expr(inner, ctx, insns);
             insns.push(Instruction::Return);
+            None
         }
 
         // ── Function call (pure) ──────────────────────────────────────────
@@ -355,19 +527,23 @@ fn emit_anf_expr<'a>(
         // since we don't have a full import table yet).
         AnfExpr::Call { args, .. } => {
             for arg_name in args {
-                if let Some(idx) = ctx.lookup(arg_name) {
+                if let Some((idx, _)) = ctx.lookup(arg_name) {
                     insns.push(Instruction::LocalGet(idx));
                 }
             }
             // TODO: resolve function index from name table.
             // For now emit unreachable as the call target placeholder.
             insns.push(Instruction::Unreachable);
+            None
         }
 
         // ── FieldGet ──────────────────────────────────────────────────────
         AnfExpr::FieldGet { record, .. } => {
-            if let Some(idx) = ctx.lookup(record) {
+            if let Some((idx, ty)) = ctx.lookup(record) {
                 insns.push(Instruction::LocalGet(idx));
+                Some(ty)
+            } else {
+                None
             }
             // TODO: emit field-accessor logic (memory read).
             // For now the record value is left on the stack as a proxy.
@@ -375,13 +551,17 @@ fn emit_anf_expr<'a>(
 
         // ── FieldUpdate ───────────────────────────────────────────────────
         AnfExpr::FieldUpdate { record, value, .. } => {
-            if let Some(idx) = ctx.lookup(record) {
+            let record_ty = if let Some((idx, ty)) = ctx.lookup(record) {
                 insns.push(Instruction::LocalGet(idx));
-            }
+                Some(ty)
+            } else {
+                None
+            };
             // Emit the replacement value.
             emit_anf_expr(value, ctx, insns);
             insns.push(Instruction::Drop); // consume value (TODO: actual update)
             // Return the (unchanged, pending real update) record reference.
+            record_ty
         }
 
         // ── RecordNew ─────────────────────────────────────────────────────
@@ -393,6 +573,7 @@ fn emit_anf_expr<'a>(
             }
             // Return opaque i32(0) as the record handle placeholder.
             insns.push(Instruction::I32Const(0));
+            Some(ValType::I32)
         }
 
         // ── TupleNew ─────────────────────────────────────────────────────
@@ -402,6 +583,7 @@ fn emit_anf_expr<'a>(
                 insns.push(Instruction::Drop); // TODO: pack tuple
             }
             insns.push(Instruction::I32Const(0));
+            Some(ValType::I32)
         }
 
         // ── VariantNew ───────────────────────────────────────────────────
@@ -411,6 +593,7 @@ fn emit_anf_expr<'a>(
                 insns.push(Instruction::Drop); // TODO: tag the variant
             }
             insns.push(Instruction::I32Const(0));
+            Some(ValType::I32)
         }
 
         // ── ListNew ──────────────────────────────────────────────────────
@@ -420,20 +603,19 @@ fn emit_anf_expr<'a>(
                 insns.push(Instruction::Drop); // TODO: append to list
             }
             insns.push(Instruction::I32Const(0));
+            Some(ValType::I32)
         }
 
         // ── Match ─────────────────────────────────────────────────────────
         // Emit as a series of block/if nesting over the arms.
         // For now uses a simplified linear-scan pattern.
         AnfExpr::Match { scrutinee, arms } => {
-            if let Some(idx) = ctx.lookup(scrutinee) {
-                insns.push(Instruction::LocalGet(idx));
-                insns.push(Instruction::Drop); // consume scrutinee (TODO: dispatch)
-            }
-            if let Some(first_arm) = arms.first() {
-                emit_anf_expr(&first_arm.body, ctx, insns);
+            if let Some((_, scrutinee_ty)) = ctx.lookup(scrutinee) {
+                let result_ty = ctx.expr_type(expr);
+                emit_match_arms(scrutinee, scrutinee_ty, arms, result_ty, ctx, insns)
             } else {
                 insns.push(Instruction::Unreachable);
+                None
             }
         }
 
@@ -442,6 +624,7 @@ fn emit_anf_expr<'a>(
         // At this stage, emit an opaque function reference (i32.const 0).
         AnfExpr::Lambda { .. } => {
             insns.push(Instruction::I32Const(0));
+            Some(ValType::I32)
         }
 
         // ── Effect/concurrent/resource variants ───────────────────────────
@@ -465,11 +648,13 @@ fn emit_anf_expr<'a>(
         | AnfExpr::ResourceAcquire { .. }
         | AnfExpr::ResourceRelease { .. } => {
             insns.push(Instruction::Unreachable);
+            None
         }
 
         // ── Placeholder ───────────────────────────────────────────────────
         AnfExpr::Placeholder => {
             insns.push(Instruction::Unreachable);
+            None
         }
     }
 }
@@ -492,21 +677,20 @@ fn build_code_section(bindings: &[crate::anf::AnfBinding]) -> Option<CodeSection
         let mut ctx = WasmCodegenCtx::new();
         let mut insns: Vec<Instruction<'_>> = Vec::new();
 
-        emit_anf_expr(&binding.expr, &mut ctx, &mut insns);
+        let emitted_ty = emit_anf_expr(&binding.expr, &mut ctx, &mut insns);
 
-        if binding_result(binding).is_none() {
+        if binding_result(binding).is_none() && emitted_ty.is_some() {
             insns.push(Instruction::Drop);
         }
         insns.push(Instruction::End);
 
         // Allocate locals: one i64 slot per let-binding (conservative).
         // In production we'd type-infer; here we use i32 as a safe default.
-        let n_locals = ctx.next_local as usize;
-        let locals = if n_locals > 0 {
-            vec![(n_locals as u32, ValType::I32)]
-        } else {
-            vec![]
-        };
+        let locals = ctx
+            .local_types
+            .into_iter()
+            .map(|ty| (1, ty))
+            .collect::<Vec<_>>();
 
         let mut f = Function::new(locals);
         for insn in &insns {
