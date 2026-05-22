@@ -108,6 +108,9 @@ pub mod verify;
 /// Runtime-facing types: RuntimeProfile, LimitConfig, AuditEvent, ArtifactManifest (`std.runtime`).
 pub mod runtime;
 
+/// Executable stdlib function descriptors and pure dispatch.
+pub mod exec;
+
 /// Canonical v1 stdlib module registry — `v1_registry()`.
 pub mod v1;
 
