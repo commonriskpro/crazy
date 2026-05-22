@@ -551,6 +551,46 @@ fn lower_anf_expr_cranelift<'a>(
             LowerResult::Value(builder.block_params(merge_block)[0])
         }
 
+        // ── Seq ───────────────────────────────────────────────────────────
+        AnfExpr::Seq(exprs) => {
+            if exprs.is_empty() {
+                return LowerResult::Unit;
+            }
+            let last_idx = exprs.len() - 1;
+            for expr in &exprs[..last_idx] {
+                // Lower each non-last expression; result is intentionally dropped.
+                match lower_anf_expr_cranelift(expr, ctx, builder) {
+                    LowerResult::Terminated => return LowerResult::Terminated,
+                    _ => {}
+                }
+            }
+            lower_anf_expr_cranelift(&exprs[last_idx], ctx, builder)
+        }
+
+        // ── RuntimeCheck ──────────────────────────────────────────────────
+        AnfExpr::RuntimeCheck { cond, .. } => {
+            let cond_val = match ctx.lookup(cond.as_str()) {
+                Some((v, _)) => v,
+                None => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    return LowerResult::Terminated;
+                }
+            };
+            let trap_block = builder.create_block();
+            let fallthrough = builder.create_block();
+
+            // brif cond → trap_block (trap if cond non-zero), else fallthrough
+            builder.ins().brif(cond_val, trap_block, &[], fallthrough, &[]);
+
+            builder.switch_to_block(trap_block);
+            builder.seal_block(trap_block);
+            builder.ins().trap(TrapCode::user(1).unwrap());
+
+            builder.switch_to_block(fallthrough);
+            builder.seal_block(fallthrough);
+            LowerResult::Unit
+        }
+
         // ── ShortCircuitOr ────────────────────────────────────────────────
         AnfExpr::ShortCircuitOr { left, right } => {
             let left_val = match ctx.lookup(left.as_str()) {
