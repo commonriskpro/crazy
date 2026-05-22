@@ -102,6 +102,24 @@ pub struct SelectClause {
     pub body: CoreExpr,
 }
 
+// ── ResourceMode ──────────────────────────────────────────────────────────
+
+/// The ownership / linearity mode of an external resource handle.
+///
+/// Carried by `CoreType::Handle` to distinguish how the resource's lifecycle
+/// is managed.  Affects how the type checker enforces use-once vs. reuse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResourceMode {
+    /// The handle may be freely copied — the resource has value semantics.
+    Copy,
+    /// The handle may be used at most once (move semantics without aliasing).
+    Affine,
+    /// The handle must be used exactly once — strict linear types.
+    Linear,
+    /// The handle may be shared among many concurrent users.
+    Shared,
+}
+
 // ── CoreExpr ──────────────────────────────────────────────────────────────
 
 /// Pure expression primitives of the Semantic Core IR.
@@ -450,22 +468,49 @@ pub enum CoreType {
     Variant,
     /// Structural product type (positional: `(A, B, C)`).
     Tuple,
-    /// Homogeneous ordered collection.
-    List,
+    /// Homogeneous ordered collection with element type.
+    ///
+    /// `List(Box::new(CoreType::Int))` represents `List<Int>`.
+    List(Box<CoreType>),
     /// Key-value association (ordered by key for determinism).
-    Map,
+    ///
+    /// `Map(key_type, value_type)` — e.g., `Map<Text, Int>`.
+    Map(Box<CoreType>, Box<CoreType>),
     /// Unordered unique-element collection.
-    Set,
+    ///
+    /// `Set(Box::new(CoreType::Int))` represents `Set<Int>`.
+    Set(Box<CoreType>),
     /// Optional value — `Some(T) | None`.
-    Option,
+    ///
+    /// `Option(Box::new(CoreType::Bool))` represents `Option<Bool>`.
+    Option(Box<CoreType>),
     /// Fallible value — `Ok(T) | Err(E)`.
-    Result,
+    ///
+    /// `Result(ok_type, err_type)` — e.g., `Result<Int, Text>`.
+    Result(Box<CoreType>, Box<CoreType>),
     /// Function type `(Params) -> Return` with optional effect row.
-    Function,
+    Function {
+        /// Ordered parameter types.
+        params: Vec<CoreType>,
+        /// Return type.
+        ret: Box<CoreType>,
+        /// Named effects (e.g., `["IO", "State"]`).
+        effects: Vec<String>,
+    },
     /// External resource handle with an ownership mode.
-    Handle,
+    Handle {
+        /// The resource type being wrapped.
+        resource: Box<CoreType>,
+        /// The ownership / linearity mode.
+        mode: ResourceMode,
+    },
     /// A base type refined by a logical predicate.
-    Refinement,
+    Refinement {
+        /// The base type being refined.
+        base: Box<CoreType>,
+        /// The predicate expression string.
+        predicate: String,
+    },
     /// Generic/unknown type — used as a fallback when the nominal is
     /// unrecognised or when type parameters have not been resolved yet.
     Generic,
@@ -494,6 +539,42 @@ pub enum CoreType {
     UInt64,
     /// Type representing a group of concurrent tasks (mirrors `CoreExpr::TaskGroup`).
     TaskGroup,
+
+    // ── ola3-core-ir-types: new parameterized collection and boundary types ─
+    /// Partial-update field type.
+    ///
+    /// `PatchField(Box::new(CoreType::Text))` represents `PatchField<Text>`.
+    PatchField(Box<CoreType>),
+    /// Fixed-capacity vector (size is a separate ConstParam, not carried here).
+    ///
+    /// `Vector(Box::new(CoreType::Float))` represents `Vector<Float, N>`.
+    Vector(Box<CoreType>),
+    /// Ordered (sorted) unique-element set.
+    ///
+    /// `OrderedSet(Box::new(CoreType::Int))` represents `OrderedSet<Int>`.
+    OrderedSet(Box<CoreType>),
+    /// Ordered (sorted) key-value map.
+    ///
+    /// `OrderedMap(key_type, value_type)` — e.g., `OrderedMap<Int, Text>`.
+    OrderedMap(Box<CoreType>, Box<CoreType>),
+    /// Fixed-length array.
+    ///
+    /// `Array(Box::new(CoreType::Int))` represents `Array<Int, N>`.
+    Array(Box<CoreType>),
+    /// Asynchronous task returning a value of the given type.
+    ///
+    /// `Task(Box::new(CoreType::Bool))` represents `Task<Bool>`.
+    Task(Box<CoreType>),
+    /// Asynchronous message channel.
+    ///
+    /// `Channel(Box::new(CoreType::Text))` represents `Channel<Text>`.
+    Channel(Box<CoreType>),
+    /// Opaque external (foreign) type, identified by name.
+    ForeignType(String),
+    /// An encoded representation of a value (e.g., `Encoded<Json>`).
+    Encoded(String),
+    /// A decoded/parsed value of the given type.
+    Decoded(Box<CoreType>),
 }
 
 // ── CoreNode ──────────────────────────────────────────────────────────────
@@ -739,36 +820,43 @@ mod tests {
 
     // ── G2: CoreType tests ────────────────────────────────────────────────
 
-    // S2: All 20 CoreType variants are constructible without panic.
+    // S2: All original CoreType variants are constructible without panic.
+    // Updated for ola3-core-ir-types: parameterized variants now carry inner types.
     #[test]
     fn all_core_type_variants_are_constructible() {
-        let types = [
-            CoreType::Unit,
-            CoreType::Never,
-            CoreType::Bool,
-            CoreType::Int,
-            CoreType::UInt,
-            CoreType::Float,
-            CoreType::Text,
-            CoreType::Bytes,
-            CoreType::Record,
-            CoreType::Variant,
-            CoreType::Tuple,
-            CoreType::List,
-            CoreType::Map,
-            CoreType::Set,
-            CoreType::Option,
-            CoreType::Result,
-            CoreType::Function,
-            CoreType::Handle,
-            CoreType::Refinement,
-            CoreType::Generic,
-        ];
-        assert_eq!(
-            types.len(),
-            20,
-            "all 20 CoreType variants must be reachable"
-        );
+        // Original unit-like variants (unchanged).
+        let _unit = CoreType::Unit;
+        let _never = CoreType::Never;
+        let _bool = CoreType::Bool;
+        let _int = CoreType::Int;
+        let _uint = CoreType::UInt;
+        let _float = CoreType::Float;
+        let _text = CoreType::Text;
+        let _bytes = CoreType::Bytes;
+        let _record = CoreType::Record;
+        let _variant = CoreType::Variant;
+        let _tuple = CoreType::Tuple;
+        let _generic = CoreType::Generic;
+        // Parameterized variants (now carry inner types).
+        let _list = CoreType::List(Box::new(CoreType::Int));
+        let _map = CoreType::Map(Box::new(CoreType::Text), Box::new(CoreType::Int));
+        let _set = CoreType::Set(Box::new(CoreType::Bool));
+        let _option = CoreType::Option(Box::new(CoreType::Int));
+        let _result = CoreType::Result(Box::new(CoreType::Int), Box::new(CoreType::Text));
+        let _function = CoreType::Function {
+            params: vec![CoreType::Int],
+            ret: Box::new(CoreType::Bool),
+            effects: vec![],
+        };
+        let _handle = CoreType::Handle {
+            resource: Box::new(CoreType::Text),
+            mode: ResourceMode::Copy,
+        };
+        let _refinement = CoreType::Refinement {
+            base: Box::new(CoreType::Int),
+            predicate: "x > 0".to_string(),
+        };
+        // All constructed without panic — test passes.
     }
 
     // S1: CoreType::Bool is constructible and serializable (deterministic CBOR).
@@ -1040,6 +1128,118 @@ mod tests {
         };
         assert_eq!(arm.pattern, "None");
         assert_eq!(arm.body, CoreExpr::Placeholder);
+    }
+
+    // ── Task B1 (RED): parameterized CoreType variants ────────────────────
+
+    // S-B1a: List(Box<CoreType::Int>) round-trips through CBOR.
+    #[test]
+    fn list_with_inner_type_cbor_round_trip() {
+        let ty = CoreType::List(Box::new(CoreType::Int));
+        let bytes = stable_cbor_bytes(&ty).expect("encode");
+        let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, ty, "List<Int> must survive CBOR round-trip");
+        // Verify inner type is preserved.
+        if let CoreType::List(inner) = decoded {
+            assert_eq!(*inner, CoreType::Int);
+        } else {
+            panic!("expected List variant");
+        }
+    }
+
+    // S-B1b: Map(Text, Int) round-trips — both key and value types preserved.
+    #[test]
+    fn map_with_key_and_value_types_cbor_round_trip() {
+        let ty = CoreType::Map(Box::new(CoreType::Text), Box::new(CoreType::Int));
+        let bytes = stable_cbor_bytes(&ty).expect("encode");
+        let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, ty, "Map<Text, Int> must survive CBOR round-trip");
+    }
+
+    // S-B1c: Option(Bool) round-trips.
+    #[test]
+    fn option_with_inner_type_cbor_round_trip() {
+        let ty = CoreType::Option(Box::new(CoreType::Bool));
+        let bytes = stable_cbor_bytes(&ty).expect("encode");
+        let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, ty, "Option<Bool> must survive CBOR round-trip");
+    }
+
+    // S-B1d: Result(Int, Text) round-trips — Ok and Err types preserved.
+    #[test]
+    fn result_with_ok_and_err_types_cbor_round_trip() {
+        let ty = CoreType::Result(Box::new(CoreType::Int), Box::new(CoreType::Text));
+        let bytes = stable_cbor_bytes(&ty).expect("encode");
+        let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, ty, "Result<Int, Text> must survive CBOR round-trip");
+    }
+
+    // S-B1e: Handle { resource: Text, mode: ResourceMode::Linear } round-trips.
+    #[test]
+    fn handle_with_resource_and_mode_cbor_round_trip() {
+        let ty = CoreType::Handle {
+            resource: Box::new(CoreType::Text),
+            mode: ResourceMode::Linear,
+        };
+        let bytes = stable_cbor_bytes(&ty).expect("encode");
+        let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, ty, "Handle<Text, Linear> must survive CBOR round-trip");
+        if let CoreType::Handle { resource, mode } = decoded {
+            assert_eq!(*resource, CoreType::Text);
+            assert_eq!(mode, ResourceMode::Linear);
+        } else {
+            panic!("expected Handle variant");
+        }
+    }
+
+    // S-B1f: PatchField(Text) round-trips — new parameterized variant.
+    #[test]
+    fn patch_field_with_inner_type_cbor_round_trip() {
+        let ty = CoreType::PatchField(Box::new(CoreType::Text));
+        let bytes = stable_cbor_bytes(&ty).expect("encode");
+        let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, ty, "PatchField<Text> must survive CBOR round-trip");
+    }
+
+    // S-B1g: Vector(Float) round-trips.
+    #[test]
+    fn vector_with_inner_type_cbor_round_trip() {
+        let ty = CoreType::Vector(Box::new(CoreType::Float));
+        let bytes = stable_cbor_bytes(&ty).expect("encode");
+        let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, ty, "Vector<Float> must survive CBOR round-trip");
+    }
+
+    // S-B1h: OrderedSet(Int) round-trips.
+    #[test]
+    fn ordered_set_with_inner_type_cbor_round_trip() {
+        let ty = CoreType::OrderedSet(Box::new(CoreType::Int));
+        let bytes = stable_cbor_bytes(&ty).expect("encode");
+        let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, ty, "OrderedSet<Int> must survive CBOR round-trip");
+    }
+
+    // S-B1i: Task(Bool) round-trips — concurrency type with inner.
+    #[test]
+    fn task_with_inner_type_cbor_round_trip() {
+        let ty = CoreType::Task(Box::new(CoreType::Bool));
+        let bytes = stable_cbor_bytes(&ty).expect("encode");
+        let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, ty, "Task<Bool> must survive CBOR round-trip");
+    }
+
+    // S-B1j: Channel(Text) round-trips.
+    // Triangulation: Task<Bool> and Channel<Text> must produce different CBOR.
+    #[test]
+    fn channel_with_inner_type_cbor_round_trip() {
+        let ty = CoreType::Channel(Box::new(CoreType::Text));
+        let bytes = stable_cbor_bytes(&ty).expect("encode");
+        let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, ty, "Channel<Text> must survive CBOR round-trip");
+        // Triangulation: Channel<Text> ≠ Task<Bool>
+        let task_ty = CoreType::Task(Box::new(CoreType::Bool));
+        let task_bytes = stable_cbor_bytes(&task_ty).expect("encode task");
+        assert_ne!(bytes, task_bytes, "Channel<Text> must differ from Task<Bool> in CBOR");
     }
 
     // ── Task A1 (RED): new flat CoreType variants ─────────────────────────

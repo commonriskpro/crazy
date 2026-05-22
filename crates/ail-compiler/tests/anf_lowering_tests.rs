@@ -51,7 +51,11 @@ fn core_ir_with_expr(source_ref: NodeRef, name: &str, expr: CoreExpr) -> CoreIr 
             source_ref,
             kind: CoreNodeKind::Function,
             name: name.to_string(),
-            ty: Some(CoreType::Function),
+            ty: Some(CoreType::Function {
+                params: vec![],
+                ret: Box::new(CoreType::Generic),
+                effects: vec![],
+            }),
             expr: Some(expr),
         }],
         stage_hashes: StageHashes {
@@ -442,7 +446,11 @@ fn core_node_without_expr_produces_literal_unit() {
                 source_ref: NodeRef(1),
                 kind: CoreNodeKind::Function,
                 name: "fn_stub".to_string(),
-                ty: Some(CoreType::Function),
+                ty: Some(CoreType::Function {
+                    params: vec![],
+                    ret: Box::new(CoreType::Generic),
+                    effects: vec![],
+                }),
                 expr: None,
             },
         ],

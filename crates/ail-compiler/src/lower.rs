@@ -30,7 +30,7 @@ use ail_verify::report::{VerificationReport, VerificationState};
 
 use crate::anf::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, SourceMap, SourceMapEntry};
 use crate::core_ir::{
-    CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, StageHashes,
+    CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, ResourceMode, StageHashes,
 };
 use crate::error::CompileError;
 use crate::expr_parser::parse_expr;
@@ -673,14 +673,26 @@ pub fn nominal_to_core_type(nominal: &str) -> CoreType {
         "Record" => CoreType::Record,
         "Variant" => CoreType::Variant,
         "Tuple" => CoreType::Tuple,
-        "List" => CoreType::List,
-        "Map" => CoreType::Map,
-        "Set" => CoreType::Set,
-        "Option" => CoreType::Option,
-        "Result" => CoreType::Result,
-        "Function" => CoreType::Function,
-        "Handle" => CoreType::Handle,
-        "Refinement" => CoreType::Refinement,
+        // Parameterized variants: inner type defaults to Generic when only the
+        // nominal name is available (full resolution requires type-param phase).
+        "List" => CoreType::List(Box::new(CoreType::Generic)),
+        "Map" => CoreType::Map(Box::new(CoreType::Generic), Box::new(CoreType::Generic)),
+        "Set" => CoreType::Set(Box::new(CoreType::Generic)),
+        "Option" => CoreType::Option(Box::new(CoreType::Generic)),
+        "Result" => CoreType::Result(Box::new(CoreType::Generic), Box::new(CoreType::Generic)),
+        "Function" => CoreType::Function {
+            params: vec![],
+            ret: Box::new(CoreType::Generic),
+            effects: vec![],
+        },
+        "Handle" => CoreType::Handle {
+            resource: Box::new(CoreType::Generic),
+            mode: ResourceMode::Copy,
+        },
+        "Refinement" => CoreType::Refinement {
+            base: Box::new(CoreType::Generic),
+            predicate: String::new(),
+        },
         "Generic" => CoreType::Generic,
         _ => CoreType::Generic,
     }
@@ -1184,14 +1196,14 @@ mod tests {
             ("Record", CoreType::Record),
             ("Variant", CoreType::Variant),
             ("Tuple", CoreType::Tuple),
-            ("List", CoreType::List),
-            ("Map", CoreType::Map),
-            ("Set", CoreType::Set),
-            ("Option", CoreType::Option),
-            ("Result", CoreType::Result),
-            ("Function", CoreType::Function),
-            ("Handle", CoreType::Handle),
-            ("Refinement", CoreType::Refinement),
+            ("List", CoreType::List(Box::new(CoreType::Generic))),
+            ("Map", CoreType::Map(Box::new(CoreType::Generic), Box::new(CoreType::Generic))),
+            ("Set", CoreType::Set(Box::new(CoreType::Generic))),
+            ("Option", CoreType::Option(Box::new(CoreType::Generic))),
+            ("Result", CoreType::Result(Box::new(CoreType::Generic), Box::new(CoreType::Generic))),
+            ("Function", CoreType::Function { params: vec![], ret: Box::new(CoreType::Generic), effects: vec![] }),
+            ("Handle", CoreType::Handle { resource: Box::new(CoreType::Generic), mode: ResourceMode::Copy }),
+            ("Refinement", CoreType::Refinement { base: Box::new(CoreType::Generic), predicate: String::new() }),
             ("Generic", CoreType::Generic),
         ];
         for (nominal, expected) in cases {
