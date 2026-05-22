@@ -336,13 +336,63 @@ impl Migration for V0ToV1Migration {
     }
 }
 
+// ── V1ToV2Migration ───────────────────────────────────────────────────────────
+
+/// Structural no-op migration: advances store from schema version 1 to 2.
+///
+/// Writes the version 2 record, establishing baseline for subsequent migrations.
+pub struct V1ToV2Migration;
+
+impl Migration for V1ToV2Migration {
+    fn source_version(&self) -> u32 {
+        1
+    }
+
+    fn target_version(&self) -> u32 {
+        2
+    }
+
+    fn up(
+        &self,
+        store: MigrationStore,
+    ) -> Pin<Box<dyn Future<Output = Result<(), MigrationError>> + Send + '_>> {
+        Box::pin(async move { write_version(&store, 2).await })
+    }
+}
+
+// ── V2ToV3Migration ───────────────────────────────────────────────────────────
+
+/// Structural no-op migration: advances store from schema version 2 to 3.
+///
+/// Writes the version 3 record.
+pub struct V2ToV3Migration;
+
+impl Migration for V2ToV3Migration {
+    fn source_version(&self) -> u32 {
+        2
+    }
+
+    fn target_version(&self) -> u32 {
+        3
+    }
+
+    fn up(
+        &self,
+        store: MigrationStore,
+    ) -> Pin<Box<dyn Future<Output = Result<(), MigrationError>> + Send + '_>> {
+        Box::pin(async move { write_version(&store, 3).await })
+    }
+}
+
 // ── default_catalog ───────────────────────────────────────────────────────────
 
 /// Return a [`MigrationCatalog`] pre-loaded with all built-in migrations.
 ///
-/// Currently includes: [`V0ToV1Migration`].
+/// Includes: [`V0ToV1Migration`], [`V1ToV2Migration`], [`V2ToV3Migration`].
 pub fn default_catalog() -> MigrationCatalog {
     let mut catalog = MigrationCatalog::new();
     catalog.register(V0ToV1Migration);
+    catalog.register(V1ToV2Migration);
+    catalog.register(V2ToV3Migration);
     catalog
 }
