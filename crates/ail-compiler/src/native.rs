@@ -49,7 +49,7 @@ use cranelift_codegen::{
     settings,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::{Linkage, Module};
+use cranelift_module::{DataDescription, DataId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +58,113 @@ use crate::artifact_manifest::ArtifactManifest;
 use crate::core_ir::StageHashes;
 use crate::error::CompileError;
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
+
+// ── NativeDataLayout ──────────────────────────────────────────────────────
+
+/// Pre-scan of all string literals and EffectCall names in an `AnfIr`.
+///
+/// Interns each unique string exactly once so that multiple bindings
+/// using the same literal share a single data object.
+#[derive(Default)]
+pub struct NativeDataLayout {
+    /// Interned strings: value → (index into `ordered`, byte length).
+    strings: BTreeMap<String, (usize, usize)>,
+    /// Ordered list of all interned strings (index = position in this vec).
+    pub ordered: Vec<String>,
+    /// Set when any binding contains an `EffectCall` — triggers host_call import.
+    pub needs_host_call: bool,
+}
+
+impl NativeDataLayout {
+    /// Intern a string, returning its index into `ordered`.
+    pub fn intern(&mut self, s: &str) -> usize {
+        if let Some(&(idx, _)) = self.strings.get(s) {
+            return idx;
+        }
+        let idx = self.ordered.len();
+        let len = s.len();
+        self.ordered.push(s.to_string());
+        self.strings.insert(s.to_string(), (idx, len));
+        idx
+    }
+
+    /// Return `(index, byte_len)` for a previously interned string.
+    pub fn get(&self, s: &str) -> (usize, usize) {
+        self.strings.get(s).copied().unwrap_or((0, 0))
+    }
+
+    /// Pre-scan all bindings to intern strings and detect EffectCall usage.
+    pub fn for_bindings(bindings: &[crate::anf::AnfBinding]) -> Self {
+        let mut layout = Self::default();
+        for b in bindings {
+            layout.scan_expr(&b.expr);
+        }
+        layout
+    }
+
+    fn scan_expr(&mut self, expr: &crate::anf::AnfExpr) {
+        use crate::anf::AnfExpr;
+        use crate::core_ir::LiteralValue;
+        match expr {
+            AnfExpr::Literal(LiteralValue::Text(s)) => { self.intern(s); }
+            AnfExpr::EffectCall { capability, func, .. } => {
+                self.needs_host_call = true;
+                self.intern(capability);
+                self.intern(func);
+            }
+            AnfExpr::Let { value, body, .. } => {
+                self.scan_expr(value);
+                self.scan_expr(body);
+            }
+            AnfExpr::Return(inner) => self.scan_expr(inner),
+            AnfExpr::Seq(exprs) => exprs.iter().for_each(|e| self.scan_expr(e)),
+            AnfExpr::If { then_branch, else_branch, .. } => {
+                self.scan_expr(then_branch);
+                self.scan_expr(else_branch);
+            }
+            AnfExpr::Loop { body } | AnfExpr::Break { value: body } => self.scan_expr(body),
+            AnfExpr::ShortCircuitAnd { right, .. } | AnfExpr::ShortCircuitOr { right, .. } => {
+                self.scan_expr(right);
+            }
+            AnfExpr::Match { arms, .. } => {
+                for arm in arms { self.scan_expr(&arm.body); }
+            }
+            AnfExpr::RecordNew { fields } => {
+                for (_, e) in fields { self.scan_expr(e); }
+            }
+            AnfExpr::FieldUpdate { value, .. } => self.scan_expr(value),
+            AnfExpr::TupleNew(elems) | AnfExpr::ListNew(elems) => {
+                for e in elems { self.scan_expr(e); }
+            }
+            AnfExpr::VariantNew { payload, .. } => {
+                if let Some(p) = payload { self.scan_expr(p); }
+            }
+            _ => {}
+        }
+    }
+
+    /// Declare + define all interned string data objects in the `ObjectModule`.
+    /// Returns a `Vec` mapping index → `DataId`.
+    pub fn define_all(&self, module: &mut ObjectModule) -> Result<Vec<DataId>, CompileError> {
+        let mut data_ids = Vec::with_capacity(self.ordered.len());
+        for (i, s) in self.ordered.iter().enumerate() {
+            let name = format!("__ail_str_{i}");
+            let data_id = module
+                .declare_data(&name, Linkage::Local, false, false)
+                .map_err(|e| CompileError::NativeEncodingError(
+                    format!("declare_data({name}): {e}")))?;
+            let mut desc = DataDescription::new();
+            let bytes: Box<[u8]> = s.as_bytes().to_vec().into_boxed_slice();
+            desc.define(bytes);
+            module
+                .define_data(data_id, &desc)
+                .map_err(|e| CompileError::NativeEncodingError(
+                    format!("define_data({name}): {e}")))?;
+            data_ids.push(data_id);
+        }
+        Ok(data_ids)
+    }
+}
 
 // ── CapabilityEntry ───────────────────────────────────────────────────────
 
@@ -180,7 +287,8 @@ enum NativeLabelKind {
 /// Per-function compilation context for `lower_anf_expr_cranelift`.
 struct NativeCodegenCtx<'a> {
     /// Maps ANF let-binding names to their Cranelift SSA `Value` + type.
-    locals: BTreeMap<&'a str, (cranelift_codegen::ir::Value, cranelift_codegen::ir::types::Type)>,
+    /// Uses `String` keys to avoid lifetime complexity with nested expressions.
+    locals: BTreeMap<String, (cranelift_codegen::ir::Value, cranelift_codegen::ir::types::Type)>,
     /// Label stack for Loop/Break/Continue resolution.
     labels: Vec<(NativeLabelKind, cranelift_codegen::ir::Block)>,
     /// Record layout map: binding name → ordered field names.
@@ -188,22 +296,28 @@ struct NativeCodegenCtx<'a> {
     /// Tag discriminant table: tag string → u32 id (first-encounter order).
     variant_tags: BTreeMap<String, u32>,
     next_variant_tag: u32,
+    /// Interned data object IDs for text literals and EffectCall strings.
+    data_ids: &'a [DataId],
+    /// Layout describing which strings map to which data_ids index.
+    data_layout: &'a NativeDataLayout,
 }
 
 impl<'a> NativeCodegenCtx<'a> {
-    fn new() -> Self {
+    fn new(data_ids: &'a [DataId], data_layout: &'a NativeDataLayout) -> Self {
         Self {
             locals: BTreeMap::new(),
             labels: Vec::new(),
             record_layouts: BTreeMap::new(),
             variant_tags: BTreeMap::new(),
             next_variant_tag: 0,
+            data_ids,
+            data_layout,
         }
     }
 
-    fn bind(&mut self, name: &'a str, val: cranelift_codegen::ir::Value,
+    fn bind(&mut self, name: &str, val: cranelift_codegen::ir::Value,
             ty: cranelift_codegen::ir::types::Type) {
-        self.locals.insert(name, (val, ty));
+        self.locals.insert(name.to_string(), (val, ty));
     }
 
     fn lookup(&self, name: &str) -> Option<(cranelift_codegen::ir::Value,
@@ -264,6 +378,7 @@ fn infer_cranelift_return_type(
         AnfExpr::Literal(LiteralValue::Int(_)) => Some(types::I64),
         AnfExpr::Literal(LiteralValue::Bool(_)) => Some(types::I8),
         AnfExpr::Literal(LiteralValue::Float(_)) => Some(types::F64),
+        AnfExpr::Literal(LiteralValue::Text(_)) => Some(types::I64),
         AnfExpr::Let { body, .. } => infer_cranelift_return_type(body),
         AnfExpr::Return(inner) => infer_cranelift_return_type(inner),
         AnfExpr::Call { func, .. } => match func.as_str() {
@@ -322,10 +437,11 @@ fn infer_cranelift_return_type(
 /// - `Call { func: "i64.add"|"i64.sub"|"i64.mul", args: [a, b] }` → arithmetic
 ///
 /// All other variants emit `trap(user(1))` → [`LowerResult::Terminated`].
-fn lower_anf_expr_cranelift<'a>(
-    expr: &'a crate::anf::AnfExpr,
-    ctx: &mut NativeCodegenCtx<'a>,
+fn lower_anf_expr_cranelift(
+    expr: &crate::anf::AnfExpr,
+    ctx: &mut NativeCodegenCtx<'_>,
     builder: &mut FunctionBuilder<'_>,
+    module: &mut ObjectModule,
 ) -> LowerResult {
     use crate::anf::AnfExpr;
     use crate::core_ir::LiteralValue;
@@ -343,10 +459,20 @@ fn lower_anf_expr_cranelift<'a>(
                 LowerResult::Value(builder.ins().f64const(*f))
             }
             LiteralValue::Unit => LowerResult::Unit,
-            LiteralValue::Text(_) => {
-                // Text encoding requires data section support — deferred.
-                builder.ins().trap(TrapCode::user(1).unwrap());
-                LowerResult::Terminated
+            LiteralValue::Text(s) => {
+                let (idx, len) = ctx.data_layout.get(s.as_str());
+                if idx >= ctx.data_ids.len() {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    return LowerResult::Terminated;
+                }
+                let data_id = ctx.data_ids[idx];
+                let gv = module.declare_data_in_func(data_id, &mut builder.func);
+                let ptr = builder.ins().symbol_value(types::I64, gv);
+                // Pack: (len as i64) << 32 | ptr
+                let len_val = builder.ins().iconst(types::I64, len as i64);
+                let len_shifted = builder.ins().ishl_imm(len_val, 32);
+                let packed = builder.ins().bor(len_shifted, ptr);
+                LowerResult::Value(packed)
             }
         },
 
@@ -366,19 +492,19 @@ fn lower_anf_expr_cranelift<'a>(
                     fields.iter().map(|(f, _)| f.clone()).collect(),
                 );
             }
-            match lower_anf_expr_cranelift(value, ctx, builder) {
+            match lower_anf_expr_cranelift(value, ctx, builder, module) {
                 LowerResult::Value(val) => {
                     let ty = infer_cranelift_return_type(value)
                         .unwrap_or(cranelift_codegen::ir::types::I64);
                     ctx.bind(name.as_str(), val, ty);
-                    lower_anf_expr_cranelift(body, ctx, builder)
+                    lower_anf_expr_cranelift(body, ctx, builder, module)
                 }
-                LowerResult::Unit => lower_anf_expr_cranelift(body, ctx, builder),
+                LowerResult::Unit => lower_anf_expr_cranelift(body, ctx, builder, module),
                 LowerResult::Terminated => LowerResult::Terminated,
             }
         }
 
-        AnfExpr::Return(inner) => lower_anf_expr_cranelift(inner, ctx, builder),
+        AnfExpr::Return(inner) => lower_anf_expr_cranelift(inner, ctx, builder, module),
 
         AnfExpr::Call { func, args } => {
             match func.as_str() {
@@ -487,7 +613,7 @@ fn lower_anf_expr_cranelift<'a>(
             ctx.push_label(NativeLabelKind::LoopBreak, break_block);
             ctx.push_label(NativeLabelKind::LoopContinue, loop_block);
 
-            let body_result = lower_anf_expr_cranelift(body, ctx, builder);
+            let body_result = lower_anf_expr_cranelift(body, ctx, builder, module);
 
             ctx.pop_label(); // LoopContinue
             ctx.pop_label(); // LoopBreak
@@ -515,7 +641,7 @@ fn lower_anf_expr_cranelift<'a>(
                     return LowerResult::Terminated;
                 }
             };
-            match lower_anf_expr_cranelift(value, ctx, builder) {
+            match lower_anf_expr_cranelift(value, ctx, builder, module) {
                 LowerResult::Value(v)  => { builder.ins().jump(break_block, &[v]); }
                 LowerResult::Unit      => { builder.ins().jump(break_block, &[]); }
                 LowerResult::Terminated => {}
@@ -561,7 +687,7 @@ fn lower_anf_expr_cranelift<'a>(
             builder.seal_block(body_block);
             ctx.push_label(NativeLabelKind::LoopBreak, break_block);
             ctx.push_label(NativeLabelKind::LoopContinue, loop_block);
-            let while_body_result = lower_anf_expr_cranelift(body, ctx, builder);
+            let while_body_result = lower_anf_expr_cranelift(body, ctx, builder, module);
             ctx.pop_label(); // LoopContinue
             ctx.pop_label(); // LoopBreak
             if !matches!(while_body_result, LowerResult::Terminated) {
@@ -597,7 +723,7 @@ fn lower_anf_expr_cranelift<'a>(
 
             builder.switch_to_block(then_block);
             builder.seal_block(then_block);
-            match lower_anf_expr_cranelift(then_branch, ctx, builder) {
+            match lower_anf_expr_cranelift(then_branch, ctx, builder, module) {
                 LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
                 LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
                 LowerResult::Terminated => {}
@@ -605,7 +731,7 @@ fn lower_anf_expr_cranelift<'a>(
 
             builder.switch_to_block(else_block);
             builder.seal_block(else_block);
-            match lower_anf_expr_cranelift(else_branch, ctx, builder) {
+            match lower_anf_expr_cranelift(else_branch, ctx, builder, module) {
                 LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
                 LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
                 LowerResult::Terminated => {}
@@ -662,7 +788,7 @@ fn lower_anf_expr_cranelift<'a>(
                     builder.switch_to_block(arm_block);
                     builder.seal_block(arm_block);
                     // Lower arm body and jump to merge.
-                    match lower_anf_expr_cranelift(&arm.body, ctx, builder) {
+                    match lower_anf_expr_cranelift(&arm.body, ctx, builder, module) {
                         LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
                         LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
                         LowerResult::Terminated => {}
@@ -687,7 +813,7 @@ fn lower_anf_expr_cranelift<'a>(
                     // Emit arm body in arm_block.
                     builder.switch_to_block(arm_block);
                     builder.seal_block(arm_block);
-                    match lower_anf_expr_cranelift(&arm.body, ctx, builder) {
+                    match lower_anf_expr_cranelift(&arm.body, ctx, builder, module) {
                         LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
                         LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
                         LowerResult::Terminated => {}
@@ -706,7 +832,7 @@ fn lower_anf_expr_cranelift<'a>(
                     // Arm block.
                     builder.switch_to_block(arm_block);
                     builder.seal_block(arm_block);
-                    match lower_anf_expr_cranelift(&arm.body, ctx, builder) {
+                    match lower_anf_expr_cranelift(&arm.body, ctx, builder, module) {
                         LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
                         LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
                         LowerResult::Terminated => {}
@@ -741,7 +867,7 @@ fn lower_anf_expr_cranelift<'a>(
             // true branch: evaluate right
             builder.switch_to_block(true_block);
             builder.seal_block(true_block);
-            let right_val = match lower_anf_expr_cranelift(right, ctx, builder) {
+            let right_val = match lower_anf_expr_cranelift(right, ctx, builder, module) {
                 LowerResult::Value(v) => v,
                 _ => builder.ins().iconst(cranelift_codegen::ir::types::I64, 0),
             };
@@ -766,12 +892,12 @@ fn lower_anf_expr_cranelift<'a>(
             let last_idx = exprs.len() - 1;
             for expr in &exprs[..last_idx] {
                 // Lower each non-last expression; result is intentionally dropped.
-                match lower_anf_expr_cranelift(expr, ctx, builder) {
+                match lower_anf_expr_cranelift(expr, ctx, builder, module) {
                     LowerResult::Terminated => return LowerResult::Terminated,
                     _ => {}
                 }
             }
-            lower_anf_expr_cranelift(&exprs[last_idx], ctx, builder)
+            lower_anf_expr_cranelift(&exprs[last_idx], ctx, builder, module)
         }
 
         // ── RuntimeCheck ──────────────────────────────────────────────────
@@ -783,7 +909,7 @@ fn lower_anf_expr_cranelift<'a>(
                     return LowerResult::Terminated;
                 }
             };
-            let trap_block = builder.create_block();
+            let trap_block  = builder.create_block();
             let fallthrough = builder.create_block();
 
             // brif cond → trap_block (trap if cond non-zero), else fallthrough
@@ -823,7 +949,7 @@ fn lower_anf_expr_cranelift<'a>(
             // false branch: evaluate right
             builder.switch_to_block(false_block);
             builder.seal_block(false_block);
-            let right_val = match lower_anf_expr_cranelift(right, ctx, builder) {
+            let right_val = match lower_anf_expr_cranelift(right, ctx, builder, module) {
                 LowerResult::Value(v) => v,
                 _ => builder.ins().iconst(cranelift_codegen::ir::types::I64, 0),
             };
@@ -857,6 +983,8 @@ fn lower_binding(
     name: &str,
     expr: &crate::anf::AnfExpr,
     cumulative_offset: u64,
+    data_ids: &[DataId],
+    data_layout: &NativeDataLayout,
 ) -> Result<u64, CompileError> {
     // Infer return type from the expression before building the function.
     let ret_ty = infer_cranelift_return_type(expr);
@@ -879,8 +1007,8 @@ fn lower_binding(
         builder.switch_to_block(block);
         builder.seal_block(block);
 
-        let mut codegen_ctx = NativeCodegenCtx::new();
-        match lower_anf_expr_cranelift(expr, &mut codegen_ctx, &mut builder) {
+        let mut codegen_ctx = NativeCodegenCtx::new(data_ids, data_layout);
+        match lower_anf_expr_cranelift(expr, &mut codegen_ctx, &mut builder, module) {
             LowerResult::Value(val) => {
                 builder.ins().return_(&[val]);
             }
@@ -949,6 +1077,10 @@ pub fn emit_native_with_profile(
     let isa = build_isa()?;
     let mut module = build_object_module(isa)?;
 
+    // Pre-scan all bindings to build the data layout and detect EffectCall.
+    let data_layout = NativeDataLayout::for_bindings(&anf.bindings);
+    let data_ids = data_layout.define_all(&mut module)?;
+
     // Lower each binding and accumulate provenance.
     let mut provenance: BTreeMap<NodeRef, u64> = BTreeMap::new();
     let mut native_offsets: Vec<u64> = Vec::with_capacity(anf.bindings.len());
@@ -960,7 +1092,10 @@ pub fn emit_native_with_profile(
         native_offsets.push(cumulative_offset);
 
         // Lower the binding and get its compiled code size.
-        let code_size = lower_binding(&mut module, &binding.name, &binding.expr, cumulative_offset)?;
+        let code_size = lower_binding(
+            &mut module, &binding.name, &binding.expr, cumulative_offset,
+            &data_ids, &data_layout,
+        )?;
         cumulative_offset += code_size;
     }
 
