@@ -337,6 +337,7 @@ fn migration_output_can_carry_new_snapshot() {
                     applied_change_id: None,
                     created_at: 12345,
                     verification_report_hash: None,
+                    ..Default::default()
                 };
                 Ok(MigrationOutput {
                     new_snapshot: Some(snap),

@@ -413,6 +413,7 @@ mod tests {
             applied_change_id: None,
             created_at: 100,
             verification_report_hash: None,
+            ..Default::default()
         };
         let e2 = SnapshotEnvelope {
             id: make_id(2),
@@ -421,6 +422,7 @@ mod tests {
             applied_change_id: None,
             created_at: 200,
             verification_report_hash: None,
+            ..Default::default()
         };
 
         graph_store.save_snapshot(&e1).await.expect("save e1");
@@ -452,6 +454,7 @@ mod tests {
             applied_change_id: None,
             created_at: 0,
             verification_report_hash: None,
+            ..Default::default()
         };
         graph_store.save_snapshot(&e).await.expect("save");
 
@@ -501,6 +504,7 @@ mod tests {
             applied_change_id: None,
             created_at: 0,
             verification_report_hash: None,
+            ..Default::default()
         };
         graph_store.save_snapshot(&e).await.expect("save");
 
@@ -531,6 +535,7 @@ mod tests {
             applied_change_id: None,
             created_at: 100,
             verification_report_hash: None,
+            ..Default::default()
         };
         let e2 = SnapshotEnvelope {
             id: make_id(2),
@@ -539,6 +544,7 @@ mod tests {
             applied_change_id: None,
             created_at: 200,
             verification_report_hash: None,
+            ..Default::default()
         };
         graph_store.save_snapshot(&e1).await.expect("save e1");
         graph_store.save_snapshot(&e2).await.expect("save e2");
@@ -619,6 +625,7 @@ mod tests {
             applied_change_id: Some(cs_id),
             created_at: 0,
             verification_report_hash: None,
+            ..Default::default()
         };
         graph_store.save_snapshot(&e).await.expect("save");
 
@@ -652,6 +659,7 @@ mod tests {
             applied_change_id: Some(cs_id),
             created_at: 0,
             verification_report_hash: None,
+            ..Default::default()
         };
         graph_store.save_snapshot(&e).await.expect("save");
 
@@ -685,6 +693,7 @@ mod tests {
             applied_change_id: Some(cs_id),
             created_at: 0,
             verification_report_hash: None,
+            ..Default::default()
         };
         graph_store.save_snapshot(&e).await.expect("save");
 
@@ -751,6 +760,7 @@ mod tests {
             applied_change_id: Some(cs_id),
             created_at: 0,
             verification_report_hash: None,
+            ..Default::default()
         };
         graph_store.save_snapshot(&e).await.expect("save");
 
@@ -831,6 +841,7 @@ mod tests {
             applied_change_id: None,
             created_at: 100,
             verification_report_hash: None,
+            ..Default::default()
         };
         graph_store.save_snapshot(&e).await.expect("save");
 
@@ -868,6 +879,7 @@ mod tests {
             applied_change_id: None,
             created_at: 100,
             verification_report_hash: None,
+            ..Default::default()
         };
         graph_store.save_snapshot(&e).await.expect("save");
 
@@ -906,6 +918,7 @@ mod tests {
             applied_change_id: None,
             created_at: 100,
             verification_report_hash: None,
+            ..Default::default()
         };
         graph_store.save_snapshot(&e).await.expect("save");
 

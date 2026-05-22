@@ -326,6 +326,26 @@ where
     }
     let covering_id = ObjectId::from_bytes(&id_bytes);
 
+    // Preserve audit records from all collapsed snapshots.
+    // Deduplicate while preserving order (BTreeSet for determinism).
+    let mut audit_set: std::collections::BTreeSet<ObjectId> = std::collections::BTreeSet::new();
+    for snap in &range_snapshots {
+        for id in &snap.audit_record_ids {
+            audit_set.insert(*id);
+        }
+    }
+    let audit_record_ids: Vec<ObjectId> = audit_set.into_iter().collect();
+
+    // Preserve migration metadata from all collapsed snapshots.
+    let mut migration_set: std::collections::BTreeSet<ObjectId> =
+        std::collections::BTreeSet::new();
+    for snap in &range_snapshots {
+        for id in &snap.migration_metadata_ids {
+            migration_set.insert(*id);
+        }
+    }
+    let migration_metadata_ids: Vec<ObjectId> = migration_set.into_iter().collect();
+
     let covering = SnapshotEnvelope {
         id: covering_id,
         graph_root_hash: last.graph_root_hash,
@@ -333,6 +353,8 @@ where
         applied_change_id: last.applied_change_id,
         created_at: last.created_at,
         verification_report_hash: last.verification_report_hash,
+        audit_record_ids,
+        migration_metadata_ids,
     };
 
     // Save covering snapshot first, then remove originals.
@@ -452,5 +474,162 @@ mod gc_tests {
             payload.len() as u64,
             "bytes_freed must equal the payload size"
         );
+    }
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    use futures::executor::block_on;
+
+    use super::*;
+    use crate::backends::memory::MemoryObjectStore;
+    use crate::graph::{GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
+    use crate::object::ObjectId;
+
+    fn make_snapshot(seed: &[u8], ts: u64) -> SnapshotEnvelope {
+        let id = ObjectId::from_bytes(seed);
+        SnapshotEnvelope {
+            id,
+            graph_root_hash: id,
+            parent_id: None,
+            applied_change_id: None,
+            created_at: ts,
+            verification_report_hash: None,
+            audit_record_ids: Vec::new(),
+            migration_metadata_ids: Vec::new(),
+        }
+    }
+
+    fn make_store() -> ObjectBackedGraphStore<MemoryObjectStore> {
+        ObjectBackedGraphStore::new(MemoryObjectStore::new())
+    }
+
+    // Scenario: compact_snapshots produces a covering snapshot.
+    //   GIVEN two snapshots in the store
+    //   WHEN compact_snapshots(0..=1) is called
+    //   THEN one covering snapshot replaces both originals
+    #[test]
+    fn compact_produces_covering_snapshot() {
+        let store = make_store();
+        let s1 = make_snapshot(b"snap-1", 1_000);
+        let s2 = make_snapshot(b"snap-2", 2_000);
+
+        block_on(async {
+            store.save_snapshot(&s1).await.expect("save s1");
+            store.save_snapshot(&s2).await.expect("save s2");
+
+            let report = compact_snapshots(&store, 0, 1)
+                .await
+                .expect("compact must succeed");
+            assert_eq!(report.snapshots_merged, 2);
+
+            let list = store
+                .list_snapshots()
+                .await
+                .expect("list after compact");
+            assert_eq!(list.len(), 1, "originals must be replaced by covering snapshot");
+            assert_eq!(list[0].id, report.covering_snapshot_id);
+        });
+    }
+
+    // Scenario: compaction preserves audit_record_ids from collapsed snapshots.
+    //   GIVEN two snapshots each with audit_record_ids
+    //   WHEN compact_snapshots collapses them
+    //   THEN the covering snapshot holds the union of all audit_record_ids
+    #[test]
+    fn compact_preserves_audit_record_ids() {
+        let store = make_store();
+        let audit_a = ObjectId::from_bytes(b"approval-record-a");
+        let audit_b = ObjectId::from_bytes(b"approval-record-b");
+
+        let mut s1 = make_snapshot(b"snap-a", 1_000);
+        s1.audit_record_ids = vec![audit_a];
+        let mut s2 = make_snapshot(b"snap-b", 2_000);
+        s2.audit_record_ids = vec![audit_b];
+
+        block_on(async {
+            store.save_snapshot(&s1).await.expect("save s1");
+            store.save_snapshot(&s2).await.expect("save s2");
+
+            compact_snapshots(&store, 0, 1)
+                .await
+                .expect("compact must succeed");
+
+            let list = store.list_snapshots().await.expect("list");
+            assert_eq!(list.len(), 1, "must have one covering snapshot");
+            let covering = &list[0];
+            assert!(
+                covering.audit_record_ids.contains(&audit_a),
+                "covering snapshot must preserve audit_a"
+            );
+            assert!(
+                covering.audit_record_ids.contains(&audit_b),
+                "covering snapshot must preserve audit_b"
+            );
+        });
+    }
+
+    // Scenario: compaction preserves migration_metadata_ids from collapsed snapshots.
+    //   GIVEN two snapshots each with migration_metadata_ids
+    //   WHEN compact_snapshots collapses them
+    //   THEN the covering snapshot holds the union of all migration_metadata_ids
+    #[test]
+    fn compact_preserves_migration_metadata_ids() {
+        let store = make_store();
+        let mig_1 = ObjectId::from_bytes(b"migration-report-v1-v2");
+        let mig_2 = ObjectId::from_bytes(b"migration-report-v2-v3");
+
+        let mut s1 = make_snapshot(b"snap-m1", 1_000);
+        s1.migration_metadata_ids = vec![mig_1];
+        let mut s2 = make_snapshot(b"snap-m2", 2_000);
+        s2.migration_metadata_ids = vec![mig_2];
+
+        block_on(async {
+            store.save_snapshot(&s1).await.expect("save s1");
+            store.save_snapshot(&s2).await.expect("save s2");
+
+            compact_snapshots(&store, 0, 1)
+                .await
+                .expect("compact must succeed");
+
+            let list = store.list_snapshots().await.expect("list");
+            let covering = &list[0];
+            assert!(
+                covering.migration_metadata_ids.contains(&mig_1),
+                "must preserve mig_1"
+            );
+            assert!(
+                covering.migration_metadata_ids.contains(&mig_2),
+                "must preserve mig_2"
+            );
+        });
+    }
+
+    // TRIANGULATE: empty audit/migration ids on input → empty on covering snapshot.
+    #[test]
+    fn compact_with_empty_metadata_stays_empty() {
+        let store = make_store();
+        let s1 = make_snapshot(b"snap-empty-1", 1_000);
+        let s2 = make_snapshot(b"snap-empty-2", 2_000);
+
+        block_on(async {
+            store.save_snapshot(&s1).await.expect("save s1");
+            store.save_snapshot(&s2).await.expect("save s2");
+
+            compact_snapshots(&store, 0, 1)
+                .await
+                .expect("compact must succeed");
+
+            let list = store.list_snapshots().await.expect("list");
+            let covering = &list[0];
+            assert!(
+                covering.audit_record_ids.is_empty(),
+                "audit_record_ids must be empty when all inputs are empty"
+            );
+            assert!(
+                covering.migration_metadata_ids.is_empty(),
+                "migration_metadata_ids must be empty when all inputs are empty"
+            );
+        });
     }
 }

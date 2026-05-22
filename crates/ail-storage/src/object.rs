@@ -53,6 +53,16 @@ impl From<[u8; 32]> for ObjectId {
     }
 }
 
+impl Default for ObjectId {
+    /// Returns the zero `ObjectId` (all 32 bytes are `0x00`).
+    ///
+    /// The zero id is a sentinel for "not yet assigned"; a real BLAKE3 hash
+    /// will never be all-zeros in practice (cryptographically infeasible).
+    fn default() -> Self {
+        ObjectId([0u8; 32])
+    }
+}
+
 /// Raw bytes of a content-addressed object.
 ///
 /// No schema is assumed; the bytes are typically the CBOR encoding of a
