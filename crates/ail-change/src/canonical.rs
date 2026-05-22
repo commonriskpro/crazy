@@ -267,15 +267,35 @@ pub enum Precondition {
 /// `composition`, `blocks`, `verify`) are carried through so downstream
 /// consumers (verifier, policy engine) can inspect them without re-parsing
 /// the submitted text.
+///
+/// ## Schema versions (§Versioning y schema evolution)
+///
+/// The five schema version fields are carried through from `ParsedChangeSet`
+/// unchanged. They default to `None` when absent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalChangeSet {
     /// Canonicalized authorship and intent metadata.
     pub meta: CanonicalMeta,
     /// Snapshot identity against which this changeset was authored.
     pub base_snapshot_id: SnapshotId,
-    /// ACL language version (defaults to `"1.0"`).
+    /// ACL language syntax version (defaults to `"1.0"`).
     #[serde(default = "default_acl_version")]
     pub acl_version: String,
+    /// Op-schema version declared by this changeset (`op_schema <N>`).
+    #[serde(default)]
+    pub op_schema_version: Option<String>,
+    /// Semantic Graph schema version (`graph_schema <N>`).
+    #[serde(default)]
+    pub graph_schema_version: Option<String>,
+    /// Core IR schema version (`core_ir_schema <N>`).
+    #[serde(default)]
+    pub core_ir_schema_version: Option<String>,
+    /// Diagnostics format version (`diagnostics_schema <N>`).
+    #[serde(default)]
+    pub diagnostics_schema_version: Option<String>,
+    /// Verification report format version (`verification_schema <N>`).
+    #[serde(default)]
+    pub verification_schema_version: Option<String>,
     /// Preconditions evaluated before any op is applied.
     pub preconditions: Vec<Precondition>,
     /// Phase-ordered, hash-stamped operations.
@@ -307,6 +327,11 @@ impl Default for CanonicalChangeSet {
             },
             base_snapshot_id: SnapshotId(0),
             acl_version: default_acl_version(),
+            op_schema_version: None,
+            graph_schema_version: None,
+            core_ir_schema_version: None,
+            diagnostics_schema_version: None,
+            verification_schema_version: None,
             preconditions: Vec::new(),
             ops: Vec::new(),
             expect: None,
@@ -440,6 +465,11 @@ pub fn canonicalize(cs: ChangeSet) -> CanonicalChangeSet {
         },
         base_snapshot_id: cs.base_snapshot_id,
         acl_version: "1.0".to_string(),
+        op_schema_version: None,
+        graph_schema_version: None,
+        core_ir_schema_version: None,
+        diagnostics_schema_version: None,
+        verification_schema_version: None,
         preconditions: vec![],
         ops: canonical_ops,
         expect: None,
@@ -672,6 +702,11 @@ fn canonicalize_parsed_inner(pcs: ParsedChangeSet) -> CanonicalChangeSet {
         },
         base_snapshot_id: pcs.changeset.base_snapshot_id,
         acl_version: pcs.acl_version,
+        op_schema_version: pcs.op_schema_version,
+        graph_schema_version: pcs.graph_schema_version,
+        core_ir_schema_version: pcs.core_ir_schema_version,
+        diagnostics_schema_version: pcs.diagnostics_schema_version,
+        verification_schema_version: pcs.verification_schema_version,
         preconditions: pcs.preconditions,
         ops: canonical_ops,
         expect: pcs.expect,

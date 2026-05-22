@@ -266,7 +266,6 @@ fn make_parsed_op(kind: ChangeSetOp, verb: &str, args: &[(&str, &str)]) -> Parse
 }
 
 fn minimal_parsed_changeset(parsed_ops: Vec<ParsedOp>) -> ParsedChangeSet {
-    use ail_change::parser::{ApprovalRequirements, ChangeComposition, ExpectClaims};
     ParsedChangeSet {
         changeset: ChangeSet {
             meta: ChangeSetMeta {
@@ -277,14 +276,9 @@ fn minimal_parsed_changeset(parsed_ops: Vec<ParsedOp>) -> ParsedChangeSet {
             base_snapshot_id: SnapshotId(1),
             ops: parsed_ops.iter().map(|o| o.kind.clone()).collect(),
         },
-        preconditions: vec![],
         parsed_ops,
         acl_version: "1.0".to_string(),
-        expect: None,
-        approval: None,
-        composition: ChangeComposition::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     }
 }
 

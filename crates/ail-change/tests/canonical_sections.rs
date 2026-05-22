@@ -17,7 +17,6 @@ use ail_change::parser::{ChangeComposition, parse_changeset};
 fn minimal_parsed(
     parsed_ops: Vec<ail_change::parser::ParsedOp>,
 ) -> ail_change::parser::ParsedChangeSet {
-    use std::collections::BTreeMap;
     ail_change::parser::ParsedChangeSet {
         changeset: ChangeSet {
             meta: ChangeSetMeta {
@@ -28,14 +27,9 @@ fn minimal_parsed(
             base_snapshot_id: SnapshotId(1),
             ops: parsed_ops.iter().map(|o| o.kind.clone()).collect(),
         },
-        preconditions: vec![],
         parsed_ops,
         acl_version: "1.0".to_string(),
-        expect: None,
-        approval: None,
-        composition: ChangeComposition::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     }
 }
 
@@ -226,14 +220,9 @@ fn infer_boundary_is_marked_for_expansion() {
             base_snapshot_id: SnapshotId(0),
             ops: vec![ChangeSetOp::Infer],
         },
-        preconditions: vec![],
         parsed_ops: vec![parsed_op],
         acl_version: "1.0".to_string(),
-        expect: None,
-        approval: None,
-        composition: ChangeComposition::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     };
 
     let canonical = canonicalize_parsed(pcs);
@@ -278,14 +267,9 @@ fn infer_effects_is_marked_for_expansion() {
             base_snapshot_id: SnapshotId(0),
             ops: vec![ChangeSetOp::Infer],
         },
-        preconditions: vec![],
         parsed_ops: vec![parsed_op],
         acl_version: "1.0".to_string(),
-        expect: None,
-        approval: None,
-        composition: ChangeComposition::default(),
-        blocks: vec![],
-        verify: vec![],
+        ..Default::default()
     };
 
     let canonical = canonicalize_parsed(pcs);

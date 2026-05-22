@@ -157,6 +157,12 @@ use crate::{
 /// `parsed_ops` mirrors `changeset.ops` but carries the full verb and
 /// kv args; use these for canonicalization and op-schema validation.
 /// `changeset.ops` is preserved for backward compatibility with apply tests.
+///
+/// ## Schema versions (from doc §Versioning y schema evolution)
+///
+/// Schemas evolve independently; each field tracks the declared version for
+/// the corresponding schema component.  All fields default to `None` when
+/// the corresponding directive is absent from the metadata section.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedChangeSet {
     /// The typed changeset (ops + metadata + base snapshot).
@@ -165,8 +171,18 @@ pub struct ParsedChangeSet {
     pub preconditions: Vec<Precondition>,
     /// Enriched ops with full verb and kv args (parallel to `changeset.ops`).
     pub parsed_ops: Vec<ParsedOp>,
-    /// ACL version declared by the changeset (defaults to `"1.0"`).
+    /// ACL language syntax version (defaults to `"1.0"`).
     pub acl_version: String,
+    /// Op-schema version declared by this changeset (`op_schema <N>`).
+    pub op_schema_version: Option<String>,
+    /// Semantic Graph schema version (`graph_schema <N>`).
+    pub graph_schema_version: Option<String>,
+    /// Core IR schema version (`core_ir_schema <N>`).
+    pub core_ir_schema_version: Option<String>,
+    /// Diagnostics format version (`diagnostics_schema <N>`).
+    pub diagnostics_schema_version: Option<String>,
+    /// Verification report format version (`verification_schema <N>`).
+    pub verification_schema_version: Option<String>,
     /// Claims about the expected diff (from `expect` section).
     pub expect: Option<ExpectClaims>,
     /// Approval requirements (from `approval` section).
@@ -177,6 +193,35 @@ pub struct ParsedChangeSet {
     pub blocks: Vec<ParsedBlock>,
     /// Verify directives: short form lines and block form lines combined.
     pub verify: Vec<String>,
+}
+
+impl Default for ParsedChangeSet {
+    fn default() -> Self {
+        Self {
+            changeset: ChangeSet {
+                meta: ChangeSetMeta {
+                    author: String::new(),
+                    description: String::new(),
+                    timestamp: Timestamp(0),
+                },
+                base_snapshot_id: SnapshotId(0),
+                ops: Vec::new(),
+            },
+            preconditions: Vec::new(),
+            parsed_ops: Vec::new(),
+            acl_version: "1.0".to_string(),
+            op_schema_version: None,
+            graph_schema_version: None,
+            core_ir_schema_version: None,
+            diagnostics_schema_version: None,
+            verification_schema_version: None,
+            expect: None,
+            approval: None,
+            composition: ChangeComposition::default(),
+            blocks: Vec::new(),
+            verify: Vec::new(),
+        }
+    }
 }
 
 // ── Section state ─────────────────────────────────────────────────────────
@@ -213,6 +258,11 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
     let mut description: Option<String> = None;
     let mut base: Option<SnapshotId> = None;
     let mut acl_version: String = "1.0".to_string();
+    let mut op_schema_version: Option<String> = None;
+    let mut graph_schema_version: Option<String> = None;
+    let mut core_ir_schema_version: Option<String> = None;
+    let mut diagnostics_schema_version: Option<String> = None;
+    let mut verification_schema_version: Option<String> = None;
     let mut ops: Vec<ChangeSetOp> = Vec::new();
     let mut parsed_ops: Vec<ParsedOp> = Vec::new();
     let mut preconditions: Vec<Precondition> = Vec::new();
@@ -375,6 +425,11 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
                     &mut description,
                     &mut base,
                     &mut acl_version,
+                    &mut op_schema_version,
+                    &mut graph_schema_version,
+                    &mut core_ir_schema_version,
+                    &mut diagnostics_schema_version,
+                    &mut verification_schema_version,
                     &mut composition,
                 )?;
             }
@@ -391,6 +446,11 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
                     &mut description,
                     &mut base,
                     &mut acl_version,
+                    &mut op_schema_version,
+                    &mut graph_schema_version,
+                    &mut core_ir_schema_version,
+                    &mut diagnostics_schema_version,
+                    &mut verification_schema_version,
                     &mut composition,
                     &section,
                 )?;
@@ -447,6 +507,11 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
         preconditions,
         parsed_ops,
         acl_version,
+        op_schema_version,
+        graph_schema_version,
+        core_ir_schema_version,
+        diagnostics_schema_version,
+        verification_schema_version,
         expect: if expect_claims.is_empty() {
             None
         } else {
@@ -543,7 +608,7 @@ fn parse_block_header(rest: &str, line_num: usize) -> Result<ParsedBlock, String
 
 // ── parse_metadata_line ───────────────────────────────────────────────────
 
-/// Parse a directive that supplies metadata (author, description, base, intent).
+/// Parse a directive that supplies metadata (author, description, base, intent, schema versions).
 ///
 /// Called when section is `TopLevel` or `Metadata`.
 #[allow(clippy::too_many_arguments)]
@@ -554,6 +619,11 @@ fn parse_metadata_line(
     description: &mut Option<String>,
     base: &mut Option<SnapshotId>,
     acl_version: &mut String,
+    op_schema_version: &mut Option<String>,
+    graph_schema_version: &mut Option<String>,
+    core_ir_schema_version: &mut Option<String>,
+    diagnostics_schema_version: &mut Option<String>,
+    verification_schema_version: &mut Option<String>,
     composition: &mut ChangeComposition,
 ) -> Result<(), String> {
     if let Some(v) = line.strip_prefix("author ") {
@@ -571,6 +641,20 @@ fn parse_metadata_line(
             *acl_version = ver.to_string();
         }
         // Unknown language ids are silently ignored.
+    } else if let Some(v) = line.strip_prefix("acl_version ") {
+        // `acl_version acl/1.0` or `acl_version 1.0` → extract version.
+        let v = v.trim();
+        *acl_version = v.strip_prefix("acl/").unwrap_or(v).to_string();
+    } else if let Some(v) = line.strip_prefix("op_schema ") {
+        *op_schema_version = Some(v.trim().to_string());
+    } else if let Some(v) = line.strip_prefix("graph_schema ") {
+        *graph_schema_version = Some(v.trim().to_string());
+    } else if let Some(v) = line.strip_prefix("core_ir_schema ") {
+        *core_ir_schema_version = Some(v.trim().to_string());
+    } else if let Some(v) = line.strip_prefix("diagnostics_schema ") {
+        *diagnostics_schema_version = Some(v.trim().to_string());
+    } else if let Some(v) = line.strip_prefix("verification_schema ") {
+        *verification_schema_version = Some(v.trim().to_string());
     } else if let Some(v) = line.strip_prefix("depends_on ") {
         composition.depends_on.push(v.trim().to_string());
     } else if let Some(v) = line.strip_prefix("supersedes ") {
@@ -615,6 +699,11 @@ fn parse_op_or_directive(
     description: &mut Option<String>,
     base: &mut Option<SnapshotId>,
     acl_version: &mut String,
+    op_schema_version: &mut Option<String>,
+    graph_schema_version: &mut Option<String>,
+    core_ir_schema_version: &mut Option<String>,
+    diagnostics_schema_version: &mut Option<String>,
+    verification_schema_version: &mut Option<String>,
     composition: &mut ChangeComposition,
     section: &Section,
 ) -> Result<(), String> {
@@ -643,6 +732,11 @@ fn parse_op_or_directive(
             description,
             base,
             acl_version,
+            op_schema_version,
+            graph_schema_version,
+            core_ir_schema_version,
+            diagnostics_schema_version,
+            verification_schema_version,
             composition,
         )?;
     } else {
@@ -1421,6 +1515,71 @@ end
             panic!("expected AssertExists, got {:?}", result.preconditions[0]);
         };
         assert_eq!(ae.node_id, NodeRef(42));
+    }
+
+    // ── Gap 2: Schema versioning fields ───────────────────────────────────
+
+    // Scenario: all five schema version directives in metadata section are parsed.
+    //   GIVEN a metadata section with all five schema version fields
+    //   WHEN parsed
+    //   THEN ParsedChangeSet carries correct versions for each field
+    #[test]
+    fn parse_all_schema_version_fields() {
+        let src = "\
+change test_versions
+author Agent
+base 0
+metadata
+  acl_version acl/1.0
+  op_schema 1
+  graph_schema 3
+  core_ir_schema 2
+  diagnostics_schema 1
+  verification_schema 1
+end
+end
+";
+        let result = parse_changeset(src).expect("schema versions must parse");
+        assert_eq!(result.acl_version, "1.0");
+        assert_eq!(result.op_schema_version.as_deref(), Some("1"));
+        assert_eq!(result.graph_schema_version.as_deref(), Some("3"));
+        assert_eq!(result.core_ir_schema_version.as_deref(), Some("2"));
+        assert_eq!(result.diagnostics_schema_version.as_deref(), Some("1"));
+        assert_eq!(result.verification_schema_version.as_deref(), Some("1"));
+    }
+
+    // Scenario: schema version fields default to None when absent.
+    #[test]
+    fn parse_schema_versions_default_to_none_when_absent() {
+        let src = "change x\nauthor A\nbase 0\nend\n";
+        let result = parse_changeset(src).expect("must parse");
+        assert!(result.op_schema_version.is_none());
+        assert!(result.graph_schema_version.is_none());
+        assert!(result.core_ir_schema_version.is_none());
+        assert!(result.diagnostics_schema_version.is_none());
+        assert!(result.verification_schema_version.is_none());
+    }
+
+    // TRIANGULATE: schema versions are carried through canonicalize_parsed.
+    #[test]
+    fn schema_versions_carried_through_canonicalize() {
+        use crate::canonical::canonicalize_parsed;
+
+        let src = "\
+change test
+author tester
+base 0
+metadata
+  graph_schema 5
+  core_ir_schema 3
+end
+end
+";
+        let parsed = parse_changeset(src).expect("must parse");
+        let canonical = canonicalize_parsed(parsed);
+        assert_eq!(canonical.graph_schema_version.as_deref(), Some("5"));
+        assert_eq!(canonical.core_ir_schema_version.as_deref(), Some("3"));
+        assert!(canonical.op_schema_version.is_none());
     }
 
     // Scenario: identity changeset (no ops) parses successfully.
