@@ -43,9 +43,9 @@
 use ail_core::semantic_graph::EdgeKind;
 use ail_core::semantic_graph::{
     AssociatedTypeBinding, CapabilityReqs, ConstraintSet, ContractClauses, EffectRow,
-    GenericParamDecl, GenericParamKind, GraphEdge, GraphNode, InferredFact, InterfaceImplMeta,
-    NodeKind, NodeRef, ParamDecl, RefinementRef, RefinementStatus, RuntimeCheckMeta, SemanticGraph,
-    TypeArgBinding, TypeFacts,
+    GenericParamDecl, GenericParamKind, GraphEdge, GraphNode, HandlerMeta, InferredFact,
+    InterfaceImplMeta, NodeKind, NodeRef, ParamDecl, RefinementRef, RefinementStatus,
+    RuntimeCheckMeta, SemanticGraph, TypeArgBinding, TypeFacts,
 };
 use ail_verify::report::VerificationState;
 use ail_verify::type_checker::{
@@ -1944,5 +1944,140 @@ fn function_with_no_inferred_facts_has_no_boundary_inference_entry() {
     assert!(
         !has_entry,
         "function with no inferred_facts must not have boundary-inference entry"
+    );
+}
+
+// ── Task F1: Combined integration scenario ────────────────────────────────
+//
+// Builds a SemanticGraph with all structural additions from ola3-core-ir-types:
+//   - NodeKind::Interface node ("PaymentGateway")
+//   - Function with EffectParam generic + effect_row + params + return_type + boundary inferred fact
+//   - Type node with RefinementRef (Proven/true) + PatchField<Text> return type
+//   - Handler node (Function) with HandlerMeta
+//
+// Asserts that TypeChecker::check() produces entries covering refinement,
+// boundary-materialization, generic-param-kind, patchfield, and boundary-inference
+// claims, all with the expected states.
+
+#[test]
+fn combined_scenario_all_structural_additions_produce_expected_entries() {
+    use ail_verify::type_checker::{E_BOUNDARY_INFERENCE_MISMATCH, E_PATCHFIELD_EMPTY_INNER};
+
+    // Node 0 — Interface node: no type-check entries expected (not Function/Type).
+    let interface_node = GraphNode::new(NodeRef(0), NodeKind::Interface, "PaymentGateway");
+
+    // Node 1 — Function with EffectParam generic, effect_row, params, return_type,
+    //           and a matching boundary inferred fact.
+    let mut fn_generic = GraphNode::new(NodeRef(1), NodeKind::Function, "process_payment");
+    fn_generic.generic_params = Some(vec![GenericParamDecl {
+        name: "db".into(),
+        kind: GenericParamKind::EffectParam,
+        required_constraints: vec![],
+    }]);
+    fn_generic.effect_row = Some(EffectRow {
+        effects: vec!["db".into()],
+    });
+    fn_generic.params = Some(vec![ParamDecl {
+        name: "order_id".into(),
+        ty: "OrderId".into(),
+    }]);
+    fn_generic.return_type = Some("Result<OrderId>".into());
+    fn_generic.inferred = vec![InferredFact {
+        kind: "boundary".into(),
+        value: "return:Result<OrderId>".into(),
+    }];
+
+    // Node 2 — Type with Proven refinement (predicate "true") and PatchField<Text> return.
+    let mut patch_type = GraphNode::new(NodeRef(2), NodeKind::Type, "PatchOrderDetails");
+    patch_type.refinement_ref = Some(RefinementRef {
+        base_type: "Text".into(),
+        predicate: "true".into(),
+        status: RefinementStatus::Proven,
+        erased: false,
+    });
+    patch_type.return_type = Some("PatchField<Text>".into());
+
+    // Node 3 — Function acting as a capability handler with HandlerMeta.
+    let mut handler = GraphNode::new(NodeRef(3), NodeKind::Function, "StripeHandler");
+    handler.handler_meta = Some(HandlerMeta {
+        handled_caps: vec!["database.read".into()],
+        internal_effects: vec![],
+        satisfies_contract: None,
+    });
+
+    let graph = SemanticGraph {
+        nodes: vec![interface_node, fn_generic, patch_type, handler],
+        edges: vec![],
+    };
+
+    let report = TypeChecker::check(&graph);
+
+    // 1. generic-param-kind: EffectParam "db" is in the effect_row → Proven.
+    let generic_proven = report.entries.iter().any(|e| {
+        e.claim == "generic-param-kind" && e.state == VerificationState::Proven
+    });
+    assert!(
+        generic_proven,
+        "EffectParam 'db' in effect_row must produce Proven generic-param-kind entry"
+    );
+
+    // 2. boundary-materialization: process_payment has params + return_type → Proven.
+    let boundary_mat_proven = report.entries.iter().any(|e| {
+        e.claim == "boundary-materialization" && e.state == VerificationState::Proven
+    });
+    assert!(
+        boundary_mat_proven,
+        "function with params + return_type must produce Proven boundary-materialization entry"
+    );
+
+    // 3. refinement: PatchOrderDetails has predicate "true" + status Proven → Proven.
+    let refinement_proven = report.entries.iter().any(|e| {
+        e.claim == "refinement" && e.state == VerificationState::Proven
+    });
+    assert!(
+        refinement_proven,
+        "refinement with status Proven and predicate 'true' must produce Proven refinement entry"
+    );
+
+    // 4. patchfield: PatchField<Text> inner type is non-empty → Proven.
+    let patchfield_proven = report.entries.iter().any(|e| {
+        e.claim == "patchfield" && e.state == VerificationState::Proven
+    });
+    assert!(
+        patchfield_proven,
+        "PatchField<Text> must produce Proven patchfield entry"
+    );
+    let patchfield_failed = report.entries.iter().any(|e| {
+        e.claim == "patchfield"
+            && e.state == VerificationState::Failed
+            && e.evidence
+                .as_deref()
+                .map(|ev| ev.contains(E_PATCHFIELD_EMPTY_INNER))
+                .unwrap_or(false)
+    });
+    assert!(
+        !patchfield_failed,
+        "PatchField<Text> must not produce E_PATCHFIELD_EMPTY_INNER"
+    );
+
+    // 5. boundary-inference: inferred "return:Result<OrderId>" matches declared return_type → Proven.
+    let bi_proven = report.entries.iter().any(|e| {
+        e.claim == "boundary-inference" && e.state == VerificationState::Proven
+    });
+    assert!(
+        bi_proven,
+        "matching boundary inferred fact must produce Proven boundary-inference entry"
+    );
+    let bi_failed = report.entries.iter().any(|e| {
+        e.claim == "boundary-inference"
+            && e.state == VerificationState::Failed
+            && e.evidence
+                .as_deref()
+                .map(|ev| ev.contains(E_BOUNDARY_INFERENCE_MISMATCH))
+                .unwrap_or(false)
+    });
+    assert!(
+        !bi_failed,
+        "matching boundary inference must not produce E_BOUNDARY_INFERENCE_MISMATCH"
     );
 }
