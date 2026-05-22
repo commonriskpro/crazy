@@ -380,7 +380,10 @@ mod tests {
     }
 
     fn proven_report() -> VerificationReport {
-        VerificationReport { entries: vec![], ..Default::default() }
+        VerificationReport {
+            entries: vec![],
+            ..Default::default()
+        }
     }
 
     fn one_node_graph() -> SemanticGraph {

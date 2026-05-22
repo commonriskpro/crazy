@@ -3,12 +3,16 @@ name    = "ail-context"
 version.workspace = true
 edition.workspace = true
 
+[features]
+otel = ["dep:tracing"]
+
 [dependencies]
 ail-core    = { workspace = true }
 ail-storage = { workspace = true }
 blake3      = { workspace = true }
 ciborium    = { workspace = true }
 serde       = { workspace = true }
+tracing     = { workspace = true, optional = true }
 
 [dev-dependencies]
 ail-testkit = { workspace = true }

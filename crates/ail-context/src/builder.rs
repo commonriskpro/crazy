@@ -50,6 +50,10 @@ impl ResponseBuilder {
     /// - `ContextError::NodeNotFound`  — node-scoped query target absent.
     /// - `ContextError::Codec`         — CBOR encode failure (should not
     ///   happen with well-formed graph nodes).
+    #[cfg_attr(
+        feature = "otel",
+        tracing::instrument(skip_all, name = "context.response_builder.build")
+    )]
     pub fn build(
         query: &ContextQuery,
         graph: &SemanticGraph,

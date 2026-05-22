@@ -181,6 +181,10 @@ pub fn compute_node_hashes(graph: &SemanticGraph) -> Result<NodeHashes, CompileE
 /// - `CompileError::RejectedReport` — report not accepted.
 /// - `CompileError::InvalidGraph` / `CompileError::MissingNode` — validation failure.
 /// - `CompileError::EncodingError` — CBOR serialization failure.
+#[cfg_attr(
+    feature = "otel",
+    tracing::instrument(skip_all, name = "compiler.compile_incremental")
+)]
 pub fn compile_incremental(
     graph: &SemanticGraph,
     report: &VerificationReport,
@@ -329,7 +333,10 @@ mod tests {
     // ── Helpers ───────────────────────────────────────────────────────────
 
     fn proven_report() -> VerificationReport {
-        VerificationReport { entries: vec![], ..Default::default() }
+        VerificationReport {
+            entries: vec![],
+            ..Default::default()
+        }
     }
 
     fn node(id: u32) -> GraphNode {
