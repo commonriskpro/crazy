@@ -63,6 +63,8 @@ allow = [
     "Zlib",
     "Unicode-DFS-2016",
     "Unicode-3.0",
+    # NCSA: used by libfuzzer-sys (LLVM fuzzer bindings)
+    "NCSA",
 ]
 
 [bans]
