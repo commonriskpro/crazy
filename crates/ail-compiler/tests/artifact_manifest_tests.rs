@@ -15,6 +15,8 @@ use ail_compiler::{
     emit_wasm, emit_native,
     lower::{lower_to_anf, lower_to_core_ir},
 };
+#[allow(unused_imports)]
+use ciborium;
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_verify::report::VerificationReport;
 
@@ -145,6 +147,115 @@ fn artifact_manifest_cbor_round_trip() {
     ciborium::ser::into_writer(&manifest, &mut buf).expect("encode");
     let decoded: ArtifactManifest = ciborium::de::from_reader(buf.as_slice()).expect("decode");
     assert_eq!(manifest, decoded, "ArtifactManifest must round-trip through CBOR");
+}
+
+// ── G32 Round 2: artifact_manifest_hash and sidecar emission ─────────────
+
+// RED → GREEN: emit_wasm must compute artifact_manifest_hash and store it
+// in hash_chain.artifact_manifest_hash (currently always None).
+#[test]
+fn emit_wasm_sets_artifact_manifest_hash() {
+    let anf = anf_for_n(2);
+    let artifact = emit_wasm(&anf).expect("emit_wasm");
+    assert!(
+        artifact.hash_chain.artifact_manifest_hash.is_some(),
+        "artifact_manifest_hash must be Some after emit_wasm"
+    );
+}
+
+// RED → GREEN: emit_native must compute artifact_manifest_hash.
+#[test]
+fn emit_native_sets_artifact_manifest_hash() {
+    let anf = anf_for_n(2);
+    let artifact = emit_native(&anf).expect("emit_native");
+    assert!(
+        artifact.hash_chain.artifact_manifest_hash.is_some(),
+        "artifact_manifest_hash must be Some after emit_native"
+    );
+}
+
+// RED → GREEN: WasmArtifact must carry the ArtifactManifest struct directly
+// so callers can emit it as program.artifact.json without rebuilding it.
+#[test]
+fn wasm_artifact_has_artifact_manifest_field() {
+    let anf = anf_for_n(2);
+    let artifact = emit_wasm(&anf).expect("emit_wasm");
+    // Access the new field — will fail to compile if it doesn't exist.
+    assert_eq!(artifact.artifact_manifest.profile, "unspecified");
+    assert!(
+        artifact.artifact_manifest.wasm_hash.is_some(),
+        "artifact_manifest.wasm_hash must be populated by emit_wasm"
+    );
+}
+
+// RED → GREEN: NativeArtifact must carry the ArtifactManifest struct.
+#[test]
+fn native_artifact_has_artifact_manifest_field() {
+    let anf = anf_for_n(2);
+    let artifact = emit_native(&anf).expect("emit_native");
+    assert_eq!(artifact.artifact_manifest.profile, "unspecified");
+    assert!(
+        artifact.artifact_manifest.native_hash.is_some(),
+        "artifact_manifest.native_hash must be populated by emit_native"
+    );
+}
+
+// RED → GREEN: WasmArtifact must include serialized JSON sidecars.
+// source_map_json is the content of program.source_map.json.
+#[test]
+fn emit_wasm_source_map_json_is_non_empty() {
+    let anf = anf_for_n(2);
+    let artifact = emit_wasm(&anf).expect("emit_wasm");
+    assert!(
+        !artifact.source_map_json.is_empty(),
+        "source_map_json must be non-empty after emit_wasm"
+    );
+}
+
+// RED → GREEN: artifact_manifest_json is the content of program.artifact.json.
+#[test]
+fn emit_wasm_artifact_manifest_json_is_non_empty() {
+    let anf = anf_for_n(2);
+    let artifact = emit_wasm(&anf).expect("emit_wasm");
+    assert!(
+        !artifact.artifact_manifest_json.is_empty(),
+        "artifact_manifest_json must be non-empty after emit_wasm"
+    );
+}
+
+// TRIANGULATE: artifact_manifest_json deserializes back to ArtifactManifest.
+#[test]
+fn emit_wasm_artifact_manifest_json_is_valid_json() {
+    let anf = anf_for_n(2);
+    let artifact = emit_wasm(&anf).expect("emit_wasm");
+    let decoded: ArtifactManifest =
+        serde_json::from_slice(&artifact.artifact_manifest_json)
+            .expect("artifact_manifest_json must deserialize to ArtifactManifest");
+    assert_eq!(decoded.profile, artifact.artifact_manifest.profile);
+    assert_eq!(decoded.wasm_hash, artifact.artifact_manifest.wasm_hash);
+}
+
+// RED → GREEN: source_map_json from emit_native is also non-empty.
+#[test]
+fn emit_native_source_map_json_is_non_empty() {
+    let anf = anf_for_n(2);
+    let artifact = emit_native(&anf).expect("emit_native");
+    assert!(
+        !artifact.source_map_json.is_empty(),
+        "source_map_json must be non-empty after emit_native"
+    );
+}
+
+// TRIANGULATE: different inputs produce different artifact_manifest_hash.
+#[test]
+fn different_inputs_produce_different_artifact_manifest_hashes() {
+    let a1 = emit_wasm(&anf_for_n(1)).expect("emit_wasm 1");
+    let a2 = emit_wasm(&anf_for_n(2)).expect("emit_wasm 2");
+    assert_ne!(
+        a1.hash_chain.artifact_manifest_hash,
+        a2.hash_chain.artifact_manifest_hash,
+        "different AnfIr inputs must produce different artifact_manifest_hashes"
+    );
 }
 
 // ── ArtifactManifest from pipeline artifacts ──────────────────────────────

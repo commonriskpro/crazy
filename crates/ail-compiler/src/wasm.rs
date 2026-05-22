@@ -48,6 +48,7 @@ use ail_core::semantic_graph::NodeRef;
 use wasm_encoder::{CodeSection, Function, FunctionSection, Instruction, Module, TypeSection, ValType};
 
 use crate::anf::{AnfExpr, AnfIr, SourceMap, SourceMapEntry};
+use crate::artifact_manifest::ArtifactManifest;
 use crate::core_ir::{LiteralValue, StageHashes};
 use crate::error::CompileError;
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
@@ -77,7 +78,22 @@ pub struct WasmArtifact {
     /// Hash chain extended through the WASM stage.
     /// `hash_chain.wasm_hash` is `Some(...)` after `emit_wasm` completes.
     /// `hash_chain.source_map_hash` is `Some(...)` after `emit_wasm` completes.
+    /// `hash_chain.artifact_manifest_hash` is `Some(...)` after `emit_wasm`.
     pub hash_chain: StageHashes,
+    /// Profile-bound artifact manifest for this WASM artifact.
+    ///
+    /// Can be serialized as `program.artifact.json` by callers.
+    /// Includes the full hash chain and compiler version.
+    pub artifact_manifest: ArtifactManifest,
+    /// JSON-serialized `SourceMap` — content for `program.source_map.json`.
+    ///
+    /// Callers write this to disk as the source-map sidecar for debugging,
+    /// profiling, and runtime error mapping.
+    pub source_map_json: Vec<u8>,
+    /// JSON-serialized `ArtifactManifest` — content for `program.artifact.json`.
+    ///
+    /// Callers write this to disk as the artifact metadata sidecar.
+    pub artifact_manifest_json: Vec<u8>,
 }
 
 // ── build_type_section ────────────────────────────────────────────────────
@@ -569,11 +585,46 @@ pub fn emit_wasm(anf: &AnfIr) -> Result<WasmArtifact, CompileError> {
     hash_chain.wasm_hash = Some(wasm_hash);
     hash_chain.source_map_hash = Some(source_map_hash);
 
+    // Build ArtifactManifest from the complete hash chain.
+    //
+    // `profile` defaults to "unspecified" — the pipeline does not yet carry a
+    // target_profile input.  When profile threading is added, replace this.
+    // `capabilities_manifest_hash` (listed in compiler.md §Profile-bound
+    // artifacts) is not yet wired through; it will be added when the
+    // capability manifest emission is wired into the pipeline.
+    let artifact_manifest = ArtifactManifest {
+        profile: "unspecified".to_string(),
+        compiler_version: env!("CARGO_PKG_VERSION").to_string(),
+        graph_snapshot_hash: hash_chain.graph_snapshot_hash,
+        verification_report_hash: hash_chain.verification_report_hash,
+        core_ir_hash: hash_chain.core_ir_hash,
+        anf_ir_hash,
+        wasm_hash: Some(wasm_hash),
+        native_hash: None,
+        source_map_hash: Some(source_map_hash),
+    };
+
+    // Seal: artifact_manifest_hash = blake3(manifest_cbor_bytes).
+    let manifest_cbor = stable_cbor_bytes(&artifact_manifest)?;
+    let artifact_manifest_hash = hash_with_parent(&[], &manifest_cbor);
+    hash_chain.artifact_manifest_hash = Some(artifact_manifest_hash);
+
+    // Serialize JSON sidecars.
+    // `program.source_map.json` — semantic source map for debugging/profiling.
+    let source_map_json = serde_json::to_vec(&source_map)
+        .map_err(|e| CompileError::EncodingError(format!("source_map JSON encode: {e}")))?;
+    // `program.artifact.json` — profile-bound artifact manifest.
+    let artifact_manifest_json = serde_json::to_vec(&artifact_manifest)
+        .map_err(|e| CompileError::EncodingError(format!("artifact_manifest JSON encode: {e}")))?;
+
     Ok(WasmArtifact {
         wasm,
         source_map,
         provenance,
         hash_chain,
+        artifact_manifest,
+        source_map_json,
+        artifact_manifest_json,
     })
 }
 

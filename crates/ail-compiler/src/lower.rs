@@ -20,10 +20,15 @@
 // All collections are `Vec` / `BTreeMap` — never `HashMap`.
 // `stable_cbor_bytes` + BLAKE3 gives byte-identical output across runs.
 
-use ail_core::semantic_graph::{GraphValidationError, NodeKind, SemanticGraph};
+use std::collections::BTreeMap;
+
+use ail_core::semantic_graph::{
+    BlockRef, ContractRef, EffectRef, GraphValidationError, NodeKind, NodeRef, ProofObligationRef,
+    RuntimeCheckRef, SemanticGraph,
+};
 use ail_verify::report::{VerificationReport, VerificationState};
 
-use crate::anf::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, SourceMap};
+use crate::anf::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, SourceMap, SourceMapEntry};
 use crate::core_ir::{
     CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, StageHashes,
 };
@@ -501,6 +506,151 @@ pub fn lower_to_core_ir(
     })
 }
 
+// ── Semantic provenance extraction ───────────────────────────────────────
+
+/// Node-level provenance data extracted from a `GraphNode` for source-map
+/// enrichment.  All fields are `Option` because graph nodes are not required
+/// to carry this metadata.
+struct NodeProvenance {
+    /// From `GraphNode.provenance.change_id` — the `ChangeSet` that last
+    /// created or modified this node.
+    change_set: Option<String>,
+    /// Derived block identity: `Some(format!("block.{name}"))` for
+    /// `Module` / `Boundary` nodes; `None` for all other kinds.
+    block_ref: Option<String>,
+    /// Derived contract ref: `Some(format!("contract.{name}"))` when the
+    /// node has `contract_clauses`; `None` otherwise.
+    contract_ref: Option<String>,
+    /// First declared effect from `GraphNode.effect_row.effects`, if any.
+    effect_ref: Option<String>,
+    /// Content hash of the first `RuntimeCheckMeta` in
+    /// `GraphNode.runtime_checks`, if any.
+    runtime_check_ref: Option<String>,
+}
+
+/// Build a `NodeRef → NodeProvenance` lookup from a `SemanticGraph`.
+///
+/// Used by `lower_to_anf_with_graph` to enrich `SourceMapEntry` fields
+/// without changing the `lower_to_anf` public API.
+fn extract_provenance_lookup(graph: &SemanticGraph) -> BTreeMap<NodeRef, NodeProvenance> {
+    graph
+        .nodes
+        .iter()
+        .map(|gn| {
+            let prov = NodeProvenance {
+                change_set: gn.provenance.as_ref().map(|p| p.change_id.clone()),
+                block_ref: match gn.kind {
+                    NodeKind::Module | NodeKind::Boundary => {
+                        Some(format!("block.{}", gn.name))
+                    }
+                    _ => None,
+                },
+                contract_ref: gn
+                    .contract_clauses
+                    .as_ref()
+                    .map(|_| format!("contract.{}", gn.name)),
+                effect_ref: gn
+                    .effect_row
+                    .as_ref()
+                    .and_then(|er| er.effects.first().cloned()),
+                runtime_check_ref: gn
+                    .runtime_checks
+                    .as_ref()
+                    .and_then(|rcs| rcs.first())
+                    .map(|rc| rc.hash.clone()),
+            };
+            (gn.id, prov)
+        })
+        .collect()
+}
+
+/// Build an enriched `SourceMap` from ANF bindings and a provenance lookup.
+///
+/// Each `SourceMapEntry` is populated with the provenance fields available
+/// in the lookup for the binding's `source_ref`.  Fields for which no
+/// upstream data exists remain `None`.
+///
+/// `proof_obligation_ref` is always `None` — the upstream pipeline does not
+/// yet produce proof obligation metadata.  The field is plumbed correctly so
+/// that when upstream starts producing it, it flows through automatically.
+fn build_enriched_source_map(
+    bindings: &[AnfBinding],
+    lookup: &BTreeMap<NodeRef, NodeProvenance>,
+) -> SourceMap {
+    let entries = bindings
+        .iter()
+        .map(|b| {
+            let prov = lookup.get(&b.source_ref);
+            SourceMapEntry {
+                binding_name: b.name.clone(),
+                node_id: b.source_ref,
+                block_ref: prov
+                    .and_then(|p| p.block_ref.as_ref())
+                    .map(|s| BlockRef(s.clone())),
+                change_set: prov.and_then(|p| p.change_set.clone()),
+                contract_ref: prov
+                    .and_then(|p| p.contract_ref.as_ref())
+                    .map(|s| ContractRef(s.clone())),
+                effect_ref: prov
+                    .and_then(|p| p.effect_ref.as_ref())
+                    .map(|s| EffectRef(s.clone())),
+                // No upstream proof-obligation data yet — field plumbed for
+                // future use.
+                proof_obligation_ref: None::<ProofObligationRef>,
+                runtime_check_ref: prov
+                    .and_then(|p| p.runtime_check_ref.as_ref())
+                    .map(|s| RuntimeCheckRef(s.clone())),
+                wasm_offset: None,
+                native_offset: None,
+            }
+        })
+        .collect();
+    SourceMap { entries }
+}
+
+// ── lower_to_anf_impl ────────────────────────────────────────────────────
+
+/// Shared ANF lowering implementation.
+///
+/// When `provenance_lookup` is `Some`, each `SourceMapEntry` is enriched with
+/// semantic provenance extracted from the original `SemanticGraph`.  When it
+/// is `None`, all optional provenance fields remain `None` (backward-compat
+/// path used by `lower_to_anf`).
+fn lower_to_anf_impl(
+    core: &CoreIr,
+    provenance_lookup: Option<&BTreeMap<NodeRef, NodeProvenance>>,
+) -> Result<AnfIr, CompileError> {
+    // Lower each CoreNode — collecting synthetic temporaries and node bindings.
+    let mut bindings: Vec<AnfBinding> = Vec::with_capacity(core.nodes.len());
+    let mut fresh: u32 = 0;
+    for node in &core.nodes {
+        map_core_node_to_anf(node, &mut fresh, &mut bindings);
+    }
+
+    // Build semantic source map, optionally enriched with provenance.
+    let source_map = match provenance_lookup {
+        Some(lookup) => build_enriched_source_map(&bindings, lookup),
+        None => SourceMap::from_bindings(&bindings),
+    };
+
+    // Seal: anf_ir_hash = blake3(core_ir_hash || anf_ir_bytes).
+    // Note: anf_ir_hash covers *bindings* only, not the source map, so it is
+    // identical whether or not provenance enrichment is applied.
+    let anf_ir_bytes = stable_cbor_bytes(&bindings)?;
+    let anf_ir_hash = hash_with_parent(&core.stage_hashes.core_ir_hash, &anf_ir_bytes);
+
+    // Extend the stage hashes from Core IR.
+    let mut stage_hashes = core.stage_hashes.clone();
+    stage_hashes.anf_ir_hash = Some(anf_ir_hash);
+
+    Ok(AnfIr {
+        schema_version: ANF_SCHEMA_VERSION,
+        bindings,
+        source_map,
+        stage_hashes,
+    })
+}
+
 // ── lower_to_anf ─────────────────────────────────────────────────────────
 
 /// Normalize a `CoreIr` into Administrative Normal Form (`AnfIr`).
@@ -516,6 +666,10 @@ pub fn lower_to_core_ir(
 /// counterpart.  The mapping is 1-to-1 in Phase 7; structural normalisation
 /// (e.g. let-bindings for sub-expressions) is deferred to Phase 8.
 ///
+/// All `SourceMapEntry` optional provenance fields (`block_ref`, `change_set`,
+/// etc.) remain `None` in this path.  Use `lower_to_anf_with_graph` when the
+/// original `SemanticGraph` is available to get enriched provenance.
+///
 /// # Hash chain
 ///
 /// Extends the chain: `anf_ir_hash = blake3(core_ir_hash || anf_ir_bytes)`.
@@ -524,30 +678,40 @@ pub fn lower_to_core_ir(
 ///
 /// - `CompileError::EncodingError` — CBOR serialization failed.
 pub fn lower_to_anf(core: &CoreIr) -> Result<AnfIr, CompileError> {
-    // Lower each CoreNode — collecting synthetic temporaries and node bindings.
-    let mut bindings: Vec<AnfBinding> = Vec::with_capacity(core.nodes.len());
-    let mut fresh: u32 = 0;
-    for node in &core.nodes {
-        map_core_node_to_anf(node, &mut fresh, &mut bindings);
-    }
+    lower_to_anf_impl(core, None)
+}
 
-    // Build semantic source map from the lowered bindings.
-    let source_map = SourceMap::from_bindings(&bindings);
+// ── lower_to_anf_with_graph ───────────────────────────────────────────────
 
-    // Seal: anf_ir_hash = blake3(core_ir_hash || anf_ir_bytes).
-    let anf_ir_bytes = stable_cbor_bytes(&bindings)?;
-    let anf_ir_hash = hash_with_parent(&core.stage_hashes.core_ir_hash, &anf_ir_bytes);
-
-    // Extend the stage hashes from Core IR.
-    let mut stage_hashes = core.stage_hashes.clone();
-    stage_hashes.anf_ir_hash = Some(anf_ir_hash);
-
-    Ok(AnfIr {
-        schema_version: ANF_SCHEMA_VERSION,
-        bindings,
-        source_map,
-        stage_hashes,
-    })
+/// Normalize a `CoreIr` into ANF with full semantic provenance enrichment.
+///
+/// Identical to `lower_to_anf` in every respect except that each
+/// `SourceMapEntry` is enriched with provenance data extracted from the
+/// original `SemanticGraph`:
+///
+/// | `SourceMapEntry` field  | Source in `GraphNode`                        |
+/// |-------------------------|----------------------------------------------|
+/// | `change_set`            | `provenance.change_id`                       |
+/// | `block_ref`             | Derived: `"block.<name>"` for Module/Boundary|
+/// | `contract_ref`          | Derived: `"contract.<name>"` when clauses set|
+/// | `effect_ref`            | First effect in `effect_row.effects`         |
+/// | `runtime_check_ref`     | First `RuntimeCheckMeta.hash`                |
+/// | `proof_obligation_ref`  | Always `None` — upstream not producing yet   |
+///
+/// # Hash chain
+///
+/// `anf_ir_hash` is identical to the one produced by `lower_to_anf` because
+/// it covers only the bindings, not the source-map provenance fields.
+///
+/// # Errors
+///
+/// - `CompileError::EncodingError` — CBOR serialization failed.
+pub fn lower_to_anf_with_graph(
+    core: &CoreIr,
+    graph: &SemanticGraph,
+) -> Result<AnfIr, CompileError> {
+    let lookup = extract_provenance_lookup(graph);
+    lower_to_anf_impl(core, Some(&lookup))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────

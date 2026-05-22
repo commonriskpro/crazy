@@ -9,12 +9,17 @@
 //  - Empty input yields empty source map.
 //  - Any source-map change changes source_map_hash downstream.
 //  - Duplicate NodeRefs are preserved (not collapsed) in source maps.
+//  - lower_to_anf_with_graph threads provenance (change_set, block_ref,
+//    contract_ref, effect_ref, runtime_check_ref) from SemanticGraph nodes.
 
 use ail_compiler::{
     emit_native, emit_wasm,
-    lower::{lower_to_anf, lower_to_core_ir},
+    lower::{lower_to_anf, lower_to_anf_with_graph, lower_to_core_ir},
 };
-use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
+use ail_core::semantic_graph::{
+    ContractClauses, EffectRow, GraphNode, NodeKind, NodeRef, Provenance, RuntimeCheckMeta,
+    SemanticGraph,
+};
 use ail_verify::report::VerificationReport;
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -222,5 +227,184 @@ fn source_map_hash_is_deterministic_across_runs() {
     assert_eq!(
         a1.hash_chain.source_map_hash, a2.hash_chain.source_map_hash,
         "source_map_hash must be identical across two calls with the same AnfIr"
+    );
+}
+
+// ── G32 Round 2: Provenance threading via lower_to_anf_with_graph ─────────
+
+/// Build a `SemanticGraph` with one Function node that has full provenance
+/// metadata: provenance.change_id, contract_clauses, effect_row, and
+/// runtime_checks.
+fn graph_with_rich_provenance() -> SemanticGraph {
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn_checkout");
+    node.provenance = Some(Provenance { change_id: "change.add_checkout".to_string() });
+    node.contract_clauses = Some(ContractClauses {
+        requires: vec!["amount > 0".to_string()],
+        ensures: vec![],
+    });
+    node.effect_row = Some(EffectRow { effects: vec!["database.read".to_string()] });
+    node.runtime_checks = Some(vec![RuntimeCheckMeta {
+        predicate: "cart_id != null".to_string(),
+        hash: "rtcheck_hash_abc123".to_string(),
+    }]);
+    SemanticGraph { nodes: vec![node], edges: vec![] }
+}
+
+/// Build a `SemanticGraph` with one Module node (which should receive a
+/// block_ref) and one Function node (which should NOT receive a block_ref).
+fn graph_with_module_and_function() -> SemanticGraph {
+    SemanticGraph {
+        nodes: vec![
+            GraphNode::new(NodeRef(0), NodeKind::Module, "mod_core"),
+            GraphNode::new(NodeRef(1), NodeKind::Function, "fn_run"),
+        ],
+        edges: vec![],
+    }
+}
+
+// RED → GREEN: lower_to_anf_with_graph threads change_set from
+// GraphNode.provenance.change_id into each SourceMapEntry.
+#[test]
+fn lower_to_anf_with_graph_threads_change_set_from_provenance() {
+    let graph = graph_with_rich_provenance();
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+    assert_eq!(anf.source_map.entries.len(), 1);
+    assert_eq!(
+        anf.source_map.entries[0].change_set.as_deref(),
+        Some("change.add_checkout"),
+        "change_set must be threaded from GraphNode.provenance.change_id"
+    );
+}
+
+// RED → GREEN: lower_to_anf_with_graph threads contract_ref from
+// GraphNode.contract_clauses (derived as `contract.<node_name>`).
+#[test]
+fn lower_to_anf_with_graph_threads_contract_ref_from_clauses() {
+    let graph = graph_with_rich_provenance();
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+    let contract_ref = anf.source_map.entries[0].contract_ref.as_ref();
+    assert!(
+        contract_ref.is_some(),
+        "contract_ref must be Some when GraphNode has contract_clauses"
+    );
+    assert!(
+        contract_ref.unwrap().0.contains("fn_checkout"),
+        "contract_ref must be derived from node name, got {:?}",
+        contract_ref
+    );
+}
+
+// RED → GREEN: lower_to_anf_with_graph threads effect_ref from
+// the first effect in GraphNode.effect_row.effects.
+#[test]
+fn lower_to_anf_with_graph_threads_effect_ref_from_effect_row() {
+    let graph = graph_with_rich_provenance();
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+    let effect_ref = &anf.source_map.entries[0].effect_ref;
+    assert!(
+        effect_ref.is_some(),
+        "effect_ref must be Some when GraphNode has effect_row"
+    );
+    assert_eq!(
+        effect_ref.as_ref().unwrap().0,
+        "database.read",
+        "effect_ref must be threaded from the first declared effect"
+    );
+}
+
+// RED → GREEN: lower_to_anf_with_graph threads runtime_check_ref from
+// the first RuntimeCheckMeta.hash in GraphNode.runtime_checks.
+#[test]
+fn lower_to_anf_with_graph_threads_runtime_check_ref_from_checks() {
+    let graph = graph_with_rich_provenance();
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+    let rt_ref = &anf.source_map.entries[0].runtime_check_ref;
+    assert!(
+        rt_ref.is_some(),
+        "runtime_check_ref must be Some when GraphNode has runtime_checks"
+    );
+    assert_eq!(
+        rt_ref.as_ref().unwrap().0,
+        "rtcheck_hash_abc123",
+        "runtime_check_ref must be threaded from the first runtime_check hash"
+    );
+}
+
+// RED → GREEN: Module nodes receive a block_ref (block identity).
+#[test]
+fn lower_to_anf_with_graph_sets_block_ref_for_module_nodes() {
+    let graph = graph_with_module_and_function();
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+    // Entry 0 is the Module node "mod_core".
+    let block_ref = &anf.source_map.entries[0].block_ref;
+    assert!(
+        block_ref.is_some(),
+        "Module node must receive a block_ref"
+    );
+    assert!(
+        block_ref.as_ref().unwrap().0.contains("mod_core"),
+        "block_ref must be derived from module name, got {:?}",
+        block_ref
+    );
+}
+
+// RED → GREEN: Function nodes without explicit block metadata have block_ref = None.
+#[test]
+fn lower_to_anf_with_graph_leaves_block_ref_none_for_function_nodes() {
+    let graph = graph_with_module_and_function();
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+    // Entry 1 is the Function node "fn_run" (no block_ref expected).
+    let block_ref = &anf.source_map.entries[1].block_ref;
+    assert!(
+        block_ref.is_none(),
+        "Function node without block metadata must have block_ref = None, got {:?}",
+        block_ref
+    );
+}
+
+// RED → GREEN: Nodes without provenance metadata yield None for all
+// optional provenance fields.
+#[test]
+fn lower_to_anf_with_graph_leaves_none_when_no_graph_data() {
+    // Simple graph: one Function node with no provenance metadata at all.
+    let graph = SemanticGraph {
+        nodes: vec![GraphNode::new(NodeRef(0), NodeKind::Function, "fn_bare")],
+        edges: vec![],
+    };
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+    let entry = &anf.source_map.entries[0];
+    assert!(entry.change_set.is_none(), "change_set must be None when no provenance on node");
+    assert!(entry.block_ref.is_none(), "block_ref must be None for Function without block data");
+    assert!(entry.contract_ref.is_none(), "contract_ref must be None when no contract_clauses");
+    assert!(entry.effect_ref.is_none(), "effect_ref must be None when no effect_row");
+    assert!(entry.runtime_check_ref.is_none(), "runtime_check_ref must be None when no runtime_checks");
+    assert!(entry.proof_obligation_ref.is_none(), "proof_obligation_ref must always be None (upstream not producing yet)");
+}
+
+// TRIANGULATE: lower_to_anf_with_graph produces same hash as lower_to_anf
+// for nodes without provenance (provenance fields are Option, CBOR-skipped).
+// The anf_ir_hash covers only the bindings, not the source map, so hashes
+// must be equal regardless of whether provenance is populated.
+#[test]
+fn lower_to_anf_with_graph_same_anf_ir_hash_as_lower_to_anf_for_plain_nodes() {
+    let graph = SemanticGraph {
+        nodes: vec![GraphNode::new(NodeRef(0), NodeKind::Function, "fn_x")],
+        edges: vec![],
+    };
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf_plain = lower_to_anf(&core).expect("lower_to_anf");
+    let anf_with_graph = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+    // anf_ir_hash covers bindings (not source map provenance), so must be identical.
+    assert_eq!(
+        anf_plain.stage_hashes.anf_ir_hash,
+        anf_with_graph.stage_hashes.anf_ir_hash,
+        "anf_ir_hash must be identical for the same bindings regardless of provenance enrichment"
     );
 }

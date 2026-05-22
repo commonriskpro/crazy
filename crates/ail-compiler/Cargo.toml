@@ -13,6 +13,7 @@ ail-verify         = { workspace = true }
 blake3             = { workspace = true }
 ciborium           = { workspace = true }
 serde              = { workspace = true }
+serde_json         = { workspace = true }
 wasm-encoder       = { workspace = true }
 cranelift-codegen  = { workspace = true }
 cranelift-frontend = { workspace = true }

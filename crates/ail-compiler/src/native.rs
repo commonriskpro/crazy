@@ -54,6 +54,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
 
 use crate::anf::{AnfIr, SourceMap, SourceMapEntry};
+use crate::artifact_manifest::ArtifactManifest;
 use crate::core_ir::StageHashes;
 use crate::error::CompileError;
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
@@ -109,7 +110,19 @@ pub struct NativeArtifact {
     /// Hash chain extended through the native backend stage.
     /// `hash_chain.native_hash` is `Some(...)` after `emit_native` completes.
     /// `hash_chain.source_map_hash` is `Some(...)` after `emit_native` completes.
+    /// `hash_chain.artifact_manifest_hash` is `Some(...)` after `emit_native`.
     pub hash_chain: StageHashes,
+    /// Profile-bound artifact manifest for this native artifact.
+    ///
+    /// Can be serialized as `program.artifact.json` by callers.
+    pub artifact_manifest: ArtifactManifest,
+    /// JSON-serialized `SourceMap` — content for `program.source_map.json`.
+    ///
+    /// Callers write this to disk as the source-map sidecar for debugging,
+    /// profiling, and runtime error mapping.
+    pub source_map_json: Vec<u8>,
+    /// JSON-serialized `ArtifactManifest` — content for `program.artifact.json`.
+    pub artifact_manifest_json: Vec<u8>,
 }
 
 // ── build_isa ─────────────────────────────────────────────────────────────
@@ -283,12 +296,45 @@ pub fn emit_native(anf: &AnfIr) -> Result<NativeArtifact, CompileError> {
     hash_chain.native_hash = Some(native_hash);
     hash_chain.source_map_hash = Some(source_map_hash);
 
+    // Build ArtifactManifest from the complete hash chain.
+    //
+    // `profile` defaults to "unspecified" — the pipeline does not yet carry a
+    // target_profile input.  When profile threading is added, replace this.
+    let artifact_manifest = ArtifactManifest {
+        profile: "unspecified".to_string(),
+        compiler_version: env!("CARGO_PKG_VERSION").to_string(),
+        graph_snapshot_hash: hash_chain.graph_snapshot_hash,
+        verification_report_hash: hash_chain.verification_report_hash,
+        core_ir_hash: hash_chain.core_ir_hash,
+        anf_ir_hash,
+        wasm_hash: None,
+        native_hash: Some(native_hash),
+        source_map_hash: Some(source_map_hash),
+    };
+
+    // Seal: artifact_manifest_hash = blake3(manifest_cbor_bytes).
+    let manifest_cbor = stable_cbor_bytes(&artifact_manifest)
+        .map_err(|e| CompileError::NativeEncodingError(format!("manifest CBOR encode: {e}")))?;
+    let artifact_manifest_hash = hash_with_parent(&[], &manifest_cbor);
+    hash_chain.artifact_manifest_hash = Some(artifact_manifest_hash);
+
+    // Serialize JSON sidecars.
+    let source_map_json = serde_json::to_vec(&source_map)
+        .map_err(|e| CompileError::NativeEncodingError(format!("source_map JSON encode: {e}")))?;
+    let artifact_manifest_json = serde_json::to_vec(&artifact_manifest)
+        .map_err(|e| {
+            CompileError::NativeEncodingError(format!("artifact_manifest JSON encode: {e}"))
+        })?;
+
     Ok(NativeArtifact {
         native_bytes,
         source_map,
         provenance,
         capabilities_manifest,
         hash_chain,
+        artifact_manifest,
+        source_map_json,
+        artifact_manifest_json,
     })
 }
 

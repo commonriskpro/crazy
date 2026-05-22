@@ -40,8 +40,8 @@ pub use core_ir::{
 pub use error::CompileError;
 pub use incremental::{DirtySet, NodeHashes, compile_incremental, compute_node_hashes};
 pub use lower::{
-    is_report_accepted, lower_core_expr_to_anf, lower_to_anf, lower_to_core_ir,
-    nominal_to_core_type,
+    is_report_accepted, lower_core_expr_to_anf, lower_to_anf, lower_to_anf_with_graph,
+    lower_to_core_ir, nominal_to_core_type,
 };
 pub use native::{CapabilitiesManifest, CapabilityEntry, NativeArtifact, emit_native};
 pub use wasm::{WasmArtifact, emit_wasm};
