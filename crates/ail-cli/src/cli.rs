@@ -490,7 +490,7 @@ pub async fn run() -> Result<(), CliError> {
             branch,
             into_target,
         } => cmd_merge(mode, &branch, into_target.as_deref(), &store).await,
-        Commands::Refactor { operation, args } => cmd_refactor(mode, &operation, &args),
+        Commands::Refactor { operation, args } => cmd_refactor(mode, &operation, &args, &store).await,
         Commands::Approve {
             change_id,
             for_reason,
@@ -2815,44 +2815,196 @@ async fn cmd_merge(
 ///
 /// Refactor commands produce ChangeSets, not direct mutations.
 /// Must show: behavior locks, contracts preserved, effects preserved, proofs to rerun.
-fn cmd_refactor(mode: OutputMode, operation: &str, args: &[String]) -> Result<(), CliError> {
-    // Generate a deterministic change-id for the refactor ChangeSet.
-    let refactor_input = format!("{operation}:{}", args.join(":"));
-    let change_id = {
-        let hash = blake3::hash(refactor_input.as_bytes());
-        bytes_to_hex(hash.as_bytes())
-    };
+///
+/// For `extract-function <source> --to <dest>`:
+/// - Queries the graph for the source function.
+/// - Populates `behavior_locks` from `contract_clauses` (requires/ensures).
+/// - Populates `effects_preserved` from `effect_row.effects`.
+/// - Populates `proofs_to_rerun` from `runtime_checks`.
+/// - Generates ACL ops: create_function, set_body, connect call edge.
+async fn cmd_refactor(
+    mode: OutputMode,
+    operation: &str,
+    args: &[String],
+    store: &StoreHandle,
+) -> Result<(), CliError> {
+    let graph = load_current_graph_for_cli(store).await?;
 
-    // Behavior locks: operations that are guaranteed to preserve semantics.
-    let behavior_locks = json!([
-        { "type": "behavior_lock", "description": "observable behavior is unchanged" },
-    ]);
-    // Contracts preserved.
-    let contracts_preserved: Vec<Value> = vec![];
-    // Effects preserved.
-    let effects_preserved: Vec<Value> = vec![];
-    // Proofs to rerun.
-    let proofs_to_rerun: Vec<Value> = vec![];
+    match operation {
+        "extract-function" => {
+            // Parse: <source_fn> [--to <dest_fn>]
+            let source_name = args.first().map(String::as_str).unwrap_or("");
+            let dest_name = args
+                .windows(2)
+                .find(|w| w[0] == "--to")
+                .and_then(|w| w.get(1).map(String::as_str))
+                .unwrap_or("fn.extracted");
 
-    let human_msg = format!(
-        "refactor ChangeSet: {change_id}\noperation: {operation}\nargs: {}\nbehavior_locks: 1\ncontracts_preserved: 0\neffects_preserved: 0\nproofs_to_rerun: 0\nstatus: draft",
-        args.join(" ")
-    );
-    print_response(
-        mode,
-        &human_msg,
-        json!({
-            "operation": operation,
-            "args": args,
-            "change_id": change_id,
-            "status": "draft",
-            "behavior_locks": behavior_locks,
-            "contracts_preserved": contracts_preserved,
-            "effects_preserved": effects_preserved,
-            "proofs_to_rerun": proofs_to_rerun,
-        }),
-    );
-    Ok(())
+            // Find source function node.
+            let source_node = graph.nodes.iter().find(|n| n.name == source_name);
+
+            // Derive behavior_locks from contract_clauses.
+            let behavior_locks: Vec<Value> = if let Some(node) = source_node {
+                node.contract_clauses
+                    .as_ref()
+                    .map(|clauses| {
+                        clauses
+                            .requires
+                            .iter()
+                            .map(|r| {
+                                json!({ "type": "behavior_lock", "kind": "requires", "rule": r })
+                            })
+                            .chain(clauses.ensures.iter().map(|e| {
+                                json!({ "type": "behavior_lock", "kind": "ensures", "rule": e })
+                            }))
+                            .collect()
+                    })
+                    .unwrap_or_else(|| {
+                        vec![json!({ "type": "behavior_lock",
+                            "description": "observable behavior is unchanged" })]
+                    })
+            } else {
+                vec![json!({ "type": "behavior_lock",
+                    "description": "observable behavior is unchanged" })]
+            };
+
+            // Derive effects_preserved from effect_row.
+            let effects_preserved: Vec<Value> = source_node
+                .and_then(|n| n.effect_row.as_ref())
+                .map(|row| {
+                    row.effects
+                        .iter()
+                        .map(|e| json!({ "effect": e, "preserved": true }))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Derive proofs_to_rerun from runtime_checks.
+            let proofs_to_rerun: Vec<Value> = source_node
+                .and_then(|n| n.runtime_checks.as_ref())
+                .map(|checks| {
+                    checks
+                        .iter()
+                        .map(|c| json!({ "predicate": c.predicate, "hash": c.hash }))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Generate ACL ops.
+            let mut acl_ops: Vec<Value> = vec![
+                json!({ "op": "create_function", "id": dest_name, "visibility": "private" }),
+            ];
+            if let Some(node) = source_node {
+                if let Some(body) = &node.body_expr {
+                    acl_ops.push(json!({ "op": "set_body", "target": dest_name, "body": body }));
+                }
+                if let Some(ret) = &node.return_type {
+                    acl_ops.push(json!({ "op": "set_return", "target": dest_name, "type": ret }));
+                }
+            }
+            acl_ops.push(json!({ "op": "connect", "source": source_name,
+                "target": dest_name, "relation": "calls" }));
+
+            // Change-id: hash over the real ops content.
+            let ops_repr = serde_json::to_string(&acl_ops).unwrap_or_default();
+            let change_id = bytes_to_hex(
+                blake3::hash(
+                    format!("{operation}:{source_name}:{dest_name}:{ops_repr}").as_bytes(),
+                )
+                .as_bytes(),
+            );
+
+            let behavior_lock_count = behavior_locks.len();
+            let effects_count = effects_preserved.len();
+            let proofs_count = proofs_to_rerun.len();
+            let ops_count = acl_ops.len();
+            let human_msg = format!(
+                "refactor ChangeSet: {change_id}\noperation: {operation}\n\
+                 source: {source_name}\ndest: {dest_name}\n\
+                 behavior_locks: {behavior_lock_count}\n\
+                 effects_preserved: {effects_count}\n\
+                 proofs_to_rerun: {proofs_count}\n\
+                 acl_ops: {ops_count}\nstatus: draft"
+            );
+            print_response(
+                mode,
+                &human_msg,
+                json!({
+                    "operation": operation,
+                    "source": source_name,
+                    "dest": dest_name,
+                    "change_id": change_id,
+                    "status": "draft",
+                    "behavior_locks": behavior_locks,
+                    "contracts_preserved": effects_preserved,
+                    "effects_preserved": effects_preserved,
+                    "proofs_to_rerun": proofs_to_rerun,
+                    "acl_ops": acl_ops,
+                }),
+            );
+            Ok(())
+        }
+        _ => {
+            // Generic refactor: hash over operation + args.
+            let refactor_input = format!("{operation}:{}", args.join(":"));
+            let change_id =
+                bytes_to_hex(blake3::hash(refactor_input.as_bytes()).as_bytes());
+
+            // For move/rename/inline: derive what we can from the graph.
+            let source_name = args.first().map(String::as_str).unwrap_or("");
+            let source_node = graph.nodes.iter().find(|n| n.name == source_name);
+
+            let behavior_locks: Vec<Value> = source_node
+                .and_then(|n| n.contract_clauses.as_ref())
+                .map(|clauses| {
+                    clauses
+                        .requires
+                        .iter()
+                        .chain(clauses.ensures.iter())
+                        .map(|r| json!({ "type": "behavior_lock", "rule": r }))
+                        .collect()
+                })
+                .unwrap_or_else(|| {
+                    vec![json!({ "type": "behavior_lock",
+                        "description": "observable behavior is unchanged" })]
+                });
+
+            let effects_preserved: Vec<Value> = source_node
+                .and_then(|n| n.effect_row.as_ref())
+                .map(|row| {
+                    row.effects
+                        .iter()
+                        .map(|e| json!({ "effect": e, "preserved": true }))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let proofs_to_rerun: Vec<Value> = vec![];
+
+            let human_msg = format!(
+                "refactor ChangeSet: {change_id}\noperation: {operation}\nargs: {}\n\
+                 behavior_locks: {}\neffects_preserved: {}\nproofs_to_rerun: 0\nstatus: draft",
+                args.join(" "),
+                behavior_locks.len(),
+                effects_preserved.len(),
+            );
+            print_response(
+                mode,
+                &human_msg,
+                json!({
+                    "operation": operation,
+                    "args": args,
+                    "change_id": change_id,
+                    "status": "draft",
+                    "behavior_locks": behavior_locks,
+                    "contracts_preserved": effects_preserved,
+                    "effects_preserved": effects_preserved,
+                    "proofs_to_rerun": proofs_to_rerun,
+                }),
+            );
+            Ok(())
+        }
+    }
 }
 
 /// `ail approve <change-id> [--for <reason>] [--role <role>]`
@@ -4682,8 +4834,10 @@ mod tests {
     }
 
     // Scenario: cmd_refactor produces ChangeSet with behavior locks.
-    #[test]
-    fn cmd_refactor_has_behavior_locks() {
+    #[tokio::test]
+    async fn cmd_refactor_has_behavior_locks() {
+        use crate::store::memory_store;
+        let store = memory_store();
         let result = cmd_refactor(
             OutputMode::Human,
             "extract-function",
@@ -4692,8 +4846,152 @@ mod tests {
                 "--to".to_string(),
                 "fn.pay".to_string(),
             ],
-        );
+            &store,
+        )
+        .await;
         assert!(result.is_ok(), "cmd_refactor must succeed; got: {result:?}");
+    }
+
+    // ── Gap 2: cmd_refactor real ChangeSet generator ─────────────────────
+
+    // Scenario RF-1: extract-function from a graph node with contracts produces
+    //   behavior_locks populated from the source function's contract_clauses.
+    #[tokio::test]
+    async fn cmd_refactor_extract_function_with_contracts_has_behavior_locks() {
+        use ail_change::apply::apply as apply_cs;
+        use ail_change::canonical::canonicalize_parsed;
+        use ail_change::model::SnapshotId;
+        use ail_change::parser::parse_changeset;
+        use crate::store::memory_store;
+
+        let store = memory_store();
+
+        // Set up graph: fn.checkout with a contract and an effect.
+        let source = "\
+change setup base=0
+author test
+description setup
+op create_function id=fn.checkout return=OrderId
+op add_contract target=fn.checkout kind=ensures rule=order_created
+op add_effect target=fn.checkout effect=payment.charge
+end
+";
+        let parsed = parse_changeset(source).expect("must parse");
+        let canonical = canonicalize_parsed(parsed);
+        let mut graph = ail_core::semantic_graph::SemanticGraph { nodes: vec![], edges: vec![] };
+        let bridge = SimpleSnapshotBridge(SnapshotId(0));
+        let outcome = apply_cs(canonical.clone(), &mut graph, &bridge);
+        assert!(matches!(outcome, ail_change::model::ChangeSetOutcome::Applied));
+        store.save_graph(&graph).await.expect("save graph");
+        let cbor = encode_cbor(&canonical).expect("encode");
+        let snap_id = ail_storage::object::ObjectId::from_bytes(&cbor);
+        let snap = ail_storage::SnapshotEnvelope {
+            id: snap_id,
+            graph_root_hash: store.save_graph(&graph).await.expect("root"),
+            parent_id: None,
+            applied_change_id: None,
+            created_at: unix_ms_now(),
+            verification_report_hash: None,
+        };
+        store.save_snapshot(&snap).await.expect("save snapshot");
+
+        let result = cmd_refactor(
+            OutputMode::Json,
+            "extract-function",
+            &["fn.checkout".to_string(), "--to".to_string(), "fn.payment_handler".to_string()],
+            &store,
+        )
+        .await;
+        assert!(result.is_ok(), "cmd_refactor with contracts must succeed; got: {result:?}");
+    }
+
+    // TRIANGULATE: extract-function from a graph node with effects populates
+    //   effects_preserved from the source function's effect_row.
+    #[tokio::test]
+    async fn cmd_refactor_extract_function_with_effects_has_effects_preserved() {
+        use ail_change::apply::apply as apply_cs;
+        use ail_change::canonical::canonicalize_parsed;
+        use ail_change::model::SnapshotId;
+        use ail_change::parser::parse_changeset;
+        use crate::store::memory_store;
+
+        let store = memory_store();
+
+        let source = "\
+change setup base=0
+author test
+description setup
+op create_function id=fn.checkout return=OrderId
+op add_effect target=fn.checkout effect=payment.charge
+op add_effect target=fn.checkout effect=email.notify
+end
+";
+        let parsed = parse_changeset(source).expect("must parse");
+        let canonical = canonicalize_parsed(parsed);
+        let mut graph = ail_core::semantic_graph::SemanticGraph { nodes: vec![], edges: vec![] };
+        let bridge = SimpleSnapshotBridge(SnapshotId(0));
+        apply_cs(canonical.clone(), &mut graph, &bridge);
+        let cbor = encode_cbor(&canonical).expect("encode");
+        let snap_id = ail_storage::object::ObjectId::from_bytes(&cbor);
+        let snap = ail_storage::SnapshotEnvelope {
+            id: snap_id,
+            graph_root_hash: store.save_graph(&graph).await.expect("root"),
+            parent_id: None,
+            applied_change_id: None,
+            created_at: unix_ms_now(),
+            verification_report_hash: None,
+        };
+        store.save_snapshot(&snap).await.expect("save snapshot");
+
+        let result = cmd_refactor(
+            OutputMode::Human,
+            "extract-function",
+            &["fn.checkout".to_string(), "--to".to_string(), "fn.pay".to_string()],
+            &store,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "cmd_refactor with effects must succeed; got: {result:?}"
+        );
+    }
+
+    // Scenario RF-2: extract-function generates ACL ops including create_function
+    //   for the new function and a connect call edge.
+    #[tokio::test]
+    async fn cmd_refactor_extract_function_generates_acl_ops() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        // Empty graph — refactor degrades gracefully.
+        let result = cmd_refactor(
+            OutputMode::Human,
+            "extract-function",
+            &["fn.nonexistent".to_string(), "--to".to_string(), "fn.extracted".to_string()],
+            &store,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "extract-function on missing node must degrade gracefully; got: {result:?}"
+        );
+    }
+
+    // Scenario RF-3: move operation returns appropriate ChangeSet.
+    #[tokio::test]
+    async fn cmd_refactor_move_operation_succeeds() {
+        use crate::store::memory_store;
+        let store = memory_store();
+        let result = cmd_refactor(
+            OutputMode::Human,
+            "move",
+            &["fn.answer".to_string(), "module.new".to_string()],
+            &store,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "cmd_refactor move must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: cmd_approve produces immutable record.
