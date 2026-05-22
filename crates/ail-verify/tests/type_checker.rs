@@ -45,7 +45,7 @@ use ail_core::semantic_graph::{
     AssociatedTypeBinding, CapabilityReqs, ConstraintSet, ContractClauses, EffectRow,
     GenericParamDecl, GenericParamKind, GraphEdge, GraphNode, HandlerMeta, InferredFact,
     InterfaceImplMeta, NodeKind, NodeRef, ParamDecl, RefinementRef, RefinementStatus,
-    RuntimeCheckMeta, SemanticGraph, TypeArgBinding, TypeFacts,
+    RuntimeCheckMeta, SemanticGraph, TypeArgBinding, TypeFacts, WhereConstraint,
 };
 use ail_verify::report::VerificationState;
 use ail_verify::type_checker::{
@@ -958,7 +958,11 @@ fn generic_fn_missing_eq_constraint_fails() {
     contains_fn.generic_params = Some(vec![GenericParamDecl {
         name: "T".into(),
         kind: GenericParamKind::TypeParam,
-        required_constraints: vec!["Eq".into()],
+        required_constraints: vec![WhereConstraint {
+            interface: "Eq".into(),
+            target_param: None,
+            associated_types: vec![],
+        }],
     }]);
 
     let caller = fn_node(2, "caller");
@@ -1021,7 +1025,11 @@ fn generic_fn_eq_constraint_satisfied_passes() {
     contains_fn.generic_params = Some(vec![GenericParamDecl {
         name: "T".into(),
         kind: GenericParamKind::TypeParam,
-        required_constraints: vec!["Eq".into()],
+        required_constraints: vec![WhereConstraint {
+            interface: "Eq".into(),
+            target_param: None,
+            associated_types: vec![],
+        }],
     }]);
 
     let caller = fn_node(2, "caller");

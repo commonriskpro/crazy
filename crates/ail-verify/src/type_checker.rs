@@ -937,9 +937,9 @@ impl TypeChecker {
                     continue;
                 }
                 // Look up the concrete type node.
-                let needs_eq = gp.required_constraints.iter().any(|c| c == "Eq");
-                let needs_hash = gp.required_constraints.iter().any(|c| c == "Hashable");
-                let needs_ord = gp.required_constraints.iter().any(|c| c == "Ord");
+                let needs_eq = gp.required_constraints.iter().any(|c| c.interface == "Eq");
+                let needs_hash = gp.required_constraints.iter().any(|c| c.interface == "Hashable");
+                let needs_ord = gp.required_constraints.iter().any(|c| c.interface == "Ord");
                 let scope = format!(
                     "{}→{}[{}={}]",
                     edge.source.0, callee.name, binding.param, binding.ty

@@ -300,22 +300,44 @@ pub enum GenericParamKind {
     ConstParam,
 }
 
+/// A first-class type-level constraint on a generic parameter.
+///
+/// Corresponds to `docs/core-ir.md §15/§16 — WhereConstraint`.
+/// Instead of bare strings, each constraint carries structured information
+/// about the interface requirement, the target parameter, and optionally
+/// any associated type bindings required by the constraint.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WhereConstraint {
+    /// The interface or trait name required (e.g., `"Eq"`, `"Hashable"`).
+    pub interface: String,
+    /// The type parameter this constraint applies to (e.g., `"T"`, `"K"`).
+    ///
+    /// When the constraint is stored inline in a `GenericParamDecl`, this
+    /// is typically the same as the declaring parameter's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_param: Option<String>,
+    /// Associated type bindings required by this constraint (e.g.,
+    /// `[("Error", "DbError")]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub associated_types: Vec<AssociatedTypeBinding>,
+}
+
 /// A typed generic parameter declaration on a function or type node.
 ///
 /// Each entry names a generic parameter and classifies its kind.
-/// `required_constraints` lists interface names the parameter must satisfy
-/// (e.g., `["Eq", "Hashable"]` for a type param used in `Set<T>`).
+/// `required_constraints` carries structured `WhereConstraint` entries
+/// per `docs/core-ir.md §16`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GenericParamDecl {
     /// Parameter name (e.g., `"T"`, `"e"`, `"N"`).
     pub name: String,
     /// Parameter kind.
     pub kind: GenericParamKind,
-    /// Interface constraints required on this parameter.
+    /// Structured interface constraints required on this parameter.
     ///
-    /// Examples: `["Eq"]`, `["Eq", "Hashable"]`, `["Ord"]`.
+    /// Each entry is a typed `WhereConstraint` instead of a bare string.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub required_constraints: Vec<String>,
+    pub required_constraints: Vec<WhereConstraint>,
 }
 
 // ── Function parameter declarations ──────────────────────────────────────
