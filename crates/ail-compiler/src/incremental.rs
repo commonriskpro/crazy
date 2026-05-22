@@ -604,6 +604,7 @@ mod tests {
                 scope: "s".to_string(),
                 evidence: None,
                 blocking: true,
+                repair_options: vec![],
             }],
             ..Default::default()
         };

@@ -139,6 +139,7 @@ impl ConcurrencyChecker {
                 scope,
                 evidence,
                 blocking,
+                repair_options: vec![],
             });
         }
 

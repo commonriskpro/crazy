@@ -327,6 +327,7 @@ impl TypeChecker {
                 scope,
                 evidence: None,
                 blocking: false,
+                repair_options: vec![],
             },
             Some(tf) if tf.nominal.is_empty() => VerificationEntry {
                 claim: "type-check".into(),
@@ -334,6 +335,7 @@ impl TypeChecker {
                 scope,
                 evidence: None,
                 blocking: false,
+                repair_options: vec![],
             },
             Some(tf) => {
                 let bad_generic = tf.generics.iter().any(|g| g.is_empty());
@@ -344,6 +346,7 @@ impl TypeChecker {
                         scope,
                         evidence: Some("E_GENERIC_ARITY: generic parameter name is empty".into()),
                         blocking: true,
+                        repair_options: vec![],
                     }
                 } else {
                     VerificationEntry {
@@ -352,6 +355,7 @@ impl TypeChecker {
                         scope,
                         evidence: None,
                         blocking: true,
+                        repair_options: vec![],
                     }
                 }
             }
@@ -389,6 +393,7 @@ impl TypeChecker {
                         scope,
                         evidence: None,
                         blocking: false,
+                        repair_options: vec![],
                     });
                 } else {
                     entries.push(VerificationEntry {
@@ -401,6 +406,7 @@ impl TypeChecker {
                             param.ty, param.name, callee.name
                         )),
                         blocking: true,
+                        repair_options: vec![],
                     });
                 }
             }
@@ -429,6 +435,7 @@ impl TypeChecker {
                             node.name
                         )),
                         blocking: true,
+                        repair_options: vec![],
                     });
                     continue;
                 }
@@ -509,6 +516,7 @@ impl TypeChecker {
                     scope,
                     evidence: state_and_evidence.1,
                     blocking: false,
+                    repair_options: vec![],
                 });
             }
         }
@@ -568,6 +576,7 @@ impl TypeChecker {
                         binding.param, callee.name
                     )),
                     blocking: true,
+                    repair_options: vec![],
                 });
                 continue;
             }
@@ -584,6 +593,7 @@ impl TypeChecker {
                         type_bindings.len()
                     )),
                     blocking: true,
+                    repair_options: vec![],
                 });
             } else if !type_bindings.is_empty() {
                 // Only emit Proven when there are actual TypeParam bindings to check.
@@ -593,6 +603,7 @@ impl TypeChecker {
                     scope,
                     evidence: None,
                     blocking: false,
+                    repair_options: vec![],
                 });
             }
         }
@@ -635,6 +646,7 @@ impl TypeChecker {
                             missing, callee.name, caller.name
                         )),
                         blocking: true,
+                        repair_options: vec![],
                     });
                 } else if !callee_effects.effects.is_empty() {
                     entries.push(VerificationEntry {
@@ -643,6 +655,7 @@ impl TypeChecker {
                         scope: scope.clone(),
                         evidence: None,
                         blocking: false,
+                        repair_options: vec![],
                     });
                 }
             }
@@ -667,6 +680,7 @@ impl TypeChecker {
                             missing, callee.name, caller.name
                         )),
                         blocking: true,
+                        repair_options: vec![],
                     });
                 } else if !callee_caps.caps.is_empty() {
                     entries.push(VerificationEntry {
@@ -675,6 +689,7 @@ impl TypeChecker {
                         scope: scope.clone(),
                         evidence: None,
                         blocking: false,
+                        repair_options: vec![],
                     });
                 }
             }
@@ -731,6 +746,7 @@ impl TypeChecker {
                             param.ty
                         )),
                         blocking: true,
+                        repair_options: vec![],
                     });
                 }
             }
@@ -766,6 +782,7 @@ impl TypeChecker {
                             scope: scope.clone(),
                             evidence: None,
                             blocking: false,
+                            repair_options: vec![],
                         });
                     } else {
                         entries.push(VerificationEntry {
@@ -777,6 +794,7 @@ impl TypeChecker {
                                 arg_ty, param.ty
                             )),
                             blocking: true,
+                            repair_options: vec![],
                         });
                     }
                 }
@@ -805,6 +823,7 @@ impl TypeChecker {
                             ))
                         },
                         blocking: !implements,
+                        repair_options: vec![],
                     });
                 }
             }
@@ -835,6 +854,7 @@ impl TypeChecker {
                                 impl_.interface, node.name
                             )),
                             blocking: true,
+                            repair_options: vec![],
                         });
                     }
                     if at.ty.is_empty() {
@@ -849,6 +869,7 @@ impl TypeChecker {
                                 at.name, impl_.interface, node.name
                             )),
                             blocking: true,
+                            repair_options: vec![],
                         });
                     }
                 }
@@ -871,6 +892,7 @@ impl TypeChecker {
                             impl_.interface, node.name
                         )),
                         blocking: true,
+                        repair_options: vec![],
                     });
                 } else {
                     seen_non_adapter.insert(&impl_.interface, idx);
@@ -1018,6 +1040,7 @@ impl TypeChecker {
                 scope: scope.to_string(),
                 evidence: None,
                 blocking: false,
+                repair_options: vec![],
             });
         } else {
             entries.push(VerificationEntry {
@@ -1026,6 +1049,7 @@ impl TypeChecker {
                 scope: scope.to_string(),
                 evidence: Some(evidence_parts.join("; ")),
                 blocking: true,
+                repair_options: vec![],
             });
         }
     }
@@ -1081,6 +1105,7 @@ impl TypeChecker {
                         node.name
                     )),
                     blocking: false,
+                    repair_options: vec![],
                 });
             } else {
                 entries.push(VerificationEntry {
@@ -1089,6 +1114,7 @@ impl TypeChecker {
                     scope,
                     evidence: None,
                     blocking: false,
+                    repair_options: vec![],
                 });
             }
         }
@@ -1159,6 +1185,7 @@ impl TypeChecker {
                         return_type, node.name
                     )),
                     blocking: true,
+                    repair_options: vec![],
                 });
             }
         }
@@ -1202,6 +1229,7 @@ impl TypeChecker {
                         node.name
                     )),
                     blocking: true,
+                    repair_options: vec![],
                 });
             }
             if cs.has_ord {
@@ -1216,6 +1244,7 @@ impl TypeChecker {
                         node.name
                     )),
                     blocking: true,
+                    repair_options: vec![],
                 });
             }
         }
@@ -1252,6 +1281,7 @@ impl TypeChecker {
                         node.name
                     )),
                     blocking: true,
+                    repair_options: vec![],
                 });
             } else {
                 entries.push(VerificationEntry {
@@ -1260,6 +1290,7 @@ impl TypeChecker {
                     scope,
                     evidence: None,
                     blocking: false,
+                    repair_options: vec![],
                 });
             }
         }
@@ -1295,6 +1326,7 @@ impl TypeChecker {
                     scope,
                     evidence: None,
                     blocking: false,
+                    repair_options: vec![],
                 });
             } else if !cs.has_ord {
                 entries.push(VerificationEntry {
@@ -1308,6 +1340,7 @@ impl TypeChecker {
                         node.name
                     )),
                     blocking: false,
+                    repair_options: vec![],
                 });
             }
         }
@@ -1344,6 +1377,7 @@ impl TypeChecker {
                         scope,
                         evidence: None,
                         blocking: false,
+                        repair_options: vec![],
                     });
                 } else {
                     entries.push(VerificationEntry {
@@ -1357,6 +1391,7 @@ impl TypeChecker {
                             node.name
                         )),
                         blocking: true,
+                        repair_options: vec![],
                     });
                 }
             }
@@ -1438,6 +1473,7 @@ impl TypeChecker {
                 scope: node.name.clone(),
                 evidence: Some(evidence),
                 blocking: false,
+                repair_options: vec![],
             });
 
             // Emit explicit erasure entry if the refinement was downgraded.
@@ -1453,6 +1489,7 @@ impl TypeChecker {
                         rf.predicate, rf.base_type
                     )),
                     blocking: false,
+                    repair_options: vec![],
                 });
             }
         }
@@ -1511,6 +1548,7 @@ impl TypeChecker {
                             "resolved '{return_type}' → '{concrete_ty}'"
                         )),
                         blocking: false,
+                        repair_options: vec![],
                     });
                 }
                 None => {
@@ -1525,6 +1563,7 @@ impl TypeChecker {
                             callee.name
                         )),
                         blocking: false,
+                        repair_options: vec![],
                     });
                 }
             }
@@ -1584,6 +1623,7 @@ impl TypeChecker {
                                     binding.param, effect, caller.name, caller_effects
                                 )),
                                 blocking: true,
+                                repair_options: vec![],
                             });
                             all_ok = false;
                         }
@@ -1596,6 +1636,7 @@ impl TypeChecker {
                         scope: scope.clone(),
                         evidence: None,
                         blocking: false,
+                        repair_options: vec![],
                     });
                 }
             }
@@ -1623,6 +1664,7 @@ impl TypeChecker {
                                     binding.param, cap, caller.name, caller_caps
                                 )),
                                 blocking: true,
+                                repair_options: vec![],
                             });
                             all_ok = false;
                         }
@@ -1635,6 +1677,7 @@ impl TypeChecker {
                         scope: scope.clone(),
                         evidence: None,
                         blocking: false,
+                        repair_options: vec![],
                     });
                 }
             }
@@ -1671,6 +1714,7 @@ impl TypeChecker {
                     scope,
                     evidence: None,
                     blocking: false,
+                    repair_options: vec![],
                 });
             } else {
                 entries.push(VerificationEntry {
@@ -1684,6 +1728,7 @@ impl TypeChecker {
                         node.name, return_type
                     )),
                     blocking: true,
+                    repair_options: vec![],
                 });
             }
         }
@@ -1739,6 +1784,7 @@ impl TypeChecker {
                         interface, node_names
                     )),
                     blocking: true,
+                    repair_options: vec![],
                 });
             }
         }
@@ -1770,6 +1816,7 @@ impl TypeChecker {
                             node.name, impl_meta.interface, impl_meta.interface
                         )),
                         blocking: true,
+                        repair_options: vec![],
                     });
                 }
             }
@@ -1826,6 +1873,7 @@ impl TypeChecker {
                         scope,
                         evidence: None,
                         blocking: false,
+                        repair_options: vec![],
                     });
                 } else {
                     entries.push(VerificationEntry {
@@ -1839,6 +1887,7 @@ impl TypeChecker {
                             binding.param, callee.name, binding.ty
                         )),
                         blocking: true,
+                        repair_options: vec![],
                     });
                 }
             }

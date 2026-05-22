@@ -97,6 +97,7 @@ impl EffectChecker {
                         scope,
                         evidence: Some(format!("E_EFFECT_UNDECLARED: {}", names.join(", "))),
                         blocking: true,
+                        repair_options: vec![],
                     };
                 }
 
@@ -110,6 +111,7 @@ impl EffectChecker {
                         scope,
                         evidence: Some(format!("E_EFFECT_UNUSED: {}", names.join(", "))),
                         blocking: false,
+                        repair_options: vec![],
                     };
                 }
 
@@ -121,6 +123,7 @@ impl EffectChecker {
                     scope,
                     evidence: None,
                     blocking: false,
+                    repair_options: vec![],
                 }
             })
             .collect();

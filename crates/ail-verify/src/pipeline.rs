@@ -301,6 +301,10 @@ impl VerificationPipeline {
         ));
         let package_entries = PackageTrustChecker::check(ctx.manifests, ctx.profile);
         all_entries.extend(package_entries);
+        let version_entries = PackageTrustChecker::check_version_constraints(ctx.manifests);
+        all_entries.extend(version_entries);
+        let deprecated_entries = PackageTrustChecker::check_deprecated_exports(ctx.manifests);
+        all_entries.extend(deprecated_entries);
 
         // ── Compute summary counts ────────────────────────────────────────
         let summary_counts = crate::report::SummaryCounts {
@@ -349,6 +353,12 @@ impl VerificationPipeline {
             })
             .collect();
 
+        // ── Snapshot IDs from graph structure ─────────────────────────────
+        // Derive a stable snapshot identifier from node names + IDs so the
+        // report is self-describing without adding new PipelineContext fields.
+        let target_snapshot = Some(graph_snapshot_id(ctx.graph));
+        let base_snapshot = base_graph.map(graph_snapshot_id);
+
         // ── Assemble pre-policy report ────────────────────────────────────
         let mut pre_policy = VerificationReport {
             entries: all_entries,
@@ -358,6 +368,10 @@ impl VerificationPipeline {
             proof_obligations,
             degradation_events,
             artifact_hashes: vec![],
+            base_snapshot,
+            target_snapshot,
+            structural_diff: ctx.structural_diff.cloned(),
+            approvals: ctx.approvals.to_vec(),
             ..Default::default()
         };
 
@@ -397,6 +411,17 @@ impl VerificationPipeline {
             .push(validate_manifest(ctx.graph, ctx.manifest_caps, ctx.artifact_manifest_hash));
 
         let mut artifact_hashes = Vec::new();
+
+        // ── Canonical change hash (doc §Artifact consistency) ────────────
+        // Add the canonical change hash to artifact_hashes so that the report
+        // can uniquely identify exactly which canonical changeset was verified.
+        if let Some(canonical_cs) = &canonical {
+            let hash = canonical_change_hash(canonical_cs);
+            artifact_hashes.push(crate::report::ArtifactHash {
+                artifact: "canonical_change".into(),
+                hash,
+            });
+        }
 
         // ── Stage 22: Codegen consistency ─────────────────────────────────
         pre_policy.entries.push(stage_entry(
@@ -471,6 +496,30 @@ impl VerificationPipeline {
     }
 }
 
+/// Compute a BLAKE3 content hash for a `CanonicalChangeSet`.
+///
+/// The hash is computed over the JSON-serialized form of the canonical ops
+/// list.  This ties the verification report to exactly which change was
+/// verified, enabling artifact consistency checks (verification.md §Artifact
+/// consistency).
+fn canonical_change_hash(canonical: &CanonicalChangeSet) -> String {
+    // Serialize to canonical JSON for deterministic byte representation.
+    let json = serde_json::to_string(&canonical.ops).unwrap_or_default();
+    let hash = blake3::hash(json.as_bytes());
+    hash.to_hex().to_string()
+}
+
+/// Derive a stable, human-readable snapshot identifier from a `SemanticGraph`.
+///
+/// The ID is computed from the sorted node names joined with `|` and
+/// prefixed with the node count.  This is NOT a cryptographic hash —
+/// it is a deterministic label for audit/debug purposes.
+fn graph_snapshot_id(graph: &SemanticGraph) -> String {
+    let mut names: Vec<&str> = graph.nodes.iter().map(|n| n.name.as_str()).collect();
+    names.sort_unstable();
+    format!("snap:{}:{}", graph.nodes.len(), names.join("|"))
+}
+
 fn stage_entry(
     claim: impl Into<String>,
     state: VerificationState,
@@ -484,6 +533,7 @@ fn stage_entry(
         scope: scope.into(),
         evidence,
         blocking,
+        repair_options: vec![],
     }
 }
 

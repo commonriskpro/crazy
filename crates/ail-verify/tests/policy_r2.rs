@@ -36,6 +36,7 @@ fn entry(claim: &str, scope: &str, state: VerificationState) -> VerificationEntr
         scope: scope.into(),
         evidence: None,
         blocking: false,
+        repair_options: vec![],
     }
 }
 

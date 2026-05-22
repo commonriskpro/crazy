@@ -1241,6 +1241,7 @@ mod tests {
                 scope: "s".to_string(),
                 evidence: None,
                 blocking: matches!(state, VerificationState::Failed | VerificationState::Unsafe),
+                repair_options: vec![],
             }],
             ..Default::default()
         }

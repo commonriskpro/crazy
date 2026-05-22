@@ -32,11 +32,72 @@
 use serde::{Deserialize, Serialize};
 
 use crate::diagnostic::Diagnostic;
-use crate::policy::{PolicyAudit, PolicyDecision};
+use crate::policy::{ApprovalRecord, PolicyAudit, PolicyDecision, StructuralDiff};
 use crate::proof::ObligationLedgerEntry;
 
 // Re-export PolicyAudit sub-types so callers can import from `report` module.
 pub use crate::policy::PolicyAuditEntry;
+
+// ── AssumptionState ───────────────────────────────────────────────────────
+
+/// Lifecycle state of a documented assumption.
+///
+/// Every `Assumed` verification claim must be backed by an explicit
+/// `assumption` declaration that tracks its lifecycle.  The six states
+/// correspond to the `assumption lifecycle` section of `verification.md`:
+///
+/// ```text
+/// proposed → approved → active
+///                    ↘ expired
+///                    ↘ revoked
+///                    ↘ failed_review
+/// ```
+///
+/// # Policy implications (verification.md §Assumption lifecycle)
+///
+/// If an assumption reaches `Expired`, `Revoked`, or `FailedReview`, any
+/// `prod`/`critical` build that depends on it is blocked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AssumptionState {
+    /// The assumption has been proposed but not yet reviewed.
+    Proposed,
+    /// The assumption has been reviewed and approved.
+    Approved,
+    /// The assumption is currently active and in use.
+    Active,
+    /// The assumption has passed its expiry date or review window.
+    Expired,
+    /// The assumption has been explicitly revoked by an owner or reviewer.
+    Revoked,
+    /// The assumption failed a scheduled review cycle.
+    FailedReview,
+}
+
+impl AssumptionState {
+    /// Return `true` if this state is still considered valid for production use.
+    ///
+    /// `Proposed` and `Approved` are valid (not yet active but not expired).
+    /// `Active` is valid.  `Expired`, `Revoked`, `FailedReview` are invalid.
+    pub fn is_valid_for_prod(self) -> bool {
+        matches!(
+            self,
+            AssumptionState::Proposed | AssumptionState::Approved | AssumptionState::Active
+        )
+    }
+}
+
+impl std::fmt::Display for AssumptionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AssumptionState::Proposed => write!(f, "proposed"),
+            AssumptionState::Approved => write!(f, "approved"),
+            AssumptionState::Active => write!(f, "active"),
+            AssumptionState::Expired => write!(f, "expired"),
+            AssumptionState::Revoked => write!(f, "revoked"),
+            AssumptionState::FailedReview => write!(f, "failed_review"),
+        }
+    }
+}
 
 // ── VerificationState ─────────────────────────────────────────────────────
 
@@ -104,6 +165,15 @@ pub struct VerificationEntry {
     /// deserialize cleanly (absent → `false`).
     #[serde(default)]
     pub blocking: bool,
+    /// Ordered list of actionable repair suggestions for this entry.
+    ///
+    /// Mirrors the `repair_options` field documented for each verification
+    /// entry in `verification.md §Forma de cada entry`.
+    /// Empty if no automated repairs are available.
+    /// Uses `serde(default)` so older reports without this field still
+    /// deserialize cleanly (absent → `[]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repair_options: Vec<String>,
 }
 
 // ── ArtifactHash ─────────────────────────────────────────────────────────
@@ -223,6 +293,34 @@ pub struct VerificationReport {
     /// Empty for reports that have not gone through the codegen checker.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifact_hashes: Vec<ArtifactHash>,
+
+    /// Identifier of the base graph snapshot this report was computed against.
+    ///
+    /// `None` when no base snapshot was provided (e.g. initial creation).
+    /// Set from `PipelineContext::base_graph` when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_snapshot: Option<String>,
+
+    /// Identifier of the target graph snapshot this report describes.
+    ///
+    /// `None` when the target snapshot id was not provided to the pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_snapshot: Option<String>,
+
+    /// Structural diff consumed by the policy engine.
+    ///
+    /// Stored in the report so auditors can trace policy decisions back to
+    /// the structural changes that triggered them.
+    /// `None` when no structural diff was provided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structural_diff: Option<StructuralDiff>,
+
+    /// Approval records that were active during this pipeline run.
+    ///
+    /// Stored verbatim so the report is self-contained for audit.
+    /// Empty when no approvals were provided.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approvals: Vec<ApprovalRecord>,
 }
 
 /// Aggregated counts of entries by verification state.
@@ -269,6 +367,7 @@ mod tests {
             scope: "scope".into(),
             evidence: None,
             blocking: false,
+            repair_options: vec![],
         };
         assert!(!entry.blocking, "blocking must default to false for Proven");
     }
@@ -281,6 +380,7 @@ mod tests {
             scope: "scope".into(),
             evidence: Some("E_TEST".into()),
             blocking: true,
+            repair_options: vec![],
         };
         assert!(entry.blocking, "Failed entries must have blocking=true");
     }
@@ -293,6 +393,7 @@ mod tests {
             scope: "scope".into(),
             evidence: None,
             blocking: true,
+            repair_options: vec![],
         };
         assert!(entry.blocking, "Unsafe entries must have blocking=true");
     }
@@ -305,6 +406,7 @@ mod tests {
             scope: "s".into(),
             evidence: None,
             blocking: true,
+            repair_options: vec![],
         };
         let json = serde_json::to_string(&entry).expect("serialize");
         assert!(json.contains("blocking"), "blocking field must appear in JSON");
@@ -319,5 +421,102 @@ mod tests {
         let decoded: VerificationEntry =
             serde_json::from_str(json).expect("deserialize without blocking field");
         assert!(!decoded.blocking, "absent blocking field must default to false");
+    }
+
+    // ── AssumptionState tests ─────────────────────────────────────────────
+
+    #[test]
+    fn assumption_state_six_variants_constructible() {
+        let states = [
+            AssumptionState::Proposed,
+            AssumptionState::Approved,
+            AssumptionState::Active,
+            AssumptionState::Expired,
+            AssumptionState::Revoked,
+            AssumptionState::FailedReview,
+        ];
+        assert_eq!(states.len(), 6);
+    }
+
+    #[test]
+    fn assumption_state_is_valid_for_prod_lifecycle() {
+        assert!(AssumptionState::Proposed.is_valid_for_prod());
+        assert!(AssumptionState::Approved.is_valid_for_prod());
+        assert!(AssumptionState::Active.is_valid_for_prod());
+        assert!(!AssumptionState::Expired.is_valid_for_prod());
+        assert!(!AssumptionState::Revoked.is_valid_for_prod());
+        assert!(!AssumptionState::FailedReview.is_valid_for_prod());
+    }
+
+    #[test]
+    fn assumption_state_display_matches_doc_names() {
+        assert_eq!(AssumptionState::Proposed.to_string(), "proposed");
+        assert_eq!(AssumptionState::Approved.to_string(), "approved");
+        assert_eq!(AssumptionState::Active.to_string(), "active");
+        assert_eq!(AssumptionState::Expired.to_string(), "expired");
+        assert_eq!(AssumptionState::Revoked.to_string(), "revoked");
+        assert_eq!(AssumptionState::FailedReview.to_string(), "failed_review");
+    }
+
+    #[test]
+    fn assumption_state_roundtrips_json() {
+        let state = AssumptionState::FailedReview;
+        let json = serde_json::to_string(&state).expect("serialize");
+        let decoded: AssumptionState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, state);
+    }
+
+    // ── repair_options tests ──────────────────────────────────────────────
+
+    #[test]
+    fn verification_entry_repair_options_defaults_to_empty() {
+        let entry = VerificationEntry {
+            claim: "test".into(),
+            state: VerificationState::Failed,
+            scope: "s".into(),
+            evidence: None,
+            blocking: true,
+            repair_options: vec![],
+        };
+        assert!(entry.repair_options.is_empty());
+    }
+
+    #[test]
+    fn verification_entry_repair_options_serialized_when_non_empty() {
+        let entry = VerificationEntry {
+            claim: "test".into(),
+            state: VerificationState::Failed,
+            scope: "s".into(),
+            evidence: None,
+            blocking: true,
+            repair_options: vec!["add_guard".into(), "add_runtime_check".into()],
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(json.contains("repair_options"), "non-empty repair_options must appear in JSON");
+        assert!(json.contains("add_guard"));
+    }
+
+    #[test]
+    fn verification_entry_repair_options_absent_when_empty() {
+        let entry = VerificationEntry {
+            claim: "test".into(),
+            state: VerificationState::Proven,
+            scope: "s".into(),
+            evidence: None,
+            blocking: false,
+            repair_options: vec![],
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(
+            !json.contains("repair_options"),
+            "empty repair_options must be skipped in JSON output"
+        );
+    }
+
+    #[test]
+    fn verification_entry_repair_options_deserializes_without_field() {
+        let json = r#"{"claim":"c","state":"Proven","scope":"s"}"#;
+        let decoded: VerificationEntry = serde_json::from_str(json).expect("deserialize");
+        assert!(decoded.repair_options.is_empty(), "absent field must default to empty vec");
     }
 }

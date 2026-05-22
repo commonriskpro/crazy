@@ -11,7 +11,10 @@ z3-solver = ["dep:z3"]
 ail-change  = { workspace = true }
 ail-core    = { workspace = true }
 ail-package = { workspace = true }
+blake3      = { workspace = true }
+semver      = { workspace = true }
 serde       = { workspace = true }
+serde_json  = { workspace = true }
 z3          = { workspace = true, optional = true }
 
 [dev-dependencies]
