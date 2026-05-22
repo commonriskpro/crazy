@@ -44,7 +44,10 @@ use std::collections::BTreeMap;
 use ail_core::semantic_graph::NodeRef;
 use cranelift_codegen::{
     Context,
-    ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, condcodes::IntCC},
+    ir::{
+        AbiParam, Function, InstBuilder, MemFlags, Signature, StackSlotData,
+        UserFuncName, condcodes::IntCC, stackslot::StackSlotKind,
+    },
     isa::CallConv,
     settings,
 };
@@ -958,6 +961,112 @@ fn lower_anf_expr_cranelift(
             builder.switch_to_block(merge_block);
             builder.seal_block(merge_block);
             LowerResult::Value(builder.block_params(merge_block)[0])
+        }
+
+        // ── RecordNew ─────────────────────────────────────────────────────
+        AnfExpr::RecordNew { fields } => {
+            let size = ((fields.len().max(1)) * 8) as u32;
+            let slot = builder.create_sized_stack_slot(
+                StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3)
+            );
+            for (idx, (_, field_expr)) in fields.iter().enumerate() {
+                let val = match lower_anf_expr_cranelift(field_expr, ctx, builder, module) {
+                    LowerResult::Value(v) => v,
+                    _ => builder.ins().iconst(types::I64, 0),
+                };
+                builder.ins().stack_store(val, slot, (idx * 8) as i32);
+            }
+            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+            LowerResult::Value(ptr)
+        }
+
+        // ── FieldGet ──────────────────────────────────────────────────────
+        AnfExpr::FieldGet { record, field } => {
+            let ptr = match ctx.lookup(record.as_str()) {
+                Some((v, _)) => v,
+                None => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    return LowerResult::Terminated;
+                }
+            };
+            let offset = ctx.field_offset(record.as_str(), field.as_str());
+            let val = builder.ins().load(types::I64, MemFlags::trusted(), ptr, offset);
+            LowerResult::Value(val)
+        }
+
+        // ── FieldUpdate ───────────────────────────────────────────────────
+        AnfExpr::FieldUpdate { record, field, value } => {
+            let ptr = match ctx.lookup(record.as_str()) {
+                Some((v, _)) => v,
+                None => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    return LowerResult::Terminated;
+                }
+            };
+            let val = match lower_anf_expr_cranelift(value, ctx, builder, module) {
+                LowerResult::Value(v) => v,
+                _ => builder.ins().iconst(types::I64, 0),
+            };
+            let offset = ctx.field_offset(record.as_str(), field.as_str());
+            builder.ins().store(MemFlags::trusted(), val, ptr, offset);
+            LowerResult::Value(ptr)
+        }
+
+        // ── VariantNew ────────────────────────────────────────────────────
+        AnfExpr::VariantNew { tag, payload } => {
+            // 16 bytes: 4 (tag i32) + 4 (pad) + 8 (payload i64)
+            let slot = builder.create_sized_stack_slot(
+                StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3)
+            );
+            let tag_id = ctx.assign_tag(tag.as_str()) as i64;
+            let tag_val = builder.ins().iconst(types::I32, tag_id);
+            builder.ins().stack_store(tag_val, slot, 0);
+            if let Some(payload_expr) = payload {
+                let payload_val = match lower_anf_expr_cranelift(payload_expr, ctx, builder, module) {
+                    LowerResult::Value(v) => v,
+                    _ => builder.ins().iconst(types::I64, 0),
+                };
+                builder.ins().stack_store(payload_val, slot, 8);
+            }
+            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+            LowerResult::Value(ptr)
+        }
+
+        // ── ListNew ───────────────────────────────────────────────────────
+        AnfExpr::ListNew(elems) => {
+            let size = ((1 + elems.len()).max(1) * 8) as u32;
+            let slot = builder.create_sized_stack_slot(
+                StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3)
+            );
+            // Length header at offset 0
+            let len_val = builder.ins().iconst(types::I64, elems.len() as i64);
+            builder.ins().stack_store(len_val, slot, 0);
+            for (i, elem) in elems.iter().enumerate() {
+                let val = match lower_anf_expr_cranelift(elem, ctx, builder, module) {
+                    LowerResult::Value(v) => v,
+                    _ => builder.ins().iconst(types::I64, 0),
+                };
+                builder.ins().stack_store(val, slot, (8 + i * 8) as i32);
+            }
+            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+            LowerResult::Value(ptr)
+        }
+
+        // ── TupleNew ──────────────────────────────────────────────────────
+        AnfExpr::TupleNew(elems) => {
+            let size = (elems.len().max(1) * 8) as u32;
+            let slot = builder.create_sized_stack_slot(
+                StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3)
+            );
+            for (i, elem) in elems.iter().enumerate() {
+                let val = match lower_anf_expr_cranelift(elem, ctx, builder, module) {
+                    LowerResult::Value(v) => v,
+                    _ => builder.ins().iconst(types::I64, 0),
+                };
+                builder.ins().stack_store(val, slot, (i * 8) as i32);
+            }
+            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+            LowerResult::Value(ptr)
         }
 
         _ => {
