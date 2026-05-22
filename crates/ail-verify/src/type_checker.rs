@@ -142,6 +142,12 @@ pub const E_PATCHFIELD_EMPTY_INNER: &str = "E_PATCHFIELD_EMPTY_INNER";
 pub const E_BOUNDARY_INFERENCE_MISMATCH: &str = "E_BOUNDARY_INFERENCE_MISMATCH";
 /// Type used in a context requiring PartialOrd but only partial order is available.
 pub const E_PARTIAL_ORD_REQUIRED: &str = "E_PARTIAL_ORD_REQUIRED";
+/// Associated type reference in a callee return type could not be resolved
+/// to a concrete type via any impl binding in the call context.
+pub const E_ASSOC_TYPE_NOT_RESOLVED: &str = "E_ASSOC_TYPE_NOT_RESOLVED";
+/// ConstParam instantiation value is not a decidable literal (not a simple
+/// numeric string or simple identifier).
+pub const E_CONST_PARAM_VALUE_INVALID: &str = "E_CONST_PARAM_VALUE_INVALID";
 
 // ── Collection constraint table ───────────────────────────────────────────
 
@@ -253,6 +259,12 @@ impl TypeChecker {
 
         // Subpass 13 — Boundary inference cross-check.
         Self::check_boundary_inference(graph, &mut entries);
+
+        // Subpass 14 — Associated type resolution at call sites.
+        Self::check_associated_type_resolution(graph, &ctx, &mut entries);
+
+        // Subpass 15 — ConstParam value validation at call sites (extends Subpass 3b).
+        Self::check_const_param_call_bindings(graph, &ctx, &mut entries);
 
         let summary_counts = build_summary_counts(&entries);
         VerificationReport {
@@ -490,16 +502,31 @@ impl TypeChecker {
                 continue;
             };
 
-            let declared: Vec<&str> = generic_params
+            let declared_type_params: Vec<&str> = generic_params
                 .iter()
                 .filter(|p| p.kind == GenericParamKind::TypeParam)
                 .map(|p| p.name.as_str())
                 .collect();
+
             let scope = format!("{}→{}", edge.source.0, callee.name);
 
-            let unknown = bindings
+            // Only check TypeParam bindings — ConstParam bindings are handled
+            // in check_const_param_call_bindings (Subpass 15).
+            let type_bindings: Vec<_> = bindings
                 .iter()
-                .find(|b| !declared.iter().any(|name| *name == b.param));
+                .filter(|b| {
+                    // Keep only bindings that match a TypeParam declaration,
+                    // or that do NOT match any ConstParam (i.e., truly unknown).
+                    let is_const = generic_params
+                        .iter()
+                        .any(|p| p.name == b.param && p.kind == GenericParamKind::ConstParam);
+                    !is_const
+                })
+                .collect();
+
+            let unknown = type_bindings
+                .iter()
+                .find(|b| !declared_type_params.iter().any(|name| *name == b.param));
             if let Some(binding) = unknown {
                 entries.push(VerificationEntry {
                     claim: "generic-call-binding".into(),
@@ -514,7 +541,7 @@ impl TypeChecker {
                 continue;
             }
 
-            if bindings.len() != declared.len() {
+            if type_bindings.len() != declared_type_params.len() {
                 entries.push(VerificationEntry {
                     claim: "generic-call-binding".into(),
                     state: VerificationState::Failed,
@@ -522,12 +549,13 @@ impl TypeChecker {
                     evidence: Some(format!(
                         "{E_GENERIC_BINDING_ARITY}: '{}' expects {} type generic bindings, got {}",
                         callee.name,
-                        declared.len(),
-                        bindings.len()
+                        declared_type_params.len(),
+                        type_bindings.len()
                     )),
                     blocking: true,
                 });
-            } else {
+            } else if !type_bindings.is_empty() {
+                // Only emit Proven when there are actual TypeParam bindings to check.
                 entries.push(VerificationEntry {
                     claim: "generic-call-binding".into(),
                     state: VerificationState::Proven,
@@ -1345,6 +1373,148 @@ impl TypeChecker {
             }
         }
     }
+
+    // ── Subpass 14: Associated type resolution ────────────────────────────
+
+    /// For each `Calls` edge, if the callee's `return_type` contains "::"
+    /// (indicating a reference to an interface associated type), scan the
+    /// caller's `call_args` for a `Type` node whose `interface_impls` resolves
+    /// the association.
+    ///
+    /// - Resolved → Proven (claim "assoc-type-resolution"), evidence contains concrete type
+    /// - Unresolvable → Unverified (E_ASSOC_TYPE_NOT_RESOLVED)
+    fn check_associated_type_resolution(
+        graph: &SemanticGraph,
+        ctx: &TypeContext<'_>,
+        entries: &mut Vec<VerificationEntry>,
+    ) {
+        for edge in &graph.edges {
+            if edge.kind != EdgeKind::Calls {
+                continue;
+            }
+            let Some(call_args) = &edge.call_args else {
+                continue;
+            };
+            let Some(callee) = ctx.by_ref.get(&edge.target).copied() else {
+                continue;
+            };
+            let Some(return_type) = &callee.return_type else {
+                continue;
+            };
+            // Only process associated type references (contain "::").
+            if !return_type.contains("::") {
+                continue;
+            }
+
+            let scope = format!("{}→{}", edge.source.0, callee.name);
+
+            // Split "Interface::AssocName" into the interface base and assoc name.
+            let (interface_base, assoc_name) = split_assoc_type(return_type);
+
+            // Scan call_args for a Type node whose interface_impls can resolve
+            // the associated type.
+            let resolved = call_args.iter().find_map(|arg_ty| {
+                resolve_assoc_type(ctx, arg_ty, interface_base, assoc_name)
+            });
+
+            match resolved {
+                Some(concrete_ty) => {
+                    entries.push(VerificationEntry {
+                        claim: "assoc-type-resolution".into(),
+                        state: VerificationState::Proven,
+                        scope,
+                        evidence: Some(format!(
+                            "resolved '{return_type}' → '{concrete_ty}'"
+                        )),
+                        blocking: false,
+                    });
+                }
+                None => {
+                    entries.push(VerificationEntry {
+                        claim: "assoc-type-resolution".into(),
+                        state: VerificationState::Unverified,
+                        scope,
+                        evidence: Some(format!(
+                            "{E_ASSOC_TYPE_NOT_RESOLVED}: \
+                             associated type '{return_type}' on callee '{}' \
+                             could not be resolved from call_args {call_args:?}",
+                            callee.name
+                        )),
+                        blocking: false,
+                    });
+                }
+            }
+        }
+    }
+
+    // ── Subpass 15: ConstParam value validation at call sites ─────────────
+
+    /// For each `Calls` edge with `type_arg_bindings`, check bindings that
+    /// correspond to a `ConstParam` declaration on the callee.
+    ///
+    /// A valid ConstParam value must be a decidable literal: a numeric string
+    /// (all digit characters) or a simple identifier (letters, digits, underscore).
+    ///
+    /// - Valid value → Proven (claim "const-param-value")
+    /// - Invalid value → Failed (E_CONST_PARAM_VALUE_INVALID)
+    fn check_const_param_call_bindings(
+        graph: &SemanticGraph,
+        ctx: &TypeContext<'_>,
+        entries: &mut Vec<VerificationEntry>,
+    ) {
+        for edge in &graph.edges {
+            if edge.kind != EdgeKind::Calls {
+                continue;
+            }
+            let Some(bindings) = &edge.type_arg_bindings else {
+                continue;
+            };
+            let Some(callee) = ctx.by_ref.get(&edge.target).copied() else {
+                continue;
+            };
+            let Some(generic_params) = &callee.generic_params else {
+                continue;
+            };
+
+            for binding in bindings {
+                // Only process ConstParam bindings.
+                let is_const = generic_params
+                    .iter()
+                    .any(|p| p.name == binding.param && p.kind == GenericParamKind::ConstParam);
+                if !is_const {
+                    continue;
+                }
+
+                let scope = format!(
+                    "{}→{}[{}={}]",
+                    edge.source.0, callee.name, binding.param, binding.ty
+                );
+
+                if is_const_param_value(&binding.ty) {
+                    entries.push(VerificationEntry {
+                        claim: "const-param-value".into(),
+                        state: VerificationState::Proven,
+                        scope,
+                        evidence: None,
+                        blocking: false,
+                    });
+                } else {
+                    entries.push(VerificationEntry {
+                        claim: "const-param-value".into(),
+                        state: VerificationState::Failed,
+                        scope,
+                        evidence: Some(format!(
+                            "{E_CONST_PARAM_VALUE_INVALID}: ConstParam '{}' on '{}' \
+                             bound to '{}' which is not a decidable literal; \
+                             only numeric strings or simple identifiers are permitted",
+                            binding.param, callee.name, binding.ty
+                        )),
+                        blocking: true,
+                    });
+                }
+            }
+        }
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -1353,6 +1523,64 @@ impl TypeChecker {
 /// letters, digits, or underscores only — no spaces, operators, or brackets.
 fn is_simple_identifier(name: &str) -> bool {
     !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Returns `true` when `ty` is a valid decidable ConstParam value:
+/// either an all-digit numeric literal (e.g., `"3"`, `"16"`) or a simple
+/// identifier (e.g., `"MAX_SIZE"`).
+fn is_const_param_value(ty: &str) -> bool {
+    if ty.is_empty() {
+        return false;
+    }
+    // Numeric literal: all digit characters.
+    if ty.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    // Simple identifier: alphanumeric + underscore, no operators/parens/spaces.
+    is_simple_identifier(ty)
+}
+
+/// Split an associated type reference `"Interface::AssocName"` into
+/// `("Interface", "AssocName")`.
+///
+/// Returns `(input, "")` if the input does not contain `"::"`.
+fn split_assoc_type(ty: &str) -> (&str, &str) {
+    if let Some(pos) = ty.find("::") {
+        (&ty[..pos], &ty[pos + 2..])
+    } else {
+        (ty, "")
+    }
+}
+
+/// Attempt to resolve an associated type for `arg_ty` by scanning the
+/// `interface_impls` of the corresponding node in `ctx`.
+///
+/// Looks for an `InterfaceImplMeta` whose `interface` starts with
+/// `interface_base` (handles both exact and generic interface names),
+/// then finds an `AssociatedTypeBinding` with `name == assoc_name`.
+///
+/// Returns `Some(concrete_ty)` on success, `None` if unresolvable.
+fn resolve_assoc_type<'a>(
+    ctx: &TypeContext<'a>,
+    arg_ty: &str,
+    interface_base: &str,
+    assoc_name: &str,
+) -> Option<String> {
+    let node = ctx.get_by_name(arg_ty)?;
+    let impls = node.interface_impls.as_ref()?;
+    impls.iter().find_map(|impl_meta| {
+        // Match if the impl's interface starts with the interface base
+        // (handles both "Repository" and "Repository<User>" forms).
+        if impl_meta.interface.starts_with(interface_base) {
+            impl_meta
+                .associated_types
+                .iter()
+                .find(|at| at.name == assoc_name)
+                .map(|at| at.ty.clone())
+        } else {
+            None
+        }
+    })
 }
 
 /// Split `"Base<Inner>"` into `("Base", "Inner")`.
@@ -1413,6 +1641,322 @@ fn structural_type_satisfies(ctx: &TypeContext<'_>, arg_ty: &str, required: &[St
                     .unwrap_or(false)
         })
     })
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ail_core::semantic_graph::{
+        AssociatedTypeBinding, CapabilityReqs, EffectRow, EdgeKind, GenericParamDecl,
+        GenericParamKind, GraphEdge, GraphNode, InterfaceImplMeta, NodeKind, NodeRef,
+        SemanticGraph, TypeArgBinding,
+    };
+
+    // ── helpers ───────────────────────────────────────────────────────────
+
+    fn make_node(id: u32, kind: NodeKind, name: &str) -> GraphNode {
+        GraphNode::new(NodeRef(id), kind, name)
+    }
+
+    fn make_edge(source: u32, target: u32) -> GraphEdge {
+        GraphEdge::new(NodeRef(source), NodeRef(target), EdgeKind::Calls)
+    }
+
+    fn entries_with_claim<'a>(
+        entries: &'a [VerificationEntry],
+        claim: &str,
+    ) -> Vec<&'a VerificationEntry> {
+        entries.iter().filter(|e| e.claim == claim).collect()
+    }
+
+    // ── Task B1 (RED): check_associated_type_resolution ──────────────────
+    // Tests written BEFORE the subpass exists — will fail to link at first.
+
+    // B1-1: Proven case — associated type resolved via impl binding.
+    // Spec scenario: "Associated type resolved via impl binding"
+    //   GIVEN callee Function with return_type="Repository::Error"
+    //   AND Type node "PostgresUserRepo" with interface_impls containing
+    //     interface "Repository<User>", associated_types [{ name: "Error", ty: "DbError" }]
+    //   AND Calls edge with call_args including "PostgresUserRepo"
+    //   THEN entry claim "assoc-type-resolution", state Proven, evidence contains "DbError"
+    #[test]
+    fn assoc_type_resolved_via_impl_binding_is_proven() {
+        let mut callee = make_node(1, NodeKind::Function, "load_user");
+        callee.return_type = Some("Repository::Error".to_string());
+
+        let mut impl_node = make_node(2, NodeKind::Type, "PostgresUserRepo");
+        impl_node.interface_impls = Some(vec![InterfaceImplMeta {
+            interface: "Repository<User>".to_string(),
+            associated_types: vec![AssociatedTypeBinding {
+                name: "Error".to_string(),
+                ty: "DbError".to_string(),
+            }],
+            is_adapter: false,
+        }]);
+
+        let mut caller = make_node(0, NodeKind::Function, "caller_fn");
+        caller.effect_row = None;
+
+        let mut edge = make_edge(0, 1);
+        edge.call_args = Some(vec!["PostgresUserRepo".to_string()]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee, impl_node],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let assoc = entries_with_claim(&report.entries, "assoc-type-resolution");
+        assert!(
+            !assoc.is_empty(),
+            "at least one assoc-type-resolution entry expected"
+        );
+        let proven = assoc
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "expected a Proven assoc-type-resolution entry, got: {:?}",
+            assoc
+        );
+        let ev = proven.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains("DbError"),
+            "evidence must contain the resolved type 'DbError', got: {ev}"
+        );
+    }
+
+    // B1-2: Unverified case — associated type with no impl binding.
+    // Spec scenario: "Associated type with no impl binding"
+    //   GIVEN callee with return_type="Repository::Error"
+    //   AND no matching impl in context
+    //   THEN entry claim "assoc-type-resolution", state Unverified, evidence E_ASSOC_TYPE_NOT_RESOLVED
+    #[test]
+    fn assoc_type_unresolvable_is_unverified() {
+        let mut callee = make_node(1, NodeKind::Function, "load_item");
+        callee.return_type = Some("Repository::Error".to_string());
+
+        let caller = make_node(0, NodeKind::Function, "no_impl_caller");
+
+        let mut edge = make_edge(0, 1);
+        // call_args references a type with NO interface_impls for Repository
+        edge.call_args = Some(vec!["UnknownType".to_string()]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let assoc = entries_with_claim(&report.entries, "assoc-type-resolution");
+        assert!(
+            !assoc.is_empty(),
+            "expected assoc-type-resolution entry for unresolvable case"
+        );
+        let unverified = assoc
+            .iter()
+            .find(|e| e.state == VerificationState::Unverified);
+        assert!(
+            unverified.is_some(),
+            "expected Unverified assoc-type-resolution entry, got: {:?}",
+            assoc
+        );
+        let ev = unverified.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_ASSOC_TYPE_NOT_RESOLVED),
+            "evidence must contain {E_ASSOC_TYPE_NOT_RESOLVED}, got: {ev}"
+        );
+    }
+
+    // B1-3 (TRIANGULATE): Function with return_type that does NOT contain "::"
+    // must NOT emit assoc-type-resolution entries.
+    #[test]
+    fn non_assoc_return_type_emits_no_assoc_type_resolution_entry() {
+        let mut callee = make_node(1, NodeKind::Function, "get_count");
+        callee.return_type = Some("Int".to_string()); // no "::"
+
+        let caller = make_node(0, NodeKind::Function, "caller");
+        let mut edge = make_edge(0, 1);
+        edge.call_args = Some(vec!["SomeType".to_string()]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let assoc = entries_with_claim(&report.entries, "assoc-type-resolution");
+        assert!(
+            assoc.is_empty(),
+            "non-assoc return type must emit no assoc-type-resolution entries, got: {:?}",
+            assoc
+        );
+    }
+
+    // ── Task E1 (RED): ConstParam value validation ────────────────────────
+    // Tests written BEFORE the extension exists — verifying current behavior
+    // does NOT yet handle ConstParam.
+
+    // E1-1: Valid ConstParam value "3" passes.
+    // Spec scenario: "Valid ConstParam value passes"
+    //   GIVEN Calls edge type_arg_bindings=[{param:"N",ty:"3"}]
+    //   AND callee has ConstParam "N"
+    //   THEN entry claim "const-param-value", state Proven
+    #[test]
+    fn const_param_numeric_value_is_proven() {
+        let mut callee = make_node(1, NodeKind::Function, "buffer_fn");
+        callee.generic_params = Some(vec![GenericParamDecl {
+            name: "N".to_string(),
+            kind: GenericParamKind::ConstParam,
+            required_constraints: vec![],
+        }]);
+
+        let caller = make_node(0, NodeKind::Function, "caller");
+
+        let mut edge = make_edge(0, 1);
+        edge.type_arg_bindings = Some(vec![TypeArgBinding {
+            param: "N".to_string(),
+            ty: "3".to_string(),
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let const_entries = entries_with_claim(&report.entries, "const-param-value");
+        assert!(
+            !const_entries.is_empty(),
+            "expected const-param-value entry for numeric literal, got none"
+        );
+        let proven = const_entries
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "numeric ConstParam value '3' must be Proven, got: {:?}",
+            const_entries
+        );
+    }
+
+    // E1-2 (TRIANGULATE): Valid ConstParam value "16" also passes.
+    #[test]
+    fn const_param_larger_numeric_value_is_proven() {
+        let mut callee = make_node(1, NodeKind::Function, "vector_fn");
+        callee.generic_params = Some(vec![GenericParamDecl {
+            name: "N".to_string(),
+            kind: GenericParamKind::ConstParam,
+            required_constraints: vec![],
+        }]);
+
+        let caller = make_node(0, NodeKind::Function, "caller");
+
+        let mut edge = make_edge(0, 1);
+        edge.type_arg_bindings = Some(vec![TypeArgBinding {
+            param: "N".to_string(),
+            ty: "16".to_string(),
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let const_entries = entries_with_claim(&report.entries, "const-param-value");
+        let proven = const_entries
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
+        assert!(
+            proven.is_some(),
+            "numeric ConstParam value '16' must be Proven"
+        );
+    }
+
+    // E1-3: Invalid ConstParam value "sizeof(T)" fails.
+    // Spec scenario: "Invalid ConstParam value fails"
+    //   GIVEN Calls edge type_arg_bindings=[{param:"N",ty:"sizeof(T)"}]
+    //   AND callee has ConstParam "N"
+    //   THEN entry claim "const-param-value", state Failed, evidence E_CONST_PARAM_VALUE_INVALID
+    #[test]
+    fn const_param_complex_expression_fails() {
+        let mut callee = make_node(1, NodeKind::Function, "array_fn");
+        callee.generic_params = Some(vec![GenericParamDecl {
+            name: "N".to_string(),
+            kind: GenericParamKind::ConstParam,
+            required_constraints: vec![],
+        }]);
+
+        let caller = make_node(0, NodeKind::Function, "caller");
+
+        let mut edge = make_edge(0, 1);
+        edge.type_arg_bindings = Some(vec![TypeArgBinding {
+            param: "N".to_string(),
+            ty: "sizeof(T)".to_string(),
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let const_entries = entries_with_claim(&report.entries, "const-param-value");
+        assert!(
+            !const_entries.is_empty(),
+            "expected const-param-value entry for invalid expression"
+        );
+        let failed = const_entries
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "sizeof(T) must be Failed, got: {:?}",
+            const_entries
+        );
+        let ev = failed.unwrap().evidence.as_deref().unwrap_or("");
+        assert!(
+            ev.contains(E_CONST_PARAM_VALUE_INVALID),
+            "evidence must contain {E_CONST_PARAM_VALUE_INVALID}, got: {ev}"
+        );
+    }
+
+    // E1-4 (TRIANGULATE): "n+1" is also an invalid ConstParam value.
+    #[test]
+    fn const_param_arithmetic_expression_fails() {
+        let mut callee = make_node(1, NodeKind::Function, "chunk_fn");
+        callee.generic_params = Some(vec![GenericParamDecl {
+            name: "N".to_string(),
+            kind: GenericParamKind::ConstParam,
+            required_constraints: vec![],
+        }]);
+
+        let caller = make_node(0, NodeKind::Function, "caller");
+
+        let mut edge = make_edge(0, 1);
+        edge.type_arg_bindings = Some(vec![TypeArgBinding {
+            param: "N".to_string(),
+            ty: "n+1".to_string(),
+        }]);
+
+        let graph = SemanticGraph {
+            nodes: vec![caller, callee],
+            edges: vec![edge],
+        };
+
+        let report = TypeChecker::check(&graph);
+        let const_entries = entries_with_claim(&report.entries, "const-param-value");
+        let failed = const_entries
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
+        assert!(
+            failed.is_some(),
+            "n+1 must be Failed as invalid ConstParam value"
+        );
+    }
 }
 
 /// Build `SummaryCounts` from the entry list.
