@@ -460,6 +460,25 @@ pub enum CoreExpr {
     /// Represents an impossible-branch terminal — the control flow never
     /// returns from this expression.  Used where `Never` is expected.
     Abort { message: String },
+
+    // ── ola4-type-formalism: dynamic dispatch through Dyn<Interface> ──────
+    /// Explicit dynamic dispatch through a `Dyn<Interface>` typed value.
+    ///
+    /// Distinct from `Dispatch` (which targets handler/capability tables).
+    /// `DynCall` is interface-typed: the `interface` field names the interface
+    /// (e.g., `"Repository<User>"`), `method` names the operation, and `args`
+    /// are the call arguments.
+    ///
+    /// Backward compat: absent from the wire format before ola4-type-formalism;
+    /// pre-existing `CoreNode`s decode with `expr = None` as before.
+    DynCall {
+        /// Interface name (e.g., `"Repository<User>"`).
+        interface: String,
+        /// Method name on the interface (e.g., `"get"`).
+        method: String,
+        /// Call arguments — may be non-atomic; atomized during ANF lowering.
+        args: Vec<CoreExpr>,
+    },
 }
 
 // ── CoreType ──────────────────────────────────────────────────────────────
@@ -602,6 +621,20 @@ pub enum CoreType {
     Encoded(String),
     /// A decoded/parsed value of the given type.
     Decoded(Box<CoreType>),
+
+    // ── ola4-type-formalism: dyn dispatch and boundary schema ─────────────
+    /// Dynamic interface dispatch type — `Dyn<Interface>`.
+    ///
+    /// The `String` payload carries the interface name, e.g. `"Repository<User>"`.
+    /// Follows the same flat-String payload pattern as `ForeignType`, `NormalizedText`,
+    /// and `Encoded`.
+    Dyn(String),
+
+    /// Explicit serialization schema name attached to a boundary value.
+    ///
+    /// `BoundarySchema("UserInputJsonSchema")` identifies the schema governing
+    /// how a value crossing a boundary must be encoded/decoded.
+    BoundarySchema(String),
 }
 
 // ── CoreNode ──────────────────────────────────────────────────────────────
@@ -1501,6 +1534,173 @@ mod tests {
             let decoded: CoreExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
             assert_eq!(&decoded, expr, "must survive CBOR round-trip");
         }
+    }
+
+    // ── Task A1 (RED): CoreType::Dyn and CoreExpr::DynCall ───────────────
+    // Tests written BEFORE the variants exist — compilation failure is the RED gate.
+
+    // A1-1: CoreType::Dyn carries the interface name and is constructible.
+    #[test]
+    fn dyn_core_type_construction_and_eq() {
+        let ty = CoreType::Dyn("Serializable".to_string());
+        // Eq: same interface name → equal
+        assert_eq!(ty, CoreType::Dyn("Serializable".to_string()));
+        // Eq: different interface → not equal
+        assert_ne!(ty, CoreType::Dyn("Repository<User>".to_string()));
+    }
+
+    // A1-2: CoreType::Dyn CBOR round-trip preserves the interface name.
+    // Spec scenario: "Dyn CoreType construction and CBOR round-trip"
+    #[test]
+    fn dyn_core_type_cbor_round_trip() {
+        let ty = CoreType::Dyn("Serializable".to_string());
+        let bytes = stable_cbor_bytes(&ty).expect("encode");
+        let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, ty, "Dyn<Serializable> must survive CBOR round-trip");
+        if let CoreType::Dyn(name) = decoded {
+            assert_eq!(name, "Serializable");
+        } else {
+            panic!("expected Dyn variant after round-trip");
+        }
+    }
+
+    // A1-3 (TRIANGULATE): Dyn with a generic interface name also round-trips.
+    // Forces the payload to be a non-trivial string, not a hardcoded empty string.
+    #[test]
+    fn dyn_core_type_with_generic_interface_cbor_round_trip() {
+        let ty = CoreType::Dyn("Repository<User>".to_string());
+        let bytes = stable_cbor_bytes(&ty).expect("encode");
+        let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, ty);
+        if let CoreType::Dyn(name) = decoded {
+            assert_eq!(name, "Repository<User>");
+        } else {
+            panic!("expected Dyn variant");
+        }
+    }
+
+    // A1-4: CoreExpr::DynCall construction and field access.
+    // Spec scenario: "DynCall construction and CBOR round-trip"
+    #[test]
+    fn dyn_call_core_expr_construction_and_fields() {
+        let expr = CoreExpr::DynCall {
+            interface: "Repository<User>".to_string(),
+            method: "get".to_string(),
+            args: vec![CoreExpr::Var("id".to_string())],
+        };
+        if let CoreExpr::DynCall { interface, method, args } = &expr {
+            assert_eq!(interface, "Repository<User>");
+            assert_eq!(method, "get");
+            assert_eq!(args.len(), 1);
+            assert_eq!(args[0], CoreExpr::Var("id".to_string()));
+        } else {
+            panic!("expected DynCall variant");
+        }
+    }
+
+    // A1-5: CoreExpr::DynCall CBOR round-trip preserves all fields.
+    #[test]
+    fn dyn_call_core_expr_cbor_round_trip() {
+        let expr = CoreExpr::DynCall {
+            interface: "Repository<User>".to_string(),
+            method: "get".to_string(),
+            args: vec![CoreExpr::Var("id".to_string())],
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: CoreExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr, "DynCall must survive CBOR round-trip");
+        if let CoreExpr::DynCall { interface, method, args } = decoded {
+            assert_eq!(interface, "Repository<User>");
+            assert_eq!(method, "get");
+            assert_eq!(args.len(), 1);
+        } else {
+            panic!("expected DynCall after round-trip");
+        }
+    }
+
+    // A1-6 (TRIANGULATE): DynCall with multiple args round-trips.
+    #[test]
+    fn dyn_call_with_multiple_args_cbor_round_trip() {
+        let expr = CoreExpr::DynCall {
+            interface: "Serializable".to_string(),
+            method: "serialize".to_string(),
+            args: vec![
+                CoreExpr::Var("value".to_string()),
+                CoreExpr::Var("format".to_string()),
+            ],
+        };
+        let bytes = stable_cbor_bytes(&expr).expect("encode");
+        let decoded: CoreExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, expr);
+        if let CoreExpr::DynCall { args, .. } = decoded {
+            assert_eq!(args.len(), 2);
+        } else {
+            panic!("expected DynCall");
+        }
+    }
+
+    // A1-7: DynCall backward compat — a CoreNode encoded before DynCall existed
+    // decodes successfully with expr = None.
+    // Spec scenario: "DynCall backward compat — absence from wire format"
+    #[test]
+    fn dyn_call_backward_compat_with_none_expr() {
+        // Simulate a pre-DynCall CoreNode: expr field is None and is absent from CBOR.
+        let node = CoreNode {
+            source_ref: NodeRef(0),
+            kind: CoreNodeKind::Function,
+            name: "legacy_fn".to_string(),
+            ty: None,
+            expr: None,
+        };
+        let bytes = stable_cbor_bytes(&node).expect("encode legacy node");
+        let decoded: CoreNode = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(
+            decoded.expr, None,
+            "legacy node decoded without DynCall must have expr=None"
+        );
+    }
+
+    // ── Task F1 (RED): CoreType::BoundarySchema ───────────────────────────
+    // Tests written BEFORE the variant exists — compilation failure is the RED gate.
+
+    // F1-1: CoreType::BoundarySchema carries the schema name and round-trips through CBOR.
+    // Spec scenario: "BoundarySchema CBOR round-trip"
+    #[test]
+    fn boundary_schema_cbor_round_trip() {
+        let ty = CoreType::BoundarySchema("UserInputJsonSchema".to_string());
+        let bytes = stable_cbor_bytes(&ty).expect("encode");
+        let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        assert_eq!(decoded, ty, "BoundarySchema must survive CBOR round-trip");
+        if let CoreType::BoundarySchema(name) = decoded {
+            assert_eq!(name, "UserInputJsonSchema");
+        } else {
+            panic!("expected BoundarySchema variant");
+        }
+    }
+
+    // F1-2: BoundarySchema Eq — same name equals, different names do not.
+    #[test]
+    fn boundary_schema_variant_equality() {
+        let a = CoreType::BoundarySchema("UserInputJsonSchema".to_string());
+        let b = CoreType::BoundarySchema("UserInputJsonSchema".to_string());
+        let c = CoreType::BoundarySchema("PaymentsJsonSchema".to_string());
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    // F1-3 (TRIANGULATE): BoundarySchema is distinct from Dyn and ForeignType in CBOR.
+    #[test]
+    fn boundary_schema_is_distinct_from_dyn_and_foreign_type_in_cbor() {
+        let bs = stable_cbor_bytes(&CoreType::BoundarySchema("Schema".to_string()))
+            .expect("encode BoundarySchema");
+        let dyn_ =
+            stable_cbor_bytes(&CoreType::Dyn("Schema".to_string())).expect("encode Dyn");
+        let foreign =
+            stable_cbor_bytes(&CoreType::ForeignType("Schema".to_string()))
+                .expect("encode ForeignType");
+        // Same payload string but different variants → different CBOR
+        assert_ne!(bs, dyn_, "BoundarySchema must differ from Dyn in CBOR");
+        assert_ne!(bs, foreign, "BoundarySchema must differ from ForeignType in CBOR");
     }
 
     // S-A3e: ForEach, Fold, Return, MapNew, SetNew, IndexGet round-trip through CBOR.
