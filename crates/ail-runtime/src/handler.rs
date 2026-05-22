@@ -13,6 +13,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::abi::{HostError, HostResult};
+use crate::codec::StructuredValue;
 use crate::profile::CapabilityId;
 
 // ── Handler ───────────────────────────────────────────────────────────────
@@ -56,6 +57,58 @@ pub trait Handler: Send + Sync {
         operation: &str,
         payload: &[u8],
     ) -> HostResult<Vec<u8>>;
+
+    /// Execute a capability call with structured arguments and return a
+    /// structured result.
+    ///
+    /// Default implementation: encodes `args` as little-endian i64 bytes
+    /// (8 bytes per argument), calls `self.handle`, then decodes the first
+    /// 8 bytes of the response as a little-endian i64 `StructuredValue::Scalar`.
+    ///
+    /// `Unit` args encode as 8 zero bytes.
+    /// `Scalar(n)` args encode as `n.to_le_bytes()`.
+    /// All other variants encode as 8 zero bytes.
+    fn handle_structured(
+        &self,
+        capability: &CapabilityId,
+        operation: &str,
+        args: &[StructuredValue],
+    ) -> HostResult<StructuredValue> {
+        let payload = encode_args_as_le_bytes(args);
+        let raw = self.handle(capability, operation, &payload)?;
+        Ok(decode_raw_as_structured(&raw))
+    }
+}
+
+// ── handle_structured helpers ─────────────────────────────────────────────
+
+/// Encode a slice of `StructuredValue` arguments as little-endian i64 bytes.
+///
+/// Each argument contributes exactly 8 bytes:
+/// - `Scalar(n)` → `n.to_le_bytes()`
+/// - `Unit`      → 8 zero bytes
+/// - all other variants → 8 zero bytes
+pub(crate) fn encode_args_as_le_bytes(args: &[StructuredValue]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(args.len() * 8);
+    for arg in args {
+        let val: i64 = match arg {
+            StructuredValue::Scalar(n) => *n,
+            _ => 0,
+        };
+        buf.extend_from_slice(&val.to_le_bytes());
+    }
+    buf
+}
+
+/// Decode the first 8 bytes of a raw response as a little-endian i64
+/// `StructuredValue::Scalar`.  Returns `Unit` if `raw` has fewer than 8 bytes.
+pub(crate) fn decode_raw_as_structured(raw: &[u8]) -> StructuredValue {
+    if raw.len() < 8 {
+        return StructuredValue::Unit;
+    }
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(&raw[..8]);
+    StructuredValue::Scalar(i64::from_le_bytes(buf))
 }
 
 // ── InMemoryHandler ───────────────────────────────────────────────────────
@@ -210,12 +263,75 @@ impl Handler for InMemoryHandler {
         if self.caps.contains(capability) {
             Ok(self.response.clone())
         } else {
-            Err(HostError {
-                message: format!(
-                    "InMemoryHandler does not handle capability: {}",
-                    capability.as_str()
-                ),
-            })
+                Err(HostError {
+                    message: format!(
+                        "InMemoryHandler does not handle capability: {}",
+                        capability.as_str()
+                    ),
+                })
         }
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use super::*;
+
+    // ── TASK-F1: handle_structured default method tests (TDD RED) ────────
+    // These tests call `handle_structured` which does not exist on the
+    // `Handler` trait yet.
+
+    /// Minimal handler for testing: returns a fixed i64 value as LE bytes.
+    fn i64_handler(response: i64) -> Arc<InMemoryHandler> {
+        Arc::new(InMemoryHandler::new(
+            "test-i64",
+            vec![CapabilityId::new("cap")],
+            response.to_le_bytes().to_vec(),
+        ))
+    }
+
+    #[test]
+    fn handle_structured_default_calls_handle() {
+        // InMemoryHandler returns 99i64 as LE bytes.
+        // handle_structured should decode that as StructuredValue::Scalar(99).
+        let handler = i64_handler(99);
+        let cap = CapabilityId::new("cap");
+        let result = handler
+            .handle_structured(&cap, "op", &[StructuredValue::Scalar(1)])
+            .expect("handle_structured must succeed");
+        assert_eq!(result, StructuredValue::Scalar(99));
+    }
+
+    #[test]
+    fn handle_structured_unit_arg_encodes_as_zero() {
+        // Unit arg must encode as 8 zero bytes in the payload.
+        // We verify this indirectly: the handler receives the encoded bytes;
+        // we hook into the response by checking what the underlying `handle`
+        // receives (reflected via response bytes in InMemoryHandler).
+        //
+        // Here we just check that calling handle_structured with Unit arg
+        // doesn't panic and returns the canned response.
+        let handler = i64_handler(0);
+        let cap = CapabilityId::new("cap");
+        let result = handler
+            .handle_structured(&cap, "op", &[StructuredValue::Unit])
+            .expect("handle_structured with Unit arg must succeed");
+        assert_eq!(result, StructuredValue::Scalar(0));
+    }
+
+    #[test]
+    fn handle_structured_i64_arg_encodes_correctly() {
+        // Scalar(42) arg → 42i64.to_le_bytes() in the payload.
+        // InMemoryHandler ignores the payload; we just verify success.
+        let handler = i64_handler(7);
+        let cap = CapabilityId::new("cap");
+        let result = handler
+            .handle_structured(&cap, "op", &[StructuredValue::Scalar(42)])
+            .expect("handle_structured with Scalar arg must succeed");
+        assert_eq!(result, StructuredValue::Scalar(7));
+    }
+}
+

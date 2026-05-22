@@ -48,6 +48,7 @@ use ail_package::trust::TrustLevel;
 
 use crate::abi::{HostError, HostResult};
 use crate::audit::{AuditEvent, AuditLog};
+use crate::codec::{StructuredValue, ValueDecoder, ValueLayout};
 use crate::error::{PreflightFailure, RuntimeError, RuntimeResult};
 use crate::handler::Handler;
 use crate::manifest::{CapabilityManifest, blake3_hex_of};
@@ -209,6 +210,71 @@ impl RuntimeInstance {
         }
     }
 
+    /// Read `len` bytes from WASM linear memory starting at `ptr`.
+    ///
+    /// Returns `None` if:
+    /// - `ptr` is negative.
+    /// - The module has no exported `"memory"`.
+    /// - The read range `[ptr, ptr + len)` exceeds the memory size.
+    pub fn read_wasm_memory(&mut self, ptr: i32, len: usize) -> Option<Vec<u8>> {
+        if ptr < 0 {
+            return None;
+        }
+        let memory = self.instance.get_memory(&mut self.store, "memory")?;
+        let mut buf = vec![0u8; len];
+        memory.read(&self.store, ptr as usize, &mut buf).ok()?;
+        Some(buf)
+    }
+
+    /// Write `bytes` into WASM linear memory at `ptr`.
+    ///
+    /// Returns `true` on success, `false` if `ptr` is negative, if the module
+    /// has no exported `"memory"`, or if the write range exceeds memory size.
+    pub fn write_wasm_memory(&mut self, ptr: i32, bytes: &[u8]) -> bool {
+        if ptr < 0 {
+            return false;
+        }
+        let memory = match self.instance.get_memory(&mut self.store, "memory") {
+            Some(m) => m,
+            None => return false,
+        };
+        memory.write(&mut self.store, ptr as usize, bytes).is_ok()
+    }
+
+    /// Invoke an exported function and decode its return value as a `StructuredValue`.
+    ///
+    /// This is the typed ABI entry point.  It calls `invoke`, maps the raw
+    /// `RuntimeValue` to a base integer, reads the full WASM linear memory for
+    /// pointer-based decoding, then delegates to `ValueDecoder::decode`.
+    ///
+    /// `layout` must match the return type of the export as produced by the
+    /// compiler (see `WasmArtifact::export_types`).
+    pub fn invoke_typed(
+        &mut self,
+        export_name: &str,
+        args: &[RuntimeArg],
+        layout: &ValueLayout,
+    ) -> RuntimeResult<StructuredValue> {
+        let raw = self.invoke(export_name, args)?;
+        let raw_i64 = match raw {
+            RuntimeValue::I64(v) => v,
+            RuntimeValue::I32(v) => v as i64,
+            RuntimeValue::F64(f) => return Ok(StructuredValue::Float(f)),
+            RuntimeValue::Unit => return Ok(StructuredValue::Unit),
+        };
+        let memory_size = self.wasm_memory_size();
+        let memory = self.read_wasm_memory(0, memory_size).unwrap_or_default();
+        Ok(ValueDecoder::decode(layout, raw_i64, &memory))
+    }
+
+    /// Return the byte size of the exported `"memory"`, or 0 if none.
+    fn wasm_memory_size(&mut self) -> usize {
+        self.instance
+            .get_memory(&mut self.store, "memory")
+            .map(|m| m.data_size(&self.store))
+            .unwrap_or(0)
+    }
+
     /// Return a snapshot of the audit log from the shared log.
     pub fn audit_log(&self) -> AuditLog {
         self.store
@@ -326,6 +392,40 @@ impl RuntimeHost {
                 },
             )
             .expect("ail/host_call registration must succeed");
+
+        // Register host import: module="ail", name="host_call_write".
+        // Signature: (cap_ptr: i32, cap_len: i32, op_ptr: i32, op_len: i32,
+        //             args_ptr: i32, args_len: i32, out_ptr: i32, out_max: i32) -> i32
+        // Stub returns -1 until dispatch_host_call_write is implemented (TASK-F4).
+        linker
+            .func_wrap(
+                "ail",
+                "host_call_write",
+                |mut caller: wasmtime::Caller<'_, HostState>,
+                 cap_ptr: i32,
+                 cap_len: i32,
+                 op_ptr: i32,
+                 op_len: i32,
+                 args_ptr: i32,
+                 args_len: i32,
+                 out_ptr: i32,
+                 out_max: i32|
+                 -> i32 {
+                    dispatch_host_call_write(
+                        &mut caller,
+                        cap_ptr,
+                        cap_len,
+                        op_ptr,
+                        op_len,
+                        args_ptr,
+                        args_len,
+                        out_ptr,
+                        out_max,
+                    )
+                    .unwrap_or(-1)
+                },
+            )
+            .expect("ail/host_call_write registration must succeed");
 
         RuntimeHost {
             engine,
@@ -970,6 +1070,73 @@ fn read_memory(
     let mut bytes = vec![0; len as usize];
     memory.read(caller, ptr as usize, &mut bytes).ok()?;
     Some(bytes)
+}
+
+/// Dispatch a structured capability call.
+///
+/// Reads cap/op/args from WASM memory, dispatches to the matching handler,
+/// and writes the handler's response bytes into WASM memory at `out_ptr`
+/// (up to `out_max` bytes).  Returns the number of bytes written as `Some(n)`
+/// on success, or `None` (→ -1 at the call site) on denial, missing handler,
+/// overflow, or any other error.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_host_call_write(
+    caller: &mut wasmtime::Caller<'_, HostState>,
+    cap_ptr: i32,
+    cap_len: i32,
+    op_ptr: i32,
+    op_len: i32,
+    args_ptr: i32,
+    args_len: i32,
+    out_ptr: i32,
+    out_max: i32,
+) -> Option<i32> {
+    // Validate output buffer params.
+    if out_ptr < 0 || out_max < 0 {
+        return None;
+    }
+
+    // Read capability name, operation name, and args bytes from WASM memory.
+    let capability = String::from_utf8(read_memory(caller, cap_ptr, cap_len)?).ok()?;
+    let operation = String::from_utf8(read_memory(caller, op_ptr, op_len)?).ok()?;
+    let args_bytes = read_memory(caller, args_ptr, args_len.checked_mul(8)?)?;
+    let cap = CapabilityId::new(capability);
+
+    // Grant check.
+    {
+        let state = caller.data();
+        if !state.profile.grants_capability(&cap) {
+            return None;
+        }
+    }
+
+    // Find the matching handler.
+    let handler = {
+        let state = caller.data();
+        state
+            .handlers
+            .iter()
+            .find(|h| h.capabilities().contains(&cap))
+            .cloned()
+    };
+    let handler = handler?;
+
+    // Dispatch.
+    let result = handler.handle(&cap, &operation, &args_bytes);
+    let response = result.ok()?;
+
+    // Bounds-check: response must fit in the out buffer.
+    if response.len() > out_max as usize {
+        return None;
+    }
+
+    // Write response bytes to WASM memory at out_ptr.
+    let memory = caller.get_export("memory")?.into_memory()?;
+    memory
+        .write(caller, out_ptr as usize, &response)
+        .ok()?;
+
+    Some(response.len() as i32)
 }
 
 fn dispatch_host_call(

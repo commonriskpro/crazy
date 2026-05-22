@@ -505,15 +505,17 @@ Meaning: after optimization/codegen, validate output preserves ANF/Core semantic
 | Parser | Hand-written ACL parser and hand-written expression parser for the current subset; previous `chumsky`/`lalrpop` placeholder is reversed. |
 | ANF serialization | Exact format decided during implementation; must be deterministic and schema-versioned |
 | SSA / backend | Cranelift for WASM v1. LLVM/native added later if needed. Custom SSA not required. |
-| WASM ABI layout | Exact encoding for records, variants, `Result`, `Option`, handles finalized during implementation |
+| WASM ABI layout | Implemented: records (i64 fields at 8-byte offsets), variants/Option/Result (i32 tag at offset 0, i64 payload at offset 8), lists (i64 count at offset 0, i64 elements). Descriptors in `WasmArtifact::export_types`. Structured EffectCall results via `host_call_write`. |
 | Memory management | RC vs GC deferred to implementation spike — see [Risks](risks.md) V-08 |
 | Translation validation | Required for `prod`/`critical`; scope per profile. Cranelift source-map and capability-boundary preservation is a validation spike — see [Risks](risks.md) V-03 |
 | Native backend | Cranelift (Phase 17, implemented). `emit_native` produces ELF/Mach-O/COFF with provenance + capability manifest. Expression body lowering deferred to Phase 8+. |
 
 ### Implementation Notes
 
-- `emit_wasm` now emits executable bodies for simple integer/bool/control-flow expressions and can dispatch `AnfExpr::EffectCall` through the host runtime.
-- Rich records, variants, `Result`, `Option`, handles, and general memory layout are not fully encoded yet; the current ABI is deliberately narrower.
+- `emit_wasm` emits executable bodies for integer/bool/control-flow expressions, `AnfExpr::EffectCall` (via `ail/host_call`), and all compound types: `RecordNew`, `VariantNew`, `ListNew`, `TupleNew`.
+- The typed WASM/runtime ABI is implemented: `WasmArtifact::export_types` maps each exported binding name to its `WasmTypeDescriptor`, and the runtime uses `ValueDecoder::decode` via `RuntimeInstance::invoke_typed` to reconstruct `StructuredValue` from linear memory.
+- Structured `EffectCall` results (where the binding body is a Record/Variant/List type) use `ail/host_call_write` instead of `ail/host_call`; the host writes response bytes to `result_buffer_offset` in WASM memory. `WasmArtifact::result_buffer_offset` exposes this offset for callers.
+- Memory layout: records store i64 fields at 8-byte offsets from the base pointer; variants store an i32 tag at offset 0 and an i64 payload at offset 8; lists store an i64 count at offset 0 followed by i64 elements.
 - `emit_native` closes the provenance/native-object validation spike but emits trap stubs, not executable native function bodies.
 
 Code references: `crates/ail-compiler/src/expr_parser.rs`, `core_ir.rs`, `anf.rs`, `wasm.rs`, `native.rs`.
