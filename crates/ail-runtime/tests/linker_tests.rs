@@ -22,12 +22,12 @@ use ail_runtime::{
 
 /// Build a WASM module that declares the `ail/host_call` import.
 ///
-/// Signature: (i32, i32, i32, i32, i32, i32) -> i32
+/// Signature: (i32, i32, i32, i32, i32, i32) -> i64
 /// This matches the stub registered by `RuntimeHost::new`.
 fn wasm_with_host_call_import() -> Vec<u8> {
     let mut module = Module::new();
 
-    // Type section: define the function type (i32 × 6) -> i32
+    // Type section: define the function type (i32 × 6) -> i64
     let mut types = TypeSection::new();
     types.ty().function(
         vec![
@@ -38,7 +38,7 @@ fn wasm_with_host_call_import() -> Vec<u8> {
             ValType::I32,
             ValType::I32,
         ],
-        vec![ValType::I32],
+        vec![ValType::I64],
     );
     module.section(&types);
 

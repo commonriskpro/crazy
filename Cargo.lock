@@ -223,6 +223,7 @@ dependencies = [
 name = "ail-runtime"
 version = "0.1.0"
 dependencies = [
+ "ail-change",
  "ail-compiler",
  "ail-core",
  "ail-package",

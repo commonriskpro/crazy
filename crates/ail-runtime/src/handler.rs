@@ -10,6 +10,8 @@
 // `InMemoryHandler` is a test-only handler that returns a canned byte
 // response for every capability it declares.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::abi::{HostError, HostResult};
 use crate::profile::CapabilityId;
 
@@ -80,6 +82,99 @@ pub struct InMemoryHandler {
     name: &'static str,
     caps: Vec<CapabilityId>,
     response: Vec<u8>,
+}
+
+pub struct LogHandler {
+    caps: Vec<CapabilityId>,
+}
+
+impl LogHandler {
+    pub fn new() -> Self {
+        Self {
+            caps: vec![CapabilityId::new("log")],
+        }
+    }
+}
+
+impl Default for LogHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Handler for LogHandler {
+    fn name(&self) -> &str {
+        "log"
+    }
+
+    fn capabilities(&self) -> &[CapabilityId] {
+        &self.caps
+    }
+
+    fn handle(
+        &self,
+        _capability: &CapabilityId,
+        operation: &str,
+        payload: &[u8],
+    ) -> HostResult<Vec<u8>> {
+        let args = decode_i64_args(payload);
+        println!("ail log.{operation}: {args:?}");
+        Ok(0i64.to_le_bytes().to_vec())
+    }
+}
+
+pub struct ClockHandler {
+    caps: Vec<CapabilityId>,
+}
+
+impl ClockHandler {
+    pub fn new() -> Self {
+        Self {
+            caps: vec![CapabilityId::new("clock")],
+        }
+    }
+}
+
+impl Default for ClockHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Handler for ClockHandler {
+    fn name(&self) -> &str {
+        "clock"
+    }
+
+    fn capabilities(&self) -> &[CapabilityId] {
+        &self.caps
+    }
+
+    fn handle(
+        &self,
+        _capability: &CapabilityId,
+        _operation: &str,
+        _payload: &[u8],
+    ) -> HostResult<Vec<u8>> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| HostError {
+                message: format!("clock before unix epoch: {e}"),
+            })?
+            .as_secs() as i64;
+        Ok(now.to_le_bytes().to_vec())
+    }
+}
+
+fn decode_i64_args(payload: &[u8]) -> Vec<i64> {
+    payload
+        .chunks_exact(8)
+        .map(|chunk| {
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(chunk);
+            i64::from_le_bytes(buf)
+        })
+        .collect()
 }
 
 impl InMemoryHandler {
