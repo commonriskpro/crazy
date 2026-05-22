@@ -619,6 +619,109 @@ fn lower_anf_expr_cranelift<'a>(
             }
         }
 
+        // ── Match ────────────────────────────────────────────────────────
+        AnfExpr::Match { scrutinee, arms } => {
+            // Empty arms → trap.
+            if arms.is_empty() {
+                builder.ins().trap(TrapCode::user(1).unwrap());
+                return LowerResult::Terminated;
+            }
+
+            let (scrutinee_val, scrutinee_ty) = match ctx.lookup(scrutinee.as_str()) {
+                Some(pair) => pair,
+                None => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    return LowerResult::Terminated;
+                }
+            };
+
+            // Normalize scrutinee to I64 for pattern comparisons (extend I8 bools).
+            let scrutinee_i64 = if scrutinee_ty == types::I64 {
+                scrutinee_val
+            } else {
+                builder.ins().uextend(types::I64, scrutinee_val)
+            };
+
+            let result_ty = infer_cranelift_return_type(&arms[0].body);
+            let merge_block = builder.create_block();
+            if let Some(ty) = result_ty {
+                builder.append_block_param(merge_block, ty);
+            }
+
+            // Linear scan through arms. After each non-wildcard check, if the
+            // pattern doesn't match we jump to the next check block.
+            // The wildcard or last arm terminates the chain.
+            let n = arms.len();
+            for i in 0..n {
+                let arm = &arms[i];
+                let arm_block = builder.create_block();
+
+                if arm.pattern == "_" {
+                    // Wildcard: unconditional jump into arm_block.
+                    builder.ins().jump(arm_block, &[]);
+                    builder.switch_to_block(arm_block);
+                    builder.seal_block(arm_block);
+                    // Lower arm body and jump to merge.
+                    match lower_anf_expr_cranelift(&arm.body, ctx, builder) {
+                        LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
+                        LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
+                        LowerResult::Terminated => {}
+                    }
+                    // Wildcard terminates the chain; remaining arms (if any) are unreachable.
+                    break;
+                }
+
+                // Non-wildcard: compute equality check.
+                let pattern_val: i64 = match arm.pattern.as_str() {
+                    "true"  => 1,
+                    "false" => 0,
+                    s       => s.parse::<i64>().unwrap_or(0),
+                };
+                let pat_const = builder.ins().iconst(types::I64, pattern_val);
+                let eq = builder.ins().icmp(IntCC::Equal, scrutinee_i64, pat_const);
+
+                if i + 1 < n {
+                    // More arms follow: create a next_check block for the false branch.
+                    let next_check = builder.create_block();
+                    builder.ins().brif(eq, arm_block, &[], next_check, &[]);
+                    // Emit arm body in arm_block.
+                    builder.switch_to_block(arm_block);
+                    builder.seal_block(arm_block);
+                    match lower_anf_expr_cranelift(&arm.body, ctx, builder) {
+                        LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
+                        LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
+                        LowerResult::Terminated => {}
+                    }
+                    // Switch to next_check for the next iteration.
+                    builder.switch_to_block(next_check);
+                    builder.seal_block(next_check);
+                } else {
+                    // Last arm and not wildcard: trap if pattern doesn't match.
+                    let trap_block = builder.create_block();
+                    builder.ins().brif(eq, arm_block, &[], trap_block, &[]);
+                    // Trap block.
+                    builder.switch_to_block(trap_block);
+                    builder.seal_block(trap_block);
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    // Arm block.
+                    builder.switch_to_block(arm_block);
+                    builder.seal_block(arm_block);
+                    match lower_anf_expr_cranelift(&arm.body, ctx, builder) {
+                        LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
+                        LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
+                        LowerResult::Terminated => {}
+                    }
+                }
+            }
+
+            builder.switch_to_block(merge_block);
+            builder.seal_block(merge_block);
+            match result_ty {
+                Some(_) => LowerResult::Value(builder.block_params(merge_block)[0]),
+                None    => LowerResult::Unit,
+            }
+        }
+
         // ── ShortCircuitAnd ───────────────────────────────────────────────
         AnfExpr::ShortCircuitAnd { left, right } => {
             let left_val = match ctx.lookup(left.as_str()) {
