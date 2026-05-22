@@ -102,8 +102,14 @@ pub enum NodeKind {
 /// The semantic relationship expressed by a `GraphEdge`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EdgeKind {
-    /// Caller → callee dependency.
+    /// Caller → callee dependency (static dispatch).
     Calls,
+    /// Caller → callee dependency via dynamic dispatch (`Dyn<Interface>`).
+    ///
+    /// Distinguishes calls that resolve through an interface at runtime from
+    /// static `Calls` edges.  Dynamic dispatch entries expose the interface
+    /// contract and possible impls per runtime profile.
+    DynCalls,
     /// Reader → data dependency.
     Reads,
     /// Writer → data dependency.
