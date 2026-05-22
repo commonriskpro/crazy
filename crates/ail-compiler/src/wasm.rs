@@ -434,6 +434,10 @@ struct WasmCodegenCtx<'a> {
     effect_data: &'a EffectDataLayout,
     labels: Vec<LabelKind>,
     record_layouts: BTreeMap<String, Vec<String>>,
+    /// Stable discriminant table: tag name → assigned u32 id.
+    variant_tags: BTreeMap<String, u32>,
+    /// Counter for the next unassigned variant discriminant.
+    next_variant_tag: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -457,6 +461,23 @@ impl<'a> WasmCodegenCtx<'a> {
             effect_data,
             labels: Vec::new(),
             record_layouts: BTreeMap::new(),
+            variant_tags: BTreeMap::new(),
+            next_variant_tag: 0,
+        }
+    }
+
+    /// Assign a stable discriminant to `tag` within this function context.
+    ///
+    /// The same tag name always returns the same u32 within one codegen
+    /// context.  New tags are assigned in first-encounter order (0, 1, 2, …).
+    fn assign_tag(&mut self, tag: &str) -> u32 {
+        if let Some(&existing) = self.variant_tags.get(tag) {
+            existing
+        } else {
+            let id = self.next_variant_tag;
+            self.next_variant_tag += 1;
+            self.variant_tags.insert(tag.to_string(), id);
+            id
         }
     }
 
@@ -1217,14 +1238,11 @@ fn emit_anf_expr<'a>(
             let ptr = ctx.bind("__variant_ptr", ValType::I32);
             insns.push(Instruction::LocalSet(ptr));
             insns.push(Instruction::LocalGet(ptr));
-            let tag_byte = tag
-                .as_bytes()
-                .iter()
-                .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
-            insns.push(Instruction::I32Const(i32::from(tag_byte)));
-            insns.push(Instruction::I32Store8(wasm_encoder::MemArg {
+            let tag_id = ctx.assign_tag(tag) as i32;
+            insns.push(Instruction::I32Const(tag_id));
+            insns.push(Instruction::I32Store(wasm_encoder::MemArg {
                 offset: 0,
-                align: 0,
+                align: 2,
                 memory_index: 0,
             }));
             if let Some(p) = payload {
@@ -2003,7 +2021,7 @@ mod tests {
                 let mut reader = body.get_operators_reader().unwrap();
                 while !reader.eof() {
                     match reader.read().unwrap() {
-                        Operator::I32Store8 { .. } => saw_tag_store = true,
+                        Operator::I32Store { .. } => saw_tag_store = true,
                         Operator::I64Store { .. } => i64_store_count += 1,
                         _ => {}
                     }
@@ -2011,10 +2029,134 @@ mod tests {
             }
         }
 
-        assert!(saw_tag_store, "variant construction must store a tag byte");
+        assert!(saw_tag_store, "variant construction must store a tag discriminant (I32Store)");
         assert!(
             i64_store_count >= 6,
             "tuple/list/variant constructors must store i64 payloads"
+        );
+    }
+
+    // ── TASK-A3: stable VariantNew discriminant tests (TDD RED) ──────────
+    // Spec scenarios C-2a, C-2b, C-2c.
+
+    fn emit_two_variant_anf(tag_a: &str, tag_b: &str) -> AnfIr {
+        use crate::anf::AnfBinding;
+        // One function body with two sequential VariantNew lets.
+        let binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.variants".to_string(),
+            expr: AnfExpr::Let {
+                name: "v1".to_string(),
+                value: Box::new(AnfExpr::VariantNew {
+                    tag: tag_a.to_string(),
+                    payload: None,
+                }),
+                body: Box::new(AnfExpr::Let {
+                    name: "v2".to_string(),
+                    value: Box::new(AnfExpr::VariantNew {
+                        tag: tag_b.to_string(),
+                        payload: None,
+                    }),
+                    body: Box::new(AnfExpr::Var("v1".to_string())),
+                }),
+            },
+        };
+        sealed_anf(vec![binding])
+    }
+
+    /// Extract all I32Const values seen in the code section of a WASM binary.
+    fn i32_const_values_in_code(wasm: &[u8]) -> Vec<i32> {
+        use wasmparser::{Operator, Parser, Payload};
+        let mut values = Vec::new();
+        for payload in Parser::new(0).parse_all(wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    if let Operator::I32Const { value } = reader.read().unwrap() {
+                        values.push(value);
+                    }
+                }
+            }
+        }
+        values
+    }
+
+    // C-2a: Different tag names produce different discriminants.
+    #[test]
+    fn variant_tag_ok_and_err_produce_different_discriminants() {
+        let anf = emit_two_variant_anf("Ok", "Err");
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let consts = i32_const_values_in_code(&artifact.wasm);
+        // There must be at least two I32Const values (one per VariantNew).
+        assert!(
+            consts.len() >= 2,
+            "must have at least two i32.const (one per variant tag), got: {consts:?}"
+        );
+        // The two tag discriminants must differ.
+        let first = consts[0];
+        let second = consts.iter().find(|&&v| v != first);
+        assert!(
+            second.is_some(),
+            "Ok and Err must produce different discriminants, got all equal: {consts:?}"
+        );
+    }
+
+    // C-2b: Same tag name always produces the same discriminant.
+    // Verified by emitting the same single-variant binding twice and asserting
+    // that the resulting WASM bytes are byte-identical (deterministic discriminant).
+    #[test]
+    fn same_tag_name_produces_same_discriminant_across_calls() {
+        use crate::anf::AnfBinding;
+        let make_anf = || {
+            let binding = AnfBinding {
+                source_ref: NodeRef(0),
+                name: "fn.v".to_string(),
+                expr: AnfExpr::VariantNew {
+                    tag: "Some".to_string(),
+                    payload: None,
+                },
+            };
+            sealed_anf(vec![binding])
+        };
+        let art1 = emit_wasm(&make_anf()).unwrap();
+        let art2 = emit_wasm(&make_anf()).unwrap();
+        wasmparser::validate(&art1.wasm).expect("wasm1 must validate");
+        wasmparser::validate(&art2.wasm).expect("wasm2 must validate");
+        assert_eq!(
+            art1.wasm, art2.wasm,
+            "same AnfIr must produce byte-identical WASM (stable discriminant)"
+        );
+    }
+
+    // C-2c: Tag discriminant is stored as a full i32 (not i8) at offset 0.
+    // This test is RED with the current I32Store8 implementation.
+    #[test]
+    fn variant_discriminant_stored_as_i32_at_offset_0() {
+        use wasmparser::{Operator, Parser, Payload};
+
+        let anf = emit_two_variant_anf("Tag", "Tag");
+        let artifact = emit_wasm(&anf).unwrap();
+        wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+        let mut saw_i32_store_at_0 = false;
+        for payload in Parser::new(0).parse_all(&artifact.wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    if let Operator::I32Store { memarg } = reader.read().unwrap() {
+                        if memarg.offset == 0 {
+                            saw_i32_store_at_0 = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_i32_store_at_0,
+            "VariantNew tag must be stored as a full i32 (I32Store at offset 0), not I32Store8"
         );
     }
 }
