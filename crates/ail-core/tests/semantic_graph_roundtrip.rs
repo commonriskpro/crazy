@@ -511,6 +511,7 @@ fn storage_identity_fields_absent_preserves_wire_format() {
         generated_artifacts: vec![],
         assertions: vec![],
         workflow_state: None,
+        handler_meta: None,
     };
 
     let graph_new = SemanticGraph {

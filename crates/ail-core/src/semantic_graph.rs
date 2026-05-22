@@ -57,6 +57,22 @@ pub enum NodeKind {
     /// Existing CBOR fixtures that do not use `Package` are unaffected
     /// because `ciborium` encodes enum variants by name string.
     Package,
+
+    // ── ola3-core-ir-types: interface/impl/effect-alias kinds ────────────
+    /// An interface (typeclass) definition.
+    ///
+    /// Represents a named set of method signatures and optional associated
+    /// types that a type may implement.
+    Interface,
+    /// An implementation of an interface for a concrete type.
+    ///
+    /// Pairs with a corresponding `Interface` node via a `DependsOn` edge.
+    Impl,
+    /// An effect alias definition.
+    ///
+    /// Names a set of effects under a single alias so functions can
+    /// declare the alias rather than enumerating individual effects.
+    EffectAlias,
 }
 
 // ── EdgeKind ──────────────────────────────────────────────────────────────
@@ -295,18 +311,25 @@ pub struct RefinementRef {
 
 /// Explicit constraint declarations on a type node.
 ///
-/// Records whether this type implements `Eq`, `Ord`, and `Hashable`,
+/// Records whether this type implements `Eq`, `Ord`, `PartialOrd`, and `Hashable`,
 /// plus any additional named constraints.  These are used by the type
 /// checker to enforce collection/operator constraint requirements.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstraintSet {
     /// Whether this type implements `Eq` (required for `==`, `Set<T>`, `Map<K,V>`).
     pub has_eq: bool,
-    /// Whether this type implements `Ord` (required for `sort`, `min`, `max`).
+    /// Whether this type implements `Ord` (total order; required for `sort`, `min`, `max`).
     pub has_ord: bool,
     /// Whether this type implements `Hashable` (required for `Set<T>`, `Map<K,V>`).
     pub has_hash: bool,
-    /// Additional named constraints (e.g., `["PartialOrd", "Display"]`).
+    /// Whether this type implements `PartialOrd` (partial order, e.g., for floating-point).
+    ///
+    /// Distinct from `has_ord`: a type may have partial order without total order.
+    /// Serialized only when `true`; defaults to `false` for backward compatibility
+    /// with existing CBOR fixtures that omit this field.
+    #[serde(default)]
+    pub has_partial_ord: bool,
+    /// Additional named constraints (e.g., `["Display"]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extras: Vec<String>,
 }
@@ -415,6 +438,27 @@ pub enum WorkflowState {
     Migrating,
     /// Node is undergoing behavior-preserving refactoring.
     Refactoring,
+}
+
+// ── HandlerMeta ───────────────────────────────────────────────────────────
+
+/// Metadata for a handler node — a function that satisfies one or more
+/// capability contracts.
+///
+/// Carried as an optional field on `GraphNode` so that existing fixtures
+/// without handler metadata are unaffected (backward compatible).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandlerMeta {
+    /// Capabilities this handler intercepts (e.g., `["database.read"]`).
+    pub handled_caps: Vec<String>,
+    /// Internal effects emitted by this handler's implementation body.
+    pub internal_effects: Vec<String>,
+    /// The capability contract this handler claims to satisfy, if any.
+    ///
+    /// Serialized only when `Some`; absent when the handler does not
+    /// claim a specific contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub satisfies_contract: Option<String>,
 }
 
 // ── GraphNode ─────────────────────────────────────────────────────────────
@@ -561,6 +605,13 @@ pub struct GraphNode {
     /// Workflow state attached through workflow ops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_state: Option<WorkflowState>,
+
+    /// Handler metadata — present on nodes that act as capability handlers.
+    ///
+    /// `None` for all other node kinds.  Serialized only when `Some`
+    /// so that existing CBOR fixtures are byte-identical when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler_meta: Option<HandlerMeta>,
 }
 
 impl GraphNode {
@@ -613,6 +664,7 @@ impl GraphNode {
             generated_artifacts: vec![],
             assertions: vec![],
             workflow_state: None,
+            handler_meta: None,
         }
     }
 }
@@ -1139,6 +1191,7 @@ mod tests {
             has_eq: true,
             has_ord: false,
             has_hash: true,
+            has_partial_ord: false,
             extras: vec!["Display".into()],
         });
 
@@ -1322,6 +1375,210 @@ mod tests {
         assert_eq!(
             original, decoded,
             "ContractRef must survive CBOR round-trip"
+        );
+    }
+
+    // ── Task C3 (RED): ConstraintSet::has_partial_ord ────────────────────
+
+    // S-C3a: ConstraintSet with has_partial_ord=true round-trips through CBOR.
+    #[test]
+    fn constraint_set_with_has_partial_ord_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "Price");
+        node.constraint_set = Some(ConstraintSet {
+            has_eq: true,
+            has_ord: false,
+            has_hash: false,
+            has_partial_ord: true,
+            extras: vec![],
+        });
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        let cs = decoded.nodes[0]
+            .constraint_set
+            .as_ref()
+            .expect("constraint_set must be Some");
+        assert!(cs.has_partial_ord, "has_partial_ord must be true after round-trip");
+        assert!(!cs.has_ord, "has_ord must remain false");
+    }
+
+    // S-C3b: Old ConstraintSet without has_partial_ord deserializes with has_partial_ord=false.
+    // Backward compatibility via serde default.
+    #[test]
+    fn legacy_constraint_set_has_partial_ord_defaults_false() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+        // A legacy node with constraint_set that has no has_partial_ord field
+        // in its CBOR bytes must deserialize with has_partial_ord=false.
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "Amount");
+        node.constraint_set = Some(ConstraintSet {
+            has_eq: true,
+            has_ord: true,
+            has_hash: false,
+            has_partial_ord: false, // default — must not be emitted in CBOR when false
+            extras: vec![],
+        });
+        let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        let cs = decoded.nodes[0].constraint_set.as_ref().unwrap();
+        assert!(!cs.has_partial_ord, "has_partial_ord must default to false");
+        assert!(cs.has_ord, "has_ord must be preserved");
+    }
+
+    // ── Task D1 (RED): new NodeKind variants ──────────────────────────────
+
+    // S-D1a: NodeKind::Interface, Impl, EffectAlias are constructible.
+    #[test]
+    fn new_node_kind_variants_are_constructible() {
+        let _interface = NodeKind::Interface;
+        let _impl_kind = NodeKind::Impl;
+        let _effect_alias = NodeKind::EffectAlias;
+        // All constructed without panic — test passes.
+    }
+
+    // S-D1b: Interface node CBOR round-trip preserves kind.
+    #[test]
+    fn interface_node_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+        let graph = SemanticGraph {
+            nodes: vec![GraphNode::new(
+                NodeRef(0),
+                NodeKind::Interface,
+                "PaymentProvider",
+            )],
+            edges: vec![],
+        };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        assert_eq!(
+            decoded.nodes[0].kind,
+            NodeKind::Interface,
+            "Interface kind must be preserved through CBOR round-trip"
+        );
+    }
+
+    // S-D1c: Impl node round-trips and passes validation.
+    // Triangulation: Impl is distinct from Interface in CBOR encoding.
+    #[test]
+    fn impl_node_round_trips_and_passes_validation() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+        let graph = SemanticGraph {
+            nodes: vec![
+                GraphNode::new(NodeRef(0), NodeKind::Interface, "Chargeable"),
+                GraphNode::new(NodeRef(1), NodeKind::Impl, "StripeChargeImpl"),
+            ],
+            edges: vec![],
+        };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        assert_eq!(decoded.nodes[0].kind, NodeKind::Interface);
+        assert_eq!(decoded.nodes[1].kind, NodeKind::Impl);
+        assert_eq!(decoded.validate(), Ok(()), "graph with Impl node must validate");
+    }
+
+    // S-D1d: EffectAlias node round-trips.
+    #[test]
+    fn effect_alias_node_round_trips() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+        let graph = SemanticGraph {
+            nodes: vec![GraphNode::new(
+                NodeRef(0),
+                NodeKind::EffectAlias,
+                "DatabaseAlias",
+            )],
+            edges: vec![],
+        };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        assert_eq!(decoded.nodes[0].kind, NodeKind::EffectAlias);
+    }
+
+    // ── Task D3 (RED): HandlerMeta on GraphNode ───────────────────────────
+
+    // S-D3a: HandlerMeta with handled_caps is constructible and round-trips.
+    #[test]
+    fn handler_meta_with_caps_cbor_round_trip() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+        let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "stripe_handler");
+        node.handler_meta = Some(HandlerMeta {
+            handled_caps: vec!["database.read".to_string(), "payments.charge".to_string()],
+            internal_effects: vec!["IO".to_string()],
+            satisfies_contract: Some("cap.payments.Chargeable".to_string()),
+        });
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        let hm = decoded.nodes[0]
+            .handler_meta
+            .as_ref()
+            .expect("handler_meta must be Some");
+        assert_eq!(hm.handled_caps, ["database.read", "payments.charge"]);
+        assert_eq!(hm.internal_effects, ["IO"]);
+        assert_eq!(
+            hm.satisfies_contract.as_deref(),
+            Some("cap.payments.Chargeable")
+        );
+    }
+
+    // S-D3b: Old GraphNode without handler_meta deserializes with handler_meta=None.
+    // Backward compatibility: existing fixtures must not break.
+    #[test]
+    fn legacy_node_without_handler_meta_has_none() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+        let graph = SemanticGraph {
+            nodes: vec![GraphNode::new(NodeRef(0), NodeKind::Function, "legacy_fn")],
+            edges: vec![],
+        };
+        let bytes = codec.encode(&graph).expect("encode");
+        let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
+        assert!(
+            decoded.nodes[0].handler_meta.is_none(),
+            "legacy node must have handler_meta=None after CBOR round-trip"
+        );
+    }
+
+    // S-D3c: HandlerMeta without satisfies_contract omits that field.
+    // Triangulation: None satisfies_contract must not appear in CBOR.
+    #[test]
+    fn handler_meta_without_contract_omits_field() {
+        use ail_storage::codec::{CborCodec, ContentCodec};
+        let codec = CborCodec;
+        let mut node_with = GraphNode::new(NodeRef(0), NodeKind::Function, "h");
+        node_with.handler_meta = Some(HandlerMeta {
+            handled_caps: vec!["db.read".to_string()],
+            internal_effects: vec![],
+            satisfies_contract: Some("SomeContract".to_string()),
+        });
+        let mut node_without = GraphNode::new(NodeRef(0), NodeKind::Function, "h");
+        node_without.handler_meta = Some(HandlerMeta {
+            handled_caps: vec!["db.read".to_string()],
+            internal_effects: vec![],
+            satisfies_contract: None,
+        });
+        let bytes_with = codec
+            .encode(&SemanticGraph { nodes: vec![node_with], edges: vec![] })
+            .expect("encode with");
+        let bytes_without = codec
+            .encode(&SemanticGraph { nodes: vec![node_without], edges: vec![] })
+            .expect("encode without");
+        // Node with satisfies_contract must encode to MORE bytes.
+        assert!(
+            bytes_with.len() > bytes_without.len(),
+            "satisfies_contract=Some must produce more bytes than None"
         );
     }
 }

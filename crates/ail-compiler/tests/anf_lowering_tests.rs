@@ -51,7 +51,11 @@ fn core_ir_with_expr(source_ref: NodeRef, name: &str, expr: CoreExpr) -> CoreIr 
             source_ref,
             kind: CoreNodeKind::Function,
             name: name.to_string(),
-            ty: Some(CoreType::Function),
+            ty: Some(CoreType::Function {
+                params: vec![],
+                ret: Box::new(CoreType::Generic),
+                effects: vec![],
+            }),
             expr: Some(expr),
         }],
         stage_hashes: StageHashes {
@@ -125,6 +129,7 @@ fn loop_break_continue_lower_to_anf_loop_variants() {
         body: Box::new(CoreExpr::Break {
             value: Box::new(CoreExpr::Literal(LiteralValue::Int(10))),
         }),
+        termination: None,
     };
 
     let anf = lower_expr(&expr);
@@ -148,6 +153,7 @@ fn while_loop_condition_is_atomized() {
             args: vec![],
         }),
         body: Box::new(CoreExpr::Continue),
+        termination: None,
     };
 
     let (synth, root) = lower_and_collect(&expr);
@@ -442,7 +448,11 @@ fn core_node_without_expr_produces_literal_unit() {
                 source_ref: NodeRef(1),
                 kind: CoreNodeKind::Function,
                 name: "fn_stub".to_string(),
-                ty: Some(CoreType::Function),
+                ty: Some(CoreType::Function {
+                    params: vec![],
+                    ret: Box::new(CoreType::Generic),
+                    effects: vec![],
+                }),
                 expr: None,
             },
         ],

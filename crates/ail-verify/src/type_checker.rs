@@ -136,6 +136,12 @@ pub const E_DYN_INTERFACE_UNAVAILABLE: &str = "E_DYN_INTERFACE_UNAVAILABLE";
 pub const E_REFINEMENT_PROOF_UNDISCHARGED: &str = "E_REFINEMENT_PROOF_UNDISCHARGED";
 /// Runtime-checked refinement has no materialized runtime check metadata.
 pub const E_REFINEMENT_RUNTIME_CHECK_MISSING: &str = "E_REFINEMENT_RUNTIME_CHECK_MISSING";
+/// PatchField type carries an empty inner type — prohibited in Core IR.
+pub const E_PATCHFIELD_EMPTY_INNER: &str = "E_PATCHFIELD_EMPTY_INNER";
+/// Boundary inferred fact return type does not match declared return_type.
+pub const E_BOUNDARY_INFERENCE_MISMATCH: &str = "E_BOUNDARY_INFERENCE_MISMATCH";
+/// Type used in a context requiring PartialOrd but only partial order is available.
+pub const E_PARTIAL_ORD_REQUIRED: &str = "E_PARTIAL_ORD_REQUIRED";
 
 // ── Collection constraint table ───────────────────────────────────────────
 
@@ -238,6 +244,15 @@ impl TypeChecker {
 
         // Subpass 10 — float equality/ordering policy.
         Self::check_float_policy(graph, &mut entries);
+
+        // Subpass 11 — PatchField inner-type validation.
+        Self::check_patchfield(graph, &mut entries);
+
+        // Subpass 12 — PartialOrd vs Ord distinction.
+        Self::check_partial_ord(graph, &mut entries);
+
+        // Subpass 13 — Boundary inference cross-check.
+        Self::check_boundary_inference(graph, &mut entries);
 
         let summary_counts = build_summary_counts(&entries);
         VerificationReport {
@@ -1060,6 +1075,142 @@ impl TypeChecker {
                         node.name
                     )),
                 });
+            }
+        }
+    }
+
+    // ── Subpass 11: PatchField inner-type validation ─────────────────────
+
+    /// Enforce that `PatchField<T>` always carries a non-empty inner type.
+    ///
+    /// `PatchField<>` is prohibited in Core IR — partial updates must
+    /// target a concrete type.
+    ///
+    /// - `return_type` starts with "PatchField<" and inner is non-empty → Proven
+    /// - `return_type` starts with "PatchField<" and inner is empty → Failed (E_PATCHFIELD_EMPTY_INNER)
+    /// - All other return types are not touched by this subpass.
+    fn check_patchfield(graph: &SemanticGraph, entries: &mut Vec<VerificationEntry>) {
+        for node in &graph.nodes {
+            let Some(return_type) = &node.return_type else {
+                continue;
+            };
+            if !return_type.starts_with("PatchField<") {
+                continue;
+            }
+            let (_, inner) = split_generic(return_type);
+            let scope = node.name.clone();
+            if inner.is_empty() {
+                entries.push(VerificationEntry {
+                    claim: "patchfield".into(),
+                    state: VerificationState::Failed,
+                    scope,
+                    evidence: Some(format!(
+                        "{E_PATCHFIELD_EMPTY_INNER}: PatchField on '{}' has no inner type; \
+                         Core IR requires PatchField<T> where T is a non-empty concrete type",
+                        node.name
+                    )),
+                });
+            } else {
+                entries.push(VerificationEntry {
+                    claim: "patchfield".into(),
+                    state: VerificationState::Proven,
+                    scope,
+                    evidence: None,
+                });
+            }
+        }
+    }
+
+    // ── Subpass 12: PartialOrd vs Ord distinction ─────────────────────────
+
+    /// Distinguish nodes that carry `has_partial_ord = true` in their
+    /// constraint set.
+    ///
+    /// - `return_type` starts with "PartialOrd<" AND `has_partial_ord = true`
+    ///   → Proven ("partial-ord") — the node is used in an explicit partial-order
+    ///   context and satisfies it.
+    /// - `has_partial_ord = true` AND `has_ord = false` in any other ordering
+    ///   context → Unverified ("partial-ord") with E_PARTIAL_ORD_REQUIRED —
+    ///   informational: total-order contexts cannot be served by partial order alone.
+    fn check_partial_ord(graph: &SemanticGraph, entries: &mut Vec<VerificationEntry>) {
+        for node in &graph.nodes {
+            let Some(cs) = &node.constraint_set else {
+                continue;
+            };
+            if !cs.has_partial_ord {
+                continue;
+            }
+            let Some(return_type) = &node.return_type else {
+                continue;
+            };
+            let scope = node.name.clone();
+            if return_type.starts_with("PartialOrd<") {
+                entries.push(VerificationEntry {
+                    claim: "partial-ord".into(),
+                    state: VerificationState::Proven,
+                    scope,
+                    evidence: None,
+                });
+            } else if !cs.has_ord {
+                entries.push(VerificationEntry {
+                    claim: "partial-ord".into(),
+                    state: VerificationState::Unverified,
+                    scope,
+                    evidence: Some(format!(
+                        "{E_PARTIAL_ORD_REQUIRED}: type '{}' has has_partial_ord=true \
+                         but lacks has_ord=true; in a total-order context only partial \
+                         ordering is available, which may be insufficient",
+                        node.name
+                    )),
+                });
+            }
+        }
+    }
+
+    // ── Subpass 13: Boundary inference cross-check ────────────────────────
+
+    /// Cross-check inferred boundary facts against the declared return type.
+    ///
+    /// For each Function node with `inferred` facts of `kind == "boundary"`:
+    /// - Parse the `value` as `"return:TYPE"`.
+    /// - Compare the extracted TYPE to `node.return_type`.
+    /// - Match → Proven ("boundary-inference").
+    /// - Mismatch → Failed ("boundary-inference") with E_BOUNDARY_INFERENCE_MISMATCH.
+    /// - No boundary facts → no entry emitted (subpass is skipped for that node).
+    fn check_boundary_inference(graph: &SemanticGraph, entries: &mut Vec<VerificationEntry>) {
+        for node in &graph.nodes {
+            if node.kind != NodeKind::Function {
+                continue;
+            }
+            for fact in &node.inferred {
+                if fact.kind != "boundary" {
+                    continue;
+                }
+                let Some(claimed_return) = fact.value.strip_prefix("return:") else {
+                    continue;
+                };
+                let scope = node.name.clone();
+                let declared = node.return_type.as_deref().unwrap_or("");
+                if claimed_return == declared {
+                    entries.push(VerificationEntry {
+                        claim: "boundary-inference".into(),
+                        state: VerificationState::Proven,
+                        scope,
+                        evidence: None,
+                    });
+                } else {
+                    entries.push(VerificationEntry {
+                        claim: "boundary-inference".into(),
+                        state: VerificationState::Failed,
+                        scope,
+                        evidence: Some(format!(
+                            "{E_BOUNDARY_INFERENCE_MISMATCH}: boundary inferred return \
+                             type '{claimed_return}' does not match declared return_type \
+                             '{declared}' on '{}'",
+                            node.name
+                        )),
+                    });
+                }
             }
         }
     }

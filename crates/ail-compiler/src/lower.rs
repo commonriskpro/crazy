@@ -30,7 +30,7 @@ use ail_verify::report::{VerificationReport, VerificationState};
 
 use crate::anf::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, SourceMap, SourceMapEntry};
 use crate::core_ir::{
-    CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, StageHashes,
+    CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, ResourceMode, StageHashes,
 };
 use crate::error::CompileError;
 use crate::expr_parser::parse_expr;
@@ -70,6 +70,9 @@ pub(crate) fn map_node_kind(kind: NodeKind) -> CoreNodeKind {
         NodeKind::Test => CoreNodeKind::Test,
         NodeKind::Boundary => CoreNodeKind::Boundary,
         NodeKind::Package => CoreNodeKind::Package,
+        NodeKind::Interface => CoreNodeKind::Interface,
+        NodeKind::Impl => CoreNodeKind::Impl,
+        NodeKind::EffectAlias => CoreNodeKind::EffectAlias,
     }
 }
 
@@ -381,7 +384,8 @@ pub fn lower_core_expr_to_anf(
         }
 
         // Loop: body is lowered recursively; exits through Break.
-        CoreExpr::Loop { body } => {
+        // The termination field is not used during ANF lowering.
+        CoreExpr::Loop { body, .. } => {
             let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
             AnfExpr::Loop {
                 body: Box::new(anf_body),
@@ -399,7 +403,8 @@ pub fn lower_core_expr_to_anf(
         CoreExpr::Continue => AnfExpr::Continue,
 
         // WhileLoop: condition must be atomic; body is lowered recursively.
-        CoreExpr::WhileLoop { cond, body } => {
+        // The termination field is not used during ANF lowering.
+        CoreExpr::WhileLoop { cond, body, .. } => {
             let cond_name = atomize(cond, fresh, source_ref, out);
             let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
             AnfExpr::WhileLoop {
@@ -610,6 +615,19 @@ pub fn lower_core_expr_to_anf(
 
         // CoreExpr::Placeholder → AnfExpr::Placeholder (no expression body).
         CoreExpr::Placeholder => AnfExpr::Placeholder,
+
+        // ola3-core-ir-types: new expression primitives not yet lowered to ANF.
+        // These are kept as Placeholder until the expression-lowering phase
+        // handles them explicitly.
+        CoreExpr::ForEach { .. }
+        | CoreExpr::Fold { .. }
+        | CoreExpr::Return { .. }
+        | CoreExpr::MapNew { .. }
+        | CoreExpr::SetNew { .. }
+        | CoreExpr::IndexGet { .. }
+        | CoreExpr::BoundaryCall { .. }
+        | CoreExpr::Assume { .. }
+        | CoreExpr::Abort { .. } => AnfExpr::Placeholder,
     }
 }
 
@@ -657,14 +675,26 @@ pub fn nominal_to_core_type(nominal: &str) -> CoreType {
         "Record" => CoreType::Record,
         "Variant" => CoreType::Variant,
         "Tuple" => CoreType::Tuple,
-        "List" => CoreType::List,
-        "Map" => CoreType::Map,
-        "Set" => CoreType::Set,
-        "Option" => CoreType::Option,
-        "Result" => CoreType::Result,
-        "Function" => CoreType::Function,
-        "Handle" => CoreType::Handle,
-        "Refinement" => CoreType::Refinement,
+        // Parameterized variants: inner type defaults to Generic when only the
+        // nominal name is available (full resolution requires type-param phase).
+        "List" => CoreType::List(Box::new(CoreType::Generic)),
+        "Map" => CoreType::Map(Box::new(CoreType::Generic), Box::new(CoreType::Generic)),
+        "Set" => CoreType::Set(Box::new(CoreType::Generic)),
+        "Option" => CoreType::Option(Box::new(CoreType::Generic)),
+        "Result" => CoreType::Result(Box::new(CoreType::Generic), Box::new(CoreType::Generic)),
+        "Function" => CoreType::Function {
+            params: vec![],
+            ret: Box::new(CoreType::Generic),
+            effects: vec![],
+        },
+        "Handle" => CoreType::Handle {
+            resource: Box::new(CoreType::Generic),
+            mode: ResourceMode::Copy,
+        },
+        "Refinement" => CoreType::Refinement {
+            base: Box::new(CoreType::Generic),
+            predicate: String::new(),
+        },
         "Generic" => CoreType::Generic,
         _ => CoreType::Generic,
     }
@@ -1168,14 +1198,14 @@ mod tests {
             ("Record", CoreType::Record),
             ("Variant", CoreType::Variant),
             ("Tuple", CoreType::Tuple),
-            ("List", CoreType::List),
-            ("Map", CoreType::Map),
-            ("Set", CoreType::Set),
-            ("Option", CoreType::Option),
-            ("Result", CoreType::Result),
-            ("Function", CoreType::Function),
-            ("Handle", CoreType::Handle),
-            ("Refinement", CoreType::Refinement),
+            ("List", CoreType::List(Box::new(CoreType::Generic))),
+            ("Map", CoreType::Map(Box::new(CoreType::Generic), Box::new(CoreType::Generic))),
+            ("Set", CoreType::Set(Box::new(CoreType::Generic))),
+            ("Option", CoreType::Option(Box::new(CoreType::Generic))),
+            ("Result", CoreType::Result(Box::new(CoreType::Generic), Box::new(CoreType::Generic))),
+            ("Function", CoreType::Function { params: vec![], ret: Box::new(CoreType::Generic), effects: vec![] }),
+            ("Handle", CoreType::Handle { resource: Box::new(CoreType::Generic), mode: ResourceMode::Copy }),
+            ("Refinement", CoreType::Refinement { base: Box::new(CoreType::Generic), predicate: String::new() }),
             ("Generic", CoreType::Generic),
         ];
         for (nominal, expected) in cases {
