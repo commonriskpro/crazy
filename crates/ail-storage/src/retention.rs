@@ -253,6 +253,7 @@ where
         parent_id: first.parent_id,
         applied_change_id: last.applied_change_id,
         created_at: last.created_at,
+        verification_report_hash: last.verification_report_hash,
     };
 
     // Save covering snapshot first, then remove originals.
