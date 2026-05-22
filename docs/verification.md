@@ -1,5 +1,7 @@
 # Verification model
 
+<!-- Implementation Status: checker/report infrastructure exists, but the full 23-step pipeline is implemented as a subset across explicit checker modules. -->
+
 > Full extracted design. Related: [Type system](type-system.md), [AI Change Language](change-language.md), [Runtime](runtime.md), [Compiler](compiler.md).
 
 ## Verificación
@@ -1707,6 +1709,8 @@ El profile/policy decide si el cambio pasa.
 
 #### Pipeline completo
 
+<!-- Implementation Status: full target pipeline. Current implementation covers the subset represented by `ail-verify` checker modules plus compiler/runtime hash checks; not every layer below is complete. -->
+
 ```txt
 1. Parse ChangeSet
 2. Canonicalize ChangeSet
@@ -1732,6 +1736,8 @@ El profile/policy decide si el cambio pasa.
 22. Codegen consistency check
 23. Emit verification report
 ```
+
+Implementation note: the codebase currently implements this as composable checker modules rather than one monolithic 23-step driver. Implemented areas include type, effect, contract, resource, concurrency, boundary, package, policy, proof, solver, report, and codegen checks under `crates/ail-verify/src/`. Graph canonicalization, full ANF/resource ordering validation, package/dependency policy depth, and critical-profile formal completeness remain validation work rather than completed proof.
 
 #### Layer responsibilities
 

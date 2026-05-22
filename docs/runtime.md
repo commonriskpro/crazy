@@ -1,5 +1,7 @@
 # Runtime / capability protocol
 
+<!-- Implementation Status: Wasmtime preflight, handler dispatch, schema checks, rollback integration, replay hashes, reports, and compiled effect dispatch exist. Rich typed ABI/value layout remains incomplete. -->
+
 > Full extracted design. Related: [Verification](verification.md), [Compiler](compiler.md), [Package trust](packages.md), [Standard library](stdlib.md).
 
 ## Capabilities
@@ -639,12 +641,16 @@ Runtime cannot upgrade verification state. It can only enforce and produce evide
 10. Runtime profiles are explicit and versioned.
 ```
 
-### Open design questions
+### Implementation Notes
 
-```txt
-1. Exact binary encoding for host.call payloads: canonical JSON, MessagePack, CBOR, or custom binary schema?
-2. Whether WASI is used as substrate or avoided behind our host ABI.
-3. How much of handler execution can itself be compiled/verified modules.
-4. How to standardize distributed tracing across capability calls.
-5. Whether capability calls are always async/can_suspend or can be sync by type.
-```
+The current runtime implementation resolves the original open questions for the first executable milestone as follows:
+
+| Topic | Implementation status |
+|-------|-----------------------|
+| Host call ABI | Implemented as `ail/host_call(cap_ptr, cap_len, op_ptr, op_len, args_ptr, args_len) -> i64` with handler dispatch in `RuntimeHost`. This is not the final rich typed ABI. |
+| WASI exposure | Hidden behind the host runtime. The workspace owns direct `wasmtime` usage in `ail-runtime`; programs interact through host calls and exported functions. |
+| Handler execution | In-process Rust `Handler` trait implementations. Verified-module handlers remain future work. |
+| Tracing | OpenTelemetry dependencies exist; runtime audit/reporting is implemented. Full distributed tracing across capability calls remains future hardening. |
+| Sync/async calls | Current host capability calls are synchronous from the Rust API perspective. Async-native capability typing remains part of the full design, not this milestone. |
+
+Code references: `crates/ail-runtime/src/host.rs`, `crates/ail-runtime/src/handler.rs`, `crates/ail-runtime/src/schema.rs`, `crates/ail-runtime/tests/effect_runtime_tests.rs`.

@@ -1,6 +1,38 @@
 # Consistency review
 
+<!-- Implementation Status: consistency pass rerun against current implementation state. -->
+
 ## Reviewed decisions
+
+### Parser choice
+
+Status: resolved.
+
+- Earlier docs mentioned `chumsky`/`lalrpop` as the parser spike outcome.
+- Implementation uses hand-written parsers for ACL and the current expression subset.
+- Updated `decision-log.md`, `open-questions.md`, and `compiler.md` to document the reversal.
+
+### Runtime ABI and effect dispatch
+
+Status: resolved with remaining gap documented.
+
+- Runtime docs now reflect implemented `RuntimeHost`, `ail/host_call`, handler dispatch, schema checks, audit events, and rollback helpers.
+- Full typed ABI layout is not claimed complete; it is tracked as risk/validation work.
+
+### Context Server transport
+
+Status: resolved with deliberate deviation documented.
+
+- The design keeps the Context Server protocol shape.
+- Implementation is currently an in-process `ail-context` crate with DTOs, source adapters, builder, and deterministic summary rendering.
+- Network transport is not implemented and is no longer implied by the docs.
+
+### Phase status
+
+Status: resolved.
+
+- `implementation-blueprint.md` now marks phase milestones against code evidence.
+- Milestone completion does not imply every full-design feature is complete.
 
 ### Money
 
@@ -45,4 +77,5 @@ Status: corrected.
 
 - The raw `ai-native-language-draft.md` still contains earlier exploratory/proposal sections and repeated material.
 - Canonical organized docs are now under `docs/`.
+- Full WASM value layout, native body lowering, remote Context Server transport, and large-project performance benchmarks remain known implementation gaps.
 - Future edits should update split docs first, then optionally sync/archive raw draft.

@@ -1,5 +1,7 @@
 # Risks and validation register
 
+<!-- Implementation Status: updated to distinguish mitigated implementation risks from remaining validation risks. -->
+
 > Related: [Decisions register](open-questions.md), [Decision log](decision-log.md), [Consistency review](consistency-review.md).
 
 The primary risk is not building a language. It is building a system too complex to be reliable, usable, and verifiable.
@@ -32,6 +34,8 @@ owner/area
 
 #### Complejidad sistémica
 
+Status: mitigated by crate boundaries and workspace tests; still ongoing.
+
 Riesgo:
 
 ```txt
@@ -51,6 +55,8 @@ dogfooding temprano
 
 #### Trusted Computing Base demasiado grande
 
+Status: open.
+
 Riesgo:
 
 ```txt
@@ -68,6 +74,8 @@ fuzzing de parser/canonicalizer/runtime ABI
 ```
 
 #### Semantics drift
+
+Status: mitigated for current compiler pipeline by deterministic Core IR/ANF/WASM hash-chain tests; still open for the full language semantics.
 
 Riesgo:
 
@@ -89,6 +97,8 @@ semantic source maps obligatorios
 
 #### Solver limits
 
+Status: open.
+
 Riesgo:
 
 ```txt
@@ -109,6 +119,8 @@ diagnostics reparables
 
 #### Falsa sensación de seguridad
 
+Status: mitigated by explicit report states; still open at UX/policy level.
+
 Riesgo:
 
 ```txt
@@ -125,6 +137,8 @@ UX que no oculte deuda
 ```
 
 #### Assumptions como puerta trasera
+
+Status: mitigated by assumption records and package/runtime policy surfaces; still open for full approval workflows.
 
 Riesgo:
 
@@ -145,6 +159,8 @@ assumption review workflow
 
 #### Change Language demasiado verboso
 
+Status: mitigated by line parser, canonicalization, inferred boundary support, and typed blocks; still open for large real ChangeSets.
+
 Riesgo:
 
 ```txt
@@ -163,6 +179,8 @@ operation macros derivadas pero verificables
 
 #### Contexto viejo
 
+Status: mitigated by base snapshot/precondition plumbing; semantic rebase remains ongoing.
+
 Riesgo:
 
 ```txt
@@ -179,6 +197,8 @@ semantic rebase
 ```
 
 #### Summaries engañosos
+
+Status: mitigated by deterministic summaries from structured context in `ail-context`; summary consistency testing remains ongoing.
 
 Riesgo:
 
@@ -199,6 +219,8 @@ summary consistency tests
 
 #### Graph queries lentas
 
+Status: open. Incremental/cache work exists, but large-project benchmarks remain required.
+
 Riesgo:
 
 ```txt
@@ -217,6 +239,8 @@ parallel checks
 
 #### WASM/capability overhead
 
+Status: open. Current host ABI proves dispatch but uses a narrow value layout and needs benchmarking.
+
 Riesgo:
 
 ```txt
@@ -234,6 +258,8 @@ native backend future path
 ```
 
 #### Storage growth
+
+Status: mitigated by retention, GC, compaction, migration, branch/tag/export primitives; realistic growth validation remains open.
 
 Riesgo:
 
@@ -256,6 +282,8 @@ external archival
 
 #### Capability bypass
 
+Status: mitigated for WASM preflight and runtime host calls; native/FFI and richer ABI remain open.
+
 Riesgo:
 
 ```txt
@@ -275,6 +303,8 @@ security fuzzing
 
 #### Handler malicioso o vulnerable
 
+Status: open.
+
 Riesgo:
 
 ```txt
@@ -293,6 +323,8 @@ security approval for unsafe handlers
 ```
 
 #### Supply chain
+
+Status: mitigated by package trust/signing/advisory primitives; real registry trust operations remain open.
 
 Riesgo:
 
@@ -315,6 +347,8 @@ local verification option
 
 #### Sin ecosistema no hay utilidad
 
+Status: open.
+
 Riesgo:
 
 ```txt
@@ -333,6 +367,8 @@ excellent tooling
 
 #### Modelo mental demasiado nuevo
 
+Status: open.
+
 Riesgo:
 
 ```txt
@@ -349,13 +385,71 @@ examples end-to-end
 docs enfocadas en conceptos
 ```
 
+### New implementation risks
+
+#### WASM memory layout complexity
+
+Status: open.
+
+Riesgo:
+
+```txt
+The current executable ABI handles simple i64-oriented values and host-call payload slices,
+but the design requires records, variants, Result/Option, handles, strings/bytes, and
+runtime-checked boundary schemas.
+```
+
+Mitigación:
+
+```txt
+keep current ABI narrow and tested
+document unsupported value kinds explicitly
+add golden ABI layout tests before broadening the executable subset
+tie layout decisions to runtime schema validation and compiler source maps
+```
+
+Validation:
+
+```txt
+compile and execute representative values across WASM boundary
+round-trip records, variants, Result/Option, handles, text, and bytes
+prove manifest/schema mismatch is rejected before execution
+```
+
+#### Native backend execution gap
+
+Status: open.
+
+Riesgo:
+
+```txt
+The native backend currently emits Cranelift object files with trap stubs,
+provenance, and capability manifests. It does not execute lowered expression bodies.
+```
+
+Mitigación:
+
+```txt
+treat native as a closed provenance spike, not execution parity
+keep WASM as primary executable target
+require native body lowering tests before exposing native run workflows
+```
+
+Validation:
+
+```txt
+lower simple ANF expressions to native code
+preserve source maps and capability boundaries
+compare native/WASM behavior on shared fixtures
+```
+
 ### Closed design questions (decisions made)
 
 All previously open design questions are now closed. See [Decisions register](open-questions.md) for the full table. Summary:
 
 | Area | Key decisions |
 |------|--------------|
-| Toolchain | Rust, chumsky/lalrpop (spike), Z3 + abstract solver API, Wasmtime, Cranelift v1 |
+| Toolchain | Rust, hand-written ACL/expression parsers, Z3 + abstract solver API, Wasmtime, Cranelift v1 |
 | Formats | BLAKE3 hashing, deterministic CBOR payloads, OpenTelemetry tracing |
 | Crypto | AES-256-GCM, Ed25519, Argon2id, X25519 |
 | Storage | Async GraphStore API; FoundationDB-compatible model; Postgres + CAS initial backend |
@@ -423,6 +517,8 @@ mitigation  typed binary ABI; batch capability calls; zero-copy where safe; prof
 validation  spike: measure isolation overhead under representative handler load
 ```
 
+Current status: partly mitigated for in-process handlers by `RuntimeHost::call_capability`; process/remote isolation latency is not validated.
+
 #### V-06: Distributed graph collaboration protocol
 
 ```txt
@@ -452,6 +548,8 @@ likelihood  medium
 mitigation  decision deferred to implementation spike; resource modes constrain ownership patterns
 validation  spike: prototype RC and GC approaches; evaluate performance, correctness, and WASM ABI complexity
 ```
+
+Current status: open. The current ABI intentionally avoids full object/handle memory management by using a narrow value path.
 
 ### Validation milestones (behavioral)
 

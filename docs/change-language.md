@@ -1,5 +1,7 @@
 # AI Change Language
 
+<!-- Implementation Status: hand-written ACL parser, canonicalizer, typed blocks, verify sections, composition metadata, and apply path exist for the current grammar subset. -->
+
 > Full extracted design. Related: [Core IR](core-ir.md), [Verification](verification.md), [Context Server](context-server.md), [Tooling](tooling.md).
 
 ## AI Change Language
@@ -1289,6 +1291,8 @@ end
 
 ### Grammar formal del Change Language
 
+<!-- Implementation Status: implemented by `crates/ail-change/src/parser.rs`, not a parser generator. The implemented grammar is intentionally narrower than the full protocol design. -->
+
 Decisión:
 
 ```txt
@@ -2030,3 +2034,15 @@ Reglas del formato:
 - Cambios transaccionales: si algo falla, no entra nada.
 - Errores reparables por máquina.
 - Formato textual verbose solo como protocolo de escritura, no como almacenamiento principal.
+
+### Implementation Notes
+
+The current parser is a pure hand-written line parser. It supports the implemented ACL subset documented in `crates/ail-change/src/parser.rs`: `change`, inline attrs, metadata/requires/ops/expect/approval sections, typed blocks, verify short/block forms, comments, and `key=value` op arguments.
+
+Known gaps against the full design:
+
+- Complex values are kept as strings for downstream semantic validation in several paths.
+- Expression blocks are carried through as typed blocks; the compiler expression parser only handles the current executable subset.
+- Formatting/canonical output is implemented for tested paths, not every future grammar feature.
+
+Code references: `crates/ail-change/src/parser.rs`, `crates/ail-change/src/canonical.rs`, `crates/ail-change/src/apply.rs`.

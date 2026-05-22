@@ -1,5 +1,7 @@
 # Context Server protocol
 
+<!-- Implementation Status: implemented as an in-process `ail-context` crate, not a network transport server. -->
+
 > Full extracted design. Related: [Storage](storage.md), [Verification](verification.md), [AI Change Language](change-language.md), [Tooling](tooling.md).
 
 ## Context Server
@@ -621,12 +623,16 @@ runtime profile=<profile> target
 10. The LLM should consume context slices, not source files.
 ```
 
-### Open design questions
+### Implementation Notes
 
-```txt
-1. Exact query syntax: line-oriented DSL, RPC JSON, or both?
-2. How summaries are generated and verified against structured data.
-3. Whether context slices can be signed for distributed agents.
-4. Default budgets for different model/context sizes.
-5. How much runtime/audit context should be exposed to LLMs by default.
-```
+The first implementation is an in-process semantic context API rather than a transport server. This preserves the protocol model while avoiding premature network/auth/server complexity.
+
+| Topic | Implementation status |
+|-------|-----------------------|
+| Query syntax | Structured Rust DTOs in `ail-context`; CLI/transport syntax remains future work. |
+| Summaries | Deterministic renderer in `crates/ail-context/src/summary.rs`. Structured data remains authoritative. |
+| Signing | Distributed signing is handled in remote/bundle primitives, not context responses yet. |
+| Budgets | Response DTOs include limits and budget-related errors; model-tier defaults remain policy work. |
+| Audit/runtime exposure | Redaction and access errors exist at protocol level; full audit exposure policy remains future work. |
+
+Code references: `crates/ail-context/src/lib.rs`, `builder.rs`, `dto.rs`, `summary.rs`.
