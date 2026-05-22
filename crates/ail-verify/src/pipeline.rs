@@ -37,7 +37,7 @@
 // All stages are pure.  The pipeline produces identical output for identical
 // inputs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
 use ail_change::canonical::{CanonicalChangeSet, OpPayload, canonicalize_parsed};
 use ail_change::model::ChangeSetOp;
@@ -55,10 +55,10 @@ use crate::policy::{
     ApprovalRecord, CapabilityGrant, PackageTrustEntry, PolicyEngine, PolicyInput, PolicyRule,
     PublicApiChange, StructuralDiff,
 };
-use crate::proof::ProofObligationPipeline;
+use crate::proof::{ClauseRole, ProofObligation, ProofObligationPipeline};
 use crate::report::{DegradationEvent, VerificationEntry, VerificationReport, VerificationState};
 use crate::resource_checker::ResourceChecker;
-use crate::solver::Solver;
+use crate::solver::{Solver, SolverOutcome};
 use crate::type_checker::TypeChecker;
 
 // ── PipelineContext ───────────────────────────────────────────────────────
@@ -236,7 +236,7 @@ impl VerificationPipeline {
         ));
 
         // ── Stage 10: Check refinements ───────────────────────────────────
-        all_entries.extend(check_refinements(ctx.graph));
+        all_entries.extend(check_refinements(ctx.graph, ctx.solver));
 
         // ── Stage 11: Check contracts ─────────────────────────────────────
         all_entries.push(stage_entry(
@@ -839,7 +839,7 @@ fn lower_core_ir(graph: &SemanticGraph) -> VerificationEntry {
     }
 }
 
-fn check_refinements(graph: &SemanticGraph) -> Vec<VerificationEntry> {
+fn check_refinements(graph: &SemanticGraph, solver: &dyn Solver) -> Vec<VerificationEntry> {
     let mut entries = Vec::new();
     for node in &graph.nodes {
         let Some(refinement) = &node.refinement_ref else {
@@ -864,7 +864,18 @@ fn check_refinements(graph: &SemanticGraph) -> Vec<VerificationEntry> {
                 }
                 ail_core::semantic_graph::RefinementStatus::Assumed => VerificationState::Assumed,
                 ail_core::semantic_graph::RefinementStatus::Unverified => {
-                    VerificationState::Unverified
+                    // TASK-10: try solver for Unverified refinements
+                    let obligation = ProofObligation {
+                        predicate: refinement.predicate.clone(),
+                        role: ClauseRole::Requires,
+                        scope: node.name.clone(),
+                    };
+                    match solver.solve(&obligation) {
+                        SolverOutcome::Proven => VerificationState::Proven,
+                        SolverOutcome::Assumed(_) | SolverOutcome::Unsupported => {
+                            VerificationState::Assumed
+                        }
+                    }
                 }
                 ail_core::semantic_graph::RefinementStatus::Failed => VerificationState::Failed,
             }
@@ -894,13 +905,16 @@ fn check_invariants(
     base_graph: Option<&SemanticGraph>,
     target_graph: &SemanticGraph,
 ) -> Vec<VerificationEntry> {
-    let invariant_names = target_graph
+    use ail_core::semantic_graph::{EdgeKind, NodeKind, NodeRef};
+
+    let invariant_nodes: Vec<(NodeRef, String)> = target_graph
         .nodes
         .iter()
-        .filter(|node| node.kind == ail_core::semantic_graph::NodeKind::Invariant)
-        .map(|node| node.name.clone())
-        .collect::<Vec<_>>();
-    if invariant_names.is_empty() {
+        .filter(|node| node.kind == NodeKind::Invariant)
+        .map(|node| (node.id, node.name.clone()))
+        .collect();
+
+    if invariant_nodes.is_empty() {
         return vec![stage_entry(
             "12-check-invariants-via-impact-analysis",
             VerificationState::Proven,
@@ -908,32 +922,117 @@ fn check_invariants(
             Some("no invariant nodes present".into()),
         )];
     }
-    let changed = base_graph.map_or(true, |base| base != target_graph);
-    invariant_names
+
+    // No base graph → all invariants unverified (can't determine what changed)
+    let Some(base) = base_graph else {
+        return invariant_nodes
+            .into_iter()
+            .map(|(_, name)| {
+                stage_entry(
+                    "12-check-invariants-via-impact-analysis",
+                    VerificationState::Unverified,
+                    name,
+                    Some("no base graph snapshot provided; cannot assess impact".into()),
+                )
+            })
+            .collect();
+    };
+
+    // Compute changed node IDs: new nodes OR nodes with changed type_facts/effect_row
+    let base_by_name: std::collections::HashMap<&str, &ail_core::semantic_graph::GraphNode> =
+        base.nodes.iter().map(|n| (n.name.as_str(), n)).collect();
+    let changed_ids: BTreeSet<NodeRef> = target_graph
+        .nodes
+        .iter()
+        .filter(|tn| {
+            match base_by_name.get(tn.name.as_str()) {
+                None => true, // new node
+                Some(bn) => bn.type_facts != tn.type_facts || bn.effect_row != tn.effect_row,
+            }
+        })
+        .map(|n| n.id)
+        .collect();
+
+    // For each invariant, BFS across all edges (bidirectional) to find reachable nodes
+    invariant_nodes
         .into_iter()
-        .map(|name| {
-            let impacted = target_graph.edges.iter().any(|edge| {
-                edge.kind == ail_core::semantic_graph::EdgeKind::BreaksIfChanged
-                    && target_graph
-                        .nodes
-                        .iter()
-                        .any(|node| node.id == edge.target && node.name == name)
-            });
-            let state = if changed && !impacted {
-                VerificationState::Unverified
+        .map(|(inv_id, name)| {
+            if changed_ids.is_empty() {
+                return stage_entry(
+                    "12-check-invariants-via-impact-analysis",
+                    VerificationState::Proven,
+                    name,
+                    None,
+                );
+            }
+
+            // BFS from invariant node
+            let mut reachable: BTreeSet<NodeRef> = BTreeSet::new();
+            let mut queue: VecDeque<NodeRef> = VecDeque::new();
+            reachable.insert(inv_id);
+            queue.push_back(inv_id);
+            while let Some(cur) = queue.pop_front() {
+                for edge in &target_graph.edges {
+                    if edge.source == cur && !reachable.contains(&edge.target) {
+                        reachable.insert(edge.target);
+                        queue.push_back(edge.target);
+                    }
+                    if edge.target == cur && !reachable.contains(&edge.source) {
+                        reachable.insert(edge.source);
+                        queue.push_back(edge.source);
+                    }
+                }
+            }
+
+            // Find reachable changed nodes (excluding the invariant itself)
+            let reachable_changed: Vec<NodeRef> = changed_ids
+                .iter()
+                .filter(|&&id| id != inv_id && reachable.contains(&id))
+                .copied()
+                .collect();
+
+            if reachable_changed.is_empty() {
+                return stage_entry(
+                    "12-check-invariants-via-impact-analysis",
+                    VerificationState::Proven,
+                    name,
+                    None,
+                );
+            }
+
+            // Which changed nodes are covered by BreaksIfChanged edges to the invariant?
+            let covered: BTreeSet<NodeRef> = target_graph
+                .edges
+                .iter()
+                .filter(|e| e.kind == EdgeKind::BreaksIfChanged && e.target == inv_id)
+                .map(|e| e.source)
+                .collect();
+
+            let uncovered: Vec<&str> = reachable_changed
+                .iter()
+                .filter(|id| !covered.contains(id))
+                .filter_map(|id| target_graph.nodes.iter().find(|n| n.id == *id))
+                .map(|n| n.name.as_str())
+                .collect();
+
+            if uncovered.is_empty() {
+                stage_entry(
+                    "12-check-invariants-via-impact-analysis",
+                    VerificationState::Proven,
+                    name,
+                    None,
+                )
             } else {
-                VerificationState::Proven
-            };
-            stage_entry(
-                "12-check-invariants-via-impact-analysis",
-                state,
-                name,
-                if impacted {
-                    None
-                } else {
-                    Some("no BreaksIfChanged impact edge found".into())
-                },
-            )
+                stage_entry(
+                    "12-check-invariants-via-impact-analysis",
+                    VerificationState::Unverified,
+                    name,
+                    Some(format!(
+                        "invariant impacted by changes in: {}",
+                        uncovered.join(", ")
+                    )),
+                )
+            }
         })
         .collect()
 }

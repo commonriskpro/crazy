@@ -6,7 +6,7 @@
 
 use ail_core::semantic_graph::{
     EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, RefinementRef, RefinementStatus,
-    SemanticGraph, TrustMetadata,
+    SemanticGraph, TrustMetadata, TypeFacts,
 };
 use ail_verify::codegen_checker::ArtifactEntry;
 use ail_verify::pipeline::{PipelineContext, VerificationPipeline};
@@ -529,6 +529,250 @@ fn full_pipeline_validates_manifest_capabilities() {
         entry.claim == "21-generate-validate-manifest"
             && entry.state == ail_verify::report::VerificationState::Proven
     }));
+}
+
+// ── TASK-09: Stage 10 — solver-backed refinement check ────────────────────
+
+#[test]
+fn stage10_unverified_refinement_true_predicate_proves_via_solver() {
+    // GIVEN a node with Unverified refinement and predicate "true"
+    // WHEN the pipeline runs (SimpleSolver proves "true")
+    // THEN stage10 entry is Proven
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "PositiveInt");
+    node.refinement_ref = Some(RefinementRef {
+        base_type: "Int".into(),
+        predicate: "true".into(),
+        status: RefinementStatus::Unverified,
+        erased: false,
+    });
+    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run(&ctx);
+
+    let entry = report.entries.iter().find(|e| {
+        e.claim == "10-check-refinements"
+            && e.scope == "PositiveInt"
+            && e.state == ail_verify::report::VerificationState::Proven
+    });
+    assert!(
+        entry.is_some(),
+        "Unverified refinement with 'true' predicate must be Proven via solver; entries: {:?}",
+        report.entries.iter().filter(|e| e.claim == "10-check-refinements").collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn stage10_unverified_refinement_unsupported_predicate_becomes_assumed() {
+    // GIVEN a node with Unverified refinement and predicate "x > 0" (unsupported by SimpleSolver)
+    // WHEN the pipeline runs
+    // THEN stage10 entry is Assumed (not Unverified)
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "PositiveAmount");
+    node.refinement_ref = Some(RefinementRef {
+        base_type: "Int".into(),
+        predicate: "x > 0".into(),
+        status: RefinementStatus::Unverified,
+        erased: false,
+    });
+    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run(&ctx);
+
+    let entry = report.entries.iter().find(|e| {
+        e.claim == "10-check-refinements"
+            && e.scope == "PositiveAmount"
+            && e.state == ail_verify::report::VerificationState::Assumed
+    });
+    assert!(
+        entry.is_some(),
+        "Unverified refinement with unsupported predicate must be Assumed; entries: {:?}",
+        report.entries.iter().filter(|e| e.claim == "10-check-refinements").collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn stage10_proven_refinement_stays_proven_without_solver_call() {
+    // GIVEN a node with Proven refinement status
+    // WHEN the pipeline runs
+    // THEN stage10 entry is Proven (status honoured, no solver needed)
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "SafeInt");
+    node.refinement_ref = Some(RefinementRef {
+        base_type: "Int".into(),
+        predicate: "value != 0".into(),
+        status: RefinementStatus::Proven,
+        erased: false,
+    });
+    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run(&ctx);
+
+    let entry = report.entries.iter().find(|e| {
+        e.claim == "10-check-refinements"
+            && e.scope == "SafeInt"
+            && e.state == ail_verify::report::VerificationState::Proven
+    });
+    assert!(
+        entry.is_some(),
+        "Proven refinement must stay Proven; entries: {:?}",
+        report.entries.iter().filter(|e| e.claim == "10-check-refinements").collect::<Vec<_>>()
+    );
+}
+
+// ── TASK-11: Stage 12 — BFS impact analysis ───────────────────────────────
+
+#[test]
+fn stage12_connected_changed_node_without_breaks_edge_is_unverified_with_evidence() {
+    // GIVEN base graph has invariant + fn.dep with same type_facts
+    // AND target graph has fn.dep with changed type_facts
+    // AND there is a DependsOn edge from invariant to fn.dep (connected)
+    // AND NO BreaksIfChanged edge
+    // THEN stage12 entry for invariant is Unverified with fn.dep in evidence
+    let base_fn = {
+        let mut n = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.dep");
+        n.type_facts = Some(TypeFacts { nominal: "Int".into(), generics: vec![] });
+        n
+    };
+    let base = SemanticGraph {
+        nodes: vec![
+            GraphNode::new(NodeRef(0), NodeKind::Invariant, "inv.stable"),
+            base_fn,
+        ],
+        edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn)],
+    };
+
+    let changed_fn = {
+        let mut n = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.dep");
+        n.type_facts = Some(TypeFacts { nominal: "String".into(), generics: vec![] }); // changed
+        n
+    };
+    let target = SemanticGraph {
+        nodes: vec![
+            GraphNode::new(NodeRef(0), NodeKind::Invariant, "inv.stable"),
+            changed_fn,
+        ],
+        edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn)],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&target, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, None, Some(&base));
+
+    let entry = report.entries.iter().find(|e| {
+        e.claim == "12-check-invariants-via-impact-analysis"
+            && e.scope == "inv.stable"
+            && e.state == ail_verify::report::VerificationState::Unverified
+            && e.evidence.as_deref().unwrap_or("").contains("fn.dep")
+    });
+    assert!(
+        entry.is_some(),
+        "connected changed node without BreaksIfChanged must produce Unverified with node name; entries: {:?}",
+        report.entries.iter().filter(|e| e.claim == "12-check-invariants-via-impact-analysis").collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn stage12_connected_changed_node_with_breaks_edge_is_proven() {
+    // GIVEN same setup as above BUT with BreaksIfChanged from fn.dep to inv.stable
+    // THEN stage12 entry for inv.stable is Proven
+    let base_fn = {
+        let mut n = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.dep");
+        n.type_facts = Some(TypeFacts { nominal: "Int".into(), generics: vec![] });
+        n
+    };
+    let base = SemanticGraph {
+        nodes: vec![
+            GraphNode::new(NodeRef(0), NodeKind::Invariant, "inv.stable"),
+            base_fn,
+        ],
+        edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn)],
+    };
+
+    let changed_fn = {
+        let mut n = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.dep");
+        n.type_facts = Some(TypeFacts { nominal: "String".into(), generics: vec![] });
+        n
+    };
+    let target = SemanticGraph {
+        nodes: vec![
+            GraphNode::new(NodeRef(0), NodeKind::Invariant, "inv.stable"),
+            changed_fn,
+        ],
+        edges: vec![
+            GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn),
+            GraphEdge::new(NodeRef(1), NodeRef(0), EdgeKind::BreaksIfChanged),
+        ],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&target, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, None, Some(&base));
+
+    let entry = report.entries.iter().find(|e| {
+        e.claim == "12-check-invariants-via-impact-analysis"
+            && e.scope == "inv.stable"
+            && e.state == ail_verify::report::VerificationState::Proven
+    });
+    assert!(
+        entry.is_some(),
+        "changed node covered by BreaksIfChanged must produce Proven; entries: {:?}",
+        report.entries.iter().filter(|e| e.claim == "12-check-invariants-via-impact-analysis").collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn stage12_no_base_graph_invariant_is_unverified() {
+    // GIVEN no base graph (None)
+    // THEN invariant is Unverified (existing behavior)
+    let invariant = GraphNode::new(NodeRef(0), NodeKind::Invariant, "inv.no_base");
+    let graph = SemanticGraph { nodes: vec![invariant], edges: vec![] };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    let report = VerificationPipeline::run_with_changeset(&ctx, None, None);
+
+    let entry = report.entries.iter().find(|e| {
+        e.claim == "12-check-invariants-via-impact-analysis"
+            && e.scope == "inv.no_base"
+            && e.state == ail_verify::report::VerificationState::Unverified
+    });
+    assert!(
+        entry.is_some(),
+        "no base graph must produce Unverified for invariants; entries: {:?}",
+        report.entries.iter().filter(|e| e.claim == "12-check-invariants-via-impact-analysis").collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn stage12_no_changed_nodes_invariant_is_proven() {
+    // GIVEN base and target graphs are identical (no changes)
+    // THEN invariant is Proven (no impact detected)
+    let inv = GraphNode::new(NodeRef(0), NodeKind::Invariant, "inv.stable_no_change");
+    let fn_node = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.stable");
+    let graph = SemanticGraph {
+        nodes: vec![inv, fn_node],
+        edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn)],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "test", &[]);
+
+    // Both base and target are identical → no changed nodes
+    let report = VerificationPipeline::run_with_changeset(&ctx, None, Some(&graph));
+
+    let entry = report.entries.iter().find(|e| {
+        e.claim == "12-check-invariants-via-impact-analysis"
+            && e.scope == "inv.stable_no_change"
+            && e.state == ail_verify::report::VerificationState::Proven
+    });
+    assert!(
+        entry.is_some(),
+        "no changed nodes must produce Proven for invariants; entries: {:?}",
+        report.entries.iter().filter(|e| e.claim == "12-check-invariants-via-impact-analysis").collect::<Vec<_>>()
+    );
 }
 
 // ── TASK-03: Stage 3 — op schema version + arg type validation tests ───────
