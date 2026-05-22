@@ -22,8 +22,23 @@ pub mod capability;
 /// `StdlibRegistry`, `StdlibError`, and all associated methods.
 pub mod registry;
 
+/// Checked, wrapping, and saturating arithmetic (`std.numeric`).
+pub mod numeric;
+
+/// `Option<T>` combinators (`std.option`).
+pub mod option;
+
+/// `Result<T, E>` combinators (`std.result`).
+pub mod result;
+
+/// Text helpers (`std.text`).
+pub mod text;
+
+/// Effect-polymorphic iterator combinators (`std.iter`).
+pub mod iter;
+
 /// Canonical v1 stdlib module registry — `v1_registry()`.
 pub mod v1;
 
 pub use registry::{StabilityTier, StdlibEntry, StdlibError, StdlibId, StdlibRegistry};
-pub use v1::v1_registry;
+pub use v1::{v1_registry, v1_registry_with_functions};

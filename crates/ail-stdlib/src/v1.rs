@@ -23,6 +23,13 @@
 // `effect_row` is populated for effect-bearing or effect-polymorphic modules.
 // `capability_reqs` is populated only for `std.capability` (the definition module).
 // `contract_clauses` carries module-level invariants from docs/stdlib.md.
+//
+// # G26: Function entries
+//
+// `v1_registry_with_functions()` extends the base 9-module registry with
+// `NodeKind::Function` entries for each semantic function implementation
+// in the std.numeric, std.option, std.result, std.text, and std.iter modules.
+// The base `v1_registry()` is preserved unchanged for backward compatibility.
 
 use ail_core::semantic_graph::{CapabilityReqs, ContractClauses, EffectRow, NodeKind, TypeFacts};
 
@@ -263,4 +270,434 @@ pub fn v1_registry() -> StdlibRegistry {
             },
         ],
     }
+}
+
+/// Return the extended v1 stdlib registry with `NodeKind::Function` entries.
+///
+/// Starts from `v1_registry()` (the 9-module base) and appends one
+/// `StdlibEntry` per implemented function in:
+///
+/// - `std.numeric`: `checked_add`, `wrapping_add`, `saturating_add`,
+///   `checked_sub`, `checked_mul`
+/// - `std.option`: `map`, `and_then`, `unwrap_or`, `transpose`,
+///   `collect_results`
+/// - `std.result`: `map`, `and_then`, `unwrap_or`, `transpose`
+/// - `std.text`: `trim`, `split`, `join`, `length_graphemes`,
+///   `to_bytes`, `from_bytes`
+/// - `std.iter`: `map`, `filter`, `fold`, `traverse`
+///
+/// The returned registry is guaranteed to pass `validate()`.
+pub fn v1_registry_with_functions() -> StdlibRegistry {
+    let mut reg = v1_registry();
+
+    // ── std.numeric functions ─────────────────────────────────────────────
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.checked_add".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "checked_add".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["i64".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["no silent overflow".to_string()],
+            ensures: vec!["returns None on overflow".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.wrapping_add".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "wrapping_add".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "i64".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["wrapping semantics chosen explicitly".to_string()],
+            ensures: vec!["result wraps on overflow (defined, not silent)".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.saturating_add".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "saturating_add".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "i64".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["saturating semantics chosen explicitly".to_string()],
+            ensures: vec!["result clamped to i64::MAX or i64::MIN on overflow".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.checked_sub".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "checked_sub".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["i64".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["no silent underflow".to_string()],
+            ensures: vec!["returns None on underflow or overflow".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.checked_mul".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "checked_mul".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["i64".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["no silent overflow".to_string()],
+            ensures: vec!["returns None on overflow".to_string()],
+        }),
+    });
+
+    // ── std.option functions ──────────────────────────────────────────────
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.option.map".to_string()),
+        module_path: "std::option".to_string(),
+        name: "map".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["T".to_string(), "U".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.option.and_then".to_string()),
+        module_path: "std::option".to_string(),
+        name: "and_then".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["T".to_string(), "U".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.option.unwrap_or".to_string()),
+        module_path: "std::option".to_string(),
+        name: "unwrap_or".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "T".to_string(),
+            generics: vec!["T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.option.transpose".to_string()),
+        module_path: "std::option".to_string(),
+        name: "transpose".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["Option".to_string(), "T".to_string(), "E".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.option.collect_results".to_string()),
+        module_path: "std::option".to_string(),
+        name: "collect_results".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["Vec".to_string(), "T".to_string(), "E".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    // ── std.result functions ──────────────────────────────────────────────
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.result.map".to_string()),
+        module_path: "std::result".to_string(),
+        name: "map".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["T".to_string(), "U".to_string(), "E".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.result.and_then".to_string()),
+        module_path: "std::result".to_string(),
+        name: "and_then".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["T".to_string(), "U".to_string(), "E".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.result.unwrap_or".to_string()),
+        module_path: "std::result".to_string(),
+        name: "unwrap_or".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "T".to_string(),
+            generics: vec!["T".to_string(), "E".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.result.transpose".to_string()),
+        module_path: "std::result".to_string(),
+        name: "transpose".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["Result".to_string(), "T".to_string(), "E".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    // ── std.text functions ────────────────────────────────────────────────
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.trim".to_string()),
+        module_path: "std::text".to_string(),
+        name: "trim".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Text".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["valid UTF-8 input".to_string()],
+            ensures: vec!["result is valid Text with no leading/trailing whitespace".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.split".to_string()),
+        module_path: "std::text".to_string(),
+        name: "split".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "List".to_string(),
+            generics: vec!["Text".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["valid UTF-8 input".to_string()],
+            ensures: vec!["result is valid List<Text>".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.join".to_string()),
+        module_path: "std::text".to_string(),
+        name: "join".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Text".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["valid UTF-8 inputs".to_string()],
+            ensures: vec!["result is valid Text".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.length_graphemes".to_string()),
+        module_path: "std::text".to_string(),
+        name: "length_graphemes".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "UInt".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["valid UTF-8 input".to_string()],
+            ensures: vec!["result >= 0".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.to_bytes".to_string()),
+        module_path: "std::text".to_string(),
+        name: "to_bytes".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Bytes".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.from_bytes".to_string()),
+        module_path: "std::text".to_string(),
+        name: "from_bytes".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["Text".to_string(), "DecodeError".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec![],
+            ensures: vec![
+                "Ok(Text) if bytes are valid UTF-8".to_string(),
+                "Err(DecodeError) if bytes are invalid UTF-8".to_string(),
+            ],
+        }),
+    });
+
+    // ── std.iter functions ────────────────────────────────────────────────
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.iter.map".to_string()),
+        module_path: "std::iter".to_string(),
+        name: "map".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "List".to_string(),
+            generics: vec!["T".to_string(), "U".to_string()],
+        }),
+        effect_row: Some(EffectRow {
+            effects: vec!["EffectPoly".to_string()],
+        }),
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.iter.filter".to_string()),
+        module_path: "std::iter".to_string(),
+        name: "filter".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "List".to_string(),
+            generics: vec!["T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.iter.fold".to_string()),
+        module_path: "std::iter".to_string(),
+        name: "fold".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "U".to_string(),
+            generics: vec!["T".to_string(), "U".to_string()],
+        }),
+        effect_row: Some(EffectRow {
+            effects: vec!["EffectPoly".to_string()],
+        }),
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.iter.traverse".to_string()),
+        module_path: "std::iter".to_string(),
+        name: "traverse".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["List".to_string(), "T".to_string(), "U".to_string(), "E".to_string()],
+        }),
+        effect_row: Some(EffectRow {
+            effects: vec!["EffectPoly".to_string()],
+        }),
+        capability_reqs: None,
+        contract_clauses: None,
+    });
+
+    reg
 }
