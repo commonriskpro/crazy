@@ -1,0 +1,160 @@
+// ── ail-compiler::wasm_text_literal_tests ────────────────────────────────
+//
+// TDD RED phase — written before Text literal linear-memory encoding exists.
+//
+// Spec scenarios covered (C-1a, C-1b, C-1c):
+//  - Emit WASM with Literal(Text("hello")) → data section non-empty.
+//  - i64 value packs (len as u32) << 32 | (ptr as u32) correctly.
+//  - Two different text literals produce different i64 packed values.
+
+use ail_compiler::core_ir::{LiteralValue, StageHashes};
+use ail_compiler::{AnfBinding, AnfExpr, AnfIr, SourceMap, emit_wasm};
+use ail_core::semantic_graph::NodeRef;
+use wasmparser::{Parser, Payload};
+
+// ── helpers ──────────────────────────────────────────────────────────────
+
+fn sealed_anf(binding: AnfBinding) -> AnfIr {
+    AnfIr {
+        schema_version: ail_compiler::anf::ANF_SCHEMA_VERSION,
+        source_map: SourceMap::from_bindings(std::slice::from_ref(&binding)),
+        bindings: vec![binding],
+        stage_hashes: StageHashes {
+            graph_snapshot_hash: [0u8; 32],
+            verification_report_hash: [0u8; 32],
+            core_ir_hash: [1u8; 32],
+            anf_ir_hash: Some([2u8; 32]),
+            wasm_hash: None,
+            native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
+        },
+    }
+}
+
+fn emit_text_literal_wasm(text: &str) -> Vec<u8> {
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.main".to_string(),
+        expr: AnfExpr::Literal(LiteralValue::Text(text.to_string())),
+    };
+    let artifact = emit_wasm(&sealed_anf(binding)).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("emitted WASM must validate");
+    artifact.wasm
+}
+
+/// Count the number of data section entries in a WASM binary.
+fn data_section_entry_count(wasm: &[u8]) -> usize {
+    let mut count = 0;
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::DataSection(reader) = payload.expect("payload must parse") {
+            for segment in reader {
+                let _ = segment.expect("data segment");
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Check whether the WASM binary has a data section with at least one entry.
+fn has_data_section(wasm: &[u8]) -> bool {
+    data_section_entry_count(wasm) > 0
+}
+
+/// Extract all i64.const values from the code section.
+fn i64_const_values(wasm: &[u8]) -> Vec<i64> {
+    let mut values = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.expect("payload must parse") {
+            let mut reader = body.get_operators_reader().expect("operators reader");
+            while !reader.eof() {
+                if let wasmparser::Operator::I64Const { value } =
+                    reader.read().expect("operator must read")
+                {
+                    values.push(value);
+                }
+            }
+        }
+    }
+    values
+}
+
+// ── Scenario C-1a: data section is non-empty ──────────────────────────────
+
+#[test]
+fn text_literal_produces_data_section() {
+    let wasm = emit_text_literal_wasm("hello");
+    assert!(
+        has_data_section(&wasm),
+        "WASM with Text literal must have a non-empty data section"
+    );
+}
+
+// ── Scenario C-1b: i64 packs ptr and len correctly ───────────────────────
+
+#[test]
+fn text_literal_i64_packs_ptr_and_len() {
+    let text = "hello";
+    let wasm = emit_text_literal_wasm(text);
+
+    // The i64 constant should encode: (len << 32) | ptr
+    let values = i64_const_values(&wasm);
+    assert!(
+        !values.is_empty(),
+        "must have at least one i64.const in code section"
+    );
+
+    // Find a value whose upper 32 bits = len (ptr can be 0 for the first/only string)
+    let expected_len = text.len() as i64;
+    let packed = values.iter().find(|&&v| {
+        let len_part = (v as u64) >> 32;
+        len_part == expected_len as u64
+    });
+
+    assert!(
+        packed.is_some(),
+        "must find i64 encoding with len={expected_len} in upper 32 bits, got values: {values:?}"
+    );
+}
+
+// ── Scenario C-1c: different texts produce different i64 values ───────────
+// Uses different-length strings to guarantee different upper 32 bits.
+
+#[test]
+fn two_different_text_literals_produce_different_i64() {
+    // "hi" (len=2) vs "hello" (len=5) — different lengths → different upper 32 bits
+    let wasm_hi = emit_text_literal_wasm("hi");
+    let wasm_hello = emit_text_literal_wasm("hello");
+
+    let values_hi = i64_const_values(&wasm_hi);
+    let values_hello = i64_const_values(&wasm_hello);
+
+    assert_ne!(
+        values_hi, values_hello,
+        "different-length text literals must produce different i64 packed values"
+    );
+}
+
+// ── Bonus: text-returning function now exports (formerly i32 placeholder) ─
+
+#[test]
+fn text_literal_function_is_exported() {
+    let wasm = emit_text_literal_wasm("hi");
+
+    // After the fix, Text literals return I64 → binding_result returns Some(I64) → exported
+    let mut export_names = Vec::new();
+    for payload in Parser::new(0).parse_all(&wasm) {
+        if let Payload::ExportSection(reader) = payload.expect("payload") {
+            for export in reader {
+                let e = export.expect("export");
+                export_names.push(e.name.to_string());
+            }
+        }
+    }
+
+    assert!(
+        export_names.iter().any(|n| n == "main"),
+        "Text-returning function must be exported as 'main', got {export_names:?}"
+    );
+}

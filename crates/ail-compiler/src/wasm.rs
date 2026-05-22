@@ -148,8 +148,8 @@ fn build_type_section_with_host_call(signatures: &[WasmSignature]) -> TypeSectio
 
 fn literal_type(lit: &LiteralValue) -> ValType {
     match lit {
-        LiteralValue::Int(_) | LiteralValue::Bool(_) => ValType::I64,
-        LiteralValue::Text(_) | LiteralValue::Unit => ValType::I32,
+        LiteralValue::Int(_) | LiteralValue::Bool(_) | LiteralValue::Text(_) => ValType::I64,
+        LiteralValue::Unit => ValType::I32,
         LiteralValue::Float(_) => ValType::F64,
     }
 }
@@ -532,6 +532,10 @@ impl EffectDataLayout {
 
     fn collect_expr(&mut self, expr: &AnfExpr) {
         match expr {
+            AnfExpr::Literal(LiteralValue::Text(s)) => {
+                self.intern(s);
+                self.needs_memory = true;
+            }
             AnfExpr::EffectCall {
                 capability, func, ..
             } => {
@@ -655,7 +659,7 @@ fn align_to_i64(offset: i32) -> i32 {
 }
 
 fn build_data_section(layout: &EffectDataLayout) -> Option<DataSection> {
-    if !layout.needs_host_call {
+    if layout.strings.is_empty() {
         return None;
     }
     let mut data = DataSection::new();
@@ -915,8 +919,14 @@ fn emit_anf_expr<'a>(
                 insns.push(Instruction::F64Const(wasm_encoder::Ieee64::from(*f)));
                 Some(ValType::F64)
             }
-            // Text, Unit → opaque i32(0) placeholder (no runtime value).
-            LiteralValue::Text(_) | LiteralValue::Unit => {
+            LiteralValue::Text(s) => {
+                // Encode as: i64 = (len as u64) << 32 | (ptr as u64)
+                let (ptr, len) = ctx.effect_data.string(s);
+                let packed = ((len as i64) << 32) | (ptr as i64);
+                insns.push(Instruction::I64Const(packed));
+                Some(ValType::I64)
+            }
+            LiteralValue::Unit => {
                 insns.push(Instruction::I32Const(0));
                 Some(ValType::I32)
             }
