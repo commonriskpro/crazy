@@ -8,7 +8,9 @@
 //  - Failed preflight (hash mismatch) blocks Wasmtime invocation.
 //  - RuntimeHost::new() succeeds (engine initialization is infallible from caller's view).
 
+use ail_compiler::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, LiteralValue, SourceMap};
 use ail_compiler::{emit_wasm, lower_to_anf, lower_to_core_ir};
+use ail_core::semantic_graph::NodeRef;
 use ail_core::semantic_graph::SemanticGraph;
 use ail_runtime::{
     CapabilityManifest, PreflightFailure, ResourceLimits, RuntimeError, RuntimeHost,
@@ -50,6 +52,24 @@ fn matching_profile(wasm: &[u8], manifest: &CapabilityManifest) -> RuntimeProfil
             max_fuel: None,
         },
     )
+}
+
+fn sealed_anf(bindings: Vec<AnfBinding>) -> AnfIr {
+    AnfIr {
+        schema_version: ANF_SCHEMA_VERSION,
+        source_map: SourceMap::from_bindings(&bindings),
+        bindings,
+        stage_hashes: ail_compiler::StageHashes {
+            graph_snapshot_hash: [0u8; 32],
+            verification_report_hash: [0u8; 32],
+            core_ir_hash: [1u8; 32],
+            anf_ir_hash: Some([2u8; 32]),
+            wasm_hash: None,
+            native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
+        },
+    }
 }
 
 // ── Scenario 1: Malformed WASM is rejected ────────────────────────────────
@@ -168,6 +188,45 @@ fn exported_i64_function_can_be_invoked() {
 
     let value = instance.invoke("answer", &[]).expect("invoke must succeed");
 
+    assert_eq!(value, RuntimeValue::I64(42));
+}
+
+#[test]
+fn compiler_function_call_double_21_invokes_to_42() {
+    let anf = sealed_anf(vec![
+        AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.double".to_string(),
+            expr: AnfExpr::Call {
+                func: "i64.add".to_string(),
+                args: vec!["x".to_string(), "x".to_string()],
+            },
+        },
+        AnfBinding {
+            source_ref: NodeRef(1),
+            name: "fn.main".to_string(),
+            expr: AnfExpr::Let {
+                name: "n".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(21))),
+                body: Box::new(AnfExpr::Call {
+                    func: "double".to_string(),
+                    args: vec!["n".to_string()],
+                }),
+            },
+        },
+    ]);
+    let wasm = emit_wasm(&anf).expect("emit_wasm failed").wasm;
+    let manifest = CapabilityManifest {
+        module: "function-call-test".to_string(),
+        requires: vec![],
+    };
+    let profile = matching_profile(&wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("WASM must instantiate");
+
+    let value = instance.invoke("main", &[]).expect("main must invoke");
     assert_eq!(value, RuntimeValue::I64(42));
 }
 
