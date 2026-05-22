@@ -1003,16 +1003,8 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Effect, "io"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::DependsOn,
-                },
-                GraphEdge {
-                    source: NodeRef(1),
-                    target: NodeRef(2),
-                    kind: EdgeKind::Emits,
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn),
+                GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Emits),
             ],
         }
     }
@@ -1342,16 +1334,8 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Function, "C"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::DependsOn,
-                },
-                GraphEdge {
-                    source: NodeRef(1),
-                    target: NodeRef(2),
-                    kind: EdgeKind::Calls,
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn),
+                GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Calls),
             ],
         };
         let snapshot = make_snapshot();
@@ -1398,16 +1382,8 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Function, "C"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::Calls,
-                },
-                GraphEdge {
-                    source: NodeRef(1),
-                    target: NodeRef(2),
-                    kind: EdgeKind::Calls,
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),
+                GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Calls),
             ],
         };
         let snapshot = make_snapshot();
@@ -1432,16 +1408,8 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Function, "C"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::Calls,
-                },
-                GraphEdge {
-                    source: NodeRef(1),
-                    target: NodeRef(2),
-                    kind: EdgeKind::Calls,
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),
+                GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Calls),
             ],
         };
         let snapshot = make_snapshot();
@@ -1496,16 +1464,8 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Function, "C"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::Calls,
-                },
-                GraphEdge {
-                    source: NodeRef(1),
-                    target: NodeRef(2),
-                    kind: EdgeKind::Calls,
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),
+                GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Calls),
             ],
         };
         let snapshot = make_snapshot();
@@ -1530,16 +1490,8 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Function, "C"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::Calls,
-                },
-                GraphEdge {
-                    source: NodeRef(1),
-                    target: NodeRef(2),
-                    kind: EdgeKind::Calls,
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),
+                GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Calls),
             ],
         };
         let snapshot = make_snapshot();
@@ -1802,11 +1754,7 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Module, "unrelated"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::Proves,
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Proves),
             ],
         };
         let snapshot = make_snapshot();
@@ -1866,16 +1814,8 @@ mod tests {
                 GraphNode::new(NodeRef(3), NodeKind::Module, "unrelated"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::Reads,
-                },
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(2),
-                    kind: EdgeKind::Writes,
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Reads),
+                GraphEdge::new(NodeRef(0), NodeRef(2), EdgeKind::Writes),
             ],
         };
         let snapshot = make_snapshot();
@@ -1932,16 +1872,8 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Function, "pay"), // not boundary
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::DependsOn,
-                },
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(2),
-                    kind: EdgeKind::Calls,
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn),
+                GraphEdge::new(NodeRef(0), NodeRef(2), EdgeKind::Calls),
             ],
         };
         let snapshot = make_snapshot();
@@ -1999,16 +1931,8 @@ mod tests {
                 GraphNode::new(NodeRef(3), NodeKind::Module, "unrelated"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::Proves,
-                },
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(2),
-                    kind: EdgeKind::BreaksIfChanged,
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Proves),
+                GraphEdge::new(NodeRef(0), NodeRef(2), EdgeKind::BreaksIfChanged),
             ],
         };
         let snapshot = make_snapshot();
@@ -2080,21 +2004,9 @@ mod tests {
                 GraphNode::new(NodeRef(4), NodeKind::Module, "unrelated"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::Calls, // A calls B → A is a caller
-                },
-                GraphEdge {
-                    source: NodeRef(1),
-                    target: NodeRef(2),
-                    kind: EdgeKind::Proves, // B proves C → C is a proof
-                },
-                GraphEdge {
-                    source: NodeRef(1),
-                    target: NodeRef(3),
-                    kind: EdgeKind::Emits, // B emits D → D is an effect
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),   // A calls B → A is a caller
+                GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Proves),  // B proves C → C is a proof
+                GraphEdge::new(NodeRef(1), NodeRef(3), EdgeKind::Emits),   // B emits D → D is an effect
             ],
         };
         let snapshot = make_snapshot();
@@ -2151,16 +2063,8 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Function, "pay"), // Calls, not Emits
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::Emits,
-                },
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(2),
-                    kind: EdgeKind::Calls,
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Emits),
+                GraphEdge::new(NodeRef(0), NodeRef(2), EdgeKind::Calls),
             ],
         };
         let snapshot = make_snapshot();
@@ -2274,16 +2178,8 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Function, "C"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::BreaksIfChanged,
-                },
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(2),
-                    kind: EdgeKind::Calls,
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::BreaksIfChanged),
+                GraphEdge::new(NodeRef(0), NodeRef(2), EdgeKind::Calls),
             ],
         };
         let snapshot = make_snapshot();
@@ -2331,11 +2227,7 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Module, "unrelated"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::Proves,
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Proves),
             ],
         };
         let snapshot = make_snapshot();
@@ -2385,21 +2277,9 @@ mod tests {
                 GraphNode::new(NodeRef(3), NodeKind::Function, "pay"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(1),
-                    kind: EdgeKind::Emits,
-                },
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(2),
-                    kind: EdgeKind::DependsOn,
-                },
-                GraphEdge {
-                    source: NodeRef(0),
-                    target: NodeRef(3),
-                    kind: EdgeKind::Calls, // excluded
-                },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Emits),
+                GraphEdge::new(NodeRef(0), NodeRef(2), EdgeKind::DependsOn),
+                GraphEdge::new(NodeRef(0), NodeRef(3), EdgeKind::Calls), // excluded
             ],
         };
         let snapshot = make_snapshot();
@@ -2451,16 +2331,8 @@ mod tests {
                 GraphNode::new(NodeRef(3), NodeKind::Module, "unrelated"),
             ],
             edges: vec![
-                GraphEdge {
-                    source: NodeRef(1),
-                    target: NodeRef(0),
-                    kind: EdgeKind::Calls,
-                },
-                GraphEdge {
-                    source: NodeRef(2),
-                    target: NodeRef(0),
-                    kind: EdgeKind::Calls,
-                },
+                GraphEdge::new(NodeRef(1), NodeRef(0), EdgeKind::Calls),
+                GraphEdge::new(NodeRef(2), NodeRef(0), EdgeKind::Calls),
             ],
         };
         let snapshot = make_snapshot();
@@ -2513,9 +2385,9 @@ mod tests {
                 GraphNode::new(NodeRef(4), NodeKind::Module, "unrelated"),
             ],
             edges: vec![
-                GraphEdge { source: NodeRef(0), target: NodeRef(1), kind: EdgeKind::Reads },
-                GraphEdge { source: NodeRef(0), target: NodeRef(2), kind: EdgeKind::Writes },
-                GraphEdge { source: NodeRef(0), target: NodeRef(3), kind: EdgeKind::Calls },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Reads),
+                GraphEdge::new(NodeRef(0), NodeRef(2), EdgeKind::Writes),
+                GraphEdge::new(NodeRef(0), NodeRef(3), EdgeKind::Calls),
             ],
         };
         let snapshot = make_snapshot();
@@ -2561,9 +2433,9 @@ mod tests {
                 GraphNode::new(NodeRef(3), NodeKind::Type, "state"),
             ],
             edges: vec![
-                GraphEdge { source: NodeRef(0), target: NodeRef(1), kind: EdgeKind::Calls },
-                GraphEdge { source: NodeRef(0), target: NodeRef(2), kind: EdgeKind::Emits },
-                GraphEdge { source: NodeRef(0), target: NodeRef(3), kind: EdgeKind::Reads },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),
+                GraphEdge::new(NodeRef(0), NodeRef(2), EdgeKind::Emits),
+                GraphEdge::new(NodeRef(0), NodeRef(3), EdgeKind::Reads),
             ],
         };
         let snapshot = make_snapshot();
@@ -2607,8 +2479,8 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Function, "pay"),
             ],
             edges: vec![
-                GraphEdge { source: NodeRef(0), target: NodeRef(1), kind: EdgeKind::DependsOn },
-                GraphEdge { source: NodeRef(0), target: NodeRef(2), kind: EdgeKind::DependsOn },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn),
+                GraphEdge::new(NodeRef(0), NodeRef(2), EdgeKind::DependsOn),
             ],
         };
         let snapshot = make_snapshot();
@@ -2654,7 +2526,7 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Module, "unrelated"),
             ],
             edges: vec![
-                GraphEdge { source: NodeRef(0), target: NodeRef(1), kind: EdgeKind::Calls },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),
             ],
         };
         let snapshot = make_snapshot();
@@ -2684,8 +2556,8 @@ mod tests {
                 GraphNode::new(NodeRef(2), NodeKind::Module, "external"),
             ],
             edges: vec![
-                GraphEdge { source: NodeRef(0), target: NodeRef(1), kind: EdgeKind::Calls },
-                GraphEdge { source: NodeRef(2), target: NodeRef(1), kind: EdgeKind::Calls },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),
+                GraphEdge::new(NodeRef(2), NodeRef(1), EdgeKind::Calls),
             ],
         };
         let snapshot = make_snapshot();
@@ -2729,9 +2601,9 @@ mod tests {
                 GraphNode::new(NodeRef(4), NodeKind::Module, "destination"),
             ],
             edges: vec![
-                GraphEdge { source: NodeRef(0), target: NodeRef(1), kind: EdgeKind::Calls },
-                GraphEdge { source: NodeRef(1), target: NodeRef(2), kind: EdgeKind::Proves },
-                GraphEdge { source: NodeRef(1), target: NodeRef(3), kind: EdgeKind::Emits },
+                GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),
+                GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Proves),
+                GraphEdge::new(NodeRef(1), NodeRef(3), EdgeKind::Emits),
             ],
         };
         let snapshot = make_snapshot();

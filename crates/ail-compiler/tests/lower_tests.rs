@@ -323,11 +323,7 @@ fn invalid_graph_duplicate_node_refs_returns_invalid_graph_error() {
 fn invalid_graph_dangling_edge_returns_missing_node_error() {
     let graph = SemanticGraph {
         nodes: vec![GraphNode::new(NodeRef(0), NodeKind::Function, "fn_a")],
-        edges: vec![GraphEdge {
-            source: NodeRef(0),
-            target: NodeRef(99), // NodeRef(99) is not in the node list
-            kind: EdgeKind::Calls,
-        }],
+        edges: vec![GraphEdge::new(NodeRef(0), NodeRef(99), EdgeKind::Calls)], // NodeRef(99) is not in the node list
     };
     let report = proven_report();
     let result = lower_to_core_ir(&graph, &report);

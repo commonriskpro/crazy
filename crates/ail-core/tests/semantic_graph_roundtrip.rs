@@ -308,41 +308,13 @@ fn all_node_and_edge_kind_variants_roundtrip() {
             GraphNode::new(NodeRef(8), NodeKind::Boundary, "b"),
         ],
         edges: vec![
-            GraphEdge {
-                source: NodeRef(0),
-                target: NodeRef(1),
-                kind: EdgeKind::Calls,
-            },
-            GraphEdge {
-                source: NodeRef(1),
-                target: NodeRef(2),
-                kind: EdgeKind::Reads,
-            },
-            GraphEdge {
-                source: NodeRef(2),
-                target: NodeRef(3),
-                kind: EdgeKind::Writes,
-            },
-            GraphEdge {
-                source: NodeRef(3),
-                target: NodeRef(4),
-                kind: EdgeKind::Emits,
-            },
-            GraphEdge {
-                source: NodeRef(4),
-                target: NodeRef(5),
-                kind: EdgeKind::DependsOn,
-            },
-            GraphEdge {
-                source: NodeRef(5),
-                target: NodeRef(6),
-                kind: EdgeKind::Proves,
-            },
-            GraphEdge {
-                source: NodeRef(6),
-                target: NodeRef(7),
-                kind: EdgeKind::BreaksIfChanged,
-            },
+            GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls),
+            GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Reads),
+            GraphEdge::new(NodeRef(2), NodeRef(3), EdgeKind::Writes),
+            GraphEdge::new(NodeRef(3), NodeRef(4), EdgeKind::Emits),
+            GraphEdge::new(NodeRef(4), NodeRef(5), EdgeKind::DependsOn),
+            GraphEdge::new(NodeRef(5), NodeRef(6), EdgeKind::Proves),
+            GraphEdge::new(NodeRef(6), NodeRef(7), EdgeKind::BreaksIfChanged),
         ],
     };
 
@@ -525,6 +497,12 @@ fn storage_identity_fields_absent_preserves_wire_format() {
         provenance: None,
         schema: None,
         trust_metadata: None,
+        generic_params: None,
+        params: None,
+        return_type: None,
+        interface_impls: None,
+        refinement_ref: None,
+        constraint_set: None,
     };
 
     let graph_new = SemanticGraph {

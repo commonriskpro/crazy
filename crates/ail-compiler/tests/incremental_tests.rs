@@ -31,11 +31,7 @@ fn node(id: u32) -> GraphNode {
 }
 
 fn calls_edge(source: u32, target: u32) -> GraphEdge {
-    GraphEdge {
-        source: NodeRef(source),
-        target: NodeRef(target),
-        kind: EdgeKind::Calls,
-    }
+    GraphEdge::new(NodeRef(source), NodeRef(target), EdgeKind::Calls)
 }
 
 // ── Task 3.3 — end-to-end compile_incremental scenarios ──────────────────

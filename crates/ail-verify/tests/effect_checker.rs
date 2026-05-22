@@ -19,11 +19,7 @@ fn node(id: u32, kind: NodeKind, name: &str) -> GraphNode {
 }
 
 fn emits_edge(source: u32, target: u32) -> GraphEdge {
-    GraphEdge {
-        source: NodeRef(source),
-        target: NodeRef(target),
-        kind: EdgeKind::Emits,
-    }
+    GraphEdge::new(NodeRef(source), NodeRef(target), EdgeKind::Emits)
 }
 
 // ── Scenario R4: Pure node (no effects) → Proven ─────────────────────────
@@ -170,11 +166,7 @@ fn calls_edges_are_not_inferred_effects() {
     let callee = node(1, NodeKind::Function, "callee");
     let graph = SemanticGraph {
         nodes: vec![caller, callee],
-        edges: vec![GraphEdge {
-            source: NodeRef(0),
-            target: NodeRef(1),
-            kind: EdgeKind::Calls, // NOT Emits — should be ignored
-        }],
+        edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls)], // NOT Emits — should be ignored
     };
     let report = EffectChecker::check(&graph);
     // caller: no declared, no inferred Emits → Proven

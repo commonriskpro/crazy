@@ -27,16 +27,8 @@ pub fn make_semantic_graph() -> ail_core::semantic_graph::SemanticGraph {
             GraphNode::new(NodeRef(2), NodeKind::Effect, "io"),
         ],
         edges: vec![
-            GraphEdge {
-                source: NodeRef(0),
-                target: NodeRef(1),
-                kind: EdgeKind::DependsOn,
-            },
-            GraphEdge {
-                source: NodeRef(1),
-                target: NodeRef(2),
-                kind: EdgeKind::Emits,
-            },
+            GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn),
+            GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Emits),
         ],
     }
 }
@@ -74,11 +66,7 @@ pub fn make_large_graph(n: usize) -> ail_core::semantic_graph::SemanticGraph {
 
     // Linear chain: NodeRef(i) Calls NodeRef(i+1) for i in 0..n-1.
     let edges: Vec<GraphEdge> = (0..n.saturating_sub(1))
-        .map(|i| GraphEdge {
-            source: NodeRef(i as u32),
-            target: NodeRef((i + 1) as u32),
-            kind: EdgeKind::Calls,
-        })
+        .map(|i| GraphEdge::new(NodeRef(i as u32), NodeRef((i + 1) as u32), EdgeKind::Calls))
         .collect();
 
     SemanticGraph { nodes, edges }
