@@ -62,8 +62,8 @@ use ail_compiler::{
 };
 use ail_context::{
     AuthSession, ContextQuery, ContextRequest, ContextServer, ContextServerConfig,
-    DerivedIndexCache, FieldRedactionRule, InMemoryContextSource, QueryScope, SnapshotSelector,
-    TrustLevel as ContextTrustLevel,
+    DerivedIndexCache, FieldRedactionRule, InMemoryContextSource, QueryBudget, QueryScope,
+    SnapshotSelector, TrustLevel as ContextTrustLevel,
 };
 use ail_core::semantic_graph::{GraphEdge, GraphNode, NodeKind};
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
@@ -719,7 +719,7 @@ async fn parse_context_query_for_cli(
     store: &StoreHandle,
 ) -> Result<ContextQuery, CliError> {
     let graph = load_current_graph_for_cli(store).await?;
-    let budget = usize::MAX;
+    let budget = QueryBudget::default();
     let target = || -> Result<NodeRef, CliError> {
         let raw = args.first().map(String::as_str).unwrap_or("0");
         node_ref_for_cli_target(raw, &graph)
