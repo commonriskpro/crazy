@@ -65,12 +65,17 @@ use ail_context::{
     DerivedIndexCache, FieldRedactionRule, InMemoryContextSource, QueryBudget, QueryScope,
     SnapshotSelector, TrustLevel as ContextTrustLevel,
 };
+use ail_coordinator::Coordinator;
 use ail_core::semantic_graph::{GraphEdge, GraphNode, NodeKind};
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_package::{
     ArtifactHashEntry, CapabilityPolicy, CapabilityPolicyEnforcer, CapabilityPolicyVerdict,
     Lockfile, LockfileEntry, PackageDef, PackageKeypair, PackageManifest, PackageRegistry,
     PublishRequest, RegistryClient, SearchRequest, TrustLevel, VerifyOutcome, VerifyRequest,
+};
+use ail_remote::{
+    AgentKeypair, RemoteChangeSet, RemoteExchangeRequest, RemoteExchangeResponse,
+    RemoteSignerPolicy, RemoteSubmissionOutcome, SignerTrustTier, TrustedRemoteSigner,
 };
 use ail_runtime::{
     CapabilityManifest, ResourceLimits, RuntimeArg, RuntimeHost, RuntimeProfile, RuntimeValue,
@@ -90,6 +95,11 @@ use crate::output::{OutputMode, print_response};
 use crate::store::{
     StoreHandle, build_store, doctor, file_store, gc, init_file_layout_with_branch,
 };
+
+const REMOTE_SUBMIT_TRANSPORT: &str = "in_process";
+const REMOTE_SUBMIT_KEY_SOURCE: &str = "ephemeral_in_process";
+const REMOTE_SUBMIT_NOTE: &str =
+    "local in-process exchange only; no network transport or durable key config is used";
 
 // ── Cli ───────────────────────────────────────────────────────────────────
 
@@ -321,6 +331,12 @@ enum Commands {
         cmd: PackageCmd,
     },
 
+    /// Remote collaboration commands backed by local in-process exchange APIs.
+    Remote {
+        #[command(subcommand)]
+        cmd: RemoteCmd,
+    },
+
     /// Run integrity and health checks on the project.
     Doctor,
 
@@ -402,6 +418,21 @@ enum PackageCmd {
     },
 }
 
+// ── RemoteCmd ─────────────────────────────────────────────────────────────
+
+/// Sub-commands for `ail remote`.
+#[derive(Subcommand)]
+enum RemoteCmd {
+    /// Sign and submit a stored ChangeSet through the local in-process coordinator.
+    Submit {
+        /// Canonical change-id of a locally stored ChangeSet.
+        change_id: String,
+        /// Local signer key reference label. The current CLI uses an ephemeral key.
+        #[arg(long)]
+        signer: String,
+    },
+}
+
 // ── PUBLIC ENTRY POINT ────────────────────────────────────────────────────
 
 /// Parse CLI arguments, build the store, and dispatch to the appropriate handler.
@@ -417,7 +448,7 @@ pub async fn run() -> Result<(), CliError> {
             eprintln!(
                 "Available subcommands: context, change, verify, apply, compile, run, \
                  eval, init, status, inspect, diff, rollback, rebase, merge, refactor, \
-                 approve, reject, policy, package, doctor, gc"
+                 approve, reject, policy, package, remote, doctor, gc"
             );
             std::process::exit(2);
         }
@@ -515,6 +546,7 @@ pub async fn run() -> Result<(), CliError> {
         Commands::Reject { change_id, reason } => cmd_reject(mode, &change_id, &reason, &store),
         Commands::Policy { cmd } => cmd_policy(mode, cmd, &store).await,
         Commands::Package { cmd } => cmd_package(mode, cmd, &store).await,
+        Commands::Remote { cmd } => cmd_remote(mode, cmd, &store).await,
         Commands::Doctor => cmd_doctor(mode, &store).await,
         Commands::Gc => cmd_gc(mode, &store),
     }
@@ -1738,6 +1770,66 @@ async fn load_current_graph_for_cli(store: &StoreHandle) -> Result<SemanticGraph
     }
 }
 
+async fn load_current_graph_with_snapshot_id_for_cli(
+    store: &StoreHandle,
+) -> Result<(SemanticGraph, SnapshotId), CliError> {
+    let snapshots = store.list_snapshots().await?;
+    let head_snapshot = store.head_snapshot().await?;
+    let Some(snapshot) = head_snapshot
+        .as_ref()
+        .or_else(|| latest_snapshot(&snapshots))
+    else {
+        return if store.has_persistent_project() {
+            Ok((
+                SemanticGraph {
+                    nodes: vec![],
+                    edges: vec![],
+                },
+                SnapshotId(0),
+            ))
+        } else {
+            current_graph_for_cli().map(|graph| (graph, SnapshotId(0)))
+        };
+    };
+
+    let graph = match store.load_graph(&snapshot.graph_root_hash).await? {
+        Some(graph) => Ok(graph),
+        None if store.has_persistent_project() => current_graph_for_cli(),
+        None => current_graph_for_cli(),
+    }?;
+    let snapshot_id = snapshot_id_from_parent_chain(store, snapshot).await?;
+    Ok((graph, snapshot_id))
+}
+
+async fn snapshot_id_from_parent_chain(
+    store: &StoreHandle,
+    snapshot: &SnapshotEnvelope,
+) -> Result<SnapshotId, CliError> {
+    let mut depth = 0;
+    let mut current = snapshot.clone();
+    let mut seen = vec![current.id];
+
+    while let Some(parent_id) = current.parent_id {
+        if seen.contains(&parent_id) {
+            return Err(CliError::Domain(format!(
+                "snapshot parent cycle detected at {}",
+                parent_id.to_hex()
+            )));
+        }
+        let Some(parent) = store.load_snapshot(&parent_id).await? else {
+            return Err(CliError::Domain(format!(
+                "snapshot parent not found: {}",
+                parent_id.to_hex()
+            )));
+        };
+        depth += 1;
+        seen.push(parent_id);
+        current = parent;
+    }
+
+    Ok(SnapshotId(depth))
+}
+
 fn cmd_eval(mode: OutputMode, expression: &str) -> Result<(), CliError> {
     let expr = parse_eval_expression(expression)?;
     let anf = eval_anf(expr);
@@ -1781,6 +1873,144 @@ fn cmd_eval(mode: OutputMode, expression: &str) -> Result<(), CliError> {
         }),
     );
     Ok(())
+}
+
+/// `ail remote submit <change-id> --signer <key-ref>` — submit a signed
+/// ChangeSet through the transport-agnostic in-process remote exchange API.
+async fn cmd_remote(mode: OutputMode, cmd: RemoteCmd, store: &StoreHandle) -> Result<(), CliError> {
+    match cmd {
+        RemoteCmd::Submit { change_id, signer } => {
+            cmd_remote_submit(mode, &change_id, &signer, store).await
+        }
+    }
+}
+
+async fn cmd_remote_submit(
+    mode: OutputMode,
+    change_id: &str,
+    signer_ref: &str,
+    store: &StoreHandle,
+) -> Result<(), CliError> {
+    if !is_valid_change_id(change_id) {
+        return Err(CliError::NotFound(format!(
+            "change-id not found: {change_id}"
+        )));
+    }
+    if signer_ref.trim().is_empty() {
+        return Err(CliError::ParseError(
+            "--signer must be a non-empty key reference".to_string(),
+        ));
+    }
+
+    let canonical = store
+        .load_changeset_by_id(change_id)
+        .await?
+        .ok_or_else(|| CliError::NotFound(format!("change-id not found: {change_id}")))?;
+
+    let keypair = AgentKeypair::generate();
+    let identity = keypair.identity();
+    let policy =
+        RemoteSignerPolicy::from_allowed_signers(vec![TrustedRemoteSigner::from_identity(
+            &identity,
+            SignerTrustTier::Trusted,
+            Some(signer_ref.to_string()),
+        )]);
+    let (graph, current_snapshot_id) = load_current_graph_with_snapshot_id_for_cli(store).await?;
+    let coordinator = Coordinator::with_remote_signer_policy(current_snapshot_id, graph, policy);
+    let mut remote_changeset = RemoteChangeSet::sign(canonical, &keypair)
+        .map_err(|e| CliError::Domain(format!("remote signing failed: {e}")))?;
+    remote_changeset.agent.label = Some(signer_ref.to_string());
+
+    let response = coordinator
+        .handle_remote_exchange(RemoteExchangeRequest::SubmitChangeSet(remote_changeset))
+        .await;
+    let RemoteExchangeResponse::Submission(outcome) = response else {
+        return Err(CliError::Domain(remote_exchange_error_message(response)));
+    };
+
+    let human_msg = remote_submit_human(change_id, signer_ref, &identity.public_key, &outcome);
+    print_response(
+        mode,
+        &human_msg,
+        json!({
+            "change_id": change_id,
+            "request": "SubmitChangeSet",
+            "transport": REMOTE_SUBMIT_TRANSPORT,
+            "key_source": REMOTE_SUBMIT_KEY_SOURCE,
+            "signer": {
+                "key_ref": signer_ref,
+                "public_key": bytes_to_hex(&identity.public_key),
+            },
+            "outcome": remote_submission_outcome_json(&outcome),
+            "note": REMOTE_SUBMIT_NOTE,
+        }),
+    );
+    Ok(())
+}
+
+fn remote_exchange_error_message(response: RemoteExchangeResponse) -> String {
+    match response {
+        RemoteExchangeResponse::Error { code, message } => {
+            format!("remote exchange failed ({code}): {message}")
+        }
+        other => format!("unexpected remote exchange response: {other:?}"),
+    }
+}
+
+fn remote_submit_human(
+    change_id: &str,
+    signer_ref: &str,
+    public_key: &[u8; 32],
+    outcome: &RemoteSubmissionOutcome,
+) -> String {
+    format!(
+        "remote submit: {change_id}\nsigner: {signer_ref}\npublic key: {}\ntransport: {REMOTE_SUBMIT_TRANSPORT}\nkey source: {REMOTE_SUBMIT_KEY_SOURCE}\noutcome: {}\nnote: {REMOTE_SUBMIT_NOTE}",
+        bytes_to_hex(public_key),
+        remote_submission_outcome_label(outcome),
+    )
+}
+
+fn remote_submission_outcome_label(outcome: &RemoteSubmissionOutcome) -> &'static str {
+    match outcome {
+        RemoteSubmissionOutcome::Applied { .. } => "applied",
+        RemoteSubmissionOutcome::RebaseApplied { .. } => "rebase_applied",
+        RemoteSubmissionOutcome::ConflictIrresolvable { .. } => "conflict_irresolvable",
+        RemoteSubmissionOutcome::StaleBase { .. } => "stale_base",
+        RemoteSubmissionOutcome::Failed { .. } => "failed",
+    }
+}
+
+fn remote_submission_outcome_json(outcome: &RemoteSubmissionOutcome) -> Value {
+    match outcome {
+        RemoteSubmissionOutcome::Applied {
+            applied_snapshot_id,
+        } => json!({
+            "status": "Applied",
+            "applied_snapshot_id": applied_snapshot_id.0,
+        }),
+        RemoteSubmissionOutcome::RebaseApplied {
+            rebased_onto,
+            applied_snapshot_id,
+        } => json!({
+            "status": "RebaseApplied",
+            "rebased_onto": rebased_onto.0,
+            "applied_snapshot_id": applied_snapshot_id.0,
+        }),
+        RemoteSubmissionOutcome::ConflictIrresolvable { reason } => json!({
+            "status": "ConflictIrresolvable",
+            "reason": format!("{reason:?}"),
+        }),
+        RemoteSubmissionOutcome::StaleBase {
+            current_snapshot_id,
+        } => json!({
+            "status": "StaleBase",
+            "current_snapshot_id": current_snapshot_id.0,
+        }),
+        RemoteSubmissionOutcome::Failed { reason } => json!({
+            "status": "Failed",
+            "reason": reason,
+        }),
+    }
 }
 
 fn latest_snapshot(snapshots: &[SnapshotEnvelope]) -> Option<&SnapshotEnvelope> {

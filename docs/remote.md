@@ -195,4 +195,6 @@ Devuelve el punto de Montgomery crudo. **Se debe pasar por un KDF** (p.ej. `deri
 
 `RemoteExchangeRequest` / `RemoteExchangeResponse` definen el límite de servicio independiente del transporte para enviar changesets firmados e intercambiar bundles de objetos. El `Coordinator` acepta bundles enviados después de verificar su integridad, los retiene en un `BundleStore` en memoria, y responde pulls con `Bundle(bundle)` cuando conoce el `root` o `BundleMissing` cuando no existe.
 
+La CLI implementa el primer slice de producto como `ail remote submit <change-id> --signer <key-ref> [--json]`. Este comando carga un ChangeSet local ya persistido, lo firma con una key efímera in-process etiquetada por `--signer`, allowlistea esa identidad solo para la invocación, y llama `Coordinator::handle_remote_exchange(RemoteExchangeRequest::SubmitChangeSet(_))`. No implementa transporte de red, push/pull, ni configuración durable de keys.
+
 Referencias de código: `crates/ail-remote/src/identity.rs`, `crates/ail-remote/src/signing.rs`, `crates/ail-remote/src/bundle.rs`, `crates/ail-remote/src/exchange.rs`, `crates/ail-remote/src/crypto.rs`, `crates/ail-remote/src/error.rs`, `crates/ail-coordinator/src/coordinator.rs`.

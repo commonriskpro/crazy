@@ -11,9 +11,11 @@ path = "src/main.rs"
 [dependencies]
 ail-change   = { workspace = true }
 ail-compiler = { workspace = true }
+ail-coordinator = { workspace = true }
 ail-context  = { workspace = true }
 ail-core     = { workspace = true }
 ail-package  = { workspace = true }
+ail-remote   = { workspace = true }
 ail-runtime  = { workspace = true }
 ail-storage  = { workspace = true }
 ail-verify   = { workspace = true }
