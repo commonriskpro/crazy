@@ -91,6 +91,8 @@ Cada entrada está indexada por el hash BLAKE3 de sus bytes. `verify_integrity()
 
 `BTreeMap` (no `HashMap`) garantiza orden determinístico en la serialización CBOR.
 
+`BundleStore` abstrae la retención de bundles aceptados. `InMemoryBundleStore` cubre coordinators efímeros y tests; `FileBundleStore` agrega una implementación durable en disco, con un archivo CBOR determinístico por `root` (`<root>.cbor`) bajo un directorio configurado. El store asume que el caller verificó integridad antes de escribir, y al leer vuelve a decodificar/verificar antes de devolver el bundle.
+
 ## Envelopes firmados
 
 ### SignedContextSlice
@@ -193,6 +195,6 @@ Devuelve el punto de Montgomery crudo. **Se debe pasar por un KDF** (p.ej. `deri
 
 ### Notas de implementación
 
-`RemoteExchangeRequest` / `RemoteExchangeResponse` definen el límite de servicio independiente del transporte para enviar changesets firmados e intercambiar bundles de objetos. El `Coordinator` acepta bundles enviados después de verificar su integridad, los retiene en un `BundleStore` en memoria, y responde pulls con `Bundle(bundle)` cuando conoce el `root` o `BundleMissing` cuando no existe.
+`RemoteExchangeRequest` / `RemoteExchangeResponse` definen el límite de servicio independiente del transporte para enviar changesets firmados e intercambiar bundles de objetos. El `Coordinator` acepta bundles enviados después de verificar su integridad, los retiene en un `BundleStore` en memoria por default, y responde pulls con `Bundle(bundle)` cuando conoce el `root` o `BundleMissing` cuando no existe. La implementación durable (`FileBundleStore`) queda disponible detrás del mismo trait; el wiring CLI/config es un paso separado.
 
 Referencias de código: `crates/ail-remote/src/identity.rs`, `crates/ail-remote/src/signing.rs`, `crates/ail-remote/src/bundle.rs`, `crates/ail-remote/src/exchange.rs`, `crates/ail-remote/src/crypto.rs`, `crates/ail-remote/src/error.rs`, `crates/ail-coordinator/src/coordinator.rs`.

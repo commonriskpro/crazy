@@ -19,7 +19,12 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
+use ail_storage::codec::{CborCodec, ContentCodec};
+use ail_storage::error::StorageError;
 use ail_storage::object::ObjectId;
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +54,66 @@ impl fmt::Display for BundleError {
 }
 
 impl std::error::Error for BundleError {}
+
+// ── FileBundleStoreError ──────────────────────────────────────────────────
+
+/// Error returned by fallible [`FileBundleStore`] operations.
+#[derive(Debug)]
+pub enum FileBundleStoreError {
+    /// A filesystem operation failed.
+    Io(io::Error),
+    /// Bundle CBOR encoding or decoding failed.
+    Codec(String),
+    /// The decoded bundle failed integrity verification.
+    Integrity(BundleError),
+    /// The bundle file decoded successfully but belongs to another root.
+    RootMismatch {
+        /// The root requested by the caller.
+        expected: ObjectId,
+        /// The root encoded inside the bundle file.
+        found: ObjectId,
+    },
+}
+
+impl fmt::Display for FileBundleStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FileBundleStoreError::Io(err) => write!(f, "bundle store io error: {err}"),
+            FileBundleStoreError::Codec(msg) => write!(f, "bundle store codec error: {msg}"),
+            FileBundleStoreError::Integrity(err) => {
+                write!(f, "bundle store integrity error: {err}")
+            }
+            FileBundleStoreError::RootMismatch { expected, found } => write!(
+                f,
+                "bundle file root mismatch: expected {expected}, found {found}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FileBundleStoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            FileBundleStoreError::Io(err) => Some(err),
+            FileBundleStoreError::Integrity(err) => Some(err),
+            FileBundleStoreError::Codec(_) | FileBundleStoreError::RootMismatch { .. } => None,
+        }
+    }
+}
+
+impl From<io::Error> for FileBundleStoreError {
+    fn from(err: io::Error) -> Self {
+        FileBundleStoreError::Io(err)
+    }
+}
+
+fn bundle_codec_error(err: StorageError) -> FileBundleStoreError {
+    match err {
+        StorageError::Codec(msg) => FileBundleStoreError::Codec(msg),
+        StorageError::Io(err) => FileBundleStoreError::Io(err),
+        other => FileBundleStoreError::Codec(other.to_string()),
+    }
+}
 
 // ── ObjectBundle ──────────────────────────────────────────────────────────
 
@@ -139,6 +204,114 @@ impl BundleStore for InMemoryBundleStore {
     }
 }
 
+/// Disk-backed bundle store rooted at a directory.
+///
+/// Bundles are encoded with [`CborCodec`] into one file per root object id.  The
+/// store assumes callers verify [`ObjectBundle::verify_integrity`] before write;
+/// reads verify decoded bundles before returning them.
+#[derive(Clone)]
+pub struct FileBundleStore {
+    root_dir: PathBuf,
+    codec: CborCodec,
+}
+
+impl FileBundleStore {
+    /// Create or open a disk-backed bundle store at `root_dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileBundleStoreError::Io`] if the directory cannot be created.
+    pub fn new(root_dir: impl Into<PathBuf>) -> Result<Self, FileBundleStoreError> {
+        let root_dir = root_dir.into();
+        fs::create_dir_all(&root_dir)?;
+        Ok(Self {
+            root_dir,
+            codec: CborCodec,
+        })
+    }
+
+    /// Return the directory used by this store.
+    #[must_use]
+    pub fn root_dir(&self) -> &Path {
+        &self.root_dir
+    }
+
+    /// Store `bundle` using deterministic CBOR encoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if encoding or filesystem writes fail.
+    pub fn try_put_bundle(&self, bundle: &ObjectBundle) -> Result<(), FileBundleStoreError> {
+        let bytes = self.codec.encode(bundle).map_err(bundle_codec_error)?;
+        let path = self.bundle_path(&bundle.root);
+        let tmp_path = self.tmp_bundle_path(&bundle.root);
+
+        let mut file = fs::File::create(&tmp_path)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+
+        fs::rename(tmp_path, path)?;
+        Ok(())
+    }
+
+    /// Return the stored bundle for `root`, or `Ok(None)` when absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file exists but cannot be read, decoded, or
+    /// verified.
+    pub fn try_get_bundle(
+        &self,
+        root: &ObjectId,
+    ) -> Result<Option<ObjectBundle>, FileBundleStoreError> {
+        let path = self.bundle_path(root);
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(FileBundleStoreError::Io(err)),
+        };
+
+        let bundle: ObjectBundle = self.codec.decode(&bytes).map_err(bundle_codec_error)?;
+        if bundle.root != *root {
+            return Err(FileBundleStoreError::RootMismatch {
+                expected: *root,
+                found: bundle.root,
+            });
+        }
+        bundle
+            .verify_integrity()
+            .map_err(FileBundleStoreError::Integrity)?;
+        Ok(Some(bundle))
+    }
+
+    fn bundle_path(&self, root: &ObjectId) -> PathBuf {
+        self.root_dir.join(format!("{}.cbor", root.to_hex()))
+    }
+
+    fn tmp_bundle_path(&self, root: &ObjectId) -> PathBuf {
+        self.root_dir.join(format!("{}.tmp", root.to_hex()))
+    }
+}
+
+impl fmt::Debug for FileBundleStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FileBundleStore")
+            .field("root_dir", &self.root_dir)
+            .finish_non_exhaustive()
+    }
+}
+
+impl BundleStore for FileBundleStore {
+    fn put_bundle(&mut self, bundle: ObjectBundle) {
+        let _ = self.try_put_bundle(&bundle);
+    }
+
+    fn get_bundle(&self, root: &ObjectId) -> Option<ObjectBundle> {
+        self.try_get_bundle(root).ok().flatten()
+    }
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -211,5 +384,46 @@ mod tests {
         let missing_root = ObjectId::from_bytes(b"missing root");
 
         assert_eq!(store.get_bundle(&missing_root), None);
+    }
+
+    #[test]
+    fn file_store_returns_bundle_after_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir must be created");
+        let bundle = valid_bundle();
+        let root = bundle.root;
+
+        {
+            let store = FileBundleStore::new(dir.path()).expect("file store must open");
+            store
+                .try_put_bundle(&bundle)
+                .expect("bundle write must succeed");
+        }
+
+        let reopened = FileBundleStore::new(dir.path()).expect("file store must reopen");
+        assert_eq!(reopened.try_get_bundle(&root).unwrap(), Some(bundle));
+    }
+
+    #[test]
+    fn file_store_returns_none_for_missing_root() {
+        let dir = tempfile::tempdir().expect("tempdir must be created");
+        let store = FileBundleStore::new(dir.path()).expect("file store must open");
+        let missing_root = ObjectId::from_bytes(b"missing root");
+
+        assert_eq!(store.try_get_bundle(&missing_root).unwrap(), None);
+    }
+
+    #[test]
+    fn file_store_reports_corrupt_bundle_file() {
+        let dir = tempfile::tempdir().expect("tempdir must be created");
+        let store = FileBundleStore::new(dir.path()).expect("file store must open");
+        let root = ObjectId::from_bytes(b"corrupt root");
+
+        fs::write(store.bundle_path(&root), b"not valid cbor").expect("corrupt file write");
+
+        let err = store
+            .try_get_bundle(&root)
+            .expect_err("corrupt file must fail");
+        assert!(matches!(err, FileBundleStoreError::Codec(_)));
+        assert_eq!(store.get_bundle(&root), None);
     }
 }
