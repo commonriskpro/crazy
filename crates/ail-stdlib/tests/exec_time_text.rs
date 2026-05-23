@@ -5,7 +5,9 @@
 // Spec: STDLIB-EXEC-TEXT-1..3, STDLIB-EXEC-TIME-1..3,
 //       STDLIB-CAP-MONO-1..2, STDLIB-CAP-RAND-1
 
-use ail_stdlib::exec::{InMemoryCapabilityHost, StdlibCapabilityDispatch, StdlibValue, call_pure_stdlib};
+use ail_stdlib::exec::{
+    InMemoryCapabilityHost, StdlibCapabilityDispatch, StdlibValue, call_pure_stdlib,
+};
 
 // ── STDLIB-EXEC-TEXT-1: length_graphemes ASCII ────────────────────────────
 
@@ -87,20 +89,14 @@ fn time_add_duration_zero_delta_is_identity() {
 
 #[test]
 fn time_instant_to_ms_is_identity() {
-    let result = call_pure_stdlib(
-        "std.time.instant_to_ms",
-        &[StdlibValue::Int(99_000)],
-    );
+    let result = call_pure_stdlib("std.time.instant_to_ms", &[StdlibValue::Int(99_000)]);
     assert_eq!(result, Ok(StdlibValue::Int(99_000)));
 }
 
 // Triangulate: instant_to_ms with zero
 #[test]
 fn time_instant_to_ms_zero() {
-    let result = call_pure_stdlib(
-        "std.time.instant_to_ms",
-        &[StdlibValue::Int(0)],
-    );
+    let result = call_pure_stdlib("std.time.instant_to_ms", &[StdlibValue::Int(0)]);
     assert_eq!(result, Ok(StdlibValue::Int(0)));
 }
 

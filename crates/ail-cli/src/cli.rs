@@ -101,12 +101,10 @@ use crate::store::{
 
 const REMOTE_SUBMIT_TRANSPORT: &str = "in_process";
 const REMOTE_SUBMIT_KEY_SOURCE: &str = "ephemeral_in_process";
-const REMOTE_SUBMIT_NOTE: &str =
-    "local in-process exchange only; no network transport is used; remote config is validated but not applied to the ephemeral signer policy";
+const REMOTE_SUBMIT_NOTE: &str = "local in-process exchange only; no network transport is used; remote config is validated but not applied to the ephemeral signer policy";
 const REMOTE_BUNDLE_TRANSPORT: &str = "local_file_bundle_store+in_process";
 const REMOTE_BUNDLE_SCOPE_SINGLE_ROOT: &str = "single_root_object";
-const REMOTE_BUNDLE_SCOPE_SNAPSHOT_DEPENDENCIES: &str =
-    "root_with_snapshot_envelope_dependencies";
+const REMOTE_BUNDLE_SCOPE_SNAPSHOT_DEPENDENCIES: &str = "root_with_snapshot_envelope_dependencies";
 const REMOTE_BUNDLE_NOTE: &str = "local file bundle store only; snapshot envelope roots include available directly referenced stored objects; raw graph traversal remains opaque; no network transport is used and remote config is not consulted";
 
 // ── Cli ───────────────────────────────────────────────────────────────────
@@ -550,7 +548,9 @@ pub async fn run() -> Result<(), CliError> {
             branch,
             into_target,
         } => cmd_merge(mode, &branch, into_target.as_deref(), &store).await,
-        Commands::Refactor { operation, args } => cmd_refactor(mode, &operation, &args, &store).await,
+        Commands::Refactor { operation, args } => {
+            cmd_refactor(mode, &operation, &args, &store).await
+        }
         Commands::Approve {
             change_id,
             for_reason,
@@ -940,10 +940,7 @@ fn node_refs_for_name<'g>(
 
 /// Fetch snapshot identity strings from the store for output binding.
 async fn snapshot_identity(store: &StoreHandle) -> (String, String) {
-    let snapshots = store
-        .list_snapshots()
-        .await
-        .unwrap_or_default();
+    let snapshots = store.list_snapshots().await.unwrap_or_default();
     let snapshot_id = snapshots
         .last()
         .map(|s| s.id.to_hex())
@@ -1113,8 +1110,18 @@ async fn cmd_proofs(mode: OutputMode, target: &str, store: &StoreHandle) -> Resu
                 && (target_refs.contains(&e.source) || target_refs.contains(&e.target))
         })
         .map(|e| {
-            let prover = graph.nodes.iter().find(|n| n.id == e.source).map(|n| n.name.as_str()).unwrap_or("?");
-            let claim = graph.nodes.iter().find(|n| n.id == e.target).map(|n| n.name.as_str()).unwrap_or("?");
+            let prover = graph
+                .nodes
+                .iter()
+                .find(|n| n.id == e.source)
+                .map(|n| n.name.as_str())
+                .unwrap_or("?");
+            let claim = graph
+                .nodes
+                .iter()
+                .find(|n| n.id == e.target)
+                .map(|n| n.name.as_str())
+                .unwrap_or("?");
             json!({
                 "prover": prover,
                 "claim": claim,
@@ -1191,7 +1198,9 @@ async fn cmd_change(
     };
     store.append_changeset_log(&entry).await?;
     // Persist the canonical CBOR bytes so cmd_verify can reconstruct the graph.
-    store.save_changeset_payload(&change_id, &cbor_bytes).await?;
+    store
+        .save_changeset_payload(&change_id, &cbor_bytes)
+        .await?;
 
     // Structural diff preview: empty graph → all ops are additions.
     let structural_diff = build_structural_diff_preview(&changeset.ops);
@@ -1213,9 +1222,7 @@ async fn cmd_change(
                 let graph_root = store.save_graph(&graph).await?;
                 let parent_id = latest_snapshot(&snapshots_before).map(|s| s.id);
                 let snapshot = SnapshotEnvelope {
-                    id: ObjectId::from_bytes(
-                        &format!("snapshot-after-{change_id}").into_bytes(),
-                    ),
+                    id: ObjectId::from_bytes(&format!("snapshot-after-{change_id}").into_bytes()),
                     graph_root_hash: graph_root,
                     parent_id,
                     applied_change_id: Some(cs_oid),
@@ -2614,9 +2621,7 @@ async fn cmd_status(mode: OutputMode, store: &StoreHandle) -> Result<(), CliErro
     let runtime_profile_status = "valid";
     // Real lockfile count: number of installed packages when using a persistent store.
     let package_advisories = if store.has_persistent_project() {
-        load_package_lockfile(store)
-            .map(|lf| lf.len())
-            .unwrap_or(0)
+        load_package_lockfile(store).map(|lf| lf.len()).unwrap_or(0)
     } else {
         0
     };
@@ -3492,9 +3497,8 @@ async fn cmd_refactor(
                 .unwrap_or_default();
 
             // Generate ACL ops.
-            let mut acl_ops: Vec<Value> = vec![
-                json!({ "op": "create_function", "id": dest_name, "visibility": "private" }),
-            ];
+            let mut acl_ops: Vec<Value> =
+                vec![json!({ "op": "create_function", "id": dest_name, "visibility": "private" })];
             if let Some(node) = source_node {
                 if let Some(body) = &node.body_expr {
                     acl_ops.push(json!({ "op": "set_body", "target": dest_name, "body": body }));
@@ -3548,8 +3552,7 @@ async fn cmd_refactor(
         _ => {
             // Generic refactor: hash over operation + args.
             let refactor_input = format!("{operation}:{}", args.join(":"));
-            let change_id =
-                bytes_to_hex(blake3::hash(refactor_input.as_bytes()).as_bytes());
+            let change_id = bytes_to_hex(blake3::hash(refactor_input.as_bytes()).as_bytes());
 
             // For move/rename/inline: derive what we can from the graph.
             let source_name = args.first().map(String::as_str).unwrap_or("");
@@ -4149,10 +4152,7 @@ fn doctor_schema_compatibility(ail_dir: &Path) -> (&'static str, &'static str) {
 
     let project_toml = ail_dir.join("project.toml");
     if !project_toml.exists() {
-        return (
-            "ok",
-            "Storage schema version matches current toolchain.",
-        );
+        return ("ok", "Storage schema version matches current toolchain.");
     }
 
     let Ok(content) = std::fs::read_to_string(&project_toml) else {
@@ -4209,7 +4209,11 @@ async fn cmd_doctor(mode: OutputMode, store: &StoreHandle) -> Result<(), CliErro
             Ok(graph) => {
                 let errors = graph.validate_full();
                 if errors.is_empty() {
-                    ("ok", "Graph structure is consistent — no orphan nodes or dangling edges.".to_string())
+                    (
+                        "ok",
+                        "Graph structure is consistent — no orphan nodes or dangling edges."
+                            .to_string(),
+                    )
                 } else {
                     (
                         "warn",
@@ -4225,7 +4229,10 @@ async fn cmd_doctor(mode: OutputMode, store: &StoreHandle) -> Result<(), CliErro
                     )
                 }
             }
-            Err(_) => ("ok", "Graph structure is consistent — no orphan nodes or dangling edges.".to_string()),
+            Err(_) => (
+                "ok",
+                "Graph structure is consistent — no orphan nodes or dangling edges.".to_string(),
+            ),
         }
     };
 
@@ -4236,8 +4243,16 @@ async fn cmd_doctor(mode: OutputMode, store: &StoreHandle) -> Result<(), CliErro
             graph_integrity_status,
             &graph_integrity_msg,
         ),
-        ("index_freshness", index_freshness_status, index_freshness_msg),
-        ("schema_compatibility", schema_compat_status, schema_compat_msg),
+        (
+            "index_freshness",
+            index_freshness_status,
+            index_freshness_msg,
+        ),
+        (
+            "schema_compatibility",
+            schema_compat_status,
+            schema_compat_msg,
+        ),
         (
             "artifact_hash_consistency",
             "ok",
@@ -4830,7 +4845,9 @@ fn default_memory_package_registry() -> Result<PackageRegistry, CliError> {
             imports: vec![],
             boundaries: vec![],
             license: None,
-            provenance: Some(ail_package::Provenance::from_url("built-in memory registry fixture")),
+            provenance: Some(ail_package::Provenance::from_url(
+                "built-in memory registry fixture",
+            )),
             verification_report: None,
             graph_schema: Some(1),
             core_ir_schema: Some(1),
@@ -5318,17 +5335,28 @@ mod tests {
     //   THEN output contains "A" in the callers list
     #[tokio::test]
     async fn cmd_callers_returns_real_callers_from_graph() {
-        use ail_core::semantic_graph::{EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph};
-        use ail_storage::{SnapshotEnvelope, object::ObjectId};
         use crate::store::memory_store;
+        use ail_core::semantic_graph::{
+            EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph,
+        };
+        use ail_storage::{SnapshotEnvelope, object::ObjectId};
 
         let store = memory_store();
 
         // Build a graph: node 0 (checkout) calls node 1 (cart_total).
-        let mut graph = SemanticGraph { nodes: vec![], edges: vec![] };
-        graph.nodes.push(GraphNode::new(NodeRef(0), NodeKind::Function, "checkout"));
-        graph.nodes.push(GraphNode::new(NodeRef(1), NodeKind::Function, "cart_total"));
-        graph.edges.push(GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls));
+        let mut graph = SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
+        graph
+            .nodes
+            .push(GraphNode::new(NodeRef(0), NodeKind::Function, "checkout"));
+        graph
+            .nodes
+            .push(GraphNode::new(NodeRef(1), NodeKind::Function, "cart_total"));
+        graph
+            .edges
+            .push(GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls));
 
         // Save graph and a snapshot pointing to it.
         let root_hash = store.save_graph(&graph).await.expect("save graph");
@@ -5355,16 +5383,29 @@ mod tests {
     //   THEN the function succeeds with graph traversal active
     #[tokio::test]
     async fn cmd_impact_traverses_depends_on_edges() {
-        use ail_core::semantic_graph::{EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph};
-        use ail_storage::{SnapshotEnvelope, object::ObjectId};
         use crate::store::memory_store;
+        use ail_core::semantic_graph::{
+            EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph,
+        };
+        use ail_storage::{SnapshotEnvelope, object::ObjectId};
 
         let store = memory_store();
 
-        let mut graph = SemanticGraph { nodes: vec![], edges: vec![] };
-        graph.nodes.push(GraphNode::new(NodeRef(0), NodeKind::Function, "cart_total"));
-        graph.nodes.push(GraphNode::new(NodeRef(1), NodeKind::Module, "order_service"));
-        graph.edges.push(GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn));
+        let mut graph = SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
+        graph
+            .nodes
+            .push(GraphNode::new(NodeRef(0), NodeKind::Function, "cart_total"));
+        graph.nodes.push(GraphNode::new(
+            NodeRef(1),
+            NodeKind::Module,
+            "order_service",
+        ));
+        graph
+            .edges
+            .push(GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn));
 
         let root_hash = store.save_graph(&graph).await.expect("save graph");
         let snap = SnapshotEnvelope {
@@ -5464,7 +5505,10 @@ mod tests {
         let store = memory_store();
         let id = "d".repeat(64);
         let result = cmd_apply(OutputMode::Human, &id, true, Some("prod"), &store).await;
-        assert!(result.is_ok(), "prod with --yes must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "prod with --yes must succeed; got: {result:?}"
+        );
     }
 
     // Scenario: preflight fails on module hash mismatch.
@@ -5598,11 +5642,11 @@ mod tests {
     //   behavior_locks populated from the source function's contract_clauses.
     #[tokio::test]
     async fn cmd_refactor_extract_function_with_contracts_has_behavior_locks() {
+        use crate::store::memory_store;
         use ail_change::apply::apply as apply_cs;
         use ail_change::canonical::canonicalize_parsed;
         use ail_change::model::SnapshotId;
         use ail_change::parser::parse_changeset;
-        use crate::store::memory_store;
 
         let store = memory_store();
 
@@ -5618,10 +5662,16 @@ end
 ";
         let parsed = parse_changeset(source).expect("must parse");
         let canonical = canonicalize_parsed(parsed);
-        let mut graph = ail_core::semantic_graph::SemanticGraph { nodes: vec![], edges: vec![] };
+        let mut graph = ail_core::semantic_graph::SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
         let bridge = SimpleSnapshotBridge(SnapshotId(0));
         let outcome = apply_cs(canonical.clone(), &mut graph, &bridge);
-        assert!(matches!(outcome, ail_change::model::ChangeSetOutcome::Applied));
+        assert!(matches!(
+            outcome,
+            ail_change::model::ChangeSetOutcome::Applied
+        ));
         store.save_graph(&graph).await.expect("save graph");
         let cbor = encode_cbor(&canonical).expect("encode");
         let snap_id = ail_storage::object::ObjectId::from_bytes(&cbor);
@@ -5639,22 +5689,29 @@ end
         let result = cmd_refactor(
             OutputMode::Json,
             "extract-function",
-            &["fn.checkout".to_string(), "--to".to_string(), "fn.payment_handler".to_string()],
+            &[
+                "fn.checkout".to_string(),
+                "--to".to_string(),
+                "fn.payment_handler".to_string(),
+            ],
             &store,
         )
         .await;
-        assert!(result.is_ok(), "cmd_refactor with contracts must succeed; got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "cmd_refactor with contracts must succeed; got: {result:?}"
+        );
     }
 
     // TRIANGULATE: extract-function from a graph node with effects populates
     //   effects_preserved from the source function's effect_row.
     #[tokio::test]
     async fn cmd_refactor_extract_function_with_effects_has_effects_preserved() {
+        use crate::store::memory_store;
         use ail_change::apply::apply as apply_cs;
         use ail_change::canonical::canonicalize_parsed;
         use ail_change::model::SnapshotId;
         use ail_change::parser::parse_changeset;
-        use crate::store::memory_store;
 
         let store = memory_store();
 
@@ -5669,7 +5726,10 @@ end
 ";
         let parsed = parse_changeset(source).expect("must parse");
         let canonical = canonicalize_parsed(parsed);
-        let mut graph = ail_core::semantic_graph::SemanticGraph { nodes: vec![], edges: vec![] };
+        let mut graph = ail_core::semantic_graph::SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
         let bridge = SimpleSnapshotBridge(SnapshotId(0));
         apply_cs(canonical.clone(), &mut graph, &bridge);
         let cbor = encode_cbor(&canonical).expect("encode");
@@ -5688,7 +5748,11 @@ end
         let result = cmd_refactor(
             OutputMode::Human,
             "extract-function",
-            &["fn.checkout".to_string(), "--to".to_string(), "fn.pay".to_string()],
+            &[
+                "fn.checkout".to_string(),
+                "--to".to_string(),
+                "fn.pay".to_string(),
+            ],
             &store,
         )
         .await;
@@ -5708,7 +5772,11 @@ end
         let result = cmd_refactor(
             OutputMode::Human,
             "extract-function",
-            &["fn.nonexistent".to_string(), "--to".to_string(), "fn.extracted".to_string()],
+            &[
+                "fn.nonexistent".to_string(),
+                "--to".to_string(),
+                "fn.extracted".to_string(),
+            ],
             &store,
         )
         .await;
@@ -5861,16 +5929,25 @@ end
     //   THEN overall is "issues_found" and the graph_integrity check is "warn"
     #[tokio::test]
     async fn cmd_doctor_graph_integrity_warn_on_dangling_edge() {
-        use ail_core::semantic_graph::{EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph};
-        use ail_storage::{SnapshotEnvelope, object::ObjectId};
         use crate::store::memory_store;
+        use ail_core::semantic_graph::{
+            EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph,
+        };
+        use ail_storage::{SnapshotEnvelope, object::ObjectId};
 
         let store = memory_store();
 
         // Graph with a dangling edge (target NodeRef(99) doesn't exist).
-        let mut graph = SemanticGraph { nodes: vec![], edges: vec![] };
-        graph.nodes.push(GraphNode::new(NodeRef(0), NodeKind::Function, "foo"));
-        graph.edges.push(GraphEdge::new(NodeRef(0), NodeRef(99), EdgeKind::DependsOn));
+        let mut graph = SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
+        graph
+            .nodes
+            .push(GraphNode::new(NodeRef(0), NodeKind::Function, "foo"));
+        graph
+            .edges
+            .push(GraphEdge::new(NodeRef(0), NodeRef(99), EdgeKind::DependsOn));
 
         let root_hash = store.save_graph(&graph).await.expect("save graph");
         let snap = SnapshotEnvelope {
@@ -5926,10 +6003,16 @@ end
             .expect("put object");
         // Ensure snapshots.cbor does NOT exist
         let index_path = ail_dir.join("index").join("snapshots.cbor");
-        assert!(!index_path.exists(), "test setup: snapshots.cbor must not exist");
+        assert!(
+            !index_path.exists(),
+            "test setup: snapshots.cbor must not exist"
+        );
 
         let (status, _msg) = doctor_index_freshness(&ail_dir);
-        assert_eq!(status, "warn", "objects without index → freshness must be warn");
+        assert_eq!(
+            status, "warn",
+            "objects without index → freshness must be warn"
+        );
     }
 
     // Scenario: schema_compatibility is "ok" when project.toml does not exist.
@@ -5943,7 +6026,10 @@ end
         std::fs::create_dir_all(&ail_dir).expect("create ail_dir");
         // No project.toml
         let (status, _msg) = doctor_schema_compatibility(&ail_dir);
-        assert_eq!(status, "ok", "missing project.toml → schema compat must be ok");
+        assert_eq!(
+            status, "ok",
+            "missing project.toml → schema compat must be ok"
+        );
     }
 
     // TRIANGULATE: schema_compatibility is "warn" when project.toml has version = "0".
@@ -5955,11 +6041,8 @@ end
         let temp = tempfile::tempdir().expect("tempdir");
         let ail_dir = temp.path().join(".ail");
         std::fs::create_dir_all(&ail_dir).expect("create ail_dir");
-        std::fs::write(
-            ail_dir.join("project.toml"),
-            b"version = \"0\"\n",
-        )
-        .expect("write project.toml");
+        std::fs::write(ail_dir.join("project.toml"), b"version = \"0\"\n")
+            .expect("write project.toml");
 
         let (status, _msg) = doctor_schema_compatibility(&ail_dir);
         assert_eq!(
@@ -6077,8 +6160,7 @@ end
         let store = memory_store();
         let canonical = CanonicalChangeSet::default();
         let mut cbor_bytes = Vec::new();
-        ciborium::into_writer(&canonical, &mut cbor_bytes)
-            .expect("CBOR encode must succeed");
+        ciborium::into_writer(&canonical, &mut cbor_bytes).expect("CBOR encode must succeed");
         let change_id = ail_storage::object::ObjectId::from_bytes(&cbor_bytes).to_hex();
 
         store

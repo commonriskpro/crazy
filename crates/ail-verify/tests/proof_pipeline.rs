@@ -4,7 +4,7 @@
 //   Generate → Simplify → Solve → Compose → Degrade
 
 use ail_core::semantic_graph::{ContractClauses, GraphNode, NodeKind, NodeRef, SemanticGraph};
-use ail_verify::proof::{semantic_implies, ObligationState, ProofObligationPipeline};
+use ail_verify::proof::{ObligationState, ProofObligationPipeline, semantic_implies};
 use ail_verify::solver::SimpleSolver;
 
 fn graph_with_clauses(node_name: &str, requires: Vec<&str>, ensures: Vec<&str>) -> SemanticGraph {
@@ -174,19 +174,31 @@ fn semantic_implies_x_gte_0_required_x_gt_0_candidate_is_true() {
 #[test]
 fn semantic_implies_x_gt_5_required_x_gt_3_candidate_is_false() {
     // "x > 3" does NOT imply "x > 5" (x could be 4)
-    assert!(!semantic_implies("x > 5", "x > 3"), "x>3 must not imply x>5");
+    assert!(
+        !semantic_implies("x > 5", "x > 3"),
+        "x>3 must not imply x>5"
+    );
 }
 
 #[test]
 fn semantic_implies_exact_string_match_is_true() {
-    assert!(semantic_implies("x > 0", "x > 0"), "exact match must be true");
+    assert!(
+        semantic_implies("x > 0", "x > 0"),
+        "exact match must be true"
+    );
 }
 
 #[test]
 fn semantic_implies_non_comparable_predicates_is_false() {
     // Non-comparable predicates (no simple int comparison form) → false
-    assert!(!semantic_implies("amount > 0", "x > 0"), "different idents must not imply");
-    assert!(!semantic_implies("x > 0", "complex_predicate"), "non-comparable must not imply");
+    assert!(
+        !semantic_implies("amount > 0", "x > 0"),
+        "different idents must not imply"
+    );
+    assert!(
+        !semantic_implies("x > 0", "complex_predicate"),
+        "non-comparable must not imply"
+    );
 }
 
 #[test]
@@ -212,7 +224,10 @@ fn compose_check_upgrades_obligation_when_peer_ensures_semantically_implies() {
     let solver = SimpleSolver;
     let results = ProofObligationPipeline::run(&graph, &solver);
     let target_result = results.iter().find(|r| r.obligation.scope == "target_fn");
-    assert!(target_result.is_some(), "must have obligation for target_fn");
+    assert!(
+        target_result.is_some(),
+        "must have obligation for target_fn"
+    );
     assert_eq!(
         target_result.unwrap().state,
         ObligationState::RuntimeChecked,
@@ -235,7 +250,10 @@ fn result_ge_zero_with_checked_add_evidence_resolves_to_proven() {
         requires: vec!["a >= 0".into(), "b >= 0".into()],
         ensures: vec!["result >= 0".into()],
     });
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let results = ProofObligationPipeline::run(&graph, &solver);
 
@@ -246,7 +264,10 @@ fn result_ge_zero_with_checked_add_evidence_resolves_to_proven() {
     assert!(
         ensures_result.is_some(),
         "must find obligation for result >= 0; obligations: {:?}",
-        results.iter().map(|r| (&r.obligation.predicate, &r.state)).collect::<Vec<_>>()
+        results
+            .iter()
+            .map(|r| (&r.obligation.predicate, &r.state))
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         ensures_result.unwrap().state,
@@ -266,14 +287,20 @@ fn obligation_without_scope_node_falls_back_to_simple_solve() {
         requires: vec![],
         ensures: vec!["x > 0".into()],
     });
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let results = ProofObligationPipeline::run(&graph, &solver);
 
     let result = results.iter().find(|r| r.obligation.predicate == "x > 0");
     assert!(result.is_some(), "must have obligation for x > 0");
     assert!(
-        matches!(result.unwrap().state, ObligationState::Assumed(_) | ObligationState::RuntimeChecked),
+        matches!(
+            result.unwrap().state,
+            ObligationState::Assumed(_) | ObligationState::RuntimeChecked
+        ),
         "x > 0 with no constraints must be Assumed or RuntimeChecked (not Proven); got {:?}",
         result.unwrap().state
     );

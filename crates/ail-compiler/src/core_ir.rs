@@ -494,7 +494,6 @@ pub enum CoreExpr {
     },
 
     // ── doc-alignment: missing CoreExpr variants from core-ir.md ──────────
-
     /// Use of a declared capability.
     ///
     /// Corresponds to `docs/core-ir.md §9 — CapabilityUse`.
@@ -730,7 +729,6 @@ pub enum CoreType {
     BoundarySchema(String),
 
     // ── doc-alignment: missing CoreType variants from core-ir.md ──────────
-
     /// Adapter contract type — wraps a foreign boundary with type-level
     /// contract metadata.
     ///
@@ -1307,7 +1305,10 @@ mod tests {
         };
         let bytes = stable_cbor_bytes(&expr).expect("encode");
         let decoded: CoreExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, expr, "Loop with Proven termination must survive CBOR round-trip");
+        assert_eq!(
+            decoded, expr,
+            "Loop with Proven termination must survive CBOR round-trip"
+        );
         if let CoreExpr::Loop { termination, .. } = &decoded {
             assert_eq!(termination.as_ref(), Some(&LoopTermination::Proven));
         } else {
@@ -1330,7 +1331,10 @@ mod tests {
         let decoded: CoreExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
         assert_eq!(decoded, expr_with_none);
         if let CoreExpr::Loop { termination, .. } = decoded {
-            assert!(termination.is_none(), "termination must be None after round-trip");
+            assert!(
+                termination.is_none(),
+                "termination must be None after round-trip"
+            );
         }
     }
 
@@ -1345,7 +1349,10 @@ mod tests {
         };
         let bytes = stable_cbor_bytes(&expr).expect("encode");
         let decoded: CoreExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, expr, "WhileLoop with Bounded termination must round-trip");
+        assert_eq!(
+            decoded, expr,
+            "WhileLoop with Bounded termination must round-trip"
+        );
     }
 
     // S-C1d: All LoopTermination variants are constructible.
@@ -1399,7 +1406,10 @@ mod tests {
         let ty = CoreType::Result(Box::new(CoreType::Int), Box::new(CoreType::Text));
         let bytes = stable_cbor_bytes(&ty).expect("encode");
         let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, ty, "Result<Int, Text> must survive CBOR round-trip");
+        assert_eq!(
+            decoded, ty,
+            "Result<Int, Text> must survive CBOR round-trip"
+        );
     }
 
     // S-B1e: Handle { resource: Text, mode: ResourceMode::Linear } round-trips.
@@ -1411,7 +1421,10 @@ mod tests {
         };
         let bytes = stable_cbor_bytes(&ty).expect("encode");
         let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, ty, "Handle<Text, Linear> must survive CBOR round-trip");
+        assert_eq!(
+            decoded, ty,
+            "Handle<Text, Linear> must survive CBOR round-trip"
+        );
         if let CoreType::Handle { resource, mode } = decoded {
             assert_eq!(*resource, CoreType::Text);
             assert_eq!(mode, ResourceMode::Linear);
@@ -1467,7 +1480,10 @@ mod tests {
         // Triangulation: Channel<Text> ≠ Task<Bool>
         let task_ty = CoreType::Task(Box::new(CoreType::Bool));
         let task_bytes = stable_cbor_bytes(&task_ty).expect("encode task");
-        assert_ne!(bytes, task_bytes, "Channel<Text> must differ from Task<Bool> in CBOR");
+        assert_ne!(
+            bytes, task_bytes,
+            "Channel<Text> must differ from Task<Bool> in CBOR"
+        );
     }
 
     // ── Task A1 (RED): new flat CoreType variants ─────────────────────────
@@ -1494,7 +1510,10 @@ mod tests {
         let ty = CoreType::NormalizedText("NFC".to_string());
         let bytes = stable_cbor_bytes(&ty).expect("encode");
         let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, ty, "NormalizedText<NFC> must survive CBOR round-trip");
+        assert_eq!(
+            decoded, ty,
+            "NormalizedText<NFC> must survive CBOR round-trip"
+        );
     }
 
     // S-A1c: Decimal is distinct from Int and Float in CBOR encoding.
@@ -1593,10 +1612,7 @@ mod tests {
         } = &expr
         {
             assert_eq!(binding, "item");
-            assert_eq!(
-                **collection,
-                CoreExpr::Var("cart.items".to_string())
-            );
+            assert_eq!(**collection, CoreExpr::Var("cart.items".to_string()));
             assert!(matches!(**body, CoreExpr::EffectCall { .. }));
         } else {
             panic!("expected ForEach variant");
@@ -1611,7 +1627,12 @@ mod tests {
             func: "charge".to_string(),
             args: vec![],
         };
-        if let CoreExpr::BoundaryCall { boundary, func, args } = &expr {
+        if let CoreExpr::BoundaryCall {
+            boundary,
+            func,
+            args,
+        } = &expr
+        {
             assert_eq!(boundary, "payments.stripe");
             assert_eq!(func, "charge");
             assert!(args.is_empty());
@@ -1658,7 +1679,10 @@ mod tests {
         let ty = CoreType::Dyn("Serializable".to_string());
         let bytes = stable_cbor_bytes(&ty).expect("encode");
         let decoded: CoreType = ciborium::from_reader(bytes.as_slice()).expect("decode");
-        assert_eq!(decoded, ty, "Dyn<Serializable> must survive CBOR round-trip");
+        assert_eq!(
+            decoded, ty,
+            "Dyn<Serializable> must survive CBOR round-trip"
+        );
         if let CoreType::Dyn(name) = decoded {
             assert_eq!(name, "Serializable");
         } else {
@@ -1690,7 +1714,12 @@ mod tests {
             method: "get".to_string(),
             args: vec![CoreExpr::Var("id".to_string())],
         };
-        if let CoreExpr::DynCall { interface, method, args } = &expr {
+        if let CoreExpr::DynCall {
+            interface,
+            method,
+            args,
+        } = &expr
+        {
             assert_eq!(interface, "Repository<User>");
             assert_eq!(method, "get");
             assert_eq!(args.len(), 1);
@@ -1711,7 +1740,12 @@ mod tests {
         let bytes = stable_cbor_bytes(&expr).expect("encode");
         let decoded: CoreExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
         assert_eq!(decoded, expr, "DynCall must survive CBOR round-trip");
-        if let CoreExpr::DynCall { interface, method, args } = decoded {
+        if let CoreExpr::DynCall {
+            interface,
+            method,
+            args,
+        } = decoded
+        {
             assert_eq!(interface, "Repository<User>");
             assert_eq!(method, "get");
             assert_eq!(args.len(), 1);
@@ -1795,14 +1829,15 @@ mod tests {
     fn boundary_schema_is_distinct_from_dyn_and_foreign_type_in_cbor() {
         let bs = stable_cbor_bytes(&CoreType::BoundarySchema("Schema".to_string()))
             .expect("encode BoundarySchema");
-        let dyn_ =
-            stable_cbor_bytes(&CoreType::Dyn("Schema".to_string())).expect("encode Dyn");
-        let foreign =
-            stable_cbor_bytes(&CoreType::ForeignType("Schema".to_string()))
-                .expect("encode ForeignType");
+        let dyn_ = stable_cbor_bytes(&CoreType::Dyn("Schema".to_string())).expect("encode Dyn");
+        let foreign = stable_cbor_bytes(&CoreType::ForeignType("Schema".to_string()))
+            .expect("encode ForeignType");
         // Same payload string but different variants → different CBOR
         assert_ne!(bs, dyn_, "BoundarySchema must differ from Dyn in CBOR");
-        assert_ne!(bs, foreign, "BoundarySchema must differ from ForeignType in CBOR");
+        assert_ne!(
+            bs, foreign,
+            "BoundarySchema must differ from ForeignType in CBOR"
+        );
     }
 
     // S-A3e: ForEach, Fold, Return, MapNew, SetNew, IndexGet round-trip through CBOR.
@@ -1843,8 +1878,7 @@ mod tests {
         ];
         for expr in &variants {
             let bytes = stable_cbor_bytes(expr).expect("encode");
-            let decoded: CoreExpr =
-                ciborium::from_reader(bytes.as_slice()).expect("decode");
+            let decoded: CoreExpr = ciborium::from_reader(bytes.as_slice()).expect("decode");
             assert_eq!(
                 &decoded, expr,
                 "CoreExpr::{:?} must survive CBOR round-trip",

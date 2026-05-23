@@ -241,8 +241,7 @@ pub enum MergeResult {
 /// non-conflicting additions from `right`.
 pub fn semantic_merge(left: &SemanticGraph, right: &SemanticGraph) -> MergeResult {
     // Step 1: index left nodes by NodeRef.
-    let left_by_ref: BTreeMap<NodeRef, &GraphNode> =
-        left.nodes.iter().map(|n| (n.id, n)).collect();
+    let left_by_ref: BTreeMap<NodeRef, &GraphNode> = left.nodes.iter().map(|n| (n.id, n)).collect();
 
     let mut merged = left.clone();
 
@@ -505,9 +504,19 @@ mod tests {
         match semantic_merge(&left, &right) {
             MergeResult::Merged(merged) => {
                 let refs: Vec<u32> = merged.nodes.iter().map(|n| n.id.0).collect();
-                assert!(refs.contains(&0), "left node NodeRef(0) must survive; got: {refs:?}");
-                assert!(refs.contains(&1), "right node NodeRef(1) must be added; got: {refs:?}");
-                assert_eq!(merged.nodes.len(), 2, "merged graph must have exactly 2 nodes");
+                assert!(
+                    refs.contains(&0),
+                    "left node NodeRef(0) must survive; got: {refs:?}"
+                );
+                assert!(
+                    refs.contains(&1),
+                    "right node NodeRef(1) must be added; got: {refs:?}"
+                );
+                assert_eq!(
+                    merged.nodes.len(),
+                    2,
+                    "merged graph must have exactly 2 nodes"
+                );
             }
             MergeResult::Conflict { reason, node_ref } => {
                 panic!("expected Merged, got Conflict({reason:?}, {node_ref:?})");
@@ -542,7 +551,11 @@ mod tests {
                     ConflictReason::IncompatibleNodeModification,
                     "reason must be IncompatibleNodeModification"
                 );
-                assert_eq!(node_ref, NodeRef(0), "conflicting NodeRef must be NodeRef(0)");
+                assert_eq!(
+                    node_ref,
+                    NodeRef(0),
+                    "conflicting NodeRef must be NodeRef(0)"
+                );
             }
             MergeResult::Merged(_) => {
                 panic!("expected Conflict for incompatible return_type, got Merged");

@@ -10,10 +10,10 @@
 //
 // Each test cites the spec scenario it exercises in its doc comment.
 
-use assert_cmd::Command;
 use ail_storage::SnapshotEnvelope;
 use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::object::ObjectId;
+use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::fs;
@@ -1604,10 +1604,7 @@ fn remote_push_pull_json_use_local_file_bundle_store() {
         push_json["data"]["transport"],
         "local_file_bundle_store+in_process"
     );
-    assert_eq!(
-        push_json["data"]["bundle_scope"],
-        "single_root_object"
-    );
+    assert_eq!(push_json["data"]["bundle_scope"], "single_root_object");
     assert_eq!(push_json["data"]["object_count"], 1);
     assert!(
         push_json["data"]["note"]

@@ -95,7 +95,11 @@ fn effect_anf_with_arg(cap_name: &str) -> AnfIr {
     }
 }
 
-fn profile_granting(wasm: &[u8], manifest: &CapabilityManifest, cap: CapabilityId) -> RuntimeProfile {
+fn profile_granting(
+    wasm: &[u8],
+    manifest: &CapabilityManifest,
+    cap: CapabilityId,
+) -> RuntimeProfile {
     RuntimeProfile::new(
         "dispatch-parity-test".to_string(),
         blake3_hex_of(wasm),
@@ -152,15 +156,32 @@ fn wasm_call_to_granted_capability_dispatches_handler() {
     let result = instance.invoke("main", &[]).expect("invoke succeeds");
 
     // R-4a: handler was dispatched, result is the handler's return (99)
-    assert_eq!(result, RuntimeValue::I64(99), "granted handler must return its value");
-    assert_eq!(handler.call_count(), 1, "handler must have been called once");
+    assert_eq!(
+        result,
+        RuntimeValue::I64(99),
+        "granted handler must return its value"
+    );
+    assert_eq!(
+        handler.call_count(),
+        1,
+        "handler must have been called once"
+    );
 
     // R-4a: audit log must have a succeeded CapabilityCallExecuted event in host log
     let host_log = host.audit_log();
     let has_success = host_log.events().iter().any(|e| {
-        matches!(e, AuditEvent::CapabilityCallExecuted { succeeded: true, .. })
+        matches!(
+            e,
+            AuditEvent::CapabilityCallExecuted {
+                succeeded: true,
+                ..
+            }
+        )
     });
-    assert!(has_success, "host audit log must have a succeeded capability call event");
+    assert!(
+        has_success,
+        "host audit log must have a succeeded capability call event"
+    );
 }
 
 // ── Scenario R-4b: ungranted capability → returns -1, no handler called ───
@@ -188,15 +209,29 @@ fn wasm_call_to_ungranted_capability_returns_minus_one() {
     let result = instance.invoke("main", &[]).expect("invoke does not panic");
 
     // R-4b: returns -1 (the sentinel for denied/error)
-    assert_eq!(result, RuntimeValue::I64(-1), "ungranted capability must return -1");
+    assert_eq!(
+        result,
+        RuntimeValue::I64(-1),
+        "ungranted capability must return -1"
+    );
 
     // R-4b: handler must NOT have been called
-    assert_eq!(handler.call_count(), 0, "handler must not be called for ungranted capability");
+    assert_eq!(
+        handler.call_count(),
+        0,
+        "handler must not be called for ungranted capability"
+    );
 
     // R-4b: host audit log must have a failed event
     let host_log = host.audit_log();
     let has_denied = host_log.events().iter().any(|e| {
-        matches!(e, AuditEvent::CapabilityCallExecuted { succeeded: false, .. })
+        matches!(
+            e,
+            AuditEvent::CapabilityCallExecuted {
+                succeeded: false,
+                ..
+            }
+        )
     });
     assert!(has_denied, "denied call must produce a failed audit event");
 }
@@ -225,12 +260,25 @@ fn wasm_call_to_granted_but_unbound_capability_returns_minus_one() {
     let result = instance.invoke("main", &[]).expect("invoke does not panic");
 
     // R-4c: returns -1
-    assert_eq!(result, RuntimeValue::I64(-1), "no-handler capability must return -1");
+    assert_eq!(
+        result,
+        RuntimeValue::I64(-1),
+        "no-handler capability must return -1"
+    );
 
     // R-4c: audit log must have a failed event
     let host_log = host.audit_log();
     let has_no_handler_event = host_log.events().iter().any(|e| {
-        matches!(e, AuditEvent::CapabilityCallExecuted { succeeded: false, .. })
+        matches!(
+            e,
+            AuditEvent::CapabilityCallExecuted {
+                succeeded: false,
+                ..
+            }
+        )
     });
-    assert!(has_no_handler_event, "no-handler call must produce a failed audit event");
+    assert!(
+        has_no_handler_event,
+        "no-handler call must produce a failed audit event"
+    );
 }

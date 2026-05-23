@@ -114,8 +114,12 @@ pub enum StructuredValue {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ValueLayout {
     Scalar,
-    Record { fields: Vec<String> },
-    Variant { tags: Vec<String> },
+    Record {
+        fields: Vec<String>,
+    },
+    Variant {
+        tags: Vec<String>,
+    },
     List(Box<ValueLayout>),
     Option(Box<ValueLayout>),
     Result {
@@ -250,9 +254,7 @@ fn decode_typed_variant(
     let payload = if let Some(layout) = typed_payloads.get(tag_idx) {
         match tag.as_str() {
             "None" => None,
-            _ => payload_raw.map(|raw| {
-                Box::new(ValueDecoder::decode(layout, raw, memory))
-            }),
+            _ => payload_raw.map(|raw| Box::new(ValueDecoder::decode(layout, raw, memory))),
         }
     } else {
         None
@@ -289,9 +291,7 @@ mod tests {
 
     #[test]
     fn structured_value_record_roundtrip() {
-        let sv = StructuredValue::Record(vec![
-            ("x".to_string(), StructuredValue::Scalar(42)),
-        ]);
+        let sv = StructuredValue::Record(vec![("x".to_string(), StructuredValue::Scalar(42))]);
         // Debug/PartialEq
         let sv2 = sv.clone();
         assert_eq!(sv, sv2);
@@ -526,9 +526,7 @@ mod tests {
         let result = ValueDecoder::decode(&layout, 0, &mem);
         assert_eq!(
             result,
-            StructuredValue::Record(vec![
-                ("x".to_string(), StructuredValue::Scalar(0))
-            ])
+            StructuredValue::Record(vec![("x".to_string(), StructuredValue::Scalar(0))])
         );
 
         // variant OOB: memory is only 2 bytes, can't read i32 at offset 0

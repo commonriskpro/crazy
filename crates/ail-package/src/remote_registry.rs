@@ -436,7 +436,10 @@ fn insert_latest(by_name: &mut BTreeMap<String, PackageManifest>, manifest: Pack
 }
 
 fn version_is_newer(candidate: &str, existing: &str) -> bool {
-    match (semver::Version::parse(candidate), semver::Version::parse(existing)) {
+    match (
+        semver::Version::parse(candidate),
+        semver::Version::parse(existing),
+    ) {
         (Ok(candidate), Ok(existing)) => candidate > existing,
         _ => candidate > existing,
     }

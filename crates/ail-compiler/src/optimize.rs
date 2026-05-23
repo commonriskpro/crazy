@@ -292,9 +292,7 @@ fn anf_node_count(expr: &AnfExpr) -> usize {
         | AnfExpr::SetNew { .. }
         | AnfExpr::ForEach { .. }
         | AnfExpr::Fold { .. } => 1,
-        AnfExpr::Let { value, body, .. } => {
-            1 + anf_node_count(value) + anf_node_count(body)
-        }
+        AnfExpr::Let { value, body, .. } => 1 + anf_node_count(value) + anf_node_count(body),
         AnfExpr::If {
             then_branch,
             else_branch,
@@ -317,10 +315,16 @@ fn anf_node_count(expr: &AnfExpr) -> usize {
             1 + payload.as_ref().map_or(0, |p| anf_node_count(p))
         }
         AnfExpr::Match { arms, .. } => {
-            1 + arms.iter().map(|arm| anf_node_count(&arm.body)).sum::<usize>()
+            1 + arms
+                .iter()
+                .map(|arm| anf_node_count(&arm.body))
+                .sum::<usize>()
         }
         AnfExpr::Select { branches } => {
-            1 + branches.iter().map(|b| anf_node_count(&b.body)).sum::<usize>()
+            1 + branches
+                .iter()
+                .map(|b| anf_node_count(&b.body))
+                .sum::<usize>()
         }
     }
 }
@@ -413,7 +417,11 @@ fn elim_dead_expr(expr: AnfExpr) -> AnfExpr {
                 .map(|(f, e)| (f, elim_dead_expr(e)))
                 .collect(),
         },
-        AnfExpr::FieldUpdate { record, field, value } => AnfExpr::FieldUpdate {
+        AnfExpr::FieldUpdate {
+            record,
+            field,
+            value,
+        } => AnfExpr::FieldUpdate {
             record,
             field,
             value: Box::new(elim_dead_expr(*value)),
@@ -529,7 +537,11 @@ fn inline_calls_in_expr(
                 .map(|(f, e)| (f, inline_calls_in_expr(e, small_fns)))
                 .collect(),
         },
-        AnfExpr::FieldUpdate { record, field, value } => AnfExpr::FieldUpdate {
+        AnfExpr::FieldUpdate {
+            record,
+            field,
+            value,
+        } => AnfExpr::FieldUpdate {
             record,
             field,
             value: Box::new(inline_calls_in_expr(*value, small_fns)),
@@ -609,30 +621,43 @@ fn substitute_vars(expr: AnfExpr, subst: &BTreeMap<String, String>) -> AnfExpr {
             }
         }
         AnfExpr::Return(inner) => AnfExpr::Return(Box::new(substitute_vars(*inner, subst))),
-        AnfExpr::Seq(exprs) => {
-            AnfExpr::Seq(exprs.into_iter().map(|e| substitute_vars(e, subst)).collect())
-        }
+        AnfExpr::Seq(exprs) => AnfExpr::Seq(
+            exprs
+                .into_iter()
+                .map(|e| substitute_vars(e, subst))
+                .collect(),
+        ),
         AnfExpr::RecordNew { fields } => AnfExpr::RecordNew {
             fields: fields
                 .into_iter()
                 .map(|(f, e)| (f, substitute_vars(e, subst)))
                 .collect(),
         },
-        AnfExpr::FieldUpdate { record, field, value } => AnfExpr::FieldUpdate {
+        AnfExpr::FieldUpdate {
+            record,
+            field,
+            value,
+        } => AnfExpr::FieldUpdate {
             record: sub(record),
             field,
             value: Box::new(substitute_vars(*value, subst)),
         },
-        AnfExpr::TupleNew(elems) => {
-            AnfExpr::TupleNew(elems.into_iter().map(|e| substitute_vars(e, subst)).collect())
-        }
+        AnfExpr::TupleNew(elems) => AnfExpr::TupleNew(
+            elems
+                .into_iter()
+                .map(|e| substitute_vars(e, subst))
+                .collect(),
+        ),
         AnfExpr::VariantNew { tag, payload } => AnfExpr::VariantNew {
             tag,
             payload: payload.map(|p| Box::new(substitute_vars(*p, subst))),
         },
-        AnfExpr::ListNew(elems) => {
-            AnfExpr::ListNew(elems.into_iter().map(|e| substitute_vars(e, subst)).collect())
-        }
+        AnfExpr::ListNew(elems) => AnfExpr::ListNew(
+            elems
+                .into_iter()
+                .map(|e| substitute_vars(e, subst))
+                .collect(),
+        ),
         AnfExpr::Lambda { params, body } => {
             let mut inner = subst.clone();
             for p in &params {
@@ -909,7 +934,10 @@ mod tests {
         ]);
         let input = seq.clone();
         let result = eliminate_dead_pure(vec![binding(seq)]);
-        assert_eq!(result[0].expr, input, "both effectful — seq must be unchanged");
+        assert_eq!(
+            result[0].expr, input,
+            "both effectful — seq must be unchanged"
+        );
     }
 
     #[test]

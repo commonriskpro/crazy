@@ -3,7 +3,9 @@
 // Strict TDD — tests for boundary/FFI trust verification.
 // Spec: verification-pipeline/spec §3 (boundary/FFI trust checker).
 
-use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph, TrustLevel, TrustMetadata};
+use ail_core::semantic_graph::{
+    GraphNode, NodeKind, NodeRef, SemanticGraph, TrustLevel, TrustMetadata,
+};
 use ail_verify::boundary_checker::BoundaryChecker;
 use ail_verify::report::VerificationState;
 
@@ -201,29 +203,49 @@ fn entry_scope_matches_node_name() {
 
 #[test]
 fn boundary_with_has_assumption_expired_tag_is_failed() {
-    let g = graph(vec![boundary_node(0, "legacy_api", vec!["has-assumption-expired"])]);
+    let g = graph(vec![boundary_node(
+        0,
+        "legacy_api",
+        vec!["has-assumption-expired"],
+    )]);
     let report = BoundaryChecker::check(&g);
     assert_eq!(report.entries[0].state, VerificationState::Failed);
     assert!(
-        report.entries[0].evidence.as_deref().unwrap_or("").contains("E_BOUNDARY_ASSUMPTION_REVOKED"),
+        report.entries[0]
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("E_BOUNDARY_ASSUMPTION_REVOKED"),
         "evidence must contain E_BOUNDARY_ASSUMPTION_REVOKED"
     );
 }
 
 #[test]
 fn boundary_with_has_assumption_revoked_tag_is_failed() {
-    let g = graph(vec![boundary_node(0, "old_ffi", vec!["has-assumption-revoked"])]);
+    let g = graph(vec![boundary_node(
+        0,
+        "old_ffi",
+        vec!["has-assumption-revoked"],
+    )]);
     let report = BoundaryChecker::check(&g);
     assert_eq!(report.entries[0].state, VerificationState::Failed);
     assert!(
-        report.entries[0].evidence.as_deref().unwrap_or("").contains("E_BOUNDARY_ASSUMPTION_REVOKED")
+        report.entries[0]
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("E_BOUNDARY_ASSUMPTION_REVOKED")
     );
 }
 
 #[test]
 fn boundary_with_has_assumption_proposed_only_is_unverified() {
     // proposed but not approved/active → Unverified
-    let g = graph(vec![boundary_node(0, "pending_api", vec!["has-assumption-proposed"])]);
+    let g = graph(vec![boundary_node(
+        0,
+        "pending_api",
+        vec!["has-assumption-proposed"],
+    )]);
     let report = BoundaryChecker::check(&g);
     assert_eq!(report.entries[0].state, VerificationState::Unverified);
 }

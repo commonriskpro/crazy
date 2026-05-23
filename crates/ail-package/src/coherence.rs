@@ -127,7 +127,11 @@ impl CoherenceChecker {
     ///
     /// Returns `true` if any namespace that contains `symbol` is owned by `implementor`.
     /// Returns `true` also when no namespace claims the symbol (open ownership).
-    fn owns_in_namespaces(implementor: &str, symbol: &str, namespaces: &[PackageNamespace]) -> bool {
+    fn owns_in_namespaces(
+        implementor: &str,
+        symbol: &str,
+        namespaces: &[PackageNamespace],
+    ) -> bool {
         let mut covered = false;
         for ns in namespaces {
             if ns.contains_symbol(symbol) {
@@ -421,7 +425,11 @@ mod tests {
             is_adapter: false,
         }];
         let namespaces = vec![
-            make_namespace("payments.stripe", "payments.stripe", NamespaceKind::Capability),
+            make_namespace(
+                "payments.stripe",
+                "payments.stripe",
+                NamespaceKind::Capability,
+            ),
             make_namespace("utils.core", "utils.core", NamespaceKind::Type),
         ];
         // "other.pkg" owns neither the interface namespace nor the type namespace
@@ -441,12 +449,16 @@ mod tests {
             for_type: "type.other.pkg.SomeType".to_string(),
             is_adapter: true, // adapter exemption
         }];
-        let namespaces = vec![
-            make_namespace("payments.stripe", "payments.stripe", NamespaceKind::Capability),
-        ];
+        let namespaces = vec![make_namespace(
+            "payments.stripe",
+            "payments.stripe",
+            NamespaceKind::Capability,
+        )];
         let errors = CoherenceChecker::check_with_namespaces(&impls, &namespaces);
         assert!(
-            !errors.iter().any(|e| matches!(e, CoherenceError::OrphanViolation { .. })),
+            !errors
+                .iter()
+                .any(|e| matches!(e, CoherenceError::OrphanViolation { .. })),
             "adapter must bypass orphan rule in check_with_namespaces"
         );
     }
@@ -475,7 +487,9 @@ mod tests {
         ];
         let errors = CoherenceChecker::check_with_namespaces(&impls, &namespaces);
         assert!(
-            errors.iter().any(|e| matches!(e, CoherenceError::ConflictingImpl { .. })),
+            errors
+                .iter()
+                .any(|e| matches!(e, CoherenceError::ConflictingImpl { .. })),
             "two non-owners implementing same Interface<T> must produce ConflictingImpl"
         );
     }
@@ -489,12 +503,16 @@ mod tests {
             for_type: "type.utils.core.Request".to_string(),
             is_adapter: false,
         }];
-        let namespaces = vec![
-            make_namespace("payments.stripe", "payments.stripe", NamespaceKind::Capability),
-        ];
+        let namespaces = vec![make_namespace(
+            "payments.stripe",
+            "payments.stripe",
+            NamespaceKind::Capability,
+        )];
         let errors = CoherenceChecker::check_with_namespaces(&impls, &namespaces);
         assert!(
-            !errors.iter().any(|e| matches!(e, CoherenceError::OrphanViolation { .. })),
+            !errors
+                .iter()
+                .any(|e| matches!(e, CoherenceError::OrphanViolation { .. })),
             "interface owner must not produce orphan error"
         );
     }

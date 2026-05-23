@@ -12,10 +12,7 @@ use ail_stdlib::exec::{StdlibValue, call_pure_stdlib};
 
 #[test]
 fn channel_new_returns_channel_value() {
-    let result = call_pure_stdlib(
-        "std.concurrent.channel_new",
-        &[StdlibValue::Int(4)],
-    );
+    let result = call_pure_stdlib("std.concurrent.channel_new", &[StdlibValue::Int(4)]);
     assert!(
         matches!(result, Ok(StdlibValue::Channel(_))),
         "channel_new must return a Channel handle, got: {:?}",
@@ -26,10 +23,7 @@ fn channel_new_returns_channel_value() {
 // Triangulate: different capacity
 #[test]
 fn channel_new_with_capacity_16() {
-    let result = call_pure_stdlib(
-        "std.concurrent.channel_new",
-        &[StdlibValue::Int(16)],
-    );
+    let result = call_pure_stdlib("std.concurrent.channel_new", &[StdlibValue::Int(16)]);
     assert!(
         matches!(result, Ok(StdlibValue::Channel(_))),
         "channel_new with capacity 16 must return a Channel handle"
@@ -42,10 +36,7 @@ fn channel_new_with_capacity_16() {
 fn channel_send_returns_ok_unit_when_not_full() {
     let ch = call_pure_stdlib("std.concurrent.channel_new", &[StdlibValue::Int(4)])
         .expect("channel_new must succeed");
-    let result = call_pure_stdlib(
-        "std.concurrent.channel_send",
-        &[ch, StdlibValue::Int(42)],
-    );
+    let result = call_pure_stdlib("std.concurrent.channel_send", &[ch, StdlibValue::Int(42)]);
     assert_eq!(
         result,
         Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Unit))))

@@ -690,7 +690,11 @@ pub fn lower_core_expr_to_anf(
 
         // BoundaryCall: atomize all args; encode boundary + func as a
         // namespaced call so backends can route to the trust boundary.
-        CoreExpr::BoundaryCall { boundary, func, args } => {
+        CoreExpr::BoundaryCall {
+            boundary,
+            func,
+            args,
+        } => {
             let atomic_args: Vec<String> = args
                 .iter()
                 .map(|a| atomize(a, fresh, source_ref, out))
@@ -703,7 +707,11 @@ pub fn lower_core_expr_to_anf(
 
         // DynCall: atomize all args; encode interface + method as a
         // namespaced call for dynamic dispatch through Dyn<Interface>.
-        CoreExpr::DynCall { interface, method, args } => {
+        CoreExpr::DynCall {
+            interface,
+            method,
+            args,
+        } => {
             let atomic_args: Vec<String> = args
                 .iter()
                 .map(|a| atomize(a, fresh, source_ref, out))
@@ -736,7 +744,11 @@ pub fn lower_core_expr_to_anf(
         }
 
         // ResourceUsing: acquire, bind, use, release — lowered as let + body.
-        CoreExpr::ResourceUsing { resource, binding, body } => {
+        CoreExpr::ResourceUsing {
+            resource,
+            binding,
+            body,
+        } => {
             let res_name = atomize(resource, fresh, source_ref, out);
             // Emit acquire binding.
             out.push(AnfBinding {
@@ -785,12 +797,10 @@ pub fn lower_core_expr_to_anf(
 
         // PatchFieldConstruct: lower as a variant construction.
         CoreExpr::PatchFieldConstruct { state, value } => {
-            let payload = value
-                .as_ref()
-                .map(|v| {
-                    let name = atomize(v, fresh, source_ref, out);
-                    Box::new(AnfExpr::Var(name))
-                });
+            let payload = value.as_ref().map(|v| {
+                let name = atomize(v, fresh, source_ref, out);
+                Box::new(AnfExpr::Var(name))
+            });
             AnfExpr::VariantNew {
                 tag: state.clone(),
                 payload,
@@ -833,7 +843,9 @@ pub fn lower_core_expr_to_anf(
                     (k_name, v_name)
                 })
                 .collect();
-            AnfExpr::MapNew { entries: atomic_entries }
+            AnfExpr::MapNew {
+                entries: atomic_entries,
+            }
         }
 
         // SetNew: atomize all elements; preserve declaration order.
@@ -842,11 +854,17 @@ pub fn lower_core_expr_to_anf(
                 .iter()
                 .map(|e| atomize(e, fresh, source_ref, out))
                 .collect();
-            AnfExpr::SetNew { elements: atomic_elems }
+            AnfExpr::SetNew {
+                elements: atomic_elems,
+            }
         }
 
         // ForEach: atomize the collection; body is lowered recursively.
-        CoreExpr::ForEach { binding, collection, body } => {
+        CoreExpr::ForEach {
+            binding,
+            collection,
+            body,
+        } => {
             let col_name = atomize(collection, fresh, source_ref, out);
             let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
             AnfExpr::ForEach {
@@ -866,10 +884,8 @@ pub fn lower_core_expr_to_anf(
                 list: list_name,
                 func: func_name,
             }
-        }
-
-        // CoreExpr::Placeholder → AnfExpr::Placeholder (no expression body).
-        // (kept last for clarity — already handled above)
+        } // CoreExpr::Placeholder → AnfExpr::Placeholder (no expression body).
+          // (kept last for clarity — already handled above)
     }
 }
 
@@ -920,10 +936,16 @@ pub fn nominal_to_core_type(nominal: &str) -> CoreType {
         // Parameterized variants: inner type defaults to Generic when only the
         // nominal name is available (full resolution requires type-param phase).
         "List" => CoreType::List(Box::new(CoreType::Generic(None))),
-        "Map" => CoreType::Map(Box::new(CoreType::Generic(None)), Box::new(CoreType::Generic(None))),
+        "Map" => CoreType::Map(
+            Box::new(CoreType::Generic(None)),
+            Box::new(CoreType::Generic(None)),
+        ),
         "Set" => CoreType::Set(Box::new(CoreType::Generic(None))),
         "Option" => CoreType::Option(Box::new(CoreType::Generic(None))),
-        "Result" => CoreType::Result(Box::new(CoreType::Generic(None)), Box::new(CoreType::Generic(None))),
+        "Result" => CoreType::Result(
+            Box::new(CoreType::Generic(None)),
+            Box::new(CoreType::Generic(None)),
+        ),
         "Function" => CoreType::Function {
             params: vec![],
             ret: Box::new(CoreType::Generic(None)),
@@ -1000,15 +1022,17 @@ pub fn lower_to_core_ir(
             CompileError::InvalidGraph(format!("duplicate NodeRef({})", r.0))
         }
         GraphValidationError::DanglingEdge { r#ref, .. } => CompileError::MissingNode(r#ref),
-        GraphValidationError::EffectRowNoEmitsEdge(r) => {
-            CompileError::InvalidGraph(format!("effect_row declared but no Emits edge on NodeRef({})", r.0))
-        }
-        GraphValidationError::CapabilityReqsMissingNode { owner_ref, cap_name } => {
-            CompileError::InvalidGraph(format!(
-                "capability '{}' required by NodeRef({}) has no matching Capability node",
-                cap_name, owner_ref.0
-            ))
-        }
+        GraphValidationError::EffectRowNoEmitsEdge(r) => CompileError::InvalidGraph(format!(
+            "effect_row declared but no Emits edge on NodeRef({})",
+            r.0
+        )),
+        GraphValidationError::CapabilityReqsMissingNode {
+            owner_ref,
+            cap_name,
+        } => CompileError::InvalidGraph(format!(
+            "capability '{}' required by NodeRef({}) has no matching Capability node",
+            cap_name, owner_ref.0
+        )),
     })?;
 
     // Hash the pipeline inputs (empty parent → blake3(content)).
@@ -1452,13 +1476,47 @@ mod tests {
             ("Variant", CoreType::Variant),
             ("Tuple", CoreType::Tuple),
             ("List", CoreType::List(Box::new(CoreType::Generic(None)))),
-            ("Map", CoreType::Map(Box::new(CoreType::Generic(None)), Box::new(CoreType::Generic(None)))),
+            (
+                "Map",
+                CoreType::Map(
+                    Box::new(CoreType::Generic(None)),
+                    Box::new(CoreType::Generic(None)),
+                ),
+            ),
             ("Set", CoreType::Set(Box::new(CoreType::Generic(None)))),
-            ("Option", CoreType::Option(Box::new(CoreType::Generic(None)))),
-            ("Result", CoreType::Result(Box::new(CoreType::Generic(None)), Box::new(CoreType::Generic(None)))),
-            ("Function", CoreType::Function { params: vec![], ret: Box::new(CoreType::Generic(None)), effects: vec![] }),
-            ("Handle", CoreType::Handle { resource: Box::new(CoreType::Generic(None)), mode: ResourceMode::Copy }),
-            ("Refinement", CoreType::Refinement { base: Box::new(CoreType::Generic(None)), predicate: String::new() }),
+            (
+                "Option",
+                CoreType::Option(Box::new(CoreType::Generic(None))),
+            ),
+            (
+                "Result",
+                CoreType::Result(
+                    Box::new(CoreType::Generic(None)),
+                    Box::new(CoreType::Generic(None)),
+                ),
+            ),
+            (
+                "Function",
+                CoreType::Function {
+                    params: vec![],
+                    ret: Box::new(CoreType::Generic(None)),
+                    effects: vec![],
+                },
+            ),
+            (
+                "Handle",
+                CoreType::Handle {
+                    resource: Box::new(CoreType::Generic(None)),
+                    mode: ResourceMode::Copy,
+                },
+            ),
+            (
+                "Refinement",
+                CoreType::Refinement {
+                    base: Box::new(CoreType::Generic(None)),
+                    predicate: String::new(),
+                },
+            ),
             ("Generic", CoreType::Generic(None)),
         ];
         for (nominal, expected) in cases {

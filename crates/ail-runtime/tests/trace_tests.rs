@@ -11,8 +11,8 @@
 use std::sync::Arc;
 
 use ail_runtime::{
-    AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, InMemoryHandler,
-    ResourceLimits, RuntimeHost, RuntimeProfile, TraceContext, blake3_hex_of,
+    AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, InMemoryHandler, ResourceLimits,
+    RuntimeHost, RuntimeProfile, TraceContext, blake3_hex_of,
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -72,7 +72,8 @@ fn trace_id_propagates_through_capability_call() {
     };
     host.set_trace_context(ctx);
 
-    host.call_capability(&cap, "read", b"").expect("call must succeed");
+    host.call_capability(&cap, "read", b"")
+        .expect("call must succeed");
 
     let log = host.audit_log();
     let events = log.events();
@@ -86,8 +87,10 @@ fn trace_id_propagates_through_capability_call() {
             let tc = trace_context
                 .as_ref()
                 .expect("trace_context must be Some when set on host");
-            assert_eq!(tc.trace_id, "trace-abc-123",
-                "trace_id must propagate to audit event");
+            assert_eq!(
+                tc.trace_id, "trace-abc-123",
+                "trace_id must propagate to audit event"
+            );
         }
         other => panic!("expected CapabilityCallExecuted, got {other:?}"),
     }
@@ -109,7 +112,8 @@ fn capability_call_creates_child_span() {
     };
     host.set_trace_context(parent_ctx.clone());
 
-    host.call_capability(&cap, "write", b"").expect("call must succeed");
+    host.call_capability(&cap, "write", b"")
+        .expect("call must succeed");
 
     let log = host.audit_log();
     let call_event = log
@@ -120,13 +124,15 @@ fn capability_call_creates_child_span() {
 
     match call_event {
         AuditEvent::CapabilityCallExecuted { trace_context, .. } => {
-            let tc = trace_context
-                .as_ref()
-                .expect("trace_context must be Some");
-            assert_eq!(tc.trace_id, "trace-def-456",
-                "child span must inherit trace_id");
-            assert_ne!(tc.span_id, "span-parent-002",
-                "child span must have a new span_id");
+            let tc = trace_context.as_ref().expect("trace_context must be Some");
+            assert_eq!(
+                tc.trace_id, "trace-def-456",
+                "child span must inherit trace_id"
+            );
+            assert_ne!(
+                tc.span_id, "span-parent-002",
+                "child span must have a new span_id"
+            );
             assert_eq!(
                 tc.parent_span_id.as_deref(),
                 Some("span-parent-002"),
@@ -147,7 +153,8 @@ fn no_trace_context_yields_none_in_audit() {
     let mut host = setup_host_with_cap(&cap);
     // Deliberately do NOT call set_trace_context.
 
-    host.call_capability(&cap, "read", b"").expect("call must succeed");
+    host.call_capability(&cap, "read", b"")
+        .expect("call must succeed");
 
     let log = host.audit_log();
     let call_event = log
@@ -212,6 +219,9 @@ fn set_trace_context_on_instance_does_not_panic() {
 
     // Verify the context was stored by reading it back.
     let stored = instance.trace_context();
-    assert_eq!(stored.as_ref(), Some(&ctx),
-        "stored trace context must match what was set");
+    assert_eq!(
+        stored.as_ref(),
+        Some(&ctx),
+        "stored trace context must match what was set"
+    );
 }

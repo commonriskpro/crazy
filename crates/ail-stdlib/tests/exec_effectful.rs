@@ -39,8 +39,7 @@ fn call_effectful_stdlib_routes_fs_read_file_via_host() {
 fn call_effectful_stdlib_returns_capability_required_without_host() {
     // This uses find_function_entry + call() which already returns CapabilityRequired.
     // Proves the convention is consistent.
-    let entry = find_function_entry("std.fs.read_file")
-        .expect("std.fs.read_file entry must exist");
+    let entry = find_function_entry("std.fs.read_file").expect("std.fs.read_file entry must exist");
     let result = entry.call(&[StdlibValue::Text("/any.txt".to_string())]);
     assert!(
         matches!(result, Err(StdlibExecError::CapabilityRequired { .. })),

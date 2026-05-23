@@ -661,7 +661,10 @@ fn parse_simple_cmp(s: &str) -> Option<(String, &'static str, i64)> {
             if ident.is_empty() {
                 continue;
             }
-            if !ident.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+            if !ident
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+            {
                 continue;
             }
             if let Ok(val) = val_str.parse::<i64>() {

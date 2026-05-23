@@ -661,10 +661,7 @@ impl RuntimeHost {
     ) -> RuntimeResult<RuntimeInstance> {
         let result = self.preflight_inner(wasm, manifest, profile, package_manifests);
         let event = Self::build_audit_event(&result, profile, wasm);
-        self.audit_log
-            .lock()
-            .expect("audit_log lock")
-            .push(event);
+        self.audit_log.lock().expect("audit_log lock").push(event);
         if result.is_ok() {
             self.current_profile = Some(Arc::new(profile.clone()));
             self.current_module_name = Some(manifest.module.clone());
@@ -714,10 +711,8 @@ impl RuntimeHost {
         if !granted {
             let err = HostError::CapabilityDenied(capability.as_str().to_string());
             let duration_us = start.elapsed().as_micros() as u64;
-            self.audit_log
-                .lock()
-                .expect("audit_log lock")
-                .push(AuditEvent::CapabilityCallExecuted {
+            self.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
                     capability: capability.clone(),
                     operation: operation.to_string(),
                     handler_name: "none".to_string(),
@@ -732,7 +727,8 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                });
+                },
+            );
             return Err(err);
         }
 
@@ -745,10 +741,8 @@ impl RuntimeHost {
                     schema_err.message
                 ));
                 let duration_us = start.elapsed().as_micros() as u64;
-                self.audit_log
-                    .lock()
-                    .expect("audit_log lock")
-                    .push(AuditEvent::CapabilityCallExecuted {
+                self.audit_log.lock().expect("audit_log lock").push(
+                    AuditEvent::CapabilityCallExecuted {
                         capability: capability.clone(),
                         operation: operation.to_string(),
                         handler_name: "none".to_string(),
@@ -763,7 +757,8 @@ impl RuntimeHost {
                         trace_id,
                         verification_report_hash: vr_hash,
                         trace_context: child_trace,
-                    });
+                    },
+                );
                 return Err(err);
             }
         }
@@ -777,10 +772,8 @@ impl RuntimeHost {
         let Some(handler) = handler else {
             let err = HostError::HandlerNotBound(capability.as_str().to_string());
             let duration_us = start.elapsed().as_micros() as u64;
-            self.audit_log
-                .lock()
-                .expect("audit_log lock")
-                .push(AuditEvent::CapabilityCallExecuted {
+            self.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
                     capability: capability.clone(),
                     operation: operation.to_string(),
                     handler_name: "none".to_string(),
@@ -795,7 +788,8 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                });
+                },
+            );
             return Err(err);
         };
 
@@ -943,11 +937,7 @@ impl RuntimeHost {
         // Build per-capability summaries from CapabilityCallExecuted events.
         let mut totals: HashMap<String, (u32, u32, u32)> = HashMap::new(); // cap → (total, ok, err)
 
-        let log_snapshot = self
-            .audit_log
-            .lock()
-            .expect("audit_log lock")
-            .clone();
+        let log_snapshot = self.audit_log.lock().expect("audit_log lock").clone();
 
         for event in log_snapshot.events() {
             if let AuditEvent::CapabilityCallExecuted {
@@ -1368,9 +1358,7 @@ fn dispatch_host_call_write(
 
     // Write response bytes to WASM memory at out_ptr.
     let memory = caller.get_export("memory")?.into_memory()?;
-    memory
-        .write(caller, out_ptr as usize, &response)
-        .ok()?;
+    memory.write(caller, out_ptr as usize, &response).ok()?;
 
     Some(response.len() as i32)
 }
@@ -1405,11 +1393,8 @@ fn dispatch_host_call(
         let state = caller.data_mut();
         // Grant check (module-scoped).
         if !state.profile.grants_capability(&state.module_name, &cap) {
-            state
-                .audit_log
-                .lock()
-                .expect("audit_log lock")
-                .push(AuditEvent::CapabilityCallExecuted {
+            state.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
                     capability: cap,
                     operation,
                     handler_name: "none".to_string(),
@@ -1424,7 +1409,8 @@ fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                });
+                },
+            );
             return Some(-1);
         }
         state

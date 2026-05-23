@@ -11,8 +11,7 @@
 //  - read_wasm_memory_past_end_returns_none: ptr + len > mem size → None.
 
 use ail_compiler::{
-    ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, LiteralValue, SourceMap, StageHashes,
-    emit_wasm,
+    ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, LiteralValue, SourceMap, StageHashes, emit_wasm,
 };
 use ail_core::semantic_graph::NodeRef;
 use ail_runtime::{
@@ -87,7 +86,9 @@ fn read_wasm_memory_after_record_construction() {
     let mut instance = instantiate(&wasm);
 
     // invoke returns I32(ptr)
-    let result = instance.invoke("make_rec", &[]).expect("invoke must succeed");
+    let result = instance
+        .invoke("make_rec", &[])
+        .expect("invoke must succeed");
     let ptr = match result {
         RuntimeValue::I32(p) => p,
         other => panic!("expected RuntimeValue::I32 pointer, got {other:?}"),
@@ -123,7 +124,11 @@ fn write_then_read_wasm_memory() {
     let read_back = instance
         .read_wasm_memory(0, 8)
         .expect("read_wasm_memory must succeed");
-    assert_eq!(read_back.as_slice(), &payload, "read-back bytes must match written bytes");
+    assert_eq!(
+        read_back.as_slice(),
+        &payload,
+        "read-back bytes must match written bytes"
+    );
 }
 
 #[test]

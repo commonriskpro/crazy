@@ -25,14 +25,15 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use ail_core::semantic_graph::{EdgeKind, GraphNode, NodeKind, NodeRef, SemanticGraph, Visibility, WorkflowState};
+use ail_core::semantic_graph::{
+    EdgeKind, GraphNode, NodeKind, NodeRef, SemanticGraph, Visibility, WorkflowState,
+};
 use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::graph::SnapshotEnvelope;
 
 use crate::dto::{
     CONTEXT_SCHEMA_V1, ContextQuery, ContextResponse, FreshnessStatus, ImpactInfo, ProvenanceBlock,
-    QueryScope, RedactionPolicy, RedactionState, RefactorInfo, RepairOption,
-    ResponseLimits,
+    QueryScope, RedactionPolicy, RedactionState, RefactorInfo, RepairOption, ResponseLimits,
 };
 use crate::error::{ContextError, ContextResult};
 use crate::summary::render_summary;
@@ -398,9 +399,19 @@ fn collect_candidates_with_history(
                 return Err(ContextError::NodeNotFound);
             }
             let callers = if *transitive {
-                reverse_bfs(graph, &node_map, *target, &[EdgeKind::Calls, EdgeKind::DynCalls])
+                reverse_bfs(
+                    graph,
+                    &node_map,
+                    *target,
+                    &[EdgeKind::Calls, EdgeKind::DynCalls],
+                )
             } else {
-                direct_reverse(graph, &node_map, *target, &[EdgeKind::Calls, EdgeKind::DynCalls])
+                direct_reverse(
+                    graph,
+                    &node_map,
+                    *target,
+                    &[EdgeKind::Calls, EdgeKind::DynCalls],
+                )
             };
             Ok((callers, Vec::new()))
         }
@@ -416,9 +427,19 @@ fn collect_candidates_with_history(
                 return Err(ContextError::NodeNotFound);
             }
             let callees = if *transitive {
-                bfs_filtered(graph, &node_map, *target, &[EdgeKind::Calls, EdgeKind::DynCalls])
+                bfs_filtered(
+                    graph,
+                    &node_map,
+                    *target,
+                    &[EdgeKind::Calls, EdgeKind::DynCalls],
+                )
             } else {
-                direct_forward(graph, &node_map, *target, &[EdgeKind::Calls, EdgeKind::DynCalls])
+                direct_forward(
+                    graph,
+                    &node_map,
+                    *target,
+                    &[EdgeKind::Calls, EdgeKind::DynCalls],
+                )
             };
             Ok((callees, Vec::new()))
         }
@@ -571,7 +592,12 @@ fn collect_candidates_with_history(
 
             // Callers (nodes to update after refactor) — reverse BFS over both
             // static Calls and dynamic DynCalls edges.
-            let callers = reverse_bfs(graph, &node_map, *target, &[EdgeKind::Calls, EdgeKind::DynCalls]);
+            let callers = reverse_bfs(
+                graph,
+                &node_map,
+                *target,
+                &[EdgeKind::Calls, EdgeKind::DynCalls],
+            );
             // Proofs to rerun.
             let proves = bfs_filtered(graph, &node_map, *target, &[EdgeKind::Proves]);
             // Effects to preserve.
@@ -706,7 +732,12 @@ fn collect_candidates_with_history(
                 graph,
                 &node_map,
                 *target,
-                &[EdgeKind::Reads, EdgeKind::Writes, EdgeKind::Calls, EdgeKind::DynCalls],
+                &[
+                    EdgeKind::Reads,
+                    EdgeKind::Writes,
+                    EdgeKind::Calls,
+                    EdgeKind::DynCalls,
+                ],
             );
             conc_nodes.insert(0, target_node);
             conc_nodes.dedup_by_key(|n| n.id);
@@ -1731,8 +1762,14 @@ mod tests {
         )
         .expect("callees must succeed");
         let callee_ids: Vec<u32> = callees_resp.structured.iter().map(|n| n.id.0).collect();
-        assert!(callee_ids.contains(&1), "static callee B must appear; got: {callee_ids:?}");
-        assert!(callee_ids.contains(&2), "dynamic callee C must appear; got: {callee_ids:?}");
+        assert!(
+            callee_ids.contains(&1),
+            "static callee B must appear; got: {callee_ids:?}"
+        );
+        assert!(
+            callee_ids.contains(&2),
+            "dynamic callee C must appear; got: {callee_ids:?}"
+        );
 
         // Callers(C) must include A (via DynCalls).
         let callers_resp = ResponseBuilder::build(
@@ -1747,7 +1784,10 @@ mod tests {
         )
         .expect("callers must succeed");
         let caller_ids: Vec<u32> = callers_resp.structured.iter().map(|n| n.id.0).collect();
-        assert!(caller_ids.contains(&0), "A must appear as dynamic caller of C; got: {caller_ids:?}");
+        assert!(
+            caller_ids.contains(&0),
+            "A must appear as dynamic caller of C; got: {caller_ids:?}"
+        );
     }
 
     // ── effects_query_returns_target_and_emits ────────────────────────────

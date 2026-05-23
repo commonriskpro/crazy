@@ -232,7 +232,12 @@ fn task_with_no_lifecycle_tags_and_no_parent_taskgroup_is_unverified_with_orphan
     assert!(entry.is_some());
     assert_eq!(entry.unwrap().state, VerificationState::Unverified);
     assert!(
-        entry.unwrap().evidence.as_deref().unwrap_or("").contains("potential orphan scope"),
+        entry
+            .unwrap()
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("potential orphan scope"),
         "evidence must mention 'potential orphan scope'; got: {:?}",
         entry.unwrap().evidence
     );
@@ -254,7 +259,12 @@ fn task_with_spawned_by_edge_to_taskgroup_has_no_additional_scope_unverified() {
     // Still Unverified (no lifecycle tag), but no orphan scope note
     assert_eq!(entry.unwrap().state, VerificationState::Unverified);
     assert!(
-        !entry.unwrap().evidence.as_deref().unwrap_or("").contains("potential orphan scope"),
+        !entry
+            .unwrap()
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("potential orphan scope"),
         "task with SpawnedBy must NOT have 'potential orphan scope' in evidence"
     );
 }

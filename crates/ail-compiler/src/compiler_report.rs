@@ -179,7 +179,11 @@ mod tests {
     #[test]
     fn add_warning_records_code_message_scope() {
         let mut report = CompilerReport::new("draft");
-        report.add_warning("W_STUB_LOWERING", "concurrency ops are trap stubs", "fn.spawn");
+        report.add_warning(
+            "W_STUB_LOWERING",
+            "concurrency ops are trap stubs",
+            "fn.spawn",
+        );
         assert_eq!(report.warnings.len(), 1);
         assert_eq!(report.warnings[0].code, "W_STUB_LOWERING");
         assert!(!report.is_clean());

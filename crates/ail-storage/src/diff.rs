@@ -232,7 +232,11 @@ mod tests {
             assert_eq!(returned_id, diff.id, "store_diff must return diff.id");
 
             let loaded = store.load_diff(&diff.id).await.expect("load_diff");
-            assert_eq!(loaded, Some(diff.clone()), "loaded diff must equal original");
+            assert_eq!(
+                loaded,
+                Some(diff.clone()),
+                "loaded diff must equal original"
+            );
         });
     }
 

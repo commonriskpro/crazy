@@ -41,11 +41,11 @@ pub use anf::{
 };
 pub use artifact_manifest::ArtifactManifest;
 pub use cache::{ArtifactCache, ArtifactEntry, MemoryArtifactCache};
+pub use compiler_report::{CompilerReport, CompilerWarning, StageRecord};
 pub use core_ir::{
     CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, MatchArm, SelectClause,
     StageHashes,
 };
-pub use compiler_report::{CompilerReport, CompilerWarning, StageRecord};
 pub use error::CompileError;
 pub use expr_parser::{ParseError, parse_expr};
 pub use incremental::{DirtySet, NodeHashes, compile_incremental, compute_node_hashes};

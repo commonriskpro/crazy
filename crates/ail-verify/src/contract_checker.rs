@@ -147,7 +147,9 @@ impl<'s> ContractChecker<'s> {
             SolverOutcome::Proven => (VerificationState::RuntimeChecked, None),
             SolverOutcome::Unsupported => (
                 VerificationState::Assumed,
-                Some(format!("solver cannot evaluate invariant predicate: {predicate}")),
+                Some(format!(
+                    "solver cannot evaluate invariant predicate: {predicate}"
+                )),
             ),
             SolverOutcome::Assumed(reason) => (VerificationState::Assumed, Some(reason)),
         };

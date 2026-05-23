@@ -286,8 +286,8 @@ impl Handler for InMemoryHandler {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use super::*;
+    use std::sync::Arc;
 
     // ── TASK-F1: handle_structured default method tests (TDD RED) ────────
     // These tests call `handle_structured` which does not exist on the
@@ -351,7 +351,8 @@ mod tests {
         let cap = CapabilityId::new("cap");
 
         // Record variant — unsupported
-        let record_arg = StructuredValue::Record(vec![("field".to_string(), StructuredValue::Scalar(1))]);
+        let record_arg =
+            StructuredValue::Record(vec![("field".to_string(), StructuredValue::Scalar(1))]);
         let err = handler
             .handle_structured(&cap, "op", &[record_arg])
             .expect_err("Record arg must produce an error");
@@ -371,4 +372,3 @@ mod tests {
         );
     }
 }
-

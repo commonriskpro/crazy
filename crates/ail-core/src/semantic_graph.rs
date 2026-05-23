@@ -768,7 +768,6 @@ pub struct GraphNode {
     pub handler_meta: Option<HandlerMeta>,
 
     // ── doc-alignment: identity fields from docs/core-ir.md §1 ────────────
-
     /// Optional source location / textual view reference.
     ///
     /// Corresponds to `docs/core-ir.md §1 — Span/View`.
@@ -1700,7 +1699,10 @@ mod tests {
             .constraint_set
             .as_ref()
             .expect("constraint_set must be Some");
-        assert!(cs.has_partial_ord, "has_partial_ord must be true after round-trip");
+        assert!(
+            cs.has_partial_ord,
+            "has_partial_ord must be true after round-trip"
+        );
         assert!(!cs.has_ord, "has_ord must remain false");
     }
 
@@ -1720,7 +1722,10 @@ mod tests {
             has_partial_ord: false, // default — must not be emitted in CBOR when false
             extras: vec![],
         });
-        let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
         let bytes = codec.encode(&graph).expect("encode");
         let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
         let cs = decoded.nodes[0].constraint_set.as_ref().unwrap();
@@ -1778,7 +1783,11 @@ mod tests {
         let decoded: SemanticGraph = codec.decode(&bytes).expect("decode");
         assert_eq!(decoded.nodes[0].kind, NodeKind::Interface);
         assert_eq!(decoded.nodes[1].kind, NodeKind::Impl);
-        assert_eq!(decoded.validate(), Ok(()), "graph with Impl node must validate");
+        assert_eq!(
+            decoded.validate(),
+            Ok(()),
+            "graph with Impl node must validate"
+        );
     }
 
     // S-D1d: EffectAlias node round-trips.
@@ -1918,7 +1927,10 @@ mod tests {
         // Creating it with the new constructor (None fields) produces identical
         // bytes to the old format (serde skips None).
         let graph = SemanticGraph {
-            nodes: vec![node(0, NodeKind::Function, "f"), node(1, NodeKind::Function, "g")],
+            nodes: vec![
+                node(0, NodeKind::Function, "f"),
+                node(1, NodeKind::Function, "g"),
+            ],
             edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls)],
         };
 
@@ -2008,10 +2020,16 @@ mod tests {
             satisfies_contract: None,
         });
         let bytes_with = codec
-            .encode(&SemanticGraph { nodes: vec![node_with], edges: vec![] })
+            .encode(&SemanticGraph {
+                nodes: vec![node_with],
+                edges: vec![],
+            })
             .expect("encode with");
         let bytes_without = codec
-            .encode(&SemanticGraph { nodes: vec![node_without], edges: vec![] })
+            .encode(&SemanticGraph {
+                nodes: vec![node_without],
+                edges: vec![],
+            })
             .expect("encode without");
         // Node with satisfies_contract must encode to MORE bytes.
         assert!(

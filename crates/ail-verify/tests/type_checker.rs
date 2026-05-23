@@ -1784,18 +1784,18 @@ fn patch_field_with_non_empty_inner_type_is_proven() {
     let report = TypeChecker::check(&graph_from(vec![node]));
 
     // The patchfield subpass must not produce a Failed entry for a valid PatchField.
-    let failed = report
-        .entries
-        .iter()
-        .any(|e| {
-            e.claim == "patchfield"
-                && e.state == VerificationState::Failed
-                && e.evidence
-                    .as_deref()
-                    .map(|ev| ev.contains(E_PATCHFIELD_EMPTY_INNER))
-                    .unwrap_or(false)
-        });
-    assert!(!failed, "PatchField<Text> must not emit E_PATCHFIELD_EMPTY_INNER");
+    let failed = report.entries.iter().any(|e| {
+        e.claim == "patchfield"
+            && e.state == VerificationState::Failed
+            && e.evidence
+                .as_deref()
+                .map(|ev| ev.contains(E_PATCHFIELD_EMPTY_INNER))
+                .unwrap_or(false)
+    });
+    assert!(
+        !failed,
+        "PatchField<Text> must not emit E_PATCHFIELD_EMPTY_INNER"
+    );
 }
 
 // S-E1b: Type node with empty inner PatchField<> → Failed with E_PATCHFIELD_EMPTY_INNER.
@@ -1834,7 +1834,10 @@ fn non_patchfield_return_type_is_not_checked() {
     node.return_type = Some("Result<User, DbError>".into());
     let report = TypeChecker::check(&graph_from(vec![node]));
     let has_patchfield_entry = report.entries.iter().any(|e| e.claim == "patchfield");
-    assert!(!has_patchfield_entry, "non-PatchField node must not have patchfield entry");
+    assert!(
+        !has_patchfield_entry,
+        "non-PatchField node must not have patchfield entry"
+    );
 }
 
 // ── Task E3 (RED): PartialOrd validation subpass ──────────────────────────
@@ -1858,7 +1861,10 @@ fn type_with_partial_ord_in_partial_order_context_is_proven() {
         .entries
         .iter()
         .any(|e| e.claim == "partial-ord" && e.state == VerificationState::Proven);
-    assert!(proven, "type with has_partial_ord=true must emit Proven partial-ord entry");
+    assert!(
+        proven,
+        "type with has_partial_ord=true must emit Proven partial-ord entry"
+    );
 }
 
 // S-E3b: Node requiring Ord but only has_partial_ord=true → informational entry.
@@ -1870,7 +1876,7 @@ fn type_with_only_partial_ord_emits_informational_in_sorting_context() {
     let mut node = type_node(0, "FloatOrd");
     node.constraint_set = Some(ConstraintSet {
         has_eq: true,
-        has_ord: false,   // no total ord
+        has_ord: false, // no total ord
         has_hash: false,
         has_partial_ord: true,
         extras: vec![],
@@ -1880,10 +1886,7 @@ fn type_with_only_partial_ord_emits_informational_in_sorting_context() {
     let report = TypeChecker::check(&graph_from(vec![node]));
 
     // Should emit an entry for partial-ord context (Unverified or informational).
-    let has_partial_ord_entry = report
-        .entries
-        .iter()
-        .any(|e| e.claim == "partial-ord");
+    let has_partial_ord_entry = report.entries.iter().any(|e| e.claim == "partial-ord");
     assert!(
         has_partial_ord_entry,
         "type with partial-ord-only in Ord context must emit a partial-ord entry; code: {E_PARTIAL_ORD_REQUIRED}"
@@ -1905,17 +1908,14 @@ fn boundary_inference_matching_return_type_is_proven() {
     }];
     let report = TypeChecker::check(&graph_from(vec![node]));
 
-    let failed = report
-        .entries
-        .iter()
-        .any(|e| {
-            e.claim == "boundary-inference"
-                && e.state == VerificationState::Failed
-                && e.evidence
-                    .as_deref()
-                    .map(|ev| ev.contains(E_BOUNDARY_INFERENCE_MISMATCH))
-                    .unwrap_or(false)
-        });
+    let failed = report.entries.iter().any(|e| {
+        e.claim == "boundary-inference"
+            && e.state == VerificationState::Failed
+            && e.evidence
+                .as_deref()
+                .map(|ev| ev.contains(E_BOUNDARY_INFERENCE_MISMATCH))
+                .unwrap_or(false)
+    });
     assert!(
         !failed,
         "matching boundary inference must not produce E_BOUNDARY_INFERENCE_MISMATCH"
@@ -1924,7 +1924,10 @@ fn boundary_inference_matching_return_type_is_proven() {
         .entries
         .iter()
         .any(|e| e.claim == "boundary-inference" && e.state == VerificationState::Proven);
-    assert!(proven, "matching boundary inference must produce Proven boundary-inference entry");
+    assert!(
+        proven,
+        "matching boundary inference must produce Proven boundary-inference entry"
+    );
 }
 
 // S-E5b: Function with mismatching boundary inferred_fact → Failed with E_BOUNDARY_INFERENCE_MISMATCH.
@@ -2041,36 +2044,40 @@ fn combined_scenario_all_structural_additions_produce_expected_entries() {
     let report = TypeChecker::check(&graph);
 
     // 1. generic-param-kind: EffectParam "db" is in the effect_row → Proven.
-    let generic_proven = report.entries.iter().any(|e| {
-        e.claim == "generic-param-kind" && e.state == VerificationState::Proven
-    });
+    let generic_proven = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "generic-param-kind" && e.state == VerificationState::Proven);
     assert!(
         generic_proven,
         "EffectParam 'db' in effect_row must produce Proven generic-param-kind entry"
     );
 
     // 2. boundary-materialization: process_payment has params + return_type → Proven.
-    let boundary_mat_proven = report.entries.iter().any(|e| {
-        e.claim == "boundary-materialization" && e.state == VerificationState::Proven
-    });
+    let boundary_mat_proven = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "boundary-materialization" && e.state == VerificationState::Proven);
     assert!(
         boundary_mat_proven,
         "function with params + return_type must produce Proven boundary-materialization entry"
     );
 
     // 3. refinement: PatchOrderDetails has predicate "true" + status Proven → Proven.
-    let refinement_proven = report.entries.iter().any(|e| {
-        e.claim == "refinement" && e.state == VerificationState::Proven
-    });
+    let refinement_proven = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "refinement" && e.state == VerificationState::Proven);
     assert!(
         refinement_proven,
         "refinement with status Proven and predicate 'true' must produce Proven refinement entry"
     );
 
     // 4. patchfield: PatchField<Text> inner type is non-empty → Proven.
-    let patchfield_proven = report.entries.iter().any(|e| {
-        e.claim == "patchfield" && e.state == VerificationState::Proven
-    });
+    let patchfield_proven = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "patchfield" && e.state == VerificationState::Proven);
     assert!(
         patchfield_proven,
         "PatchField<Text> must produce Proven patchfield entry"
@@ -2089,9 +2096,10 @@ fn combined_scenario_all_structural_additions_produce_expected_entries() {
     );
 
     // 5. boundary-inference: inferred "return:Result<OrderId>" matches declared return_type → Proven.
-    let bi_proven = report.entries.iter().any(|e| {
-        e.claim == "boundary-inference" && e.state == VerificationState::Proven
-    });
+    let bi_proven = report
+        .entries
+        .iter()
+        .any(|e| e.claim == "boundary-inference" && e.state == VerificationState::Proven);
     assert!(
         bi_proven,
         "matching boundary inferred fact must produce Proven boundary-inference entry"

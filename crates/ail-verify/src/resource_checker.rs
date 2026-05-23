@@ -90,7 +90,8 @@ impl ResourceChecker {
             let scope = node.name.clone();
             let claim = format!("resource-lifecycle[{}]", tm.level.as_str());
 
-            let (state, evidence) = Self::classify_resource(resource_kind, tags, &scope, node.id, graph);
+            let (state, evidence) =
+                Self::classify_resource(resource_kind, tags, &scope, node.id, graph);
 
             // Emit diagnostics for blocking violations
             match state {
@@ -128,8 +129,7 @@ impl ResourceChecker {
                 _ => {}
             }
 
-            let blocking =
-                matches!(state, VerificationState::Failed | VerificationState::Unsafe);
+            let blocking = matches!(state, VerificationState::Failed | VerificationState::Unsafe);
             entries.push(VerificationEntry {
                 claim,
                 state,
@@ -194,8 +194,7 @@ impl ResourceChecker {
                 }
                 // TASK-18: check for outgoing Consumes or Releases edges as proof of lifecycle
                 let has_lifecycle_edge = graph.edges.iter().any(|e| {
-                    e.source == node_id
-                        && matches!(e.kind, EdgeKind::Consumes | EdgeKind::Releases)
+                    e.source == node_id && matches!(e.kind, EdgeKind::Consumes | EdgeKind::Releases)
                 });
                 if has_lifecycle_edge {
                     (VerificationState::Proven, None)
@@ -236,9 +235,10 @@ impl ResourceChecker {
                     return (VerificationState::Proven, None);
                 }
                 // TASK-18: check for outgoing SafeCapability edge
-                let has_cap_edge = graph.edges.iter().any(|e| {
-                    e.source == node_id && e.kind == EdgeKind::SafeCapability
-                });
+                let has_cap_edge = graph
+                    .edges
+                    .iter()
+                    .any(|e| e.source == node_id && e.kind == EdgeKind::SafeCapability);
                 if has_cap_edge {
                     (VerificationState::Proven, None)
                 } else {

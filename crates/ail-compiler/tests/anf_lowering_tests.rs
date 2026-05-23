@@ -1861,7 +1861,11 @@ fn return_with_non_atomic_value_produces_let_binding() {
     };
     let (synth, root) = lower_and_collect(&expr);
     // The literal is atomized → one synthetic binding, root is Return(Var(name))
-    assert_eq!(synth.len(), 1, "Return with literal value must produce 1 synthetic binding");
+    assert_eq!(
+        synth.len(),
+        1,
+        "Return with literal value must produce 1 synthetic binding"
+    );
     assert!(
         matches!(root, AnfExpr::Return(_)),
         "Root must be AnfExpr::Return, got {root:?}"

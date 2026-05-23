@@ -267,8 +267,14 @@ mod tests {
         };
 
         block_on(async {
-            store.write_tombstone(id1, t1.clone()).await.expect("write t1");
-            store.write_tombstone(id2, t2.clone()).await.expect("write t2");
+            store
+                .write_tombstone(id1, t1.clone())
+                .await
+                .expect("write t1");
+            store
+                .write_tombstone(id2, t2.clone())
+                .await
+                .expect("write t2");
 
             let list = store.list_tombstones().await.expect("list must succeed");
             assert_eq!(list.len(), 2, "must return exactly two tombstones");

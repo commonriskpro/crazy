@@ -183,10 +183,7 @@ pub struct ObjectGcReport {
 /// and then collecting their `graph_root_hash` fields).  This separation keeps
 /// `run_gc` independent of the snapshot/graph layer and fully testable with a
 /// plain `MemoryObjectStore`.
-pub async fn run_gc<S>(
-    store: &S,
-    reachable: &BTreeSet<ObjectId>,
-) -> StorageResult<ObjectGcReport>
+pub async fn run_gc<S>(store: &S, reachable: &BTreeSet<ObjectId>) -> StorageResult<ObjectGcReport>
 where
     S: MutableObjectStore + Send + Sync,
 {
@@ -337,8 +334,7 @@ where
     let audit_record_ids: Vec<ObjectId> = audit_set.into_iter().collect();
 
     // Preserve migration metadata from all collapsed snapshots.
-    let mut migration_set: std::collections::BTreeSet<ObjectId> =
-        std::collections::BTreeSet::new();
+    let mut migration_set: std::collections::BTreeSet<ObjectId> = std::collections::BTreeSet::new();
     for snap in &range_snapshots {
         for id in &snap.migration_metadata_ids {
             migration_set.insert(*id);
@@ -523,11 +519,12 @@ mod compaction_tests {
                 .expect("compact must succeed");
             assert_eq!(report.snapshots_merged, 2);
 
-            let list = store
-                .list_snapshots()
-                .await
-                .expect("list after compact");
-            assert_eq!(list.len(), 1, "originals must be replaced by covering snapshot");
+            let list = store.list_snapshots().await.expect("list after compact");
+            assert_eq!(
+                list.len(),
+                1,
+                "originals must be replaced by covering snapshot"
+            );
             assert_eq!(list[0].id, report.covering_snapshot_id);
         });
     }

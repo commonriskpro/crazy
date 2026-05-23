@@ -409,7 +409,10 @@ mod tests {
             repair_options: vec![],
         };
         let json = serde_json::to_string(&entry).expect("serialize");
-        assert!(json.contains("blocking"), "blocking field must appear in JSON");
+        assert!(
+            json.contains("blocking"),
+            "blocking field must appear in JSON"
+        );
         let decoded: VerificationEntry = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded.blocking, true);
     }
@@ -420,7 +423,10 @@ mod tests {
         let json = r#"{"claim":"c","state":"Proven","scope":"s"}"#;
         let decoded: VerificationEntry =
             serde_json::from_str(json).expect("deserialize without blocking field");
-        assert!(!decoded.blocking, "absent blocking field must default to false");
+        assert!(
+            !decoded.blocking,
+            "absent blocking field must default to false"
+        );
     }
 
     // ── AssumptionState tests ─────────────────────────────────────────────
@@ -492,7 +498,10 @@ mod tests {
             repair_options: vec!["add_guard".into(), "add_runtime_check".into()],
         };
         let json = serde_json::to_string(&entry).expect("serialize");
-        assert!(json.contains("repair_options"), "non-empty repair_options must appear in JSON");
+        assert!(
+            json.contains("repair_options"),
+            "non-empty repair_options must appear in JSON"
+        );
         assert!(json.contains("add_guard"));
     }
 
@@ -517,6 +526,9 @@ mod tests {
     fn verification_entry_repair_options_deserializes_without_field() {
         let json = r#"{"claim":"c","state":"Proven","scope":"s"}"#;
         let decoded: VerificationEntry = serde_json::from_str(json).expect("deserialize");
-        assert!(decoded.repair_options.is_empty(), "absent field must default to empty vec");
+        assert!(
+            decoded.repair_options.is_empty(),
+            "absent field must default to empty vec"
+        );
     }
 }

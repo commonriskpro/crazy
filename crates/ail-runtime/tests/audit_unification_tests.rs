@@ -83,7 +83,11 @@ fn effect_anf(cap_name: &str) -> AnfIr {
     }
 }
 
-fn profile_with_grant(wasm: &[u8], manifest: &CapabilityManifest, cap: CapabilityId) -> RuntimeProfile {
+fn profile_with_grant(
+    wasm: &[u8],
+    manifest: &CapabilityManifest,
+    cap: CapabilityId,
+) -> RuntimeProfile {
     RuntimeProfile::new(
         "audit-unification-test".to_string(),
         blake3_hex_of(wasm),
@@ -143,9 +147,9 @@ fn wasm_host_call_events_appear_in_runtime_host_audit_log() {
     // R-3a: CapabilityCallExecuted event must appear in RuntimeHost::audit_log()
     let host_log = host.audit_log();
     let host_events = host_log.events();
-    let has_cap_call = host_events.iter().any(|e| {
-        matches!(e, AuditEvent::CapabilityCallExecuted { .. })
-    });
+    let has_cap_call = host_events
+        .iter()
+        .any(|e| matches!(e, AuditEvent::CapabilityCallExecuted { .. }));
     assert!(
         has_cap_call,
         "RuntimeHost::audit_log() must contain CapabilityCallExecuted after WASM invoke, got {host_events:?}"

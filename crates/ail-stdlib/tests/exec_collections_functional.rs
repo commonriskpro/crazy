@@ -27,7 +27,10 @@ fn sum_fold(v: StdlibValue) -> Result<StdlibValue, StdlibExecError> {
         return Err(StdlibExecError::Type { expected: "List" });
     };
     if pair.len() != 2 {
-        return Err(StdlibExecError::Arity { expected: 2, actual: pair.len() });
+        return Err(StdlibExecError::Arity {
+            expected: 2,
+            actual: pair.len(),
+        });
     }
     let (StdlibValue::Int(acc), StdlibValue::Int(item)) = (&pair[0], &pair[1]) else {
         return Err(StdlibExecError::Type { expected: "Int" });
@@ -44,10 +47,7 @@ fn list_map_doubles_elements() {
         "std.collections.list.map",
         &[list, StdlibValue::Function(double)],
     );
-    assert_eq!(
-        result,
-        Ok(StdlibValue::List(vec![StdlibValue::Int(2)]))
-    );
+    assert_eq!(result, Ok(StdlibValue::List(vec![StdlibValue::Int(2)])));
 }
 
 // Triangulate: list.map with multiple elements
@@ -85,10 +85,7 @@ fn list_filter_retains_even_elements() {
         "std.collections.list.filter",
         &[list, StdlibValue::Function(is_even)],
     );
-    assert_eq!(
-        result,
-        Ok(StdlibValue::List(vec![StdlibValue::Int(2)]))
-    );
+    assert_eq!(result, Ok(StdlibValue::List(vec![StdlibValue::Int(2)])));
 }
 
 // Triangulate: filter keeps all when all match
@@ -155,10 +152,7 @@ fn list_concat_with_empty_right() {
     let a = StdlibValue::List(vec![StdlibValue::Int(1)]);
     let b = StdlibValue::List(vec![]);
     let result = call_pure_stdlib("std.collections.list.concat", &[a, b]);
-    assert_eq!(
-        result,
-        Ok(StdlibValue::List(vec![StdlibValue::Int(1)]))
-    );
+    assert_eq!(result, Ok(StdlibValue::List(vec![StdlibValue::Int(1)])));
 }
 
 // Type error: non-List first arg for map

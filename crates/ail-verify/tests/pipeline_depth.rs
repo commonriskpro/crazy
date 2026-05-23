@@ -151,14 +151,16 @@ fn depth_blocking_true_for_all_failed_entries() {
         .filter(|e| e.state == VerificationState::Failed)
         .collect();
 
-    assert!(!failed.is_empty(), "must have at least one Failed entry in the full-depth run");
+    assert!(
+        !failed.is_empty(),
+        "must have at least one Failed entry in the full-depth run"
+    );
 
     for entry in &failed {
         assert!(
             entry.blocking,
             "Failed entry (claim='{}', scope='{}') must have blocking=true",
-            entry.claim,
-            entry.scope,
+            entry.claim, entry.scope,
         );
     }
 }
@@ -195,14 +197,11 @@ fn depth_resource_lifecycle_edge_detection_fires() {
     let report = run_full_pipeline();
 
     // ResourceChecker uses claim = "resource-lifecycle[<level>]"
-    let resource_entry = report
-        .entries
-        .iter()
-        .find(|e| {
-            e.claim == "resource-lifecycle[resource:linear]"
-                && e.scope == "resource_db"
-                && e.state == VerificationState::Unverified
-        });
+    let resource_entry = report.entries.iter().find(|e| {
+        e.claim == "resource-lifecycle[resource:linear]"
+            && e.scope == "resource_db"
+            && e.state == VerificationState::Unverified
+    });
 
     assert!(
         resource_entry.is_some(),
@@ -222,14 +221,11 @@ fn depth_concurrency_scope_boundary_fires() {
     let report = run_full_pipeline();
 
     // ConcurrencyChecker uses claim = "concurrency-safety[<level>]"
-    let task_entry = report
-        .entries
-        .iter()
-        .find(|e| {
-            e.claim == "concurrency-safety[task]"
-                && e.scope == "orphan_task"
-                && e.state == VerificationState::Unverified
-        });
+    let task_entry = report.entries.iter().find(|e| {
+        e.claim == "concurrency-safety[task]"
+            && e.scope == "orphan_task"
+            && e.state == VerificationState::Unverified
+    });
 
     assert!(
         task_entry.is_some(),

@@ -959,7 +959,10 @@ impl TypeChecker {
                 }
                 // Look up the concrete type node.
                 let needs_eq = gp.required_constraints.iter().any(|c| c.interface == "Eq");
-                let needs_hash = gp.required_constraints.iter().any(|c| c.interface == "Hashable");
+                let needs_hash = gp
+                    .required_constraints
+                    .iter()
+                    .any(|c| c.interface == "Hashable");
                 let needs_ord = gp.required_constraints.iter().any(|c| c.interface == "Ord");
                 let scope = format!(
                     "{}→{}[{}={}]",
@@ -1089,8 +1092,7 @@ impl TypeChecker {
             let scope = node.name.clone();
 
             // Accept either a declared return type or a locally-inferred one.
-            let has_return =
-                node.return_type.is_some() || inferred_returns.contains_key(&node.id);
+            let has_return = node.return_type.is_some() || inferred_returns.contains_key(&node.id);
 
             if !has_return {
                 entries.push(VerificationEntry {
@@ -1533,9 +1535,9 @@ impl TypeChecker {
 
             // Scan call_args for a Type node whose interface_impls can resolve
             // the associated type.
-            let resolved = call_args.iter().find_map(|arg_ty| {
-                resolve_assoc_type(ctx, arg_ty, interface_base, assoc_name)
-            });
+            let resolved = call_args
+                .iter()
+                .find_map(|arg_ty| resolve_assoc_type(ctx, arg_ty, interface_base, assoc_name));
 
             match resolved {
                 Some(concrete_ty) => {
@@ -1543,9 +1545,7 @@ impl TypeChecker {
                         claim: "assoc-type-resolution".into(),
                         state: VerificationState::Proven,
                         scope,
-                        evidence: Some(format!(
-                            "resolved '{return_type}' → '{concrete_ty}'"
-                        )),
+                        evidence: Some(format!("resolved '{return_type}' → '{concrete_ty}'")),
                         blocking: false,
                         repair_options: vec![],
                     });
@@ -2091,7 +2091,7 @@ fn structural_type_satisfies(ctx: &TypeContext<'_>, arg_ty: &str, required: &[St
 mod tests {
     use super::*;
     use ail_core::semantic_graph::{
-        AssociatedTypeBinding, CapabilityReqs, EffectRow, EdgeKind, GenericParamDecl,
+        AssociatedTypeBinding, CapabilityReqs, EdgeKind, EffectRow, GenericParamDecl,
         GenericParamKind, GraphEdge, GraphNode, InterfaceImplMeta, NodeKind, NodeRef,
         SemanticGraph, TypeArgBinding,
     };
@@ -2155,9 +2155,7 @@ mod tests {
             !assoc.is_empty(),
             "at least one assoc-type-resolution entry expected"
         );
-        let proven = assoc
-            .iter()
-            .find(|e| e.state == VerificationState::Proven);
+        let proven = assoc.iter().find(|e| e.state == VerificationState::Proven);
         assert!(
             proven.is_some(),
             "expected a Proven assoc-type-resolution entry, got: {:?}",
@@ -2250,7 +2248,9 @@ mod tests {
         use ail_core::semantic_graph::EffectArgBinding;
 
         let mut caller = make_node(0, NodeKind::Function, "caller_fn");
-        caller.effect_row = Some(EffectRow { effects: vec!["IO".to_string()] });
+        caller.effect_row = Some(EffectRow {
+            effects: vec!["IO".to_string()],
+        });
 
         let callee = make_node(1, NodeKind::Function, "effect_fn");
 
@@ -2271,7 +2271,9 @@ mod tests {
             !threading.is_empty(),
             "expected effect-param-threading entry"
         );
-        let proven = threading.iter().find(|e| e.state == VerificationState::Proven);
+        let proven = threading
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
         assert!(
             proven.is_some(),
             "effect present in caller must be Proven, got: {:?}",
@@ -2306,7 +2308,9 @@ mod tests {
 
         let report = TypeChecker::check(&graph);
         let threading = entries_with_claim(&report.entries, "effect-param-threading");
-        let failed = threading.iter().find(|e| e.state == VerificationState::Failed);
+        let failed = threading
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
         assert!(
             failed.is_some(),
             "effect missing from caller must be Failed, got: {:?}",
@@ -2346,7 +2350,9 @@ mod tests {
 
         let report = TypeChecker::check(&graph);
         let threading = entries_with_claim(&report.entries, "capability-param-threading");
-        let failed = threading.iter().find(|e| e.state == VerificationState::Failed);
+        let failed = threading
+            .iter()
+            .find(|e| e.state == VerificationState::Failed);
         assert!(
             failed.is_some(),
             "cap missing from caller must be Failed, got: {:?}",
@@ -2384,7 +2390,9 @@ mod tests {
 
         let report = TypeChecker::check(&graph);
         let threading = entries_with_claim(&report.entries, "capability-param-threading");
-        let proven = threading.iter().find(|e| e.state == VerificationState::Proven);
+        let proven = threading
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
         assert!(
             proven.is_some(),
             "cap present in caller must be Proven, got: {:?}",
@@ -2561,9 +2569,12 @@ mod tests {
 
         let report = TypeChecker::check(&graph);
         let blanket = entries_with_claim(&report.entries, "blanket-impl-coherence");
-        let overlap = blanket
-            .iter()
-            .find(|e| e.evidence.as_deref().unwrap_or("").contains(E_BLANKET_IMPL_OVERLAP));
+        let overlap = blanket.iter().find(|e| {
+            e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains(E_BLANKET_IMPL_OVERLAP)
+        });
         assert!(
             overlap.is_none(),
             "adapter impls must NOT trigger E_BLANKET_IMPL_OVERLAP, got: {:?}",
@@ -2597,9 +2608,7 @@ mod tests {
             !orphan.is_empty(),
             "expected orphan-rule entry for impl without Interface node"
         );
-        let failed = orphan
-            .iter()
-            .find(|e| e.state == VerificationState::Failed);
+        let failed = orphan.iter().find(|e| e.state == VerificationState::Failed);
         assert!(
             failed.is_some(),
             "orphan impl must be Failed, got: {:?}",
@@ -2631,9 +2640,7 @@ mod tests {
 
         let report = TypeChecker::check(&graph);
         let orphan = entries_with_claim(&report.entries, "orphan-rule");
-        let violation = orphan
-            .iter()
-            .find(|e| e.state == VerificationState::Failed);
+        let violation = orphan.iter().find(|e| e.state == VerificationState::Failed);
         assert!(
             violation.is_none(),
             "impl with local Interface node must NOT trigger orphan-rule violation, got: {:?}",
@@ -2835,11 +2842,16 @@ mod tests {
 
         let report = TypeChecker::check(&graph);
         let boundary = entries_with_claim(&report.entries, "boundary-materialization");
-        assert!(!boundary.is_empty(), "expected boundary-materialization entry");
+        assert!(
+            !boundary.is_empty(),
+            "expected boundary-materialization entry"
+        );
 
         // Without inference: would be Unverified (E_BOUNDARY_NOT_MATERIALIZED).
         // With inference: should be Proven because "42" → "Int".
-        let proven = boundary.iter().find(|e| e.state == VerificationState::Proven);
+        let proven = boundary
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
         assert!(
             proven.is_some(),
             "Int literal body_expr must make boundary-materialization Proven, got: {:?}",
@@ -2868,7 +2880,9 @@ mod tests {
 
         let report = TypeChecker::check(&graph);
         let boundary = entries_with_claim(&report.entries, "boundary-materialization");
-        let proven = boundary.iter().find(|e| e.state == VerificationState::Proven);
+        let proven = boundary
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
         assert!(
             proven.is_some(),
             "Bool literal body_expr must make boundary-materialization Proven, got: {:?}",
@@ -2937,11 +2951,11 @@ mod tests {
         let boundary = entries_with_claim(&report.entries, "boundary-materialization");
 
         // Only caller has params + no return_type; helper already has return_type.
-        let caller_boundary: Vec<_> = boundary
-            .iter()
-            .filter(|e| e.scope == "caller")
-            .collect();
-        assert!(!caller_boundary.is_empty(), "expected boundary entry for caller");
+        let caller_boundary: Vec<_> = boundary.iter().filter(|e| e.scope == "caller").collect();
+        assert!(
+            !caller_boundary.is_empty(),
+            "expected boundary entry for caller"
+        );
 
         let proven = caller_boundary
             .iter()
@@ -2977,7 +2991,9 @@ mod tests {
 
         let report = TypeChecker::check(&graph);
         let boundary = entries_with_claim(&report.entries, "boundary-materialization");
-        let proven = boundary.iter().find(|e| e.state == VerificationState::Proven);
+        let proven = boundary
+            .iter()
+            .find(|e| e.state == VerificationState::Proven);
         assert!(
             proven.is_some(),
             "function with declared return_type must always be Proven, got: {:?}",

@@ -239,8 +239,8 @@ fn canonicalize_leaves_type_pascal_case_unchanged() {
 #[test]
 fn canonicalize_parsed_normalizes_id_args() {
     use ail_change::model::{ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp};
-    use ail_change::parser::ParsedOp;
     use ail_change::parser::ParsedChangeSet;
+    use ail_change::parser::ParsedOp;
     use std::collections::BTreeMap;
 
     let mut args = BTreeMap::new();
@@ -283,8 +283,8 @@ fn canonicalize_parsed_normalizes_id_args() {
 #[test]
 fn create_type_without_derive_gets_derive_none_default() {
     use ail_change::model::{ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp};
-    use ail_change::parser::ParsedOp;
     use ail_change::parser::ParsedChangeSet;
+    use ail_change::parser::ParsedOp;
     use std::collections::BTreeMap;
 
     let mut args = BTreeMap::new();
@@ -322,8 +322,8 @@ fn create_type_without_derive_gets_derive_none_default() {
 #[test]
 fn create_type_with_explicit_derive_is_preserved() {
     use ail_change::model::{ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp};
-    use ail_change::parser::ParsedOp;
     use ail_change::parser::ParsedChangeSet;
+    use ail_change::parser::ParsedOp;
     use std::collections::BTreeMap;
 
     let mut args = BTreeMap::new();

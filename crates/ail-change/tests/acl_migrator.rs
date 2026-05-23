@@ -33,10 +33,11 @@ fn v1_0_changeset_passes_through_unchanged() {
 fn v0_9_changeset_gets_migrated() {
     let src = "change x acl=0.9 base=0\nauthor A\nop create_fn id=fn.foo\nend\n";
     let parsed = parse_changeset(src).expect("must parse");
-    let canonical =
-        try_canonicalize_parsed(parsed).expect("v0.9 must succeed after migration");
-    assert_eq!(canonical.acl_version, CURRENT_ACL_VERSION,
-        "acl_version must be updated to CURRENT after migration");
+    let canonical = try_canonicalize_parsed(parsed).expect("v0.9 must succeed after migration");
+    assert_eq!(
+        canonical.acl_version, CURRENT_ACL_VERSION,
+        "acl_version must be updated to CURRENT after migration"
+    );
     assert!(
         canonical.ops.iter().any(|op| op.verb == "create_function"),
         "deprecated 'create_fn' verb must be migrated to 'create_function'"
@@ -46,10 +47,10 @@ fn v0_9_changeset_gets_migrated() {
 // TRIANGULATE: deprecated "add_field" verb is also normalized in v0.9 → v1.0
 #[test]
 fn v0_9_add_field_is_migrated_to_add_param() {
-    let src = "change x acl=0.9 base=0\nauthor A\nop add_field target=fn.foo name=x type=Int\nend\n";
+    let src =
+        "change x acl=0.9 base=0\nauthor A\nop add_field target=fn.foo name=x type=Int\nend\n";
     let parsed = parse_changeset(src).expect("must parse");
-    let canonical =
-        try_canonicalize_parsed(parsed).expect("v0.9 must succeed after migration");
+    let canonical = try_canonicalize_parsed(parsed).expect("v0.9 must succeed after migration");
     assert!(
         canonical.ops.iter().any(|op| op.verb == "add_param"),
         "deprecated 'add_field' verb must be migrated to 'add_param'"

@@ -198,8 +198,10 @@ impl VerificationPipeline {
         }
 
         // ── Stage 3: Validate op schemas ──────────────────────────────────
-        all_entries
-            .extend(validate_op_schemas_with_graph(canonical.as_ref(), Some(ctx.graph)));
+        all_entries.extend(validate_op_schemas_with_graph(
+            canonical.as_ref(),
+            Some(ctx.graph),
+        ));
 
         // ── Stage 4: Resolve graph references ─────────────────────────────
         all_entries.extend(resolve_graph_references(canonical.as_ref(), ctx.graph));
@@ -406,9 +408,11 @@ impl VerificationPipeline {
         pre_policy.entries.push(check_anf_ordering(ctx.graph));
 
         // ── Stage 21: Generate/validate manifest ──────────────────────────
-        pre_policy
-            .entries
-            .push(validate_manifest(ctx.graph, ctx.manifest_caps, ctx.artifact_manifest_hash));
+        pre_policy.entries.push(validate_manifest(
+            ctx.graph,
+            ctx.manifest_caps,
+            ctx.artifact_manifest_hash,
+        ));
 
         let mut artifact_hashes = Vec::new();
 
@@ -842,7 +846,10 @@ fn build_semantic_diff(
                 removed_name
             )
         } else {
-            format!("node '{}' removed from graph; verify no references remain", removed_name)
+            format!(
+                "node '{}' removed from graph; verify no references remain",
+                removed_name
+            )
         };
         entries.push(stage_entry(
             "05-build-semantic-diff",
@@ -1227,7 +1234,11 @@ fn find_ordering_violation(body: &str) -> Option<String> {
                 let inner_start = pos + keyword.len();
                 if let Some(close) = body[inner_start..].find(')') {
                     let ident = body[inner_start..inner_start + close].trim().to_string();
-                    if !ident.is_empty() && ident.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                    if !ident.is_empty()
+                        && ident
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                    {
                         map.entry(ident).or_insert(pos);
                     }
                 }
@@ -1384,7 +1395,9 @@ fn check_anf_ordering(graph: &SemanticGraph) -> VerificationEntry {
 
 #[cfg(test)]
 mod tests {
-    use ail_core::semantic_graph::{EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph};
+    use ail_core::semantic_graph::{
+        EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph,
+    };
 
     use crate::report::VerificationState;
 
@@ -1393,11 +1406,17 @@ mod tests {
     fn graph_with_body(body: &str) -> SemanticGraph {
         let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.test");
         node.body_expr = Some(body.to_string());
-        SemanticGraph { nodes: vec![node], edges: vec![] }
+        SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        }
     }
 
     fn empty_graph() -> SemanticGraph {
-        SemanticGraph { nodes: vec![], edges: vec![] }
+        SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        }
     }
 
     // ── T-09 / T-10: ANF effect ordering ─────────────────────────────────
@@ -1408,7 +1427,11 @@ mod tests {
         let entry = check_anf_ordering(&graph);
         assert_eq!(entry.state, VerificationState::Failed);
         assert!(
-            entry.evidence.as_deref().unwrap_or("").contains("E_ANF_EFFECT_ORDER"),
+            entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_ANF_EFFECT_ORDER"),
             "evidence must contain E_ANF_EFFECT_ORDER"
         );
     }
@@ -1419,7 +1442,11 @@ mod tests {
         let entry = check_anf_ordering(&graph);
         assert_eq!(entry.state, VerificationState::Failed);
         assert!(
-            entry.evidence.as_deref().unwrap_or("").contains("E_ANF_EFFECT_ORDER"),
+            entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_ANF_EFFECT_ORDER"),
             "run_effect without bind_effect must produce E_ANF_EFFECT_ORDER"
         );
     }
@@ -1430,7 +1457,11 @@ mod tests {
         let entry = check_anf_ordering(&graph);
         assert_eq!(entry.state, VerificationState::Failed);
         assert!(
-            entry.evidence.as_deref().unwrap_or("").contains("E_ANF_DUPLICATE_EFFECT"),
+            entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_ANF_DUPLICATE_EFFECT"),
             "duplicate emit_effect must produce E_ANF_DUPLICATE_EFFECT"
         );
     }
@@ -1456,7 +1487,11 @@ mod tests {
         let entry = check_anf_ordering(&graph);
         assert_eq!(entry.state, VerificationState::Failed);
         assert!(
-            entry.evidence.as_deref().unwrap_or("").contains("E_ANF_RESOURCE_ORDER"),
+            entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_ANF_RESOURCE_ORDER"),
             "resource order violation must produce E_ANF_RESOURCE_ORDER"
         );
     }
@@ -1502,7 +1537,11 @@ mod tests {
         let node_d = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.D");
         let target = SemanticGraph {
             nodes: vec![inv_a, node_d],
-            edges: vec![GraphEdge::new(NodeRef(1), NodeRef(0), EdgeKind::BreaksIfChanged)],
+            edges: vec![GraphEdge::new(
+                NodeRef(1),
+                NodeRef(0),
+                EdgeKind::BreaksIfChanged,
+            )],
         };
         let entries = check_invariants(Some(&base), &target);
         let inv_entry = entries.iter().find(|e| e.scope == "inv.A").unwrap();

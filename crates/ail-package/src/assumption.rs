@@ -325,12 +325,8 @@ mod tests {
     #[test]
     fn expired_assumption_without_approval_produces_no_error() {
         let assumptions = vec![make_assumption(AssumptionState::Expired)];
-        let errors = AssumptionEnforcer::check(
-            "payments.stripe",
-            &assumptions,
-            "project.checkout",
-            &[],
-        );
+        let errors =
+            AssumptionEnforcer::check("payments.stripe", &assumptions, "project.checkout", &[]);
         assert!(
             errors.is_empty(),
             "Expired assumption must not require approval"
@@ -341,12 +337,8 @@ mod tests {
     #[test]
     fn revoked_assumption_without_approval_produces_no_error() {
         let assumptions = vec![make_assumption(AssumptionState::Revoked)];
-        let errors = AssumptionEnforcer::check(
-            "payments.stripe",
-            &assumptions,
-            "project.checkout",
-            &[],
-        );
+        let errors =
+            AssumptionEnforcer::check("payments.stripe", &assumptions, "project.checkout", &[]);
         assert!(
             errors.is_empty(),
             "Revoked assumption must not require approval"
@@ -358,12 +350,8 @@ mod tests {
     #[test]
     fn active_assumption_without_approval_still_produces_error() {
         let assumptions = vec![make_assumption(AssumptionState::Active)];
-        let errors = AssumptionEnforcer::check(
-            "payments.stripe",
-            &assumptions,
-            "project.checkout",
-            &[],
-        );
+        let errors =
+            AssumptionEnforcer::check("payments.stripe", &assumptions, "project.checkout", &[]);
         assert_eq!(
             errors.len(),
             1,
@@ -380,12 +368,8 @@ mod tests {
         proposed.id = "assume-proposed".to_string();
 
         let assumptions = vec![active, proposed];
-        let errors = AssumptionEnforcer::check(
-            "payments.stripe",
-            &assumptions,
-            "project.checkout",
-            &[],
-        );
+        let errors =
+            AssumptionEnforcer::check("payments.stripe", &assumptions, "project.checkout", &[]);
         assert_eq!(
             errors.len(),
             1,

@@ -743,7 +743,10 @@ impl PolicyEngine {
 
     // ── ProofSufficiencyGate ──────────────────────────────────────────────
 
-    fn eval_proof_sufficiency(report: &VerificationReport, max_assumed_ratio: f64) -> PolicyDecision {
+    fn eval_proof_sufficiency(
+        report: &VerificationReport,
+        max_assumed_ratio: f64,
+    ) -> PolicyDecision {
         let counts = &report.summary_counts;
         let total = counts.verified_count
             + counts.runtime_checked_count
@@ -787,9 +790,7 @@ impl PolicyEngine {
 mod tests {
     use crate::report::{SummaryCounts, VerificationReport};
 
-    use super::{
-        PolicyDecision, PolicyEngine, PolicyInput, PolicyRule, POLICY_PROOF_SUFFICIENCY,
-    };
+    use super::{POLICY_PROOF_SUFFICIENCY, PolicyDecision, PolicyEngine, PolicyInput, PolicyRule};
 
     fn report_with_counts(verified: usize, total: usize) -> VerificationReport {
         let non_proven = total - verified;
@@ -809,7 +810,9 @@ mod tests {
     fn evaluate_sufficiency(report: &VerificationReport, max_ratio: f64) -> PolicyDecision {
         let input = PolicyInput {
             report,
-            rules: &[PolicyRule::ProofSufficiencyGate { max_assumed_ratio: max_ratio }],
+            rules: &[PolicyRule::ProofSufficiencyGate {
+                max_assumed_ratio: max_ratio,
+            }],
             approvals: &[],
             structural_diff: None,
             capability_grants: &[],

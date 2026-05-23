@@ -45,8 +45,8 @@ use ail_core::semantic_graph::NodeRef;
 use cranelift_codegen::{
     Context,
     ir::{
-        AbiParam, Function, InstBuilder, MemFlags, Signature, StackSlotData,
-        UserFuncName, condcodes::IntCC, stackslot::StackSlotKind,
+        AbiParam, Function, InstBuilder, MemFlags, Signature, StackSlotData, UserFuncName,
+        condcodes::IntCC, stackslot::StackSlotKind,
     },
     isa::CallConv,
     settings,
@@ -115,8 +115,12 @@ impl NativeDataLayout {
         use crate::anf::AnfExpr;
         use crate::core_ir::LiteralValue;
         match expr {
-            AnfExpr::Literal(LiteralValue::Text(s)) => { self.intern(s); }
-            AnfExpr::EffectCall { capability, func, .. } => {
+            AnfExpr::Literal(LiteralValue::Text(s)) => {
+                self.intern(s);
+            }
+            AnfExpr::EffectCall {
+                capability, func, ..
+            } => {
                 self.needs_host_call = true;
                 self.intern(capability);
                 self.intern(func);
@@ -127,7 +131,11 @@ impl NativeDataLayout {
             }
             AnfExpr::Return(inner) => self.scan_expr(inner),
             AnfExpr::Seq(exprs) => exprs.iter().for_each(|e| self.scan_expr(e)),
-            AnfExpr::If { then_branch, else_branch, .. } => {
+            AnfExpr::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.scan_expr(then_branch);
                 self.scan_expr(else_branch);
             }
@@ -136,23 +144,33 @@ impl NativeDataLayout {
                 self.scan_expr(right);
             }
             AnfExpr::Match { arms, .. } => {
-                for arm in arms { self.scan_expr(&arm.body); }
+                for arm in arms {
+                    self.scan_expr(&arm.body);
+                }
             }
             AnfExpr::RecordNew { fields } => {
-                for (_, e) in fields { self.scan_expr(e); }
+                for (_, e) in fields {
+                    self.scan_expr(e);
+                }
                 self.needs_heap_alloc = true;
             }
             AnfExpr::FieldUpdate { value, .. } => self.scan_expr(value),
             AnfExpr::TupleNew(elems) => {
-                for e in elems { self.scan_expr(e); }
+                for e in elems {
+                    self.scan_expr(e);
+                }
                 self.needs_heap_alloc = true;
             }
             AnfExpr::ListNew(elems) => {
-                for e in elems { self.scan_expr(e); }
+                for e in elems {
+                    self.scan_expr(e);
+                }
                 self.needs_heap_alloc = true;
             }
             AnfExpr::VariantNew { payload, .. } => {
-                if let Some(p) = payload { self.scan_expr(p); }
+                if let Some(p) = payload {
+                    self.scan_expr(p);
+                }
                 self.needs_heap_alloc = true;
             }
             // ola5 Gap 2/3 — new variants
@@ -175,12 +193,16 @@ impl NativeDataLayout {
             | AnfExpr::Select { .. }
             | AnfExpr::Dispatch { .. }
             | AnfExpr::ResourceAcquire { .. }
-            | AnfExpr::ResourceRelease { .. } => { self.needs_runtime_call = true; }
+            | AnfExpr::ResourceRelease { .. } => {
+                self.needs_runtime_call = true;
+            }
             AnfExpr::CellNew { .. }
             | AnfExpr::CellGet { .. }
             | AnfExpr::CellSet { .. }
             | AnfExpr::MapNew { .. }
-            | AnfExpr::SetNew { .. } => { self.needs_heap_alloc = true; }
+            | AnfExpr::SetNew { .. } => {
+                self.needs_heap_alloc = true;
+            }
             _ => {}
         }
     }
@@ -193,15 +215,15 @@ impl NativeDataLayout {
             let name = format!("__ail_str_{i}");
             let data_id = module
                 .declare_data(&name, Linkage::Local, false, false)
-                .map_err(|e| CompileError::NativeEncodingError(
-                    format!("declare_data({name}): {e}")))?;
+                .map_err(|e| {
+                    CompileError::NativeEncodingError(format!("declare_data({name}): {e}"))
+                })?;
             let mut desc = DataDescription::new();
             let bytes: Box<[u8]> = s.as_bytes().to_vec().into_boxed_slice();
             desc.define(bytes);
-            module
-                .define_data(data_id, &desc)
-                .map_err(|e| CompileError::NativeEncodingError(
-                    format!("define_data({name}): {e}")))?;
+            module.define_data(data_id, &desc).map_err(|e| {
+                CompileError::NativeEncodingError(format!("define_data({name}): {e}"))
+            })?;
             data_ids.push(data_id);
         }
         Ok(data_ids)
@@ -330,7 +352,13 @@ enum NativeLabelKind {
 struct NativeCodegenCtx<'a> {
     /// Maps ANF let-binding names to their Cranelift SSA `Value` + type.
     /// Uses `String` keys to avoid lifetime complexity with nested expressions.
-    locals: BTreeMap<String, (cranelift_codegen::ir::Value, cranelift_codegen::ir::types::Type)>,
+    locals: BTreeMap<
+        String,
+        (
+            cranelift_codegen::ir::Value,
+            cranelift_codegen::ir::types::Type,
+        ),
+    >,
     /// Label stack for Loop/Break/Continue resolution.
     labels: Vec<(NativeLabelKind, cranelift_codegen::ir::Block)>,
     /// Record layout map: binding name → ordered field names.
@@ -373,13 +401,22 @@ impl<'a> NativeCodegenCtx<'a> {
         }
     }
 
-    fn bind(&mut self, name: &str, val: cranelift_codegen::ir::Value,
-            ty: cranelift_codegen::ir::types::Type) {
+    fn bind(
+        &mut self,
+        name: &str,
+        val: cranelift_codegen::ir::Value,
+        ty: cranelift_codegen::ir::types::Type,
+    ) {
         self.locals.insert(name.to_string(), (val, ty));
     }
 
-    fn lookup(&self, name: &str) -> Option<(cranelift_codegen::ir::Value,
-                                             cranelift_codegen::ir::types::Type)> {
+    fn lookup(
+        &self,
+        name: &str,
+    ) -> Option<(
+        cranelift_codegen::ir::Value,
+        cranelift_codegen::ir::types::Type,
+    )> {
         self.locals.get(name).copied()
     }
 
@@ -418,7 +455,9 @@ impl<'a> NativeCodegenCtx<'a> {
     }
 
     fn find_label(&self, kind: NativeLabelKind) -> Option<cranelift_codegen::ir::Block> {
-        self.labels.iter().rev()
+        self.labels
+            .iter()
+            .rev()
             .find(|(k, _)| *k == kind)
             .map(|(_, b)| *b)
     }
@@ -526,15 +565,9 @@ fn lower_anf_expr_cranelift(
 
     match expr {
         AnfExpr::Literal(lit) => match lit {
-            LiteralValue::Int(n) => {
-                LowerResult::Value(builder.ins().iconst(types::I64, *n))
-            }
-            LiteralValue::Bool(b) => {
-                LowerResult::Value(builder.ins().iconst(types::I8, *b as i64))
-            }
-            LiteralValue::Float(f) => {
-                LowerResult::Value(builder.ins().f64const(*f))
-            }
+            LiteralValue::Int(n) => LowerResult::Value(builder.ins().iconst(types::I64, *n)),
+            LiteralValue::Bool(b) => LowerResult::Value(builder.ins().iconst(types::I8, *b as i64)),
+            LiteralValue::Float(f) => LowerResult::Value(builder.ins().f64const(*f)),
             LiteralValue::Unit => LowerResult::Unit,
             LiteralValue::Text(s) => {
                 let (idx, len) = ctx.data_layout.get(s.as_str());
@@ -586,14 +619,11 @@ fn lower_anf_expr_cranelift(
         AnfExpr::Call { func, args } => {
             match func.as_str() {
                 // ── binary I64 arithmetic ──────────────────────────────
-                "i64.add" | "+" | "add"
-                | "i64.sub" | "-" | "sub"
-                | "i64.mul" | "*" | "mul"
-                | "i64.div_s" | "/" | "div"
-                | "i64.rem_s" | "%" | "mod"
-                | "i64.and" | "and"
+                "i64.add" | "+" | "add" | "i64.sub" | "-" | "sub" | "i64.mul" | "*" | "mul"
+                | "i64.div_s" | "/" | "div" | "i64.rem_s" | "%" | "mod" | "i64.and" | "and"
                 | "i64.or" | "or"
-                if args.len() == 2 => {
+                    if args.len() == 2 =>
+                {
                     let lhs = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
                     let rhs = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
                     match (lhs, rhs) {
@@ -605,7 +635,7 @@ fn lower_anf_expr_cranelift(
                                 "i64.div_s" | "/" | "div" => builder.ins().sdiv(l, r),
                                 "i64.rem_s" | "%" | "mod" => builder.ins().srem(l, r),
                                 "i64.and" | "and" => builder.ins().band(l, r),
-                                "i64.or" | "or"  => builder.ins().bor(l, r),
+                                "i64.or" | "or" => builder.ins().bor(l, r),
                                 _ => unreachable!(),
                             };
                             LowerResult::Value(val)
@@ -617,24 +647,21 @@ fn lower_anf_expr_cranelift(
                     }
                 }
                 // ── binary comparisons → I8 ────────────────────────────
-                "i64.eq" | "==" | "eq"
-                | "i64.ne" | "!=" | "ne"
-                | "i64.lt_s" | "<" | "lt"
-                | "i64.le_s" | "<=" | "le"
-                | "i64.gt_s" | ">" | "gt"
-                | "i64.ge_s" | ">=" | "ge"
-                if args.len() == 2 => {
+                "i64.eq" | "==" | "eq" | "i64.ne" | "!=" | "ne" | "i64.lt_s" | "<" | "lt"
+                | "i64.le_s" | "<=" | "le" | "i64.gt_s" | ">" | "gt" | "i64.ge_s" | ">=" | "ge"
+                    if args.len() == 2 =>
+                {
                     let lhs = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
                     let rhs = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
                     match (lhs, rhs) {
                         (Some(l), Some(r)) => {
                             let cc = match func.as_str() {
-                                "i64.eq"  | "==" | "eq" => IntCC::Equal,
-                                "i64.ne"  | "!=" | "ne" => IntCC::NotEqual,
-                                "i64.lt_s"| "<"  | "lt" => IntCC::SignedLessThan,
-                                "i64.le_s"| "<=" | "le" => IntCC::SignedLessThanOrEqual,
-                                "i64.gt_s"| ">"  | "gt" => IntCC::SignedGreaterThan,
-                                "i64.ge_s"| ">=" | "ge" => IntCC::SignedGreaterThanOrEqual,
+                                "i64.eq" | "==" | "eq" => IntCC::Equal,
+                                "i64.ne" | "!=" | "ne" => IntCC::NotEqual,
+                                "i64.lt_s" | "<" | "lt" => IntCC::SignedLessThan,
+                                "i64.le_s" | "<=" | "le" => IntCC::SignedLessThanOrEqual,
+                                "i64.gt_s" | ">" | "gt" => IntCC::SignedGreaterThan,
+                                "i64.ge_s" | ">=" | "ge" => IntCC::SignedGreaterThanOrEqual,
                                 _ => unreachable!(),
                             };
                             LowerResult::Value(builder.ins().icmp(cc, l, r))
@@ -657,9 +684,7 @@ fn lower_anf_expr_cranelift(
                 }
                 "i64.eqz" | "not" | "!" if args.len() == 1 => {
                     match ctx.lookup(args[0].as_str()).map(|(v, _)| v) {
-                        Some(a) => LowerResult::Value(
-                            builder.ins().icmp_imm(IntCC::Equal, a, 0)
-                        ),
+                        Some(a) => LowerResult::Value(builder.ins().icmp_imm(IntCC::Equal, a, 0)),
                         None => {
                             builder.ins().trap(TrapCode::user(1).unwrap());
                             LowerResult::Terminated
@@ -676,7 +701,7 @@ fn lower_anf_expr_cranelift(
         // ── Loop ─────────────────────────────────────────────────────────
         AnfExpr::Loop { body } => {
             let break_block = builder.create_block();
-            let loop_block  = builder.create_block();
+            let loop_block = builder.create_block();
 
             let result_ty = infer_cranelift_return_type(body);
             if let Some(ty) = result_ty {
@@ -705,7 +730,7 @@ fn lower_anf_expr_cranelift(
 
             match result_ty {
                 Some(_) => LowerResult::Value(builder.block_params(break_block)[0]),
-                None    => LowerResult::Unit,
+                None => LowerResult::Unit,
             }
         }
 
@@ -719,8 +744,12 @@ fn lower_anf_expr_cranelift(
                 }
             };
             match lower_anf_expr_cranelift(value, ctx, builder, module) {
-                LowerResult::Value(v)  => { builder.ins().jump(break_block, &[v]); }
-                LowerResult::Unit      => { builder.ins().jump(break_block, &[]); }
+                LowerResult::Value(v) => {
+                    builder.ins().jump(break_block, &[v]);
+                }
+                LowerResult::Unit => {
+                    builder.ins().jump(break_block, &[]);
+                }
                 LowerResult::Terminated => {}
             }
             LowerResult::Terminated
@@ -741,9 +770,9 @@ fn lower_anf_expr_cranelift(
 
         // ── WhileLoop ─────────────────────────────────────────────────────
         AnfExpr::WhileLoop { cond, body } => {
-            let break_block    = builder.create_block();
-            let loop_block     = builder.create_block();
-            let body_block     = builder.create_block();
+            let break_block = builder.create_block();
+            let loop_block = builder.create_block();
+            let body_block = builder.create_block();
 
             // Jump into the loop header.
             builder.ins().jump(loop_block, &[]);
@@ -758,7 +787,9 @@ fn lower_anf_expr_cranelift(
                 }
             };
             // brif cond → body_block, else → break_block (exit on false)
-            builder.ins().brif(cond_val, body_block, &[], break_block, &[]);
+            builder
+                .ins()
+                .brif(cond_val, body_block, &[], break_block, &[]);
 
             builder.switch_to_block(body_block);
             builder.seal_block(body_block);
@@ -778,7 +809,11 @@ fn lower_anf_expr_cranelift(
         }
 
         // ── If ────────────────────────────────────────────────────────────
-        AnfExpr::If { cond, then_branch, else_branch } => {
+        AnfExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             let cond_val = match ctx.lookup(cond.as_str()) {
                 Some((v, _)) => v,
                 None => {
@@ -796,21 +831,31 @@ fn lower_anf_expr_cranelift(
                 builder.append_block_param(merge_block, ty);
             }
 
-            builder.ins().brif(cond_val, then_block, &[], else_block, &[]);
+            builder
+                .ins()
+                .brif(cond_val, then_block, &[], else_block, &[]);
 
             builder.switch_to_block(then_block);
             builder.seal_block(then_block);
             match lower_anf_expr_cranelift(then_branch, ctx, builder, module) {
-                LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
-                LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
+                LowerResult::Value(v) => {
+                    builder.ins().jump(merge_block, &[v]);
+                }
+                LowerResult::Unit => {
+                    builder.ins().jump(merge_block, &[]);
+                }
                 LowerResult::Terminated => {}
             }
 
             builder.switch_to_block(else_block);
             builder.seal_block(else_block);
             match lower_anf_expr_cranelift(else_branch, ctx, builder, module) {
-                LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
-                LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
+                LowerResult::Value(v) => {
+                    builder.ins().jump(merge_block, &[v]);
+                }
+                LowerResult::Unit => {
+                    builder.ins().jump(merge_block, &[]);
+                }
                 LowerResult::Terminated => {}
             }
 
@@ -818,7 +863,7 @@ fn lower_anf_expr_cranelift(
             builder.seal_block(merge_block);
             match result_ty {
                 Some(_) => LowerResult::Value(builder.block_params(merge_block)[0]),
-                None    => LowerResult::Unit,
+                None => LowerResult::Unit,
             }
         }
 
@@ -871,7 +916,7 @@ fn lower_anf_expr_cranelift(
                             builder.ins().jump(merge_block, &[v]);
                             has_merge_predecessor = true;
                         }
-                        LowerResult::Unit     => {
+                        LowerResult::Unit => {
                             builder.ins().jump(merge_block, &[]);
                             has_merge_predecessor = true;
                         }
@@ -883,9 +928,9 @@ fn lower_anf_expr_cranelift(
 
                 // Non-wildcard: compute equality check.
                 let pattern_val: i64 = match arm.pattern.trim() {
-                    "true"  => 1,
+                    "true" => 1,
                     "false" => 0,
-                    s       => match s.parse::<i64>() {
+                    s => match s.parse::<i64>() {
                         Ok(value) => value,
                         Err(_) => {
                             builder.ins().trap(TrapCode::user(1).unwrap());
@@ -911,7 +956,7 @@ fn lower_anf_expr_cranelift(
                             builder.ins().jump(merge_block, &[v]);
                             has_merge_predecessor = true;
                         }
-                        LowerResult::Unit     => {
+                        LowerResult::Unit => {
                             builder.ins().jump(merge_block, &[]);
                             has_merge_predecessor = true;
                         }
@@ -936,7 +981,7 @@ fn lower_anf_expr_cranelift(
                             builder.ins().jump(merge_block, &[v]);
                             has_merge_predecessor = true;
                         }
-                        LowerResult::Unit     => {
+                        LowerResult::Unit => {
                             builder.ins().jump(merge_block, &[]);
                             has_merge_predecessor = true;
                         }
@@ -953,7 +998,7 @@ fn lower_anf_expr_cranelift(
             builder.seal_block(merge_block);
             match result_ty {
                 Some(_) => LowerResult::Value(builder.block_params(merge_block)[0]),
-                None    => LowerResult::Unit,
+                None => LowerResult::Unit,
             }
         }
 
@@ -966,12 +1011,14 @@ fn lower_anf_expr_cranelift(
                     return LowerResult::Terminated;
                 }
             };
-            let true_block  = builder.create_block();
+            let true_block = builder.create_block();
             let false_block = builder.create_block();
             let merge_block = builder.create_block();
             builder.append_block_param(merge_block, cranelift_codegen::ir::types::I64);
 
-            builder.ins().brif(left_val, true_block, &[], false_block, &[]);
+            builder
+                .ins()
+                .brif(left_val, true_block, &[], false_block, &[]);
 
             // true branch: evaluate right
             builder.switch_to_block(true_block);
@@ -1018,11 +1065,13 @@ fn lower_anf_expr_cranelift(
                     return LowerResult::Terminated;
                 }
             };
-            let trap_block  = builder.create_block();
+            let trap_block = builder.create_block();
             let fallthrough = builder.create_block();
 
             // brif cond → trap_block (trap if cond non-zero), else fallthrough
-            builder.ins().brif(cond_val, trap_block, &[], fallthrough, &[]);
+            builder
+                .ins()
+                .brif(cond_val, trap_block, &[], fallthrough, &[]);
 
             builder.switch_to_block(trap_block);
             builder.seal_block(trap_block);
@@ -1042,12 +1091,14 @@ fn lower_anf_expr_cranelift(
                     return LowerResult::Terminated;
                 }
             };
-            let true_block  = builder.create_block();
+            let true_block = builder.create_block();
             let false_block = builder.create_block();
             let merge_block = builder.create_block();
             builder.append_block_param(merge_block, cranelift_codegen::ir::types::I64);
 
-            builder.ins().brif(left_val, true_block, &[], false_block, &[]);
+            builder
+                .ins()
+                .brif(left_val, true_block, &[], false_block, &[]);
 
             // true branch: short-circuit → 1
             builder.switch_to_block(true_block);
@@ -1078,9 +1129,11 @@ fn lower_anf_expr_cranelift(
                 None => {
                     // Fallback to stack allocation (dangling pointer — Phase 17 legacy).
                     let size = (fields.len().max(1) * 8) as u32;
-                    let slot = builder.create_sized_stack_slot(
-                        StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3)
-                    );
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        size,
+                        3,
+                    ));
                     for (idx, (_, field_expr)) in fields.iter().enumerate() {
                         let val = match lower_anf_expr_cranelift(field_expr, ctx, builder, module) {
                             LowerResult::Value(v) => v,
@@ -1100,7 +1153,9 @@ fn lower_anf_expr_cranelift(
                             LowerResult::Value(v) => v,
                             _ => builder.ins().iconst(types::I64, 0),
                         };
-                        builder.ins().store(MemFlags::trusted(), val, ptr, (idx * 8) as i32);
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), val, ptr, (idx * 8) as i32);
                     }
                     LowerResult::Value(ptr)
                 }
@@ -1117,12 +1172,18 @@ fn lower_anf_expr_cranelift(
                 }
             };
             let offset = ctx.field_offset(record.as_str(), field.as_str());
-            let val = builder.ins().load(types::I64, MemFlags::trusted(), ptr, offset);
+            let val = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), ptr, offset);
             LowerResult::Value(val)
         }
 
         // ── FieldUpdate ───────────────────────────────────────────────────
-        AnfExpr::FieldUpdate { record, field, value } => {
+        AnfExpr::FieldUpdate {
+            record,
+            field,
+            value,
+        } => {
             let ptr = match ctx.lookup(record.as_str()) {
                 Some((v, _)) => v,
                 None => {
@@ -1146,13 +1207,16 @@ fn lower_anf_expr_cranelift(
             match ctx.malloc_id {
                 None => {
                     // Fallback stack allocation.
-                    let slot = builder.create_sized_stack_slot(
-                        StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3)
-                    );
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        16,
+                        3,
+                    ));
                     let tag_val = builder.ins().iconst(types::I64, tag_id);
                     builder.ins().stack_store(tag_val, slot, 0);
                     if let Some(payload_expr) = payload {
-                        let pv = match lower_anf_expr_cranelift(payload_expr, ctx, builder, module) {
+                        let pv = match lower_anf_expr_cranelift(payload_expr, ctx, builder, module)
+                        {
                             LowerResult::Value(v) => v,
                             _ => builder.ins().iconst(types::I64, 0),
                         };
@@ -1168,7 +1232,8 @@ fn lower_anf_expr_cranelift(
                     let tag_val = builder.ins().iconst(types::I64, tag_id);
                     builder.ins().store(MemFlags::trusted(), tag_val, ptr, 0);
                     if let Some(payload_expr) = payload {
-                        let pv = match lower_anf_expr_cranelift(payload_expr, ctx, builder, module) {
+                        let pv = match lower_anf_expr_cranelift(payload_expr, ctx, builder, module)
+                        {
                             LowerResult::Value(v) => v,
                             _ => builder.ins().iconst(types::I64, 0),
                         };
@@ -1187,9 +1252,11 @@ fn lower_anf_expr_cranelift(
                 None => {
                     // Fallback stack allocation.
                     let size = ((1 + elems.len()) * 8) as u32;
-                    let slot = builder.create_sized_stack_slot(
-                        StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3)
-                    );
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        size,
+                        3,
+                    ));
                     let len_val = builder.ins().iconst(types::I64, elems.len() as i64);
                     builder.ins().stack_store(len_val, slot, 0);
                     for (i, elem) in elems.iter().enumerate() {
@@ -1213,7 +1280,9 @@ fn lower_anf_expr_cranelift(
                             LowerResult::Value(v) => v,
                             _ => builder.ins().iconst(types::I64, 0),
                         };
-                        builder.ins().store(MemFlags::trusted(), val, ptr, (8 + i * 8) as i32);
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), val, ptr, (8 + i * 8) as i32);
                     }
                     LowerResult::Value(ptr)
                 }
@@ -1228,9 +1297,11 @@ fn lower_anf_expr_cranelift(
                 None => {
                     // Fallback stack allocation.
                     let size = (elems.len().max(1) * 8) as u32;
-                    let slot = builder.create_sized_stack_slot(
-                        StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3)
-                    );
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        size,
+                        3,
+                    ));
                     for (i, elem) in elems.iter().enumerate() {
                         let val = match lower_anf_expr_cranelift(elem, ctx, builder, module) {
                             LowerResult::Value(v) => v,
@@ -1250,7 +1321,9 @@ fn lower_anf_expr_cranelift(
                             LowerResult::Value(v) => v,
                             _ => builder.ins().iconst(types::I64, 0),
                         };
-                        builder.ins().store(MemFlags::trusted(), val, ptr, (i * 8) as i32);
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), val, ptr, (i * 8) as i32);
                     }
                     LowerResult::Value(ptr)
                 }
@@ -1258,7 +1331,11 @@ fn lower_anf_expr_cranelift(
         }
 
         // ── EffectCall ────────────────────────────────────────────────────
-        AnfExpr::EffectCall { capability, func, args } => {
+        AnfExpr::EffectCall {
+            capability,
+            func,
+            args,
+        } => {
             let host_call_id = match ctx.host_call_id {
                 Some(id) => id,
                 None => {
@@ -1269,15 +1346,19 @@ fn lower_anf_expr_cranelift(
 
             // Args buffer: store each arg as I64 in a stack slot.
             let args_size = (args.len().max(1) * 8) as u32;
-            let args_slot = builder.create_sized_stack_slot(
-                StackSlotData::new(StackSlotKind::ExplicitSlot, args_size, 3)
-            );
+            let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                args_size,
+                3,
+            ));
             for (idx, arg_name) in args.iter().enumerate() {
                 let arg_val = match ctx.lookup(arg_name.as_str()) {
                     Some((v, _)) => v,
                     None => builder.ins().iconst(types::I64, 0),
                 };
-                builder.ins().stack_store(arg_val, args_slot, (idx * 8) as i32);
+                builder
+                    .ins()
+                    .stack_store(arg_val, args_slot, (idx * 8) as i32);
             }
             let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
 
@@ -1285,9 +1366,9 @@ fn lower_anf_expr_cranelift(
             let (cap_idx, cap_len) = ctx.data_layout.get(capability.as_str());
             let (op_idx, op_len) = ctx.data_layout.get(func.as_str());
             let cap_gv = module.declare_data_in_func(ctx.data_ids[cap_idx], &mut builder.func);
-            let op_gv  = module.declare_data_in_func(ctx.data_ids[op_idx], &mut builder.func);
+            let op_gv = module.declare_data_in_func(ctx.data_ids[op_idx], &mut builder.func);
             let cap_ptr = builder.ins().symbol_value(types::I64, cap_gv);
-            let op_ptr  = builder.ins().symbol_value(types::I64, op_gv);
+            let op_ptr = builder.ins().symbol_value(types::I64, op_gv);
 
             let host_call_ref = module.declare_func_in_func(host_call_id, &mut builder.func);
             let call_args = [
@@ -1361,12 +1442,18 @@ fn lower_anf_expr_cranelift(
                     // Store key-value pairs
                     for (i, (k_name, v_name)) in entries.iter().enumerate() {
                         let base = (1 + i * 2) as i32 * 8;
-                        let k_val = ctx.lookup(k_name.as_str()).map(|(v, _)| v)
+                        let k_val = ctx
+                            .lookup(k_name.as_str())
+                            .map(|(v, _)| v)
                             .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
-                        let v_val = ctx.lookup(v_name.as_str()).map(|(v, _)| v)
+                        let v_val = ctx
+                            .lookup(v_name.as_str())
+                            .map(|(v, _)| v)
                             .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
                         builder.ins().store(MemFlags::trusted(), k_val, ptr, base);
-                        builder.ins().store(MemFlags::trusted(), v_val, ptr, base + 8);
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), v_val, ptr, base + 8);
                     }
                     LowerResult::Value(ptr)
                 }
@@ -1391,7 +1478,9 @@ fn lower_anf_expr_cranelift(
                     builder.ins().store(MemFlags::trusted(), count, ptr, 0);
                     for (i, elem_name) in elements.iter().enumerate() {
                         let offset = (1 + i) as i32 * 8;
-                        let val = ctx.lookup(elem_name.as_str()).map(|(v, _)| v)
+                        let val = ctx
+                            .lookup(elem_name.as_str())
+                            .map(|(v, _)| v)
                             .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
                         builder.ins().store(MemFlags::trusted(), val, ptr, offset);
                     }
@@ -1404,7 +1493,11 @@ fn lower_anf_expr_cranelift(
         // Loop over a length-prefixed list collection.
         // Layout: [len: i64, elem0: i64, ...]
         // Generates: counter from 0 to len-1, binding each element into body.
-        AnfExpr::ForEach { binding, collection, body } => {
+        AnfExpr::ForEach {
+            binding,
+            collection,
+            body,
+        } => {
             let col_ptr = match ctx.lookup(collection.as_str()) {
                 Some((v, _)) => v,
                 None => {
@@ -1413,18 +1506,22 @@ fn lower_anf_expr_cranelift(
                 }
             };
             // Load length
-            let len_val = builder.ins().load(types::I64, MemFlags::trusted(), col_ptr, 0);
+            let len_val = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), col_ptr, 0);
 
             // Allocate a stack slot for the loop counter.
-            let counter_slot = builder.create_sized_stack_slot(
-                StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3)
-            );
+            let counter_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                3,
+            ));
             let zero = builder.ins().iconst(types::I64, 0);
             builder.ins().stack_store(zero, counter_slot, 0);
 
             let break_block = builder.create_block();
-            let loop_block  = builder.create_block();
-            let body_block  = builder.create_block();
+            let loop_block = builder.create_block();
+            let body_block = builder.create_block();
 
             builder.ins().jump(loop_block, &[]);
             builder.switch_to_block(loop_block);
@@ -1438,9 +1535,11 @@ fn lower_anf_expr_cranelift(
             // Load element: ptr + 8 + counter * 8
             let eight = builder.ins().iconst(types::I64, 8);
             let offset = builder.ins().imul(counter, eight);
-            let inner_sum  = builder.ins().iadd(offset, eight);
-            let elem_addr  = builder.ins().iadd(col_ptr, inner_sum);
-            let elem_val = builder.ins().load(types::I64, MemFlags::trusted(), elem_addr, 0);
+            let inner_sum = builder.ins().iadd(offset, eight);
+            let elem_addr = builder.ins().iadd(col_ptr, inner_sum);
+            let elem_val = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), elem_addr, 0);
             // Bind the element to the loop variable.
             ctx.bind(binding.as_str(), elem_val, types::I64);
             // Lower body (result discarded — ForEach is for side effects).
@@ -1482,22 +1581,28 @@ fn lower_anf_expr_cranelift(
             };
 
             // Load list length once in the entry block.
-            let len_val = builder.ins().load(types::I64, MemFlags::trusted(), list_ptr, 0);
+            let len_val = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), list_ptr, 0);
 
             // Use stack slots for mutable accumulator and counter.
-            let acc_slot = builder.create_sized_stack_slot(
-                StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3)
-            );
-            let ctr_slot = builder.create_sized_stack_slot(
-                StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3)
-            );
+            let acc_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                3,
+            ));
+            let ctr_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                3,
+            ));
             builder.ins().stack_store(init_val, acc_slot, 0);
             let zero = builder.ins().iconst(types::I64, 0);
             builder.ins().stack_store(zero, ctr_slot, 0);
 
-            let loop_hdr  = builder.create_block();
-            let body_blk  = builder.create_block();
-            let exit_blk  = builder.create_block();
+            let loop_hdr = builder.create_block();
+            let body_blk = builder.create_block();
+            let exit_blk = builder.create_block();
 
             // Entry → loop_hdr.
             builder.ins().jump(loop_hdr, &[]);
@@ -1514,13 +1619,15 @@ fn lower_anf_expr_cranelift(
 
             // ── body_blk ──────────────────────────────────────────────────
             builder.switch_to_block(body_blk);
-            let acc  = builder.ins().stack_load(types::I64, acc_slot, 0);
+            let acc = builder.ins().stack_load(types::I64, acc_slot, 0);
             let ctr2 = builder.ins().stack_load(types::I64, ctr_slot, 0);
             let eight = builder.ins().iconst(types::I64, 8);
-            let elem_off  = builder.ins().imul(ctr2, eight);
+            let elem_off = builder.ins().imul(ctr2, eight);
             let elem_base = builder.ins().iadd(elem_off, eight);
             let elem_addr = builder.ins().iadd(list_ptr, elem_base);
-            let elem = builder.ins().load(types::I64, MemFlags::trusted(), elem_addr, 0);
+            let elem = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), elem_addr, 0);
             // Indirect call: func_ptr(acc, elem) → I64.
             let fold_sig = {
                 let mut sig = Signature::new(cranelift_codegen::isa::CallConv::SystemV);
@@ -1529,7 +1636,9 @@ fn lower_anf_expr_cranelift(
                 sig.returns.push(AbiParam::new(types::I64));
                 builder.import_signature(sig)
             };
-            let indirect_call = builder.ins().call_indirect(fold_sig, func_ptr, &[acc, elem]);
+            let indirect_call = builder
+                .ins()
+                .call_indirect(fold_sig, func_ptr, &[acc, elem]);
             let new_acc = builder.inst_results(indirect_call)[0];
             builder.ins().stack_store(new_acc, acc_slot, 0);
             let one = builder.ins().iconst(types::I64, 1);
@@ -1547,24 +1656,24 @@ fn lower_anf_expr_cranelift(
 
         // ── CellNew ───────────────────────────────────────────────────────
         // Heap-allocate an 8-byte mutable cell, store init value, return ptr.
-        AnfExpr::CellNew { init } => {
-            match ctx.malloc_id {
-                None => {
-                    builder.ins().trap(TrapCode::user(1).unwrap());
-                    return LowerResult::Terminated;
-                }
-                Some(malloc_id) => {
-                    let size_val = builder.ins().iconst(types::I64, 8);
-                    let malloc_ref = module.declare_func_in_func(malloc_id, &mut builder.func);
-                    let call = builder.ins().call(malloc_ref, &[size_val]);
-                    let ptr = builder.inst_results(call)[0];
-                    let init_val = ctx.lookup(init.as_str()).map(|(v, _)| v)
-                        .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
-                    builder.ins().store(MemFlags::trusted(), init_val, ptr, 0);
-                    LowerResult::Value(ptr)
-                }
+        AnfExpr::CellNew { init } => match ctx.malloc_id {
+            None => {
+                builder.ins().trap(TrapCode::user(1).unwrap());
+                return LowerResult::Terminated;
             }
-        }
+            Some(malloc_id) => {
+                let size_val = builder.ins().iconst(types::I64, 8);
+                let malloc_ref = module.declare_func_in_func(malloc_id, &mut builder.func);
+                let call = builder.ins().call(malloc_ref, &[size_val]);
+                let ptr = builder.inst_results(call)[0];
+                let init_val = ctx
+                    .lookup(init.as_str())
+                    .map(|(v, _)| v)
+                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                builder.ins().store(MemFlags::trusted(), init_val, ptr, 0);
+                LowerResult::Value(ptr)
+            }
+        },
 
         // ── CellGet ───────────────────────────────────────────────────────
         // Load the I64 value stored in a heap-allocated cell.
@@ -1590,7 +1699,9 @@ fn lower_anf_expr_cranelift(
                     return LowerResult::Terminated;
                 }
             };
-            let val = ctx.lookup(value.as_str()).map(|(v, _)| v)
+            let val = ctx
+                .lookup(value.as_str())
+                .map(|(v, _)| v)
                 .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
             builder.ins().store(MemFlags::trusted(), val, ptr, 0);
             LowerResult::Unit
@@ -1614,11 +1725,8 @@ fn lower_anf_expr_cranelift(
                 lambda_sig.returns.push(AbiParam::new(ty));
             }
 
-            let lambda_id = match module.declare_function(
-                &lambda_name,
-                Linkage::Local,
-                &lambda_sig,
-            ) {
+            let lambda_id = match module.declare_function(&lambda_name, Linkage::Local, &lambda_sig)
+            {
                 Ok(id) => id,
                 Err(_) => {
                     builder.ins().trap(TrapCode::user(1).unwrap());
@@ -1640,7 +1748,8 @@ fn lower_anf_expr_cranelift(
                 lam_builder.seal_block(lam_block);
 
                 // Bind params to local names.
-                let mut lam_ctx = NativeCodegenCtx::new(ctx.data_ids, ctx.data_layout, ctx.host_call_id);
+                let mut lam_ctx =
+                    NativeCodegenCtx::new(ctx.data_ids, ctx.data_layout, ctx.host_call_id);
                 lam_ctx.malloc_id = ctx.malloc_id;
                 lam_ctx.runtime_call_id = ctx.runtime_call_id;
                 for (i, param_name) in params.iter().enumerate() {
@@ -1649,8 +1758,12 @@ fn lower_anf_expr_cranelift(
                 }
 
                 match lower_anf_expr_cranelift(body, &mut lam_ctx, &mut lam_builder, module) {
-                    LowerResult::Value(v) => { lam_builder.ins().return_(&[v]); }
-                    LowerResult::Unit     => { lam_builder.ins().return_(&[]); }
+                    LowerResult::Value(v) => {
+                        lam_builder.ins().return_(&[v]);
+                    }
+                    LowerResult::Unit => {
+                        lam_builder.ins().return_(&[]);
+                    }
                     LowerResult::Terminated => {}
                 }
                 lam_builder.finalize();
@@ -1692,27 +1805,36 @@ fn lower_anf_expr_cranelift(
             let cap_name = format!("__cap_{cap_val}");
             // Encode capacity as a synthetic arg: store in stack slot, pass ptr.
             let cap_iconst = builder.ins().iconst(types::I64, cap_val);
-            let slot = builder.create_sized_stack_slot(
-                StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3)
-            );
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                3,
+            ));
             builder.ins().stack_store(cap_iconst, slot, 0);
             let _ = cap_name;
             emit_runtime_call(ctx, builder, module, 5u64, &[], &[])
         }
-        AnfExpr::ChannelSend { channel, value } => {
-            emit_runtime_call(ctx, builder, module, 6u64, &[], &[channel.clone(), value.clone()])
-        }
+        AnfExpr::ChannelSend { channel, value } => emit_runtime_call(
+            ctx,
+            builder,
+            module,
+            6u64,
+            &[],
+            &[channel.clone(), value.clone()],
+        ),
         AnfExpr::ChannelReceive { channel } => {
             emit_runtime_call(ctx, builder, module, 7u64, &[], &[channel.clone()])
         }
-        AnfExpr::Select { .. } => {
-            emit_runtime_call(ctx, builder, module, 8u64, &[], &[])
-        }
+        AnfExpr::Select { .. } => emit_runtime_call(ctx, builder, module, 8u64, &[], &[]),
         AnfExpr::Timeout { duration, body } => {
             let _ = lower_anf_expr_cranelift(body, ctx, builder, module);
             emit_runtime_call(ctx, builder, module, 9u64, &[], &[duration.clone()])
         }
-        AnfExpr::Dispatch { handler, method, args } => {
+        AnfExpr::Dispatch {
+            handler,
+            method,
+            args,
+        } => {
             let mut all_args: Vec<String> = vec![handler.clone(), method.clone()];
             all_args.extend(args.iter().cloned());
             emit_runtime_call(ctx, builder, module, 10u64, &[], &all_args)
@@ -1761,20 +1883,26 @@ fn emit_runtime_call(
     // Build args buffer on the stack.
     let args_count = var_args.len();
     let buf_size = ((args_count + 1).max(1) * 8) as u32;
-    let args_slot = builder.create_sized_stack_slot(
-        StackSlotData::new(StackSlotKind::ExplicitSlot, buf_size, 3)
-    );
+    let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        buf_size,
+        3,
+    ));
     for (i, arg_name) in var_args.iter().enumerate() {
-        let val = ctx.lookup(arg_name.as_str()).map(|(v, _)| v)
+        let val = ctx
+            .lookup(arg_name.as_str())
+            .map(|(v, _)| v)
             .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
         builder.ins().stack_store(val, args_slot, (i * 8) as i32);
     }
     let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
-    let op_val      = builder.ins().iconst(types::I64, op as i64);
-    let args_len    = builder.ins().iconst(types::I64, args_count as i64);
+    let op_val = builder.ins().iconst(types::I64, op as i64);
+    let args_len = builder.ins().iconst(types::I64, args_count as i64);
 
     let runtime_ref = module.declare_func_in_func(runtime_id, &mut builder.func);
-    let call = builder.ins().call(runtime_ref, &[op_val, args_ptr, args_len]);
+    let call = builder
+        .ins()
+        .call(runtime_ref, &[op_val, args_ptr, args_len]);
     LowerResult::Value(builder.inst_results(call)[0])
 }
 
@@ -1903,13 +2031,16 @@ pub fn emit_native_with_profile(
     let host_call_id: Option<FuncId> = if data_layout.needs_host_call {
         let mut sig = Signature::new(CallConv::SystemV);
         for _ in 0..6 {
-            sig.params.push(AbiParam::new(cranelift_codegen::ir::types::I64));
+            sig.params
+                .push(AbiParam::new(cranelift_codegen::ir::types::I64));
         }
-        sig.returns.push(AbiParam::new(cranelift_codegen::ir::types::I64));
+        sig.returns
+            .push(AbiParam::new(cranelift_codegen::ir::types::I64));
         let id = module
             .declare_function("host_call", Linkage::Import, &sig)
-            .map_err(|e| CompileError::NativeEncodingError(
-                format!("declare_function(host_call): {e}")))?;
+            .map_err(|e| {
+                CompileError::NativeEncodingError(format!("declare_function(host_call): {e}"))
+            })?;
         Some(id)
     } else {
         None
@@ -1919,12 +2050,15 @@ pub fn emit_native_with_profile(
     // Signature: (size: I64) -> I64  (returns opaque heap pointer)
     let malloc_id: Option<FuncId> = if data_layout.needs_heap_alloc {
         let mut sig = Signature::new(CallConv::SystemV);
-        sig.params.push(AbiParam::new(cranelift_codegen::ir::types::I64));
-        sig.returns.push(AbiParam::new(cranelift_codegen::ir::types::I64));
+        sig.params
+            .push(AbiParam::new(cranelift_codegen::ir::types::I64));
+        sig.returns
+            .push(AbiParam::new(cranelift_codegen::ir::types::I64));
         let id = module
             .declare_function("__ail_malloc", Linkage::Import, &sig)
-            .map_err(|e| CompileError::NativeEncodingError(
-                format!("declare_function(__ail_malloc): {e}")))?;
+            .map_err(|e| {
+                CompileError::NativeEncodingError(format!("declare_function(__ail_malloc): {e}"))
+            })?;
         Some(id)
     } else {
         None
@@ -1936,13 +2070,18 @@ pub fn emit_native_with_profile(
     let runtime_call_id: Option<FuncId> = if data_layout.needs_runtime_call {
         let mut sig = Signature::new(CallConv::SystemV);
         for _ in 0..3 {
-            sig.params.push(AbiParam::new(cranelift_codegen::ir::types::I64));
+            sig.params
+                .push(AbiParam::new(cranelift_codegen::ir::types::I64));
         }
-        sig.returns.push(AbiParam::new(cranelift_codegen::ir::types::I64));
+        sig.returns
+            .push(AbiParam::new(cranelift_codegen::ir::types::I64));
         let id = module
             .declare_function("ail_runtime_call", Linkage::Import, &sig)
-            .map_err(|e| CompileError::NativeEncodingError(
-                format!("declare_function(ail_runtime_call): {e}")))?;
+            .map_err(|e| {
+                CompileError::NativeEncodingError(format!(
+                    "declare_function(ail_runtime_call): {e}"
+                ))
+            })?;
         Some(id)
     } else {
         None
@@ -1960,8 +2099,15 @@ pub fn emit_native_with_profile(
 
         // Lower the binding and get its compiled code size.
         let code_size = lower_binding(
-            &mut module, &binding.name, &binding.expr, cumulative_offset,
-            &data_ids, &data_layout, host_call_id, malloc_id, runtime_call_id,
+            &mut module,
+            &binding.name,
+            &binding.expr,
+            cumulative_offset,
+            &data_ids,
+            &data_layout,
+            host_call_id,
+            malloc_id,
+            runtime_call_id,
         )?;
         cumulative_offset += code_size;
     }
@@ -2228,40 +2374,50 @@ mod tests {
     fn native_div_differs_from_placeholder() {
         let art = emit_native(&anf_with_call2("i64.div_s", 10, 2)).unwrap();
         let ph = emit_native(&placeholder_anf()).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "i64.div_s must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "i64.div_s must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
     fn native_rem_differs_from_placeholder() {
         let art = emit_native(&anf_with_call2("i64.rem_s", 10, 3)).unwrap();
         let ph = emit_native(&placeholder_anf()).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "i64.rem_s must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "i64.rem_s must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
     fn native_eq_differs_from_placeholder() {
         let art = emit_native(&anf_with_call2("i64.eq", 5, 5)).unwrap();
         let ph = emit_native(&placeholder_anf()).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "i64.eq must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "i64.eq must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
     fn native_neg_differs_from_placeholder() {
         let art = emit_native(&anf_with_call1("i64.neg", 7)).unwrap();
         let ph = emit_native(&placeholder_anf()).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "i64.neg must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "i64.neg must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
     fn native_eqz_differs_from_placeholder() {
         let art = emit_native(&anf_with_call1("i64.eqz", 0)).unwrap();
         let ph = emit_native(&placeholder_anf()).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "i64.eqz must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "i64.eqz must produce different bytes than Placeholder"
+        );
     }
 
     // ── TASK-B0: If + ShortCircuit tests — RED ────────────────────────────
@@ -2289,16 +2445,20 @@ mod tests {
     fn native_if_true_returns_then_branch() {
         let art = emit_native(&anf_with_if(true, 1, 2)).unwrap();
         let ph = emit_native(&placeholder_anf()).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "If with Bool(true) cond must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "If with Bool(true) cond must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
     fn native_if_false_returns_else_branch() {
         let art_true = emit_native(&anf_with_if(true, 1, 2)).unwrap();
         let art_false = emit_native(&anf_with_if(false, 1, 2)).unwrap();
-        assert_ne!(art_true.native_bytes, art_false.native_bytes,
-            "If with Bool(true) and Bool(false) cond must produce different bytes");
+        assert_ne!(
+            art_true.native_bytes, art_false.native_bytes,
+            "If with Bool(true) and Bool(false) cond must produce different bytes"
+        );
     }
 
     #[test]
@@ -2318,7 +2478,10 @@ mod tests {
                 }),
             },
         });
-        assert!(emit_native(&anf).is_ok(), "If with Unit branches must compile without panic");
+        assert!(
+            emit_native(&anf).is_ok(),
+            "If with Unit branches must compile without panic"
+        );
     }
 
     #[test]
@@ -2331,8 +2494,11 @@ mod tests {
             then_branch: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
             else_branch: Box::new(AnfExpr::Literal(LiteralValue::Int(2))),
         };
-        assert_eq!(infer_cranelift_return_type(&expr), Some(types::I64),
-            "infer_cranelift_return_type for If{{Int, Int}} must return Some(I64)");
+        assert_eq!(
+            infer_cranelift_return_type(&expr),
+            Some(types::I64),
+            "infer_cranelift_return_type for If{{Int, Int}} must return Some(I64)"
+        );
     }
 
     #[test]
@@ -2353,8 +2519,10 @@ mod tests {
         });
         let ph = emit_native(&placeholder_anf()).unwrap();
         let art = emit_native(&anf).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "ShortCircuitAnd must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "ShortCircuitAnd must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
@@ -2375,8 +2543,10 @@ mod tests {
         });
         let ph = emit_native(&placeholder_anf()).unwrap();
         let art = emit_native(&anf).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "ShortCircuitOr must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "ShortCircuitOr must produce different bytes than Placeholder"
+        );
     }
 
     // ── TASK-B1: Native expression lowering tests (TDD RED) ───────────────
@@ -2474,7 +2644,10 @@ mod tests {
         };
         let add_art = emit_native(&anf_for_binding(add_binding)).unwrap();
         let placeholder_art = emit_native(&anf_for_binding(placeholder_binding)).unwrap();
-        assert!(!add_art.native_bytes.is_empty(), "native_bytes must be non-empty");
+        assert!(
+            !add_art.native_bytes.is_empty(),
+            "native_bytes must be non-empty"
+        );
         assert_ne!(
             add_art.native_bytes, placeholder_art.native_bytes,
             "Let+Add must produce different code than a Placeholder trap stub"
@@ -2498,8 +2671,10 @@ mod tests {
         });
         let ph = emit_native(&placeholder_anf()).unwrap();
         let art = emit_native(&anf).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "Loop{{Break{{Int(42)}}}} must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "Loop{{Break{{Int(42)}}}} must produce different bytes than Placeholder"
+        );
         assert_eq!(
             infer_cranelift_return_type(&AnfExpr::Loop {
                 body: Box::new(AnfExpr::Break {
@@ -2523,7 +2698,10 @@ mod tests {
                 }),
             },
         });
-        assert!(emit_native(&anf).is_ok(), "Loop{{Break{{Unit}}}} must compile without panic");
+        assert!(
+            emit_native(&anf).is_ok(),
+            "Loop{{Break{{Unit}}}} must compile without panic"
+        );
     }
 
     #[test]
@@ -2542,7 +2720,10 @@ mod tests {
                 }),
             },
         });
-        assert!(emit_native(&anf).is_ok(), "WhileLoop with Bool(false) cond must compile");
+        assert!(
+            emit_native(&anf).is_ok(),
+            "WhileLoop with Bool(false) cond must compile"
+        );
     }
 
     #[test]
@@ -2563,7 +2744,10 @@ mod tests {
                 ])),
             },
         });
-        assert!(emit_native(&anf).is_ok(), "Loop{{Continue; Break}} must compile without panic");
+        assert!(
+            emit_native(&anf).is_ok(),
+            "Loop{{Continue; Break}} must compile without panic"
+        );
     }
 
     // ── TASK-F0: Literal(Text) + NativeDataLayout — RED ──────────────────
@@ -2579,23 +2763,29 @@ mod tests {
         });
         let ph = emit_native(&placeholder_anf()).unwrap();
         let art = emit_native(&anf).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "Literal(Text(\"hello\")) must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "Literal(Text(\"hello\")) must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
     fn native_text_literal_two_strings_differ() {
         use crate::anf::{AnfBinding, AnfExpr};
         use crate::core_ir::LiteralValue;
-        let make = |s: &str| anf_for_binding(AnfBinding {
-            source_ref: NodeRef(0),
-            name: "fn_op".to_string(),
-            expr: AnfExpr::Literal(LiteralValue::Text(s.to_string())),
-        });
+        let make = |s: &str| {
+            anf_for_binding(AnfBinding {
+                source_ref: NodeRef(0),
+                name: "fn_op".to_string(),
+                expr: AnfExpr::Literal(LiteralValue::Text(s.to_string())),
+            })
+        };
         let art_hello = emit_native(&make("hello")).unwrap();
         let art_world = emit_native(&make("world")).unwrap();
-        assert_ne!(art_hello.native_bytes, art_world.native_bytes,
-            "Literal(Text(\"hello\")) and Literal(Text(\"world\")) must produce different bytes");
+        assert_ne!(
+            art_hello.native_bytes, art_world.native_bytes,
+            "Literal(Text(\"hello\")) and Literal(Text(\"world\")) must produce different bytes"
+        );
     }
 
     #[test]
@@ -2625,18 +2815,24 @@ mod tests {
                 body: Box::new(AnfExpr::Match {
                     scrutinee: "x".to_string(),
                     arms: vec![
-                        AnfMatchArm { pattern: "1".to_string(),
-                            body: AnfExpr::Literal(LiteralValue::Int(10)) },
-                        AnfMatchArm { pattern: "_".to_string(),
-                            body: AnfExpr::Literal(LiteralValue::Int(99)) },
+                        AnfMatchArm {
+                            pattern: "1".to_string(),
+                            body: AnfExpr::Literal(LiteralValue::Int(10)),
+                        },
+                        AnfMatchArm {
+                            pattern: "_".to_string(),
+                            body: AnfExpr::Literal(LiteralValue::Int(99)),
+                        },
                     ],
                 }),
             },
         });
         let ph = emit_native(&placeholder_anf()).unwrap();
         let art = emit_native(&anf).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "Match with i64 arm must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "Match with i64 arm must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
@@ -2651,14 +2847,17 @@ mod tests {
                 value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
                 body: Box::new(AnfExpr::Match {
                     scrutinee: "x".to_string(),
-                    arms: vec![
-                        AnfMatchArm { pattern: "_".to_string(),
-                            body: AnfExpr::Literal(LiteralValue::Int(0)) },
-                    ],
+                    arms: vec![AnfMatchArm {
+                        pattern: "_".to_string(),
+                        body: AnfExpr::Literal(LiteralValue::Int(0)),
+                    }],
                 }),
             },
         });
-        assert!(emit_native(&anf).is_ok(), "Match with wildcard only must compile");
+        assert!(
+            emit_native(&anf).is_ok(),
+            "Match with wildcard only must compile"
+        );
     }
 
     #[test]
@@ -2674,25 +2873,31 @@ mod tests {
                 body: Box::new(AnfExpr::Match {
                     scrutinee: "b".to_string(),
                     arms: vec![
-                        AnfMatchArm { pattern: "true".to_string(),
-                            body: AnfExpr::Literal(LiteralValue::Int(1)) },
-                        AnfMatchArm { pattern: "false".to_string(),
-                            body: AnfExpr::Literal(LiteralValue::Int(0)) },
+                        AnfMatchArm {
+                            pattern: "true".to_string(),
+                            body: AnfExpr::Literal(LiteralValue::Int(1)),
+                        },
+                        AnfMatchArm {
+                            pattern: "false".to_string(),
+                            body: AnfExpr::Literal(LiteralValue::Int(0)),
+                        },
                     ],
                 }),
             },
         });
         let ph = emit_native(&placeholder_anf()).unwrap();
         let art = emit_native(&anf).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "Match with bool arms must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "Match with bool arms must produce different bytes than Placeholder"
+        );
         assert_eq!(
             infer_cranelift_return_type(&AnfExpr::Match {
                 scrutinee: "b".to_string(),
-                arms: vec![
-                    crate::anf::AnfMatchArm { pattern: "true".to_string(),
-                        body: AnfExpr::Literal(LiteralValue::Int(1)) },
-                ],
+                arms: vec![crate::anf::AnfMatchArm {
+                    pattern: "true".to_string(),
+                    body: AnfExpr::Literal(LiteralValue::Int(1))
+                },],
             }),
             Some(cranelift_codegen::ir::types::I64)
         );
@@ -2714,7 +2919,10 @@ mod tests {
                 }),
             },
         });
-        assert!(emit_native(&anf).is_ok(), "Match with empty arms must compile (produces trap)");
+        assert!(
+            emit_native(&anf).is_ok(),
+            "Match with empty arms must compile (produces trap)"
+        );
     }
 
     // ── TASK-C0: Seq, RuntimeCheck — RED ──────────────────────────────────
@@ -2744,8 +2952,10 @@ mod tests {
         });
         let art_a = emit_native(&seq_a).unwrap();
         let art_b = emit_native(&seq_b).unwrap();
-        assert_ne!(art_a.native_bytes, art_b.native_bytes,
-            "Seq([Int(1), Int(2)]) and Seq([Int(1), Int(5)]) must produce different bytes");
+        assert_ne!(
+            art_a.native_bytes, art_b.native_bytes,
+            "Seq([Int(1), Int(2)]) and Seq([Int(1), Int(5)]) must produce different bytes"
+        );
         // infer_return_type should be Some for the last element
         assert_eq!(
             infer_cranelift_return_type(&AnfExpr::Seq(vec![
@@ -2764,7 +2974,10 @@ mod tests {
             name: "fn_op".to_string(),
             expr: AnfExpr::Seq(vec![]),
         });
-        assert!(emit_native(&anf).is_ok(), "Seq([]) must compile without panic");
+        assert!(
+            emit_native(&anf).is_ok(),
+            "Seq([]) must compile without panic"
+        );
     }
 
     #[test]
@@ -2786,8 +2999,10 @@ mod tests {
         });
         let ph = emit_native(&placeholder_anf()).unwrap();
         let art = emit_native(&anf).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "RuntimeCheck must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "RuntimeCheck must produce different bytes than Placeholder"
+        );
     }
 
     // ── TASK-G0: RecordNew / FieldGet / FieldUpdate — RED ────────────────
@@ -2795,13 +3010,16 @@ mod tests {
     fn anf_with_record(fields: Vec<(&str, i64)>) -> AnfIr {
         use crate::anf::{AnfBinding, AnfExpr};
         use crate::core_ir::LiteralValue;
-        let field_exprs: Vec<(String, AnfExpr)> = fields.into_iter()
+        let field_exprs: Vec<(String, AnfExpr)> = fields
+            .into_iter()
             .map(|(f, v)| (f.to_string(), AnfExpr::Literal(LiteralValue::Int(v))))
             .collect();
         anf_for_binding(AnfBinding {
             source_ref: NodeRef(0),
             name: "fn_op".to_string(),
-            expr: AnfExpr::RecordNew { fields: field_exprs },
+            expr: AnfExpr::RecordNew {
+                fields: field_exprs,
+            },
         })
     }
 
@@ -2809,12 +3027,16 @@ mod tests {
     fn native_record_new_differs_from_placeholder() {
         let art = emit_native(&anf_with_record(vec![("x", 1), ("y", 2)])).unwrap();
         let ph = emit_native(&placeholder_anf()).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "RecordNew must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "RecordNew must produce different bytes than Placeholder"
+        );
         assert_eq!(
             infer_cranelift_return_type(&crate::anf::AnfExpr::RecordNew {
-                fields: vec![("x".to_string(), crate::anf::AnfExpr::Literal(
-                    crate::core_ir::LiteralValue::Int(1)))],
+                fields: vec![(
+                    "x".to_string(),
+                    crate::anf::AnfExpr::Literal(crate::core_ir::LiteralValue::Int(1))
+                )],
             }),
             Some(cranelift_codegen::ir::types::I64)
         );
@@ -2840,8 +3062,10 @@ mod tests {
         });
         let ph = emit_native(&placeholder_anf()).unwrap();
         let art = emit_native(&anf).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "FieldGet must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "FieldGet must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
@@ -2865,8 +3089,10 @@ mod tests {
         });
         let ph = emit_native(&placeholder_anf()).unwrap();
         let art = emit_native(&anf).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "FieldUpdate must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "FieldUpdate must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
@@ -2891,8 +3117,10 @@ mod tests {
         });
         let ph = emit_native(&placeholder_anf()).unwrap();
         let art = emit_native(&anf).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "VariantNew must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "VariantNew must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
@@ -2909,8 +3137,10 @@ mod tests {
         });
         let ph = emit_native(&placeholder_anf()).unwrap();
         let art = emit_native(&anf).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "ListNew must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "ListNew must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
@@ -2927,22 +3157,31 @@ mod tests {
         });
         let ph = emit_native(&placeholder_anf()).unwrap();
         let art = emit_native(&anf).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "TupleNew must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "TupleNew must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
     fn native_variant_two_tags_differ() {
         use crate::anf::{AnfBinding, AnfExpr};
-        let make_variant = |tag: &str| anf_for_binding(AnfBinding {
-            source_ref: NodeRef(0),
-            name: "fn_op".to_string(),
-            expr: AnfExpr::VariantNew { tag: tag.to_string(), payload: None },
-        });
+        let make_variant = |tag: &str| {
+            anf_for_binding(AnfBinding {
+                source_ref: NodeRef(0),
+                name: "fn_op".to_string(),
+                expr: AnfExpr::VariantNew {
+                    tag: tag.to_string(),
+                    payload: None,
+                },
+            })
+        };
         let art_ok = emit_native(&make_variant("Ok")).unwrap();
         let art_err = emit_native(&make_variant("Err")).unwrap();
-        assert_ne!(art_ok.native_bytes, art_err.native_bytes,
-            "VariantNew('Ok') and VariantNew('Err') must produce different bytes (different tag ids)");
+        assert_ne!(
+            art_ok.native_bytes, art_err.native_bytes,
+            "VariantNew('Ok') and VariantNew('Err') must produce different bytes (different tag ids)"
+        );
     }
 
     // ── TASK-I0: EffectCall — RED ─────────────────────────────────────────
@@ -2966,31 +3205,37 @@ mod tests {
         });
         let ph = emit_native(&placeholder_anf()).unwrap();
         let art = emit_native(&anf).unwrap();
-        assert_ne!(art.native_bytes, ph.native_bytes,
-            "EffectCall must produce different bytes than Placeholder");
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "EffectCall must produce different bytes than Placeholder"
+        );
     }
 
     #[test]
     fn native_effect_call_two_capabilities_differ() {
         use crate::anf::{AnfBinding, AnfExpr};
         use crate::core_ir::LiteralValue;
-        let make_effect = |cap: &str| anf_for_binding(AnfBinding {
-            source_ref: NodeRef(0),
-            name: "fn_op".to_string(),
-            expr: AnfExpr::Let {
-                name: "id".to_string(),
-                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
-                body: Box::new(AnfExpr::EffectCall {
-                    capability: cap.to_string(),
-                    func: "read".to_string(),
-                    args: vec!["id".to_string()],
-                }),
-            },
-        });
+        let make_effect = |cap: &str| {
+            anf_for_binding(AnfBinding {
+                source_ref: NodeRef(0),
+                name: "fn_op".to_string(),
+                expr: AnfExpr::Let {
+                    name: "id".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                    body: Box::new(AnfExpr::EffectCall {
+                        capability: cap.to_string(),
+                        func: "read".to_string(),
+                        args: vec!["id".to_string()],
+                    }),
+                },
+            })
+        };
         let art_db = emit_native(&make_effect("db")).unwrap();
         let art_fs = emit_native(&make_effect("fs")).unwrap();
-        assert_ne!(art_db.native_bytes, art_fs.native_bytes,
-            "EffectCall('db') and EffectCall('fs') must produce different bytes");
+        assert_ne!(
+            art_db.native_bytes, art_fs.native_bytes,
+            "EffectCall('db') and EffectCall('fs') must produce different bytes"
+        );
     }
 
     #[test]
@@ -3011,6 +3256,9 @@ mod tests {
             },
         });
         let art = emit_native(&anf).unwrap();
-        assert!(art.hash_chain.native_hash.is_some(), "native_hash must be Some for EffectCall");
+        assert!(
+            art.hash_chain.native_hash.is_some(),
+            "native_hash must be Some for EffectCall"
+        );
     }
 }

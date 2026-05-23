@@ -18,8 +18,7 @@
 use std::sync::Arc;
 
 use ail_compiler::{
-    ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, LiteralValue, SourceMap, StageHashes,
-    emit_wasm,
+    ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, LiteralValue, SourceMap, StageHashes, emit_wasm,
 };
 use ail_core::semantic_graph::NodeRef;
 use ail_runtime::{
@@ -212,7 +211,10 @@ fn invoke_typed_record_end_to_end() {
     // Full end-to-end: compile, instantiate, invoke_typed with Record layout.
     let expr = AnfExpr::RecordNew {
         fields: vec![
-            ("name_len".to_string(), AnfExpr::Literal(LiteralValue::Int(3))),
+            (
+                "name_len".to_string(),
+                AnfExpr::Literal(LiteralValue::Int(3)),
+            ),
             ("age".to_string(), AnfExpr::Literal(LiteralValue::Int(30))),
         ],
     };

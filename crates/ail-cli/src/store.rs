@@ -996,8 +996,7 @@ mod tests {
     fn minimal_canonical() -> (CanonicalChangeSet, Vec<u8>, String) {
         let canonical = CanonicalChangeSet::default();
         let mut cbor_bytes = Vec::new();
-        ciborium::into_writer(&canonical, &mut cbor_bytes)
-            .expect("CBOR encode must succeed");
+        ciborium::into_writer(&canonical, &mut cbor_bytes).expect("CBOR encode must succeed");
         // change_id = content-addressed ObjectId expressed as hex
         let change_id = ObjectId::from_bytes(&cbor_bytes).to_hex();
         (canonical, cbor_bytes, change_id)

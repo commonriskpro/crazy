@@ -8,7 +8,10 @@
 //  - RuntimeInstance::invoke succeeds with an i32 arg and returns RuntimeValue::I32.
 //  - RuntimeInstance::invoke succeeds with an f64 arg and returns RuntimeValue::F64.
 
-use ail_runtime::{CapabilityManifest, ResourceLimits, RuntimeArg, RuntimeHost, RuntimeProfile, RuntimeValue, blake3_hex_of};
+use ail_runtime::{
+    CapabilityManifest, ResourceLimits, RuntimeArg, RuntimeHost, RuntimeProfile, RuntimeValue,
+    blake3_hex_of,
+};
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -32,7 +35,9 @@ fn i32_identity_wasm() -> Vec<u8> {
     let mut module = wasm_encoder::Module::new();
 
     let mut types = wasm_encoder::TypeSection::new();
-    types.ty().function([wasm_encoder::ValType::I32], [wasm_encoder::ValType::I32]);
+    types
+        .ty()
+        .function([wasm_encoder::ValType::I32], [wasm_encoder::ValType::I32]);
     module.section(&types);
 
     let mut functions = wasm_encoder::FunctionSection::new();
@@ -58,7 +63,9 @@ fn f64_identity_wasm() -> Vec<u8> {
     let mut module = wasm_encoder::Module::new();
 
     let mut types = wasm_encoder::TypeSection::new();
-    types.ty().function([wasm_encoder::ValType::F64], [wasm_encoder::ValType::F64]);
+    types
+        .ty()
+        .function([wasm_encoder::ValType::F64], [wasm_encoder::ValType::F64]);
     module.section(&types);
 
     let mut functions = wasm_encoder::FunctionSection::new();
@@ -98,7 +105,10 @@ fn instantiate(wasm: &[u8]) -> (RuntimeHost, ail_runtime::RuntimeInstance) {
 fn runtime_arg_i32_and_i64_are_distinct() {
     let i32_zero = RuntimeArg::I32(0);
     let i64_zero = RuntimeArg::I64(0);
-    assert_ne!(i32_zero, i64_zero, "I32(0) and I64(0) must be distinct variants");
+    assert_ne!(
+        i32_zero, i64_zero,
+        "I32(0) and I64(0) must be distinct variants"
+    );
 }
 
 // ── Scenario R-1a: invoke with i32 arg succeeds ───────────────────────────
@@ -132,7 +142,11 @@ fn invoke_with_i32_arg_succeeds() {
         .invoke("identity", &[RuntimeArg::I32(5)])
         .expect("invoke with i32 arg must succeed");
 
-    assert_eq!(result, RuntimeValue::I32(5), "i32 identity must return I32(5)");
+    assert_eq!(
+        result,
+        RuntimeValue::I32(5),
+        "i32 identity must return I32(5)"
+    );
 }
 
 #[test]

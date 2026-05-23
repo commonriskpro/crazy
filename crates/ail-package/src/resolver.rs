@@ -418,10 +418,7 @@ impl DependencyResolver {
                     // Same name + version already resolved — deduplicate silently.
                 }
                 None => {
-                    resolved.insert(
-                        manifest.name.clone(),
-                        (manifest, manifest.version.clone()),
-                    );
+                    resolved.insert(manifest.name.clone(), (manifest, manifest.version.clone()));
                 }
             }
         }

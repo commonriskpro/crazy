@@ -553,7 +553,10 @@ fn stage19_let_in_body_is_proven() {
     // "let x = f() in x + 1" is valid ANF → Proven
     let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.anf_let");
     node.body_expr = Some("let x = f() in x + 1".into());
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
 
@@ -562,7 +565,10 @@ fn stage19_let_in_body_is_proven() {
     let failed = report.entries.iter().any(|e| {
         e.claim == "19-lower-to-anf" && e.state == ail_verify::report::VerificationState::Unverified
     });
-    assert!(!failed, "let...in body must not produce Unverified in stage19");
+    assert!(
+        !failed,
+        "let...in body must not produce Unverified in stage19"
+    );
 }
 
 #[test]
@@ -570,7 +576,10 @@ fn stage19_semicolon_outside_let_is_unverified() {
     // "a; b" has bare semicolon, not in let...in context → Unverified
     let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.bare_semi");
     node.body_expr = Some("a; b".into());
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
 
@@ -581,22 +590,27 @@ fn stage19_semicolon_outside_let_is_unverified() {
             && e.scope == "fn.bare_semi"
             && e.state == ail_verify::report::VerificationState::Unverified
     });
-    assert!(entry.is_some(), "bare semicolon outside let...in must produce Unverified");
+    assert!(
+        entry.is_some(),
+        "bare semicolon outside let...in must produce Unverified"
+    );
 }
 
 #[test]
 fn stage19_while_keyword_is_unverified() {
     let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.while_loop");
     node.body_expr = Some("while true { do_something() }".into());
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
 
     let report = VerificationPipeline::run(&ctx);
 
     let entry = report.entries.iter().find(|e| {
-        e.claim == "19-lower-to-anf"
-            && e.state == ail_verify::report::VerificationState::Unverified
+        e.claim == "19-lower-to-anf" && e.state == ail_verify::report::VerificationState::Unverified
     });
     assert!(entry.is_some(), "'while' keyword must produce Unverified");
 }
@@ -605,7 +619,10 @@ fn stage19_while_keyword_is_unverified() {
 fn stage19_no_body_is_proven() {
     // Node with no body_expr → Proven (nothing to analyze)
     let node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.no_body");
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
 
@@ -614,7 +631,10 @@ fn stage19_no_body_is_proven() {
     let entry = report.entries.iter().find(|e| {
         e.claim == "19-lower-to-anf" && e.state == ail_verify::report::VerificationState::Proven
     });
-    assert!(entry.is_some(), "no body_expr must produce Proven for stage19");
+    assert!(
+        entry.is_some(),
+        "no body_expr must produce Proven for stage19"
+    );
 }
 
 // ── TASK-15: Stage 20 — acquire/release pair analysis ─────────────────────
@@ -623,7 +643,10 @@ fn stage19_no_body_is_proven() {
 fn stage20_release_before_acquire_fails_with_e_anf_resource_order() {
     let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.bad_order");
     node.body_expr = Some("release(db) acquire(db)".into());
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
 
@@ -632,16 +655,25 @@ fn stage20_release_before_acquire_fails_with_e_anf_resource_order() {
     let entry = report.entries.iter().find(|e| {
         e.claim == "20-check-anf-effect-resource-ordering"
             && e.state == ail_verify::report::VerificationState::Failed
-            && e.evidence.as_deref().unwrap_or("").contains("E_ANF_RESOURCE_ORDER")
+            && e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_ANF_RESOURCE_ORDER")
     });
-    assert!(entry.is_some(), "release before acquire must produce Failed with E_ANF_RESOURCE_ORDER");
+    assert!(
+        entry.is_some(),
+        "release before acquire must produce Failed with E_ANF_RESOURCE_ORDER"
+    );
 }
 
 #[test]
 fn stage20_acquire_then_release_is_proven() {
     let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.good_order");
     node.body_expr = Some("acquire(db) release(db)".into());
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
 
@@ -651,7 +683,10 @@ fn stage20_acquire_then_release_is_proven() {
         e.claim == "20-check-anf-effect-resource-ordering"
             && e.state == ail_verify::report::VerificationState::Proven
     });
-    assert!(entry.is_some(), "acquire before release must produce Proven");
+    assert!(
+        entry.is_some(),
+        "acquire before release must produce Proven"
+    );
 }
 
 #[test]
@@ -701,7 +736,10 @@ fn stage10_unverified_refinement_true_predicate_proves_via_solver() {
         status: RefinementStatus::Unverified,
         erased: false,
     });
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
 
@@ -715,7 +753,11 @@ fn stage10_unverified_refinement_true_predicate_proves_via_solver() {
     assert!(
         entry.is_some(),
         "Unverified refinement with 'true' predicate must be Proven via solver; entries: {:?}",
-        report.entries.iter().filter(|e| e.claim == "10-check-refinements").collect::<Vec<_>>()
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim == "10-check-refinements")
+            .collect::<Vec<_>>()
     );
 }
 
@@ -731,7 +773,10 @@ fn stage10_unverified_refinement_unsupported_predicate_becomes_assumed() {
         status: RefinementStatus::Unverified,
         erased: false,
     });
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
 
@@ -745,7 +790,11 @@ fn stage10_unverified_refinement_unsupported_predicate_becomes_assumed() {
     assert!(
         entry.is_some(),
         "Unverified refinement with unsupported predicate must be Assumed; entries: {:?}",
-        report.entries.iter().filter(|e| e.claim == "10-check-refinements").collect::<Vec<_>>()
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim == "10-check-refinements")
+            .collect::<Vec<_>>()
     );
 }
 
@@ -761,7 +810,10 @@ fn stage10_proven_refinement_stays_proven_without_solver_call() {
         status: RefinementStatus::Proven,
         erased: false,
     });
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
 
@@ -775,7 +827,11 @@ fn stage10_proven_refinement_stays_proven_without_solver_call() {
     assert!(
         entry.is_some(),
         "Proven refinement must stay Proven; entries: {:?}",
-        report.entries.iter().filter(|e| e.claim == "10-check-refinements").collect::<Vec<_>>()
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim == "10-check-refinements")
+            .collect::<Vec<_>>()
     );
 }
 
@@ -790,7 +846,10 @@ fn stage12_connected_changed_node_without_breaks_edge_is_unverified_with_evidenc
     // THEN stage12 entry for invariant is Unverified with fn.dep in evidence
     let base_fn = {
         let mut n = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.dep");
-        n.type_facts = Some(TypeFacts { nominal: "Int".into(), generics: vec![] });
+        n.type_facts = Some(TypeFacts {
+            nominal: "Int".into(),
+            generics: vec![],
+        });
         n
     };
     let base = SemanticGraph {
@@ -803,7 +862,10 @@ fn stage12_connected_changed_node_without_breaks_edge_is_unverified_with_evidenc
 
     let changed_fn = {
         let mut n = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.dep");
-        n.type_facts = Some(TypeFacts { nominal: "String".into(), generics: vec![] }); // changed
+        n.type_facts = Some(TypeFacts {
+            nominal: "String".into(),
+            generics: vec![],
+        }); // changed
         n
     };
     let target = SemanticGraph {
@@ -827,7 +889,11 @@ fn stage12_connected_changed_node_without_breaks_edge_is_unverified_with_evidenc
     assert!(
         entry.is_some(),
         "connected changed node without BreaksIfChanged must produce Unverified with node name; entries: {:?}",
-        report.entries.iter().filter(|e| e.claim == "12-check-invariants-via-impact-analysis").collect::<Vec<_>>()
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim == "12-check-invariants-via-impact-analysis")
+            .collect::<Vec<_>>()
     );
 }
 
@@ -837,7 +903,10 @@ fn stage12_connected_changed_node_with_breaks_edge_is_proven() {
     // THEN stage12 entry for inv.stable is Proven
     let base_fn = {
         let mut n = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.dep");
-        n.type_facts = Some(TypeFacts { nominal: "Int".into(), generics: vec![] });
+        n.type_facts = Some(TypeFacts {
+            nominal: "Int".into(),
+            generics: vec![],
+        });
         n
     };
     let base = SemanticGraph {
@@ -850,7 +919,10 @@ fn stage12_connected_changed_node_with_breaks_edge_is_proven() {
 
     let changed_fn = {
         let mut n = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.dep");
-        n.type_facts = Some(TypeFacts { nominal: "String".into(), generics: vec![] });
+        n.type_facts = Some(TypeFacts {
+            nominal: "String".into(),
+            generics: vec![],
+        });
         n
     };
     let target = SemanticGraph {
@@ -876,7 +948,11 @@ fn stage12_connected_changed_node_with_breaks_edge_is_proven() {
     assert!(
         entry.is_some(),
         "changed node covered by BreaksIfChanged must produce Proven; entries: {:?}",
-        report.entries.iter().filter(|e| e.claim == "12-check-invariants-via-impact-analysis").collect::<Vec<_>>()
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim == "12-check-invariants-via-impact-analysis")
+            .collect::<Vec<_>>()
     );
 }
 
@@ -885,7 +961,10 @@ fn stage12_no_base_graph_invariant_is_unverified() {
     // GIVEN no base graph (None)
     // THEN invariant is Unverified (existing behavior)
     let invariant = GraphNode::new(NodeRef(0), NodeKind::Invariant, "inv.no_base");
-    let graph = SemanticGraph { nodes: vec![invariant], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![invariant],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
 
@@ -899,7 +978,11 @@ fn stage12_no_base_graph_invariant_is_unverified() {
     assert!(
         entry.is_some(),
         "no base graph must produce Unverified for invariants; entries: {:?}",
-        report.entries.iter().filter(|e| e.claim == "12-check-invariants-via-impact-analysis").collect::<Vec<_>>()
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim == "12-check-invariants-via-impact-analysis")
+            .collect::<Vec<_>>()
     );
 }
 
@@ -927,7 +1010,11 @@ fn stage12_no_changed_nodes_invariant_is_proven() {
     assert!(
         entry.is_some(),
         "no changed nodes must produce Proven for invariants; entries: {:?}",
-        report.entries.iter().filter(|e| e.claim == "12-check-invariants-via-impact-analysis").collect::<Vec<_>>()
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim == "12-check-invariants-via-impact-analysis")
+            .collect::<Vec<_>>()
     );
 }
 
@@ -944,8 +1031,7 @@ fn stage3_op_with_version_999_fails_with_version_incompatible() {
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
     // set_return with version=999 arg
-    let changeset =
-        "change test base=0\nauthor tester\nop set_return target=fn.foo type=Int version=999\nend\n";
+    let changeset = "change test base=0\nauthor tester\nop set_return target=fn.foo type=Int version=999\nend\n";
 
     let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), None);
 
@@ -957,7 +1043,10 @@ fn stage3_op_with_version_999_fails_with_version_incompatible() {
                 .unwrap_or("")
                 .contains("E_OP_VERSION_INCOMPATIBLE")
     });
-    assert!(failed, "version=999 must produce E_OP_VERSION_INCOMPATIBLE Failed entry");
+    assert!(
+        failed,
+        "version=999 must produce E_OP_VERSION_INCOMPATIBLE Failed entry"
+    );
 }
 
 #[test]
@@ -979,7 +1068,10 @@ fn stage3_op_with_unknown_type_fails_with_arg_type_invalid() {
                 .unwrap_or("")
                 .contains("E_OP_ARG_TYPE_INVALID")
     });
-    assert!(failed, "unknown type must produce E_OP_ARG_TYPE_INVALID Failed entry");
+    assert!(
+        failed,
+        "unknown type must produce E_OP_ARG_TYPE_INVALID Failed entry"
+    );
 }
 
 #[test]
@@ -1034,7 +1126,10 @@ fn stage3_op_with_version_1_is_proven() {
                 .unwrap_or("")
                 .contains("E_OP_VERSION_INCOMPATIBLE")
     });
-    assert!(!version_failed, "version=1 must NOT produce E_OP_VERSION_INCOMPATIBLE");
+    assert!(
+        !version_failed,
+        "version=1 must NOT produce E_OP_VERSION_INCOMPATIBLE"
+    );
 }
 
 // ── TASK-05: Stage 4 — snapshot hash freshness tests ─────────────────────
@@ -1056,7 +1151,10 @@ fn stage4_empty_base_hash_fails_with_stale_context() {
                 .unwrap_or("")
                 .contains("E_STALE_CONTEXT")
     });
-    assert!(failed, "empty base_hash must produce E_STALE_CONTEXT Failed entry");
+    assert!(
+        failed,
+        "empty base_hash must produce E_STALE_CONTEXT Failed entry"
+    );
 }
 
 #[test]
@@ -1077,7 +1175,10 @@ fn stage4_short_base_hash_fails_with_stale_context() {
                 .unwrap_or("")
                 .contains("E_STALE_CONTEXT")
     });
-    assert!(failed, "short base_hash must produce E_STALE_CONTEXT Failed entry");
+    assert!(
+        failed,
+        "short base_hash must produce E_STALE_CONTEXT Failed entry"
+    );
 }
 
 #[test]
@@ -1098,7 +1199,10 @@ fn stage4_valid_64char_hex_base_hash_is_proven() {
             .unwrap_or("")
             .contains("E_STALE_CONTEXT")
     });
-    assert!(!stale, "valid 64-char hex base_hash must NOT produce E_STALE_CONTEXT");
+    assert!(
+        !stale,
+        "valid 64-char hex base_hash must NOT produce E_STALE_CONTEXT"
+    );
 }
 
 #[test]
@@ -1106,8 +1210,7 @@ fn stage4_op_without_base_hash_has_no_stale_check() {
     let graph = empty_graph();
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
-    let changeset =
-        "change test base=0\nauthor tester\nop create_function id=fn.x\nend\n";
+    let changeset = "change test base=0\nauthor tester\nop create_function id=fn.x\nend\n";
 
     let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset), None);
 
@@ -1265,7 +1368,10 @@ fn stage3_op_with_multi_segment_qualified_type_passes() {
 fn stage19_function_node_without_body_produces_placeholder_entry() {
     // A Function node with no body_expr is a Placeholder → Stage 19 must flag it Unverified
     let node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.no_body");
-    let graph = SemanticGraph { nodes: vec![node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
 
@@ -1274,12 +1380,20 @@ fn stage19_function_node_without_body_produces_placeholder_entry() {
     let entry = report.entries.iter().find(|e| {
         e.claim == "19-lower-to-anf"
             && e.state == ail_verify::report::VerificationState::Unverified
-            && e.evidence.as_deref().unwrap_or("").to_lowercase().contains("placeholder")
+            && e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("placeholder")
     });
     assert!(
         entry.is_some(),
         "Function node with no body_expr must produce Unverified Stage 19 entry with Placeholder; entries: {:?}",
-        report.entries.iter().filter(|e| e.claim == "19-lower-to-anf").collect::<Vec<_>>()
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim == "19-lower-to-anf")
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1288,7 +1402,10 @@ fn stage19_non_function_node_without_body_does_not_flag_placeholder() {
     // Module/Type/Capability nodes with no body_expr are NOT Placeholders
     let module_node = GraphNode::new(NodeRef(0), NodeKind::Module, "mod.payments");
     let type_node = GraphNode::new(NodeRef(1), NodeKind::Type, "Amount");
-    let graph = SemanticGraph { nodes: vec![module_node, type_node], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![module_node, type_node],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "test", &[]);
 
@@ -1297,7 +1414,11 @@ fn stage19_non_function_node_without_body_does_not_flag_placeholder() {
     let placeholder_entry = report.entries.iter().find(|e| {
         e.claim == "19-lower-to-anf"
             && e.state == ail_verify::report::VerificationState::Unverified
-            && e.evidence.as_deref().unwrap_or("").to_lowercase().contains("placeholder")
+            && e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("placeholder")
     });
     assert!(
         placeholder_entry.is_none(),
@@ -1311,7 +1432,10 @@ fn stage19_non_function_node_without_body_does_not_flag_placeholder() {
 fn stage21_manifest_hash_mismatch_produces_failed_entry() {
     // When artifact_manifest_hash is provided but doesn't match the computed hash → Failed
     let cap = GraphNode::new(NodeRef(0), NodeKind::Capability, "cap.payment.charge");
-    let graph = SemanticGraph { nodes: vec![cap], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![cap],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let manifest_caps = vec!["cap.payment.charge".to_string()];
     let ctx = PipelineContext {
@@ -1327,7 +1451,9 @@ fn stage21_manifest_hash_mismatch_produces_failed_entry() {
         package_trust_metadata: &[],
         artifacts: &[],
         manifest_caps: &manifest_caps,
-        artifact_manifest_hash: Some("deadbeef00000000000000000000000000000000000000000000000000000000"),
+        artifact_manifest_hash: Some(
+            "deadbeef00000000000000000000000000000000000000000000000000000000",
+        ),
     };
 
     let report = VerificationPipeline::run(&ctx);
@@ -1343,7 +1469,11 @@ fn stage21_manifest_hash_mismatch_produces_failed_entry() {
     assert!(
         failed,
         "wrong artifact_manifest_hash must produce E_MANIFEST_HASH_MISMATCH Failed entry; entries: {:?}",
-        report.entries.iter().filter(|e| e.claim == "21-generate-validate-manifest").collect::<Vec<_>>()
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim == "21-generate-validate-manifest")
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1351,7 +1481,10 @@ fn stage21_manifest_hash_mismatch_produces_failed_entry() {
 fn stage21_no_artifact_hash_skips_hash_check() {
     // When artifact_manifest_hash is None → hash check is skipped, existing cap-set check runs
     let cap = GraphNode::new(NodeRef(0), NodeKind::Capability, "cap.payment.charge");
-    let graph = SemanticGraph { nodes: vec![cap], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![cap],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let manifest_caps = vec!["cap.payment.charge".to_string()];
     let ctx = PipelineContext {
@@ -1373,10 +1506,13 @@ fn stage21_no_artifact_hash_skips_hash_check() {
     let report = VerificationPipeline::run(&ctx);
 
     // Existing behavior: cap-set check passes when graph caps == manifest caps
-    assert!(report.entries.iter().any(|entry| {
-        entry.claim == "21-generate-validate-manifest"
-            && entry.state == ail_verify::report::VerificationState::Proven
-    }), "no artifact_manifest_hash → existing cap-set check must still pass");
+    assert!(
+        report.entries.iter().any(|entry| {
+            entry.claim == "21-generate-validate-manifest"
+                && entry.state == ail_verify::report::VerificationState::Proven
+        }),
+        "no artifact_manifest_hash → existing cap-set check must still pass"
+    );
 }
 
 // ── Scenario: report stores target_snapshot from graph ────────────────────
@@ -1386,7 +1522,11 @@ fn stage21_no_artifact_hash_skips_hash_check() {
 #[test]
 fn report_stores_target_snapshot_from_graph() {
     let graph = SemanticGraph {
-        nodes: vec![GraphNode::new(NodeRef(1), NodeKind::Function, "fn.checkout")],
+        nodes: vec![GraphNode::new(
+            NodeRef(1),
+            NodeKind::Function,
+            "fn.checkout",
+        )],
         edges: vec![],
     };
     let solver = SimpleSolver;
@@ -1397,15 +1537,27 @@ fn report_stores_target_snapshot_from_graph() {
         "target_snapshot must be set when graph has nodes"
     );
     let snap = report.target_snapshot.as_ref().unwrap();
-    assert!(snap.starts_with("snap:"), "snapshot id must use snap: prefix");
-    assert!(snap.contains("fn.checkout"), "snapshot must include node name");
+    assert!(
+        snap.starts_with("snap:"),
+        "snapshot id must use snap: prefix"
+    );
+    assert!(
+        snap.contains("fn.checkout"),
+        "snapshot must include node name"
+    );
 }
 
 // ── Scenario: report stores base_snapshot when base_graph provided ────────
 #[test]
 fn report_stores_base_snapshot_when_base_graph_provided() {
-    let graph = SemanticGraph { nodes: vec![], edges: vec![] };
-    let base = SemanticGraph { nodes: vec![], edges: vec![] };
+    let graph = SemanticGraph {
+        nodes: vec![],
+        edges: vec![],
+    };
+    let base = SemanticGraph {
+        nodes: vec![],
+        edges: vec![],
+    };
     let solver = SimpleSolver;
     let ctx = make_ctx(&graph, &solver, "dev", &[]);
     let report = VerificationPipeline::run_with_changeset(&ctx, None, Some(&base));
@@ -1421,7 +1573,9 @@ fn report_stores_structural_diff_from_context() {
     use ail_verify::policy::StructuralDiff;
     let graph = empty_graph();
     let solver = SimpleSolver;
-    let diff = StructuralDiff { description: "added fn.checkout".into() };
+    let diff = StructuralDiff {
+        description: "added fn.checkout".into(),
+    };
     let ctx = PipelineContext {
         graph: &graph,
         manifests: &[],
@@ -1439,7 +1593,10 @@ fn report_stores_structural_diff_from_context() {
     };
     let report = VerificationPipeline::run(&ctx);
     assert_eq!(
-        report.structural_diff.as_ref().map(|d| d.description.as_str()),
+        report
+            .structural_diff
+            .as_ref()
+            .map(|d| d.description.as_str()),
         Some("added fn.checkout"),
         "structural_diff must be stored verbatim in the report"
     );
@@ -1567,8 +1724,7 @@ fn canonical_change_hash_added_to_artifact_hashes() {
     let ctx = make_ctx(&graph, &solver, "dev", &[]);
 
     // A minimal valid changeset that can be parsed and canonicalized.
-    let changeset_text =
-        "change add-order base=0\nauthor tester\nop create_type id=Order\nend\n";
+    let changeset_text = "change add-order base=0\nauthor tester\nop create_type id=Order\nend\n";
     let report = VerificationPipeline::run_with_changeset(&ctx, Some(changeset_text), None);
 
     let canonical_hash_entry = report

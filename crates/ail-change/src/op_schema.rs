@@ -183,10 +183,7 @@ static OP_SCHEMAS: &[OpSchemaEntry] = &[
 /// Ops whose verb is not listed in `OP_SCHEMAS` pass validation without error
 /// (they are treated as unconstrained/unknown ops).
 pub fn validate_op_schemas(pcs: &ParsedChangeSet) -> Vec<OpSchemaError> {
-    pcs.parsed_ops
-        .iter()
-        .flat_map(|op| check_op(op))
-        .collect()
+    pcs.parsed_ops.iter().flat_map(|op| check_op(op)).collect()
 }
 
 fn check_op(op: &ParsedOp) -> Vec<OpSchemaError> {
@@ -215,9 +212,7 @@ mod tests {
     use crate::parser::parse_changeset;
 
     fn changeset_with_ops(ops_body: &str) -> ParsedChangeSet {
-        let src = format!(
-            "change test\nauthor tester\nbase 0\n{ops_body}\nend\n"
-        );
+        let src = format!("change test\nauthor tester\nbase 0\n{ops_body}\nend\n");
         parse_changeset(&src).expect("fixture must parse")
     }
 
@@ -229,7 +224,10 @@ mod tests {
     fn valid_create_function_produces_no_errors() {
         let pcs = changeset_with_ops("op create_function id=fn.x");
         let errors = validate_op_schemas(&pcs);
-        assert!(errors.is_empty(), "valid op must have no errors: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "valid op must have no errors: {errors:?}"
+        );
     }
 
     // Scenario: missing required arg produces MissingRequiredArg error.

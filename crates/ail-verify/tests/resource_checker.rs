@@ -252,7 +252,11 @@ fn linear_resource_with_no_lifecycle_tag_and_no_edge_is_unverified() {
     assert_eq!(report.entries.len(), 1);
     assert_eq!(report.entries[0].state, VerificationState::Unverified);
     assert!(
-        report.entries[0].evidence.as_deref().unwrap_or("").contains("E_RESOURCE_NO_LIFECYCLE_EDGE"),
+        report.entries[0]
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("E_RESOURCE_NO_LIFECYCLE_EDGE"),
         "evidence must reference E_RESOURCE_NO_LIFECYCLE_EDGE"
     );
 }
@@ -298,7 +302,11 @@ fn shared_resource_with_safe_capability_edge_is_proven() {
     let cap = GraphNode::new(NodeRef(1), NodeKind::Capability, "cap.safe_access");
     let g = SemanticGraph {
         nodes: vec![node, cap],
-        edges: vec![GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::SafeCapability)],
+        edges: vec![GraphEdge::new(
+            NodeRef(0),
+            NodeRef(1),
+            EdgeKind::SafeCapability,
+        )],
     };
     let report = ResourceChecker::check(&g);
     let entry = report.entries.iter().find(|e| e.scope == "shared_cache");

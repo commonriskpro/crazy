@@ -75,8 +75,12 @@ pub enum WasmScalarType {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WasmTypeDescriptor {
     Scalar(WasmScalarType),
-    Record { fields: Vec<String> },
-    Variant { tags: Vec<String> },
+    Record {
+        fields: Vec<String>,
+    },
+    Variant {
+        tags: Vec<String>,
+    },
     List(Box<WasmTypeDescriptor>),
     Option(Box<WasmTypeDescriptor>),
     Result {
@@ -100,9 +104,7 @@ pub fn derive_wasm_type(expr: &AnfExpr) -> WasmTypeDescriptor {
             WasmTypeDescriptor::List(Box::new(WasmTypeDescriptor::Scalar(WasmScalarType::I64)))
         }
         AnfExpr::Let { body, .. } => derive_wasm_type(body),
-        AnfExpr::Literal(LiteralValue::Float(_)) => {
-            WasmTypeDescriptor::Scalar(WasmScalarType::F64)
-        }
+        AnfExpr::Literal(LiteralValue::Float(_)) => WasmTypeDescriptor::Scalar(WasmScalarType::F64),
         AnfExpr::Literal(LiteralValue::Unit) => WasmTypeDescriptor::Scalar(WasmScalarType::I32),
         _ => WasmTypeDescriptor::Scalar(WasmScalarType::I64),
     }
@@ -184,7 +186,10 @@ fn build_type_section(signatures: &[WasmSignature]) -> Option<TypeSection> {
     Some(types)
 }
 
-fn build_type_section_with_host_call(signatures: &[WasmSignature], needs_host_call_write: bool) -> TypeSection {
+fn build_type_section_with_host_call(
+    signatures: &[WasmSignature],
+    needs_host_call_write: bool,
+) -> TypeSection {
     let mut types = TypeSection::new();
     // type 0: ail/host_call — (i32 × 6) → i64
     types.ty().function(
@@ -771,9 +776,7 @@ fn has_effect_call(expr: &AnfExpr) -> bool {
             exprs.iter().any(has_effect_call)
         }
         AnfExpr::RecordNew { fields } => fields.iter().any(|(_, e)| has_effect_call(e)),
-        AnfExpr::VariantNew { payload, .. } => {
-            payload.as_deref().is_some_and(has_effect_call)
-        }
+        AnfExpr::VariantNew { payload, .. } => payload.as_deref().is_some_and(has_effect_call),
         AnfExpr::Match { arms, .. } => arms.iter().any(|arm| has_effect_call(&arm.body)),
         AnfExpr::Lambda { body, .. } => has_effect_call(body),
         _ => false,
@@ -792,7 +795,10 @@ fn is_structured_descriptor(desc: &WasmTypeDescriptor) -> bool {
     )
 }
 
-fn build_import_section(needs_host_call: bool, needs_host_call_write: bool) -> Option<ImportSection> {
+fn build_import_section(
+    needs_host_call: bool,
+    needs_host_call_write: bool,
+) -> Option<ImportSection> {
     if !needs_host_call {
         return None;
     }
@@ -1680,7 +1686,10 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     // Assemble WASM module first so we can compute byte offsets.
     let mut module = Module::new();
     if needs_host_call {
-        module.section(&build_type_section_with_host_call(&signatures, needs_host_call_write));
+        module.section(&build_type_section_with_host_call(
+            &signatures,
+            needs_host_call_write,
+        ));
     } else if let Some(types) = build_type_section(&signatures) {
         module.section(&types);
     }
@@ -2250,7 +2259,10 @@ mod tests {
             }
         }
 
-        assert!(saw_tag_store, "variant construction must store a tag discriminant (I32Store)");
+        assert!(
+            saw_tag_store,
+            "variant construction must store a tag discriminant (I32Store)"
+        );
         assert!(
             i64_store_count >= 6,
             "tuple/list/variant constructors must store i64 payloads"
@@ -2326,7 +2338,9 @@ mod tests {
         };
         // Note: before A8 the WASM is invalid (I32 stored where I64 is needed).
         // We emit without validation here so we can inspect the instructions.
-        emit_wasm(&sealed_anf(vec![binding])).expect("emit_wasm must succeed").wasm
+        emit_wasm(&sealed_anf(vec![binding]))
+            .expect("emit_wasm must succeed")
+            .wasm
     }
 
     // C-4a: I32 arg to EffectCall must be zero-extended (I64ExtendI32U emitted).
@@ -2657,7 +2671,10 @@ mod tests {
                 }
             }
         }
-        assert!(found_export, "RecordNew binding must be exported as 'make_pair'");
+        assert!(
+            found_export,
+            "RecordNew binding must be exported as 'make_pair'"
+        );
 
         // export_types must contain Record descriptor for this binding.
         assert!(

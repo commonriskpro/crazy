@@ -624,9 +624,7 @@ pub fn canonicalize_parsed(pcs: ParsedChangeSet) -> CanonicalChangeSet {
 /// Returns `Ok(CanonicalChangeSet)` on success or
 /// `Err(MigrateError::UnknownVersion)` when the document declares a version
 /// for which no migration path is registered.
-pub fn try_canonicalize_parsed(
-    pcs: ParsedChangeSet,
-) -> Result<CanonicalChangeSet, MigrateError> {
+pub fn try_canonicalize_parsed(pcs: ParsedChangeSet) -> Result<CanonicalChangeSet, MigrateError> {
     // Run the migration chain if the declared version is not current.
     let pcs = if pcs.acl_version != CURRENT_ACL_VERSION {
         run_migration_chain(pcs, CURRENT_ACL_VERSION)?
@@ -1285,11 +1283,10 @@ end
             "must retain AddInferredFactByName as documentation"
         );
         assert!(
-            canonical
-                .ops
-                .iter()
-                .any(|op| matches!(op.payload, OpPayload::SetReturnByName { ref target, ref ty }
-                    if target == "fn.checkout" && ty == "OrderId")),
+            canonical.ops.iter().any(
+                |op| matches!(op.payload, OpPayload::SetReturnByName { ref target, ref ty }
+                    if target == "fn.checkout" && ty == "OrderId")
+            ),
             "must emit explicit SetReturnByName for the inferred return type"
         );
     }
@@ -1305,11 +1302,10 @@ end
         let canonical = canonicalize_parsed(parsed);
 
         assert!(
-            canonical
-                .ops
-                .iter()
-                .any(|op| matches!(op.payload, OpPayload::AddEffectByName { ref target, ref effect }
-                    if target == "fn.checkout" && effect == "payment.charge")),
+            canonical.ops.iter().any(
+                |op| matches!(op.payload, OpPayload::AddEffectByName { ref target, ref effect }
+                    if target == "fn.checkout" && effect == "payment.charge")
+            ),
             "must emit explicit AddEffectByName for the inferred effect"
         );
     }
@@ -1331,11 +1327,10 @@ end
         let canonical = canonicalize_parsed(parse_changeset(source).expect("fixture must parse"));
 
         assert!(
-            canonical
-                .ops
-                .iter()
-                .any(|op| matches!(op.payload, OpPayload::SetReturnByName { ref target, ref ty }
-                    if target == "fn.checkout" && ty == "OrderId")),
+            canonical.ops.iter().any(
+                |op| matches!(op.payload, OpPayload::SetReturnByName { ref target, ref ty }
+                    if target == "fn.checkout" && ty == "OrderId")
+            ),
             "must emit SetReturnByName derived from create_function return"
         );
     }

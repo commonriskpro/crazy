@@ -314,7 +314,6 @@ pub enum AnfExpr {
     CellSet { cell: String, value: String },
 
     // ── ola5-compiler-core: Gap 2 — new ANF primitives ───────────────────
-
     /// An explicit proof assumption — no runtime effect; lowers to unit.
     ///
     /// `predicate` is the logical predicate being assumed.
@@ -358,7 +357,11 @@ pub enum AnfExpr {
     ///
     /// `init`, `list`, and `func` are atomic variable names — guaranteed by lowering.
     /// `func` must hold an I64 function pointer with signature `(acc: I64, elem: I64) -> I64`.
-    Fold { init: String, list: String, func: String },
+    Fold {
+        init: String,
+        list: String,
+        func: String,
+    },
 
     /// Placeholder for nodes that have no expression body yet, or for
     /// `CoreExpr::Placeholder` nodes.

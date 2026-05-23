@@ -90,8 +90,7 @@ impl CodegenChecker {
                     )
                 };
 
-            let blocking =
-                matches!(state, VerificationState::Failed | VerificationState::Unsafe);
+            let blocking = matches!(state, VerificationState::Failed | VerificationState::Unsafe);
             entries.push(VerificationEntry {
                 claim,
                 state,
@@ -160,8 +159,7 @@ impl CodegenChecker {
                 )
             };
 
-            let blocking =
-                matches!(state, VerificationState::Failed | VerificationState::Unsafe);
+            let blocking = matches!(state, VerificationState::Failed | VerificationState::Unsafe);
             entries.push(VerificationEntry {
                 claim,
                 state,

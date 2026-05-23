@@ -104,7 +104,10 @@ impl BoundaryChecker {
     /// applying timestamp-based expiry checking from `config`.
     ///
     /// Non-boundary nodes are silently skipped.
-    pub fn check_with_config(graph: &SemanticGraph, config: &BoundaryCheckerConfig) -> VerificationReport {
+    pub fn check_with_config(
+        graph: &SemanticGraph,
+        config: &BoundaryCheckerConfig,
+    ) -> VerificationReport {
         let mut entries = Vec::new();
         let mut diagnostics = Vec::new();
 
@@ -183,8 +186,7 @@ impl BoundaryChecker {
                 _ => {}
             }
 
-            let blocking =
-                matches!(state, VerificationState::Failed | VerificationState::Unsafe);
+            let blocking = matches!(state, VerificationState::Failed | VerificationState::Unsafe);
             entries.push(VerificationEntry {
                 claim,
                 state,
@@ -334,7 +336,9 @@ impl BoundaryChecker {
 
 #[cfg(test)]
 mod tests {
-    use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph, TrustLevel, TrustMetadata};
+    use ail_core::semantic_graph::{
+        GraphNode, NodeKind, NodeRef, SemanticGraph, TrustLevel, TrustMetadata,
+    };
 
     use super::{BoundaryChecker, BoundaryCheckerConfig, E_BOUNDARY_EXPIRED_ASSUMPTION};
     use crate::report::VerificationState;
@@ -345,7 +349,10 @@ mod tests {
             level: TrustLevel::Verified,
             tags: tags.into_iter().map(|s| s.to_string()).collect(),
         });
-        SemanticGraph { nodes: vec![node], edges: vec![] }
+        SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        }
     }
 
     // ── T-15 / T-16: expires tag ─────────────────────────────────────────
@@ -361,12 +368,18 @@ mod tests {
             "has-review-policy",
             "expires:2025-01-01",
         ]);
-        let config = BoundaryCheckerConfig { reference_date: Some("2026-01-01".to_string()) };
+        let config = BoundaryCheckerConfig {
+            reference_date: Some("2026-01-01".to_string()),
+        };
         let report = BoundaryChecker::check_with_config(&graph, &config);
         let entry = &report.entries[0];
         assert_eq!(entry.state, VerificationState::Failed);
         assert!(
-            entry.evidence.as_deref().unwrap_or("").contains(E_BOUNDARY_EXPIRED_ASSUMPTION),
+            entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains(E_BOUNDARY_EXPIRED_ASSUMPTION),
             "evidence must contain E_BOUNDARY_EXPIRED_ASSUMPTION"
         );
     }
@@ -382,7 +395,9 @@ mod tests {
             "has-review-policy",
             "expires:2030-12-31",
         ]);
-        let config = BoundaryCheckerConfig { reference_date: Some("2026-01-01".to_string()) };
+        let config = BoundaryCheckerConfig {
+            reference_date: Some("2026-01-01".to_string()),
+        };
         let report = BoundaryChecker::check_with_config(&graph, &config);
         let entry = &report.entries[0];
         // All required tags present → Assumed (not Failed by expiry)
@@ -400,7 +415,9 @@ mod tests {
             "has-review-policy",
             "expires:2026-05-22",
         ]);
-        let config = BoundaryCheckerConfig { reference_date: Some("2026-05-22".to_string()) };
+        let config = BoundaryCheckerConfig {
+            reference_date: Some("2026-05-22".to_string()),
+        };
         let report = BoundaryChecker::check_with_config(&graph, &config);
         assert_eq!(report.entries[0].state, VerificationState::Failed);
     }
@@ -409,7 +426,9 @@ mod tests {
     fn boundary_expires_tag_malformed_unverified() {
         // expires:not-a-date → Unverified
         let graph = boundary_graph(vec!["has-trust-level", "expires:not-a-date"]);
-        let config = BoundaryCheckerConfig { reference_date: Some("2026-01-01".to_string()) };
+        let config = BoundaryCheckerConfig {
+            reference_date: Some("2026-01-01".to_string()),
+        };
         let report = BoundaryChecker::check_with_config(&graph, &config);
         assert_eq!(report.entries[0].state, VerificationState::Unverified);
     }
@@ -425,7 +444,9 @@ mod tests {
             "has-review-policy",
             "expires:2020-01-01",
         ]);
-        let config = BoundaryCheckerConfig { reference_date: None };
+        let config = BoundaryCheckerConfig {
+            reference_date: None,
+        };
         let report = BoundaryChecker::check_with_config(&graph, &config);
         // Without reference_date, expires tag is ignored → all required tags → Assumed
         assert_eq!(report.entries[0].state, VerificationState::Assumed);

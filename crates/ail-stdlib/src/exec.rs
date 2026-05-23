@@ -196,16 +196,15 @@ impl StdlibCapabilityDispatch for InMemoryCapabilityHost {
     ) -> Result<StdlibValue, StdlibExecError> {
         match (capability, operation) {
             // ── clock ─────────────────────────────────────────────────────
-            ("clock.now", "now") => Ok(StdlibValue::Int(
-                self.fixed_clock.unwrap_or(0),
-            )),
+            ("clock.now", "now") => Ok(StdlibValue::Int(self.fixed_clock.unwrap_or(0))),
 
             // ── env.read ──────────────────────────────────────────────────
             ("env.read", "get") => {
                 let StdlibValue::Text(key) = args.first().ok_or(StdlibExecError::Arity {
                     expected: 1,
                     actual: 0,
-                })? else {
+                })?
+                else {
                     return Err(StdlibExecError::Type { expected: "Text" });
                 };
                 Ok(StdlibValue::Option(
@@ -236,7 +235,8 @@ impl StdlibCapabilityDispatch for InMemoryCapabilityHost {
                 let StdlibValue::Bytes(bytes) = args.first().ok_or(StdlibExecError::Arity {
                     expected: 1,
                     actual: 0,
-                })? else {
+                })?
+                else {
                     return Err(StdlibExecError::Type { expected: "Bytes" });
                 };
                 let len = bytes.len() as i64;
@@ -250,7 +250,8 @@ impl StdlibCapabilityDispatch for InMemoryCapabilityHost {
                 let StdlibValue::Text(path) = args.first().ok_or(StdlibExecError::Arity {
                     expected: 1,
                     actual: 0,
-                })? else {
+                })?
+                else {
                     return Err(StdlibExecError::Type { expected: "Text" });
                 };
                 match (operation, self.files.get(path)) {
@@ -279,9 +280,7 @@ impl StdlibCapabilityDispatch for InMemoryCapabilityHost {
             ("trace.emit", "event") => Ok(StdlibValue::Unit),
 
             // ── clock.monotonic ───────────────────────────────────────────
-            ("clock.monotonic", "now") => Ok(StdlibValue::Int(
-                self.monotonic_clock.unwrap_or(0),
-            )),
+            ("clock.monotonic", "now") => Ok(StdlibValue::Int(self.monotonic_clock.unwrap_or(0))),
 
             // ── random ────────────────────────────────────────────────────
             ("random.int", "next_int") => Ok(StdlibValue::Int(self.rng_seed as i64)),
@@ -290,13 +289,13 @@ impl StdlibCapabilityDispatch for InMemoryCapabilityHost {
                 let StdlibValue::Int(n) = args.first().ok_or(StdlibExecError::Arity {
                     expected: 1,
                     actual: 0,
-                })? else {
+                })?
+                else {
                     return Err(StdlibExecError::Type { expected: "Int" });
                 };
                 let count = (*n).max(0) as usize;
-                let mut rng = crate::random::DeterministicRng::new(
-                    crate::random::Seed::new(self.rng_seed),
-                );
+                let mut rng =
+                    crate::random::DeterministicRng::new(crate::random::Seed::new(self.rng_seed));
                 Ok(StdlibValue::Bytes(rng.random_bytes(count)))
             }
 
@@ -1450,7 +1449,9 @@ fn crypto_hash(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
 fn crypto_hmac(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 2)?;
     let (StdlibValue::Bytes(key), StdlibValue::Bytes(msg)) = (&args[0], &args[1]) else {
-        return Err(StdlibExecError::Type { expected: "Bytes, Bytes" });
+        return Err(StdlibExecError::Type {
+            expected: "Bytes, Bytes",
+        });
     };
     Ok(StdlibValue::Bytes(
         crypto::Hmac::compute(key, msg).0.to_vec(),
@@ -1460,7 +1461,9 @@ fn crypto_hmac(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
 fn crypto_constant_time_eq(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 2)?;
     let (StdlibValue::Bytes(a), StdlibValue::Bytes(b)) = (&args[0], &args[1]) else {
-        return Err(StdlibExecError::Type { expected: "Bytes, Bytes" });
+        return Err(StdlibExecError::Type {
+            expected: "Bytes, Bytes",
+        });
     };
     Ok(StdlibValue::Bool(crypto::constant_time_eq(a, b)))
 }
@@ -1518,9 +1521,7 @@ fn json_to_stdlib(v: json::Json) -> StdlibValue {
             }
         }
         json::Json::Str(s) => StdlibValue::Text(s),
-        json::Json::Array(arr) => {
-            StdlibValue::List(arr.into_iter().map(json_to_stdlib).collect())
-        }
+        json::Json::Array(arr) => StdlibValue::List(arr.into_iter().map(json_to_stdlib).collect()),
         json::Json::Object(map) => StdlibValue::Map(
             map.into_iter()
                 .map(|(k, v)| (k, json_to_stdlib(v)))
@@ -1538,9 +1539,7 @@ fn stdlib_to_json(v: &StdlibValue) -> json::Json {
         StdlibValue::Float(f) => json::Json::Number(*f),
         StdlibValue::Text(s) => json::Json::Str(s.clone()),
         StdlibValue::Bytes(b) => json::Json::Str(encoding::hex_encode(b)),
-        StdlibValue::List(items) => {
-            json::Json::Array(items.iter().map(stdlib_to_json).collect())
-        }
+        StdlibValue::List(items) => json::Json::Array(items.iter().map(stdlib_to_json).collect()),
         StdlibValue::Map(map) => json::Json::Object(
             map.iter()
                 .map(|(k, v)| (k.clone(), stdlib_to_json(v)))
@@ -1568,7 +1567,9 @@ fn json_parse(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
 
 fn json_stringify(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 1)?;
-    Ok(StdlibValue::Text(json::stringify(&stdlib_to_json(&args[0]))))
+    Ok(StdlibValue::Text(json::stringify(&stdlib_to_json(
+        &args[0],
+    ))))
 }
 
 fn numeric_narrow_to_i32(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
@@ -1610,7 +1611,9 @@ fn concurrent_channel_new(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExe
 fn concurrent_channel_send(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 2)?;
     let StdlibValue::Channel(ref arc) = args[0] else {
-        return Err(StdlibExecError::Type { expected: "Channel" });
+        return Err(StdlibExecError::Type {
+            expected: "Channel",
+        });
     };
     let value = args[1].clone();
     let ch = arc.lock().unwrap();
@@ -1625,7 +1628,9 @@ fn concurrent_channel_send(args: &[StdlibValue]) -> Result<StdlibValue, StdlibEx
 fn concurrent_channel_recv(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 1)?;
     let StdlibValue::Channel(ref arc) = args[0] else {
-        return Err(StdlibExecError::Type { expected: "Channel" });
+        return Err(StdlibExecError::Type {
+            expected: "Channel",
+        });
     };
     let ch = arc.lock().unwrap();
     Ok(StdlibValue::Option(ch.recv().map(Box::new)))
@@ -1634,7 +1639,9 @@ fn concurrent_channel_recv(args: &[StdlibValue]) -> Result<StdlibValue, StdlibEx
 fn concurrent_channel_len(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 1)?;
     let StdlibValue::Channel(ref arc) = args[0] else {
-        return Err(StdlibExecError::Type { expected: "Channel" });
+        return Err(StdlibExecError::Type {
+            expected: "Channel",
+        });
     };
     let ch = arc.lock().unwrap();
     Ok(StdlibValue::Int(ch.len() as i64))
@@ -1952,11 +1959,7 @@ mod tests {
     #[test]
     fn in_memory_host_io_stdout_write() {
         let host = InMemoryCapabilityHost::new();
-        let result = host.call(
-            "io.stdout",
-            "write",
-            &[StdlibValue::Bytes(vec![1u8, 2, 3])],
-        );
+        let result = host.call("io.stdout", "write", &[StdlibValue::Bytes(vec![1u8, 2, 3])]);
         assert_eq!(result, Ok(StdlibValue::Int(3)));
     }
 
@@ -1975,10 +1978,7 @@ mod tests {
     // Pure FunctionEntry: call() still works (backward compat)
     #[test]
     fn pure_entry_call_still_works() {
-        let result = call_pure_stdlib(
-            "std.text.trim",
-            &[StdlibValue::Text("  hi  ".to_string())],
-        );
+        let result = call_pure_stdlib("std.text.trim", &[StdlibValue::Text("  hi  ".to_string())]);
         assert_eq!(result, Ok(StdlibValue::Text("hi".to_string())));
     }
 
@@ -2034,10 +2034,7 @@ mod tests {
             &[StdlibValue::Bytes(b"hello".to_vec())],
         );
         // base64("hello") = "aGVsbG8="
-        assert_eq!(
-            result,
-            Ok(StdlibValue::Text("aGVsbG8=".to_string()))
-        );
+        assert_eq!(result, Ok(StdlibValue::Text("aGVsbG8=".to_string())));
     }
 
     // Spec STDLIB-EXEC-1: std.encoding.base64_decode — success
@@ -2087,9 +2084,9 @@ mod tests {
         );
         assert_eq!(
             result,
-            Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Bytes(
-                vec![0xca, 0xfe]
-            )))))
+            Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Bytes(vec![
+                0xca, 0xfe
+            ])))))
         );
     }
 
@@ -2147,10 +2144,7 @@ mod tests {
     // Spec STDLIB-EXEC-1: std.numeric.narrow_to_i32 — ok
     #[test]
     fn exec_numeric_narrow_to_i32_ok() {
-        let result = call_pure_stdlib(
-            "std.numeric.narrow_to_i32",
-            &[StdlibValue::Int(42)],
-        );
+        let result = call_pure_stdlib("std.numeric.narrow_to_i32", &[StdlibValue::Int(42)]);
         assert_eq!(
             result,
             Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Int(42)))))
@@ -2160,10 +2154,7 @@ mod tests {
     // Spec STDLIB-EXEC-1: std.numeric.narrow_to_i32 — overflow
     #[test]
     fn exec_numeric_narrow_to_i32_overflow() {
-        let result = call_pure_stdlib(
-            "std.numeric.narrow_to_i32",
-            &[StdlibValue::Int(i64::MAX)],
-        );
+        let result = call_pure_stdlib("std.numeric.narrow_to_i32", &[StdlibValue::Int(i64::MAX)]);
         assert!(
             matches!(result, Ok(StdlibValue::Result(Err(_)))),
             "overflow must return Err"
@@ -2173,10 +2164,7 @@ mod tests {
     // Spec STDLIB-EXEC-1: std.numeric.narrow_to_u32 — ok
     #[test]
     fn exec_numeric_narrow_to_u32_ok() {
-        let result = call_pure_stdlib(
-            "std.numeric.narrow_to_u32",
-            &[StdlibValue::Int(100)],
-        );
+        let result = call_pure_stdlib("std.numeric.narrow_to_u32", &[StdlibValue::Int(100)]);
         assert_eq!(
             result,
             Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Int(100)))))
@@ -2186,10 +2174,7 @@ mod tests {
     // Spec STDLIB-EXEC-1: std.numeric.narrow_to_u32 — overflow (negative)
     #[test]
     fn exec_numeric_narrow_to_u32_negative() {
-        let result = call_pure_stdlib(
-            "std.numeric.narrow_to_u32",
-            &[StdlibValue::Int(-1)],
-        );
+        let result = call_pure_stdlib("std.numeric.narrow_to_u32", &[StdlibValue::Int(-1)]);
         assert!(
             matches!(result, Ok(StdlibValue::Result(Err(_)))),
             "negative value must return Err for u32"

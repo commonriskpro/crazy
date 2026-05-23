@@ -402,9 +402,14 @@ mod tests {
         let lf = Lockfile::from_resolution(vec![(&spec, &manifest)]);
 
         assert_eq!(lf.len(), 1);
-        let entry = lf.get("payments.stripe", "2.3.1").expect("entry must exist");
+        let entry = lf
+            .get("payments.stripe", "2.3.1")
+            .expect("entry must exist");
         assert_eq!(entry.name, "payments.stripe");
-        assert_eq!(entry.version, "2.3.1", "version must be pinned from manifest");
+        assert_eq!(
+            entry.version, "2.3.1",
+            "version must be pinned from manifest"
+        );
         assert_eq!(entry.trust_level, TrustLevel::Verified);
     }
 
@@ -438,7 +443,15 @@ mod tests {
         let specs = lf.to_specs();
         assert_eq!(specs.len(), 2);
         // Pinned exactly
-        assert!(specs.iter().any(|s| s.name == "pkg.a" && s.version_constraint == "1.0.0"));
-        assert!(specs.iter().any(|s| s.name == "pkg.b" && s.version_constraint == "2.5.0"));
+        assert!(
+            specs
+                .iter()
+                .any(|s| s.name == "pkg.a" && s.version_constraint == "1.0.0")
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|s| s.name == "pkg.b" && s.version_constraint == "2.5.0")
+        );
     }
 }

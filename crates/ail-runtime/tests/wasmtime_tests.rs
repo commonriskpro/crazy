@@ -450,7 +450,10 @@ end
 ";
 
     assert_eq!(invoke_acl_export(acl, "literal_hit"), RuntimeValue::I64(20));
-    assert_eq!(invoke_acl_export(acl, "wildcard_hit"), RuntimeValue::I64(30));
+    assert_eq!(
+        invoke_acl_export(acl, "wildcard_hit"),
+        RuntimeValue::I64(30)
+    );
 }
 
 #[test]

@@ -186,9 +186,9 @@ impl CapabilityRevocationRegistry {
 
     /// Return `true` if `module`'s `capability` has been revoked in `profile`.
     pub fn is_revoked(&self, module: &str, capability: &str, profile: &str) -> bool {
-        self.records.iter().any(|r| {
-            r.module == module && r.capability == capability && r.profile == profile
-        })
+        self.records
+            .iter()
+            .any(|r| r.module == module && r.capability == capability && r.profile == profile)
     }
 
     /// All recorded revocations.

@@ -46,7 +46,10 @@ fn parse_simple_pred(pred: &str) -> Option<(&str, &str, &str)> {
             // Validate: each side is an int literal or a valid identifier.
             let valid_side = |s: &str| -> bool {
                 parse_int(s).is_some()
-                    || (s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') && !s.is_empty())
+                    || (s
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                        && !s.is_empty())
             };
             if valid_side(lhs) && valid_side(rhs) {
                 return Some((lhs, op, rhs));
@@ -79,7 +82,7 @@ fn is_constant_tautology(pred: &str) -> bool {
 fn is_reflexive_tautology(pred: &str) -> bool {
     if let Some((lhs, op, rhs)) = parse_simple_pred(pred) {
         if lhs == rhs {
-            return matches!(op, ">=" | "==" | "<=" );
+            return matches!(op, ">=" | "==" | "<=");
         }
     }
     false
@@ -148,15 +151,17 @@ impl FactDb {
                 // Skip if this is `==` or `>=` / `<=` / `!=`
                 let prev = c[..eq_pos].chars().last();
                 let next = c[eq_pos + 1..].chars().next();
-                if matches!(prev, Some('>' | '<' | '!' | '='))
-                    || matches!(next, Some('='))
-                {
+                if matches!(prev, Some('>' | '<' | '!' | '=')) || matches!(next, Some('=')) {
                     continue;
                 }
                 let lhs = c[..eq_pos].trim();
                 let rhs_expr = c[eq_pos + 1..].trim();
                 // Ensure lhs is an identifier
-                if !lhs.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') || lhs.is_empty() {
+                if !lhs
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                    || lhs.is_empty()
+                {
                     continue;
                 }
                 // Try `a + b` on the rhs
@@ -175,7 +180,9 @@ impl FactDb {
                     }
                 }
                 // Try simple alias `x = y`
-                let rhs_is_ident = rhs_expr.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                let rhs_is_ident = rhs_expr
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
                     && !rhs_expr.is_empty();
                 if rhs_is_ident {
                     if let Some(&alias_lb) = lb.get(rhs_expr) {

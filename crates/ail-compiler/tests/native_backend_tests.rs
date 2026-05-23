@@ -9,10 +9,10 @@
 //  - Task 3.8: cargo tree -p ail-compiler does not contain wasmtime or wasmer.
 
 use ail_compiler::{
-    AnfBinding, AnfExpr, AnfIr, CapabilitiesManifest, CapabilityEntry, SourceMap, emit_native,
-    emit_wasm,
+    AnfBinding, AnfExpr, AnfIr, CapabilitiesManifest, CapabilityEntry, SourceMap,
     anf::AnfMatchArm,
     core_ir::{LiteralValue, StageHashes},
+    emit_native, emit_wasm,
     lower::{lower_to_anf, lower_to_core_ir},
 };
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
@@ -340,8 +340,7 @@ fn capability_manifest_serialization_roundtrip() {
 fn native_constructor_payload_match_does_not_lower_as_zero_pattern() {
     let unsupported = emit_native(&match_zero_with_pattern("Ok(value)"))
         .expect("unsupported constructor payload match must compile to trap");
-    let zero = emit_native(&match_zero_with_pattern("0"))
-        .expect("numeric zero match must compile");
+    let zero = emit_native(&match_zero_with_pattern("0")).expect("numeric zero match must compile");
 
     assert_ne!(
         unsupported.native_bytes, zero.native_bytes,

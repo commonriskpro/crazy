@@ -799,8 +799,8 @@ fn parse_precondition_line(
         let mut parts = rest.splitn(2, ' ');
         let target_name = parts.next().unwrap_or("").trim().to_string();
         let kv_part = parts.next().unwrap_or("").trim();
-        let context_hash = extract_kv_value(kv_part, "hash")
-            .or_else(|| extract_kv_value(kv_part, "context_hash"));
+        let context_hash =
+            extract_kv_value(kv_part, "hash").or_else(|| extract_kv_value(kv_part, "context_hash"));
         if target_name.is_empty() {
             return Err(format!(
                 "line {line_num}: assert_context requires a target name"
@@ -1353,10 +1353,7 @@ end
         let args = parse_kv_args(
             "target=fn.checkout effects={database.read:Cart,payment.charge:PaymentProvider}",
         );
-        assert_eq!(
-            args.get("target").map(String::as_str),
-            Some("fn.checkout")
-        );
+        assert_eq!(args.get("target").map(String::as_str), Some("fn.checkout"));
         assert_eq!(
             args.get("effects").map(String::as_str),
             Some("{database.read:Cart,payment.charge:PaymentProvider}")
@@ -1381,10 +1378,7 @@ end
     #[test]
     fn parse_kv_args_nested_set_literal_captured_whole() {
         let args = parse_kv_args("val={a,{b,c}} key=x");
-        assert_eq!(
-            args.get("val").map(String::as_str),
-            Some("{a,{b,c}}")
-        );
+        assert_eq!(args.get("val").map(String::as_str), Some("{a,{b,c}}"));
     }
 
     // ── Gap 4: assert_context precondition ────────────────────────────────
@@ -1490,7 +1484,10 @@ end
         let result = parse_changeset(&src).expect("named assert_hash must parse");
         assert_eq!(result.preconditions.len(), 1);
         match &result.preconditions[0] {
-            crate::canonical::Precondition::AssertHashByName { name, expected_hash } => {
+            crate::canonical::Precondition::AssertHashByName {
+                name,
+                expected_hash,
+            } => {
                 assert_eq!(name, "fn.cart_total");
                 assert_eq!(expected_hash.0, [0xbb_u8; 32]);
             }

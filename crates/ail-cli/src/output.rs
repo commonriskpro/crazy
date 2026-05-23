@@ -60,10 +60,7 @@ pub fn format_response(mode: OutputMode, human_msg: &str, data: Value) -> String
             // This satisfies spec JV-1: every --json response has schema_version in data.
             let mut data_obj = data;
             if let Some(obj) = data_obj.as_object_mut() {
-                obj.insert(
-                    "schema_version".to_string(),
-                    json!(JSON_OUTPUT_VERSION),
-                );
+                obj.insert("schema_version".to_string(), json!(JSON_OUTPUT_VERSION));
             }
             json!({ "status": "ok", "data": data_obj }).to_string()
         }

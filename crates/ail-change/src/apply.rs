@@ -156,9 +156,7 @@ fn evaluate_precondition(precondition: &Precondition, graph: &SemanticGraph) -> 
                     if &computed == expected_hash {
                         None
                     } else {
-                        Some(format!(
-                            "AssertHash failed: node '{name}' hash mismatch"
-                        ))
+                        Some(format!("AssertHash failed: node '{name}' hash mismatch"))
                     }
                 }
             }
@@ -177,11 +175,8 @@ fn evaluate_precondition(precondition: &Precondition, graph: &SemanticGraph) -> 
                     // Phase 2: when a context hash is provided, verify it matches.
                     if let Some(expected_ctx_hash) = context_hash {
                         let computed = compute_node_hash(n);
-                        let computed_hex: String = computed
-                            .0
-                            .iter()
-                            .map(|b| format!("{b:02x}"))
-                            .collect();
+                        let computed_hex: String =
+                            computed.0.iter().map(|b| format!("{b:02x}")).collect();
                         // Accept either the full 64-char hex or a prefix match
                         // (callers may record a short prefix from `ail context`).
                         if !computed_hex.starts_with(expected_ctx_hash.as_str())

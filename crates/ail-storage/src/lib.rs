@@ -43,6 +43,7 @@ pub use approval::{
 };
 pub use backends::postgres::PostgresGraphStore;
 pub use branch::{Branch, BranchRegistry, BranchStore};
+pub use diff::{ObjectBackedStructuralDiffStore, StructuralDiff, StructuralDiffStore};
 pub use export::{ExportBundle, ExportScope, build_export_bundle};
 pub use graph::{ChangeSetLogEntry, GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
 pub use integrity::{IntegrityInput, IntegrityIssue, IntegrityReport, verify_integrity};
@@ -57,4 +58,3 @@ pub use retention::{
 };
 pub use tag::{ReleaseMetadata, Tag, TagRegistry, TagStore};
 pub use tombstone::{ObjectBackedTombstoneStore, Tombstone, TombstoneStore};
-pub use diff::{ObjectBackedStructuralDiffStore, StructuralDiff, StructuralDiffStore};
