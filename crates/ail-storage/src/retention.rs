@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{StorageError, StorageResult};
 use crate::graph::{GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
-use crate::object::{ObjectId, ObjectStore};
+use crate::object::{ObjectId, ObjectStore, RawObject};
 
 // ── RetentionPolicy ───────────────────────────────────────────────────────
 
@@ -130,17 +130,28 @@ pub trait MutableGraphStore: GraphStore {
     fn delete_snapshot(&self, id: &ObjectId) -> impl Future<Output = StorageResult<()>> + Send;
 }
 
-// ── MutableObjectStore ────────────────────────────────────────────────────
+// ── EnumerableObjectStore ─────────────────────────────────────────────────
 
-/// Extension of `ObjectStore` that supports enumeration and physical deletion
-/// of content-addressed objects.
+/// Read-only contract for loading and enumerating content-addressed objects.
 ///
-/// `ObjectStore` is append-only by design; this trait adds the mutating
-/// operations required for GC without changing the base trait interface.
-pub trait MutableObjectStore: crate::object::ObjectStore {
+/// Integrity verification can depend on this narrower interface instead of the
+/// write/delete-capable object store traits.
+pub trait EnumerableObjectStore {
+    /// Retrieve the object identified by `id`, or `None` if absent.
+    fn get(&self, id: &ObjectId) -> impl Future<Output = StorageResult<Option<RawObject>>> + Send;
+
     /// Return all `ObjectId`s currently present in the store.
     fn list_object_ids(&self) -> impl Future<Output = StorageResult<Vec<ObjectId>>> + Send;
+}
 
+// ── MutableObjectStore ────────────────────────────────────────────────────
+
+/// Extension of `EnumerableObjectStore` that supports physical deletion of
+/// content-addressed objects.
+///
+/// GC requires both enumeration and deletion, while read-only integrity checks
+/// should depend on `EnumerableObjectStore` instead.
+pub trait MutableObjectStore: ObjectStore + EnumerableObjectStore {
     /// Remove the object identified by `id` and return the number of bytes
     /// freed.  Returns `None` if no object with that `id` was present
     /// (idempotent).

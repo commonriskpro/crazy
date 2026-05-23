@@ -41,6 +41,7 @@ use crate::approval::{ApprovalRecord, AssumptionRecord};
 use crate::error::StorageResult;
 use crate::graph::GraphStore;
 use crate::object::{ObjectId, ObjectStore, RawObject};
+use crate::retention::EnumerableObjectStore;
 
 // ── IntegrityIssue ────────────────────────────────────────────────────────
 
@@ -185,6 +186,17 @@ pub struct IntegrityReport {
     pub issues: Vec<IntegrityIssue>,
     /// Number of snapshots examined.
     pub snapshots_checked: u64,
+    /// `true` iff no issues were detected.
+    pub passed: bool,
+}
+
+/// Summary of a read-only CAS object verification run.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ObjectIntegrityReport {
+    /// All detected object issues, sorted for determinism.
+    pub issues: Vec<IntegrityIssue>,
+    /// Number of object ids returned by the store enumeration.
+    pub objects_checked: u64,
     /// `true` iff no issues were detected.
     pub passed: bool,
 }
@@ -341,6 +353,44 @@ where
     })
 }
 
+/// Verify every enumerable CAS object without mutating the store.
+///
+/// This checks the executable object-store contract directly: every id returned
+/// by `list_object_ids` must be loadable, and loaded bytes must hash back to the
+/// same `ObjectId`.
+pub async fn verify_object_store_integrity<S>(
+    object_store: &S,
+) -> StorageResult<ObjectIntegrityReport>
+where
+    S: EnumerableObjectStore + Send + Sync,
+{
+    let ids = object_store.list_object_ids().await?;
+    let mut issues = Vec::new();
+
+    for id in &ids {
+        match object_store.get(id).await? {
+            None => issues.push(IntegrityIssue::MissingObject { id: *id }),
+            Some(raw) => {
+                if ObjectId::from_bytes(&raw.0) != *id {
+                    issues.push(IntegrityIssue::HashMismatch { id: *id });
+                }
+            }
+        }
+    }
+
+    issues.sort_by(|a, b| {
+        a.kind_ord()
+            .cmp(&b.kind_ord())
+            .then(a.id().as_bytes().cmp(b.id().as_bytes()))
+    });
+
+    Ok(ObjectIntegrityReport {
+        objects_checked: ids.len() as u64,
+        passed: issues.is_empty(),
+        issues,
+    })
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -350,6 +400,53 @@ mod tests {
     use crate::backends::memory::MemoryObjectStore;
     use crate::graph::{GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
     use crate::object::{ObjectStore, RawObject};
+    use crate::retention::EnumerableObjectStore;
+
+    #[derive(Default)]
+    struct FaultyObjectStore {
+        ids: std::collections::BTreeSet<ObjectId>,
+        objects: std::collections::BTreeMap<ObjectId, RawObject>,
+    }
+
+    impl FaultyObjectStore {
+        fn with_listed_missing(id: ObjectId) -> Self {
+            Self {
+                ids: std::collections::BTreeSet::from([id]),
+                objects: std::collections::BTreeMap::new(),
+            }
+        }
+
+        fn with_corrupt_object(id: ObjectId, raw: RawObject) -> Self {
+            Self {
+                ids: std::collections::BTreeSet::from([id]),
+                objects: std::collections::BTreeMap::from([(id, raw)]),
+            }
+        }
+    }
+
+    impl ObjectStore for FaultyObjectStore {
+        async fn put(&self, object: RawObject) -> StorageResult<ObjectId> {
+            Ok(ObjectId::from_bytes(&object.0))
+        }
+
+        async fn get(&self, id: &ObjectId) -> StorageResult<Option<RawObject>> {
+            Ok(self.objects.get(id).cloned())
+        }
+
+        async fn exists(&self, id: &ObjectId) -> StorageResult<bool> {
+            Ok(self.objects.contains_key(id))
+        }
+    }
+
+    impl EnumerableObjectStore for FaultyObjectStore {
+        async fn get(&self, id: &ObjectId) -> StorageResult<Option<RawObject>> {
+            Ok(self.objects.get(id).cloned())
+        }
+
+        async fn list_object_ids(&self) -> StorageResult<Vec<ObjectId>> {
+            Ok(self.ids.iter().copied().collect())
+        }
+    }
 
     /// Compute the ObjectId that the MemoryObjectStore will assign when
     /// `[seed; 32]` bytes are put.  Because `put` does `ObjectId::from_bytes(&object.0)`
@@ -434,6 +531,57 @@ mod tests {
         assert!(report.passed, "report must pass");
         assert!(report.issues.is_empty());
         assert_eq!(report.snapshots_checked, 2);
+    }
+
+    #[tokio::test]
+    async fn object_store_integrity_passes_for_valid_memory_store() {
+        let obj_store = MemoryObjectStore::new();
+        put_seed_object(&obj_store, 10).await;
+        put_seed_object(&obj_store, 20).await;
+
+        let report = verify_object_store_integrity(&obj_store)
+            .await
+            .expect("verify object store");
+
+        assert!(report.passed, "issues: {:?}", report.issues);
+        assert_eq!(report.objects_checked, 2);
+    }
+
+    #[tokio::test]
+    async fn object_store_integrity_reports_listed_missing_object() {
+        let missing_id = make_id(99);
+        let obj_store = FaultyObjectStore::with_listed_missing(missing_id);
+
+        let report = verify_object_store_integrity(&obj_store)
+            .await
+            .expect("verify object store");
+
+        assert!(!report.passed);
+        assert_eq!(report.objects_checked, 1);
+        assert!(matches!(
+            report.issues.as_slice(),
+            [IntegrityIssue::MissingObject { id }] if *id == missing_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn object_store_integrity_reports_hash_mismatch() {
+        let declared_id = make_id(3);
+        let obj_store = FaultyObjectStore::with_corrupt_object(
+            declared_id,
+            RawObject(b"different bytes than declared id".to_vec()),
+        );
+
+        let report = verify_object_store_integrity(&obj_store)
+            .await
+            .expect("verify object store");
+
+        assert!(!report.passed);
+        assert_eq!(report.objects_checked, 1);
+        assert!(matches!(
+            report.issues.as_slice(),
+            [IntegrityIssue::HashMismatch { id }] if *id == declared_id
+        ));
     }
 
     // Scenario: missing graph_root_hash object produces MissingObject issue.

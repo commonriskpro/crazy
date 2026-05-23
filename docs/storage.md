@@ -452,6 +452,16 @@ assumptions link to boundaries
 indexes match snapshot or are marked stale
 ```
 
+Implementation note: `ail-storage` exposes two executable integrity paths today.
+`verify_integrity` validates snapshot dependencies (`graph_root_hash`, parent
+links, change/report/artifact links, approvals, assumptions, and indexes).
+`verify_object_store_integrity` enumerates CAS object ids from stores that
+implement read-only `EnumerableObjectStore`, reloads each object, and reports
+listed-missing objects or BLAKE3 hash mismatches without mutating storage.
+`MutableObjectStore` extends that enumerable contract with deletion for GC. The
+in-memory and tempfile stores support executable object GC through `run_gc`;
+broader policy coverage for branches/tags/audit holds remains target design.
+
 ### Final rules
 
 ```txt
