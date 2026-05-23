@@ -94,8 +94,6 @@ fn replay_handler_verifies_matching_output_hash() {
 
 #[test]
 fn replay_verifying_handler_rejects_tampered_response() {
-    use ail_runtime::replay::TamperTestHandler;
-
     // TamperTestHandler is a test helper that returns responses different from
     // what was recorded — simulating replay corruption detection.
     let mut engine = ReplayEngine::new();

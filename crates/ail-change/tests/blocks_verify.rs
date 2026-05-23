@@ -11,7 +11,7 @@
 //   7. Literal/value normalization
 
 use ail_change::canonical::canonicalize_parsed;
-use ail_change::parser::{ParsedBlock, parse_changeset};
+use ail_change::parser::parse_changeset;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Block parsing
@@ -240,7 +240,7 @@ fn canonicalize_leaves_type_pascal_case_unchanged() {
 fn canonicalize_parsed_normalizes_id_args() {
     use ail_change::model::{ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp};
     use ail_change::parser::ParsedOp;
-    use ail_change::parser::{ChangeComposition, ParsedChangeSet};
+    use ail_change::parser::ParsedChangeSet;
     use std::collections::BTreeMap;
 
     let mut args = BTreeMap::new();
@@ -284,7 +284,7 @@ fn canonicalize_parsed_normalizes_id_args() {
 fn create_type_without_derive_gets_derive_none_default() {
     use ail_change::model::{ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp};
     use ail_change::parser::ParsedOp;
-    use ail_change::parser::{ChangeComposition, ParsedChangeSet};
+    use ail_change::parser::ParsedChangeSet;
     use std::collections::BTreeMap;
 
     let mut args = BTreeMap::new();
@@ -323,7 +323,7 @@ fn create_type_without_derive_gets_derive_none_default() {
 fn create_type_with_explicit_derive_is_preserved() {
     use ail_change::model::{ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp};
     use ail_change::parser::ParsedOp;
-    use ail_change::parser::{ChangeComposition, ParsedChangeSet};
+    use ail_change::parser::ParsedChangeSet;
     use std::collections::BTreeMap;
 
     let mut args = BTreeMap::new();

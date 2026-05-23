@@ -22,7 +22,7 @@
 
 use ail_verify::policy::{
     ApprovalRecord, ApprovalStrength, POLICY_WEAK_ASSUMPTION, PolicyDecision, PolicyEngine,
-    PolicyInput, PolicyRule, PolicyViolation,
+    PolicyInput, PolicyRule,
 };
 use ail_verify::policy::{PolicyAudit, PolicyAuditEntry};
 use ail_verify::report::{VerificationEntry, VerificationReport, VerificationState};

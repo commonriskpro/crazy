@@ -8,7 +8,6 @@
 // degradation tracking), §5 (codegen consistency).
 // Design: additive serde-defaulted fields; older reports still deserialize.
 
-use ail_verify::proof::ObligationLedgerEntry;
 use ail_verify::report::{ArtifactHash, DegradationEvent, VerificationReport, VerificationState};
 
 // ── Scenario: new fields default to empty ─────────────────────────────────

@@ -307,7 +307,7 @@ mod tests {
         model::{BlockHash, SnapshotId, Timestamp},
     };
     use ail_core::semantic_graph::{
-        CapabilityReqs, EdgeKind, EffectRow, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph,
+        EdgeKind, EffectRow, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph,
     };
 
     use super::*;

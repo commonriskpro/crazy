@@ -8,15 +8,13 @@
 //  ASYNC-3: CapabilityCallMode variants are distinct and debug-printable.
 //  ASYNC-4: invoke_async propagates RuntimeError on missing export.
 
-use std::sync::Arc;
-
 use wasm_encoder::{
     CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, Module,
     TypeSection, ValType,
 };
 
 use ail_runtime::{
-    CapabilityCallMode, CapabilityManifest, ResourceLimits, RuntimeArg, RuntimeError, RuntimeHost,
+    CapabilityCallMode, CapabilityManifest, ResourceLimits, RuntimeError, RuntimeHost,
     RuntimeProfile, RuntimeValue, blake3_hex_of,
 };
 

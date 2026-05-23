@@ -2851,7 +2851,6 @@ mod tests {
 
     #[test]
     fn effect_data_layout_has_result_buffer_offset() {
-        use crate::anf::AnfBinding;
         let anf = effect_call_with_record_result_anf();
         let layout = EffectDataLayout::for_bindings(&anf.bindings);
 

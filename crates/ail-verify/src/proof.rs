@@ -364,7 +364,7 @@ impl ProofObligationPipeline {
         // assumption that preconditions hold).  Using them for *Requires*
         // obligations would be circular — a precondition cannot prove itself.
         let scope_node = graph.nodes.iter().find(|n| n.name == obligation.scope);
-        let mut constraint_strings: Vec<String> = if obligation.role == ClauseRole::Ensures {
+        let constraint_strings: Vec<String> = if obligation.role == ClauseRole::Ensures {
             let requires = scope_node
                 .and_then(|n| n.contract_clauses.as_ref())
                 .map(|clauses| clauses.requires.clone())

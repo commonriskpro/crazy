@@ -47,7 +47,7 @@
 // | unbounded-concurrency without approval       | Unverified  |
 // | channel without close/transfer tag           | Unverified  |
 
-use ail_core::semantic_graph::{EdgeKind, NodeKind, NodeRef, SemanticGraph};
+use ail_core::semantic_graph::{EdgeKind, NodeRef, SemanticGraph};
 
 use crate::diagnostic::{Diagnostic, DiagnosticSeverity};
 use crate::report::{SummaryCounts, VerificationEntry, VerificationReport, VerificationState};

@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use ail_change::model::ChangeSetOp;
-use ail_change::parser::{OpArgs, ParsedOp, parse_changeset};
+use ail_change::parser::{OpArgs, parse_changeset};
 
 // ── Scenario: op with multiple kv args ────────────────────────────────────
 // GIVEN `op create_function id=fn.checkout visibility=public`

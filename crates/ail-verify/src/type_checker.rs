@@ -82,7 +82,6 @@ use std::collections::BTreeMap;
 
 use ail_core::semantic_graph::{
     EdgeKind, GenericParamKind, GraphNode, NodeKind, NodeRef, SemanticGraph,
-    EffectArgBinding, CapabilityArgBinding,
 };
 
 use crate::report::{SummaryCounts, VerificationEntry, VerificationReport, VerificationState};
@@ -2248,7 +2247,7 @@ mod tests {
     //   THEN entry claim "effect-param-threading", state Proven
     #[test]
     fn effect_param_present_in_caller_is_proven() {
-        use ail_core::semantic_graph::{EffectArgBinding, InferredFact};
+        use ail_core::semantic_graph::EffectArgBinding;
 
         let mut caller = make_node(0, NodeKind::Function, "caller_fn");
         caller.effect_row = Some(EffectRow { effects: vec!["IO".to_string()] });

@@ -936,7 +936,7 @@ fn stage12_no_changed_nodes_invariant_is_proven() {
 #[test]
 fn stage3_op_with_version_999_fails_with_version_incompatible() {
     // Op carries version=999 which exceeds CURRENT_SCHEMA_VERSION=1
-    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.foo");
+    let node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.foo");
     let graph = SemanticGraph {
         nodes: vec![node],
         edges: vec![],
@@ -985,7 +985,7 @@ fn stage3_op_with_unknown_type_fails_with_arg_type_invalid() {
 #[test]
 fn stage3_op_with_effect_without_colon_fails_with_effect_malformed() {
     // effect=nodot has no colon separator → malformed
-    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.foo");
+    let node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.foo");
     let graph = SemanticGraph {
         nodes: vec![node],
         edges: vec![],
@@ -1014,7 +1014,7 @@ fn stage3_op_with_effect_without_colon_fails_with_effect_malformed() {
 #[test]
 fn stage3_op_with_version_1_is_proven() {
     // version=1 is valid (CURRENT_SCHEMA_VERSION)
-    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.foo");
+    let node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.foo");
     let graph = SemanticGraph {
         nodes: vec![node],
         edges: vec![],
@@ -1126,7 +1126,7 @@ fn stage4_op_without_base_hash_has_no_stale_check() {
 fn stage5_added_node_produces_proven_entry_with_node_name_scope() {
     // base has no nodes, target has one → added node
     let base = empty_graph();
-    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.added");
+    let node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.added");
     let target = SemanticGraph {
         nodes: vec![node],
         edges: vec![],
@@ -1155,7 +1155,7 @@ fn stage5_added_node_produces_proven_entry_with_node_name_scope() {
 #[test]
 fn stage5_removed_node_produces_unverified_entry_with_node_name_scope() {
     // base has one node, target has none → removed
-    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.removed");
+    let node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.removed");
     let base = SemanticGraph {
         nodes: vec![node],
         edges: vec![],
@@ -1184,7 +1184,7 @@ fn stage5_removed_node_produces_unverified_entry_with_node_name_scope() {
 
 #[test]
 fn stage5_no_base_graph_produces_single_unverified_entry() {
-    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.x");
+    let node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.x");
     let target = SemanticGraph {
         nodes: vec![node],
         edges: vec![],
