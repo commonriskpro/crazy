@@ -511,6 +511,7 @@ impl PolicyEngine {
     ) -> PolicyDecision {
         let mut violations: Vec<PolicyViolation> = Vec::new();
         let mut warnings: Vec<PolicyWarning> = Vec::new();
+        let mut approval_scopes: Vec<String> = Vec::new();
 
         for entry in &report.entries {
             let is_public = entry.scope.starts_with("pub::");
@@ -532,15 +533,7 @@ impl PolicyEngine {
                     });
                 }
                 GateResult::RequireApproval => {
-                    // Emit as violation with POLICY_ASSUMED_UNAPPROVED — blocks
-                    violations.push(PolicyViolation {
-                        code: POLICY_ASSUMED_UNAPPROVED.to_string(),
-                        scope: entry.scope.clone(),
-                        message: format!(
-                            "profile '{}' requires approval for entry '{}' with state {:?}",
-                            profile, entry.scope, entry.state
-                        ),
-                    });
+                    approval_scopes.push(entry.scope.clone());
                 }
                 GateResult::Pass => {}
             }
@@ -548,6 +541,8 @@ impl PolicyEngine {
 
         if !violations.is_empty() {
             PolicyDecision::Failed(violations)
+        } else if !approval_scopes.is_empty() {
+            PolicyDecision::ApprovalRequired(approval_scopes)
         } else if !warnings.is_empty() {
             PolicyDecision::PassedWithWarnings(warnings)
         } else {
@@ -629,8 +624,9 @@ impl PolicyEngine {
                     POLICY_PROFILE_GATE.to_string(),
                     format!("profile '{profile}' blocks Unsafe entries"),
                 ),
-                // draft/dev/test/unknown: block Unsafe without any approval
-                _ => {
+                // draft/dev/test: block Unsafe without any approval.
+                // Unknown profiles stay strict-by-default and are handled below.
+                "draft" | "dev" | "test" => {
                     if approval.is_some() {
                         GateResult::Pass
                     } else {
@@ -640,6 +636,11 @@ impl PolicyEngine {
                         )
                     }
                 }
+                // STRICT-BY-DEFAULT: unknown profiles block Unsafe like critical.
+                _ => GateResult::Block(
+                    POLICY_PROFILE_GATE.to_string(),
+                    format!("unknown profile '{profile}' treated as conservative — blocks Unsafe"),
+                ),
             },
 
             // Unverified — depends on profile strictness.

@@ -87,6 +87,7 @@ use ail_storage::{
     SnapshotEnvelope, error::StorageError, graph::ChangeSetLogEntry, object::ObjectId,
 };
 use ail_verify::checker::Checker;
+use ail_verify::policy::{PolicyDecision, PolicyEngine, PolicyInput, PolicyRule};
 use ail_verify::report::VerificationReport;
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
@@ -1325,6 +1326,36 @@ async fn cmd_verify(
         }
     }
     let report = Checker::check(&graph);
+    let policy_rules = [PolicyRule::ProfileGate(profile.to_string())];
+    let policy_input = PolicyInput {
+        report: &report,
+        rules: &policy_rules,
+        approvals: &[],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+    };
+    let (policy_decision, policy_audit) = PolicyEngine::evaluate_with_audit(&policy_input);
+    let mut approval_required_scopes = match &policy_decision {
+        PolicyDecision::ApprovalRequired(scopes) => scopes.clone(),
+        _ => Vec::new(),
+    };
+    if profile == "prod" && !approval_required_scopes.iter().any(|s| s == "profile:prod") {
+        approval_required_scopes.push("profile:prod".to_string());
+    }
+    let approval_required = !approval_required_scopes.is_empty();
+    let policy_failed = matches!(policy_decision, PolicyDecision::Failed(_));
+    let policy_blocks_apply = policy_failed || approval_required;
+    let policy_status = match &policy_decision {
+        PolicyDecision::Failed(_) => "blocked",
+        PolicyDecision::ApprovalRequired(_) => "approval_required",
+        PolicyDecision::PassedWithWarnings(_) if approval_required => "approval_required",
+        PolicyDecision::Passed if approval_required => "approval_required",
+        PolicyDecision::PassedWithWarnings(_) => "warning",
+        PolicyDecision::Passed => "passed",
+    };
+    let policy_ok = !policy_blocks_apply;
     let summary = format!("{:?}", report.summary());
     let entry_count = report.entries.len();
 
@@ -1377,21 +1408,44 @@ async fn cmd_verify(
         .iter()
         .map(|e| json!({ "claim": e.claim, "state": format!("{:?}", e.state) }))
         .collect();
-    // Policy report: profile-gated.
+    let policy_violations = match &policy_decision {
+        PolicyDecision::Failed(violations) => json!(violations),
+        _ => json!([]),
+    };
+    let policy_warnings = match &policy_decision {
+        PolicyDecision::PassedWithWarnings(warnings) => json!(warnings),
+        _ => json!([]),
+    };
+
+    // Policy report: profile-gated and machine-readable for automation.
     let policy_report = json!({
         "profile": profile,
-        "policy_ok": true,
-        "violations": [],
+        "status": policy_status,
+        "policy_ok": policy_ok,
+        "blocks_apply": policy_blocks_apply,
+        "violations": policy_violations,
+        "warnings": policy_warnings,
+        "approval_required_scopes": approval_required_scopes,
+        "decision": policy_decision,
+        "audit": policy_audit,
     });
-    // Approval requirements: none for dev; prod requires explicit approval.
-    let approval_requirements = if profile == "prod" {
-        json!({ "required": true, "reason": "prod profile requires human approval" })
+    let approval_requirements = if approval_required {
+        json!({
+            "required": true,
+            "satisfied": false,
+            "scopes": policy_report["approval_required_scopes"],
+            "reason": if profile == "prod" {
+                "prod profile requires explicit approval before apply"
+            } else {
+                "verification policy requires explicit approval"
+            },
+        })
     } else {
-        json!({ "required": false })
+        json!({ "required": false, "satisfied": true, "scopes": [] })
     };
 
     let human_msg = format!(
-        "change-id: {change_id}\nprofile: {profile}\nentries: {entry_count}\nsummary: {summary}\ndiagnostics: {diag_count}\npolicy: ok"
+        "change-id: {change_id}\nprofile: {profile}\nentries: {entry_count}\nsummary: {summary}\ndiagnostics: {diag_count}\npolicy: {policy_status}"
     );
     print_response(
         mode,
@@ -1455,12 +1509,19 @@ async fn cmd_apply(
     // Pre-apply gate: enforce policy approval for prod profile.
     // Per tooling.md: prod apply requires explicit approval; --yes signals it.
     let profile = policy_profile.unwrap_or("dev");
-    if profile == "prod" && !yes {
+    let approval_required = profile == "prod";
+    let approval_approved = !approval_required || yes;
+    if approval_required && !approval_approved {
         return Err(CliError::Domain(
             "apply blocked: prod profile requires approval; rerun with --yes to confirm"
                 .to_string(),
         ));
     }
+    let policy_status = if approval_required {
+        "operator_confirmed"
+    } else {
+        "passed"
+    };
     let pre_apply_gate = json!({
         "canonical_change_hash": change_id,
         "structural_diff": {
@@ -1478,11 +1539,16 @@ async fn cmd_apply(
         "verification_report_status": "accepted",
         "policy_status": {
             "profile": profile,
+            "status": policy_status,
             "ok": true,
+            "blocks_apply": false,
+            "approval_source": if approval_required { "operator_confirmation" } else { "not_required" },
         },
         "approval_status": {
-            "required": profile == "prod",
-            "approved": profile != "prod",
+            "required": approval_required,
+            "operator_confirmed": approval_approved,
+            "persisted_approval": false,
+            "satisfied_for_this_apply": approval_approved,
         },
         "target_snapshot": base_snap_hex,
     });

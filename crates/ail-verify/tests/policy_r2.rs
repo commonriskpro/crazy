@@ -114,6 +114,25 @@ fn unknown_profile_blocks_unsafe_strict_by_default() {
 }
 
 #[test]
+fn unknown_profile_blocks_unsafe_even_with_approval() {
+    let report = report_with(vec![entry("type", "unsafe.fn", VerificationState::Unsafe)]);
+    let input = PolicyInput {
+        report: &report,
+        rules: &[PolicyRule::ProfileGate("totally_custom".into())],
+        approvals: &[strong_approval_for("unsafe.fn")],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+    };
+    let decision = PolicyEngine::evaluate(&input);
+    assert!(
+        matches!(decision, PolicyDecision::Failed(_)),
+        "unknown profiles must be critical-like and block Unsafe even with approval"
+    );
+}
+
+#[test]
 fn unknown_profile_passes_proven_entry() {
     // Even unknown profiles must pass Proven entries (that's universal)
     let report = report_with(vec![entry("type", "proven.fn", VerificationState::Proven)]);
@@ -606,6 +625,29 @@ fn prod_blocks_assumed_without_approval() {
         ),
         "prod must block unapproved Assumed"
     );
+}
+
+#[test]
+fn prod_assumed_without_approval_is_machine_readable_approval_required() {
+    let report = report_with(vec![entry(
+        "boundary",
+        "external.payment",
+        VerificationState::Assumed,
+    )]);
+    let input = PolicyInput {
+        report: &report,
+        rules: &[PolicyRule::ProfileGate("prod".into())],
+        approvals: &[],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+    };
+
+    match PolicyEngine::evaluate(&input) {
+        PolicyDecision::ApprovalRequired(scopes) => assert_eq!(scopes, vec!["external.payment"]),
+        other => panic!("prod Assumed without approval must be ApprovalRequired, got {other:?}"),
+    }
 }
 
 #[test]
