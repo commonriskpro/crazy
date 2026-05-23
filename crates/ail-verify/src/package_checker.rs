@@ -16,8 +16,10 @@
 // # Design notes
 //
 // `PackageTrustChecker` is stateless; call `check` with a manifest slice and a
-// profile name to receive a `Vec<VerificationEntry>`.  Each entry covers one
-// package.  The `scope` field is set to `"package:<name>@<version>"`.
+// profile name to receive a `Vec<VerificationEntry>`.  Most entries cover one
+// package with scope `"package:<name>@<version>"`. In strict profiles, active
+// package assumptions are emitted with assumption-specific scopes so policy
+// approvals cover the exact consumer trust record.
 //
 // `import != grant`: this checker verifies the package's trust tier; it does
 // NOT grant any capability to the importing module.
@@ -47,21 +49,25 @@ fn minimum_trust_for_profile(profile_name: &str) -> TrustLevel {
     }
 }
 
+fn requires_assumption_approval(profile_name: &str) -> bool {
+    matches!(profile_name, "staging" | "prod" | "critical")
+}
+
 // ── PackageTrustChecker ───────────────────────────────────────────────────
 
 /// Pure, stateless package trust checker.
 ///
 /// Call [`PackageTrustChecker::check`] with a `PackageManifest` slice and a
-/// profile name string to receive a list of `VerificationEntry` items, one
-/// per package.
+/// profile name string to receive a list of `VerificationEntry` items.
 pub struct PackageTrustChecker;
 
 impl PackageTrustChecker {
     /// Check each manifest's trust tier against the named profile's policy.
     ///
-    /// Returns one [`VerificationEntry`] per manifest.  The `scope` is
-    /// `"package:<name>@<version>"`.  `blocking` is `true` when the entry
-    /// indicates the package should NOT proceed to the next phase.
+    /// Returns one [`VerificationEntry`] per manifest, except active assumptions
+    /// in strict profiles which are emitted per assumption.  `blocking` is
+    /// `true` when the entry indicates the package should NOT proceed to the
+    /// next phase.
     ///
     /// # Policy
     ///
@@ -73,7 +79,7 @@ impl PackageTrustChecker {
         let min_trust = minimum_trust_for_profile(profile_name);
         manifests
             .iter()
-            .map(|m| Self::check_one(m, profile_name, min_trust))
+            .flat_map(|m| Self::check_one(m, profile_name, min_trust))
             .collect()
     }
 
@@ -81,13 +87,13 @@ impl PackageTrustChecker {
         manifest: &PackageManifest,
         profile_name: &str,
         min_trust: TrustLevel,
-    ) -> VerificationEntry {
+    ) -> Vec<VerificationEntry> {
         let scope = format!("package:{}@{}", manifest.name, manifest.version);
         let trust = manifest.trust_level;
 
         // Unsafe packages are always blocking.
         if trust == TrustLevel::Unsafe {
-            return VerificationEntry {
+            return vec![VerificationEntry {
                 claim: format!("package-trust[{profile_name}]"),
                 state: VerificationState::Unsafe,
                 scope,
@@ -96,12 +102,37 @@ impl PackageTrustChecker {
                 ),
                 blocking: true,
                 repair_options: vec![],
-            };
+            }];
         }
 
         if trust == TrustLevel::Assumed {
             if let Some(entry) = Self::check_assumed_package_metadata(manifest, profile_name) {
-                return entry;
+                return vec![entry];
+            }
+
+            let active_assumptions = manifest
+                .assumptions
+                .iter()
+                .filter(|assumption| assumption.is_active())
+                .collect::<Vec<_>>();
+            if requires_assumption_approval(profile_name) && !active_assumptions.is_empty() {
+                return active_assumptions
+                    .into_iter()
+                    .map(|assumption| VerificationEntry {
+                        claim: format!("package-assumption-approval[{profile_name}]"),
+                        state: VerificationState::Assumed,
+                        scope: format!(
+                            "package:{}@{}#assumption:{}",
+                            manifest.name, manifest.version, assumption.id
+                        ),
+                        evidence: Some(format!(
+                            "E_PACKAGE_ASSUMPTION_APPROVAL_REQUIRED: active package assumption '{}' requires consumer approval",
+                            assumption.id
+                        )),
+                        blocking: false,
+                        repair_options: vec!["add_consumer_assumption_approval".into()],
+                    })
+                    .collect();
             }
         }
 
@@ -113,7 +144,7 @@ impl PackageTrustChecker {
                 TrustLevel::Unverified => VerificationState::Unverified,
                 TrustLevel::Unsafe => unreachable!("handled above"),
             };
-            VerificationEntry {
+            vec![VerificationEntry {
                 claim: format!("package-trust[{profile_name}]"),
                 state,
                 scope,
@@ -132,10 +163,10 @@ impl PackageTrustChecker {
                 },
                 blocking: false,
                 repair_options: vec![],
-            }
+            }]
         } else {
             // Below minimum — Unverified state, blocking.
-            VerificationEntry {
+            vec![VerificationEntry {
                 claim: format!("package-trust[{profile_name}]"),
                 state: VerificationState::Unverified,
                 scope,
@@ -144,7 +175,7 @@ impl PackageTrustChecker {
                 )),
                 blocking: true,
                 repair_options: vec!["raise_package_trust_or_select_lower_profile".into()],
-            }
+            }]
         }
     }
 

@@ -214,3 +214,31 @@ fn assumed_with_undeclared_assumption_boundary_is_failed() {
             .contains("E_PACKAGE_ASSUMPTION_FLOATING")
     );
 }
+
+#[test]
+fn active_assumed_package_uses_assumption_scope_in_prod() {
+    let m = make_assumed_manifest("payments.stripe", "2.3.1");
+    let entries = PackageTrustChecker::check(&[m], "prod");
+    let e = &entries[0];
+
+    assert_eq!(e.state, VerificationState::Assumed);
+    assert_eq!(
+        e.scope,
+        "package:payments.stripe@2.3.1#assumption:stripe_idempotency"
+    );
+    assert!(
+        e.evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("E_PACKAGE_ASSUMPTION_APPROVAL_REQUIRED")
+    );
+}
+
+#[test]
+fn assumed_package_dev_keeps_package_scope() {
+    let m = make_assumed_manifest("payments.stripe", "2.3.1");
+    let entries = PackageTrustChecker::check(&[m], "dev");
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].scope, "package:payments.stripe@2.3.1");
+}
