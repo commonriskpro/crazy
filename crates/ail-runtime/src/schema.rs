@@ -20,7 +20,8 @@
 //   Schema validation checks that every declared leaf field path is present as
 //   a key. Nested record fields use dot paths such as `receipt.id` and
 //   `receipt.risk.score`. Option fields require a tag key such as
-//   `receipt.$tag=Some`; only `Some` payload fields are required. This is the
+//   `receipt.$tag=Some`; only `Some` payload fields are required. Result fields
+//   use the same tag protocol with `Ok` and `Err` payload branches. This is the
 //   minimal boundary protocol for this implementation; a full CBOR/JSON schema
 //   validation can replace it without changing the `validate()` signature.
 
@@ -120,6 +121,24 @@ impl SchemaField {
             variants: vec![
                 SchemaVariant::new("None", vec![]),
                 SchemaVariant::new("Some", some_fields),
+            ],
+        }
+    }
+
+    /// Create a result field. `Ok` validates `ok_fields`; `Err` validates
+    /// `err_fields`.
+    pub fn result(
+        name: impl Into<String>,
+        ok_fields: Vec<SchemaField>,
+        err_fields: Vec<SchemaField>,
+    ) -> Self {
+        SchemaField {
+            name: name.into(),
+            type_name: "Result".to_string(),
+            fields: Vec::new(),
+            variants: vec![
+                SchemaVariant::new("Ok", ok_fields),
+                SchemaVariant::new("Err", err_fields),
             ],
         }
     }

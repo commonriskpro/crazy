@@ -580,3 +580,80 @@ fn capability_call_with_schema_rejects_invalid_option_some_handler_response() {
         other => panic!("expected capability call audit event, got {other:?}"),
     }
 }
+
+#[test]
+fn capability_call_with_schema_accepts_valid_result_ok_handler_response() {
+    let cap_id = CapabilityId::new("payment.charge:PaymentProvider");
+    let response = b"payment.$tag=Ok,payment.receipt_id=rcpt-42".to_vec();
+    let mut host = host_with_output_schema(
+        &cap_id,
+        response.clone(),
+        vec![SchemaField::result(
+            "payment",
+            vec![SchemaField::new("receipt_id", "String")],
+            vec![SchemaField::new("reason", "String")],
+        )],
+    );
+
+    let result = host.call_capability(&cap_id, "charge", b"");
+
+    assert_eq!(result, Ok(response));
+    match host.audit_log().events().last() {
+        Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => assert!(*succeeded),
+        other => panic!("expected capability call audit event, got {other:?}"),
+    }
+}
+
+#[test]
+fn capability_call_with_schema_accepts_valid_result_err_handler_response() {
+    let cap_id = CapabilityId::new("payment.charge:PaymentProvider");
+    let response = b"payment.$tag=Err,payment.reason=declined".to_vec();
+    let mut host = host_with_output_schema(
+        &cap_id,
+        response.clone(),
+        vec![SchemaField::result(
+            "payment",
+            vec![SchemaField::new("receipt_id", "String")],
+            vec![SchemaField::new("reason", "String")],
+        )],
+    );
+
+    let result = host.call_capability(&cap_id, "charge", b"");
+
+    assert_eq!(result, Ok(response));
+    match host.audit_log().events().last() {
+        Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => assert!(*succeeded),
+        other => panic!("expected capability call audit event, got {other:?}"),
+    }
+}
+
+#[test]
+fn capability_call_with_schema_rejects_invalid_result_ok_handler_response() {
+    let cap_id = CapabilityId::new("payment.charge:PaymentProvider");
+    let mut host = host_with_output_schema(
+        &cap_id,
+        b"payment.$tag=Ok".to_vec(),
+        vec![SchemaField::result(
+            "payment",
+            vec![SchemaField::new("receipt_id", "String")],
+            vec![SchemaField::new("reason", "String")],
+        )],
+    );
+
+    let err = host
+        .call_capability(&cap_id, "charge", b"")
+        .expect_err("missing Ok payload field must fail output schema validation");
+
+    assert!(
+        matches!(err, ail_runtime::HostError::ContractViolation(_)),
+        "expected ContractViolation for invalid result response schema, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("payment.receipt_id"),
+        "error must name missing result payload field: {err:?}"
+    );
+    match host.audit_log().events().last() {
+        Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => assert!(!*succeeded),
+        other => panic!("expected capability call audit event, got {other:?}"),
+    }
+}
