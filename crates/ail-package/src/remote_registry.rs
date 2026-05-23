@@ -21,6 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 use crate::advisory::{AdvisorySeverity, SecurityAdvisory};
 use crate::manifest::PackageManifest;
@@ -208,6 +209,32 @@ impl InMemoryRegistryClient {
     pub fn add_advisory(&mut self, advisory: SecurityAdvisory) {
         self.advisories.push(advisory);
     }
+
+    /// Record a yank in the in-memory registry metadata.
+    pub fn yank(
+        &mut self,
+        name: impl Into<String>,
+        version: impl Into<String>,
+        reason: impl Into<String>,
+    ) {
+        let name = name.into();
+        let version = version.into();
+        let reason = reason.into();
+        self.registry
+            .yank(name.clone(), version.clone(), reason.clone());
+        self.yank_records.push(crate::yank::YankRecord {
+            name,
+            version,
+            reason,
+        });
+    }
+
+    fn yank_reason(&self, name: &str, version: &str) -> Option<String> {
+        self.yank_records
+            .iter()
+            .find(|y| y.name == name && y.version == version)
+            .map(|y| y.reason.clone())
+    }
 }
 
 impl Default for InMemoryRegistryClient {
@@ -308,53 +335,41 @@ impl RegistryClient for InMemoryRegistryClient {
     }
 
     fn search(&self, request: SearchRequest) -> Result<SearchResponse, Self::Error> {
-        let results: Vec<SearchResult> = self
-            .registry
-            .all()
-            .iter()
-            .filter(|m| {
-                m.name
-                    .to_lowercase()
-                    .contains(&request.query.to_lowercase())
-            })
-            .take(request.limit.unwrap_or(20) as usize)
+        let query = request.query.to_lowercase();
+        let limit = request.limit.unwrap_or(20) as usize;
+        let mut by_name: BTreeMap<String, PackageManifest> = BTreeMap::new();
+
+        for m in self.registry.all() {
+            if m.name.to_lowercase().contains(&query) {
+                insert_latest(&mut by_name, m.clone());
+            }
+        }
+
+        for signed in self.signed_packages.borrow().iter() {
+            let m = &signed.manifest;
+            if m.name.to_lowercase().contains(&query) {
+                insert_latest(&mut by_name, m.clone());
+            }
+        }
+
+        let matches: Vec<_> = by_name
+            .into_values()
             .map(|m| SearchResult {
-                name: m.name.clone(),
-                latest_version: m.version.clone(),
+                name: m.name,
+                latest_version: m.version,
                 description: None,
             })
             .collect();
 
-        let total_matching = self
-            .registry
-            .all()
-            .iter()
-            .filter(|m| {
-                m.name
-                    .to_lowercase()
-                    .contains(&request.query.to_lowercase())
-            })
-            .count();
+        let truncated = matches.len() > limit;
+        let results = matches.into_iter().take(limit).collect();
 
-        Ok(SearchResponse {
-            truncated: total_matching > results.len(),
-            results,
-        })
+        Ok(SearchResponse { truncated, results })
     }
 
     fn verify(&self, request: VerifyRequest) -> Result<VerifyResponse, Self::Error> {
         // Check yanked first.
-        if self
-            .yank_records
-            .iter()
-            .any(|y| y.name == request.name && y.version == request.version)
-        {
-            let reason = self
-                .yank_records
-                .iter()
-                .find(|y| y.name == request.name && y.version == request.version)
-                .map(|y| y.reason.clone())
-                .unwrap_or_default();
+        if let Some(reason) = self.yank_reason(&request.name, &request.version) {
             return Ok(VerifyResponse {
                 outcome: VerifyOutcome::Yanked { reason },
             });
@@ -374,11 +389,22 @@ impl RegistryClient for InMemoryRegistryClient {
             });
         }
 
-        // Lookup manifest.
-        match self
+        // Lookup manifest. Signed publications are registry metadata too; the
+        // fallback preserves direct in-memory test fixture registration.
+        let published_manifest = self
+            .signed_packages
+            .borrow()
+            .iter()
+            .find(|signed| {
+                signed.manifest.name == request.name && signed.manifest.version == request.version
+            })
+            .map(|signed| signed.manifest.clone());
+        let fixture_manifest = self
             .registry
             .lookup_by_name_version(&request.name, &request.version)
-        {
+            .cloned();
+
+        match published_manifest.or(fixture_manifest) {
             None => Ok(VerifyResponse {
                 outcome: VerifyOutcome::NotFound,
             }),
@@ -397,6 +423,22 @@ impl RegistryClient for InMemoryRegistryClient {
                 }
             }
         }
+    }
+}
+
+fn insert_latest(by_name: &mut BTreeMap<String, PackageManifest>, manifest: PackageManifest) {
+    match by_name.get(&manifest.name) {
+        Some(existing) if !version_is_newer(&manifest.version, &existing.version) => {}
+        _ => {
+            by_name.insert(manifest.name.clone(), manifest);
+        }
+    }
+}
+
+fn version_is_newer(candidate: &str, existing: &str) -> bool {
+    match (semver::Version::parse(candidate), semver::Version::parse(existing)) {
+        (Ok(candidate), Ok(existing)) => candidate > existing,
+        _ => candidate > existing,
     }
 }
 
@@ -517,6 +559,130 @@ mod tests {
         assert_eq!(fetch.signed_package, Some(signed));
         assert!(!fetch.yanked);
         assert!(fetch.error.is_none());
+    }
+
+    // ── in_memory_client_publish_persists_for_search ──────────────────────
+    // Spec scenario: "publish + search returns registry metadata"
+    #[test]
+    fn in_memory_client_publish_persists_for_search() {
+        let kp = gen_keypair();
+        let manifest = make_manifest("payments.stripe", "1.2.0");
+        let signed = kp.sign_manifest(manifest).expect("sign");
+        let client = InMemoryRegistryClient::new();
+
+        client
+            .publish(PublishRequest {
+                signed_package: signed,
+            })
+            .expect("publish");
+
+        let search = client
+            .search(SearchRequest {
+                query: "stripe".to_string(),
+                limit: None,
+            })
+            .expect("search");
+
+        assert_eq!(search.results.len(), 1);
+        assert_eq!(search.results[0].name, "payments.stripe");
+        assert_eq!(search.results[0].latest_version, "1.2.0");
+        assert!(!search.truncated);
+    }
+
+    // ── in_memory_client_search_dedupes_by_package_with_latest_version ────
+    // Spec scenario: "Search returns one package row with the latest version"
+    #[test]
+    fn in_memory_client_search_dedupes_by_package_with_latest_version() {
+        let mut client = InMemoryRegistryClient::new();
+        client
+            .registry
+            .register(make_manifest("payments.stripe", "1.2.0"));
+
+        let kp = gen_keypair();
+        let signed = kp
+            .sign_manifest(make_manifest("payments.stripe", "1.10.0"))
+            .expect("sign");
+        client
+            .publish(PublishRequest {
+                signed_package: signed,
+            })
+            .expect("publish");
+
+        let search = client
+            .search(SearchRequest {
+                query: "stripe".to_string(),
+                limit: None,
+            })
+            .expect("search");
+
+        assert_eq!(search.results.len(), 1);
+        assert_eq!(search.results[0].name, "payments.stripe");
+        assert_eq!(search.results[0].latest_version, "1.10.0");
+    }
+
+    // ── in_memory_client_publish_persists_for_verify ──────────────────────
+    // Spec scenario: "publish + verify checks the signed package hash"
+    #[test]
+    fn in_memory_client_publish_persists_for_verify() {
+        let kp = gen_keypair();
+        let manifest = make_manifest("payments.stripe", "1.2.0");
+        let expected_hash = manifest.blake3_hex().expect("hash");
+        let signed = kp.sign_manifest(manifest).expect("sign");
+        let client = InMemoryRegistryClient::new();
+
+        client
+            .publish(PublishRequest {
+                signed_package: signed,
+            })
+            .expect("publish");
+
+        let verify = client
+            .verify(VerifyRequest {
+                name: "payments.stripe".to_string(),
+                version: "1.2.0".to_string(),
+                expected_hash,
+            })
+            .expect("verify");
+
+        assert_eq!(verify.outcome, VerifyOutcome::Ok);
+    }
+
+    // ── in_memory_client_yank_blocks_published_package ────────────────────
+    // Spec scenario: "yank metadata blocks verification but preserves fetch"
+    #[test]
+    fn in_memory_client_yank_blocks_published_package() {
+        let kp = gen_keypair();
+        let manifest = make_manifest("payments.stripe", "1.2.0");
+        let expected_hash = manifest.blake3_hex().expect("hash");
+        let signed = kp.sign_manifest(manifest).expect("sign");
+        let mut client = InMemoryRegistryClient::new();
+
+        client
+            .publish(PublishRequest {
+                signed_package: signed.clone(),
+            })
+            .expect("publish");
+        client.yank("payments.stripe", "1.2.0", "security regression");
+
+        let verify = client
+            .verify(VerifyRequest {
+                name: "payments.stripe".to_string(),
+                version: "1.2.0".to_string(),
+                expected_hash,
+            })
+            .expect("verify");
+        assert!(
+            matches!(verify.outcome, VerifyOutcome::Yanked { reason } if reason == "security regression")
+        );
+
+        let fetch = client
+            .fetch(FetchRequest {
+                name: "payments.stripe".to_string(),
+                version: "1.2.0".to_string(),
+            })
+            .expect("fetch");
+        assert_eq!(fetch.signed_package, Some(signed));
+        assert!(fetch.yanked);
     }
 
     // ── in_memory_client_publish_rejects_tampered ─────────────────────────
