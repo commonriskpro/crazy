@@ -26,6 +26,7 @@ ail-core    = { workspace = true }
 ail-storage = { workspace = true }
 blake3      = { workspace = true }
 tempfile    = { workspace = true }
+serde_json  = { workspace = true }
 
 [lints]
 workspace = true

@@ -222,6 +222,7 @@ dependencies = [
  "ed25519-dalek",
  "rand 0.8.6",
  "serde",
+ "serde_json",
  "tempfile",
  "x25519-dalek",
 ]

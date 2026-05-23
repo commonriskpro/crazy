@@ -46,7 +46,8 @@ pub use error::RemoteError;
 pub use exchange::{RemoteExchangeRequest, RemoteExchangeResponse, RemoteSubmissionOutcome};
 pub use identity::{AgentIdentity, AgentKeypair, SigningError};
 pub use policy::{
-    RemoteSignerPolicy, RemoteSignerRejection, RemoteSignerRejectionReason, SignerTrustTier,
-    TrustedRemoteSigner,
+    RemoteConfig, RemoteConfigError, RemoteEndpointConfig, RemoteSignerConfig, RemoteSignerPolicy,
+    RemoteSignerRejection, RemoteSignerRejectionReason, SignerTrustTier, TrustedRemoteSigner,
+    parse_remote_public_key_hex,
 };
 pub use signing::{RemoteChangeSet, SignedContextSlice};
