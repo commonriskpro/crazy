@@ -9,7 +9,10 @@
 //  - Task 3.8: cargo tree -p ail-compiler does not contain wasmtime or wasmer.
 
 use ail_compiler::{
-    CapabilitiesManifest, CapabilityEntry, emit_native, emit_wasm,
+    AnfBinding, AnfExpr, AnfIr, CapabilitiesManifest, CapabilityEntry, SourceMap, emit_native,
+    emit_wasm,
+    anf::AnfMatchArm,
+    core_ir::{LiteralValue, StageHashes},
     lower::{lower_to_anf, lower_to_core_ir},
 };
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
@@ -40,6 +43,48 @@ fn anf_for_graph(graph: &SemanticGraph) -> ail_compiler::AnfIr {
 
 fn anf_for_n(n: usize) -> ail_compiler::AnfIr {
     anf_for_graph(&graph_with_n_nodes(n))
+}
+
+fn sealed_anf(binding: AnfBinding) -> AnfIr {
+    AnfIr {
+        schema_version: ail_compiler::anf::ANF_SCHEMA_VERSION,
+        source_map: SourceMap::from_bindings(std::slice::from_ref(&binding)),
+        bindings: vec![binding],
+        stage_hashes: StageHashes {
+            graph_snapshot_hash: [0u8; 32],
+            verification_report_hash: [0u8; 32],
+            core_ir_hash: [1u8; 32],
+            anf_ir_hash: Some([2u8; 32]),
+            wasm_hash: None,
+            native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
+        },
+    }
+}
+
+fn match_zero_with_pattern(pattern: &str) -> AnfIr {
+    sealed_anf(AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn_match".to_string(),
+        expr: AnfExpr::Let {
+            name: "tag".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Match {
+                scrutinee: "tag".to_string(),
+                arms: vec![
+                    AnfMatchArm {
+                        pattern: pattern.to_string(),
+                        body: AnfExpr::Literal(LiteralValue::Int(99)),
+                    },
+                    AnfMatchArm {
+                        pattern: "_".to_string(),
+                        body: AnfExpr::Literal(LiteralValue::Int(0)),
+                    },
+                ],
+            }),
+        },
+    })
 }
 
 // ── Task 3.5: determinism ─────────────────────────────────────────────────
@@ -289,4 +334,17 @@ fn capability_manifest_serialization_roundtrip() {
     let roundtrip: CapabilitiesManifest =
         ciborium::de::from_reader(buf.as_slice()).expect("deserialize from CBOR");
     assert_eq!(manifest, roundtrip, "manifest must roundtrip through CBOR");
+}
+
+#[test]
+fn native_constructor_payload_match_does_not_lower_as_zero_pattern() {
+    let unsupported = emit_native(&match_zero_with_pattern("Ok(value)"))
+        .expect("unsupported constructor payload match must compile to trap");
+    let zero = emit_native(&match_zero_with_pattern("0"))
+        .expect("numeric zero match must compile");
+
+    assert_ne!(
+        unsupported.native_bytes, zero.native_bytes,
+        "unsupported constructor payload patterns must not silently lower as numeric 0"
+    );
 }

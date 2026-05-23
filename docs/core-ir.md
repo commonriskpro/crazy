@@ -1156,4 +1156,5 @@ Current executable support is narrower than the full IR:
 
 - `expr_parser.rs` only parses the small expression subset needed by current tests.
 - `wasm.rs` emits real bodies for simple values/control flow and effect calls, but many semantic variants still lower to stubs/traps or opaque references.
+- Executable `Match` currently supports integer literal, boolean literal, and wildcard patterns. Constructor-pattern strings such as `Ok(value)` may parse, but WASM/native backends treat them as unsupported and emit a trap rather than binding variant payloads.
 - Full memory/value layout for records, variants, `Result`, `Option`, handles, text, and bytes is still tracked as ABI validation work.

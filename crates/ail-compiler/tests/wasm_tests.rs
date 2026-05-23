@@ -648,6 +648,76 @@ fn anf_match_on_i64_literal_emits_real_branching() {
 }
 
 #[test]
+fn unsupported_constructor_match_traps_instead_of_running_arm_body() {
+    let ops = emit_valid_wasm(
+        AnfExpr::Let {
+            name: "result".to_string(),
+            value: Box::new(AnfExpr::VariantNew {
+                tag: "Ok".to_string(),
+                payload: Some(Box::new(AnfExpr::Literal(LiteralValue::Int(7)))),
+            }),
+            body: Box::new(AnfExpr::Match {
+                scrutinee: "result".to_string(),
+                arms: vec![ail_compiler::anf::AnfMatchArm {
+                    pattern: "Ok(value)".to_string(),
+                    body: AnfExpr::Literal(LiteralValue::Int(99)),
+                }],
+            }),
+        },
+        "fn.unsupported_constructor_match",
+    );
+
+    assert!(
+        ops.iter().any(|op| op == "Unreachable"),
+        "unsupported constructor patterns must trap explicitly, got {ops:?}"
+    );
+    assert!(
+        !ops.iter().any(|op| op == "I64Const { value: 99 }"),
+        "unsupported constructor pattern must not run its arm body: {ops:?}"
+    );
+}
+
+#[test]
+fn unsupported_constructor_match_with_wildcard_traps_before_fallback() {
+    let ops = emit_valid_wasm(
+        AnfExpr::Let {
+            name: "result".to_string(),
+            value: Box::new(AnfExpr::VariantNew {
+                tag: "Ok".to_string(),
+                payload: Some(Box::new(AnfExpr::Literal(LiteralValue::Int(7)))),
+            }),
+            body: Box::new(AnfExpr::Match {
+                scrutinee: "result".to_string(),
+                arms: vec![
+                    ail_compiler::anf::AnfMatchArm {
+                        pattern: "Ok(value)".to_string(),
+                        body: AnfExpr::Literal(LiteralValue::Int(99)),
+                    },
+                    ail_compiler::anf::AnfMatchArm {
+                        pattern: "_".to_string(),
+                        body: AnfExpr::Literal(LiteralValue::Int(0)),
+                    },
+                ],
+            }),
+        },
+        "fn.unsupported_constructor_match_with_wildcard",
+    );
+
+    assert!(
+        ops.iter().any(|op| op == "Unreachable"),
+        "unsupported constructor patterns must trap before fallback, got {ops:?}"
+    );
+    assert!(
+        !ops.iter().any(|op| op == "I64Const { value: 99 }"),
+        "unsupported constructor pattern must not run its arm body: {ops:?}"
+    );
+    assert!(
+        !ops.iter().any(|op| op == "I64Const { value: 0 }"),
+        "unsupported constructor pattern must not silently fall through to wildcard: {ops:?}"
+    );
+}
+
+#[test]
 fn core_match_lowers_to_anf_match_and_emits_valid_wasm() {
     let core = CoreExpr::Match {
         scrutinee: Box::new(CoreExpr::Literal(LiteralValue::Int(1))),

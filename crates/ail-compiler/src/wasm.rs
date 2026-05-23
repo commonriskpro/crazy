@@ -1036,18 +1036,11 @@ fn emit_match_arms<'a>(
     };
 
     if can_match.is_none() {
-        if rest.is_empty() {
-            return emit_branch_expr(&first.body, result_ty, ctx, functions, insns);
-        }
-        return emit_match_arms(
-            scrutinee,
-            scrutinee_ty,
-            rest,
-            result_ty,
-            ctx,
-            functions,
-            insns,
-        );
+        // Constructor/variant payload patterns are parsed as strings but are
+        // not lowered into payload bindings yet. Trap instead of pretending the
+        // arm can be checked or safely skipped.
+        insns.push(Instruction::Unreachable);
+        return result_ty;
     }
 
     insns.push(Instruction::If(block_type(result_ty)));
