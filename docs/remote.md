@@ -57,6 +57,8 @@ El default seguro es `deny_all()`: un coordinator creado sin policy explícita r
 
 `RemoteConfig` es el DTO serializable para cargar configuración remota de proyecto sin acoplarla a CLI ni transporte. Se puede leer desde JSON, CBOR u otro formato basado en serde, validarla, y convertirla a `RemoteSignerPolicy`.
 
+La CLI reserva `.ail/remote.json` como archivo de configuración JSON del proyecto. Si el archivo no existe, el loader devuelve `RemoteConfig::default()`, que al convertirse en policy produce `RemoteSignerPolicy::deny_all()`.
+
 ```rust
 pub struct RemoteConfig {
     pub allowed_signers: Vec<RemoteSignerConfig>,
@@ -229,6 +231,6 @@ Devuelve el punto de Montgomery crudo. **Se debe pasar por un KDF** (p.ej. `deri
 
 `RemoteExchangeRequest` / `RemoteExchangeResponse` definen el límite de servicio independiente del transporte para enviar changesets firmados e intercambiar bundles de objetos. El `Coordinator` acepta bundles enviados después de verificar su integridad, los retiene en un `BundleStore` en memoria por default, y responde pulls con `Bundle(bundle)` cuando conoce el `root` o `BundleMissing` cuando no existe. La implementación durable (`FileBundleStore`) queda disponible detrás del mismo trait; el wiring CLI/config es un paso separado.
 
-La CLI implementa el primer slice de producto como `ail remote submit <change-id> --signer <key-ref> [--json]`. Este comando carga un ChangeSet local ya persistido, lo firma con una key efímera in-process etiquetada por `--signer`, allowlistea esa identidad solo para la invocación, y llama `Coordinator::handle_remote_exchange(RemoteExchangeRequest::SubmitChangeSet(_))`. No implementa transporte de red, push/pull, ni configuración durable de keys.
+La CLI implementa el primer slice de producto como `ail remote submit <change-id> --signer <key-ref> [--json]`. Este comando carga un ChangeSet local ya persistido, valida `.ail/remote.json` si existe, lo firma con una key efímera in-process etiquetada por `--signer`, allowlistea esa identidad solo para la invocación, y llama `Coordinator::handle_remote_exchange(RemoteExchangeRequest::SubmitChangeSet(_))`. El loader de `.ail/remote.json` ya existe para producir el default seguro `deny_all()` y validar JSON de proyecto, pero `remote submit` todavía no aplica esa policy al envío porque falta una identidad de signer durable que pueda coincidir con `allowed_signers`. No implementa transporte de red ni push/pull.
 
-Referencias de código: `crates/ail-remote/src/identity.rs`, `crates/ail-remote/src/signing.rs`, `crates/ail-remote/src/bundle.rs`, `crates/ail-remote/src/exchange.rs`, `crates/ail-remote/src/crypto.rs`, `crates/ail-remote/src/error.rs`, `crates/ail-coordinator/src/coordinator.rs`.
+Referencias de código: `crates/ail-remote/src/identity.rs`, `crates/ail-remote/src/signing.rs`, `crates/ail-remote/src/bundle.rs`, `crates/ail-remote/src/exchange.rs`, `crates/ail-remote/src/crypto.rs`, `crates/ail-remote/src/error.rs`, `crates/ail-coordinator/src/coordinator.rs`, `crates/ail-cli/src/remote_config.rs`.
