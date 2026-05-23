@@ -46,8 +46,8 @@ use ail_change::{
 };
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_remote::{
-    RemoteChangeSet, RemoteError, RemoteExchangeRequest, RemoteExchangeResponse,
-    RemoteSubmissionOutcome,
+    BundleStore, InMemoryBundleStore, RemoteChangeSet, RemoteError, RemoteExchangeRequest,
+    RemoteExchangeResponse, RemoteSubmissionOutcome,
 };
 use tokio::sync::Mutex;
 
@@ -122,6 +122,8 @@ struct CoordinatorState {
     /// `NodeRef`s removed by the most recently committed changeset.
     /// Used by `classify_conflict()` to distinguish deletes from modifies.
     committed_removes: BTreeSet<NodeRef>,
+    /// Accepted remote bundles keyed by their root object id.
+    bundle_store: InMemoryBundleStore,
 }
 
 // ── Coordinator ───────────────────────────────────────────────────────────
@@ -147,6 +149,7 @@ impl Coordinator {
                 touched_nodes: BTreeSet::new(),
             },
             committed_removes: BTreeSet::new(),
+            bundle_store: InMemoryBundleStore::new(),
         };
         Self {
             inner: Arc::new(Mutex::new(state)),
@@ -301,17 +304,24 @@ impl Coordinator {
                 }
             }
             RemoteExchangeRequest::PushBundle(bundle) => match bundle.verify_integrity() {
-                Ok(()) => RemoteExchangeResponse::BundleAccepted {
-                    root: bundle.root,
-                    object_count: bundle.objects.len(),
-                },
+                Ok(()) => {
+                    let root = bundle.root;
+                    let object_count = bundle.objects.len();
+                    let mut state = self.inner.lock().await;
+                    state.bundle_store.put_bundle(bundle);
+                    RemoteExchangeResponse::BundleAccepted { root, object_count }
+                }
                 Err(err) => RemoteExchangeResponse::Error {
                     code: "E_BUNDLE_INVALID".to_string(),
                     message: err.to_string(),
                 },
             },
             RemoteExchangeRequest::PullBundle { root } => {
-                RemoteExchangeResponse::BundleMissing { root }
+                let state = self.inner.lock().await;
+                match state.bundle_store.get_bundle(&root) {
+                    Some(bundle) => RemoteExchangeResponse::Bundle(bundle),
+                    None => RemoteExchangeResponse::BundleMissing { root },
+                }
             }
         }
     }

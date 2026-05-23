@@ -10,7 +10,9 @@
 // | `invalid_signature_rejected_before_submit` | Invalid signature is rejected before coordinator submit |
 // | `valid_sig_stale_base_triggers_rebase` | Valid signature with stale base triggers rebase |
 // | `local_submit_works_after_remote_submission` | Local submit still works after verify_remote_submission addition |
-// | `remote_exchange_reports_missing_pulled_bundle` | PullBundle returns BundleMissing while no durable bundle store exists |
+// | `remote_exchange_push_then_pull_returns_same_bundle` | PullBundle returns a previously accepted bundle |
+// | `remote_exchange_reports_missing_pulled_bundle` | PullBundle returns BundleMissing for unknown roots |
+// | `remote_exchange_rejects_invalid_bundle_integrity` | Invalid bundles are rejected and not stored |
 
 use ail_change::{
     canonical::{CanonicalChangeSet, CanonicalMeta, CanonicalOp, OpPayload},
@@ -77,6 +79,14 @@ fn signed_rcs(
 ) -> RemoteChangeSet {
     let changeset = cs(base, author, ops);
     RemoteChangeSet::sign(changeset, keypair).expect("sign must succeed")
+}
+
+fn bundle_from_bytes(bytes: &[u8]) -> ObjectBundle {
+    let bytes = bytes.to_vec();
+    let root = ObjectId::from_bytes(&bytes);
+    let mut objects = BTreeMap::new();
+    objects.insert(root, bytes);
+    ObjectBundle::new(root, objects)
 }
 
 // ── Task 6.1a: Valid signed submission → CoordinatorOutcome::Applied ──────
@@ -266,11 +276,8 @@ async fn remote_exchange_submit_maps_to_submission_response() {
 #[tokio::test]
 async fn remote_exchange_accepts_integrity_checked_bundle() {
     let coord = Coordinator::new(SnapshotId(0), empty_graph());
-    let bytes = b"coordinator bundle".to_vec();
-    let root = ObjectId::from_bytes(&bytes);
-    let mut objects = BTreeMap::new();
-    objects.insert(root, bytes);
-    let bundle = ObjectBundle::new(root, objects);
+    let bundle = bundle_from_bytes(b"coordinator bundle");
+    let root = bundle.root;
 
     let response = coord
         .handle_remote_exchange(RemoteExchangeRequest::PushBundle(bundle))
@@ -283,6 +290,30 @@ async fn remote_exchange_accepts_integrity_checked_bundle() {
             object_count: 1,
         }
     );
+}
+
+#[tokio::test]
+async fn remote_exchange_push_then_pull_returns_same_bundle() {
+    let coord = Coordinator::new(SnapshotId(0), empty_graph());
+    let bundle = bundle_from_bytes(b"bundle to pull after push");
+    let root = bundle.root;
+
+    let push_response = coord
+        .handle_remote_exchange(RemoteExchangeRequest::PushBundle(bundle.clone()))
+        .await;
+    assert_eq!(
+        push_response,
+        RemoteExchangeResponse::BundleAccepted {
+            root,
+            object_count: 1,
+        }
+    );
+
+    let pull_response = coord
+        .handle_remote_exchange(RemoteExchangeRequest::PullBundle { root })
+        .await;
+
+    assert_eq!(pull_response, RemoteExchangeResponse::Bundle(bundle));
 }
 
 #[tokio::test]
@@ -315,5 +346,14 @@ async fn remote_exchange_rejects_invalid_bundle_integrity() {
             RemoteExchangeResponse::Error { ref code, .. } if code == "E_BUNDLE_INVALID"
         ),
         "invalid bundle must be rejected; got {response:?}"
+    );
+
+    let pull_response = coord
+        .handle_remote_exchange(RemoteExchangeRequest::PullBundle { root })
+        .await;
+
+    assert_eq!(
+        pull_response,
+        RemoteExchangeResponse::BundleMissing { root }
     );
 }

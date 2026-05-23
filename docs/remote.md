@@ -171,6 +171,6 @@ Devuelve el punto de Montgomery crudo. **Se debe pasar por un KDF** (p.ej. `deri
 
 ### Notas de implementación
 
-`RemoteExchangeRequest` / `RemoteExchangeResponse` definen el límite de servicio independiente del transporte para enviar changesets firmados e intercambiar bundles de objetos. El `Coordinator` actualmente acepta bundles enviados después de verificar su integridad y devuelve `BundleMissing` para pulls porque todavía no hay un store remoto durable de bundles conectado.
+`RemoteExchangeRequest` / `RemoteExchangeResponse` definen el límite de servicio independiente del transporte para enviar changesets firmados e intercambiar bundles de objetos. El `Coordinator` acepta bundles enviados después de verificar su integridad, los retiene en un `BundleStore` en memoria, y responde pulls con `Bundle(bundle)` cuando conoce el `root` o `BundleMissing` cuando no existe.
 
 Referencias de código: `crates/ail-remote/src/identity.rs`, `crates/ail-remote/src/signing.rs`, `crates/ail-remote/src/bundle.rs`, `crates/ail-remote/src/exchange.rs`, `crates/ail-remote/src/crypto.rs`, `crates/ail-remote/src/error.rs`, `crates/ail-coordinator/src/coordinator.rs`.

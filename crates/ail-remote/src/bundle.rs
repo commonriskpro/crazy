@@ -101,6 +101,44 @@ impl ObjectBundle {
     }
 }
 
+// ── BundleStore ───────────────────────────────────────────────────────────
+
+/// Storage boundary for accepted remote object bundles.
+///
+/// Implementations may keep bundles in memory, on disk, or in a database.  The
+/// store assumes callers verify [`ObjectBundle::verify_integrity`] before write.
+pub trait BundleStore {
+    /// Store an accepted bundle, replacing any existing bundle with the same root.
+    fn put_bundle(&mut self, bundle: ObjectBundle);
+
+    /// Return the bundle for `root`, or `None` when the root is unknown.
+    fn get_bundle(&self, root: &ObjectId) -> Option<ObjectBundle>;
+}
+
+/// In-memory bundle store for ephemeral coordinator instances and tests.
+#[derive(Clone, Debug, Default)]
+pub struct InMemoryBundleStore {
+    bundles: BTreeMap<ObjectId, ObjectBundle>,
+}
+
+impl InMemoryBundleStore {
+    /// Create an empty in-memory bundle store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl BundleStore for InMemoryBundleStore {
+    fn put_bundle(&mut self, bundle: ObjectBundle) {
+        self.bundles.insert(bundle.root, bundle);
+    }
+
+    fn get_bundle(&self, root: &ObjectId) -> Option<ObjectBundle> {
+        self.bundles.get(root).cloned()
+    }
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -154,5 +192,24 @@ mod tests {
             Err(BundleError::RootNotFound),
             "absent root must return RootNotFound"
         );
+    }
+
+    #[test]
+    fn in_memory_store_returns_stored_bundle() {
+        let bundle = valid_bundle();
+        let root = bundle.root;
+        let mut store = InMemoryBundleStore::new();
+
+        store.put_bundle(bundle.clone());
+
+        assert_eq!(store.get_bundle(&root), Some(bundle));
+    }
+
+    #[test]
+    fn in_memory_store_returns_none_for_missing_root() {
+        let store = InMemoryBundleStore::new();
+        let missing_root = ObjectId::from_bytes(b"missing root");
+
+        assert_eq!(store.get_bundle(&missing_root), None);
     }
 }
