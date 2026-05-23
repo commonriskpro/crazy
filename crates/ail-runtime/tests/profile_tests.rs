@@ -9,7 +9,10 @@
 //   - CapabilityGrant field access
 //   - ResourceLimits field access
 
-use ail_runtime::profile::{CapabilityGrant, CapabilityId, ResourceLimits, RuntimeProfile};
+use ail_runtime::profile::{
+    CapabilityGrant, CapabilityId, CapabilityRevocationRegistry, InFlightPolicy, ResourceLimits,
+    RuntimeProfile,
+};
 
 // ── Scenario: Valid profile constructed ───────────────────────────────────
 
@@ -131,4 +134,38 @@ fn resource_limits_some_is_accessible() {
     };
     assert_eq!(limits.max_memory_bytes, Some(1024));
     assert_eq!(limits.max_fuel, Some(500));
+}
+
+#[test]
+fn revocation_registry_records_returns_borrowed_view() {
+    let mut registry = CapabilityRevocationRegistry::new();
+    registry.revoke(
+        "module",
+        "FileRead",
+        "profile",
+        InFlightPolicy::AllowComplete,
+    );
+
+    let records = registry.records();
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].module, "module");
+    assert_eq!(records[0].capability, "FileRead");
+    assert_eq!(records[0].profile, "profile");
+}
+
+#[test]
+fn cloned_revocation_registry_shares_runtime_revocations() {
+    let mut registry = CapabilityRevocationRegistry::new();
+    let cloned = registry.clone();
+
+    registry.revoke(
+        "module",
+        "FileRead",
+        "profile",
+        InFlightPolicy::AllowComplete,
+    );
+
+    assert!(cloned.is_revoked("module", "FileRead", "profile"));
+    assert_eq!(cloned.records_snapshot().len(), 1);
 }

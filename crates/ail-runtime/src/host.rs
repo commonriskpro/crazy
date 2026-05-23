@@ -119,7 +119,7 @@ use crate::codec::{StructuredValue, ValueDecoder, ValueLayout};
 use crate::error::{PreflightFailure, RuntimeError, RuntimeResult};
 use crate::handler::Handler;
 use crate::manifest::{CapabilityManifest, blake3_hex_of};
-use crate::profile::{CapabilityId, RuntimeProfile};
+use crate::profile::{CapabilityId, CapabilityRevocationRegistry, InFlightPolicy, RuntimeProfile};
 use crate::report::{CapabilityCallSummary, RuntimeReport, RuntimeReportStatus};
 use crate::schema::CapabilityDefinition;
 use crate::transaction::TransactionGroup;
@@ -191,6 +191,8 @@ pub(crate) struct HostState {
     pub(crate) trace_context: Option<TraceContext>,
     /// Capability calls consumed by the active invocation.
     pub(crate) capability_calls_used: u64,
+    /// Runtime revocations enforced after grants and before handler dispatch.
+    pub(crate) revocations: CapabilityRevocationRegistry,
 }
 
 // ── RuntimeInstance ───────────────────────────────────────────────────────
@@ -490,6 +492,8 @@ pub struct RuntimeHost {
     current_trace_context: Option<TraceContext>,
     /// Capability calls consumed since the last successful preflight.
     capability_calls_used: u64,
+    /// Runtime-mutable revocations for active profile grants.
+    revocations: CapabilityRevocationRegistry,
 }
 
 impl RuntimeHost {
@@ -584,6 +588,7 @@ impl RuntimeHost {
             current_module_name: None,
             current_trace_context: None,
             capability_calls_used: 0,
+            revocations: CapabilityRevocationRegistry::new(),
         }
     }
 
@@ -608,6 +613,24 @@ impl RuntimeHost {
         self.schema_registry
             .insert(def.capability().as_str().to_string(), def);
         self
+    }
+
+    /// Install an existing revocation registry for this host.
+    pub fn with_revocation_registry(mut self, registry: CapabilityRevocationRegistry) -> Self {
+        self.revocations = registry;
+        self
+    }
+
+    /// Revoke a capability grant for subsequent calls on this host.
+    pub fn revoke_capability(
+        &mut self,
+        module: impl Into<String>,
+        capability: impl Into<String>,
+        profile: impl Into<String>,
+        in_flight_policy: InFlightPolicy,
+    ) {
+        self.revocations
+            .revoke(module, capability, profile, in_flight_policy);
     }
 
     /// Set the active distributed trace context for host-side capability calls.
@@ -739,6 +762,71 @@ impl RuntimeHost {
             return Err(err);
         }
 
+        let revoked = self
+            .current_profile
+            .as_ref()
+            .map(|p| {
+                self.revocations
+                    .is_revoked(module_str, capability.as_str(), p.name())
+            })
+            .unwrap_or(false);
+
+        if revoked {
+            let err = HostError::CapabilityDenied(capability.as_str().to_string());
+            let duration_us = start.elapsed().as_micros() as u64;
+            self.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
+                    capability: capability.clone(),
+                    operation: operation.to_string(),
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us,
+                    timestamp,
+                    profile: profile_name,
+                    module: module_name,
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
+                    trace_context: child_trace,
+                },
+            );
+            return Err(err);
+        }
+
+        if let Some(max_payload_bytes) = self
+            .current_profile
+            .as_ref()
+            .and_then(|p| p.limits().payload_size_limit)
+            && payload.len() as u64 > max_payload_bytes
+        {
+            let err = HostError::LimitExceeded(format!(
+                "payload_size_limit exceeded: limit={max_payload_bytes}, actual={}",
+                payload.len()
+            ));
+            let duration_us = start.elapsed().as_micros() as u64;
+            self.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
+                    capability: capability.clone(),
+                    operation: operation.to_string(),
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us,
+                    timestamp,
+                    profile: profile_name,
+                    module: module_name,
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
+                    trace_context: child_trace,
+                },
+            );
+            return Err(err);
+        }
+
         if let Some(max_calls) = self
             .current_profile
             .as_ref()
@@ -839,8 +927,18 @@ impl RuntimeHost {
         // Step 4: dispatch.
         let result = match handler.handle(capability, operation, payload) {
             Ok(response) => {
+                if let Some(max_output_bytes) = self
+                    .current_profile
+                    .as_ref()
+                    .and_then(|p| p.limits().output_size_limit)
+                    && response.len() as u64 > max_output_bytes
+                {
+                    Err(HostError::LimitExceeded(format!(
+                        "output_size_limit exceeded: limit={max_output_bytes}, actual={}",
+                        response.len()
+                    )))
                 // Step 5: output schema/boundary validation (if registered).
-                if let Some(def) = self.schema_registry.get(capability.as_str())
+                } else if let Some(def) = self.schema_registry.get(capability.as_str())
                     && let Err(schema_err) = def.schema().output().validate(&response)
                 {
                     Err(HostError::ContractViolation(format!(
@@ -1200,6 +1298,7 @@ impl RuntimeHost {
                 limiter: store_limits,
                 trace_context: None,
                 capability_calls_used: 0,
+                revocations: self.revocations.clone(),
             },
         );
 
@@ -1289,6 +1388,50 @@ fn unix_timestamp_micros() -> u64 {
         .as_micros() as u64
 }
 
+#[derive(Clone)]
+struct CapabilityAuditContext {
+    start: Instant,
+    timestamp: u64,
+    profile: Option<String>,
+    module: Option<String>,
+    input_hash: Option<String>,
+    trace_id: Option<String>,
+    verification_report_hash: Option<String>,
+    trace_context: Option<TraceContext>,
+}
+
+impl CapabilityAuditContext {
+    fn push(
+        &self,
+        audit_log: &Arc<Mutex<AuditLog>>,
+        capability: CapabilityId,
+        operation: String,
+        handler_name: String,
+        succeeded: bool,
+        output_hash: Option<String>,
+    ) {
+        audit_log
+            .lock()
+            .expect("audit_log lock")
+            .push(AuditEvent::CapabilityCallExecuted {
+                capability,
+                operation,
+                handler_name,
+                succeeded,
+                duration_us: self.start.elapsed().as_micros() as u64,
+                timestamp: self.timestamp,
+                profile: self.profile.clone(),
+                module: self.module.clone(),
+                function: None,
+                input_hash: self.input_hash.clone(),
+                output_hash,
+                trace_id: self.trace_id.clone(),
+                verification_report_hash: self.verification_report_hash.clone(),
+                trace_context: self.trace_context.clone(),
+            });
+    }
+}
+
 fn failure_parts(err: &RuntimeError) -> (Vec<CapabilityId>, PreflightFailure) {
     match err {
         RuntimeError::PreflightFailed(PreflightFailure::CapabilityDenied { denied }) => (
@@ -1357,29 +1500,62 @@ fn dispatch_host_call_write(
     out_ptr: i32,
     out_max: i32,
 ) -> Option<i32> {
-    // Validate output buffer params.
-    if out_ptr < 0 || out_max < 0 {
-        return None;
-    }
-
     // Read capability name, operation name, and args bytes from WASM memory.
     let capability = String::from_utf8(read_memory(caller, cap_ptr, cap_len)?).ok()?;
     let operation = String::from_utf8(read_memory(caller, op_ptr, op_len)?).ok()?;
     let args_bytes = read_memory(caller, args_ptr, args_len.checked_mul(8)?)?;
     let cap = CapabilityId::new(capability);
+    let start = Instant::now();
+    let timestamp = unix_timestamp_micros();
+    let input_hash = Some(blake3_hex_of(&args_bytes));
+
+    let child_trace = caller.data().trace_context.as_ref().map(|ctx| ctx.child());
+    let audit_log = caller.data().audit_log.clone();
+    let audit = CapabilityAuditContext {
+        start,
+        timestamp,
+        profile: Some(caller.data().profile.name().to_string()),
+        module: Some(caller.data().module_name.clone()),
+        input_hash,
+        trace_id: child_trace.as_ref().map(|tc| tc.trace_id.clone()),
+        verification_report_hash: Some(
+            caller.data().profile.verification_report_hash().to_string(),
+        ),
+        trace_context: child_trace,
+    };
+
+    // Validate output buffer params after decoding call metadata so failures are auditable.
+    if out_ptr < 0 || out_max < 0 {
+        audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+        return None;
+    }
 
     // Grant check (module-scoped).
     {
         let state = caller.data_mut();
         if !state.profile.grants_capability(&state.module_name, &cap) {
+            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+            return None;
+        }
+        if state
+            .revocations
+            .is_revoked(&state.module_name, cap.as_str(), state.profile.name())
+        {
+            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+            return None;
+        }
+        if let Some(max_payload_bytes) = state.profile.limits().payload_size_limit
+            && args_bytes.len() as u64 > max_payload_bytes
+        {
+            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
             return None;
         }
         if let Some(max_calls) = state.profile.limits().max_capability_calls
             && state.capability_calls_used >= max_calls
         {
+            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
             return None;
         }
-        state.capability_calls_used += 1;
     }
 
     // Find the matching handler.
@@ -1391,20 +1567,54 @@ fn dispatch_host_call_write(
             .find(|h| h.capabilities().contains(&cap))
             .cloned()
     };
-    let handler = handler?;
+    let Some(handler) = handler else {
+        audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+        return None;
+    };
+    caller.data_mut().capability_calls_used += 1;
+    let handler_name = handler.name().to_string();
 
     // Dispatch.
     let result = handler.handle(&cap, &operation, &args_bytes);
-    let response = result.ok()?;
+    let response = match result {
+        Ok(response) => response,
+        Err(_) => {
+            audit.push(&audit_log, cap, operation, handler_name, false, None);
+            return None;
+        }
+    };
+
+    if let Some(max_output_bytes) = caller.data().profile.limits().output_size_limit
+        && response.len() as u64 > max_output_bytes
+    {
+        audit.push(&audit_log, cap, operation, handler_name, false, None);
+        return None;
+    }
 
     // Bounds-check: response must fit in the out buffer.
     if response.len() > out_max as usize {
+        audit.push(&audit_log, cap, operation, handler_name, false, None);
         return None;
     }
 
     // Write response bytes to WASM memory at out_ptr.
-    let memory = caller.get_export("memory")?.into_memory()?;
-    memory.write(caller, out_ptr as usize, &response).ok()?;
+    let memory = match caller
+        .get_export("memory")
+        .and_then(|export| export.into_memory())
+    {
+        Some(memory) => memory,
+        None => {
+            audit.push(&audit_log, cap, operation, handler_name, false, None);
+            return None;
+        }
+    };
+    if memory.write(caller, out_ptr as usize, &response).is_err() {
+        audit.push(&audit_log, cap, operation, handler_name, false, None);
+        return None;
+    }
+
+    let output_hash = Some(blake3_hex_of(response.as_slice()));
+    audit.push(&audit_log, cap, operation, handler_name, true, output_hash);
 
     Some(response.len() as i32)
 }
@@ -1439,6 +1649,53 @@ fn dispatch_host_call(
         let state = caller.data_mut();
         // Grant check (module-scoped).
         if !state.profile.grants_capability(&state.module_name, &cap) {
+            state.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
+                    capability: cap,
+                    operation,
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us: start.elapsed().as_micros() as u64,
+                    timestamp,
+                    profile: profile_name,
+                    module: Some(module_name),
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
+                    trace_context: child_trace,
+                },
+            );
+            return Some(-1);
+        }
+        if state
+            .revocations
+            .is_revoked(&state.module_name, cap.as_str(), state.profile.name())
+        {
+            state.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
+                    capability: cap,
+                    operation,
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us: start.elapsed().as_micros() as u64,
+                    timestamp,
+                    profile: profile_name,
+                    module: Some(module_name),
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
+                    trace_context: child_trace,
+                },
+            );
+            return Some(-1);
+        }
+        if let Some(max_payload_bytes) = state.profile.limits().payload_size_limit
+            && args_bytes.len() as u64 > max_payload_bytes
+        {
             state.audit_log.lock().expect("audit_log lock").push(
                 AuditEvent::CapabilityCallExecuted {
                     capability: cap,
@@ -1516,7 +1773,21 @@ fn dispatch_host_call(
     };
 
     let handler_name = handler.name().to_string();
-    let result = handler.handle(&cap, &operation, &args_bytes);
+    let result = match handler.handle(&cap, &operation, &args_bytes) {
+        Ok(bytes) => {
+            if let Some(max_output_bytes) = caller.data().profile.limits().output_size_limit
+                && bytes.len() as u64 > max_output_bytes
+            {
+                Err(HostError::LimitExceeded(format!(
+                    "output_size_limit exceeded: limit={max_output_bytes}, actual={}",
+                    bytes.len()
+                )))
+            } else {
+                Ok(bytes)
+            }
+        }
+        Err(err) => Err(err),
+    };
     let succeeded = result.is_ok();
     let output_hash = result
         .as_ref()
