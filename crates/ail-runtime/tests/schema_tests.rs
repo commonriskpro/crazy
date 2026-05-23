@@ -72,6 +72,29 @@ fn empty_input_schema_is_valid() {
     assert!(schema.fields().is_empty());
 }
 
+#[test]
+fn input_schema_rejects_non_utf8_payload() {
+    let schema = CapabilityInputSchema::new(vec![SchemaField::new("cart_id", "String")]);
+
+    let err = schema
+        .validate(b"cart_id=cart-1,noise=\xFF")
+        .expect_err("invalid UTF-8 payload must be rejected");
+
+    assert!(
+        err.message.contains("payload must be valid UTF-8"),
+        "error should identify malformed payload encoding: {err:?}"
+    );
+}
+
+#[test]
+fn empty_input_schema_still_accepts_arbitrary_bytes() {
+    let schema = CapabilityInputSchema::new(vec![]);
+
+    schema
+        .validate(b"\xFF\xFE")
+        .expect("empty schema remains deny-list free and accepts any payload");
+}
+
 // ── CapabilityOutputSchema ────────────────────────────────────────────────
 
 #[test]
@@ -79,6 +102,20 @@ fn output_schema_stores_fields() {
     let schema = CapabilityOutputSchema::new(vec![SchemaField::new("receipt_id", "String")]);
     assert_eq!(schema.fields().len(), 1);
     assert_eq!(schema.fields()[0].name(), "receipt_id");
+}
+
+#[test]
+fn output_schema_rejects_non_utf8_payload() {
+    let schema = CapabilityOutputSchema::new(vec![SchemaField::new("receipt_id", "String")]);
+
+    let err = schema
+        .validate(b"receipt_id=rcpt-1,noise=\xFF")
+        .expect_err("invalid UTF-8 response must be rejected");
+
+    assert!(
+        err.message.contains("payload must be valid UTF-8"),
+        "error should identify malformed response encoding: {err:?}"
+    );
 }
 
 // ── CapabilityErrorSchema ─────────────────────────────────────────────────
