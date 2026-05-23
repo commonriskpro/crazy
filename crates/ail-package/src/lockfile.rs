@@ -130,12 +130,16 @@ impl Lockfile {
             .into_iter()
             .map(|(_spec, manifest)| {
                 let package_hash = manifest.blake3_hex().unwrap_or_default();
+                let verification_report_hash = manifest
+                    .verification_report
+                    .as_ref()
+                    .and_then(|report| report.blake3_hex().ok());
                 LockfileEntry {
                     name: manifest.name.clone(),
                     version: manifest.version.clone(),
                     package_hash,
                     trust_level: manifest.trust_level,
-                    verification_report_hash: None,
+                    verification_report_hash,
                     accepted_assumptions: vec![],
                 }
             })
@@ -411,6 +415,37 @@ mod tests {
             "version must be pinned from manifest"
         );
         assert_eq!(entry.trust_level, TrustLevel::Verified);
+    }
+
+    #[test]
+    fn from_resolution_pins_verification_report_hash() {
+        let mut manifest = make_test_manifest("payments.stripe", "2.3.1");
+        manifest.verification_report = Some(crate::verification::PackageVerificationReport {
+            package: "payments.stripe".to_string(),
+            version: "2.3.1".to_string(),
+            exports_verified: vec!["charge".to_string()],
+            effects_declared: vec![],
+            assumptions: vec![],
+            unsafe_surface: vec![],
+            artifact_hashes: vec!["a".repeat(64)],
+        });
+        let expected = manifest
+            .verification_report
+            .as_ref()
+            .expect("report must exist")
+            .blake3_hex()
+            .expect("report hash must compute");
+        let spec = make_test_spec("payments.stripe", "^2.0");
+
+        let lf = Lockfile::from_resolution(vec![(&spec, &manifest)]);
+
+        let entry = lf
+            .get("payments.stripe", "2.3.1")
+            .expect("entry must exist");
+        assert_eq!(
+            entry.verification_report_hash.as_deref(),
+            Some(expected.as_str())
+        );
     }
 
     // Spec PKG-LOCK-1: to_specs() returns exact-version DependencySpecs

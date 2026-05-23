@@ -12,7 +12,7 @@
 
 use ail_package::{
     AdvisorySeverity, Lockfile, LockfileEntry, PackageDef, PackageKeypair, PackageManifest,
-    SecurityAdvisory, SignedPackage, TrustLevel, YankRecord,
+    PackageVerificationReport, SecurityAdvisory, SignedPackage, TrustLevel, YankRecord,
 };
 use ail_storage::SnapshotEnvelope;
 use ail_storage::codec::{CborCodec, ContentCodec};
@@ -150,6 +150,28 @@ fn test_package_manifest(name: &str, version: &str, trust_level: TrustLevel) -> 
         graph_schema: Some(1),
         core_ir_schema: Some(1),
     })
+}
+
+fn test_verification_report(package: &str, version: &str) -> PackageVerificationReport {
+    PackageVerificationReport {
+        package: package.to_string(),
+        version: version.to_string(),
+        exports_verified: vec!["charge".to_string()],
+        effects_declared: vec![],
+        assumptions: vec![],
+        unsafe_surface: vec![],
+        artifact_hashes: vec!["a".repeat(64)],
+    }
+}
+
+fn test_package_manifest_with_report(name: &str, version: &str) -> PackageManifest {
+    let mut manifest = test_package_manifest(name, version, TrustLevel::Verified);
+    manifest.artifact_hashes = vec![ail_package::ArtifactHashEntry {
+        role: "wasm-binary".to_string(),
+        hash: "a".repeat(64),
+    }];
+    manifest.verification_report = Some(test_verification_report(name, version));
+    manifest
 }
 
 // ── Task 3.2 baseline: dispatch + context + change ────────────────────────
@@ -2082,6 +2104,279 @@ fn package_publish_install_verify_happy_path() {
 
     let v = parse_json_output(&verify_output);
     assert_eq!(v["data"]["packages"][0]["trust_level"], "verified");
+}
+
+#[test]
+fn package_install_stores_verification_report_hash_and_verify_passes() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest_with_report("signed.report", "1.0.0");
+    let expected_hash = manifest
+        .verification_report
+        .as_ref()
+        .expect("report must exist")
+        .blake3_hex()
+        .expect("report hash must compute");
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![signed_test_package(manifest)],
+            legacy_manifests: vec![],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+
+    let install_output = ail()
+        .args(["package", "install", "signed.report@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let install_json = parse_json_output(&install_output);
+    assert_eq!(
+        install_json["data"]["verification_report_hash"],
+        expected_hash
+    );
+
+    let lockfile_bytes = fs::read(package_lockfile_path(dir.path())).expect("lockfile must exist");
+    let lockfile: Lockfile =
+        ciborium::from_reader(lockfile_bytes.as_slice()).expect("decode lockfile");
+    assert_eq!(
+        lockfile.entries[0].verification_report_hash.as_deref(),
+        Some(expected_hash.as_str())
+    );
+
+    let verify_output = ail()
+        .args(["package", "verify", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let verify_json = parse_json_output(&verify_output);
+    assert_eq!(verify_json["data"]["verified"], true);
+    assert_eq!(verify_json["data"]["verification_report_integrity"], "ok");
+    assert_eq!(
+        verify_json["data"]["verification_report_mismatches"],
+        Value::Array(vec![])
+    );
+}
+
+#[test]
+fn package_install_updates_existing_legacy_lockfile_entry_with_report_hash() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest_with_report("signed.report", "1.0.0");
+    let expected_package_hash = manifest.blake3_hex().expect("manifest hash must compute");
+    let expected_report_hash = manifest
+        .verification_report
+        .as_ref()
+        .expect("report must exist")
+        .blake3_hex()
+        .expect("report hash must compute");
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![signed_test_package(manifest)],
+            legacy_manifests: vec![],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+    let mut legacy_lockfile = Lockfile::new();
+    legacy_lockfile.add(LockfileEntry {
+        name: "signed.report".to_string(),
+        version: "1.0.0".to_string(),
+        package_hash: "f".repeat(64),
+        trust_level: TrustLevel::Assumed,
+        verification_report_hash: None,
+        accepted_assumptions: vec!["legacy-assumption".to_string()],
+    });
+    write_package_lockfile(dir.path(), &legacy_lockfile);
+
+    let install_output = ail()
+        .args(["package", "install", "signed.report@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let install_json = parse_json_output(&install_output);
+    assert_eq!(install_json["data"]["package_hash"], expected_package_hash);
+    assert_eq!(
+        install_json["data"]["verification_report_hash"],
+        expected_report_hash
+    );
+
+    let lockfile_bytes = fs::read(package_lockfile_path(dir.path())).expect("lockfile must exist");
+    let lockfile: Lockfile =
+        ciborium::from_reader(lockfile_bytes.as_slice()).expect("decode lockfile");
+    assert_eq!(
+        lockfile.entries.len(),
+        1,
+        "install must not duplicate entries"
+    );
+    assert_eq!(lockfile.entries[0].package_hash, expected_package_hash);
+    assert_eq!(lockfile.entries[0].trust_level, TrustLevel::Verified);
+    assert_eq!(
+        lockfile.entries[0].verification_report_hash.as_deref(),
+        Some(expected_report_hash.as_str())
+    );
+    assert_eq!(
+        lockfile.entries[0].accepted_assumptions,
+        vec!["legacy-assumption".to_string()]
+    );
+}
+
+#[test]
+fn package_verify_reports_verification_report_hash_mismatch() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest_with_report("signed.report", "1.0.0");
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![signed_test_package(manifest.clone())],
+            legacy_manifests: vec![],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+    ail()
+        .args(["package", "install", "signed.report@1.0.0"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let mut changed = manifest;
+    changed
+        .verification_report
+        .as_mut()
+        .expect("report must exist")
+        .exports_verified
+        .push("refund".to_string());
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![signed_test_package(changed)],
+            legacy_manifests: vec![],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+
+    let output = ail()
+        .args(["package", "verify", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "verification report hash mismatch",
+        ))
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+    assert_ne!(v["status"], "ok");
+    assert_eq!(v["data"]["verified"], false);
+    assert_eq!(v["data"]["verification_report_integrity"], "mismatch");
+    assert_eq!(
+        v["data"]["verification_report_mismatches"][0]["reason"],
+        "hash_mismatch"
+    );
+    assert!(v["data"]["verification_report_mismatches"][0]["lockfile_hash"].is_string());
+    assert!(v["data"]["verification_report_mismatches"][0]["registry_hash"].is_string());
+}
+
+#[test]
+fn package_verify_reports_missing_registry_verification_report() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest_with_report("signed.report", "1.0.0");
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![signed_test_package(manifest.clone())],
+            legacy_manifests: vec![],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+    ail()
+        .args(["package", "install", "signed.report@1.0.0"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let mut missing_report = manifest;
+    missing_report.verification_report = None;
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![signed_test_package(missing_report)],
+            legacy_manifests: vec![],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+
+    let output = ail()
+        .args(["package", "verify", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+    assert_eq!(
+        v["data"]["verification_report_mismatches"][0]["reason"],
+        "registry_report_missing"
+    );
+    assert!(v["data"]["verification_report_mismatches"][0]["lockfile_hash"].is_string());
+    assert_eq!(
+        v["data"]["verification_report_mismatches"][0]["registry_hash"],
+        Value::Null
+    );
+}
+
+#[test]
+fn package_verify_reports_legacy_lockfile_missing_report_hash() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest_with_report("signed.report", "1.0.0");
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![signed_test_package(manifest.clone())],
+            legacy_manifests: vec![],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "verify", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["verified"], false);
+    assert_eq!(
+        v["data"]["verification_report_mismatches"][0]["reason"],
+        "lockfile_report_hash_missing"
+    );
+    assert_eq!(
+        v["data"]["verification_report_mismatches"][0]["lockfile_hash"],
+        Value::Null
+    );
+    assert!(v["data"]["verification_report_mismatches"][0]["registry_hash"].is_string());
 }
 
 /// SC-PK5: package explain exits 0.

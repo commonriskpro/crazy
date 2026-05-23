@@ -487,6 +487,13 @@ Package add, install, publish, and explain report verification evidence from the
 manifest as-is: when no `verification_report` is present, human output shows
 `verification_report: none` and JSON includes `verification_report: null` with
 `verification_report_status: "none"`.
+When a manifest has a report, add/install pin its deterministic CBOR+BLAKE3 hash
+in `.ail/packages/lock.cbor` as `verification_report_hash`. `ail package verify`
+compares that pinned hash with the current local registry manifest report hash
+and emits stable JSON under `verification_report_integrity` and
+`verification_report_mismatches`. Missing legacy lock hashes are mismatches, not
+silent full-integrity success. This is local pinning only, not remote proof
+validation.
 
 #### package audit
 
@@ -591,6 +598,7 @@ Shows trust level and package hash. Does not grant any capabilities; capabilitie
 installed: <name>@<version>
 trust: <level>
 package_hash: <blake3-hex>
+verification_report: <attached|none>
 note: package install does not grant capabilities
 ```
 

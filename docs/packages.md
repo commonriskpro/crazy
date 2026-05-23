@@ -391,6 +391,15 @@ verification_report_hash
 accepted_assumptions
 ```
 
+When a registry manifest includes `verification_report`, local install/add hashes
+that report with deterministic CBOR plus BLAKE3 and stores the digest in
+`verification_report_hash`. `ail package verify` re-computes the current local
+registry report hash and compares it with the lockfile. A changed report, a
+lockfile hash whose registry report is now missing, or a legacy lockfile entry
+missing the hash while the registry still has a report is reported as
+`verification_report_integrity: "mismatch"`. This is local hash pinning only; it
+does not validate remote proofs, transparency logs, or external attestations.
+
 ### Revocation and advisories
 
 Packages can be revoked or warned:
