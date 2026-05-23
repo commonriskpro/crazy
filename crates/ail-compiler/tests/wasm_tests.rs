@@ -95,6 +95,14 @@ fn emit_valid_wasm(expr: AnfExpr, name: &str) -> Vec<String> {
     operators(&artifact.wasm)
 }
 
+fn contains_match(expr: &AnfExpr) -> bool {
+    match expr {
+        AnfExpr::Match { .. } => true,
+        AnfExpr::Let { value, body, .. } => contains_match(value) || contains_match(body),
+        _ => false,
+    }
+}
+
 #[test]
 fn bool_literals_emit_i64_constants() {
     let ops = emit_valid_wasm(AnfExpr::Literal(LiteralValue::Bool(true)), "fn.flag");
@@ -683,4 +691,38 @@ fn core_match_lowers_to_anf_match_and_emits_valid_wasm() {
 
     let artifact = emit_wasm(&anf).expect("emit_wasm failed");
     wasmparser::validate(&artifact.wasm).expect("core match wasm must validate");
+}
+
+#[test]
+fn parsed_match_body_lowers_to_anf_and_emits_valid_wasm() {
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.match_surface");
+    node.body_expr = Some("match(2, 1, 10, 2, 20, _, 30)".to_string());
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("core lowering must parse match");
+    assert!(
+        matches!(core.nodes[0].expr, Some(CoreExpr::Match { .. })),
+        "body_expr must parse to CoreExpr::Match"
+    );
+
+    let anf = lower_to_anf(&core).expect("ANF lowering must handle parsed match");
+    assert!(
+        contains_match(&anf.bindings[0].expr),
+        "parsed match must survive into ANF"
+    );
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm failed");
+    wasmparser::validate(&artifact.wasm).expect("parsed match wasm must validate");
+    let ops = operators(&artifact.wasm);
+    assert!(
+        ops.iter().any(|op| op == "I64Eq"),
+        "parsed match must emit equality checks, got {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| op.starts_with("If")),
+        "parsed match must emit branch cascade, got {ops:?}"
+    );
 }

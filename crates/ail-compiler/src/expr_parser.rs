@@ -1,4 +1,4 @@
-use crate::core_ir::{CoreExpr, LiteralValue};
+use crate::core_ir::{CoreExpr, LiteralValue, MatchArm};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseError {
@@ -106,6 +106,7 @@ impl Parser<'_> {
                     else_: Box::new(else_),
                 })
             }
+            "match" => parse_match_call(args),
             "add" => binary(func, args, CoreExpr::Add),
             "sub" => binary(func, args, CoreExpr::Sub),
             "mul" => binary(func, args, CoreExpr::Mul),
@@ -186,6 +187,49 @@ impl Parser<'_> {
 
     fn eof(&self) -> bool {
         self.pos >= self.input.len()
+    }
+}
+
+fn parse_match_call(args: Vec<CoreExpr>) -> Result<CoreExpr, ParseError> {
+    if args.len() < 3 || args.len() % 2 == 0 {
+        return Err(ParseError::new(format!(
+            "match expects scrutinee plus pattern/body pairs, got {} args",
+            args.len()
+        )));
+    }
+
+    let mut args = args.into_iter();
+    let scrutinee = args.next().expect("len checked above");
+    let mut arms = Vec::new();
+    while let Some(pattern) = args.next() {
+        let body = args.next().expect("odd arg count checked above");
+        arms.push(MatchArm {
+            pattern: render_match_pattern(pattern)?,
+            body,
+        });
+    }
+
+    Ok(CoreExpr::Match {
+        scrutinee: Box::new(scrutinee),
+        arms,
+    })
+}
+
+fn render_match_pattern(pattern: CoreExpr) -> Result<String, ParseError> {
+    match pattern {
+        CoreExpr::Var(name) => Ok(name),
+        CoreExpr::Literal(LiteralValue::Bool(value)) => Ok(value.to_string()),
+        CoreExpr::Literal(LiteralValue::Int(value)) => Ok(value.to_string()),
+        CoreExpr::Call { func, args } => {
+            let rendered_args = args
+                .into_iter()
+                .map(render_match_pattern)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(format!("{func}({})", rendered_args.join(", ")))
+        }
+        _ => Err(ParseError::new(
+            "match pattern must be an identifier, literal, wildcard, or constructor pattern",
+        )),
     }
 }
 
@@ -292,6 +336,59 @@ mod tests {
                     Box::new(CoreExpr::Literal(LiteralValue::Int(0)))
                 )),
             }
+        );
+    }
+
+    #[test]
+    fn parses_match_expression() {
+        assert_eq!(
+            parse_expr("match(score, 1, 10, 2, 20, _, 0)").unwrap(),
+            CoreExpr::Match {
+                scrutinee: Box::new(CoreExpr::Var("score".to_string())),
+                arms: vec![
+                    MatchArm {
+                        pattern: "1".to_string(),
+                        body: CoreExpr::Literal(LiteralValue::Int(10)),
+                    },
+                    MatchArm {
+                        pattern: "2".to_string(),
+                        body: CoreExpr::Literal(LiteralValue::Int(20)),
+                    },
+                    MatchArm {
+                        pattern: "_".to_string(),
+                        body: CoreExpr::Literal(LiteralValue::Int(0)),
+                    },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn parses_match_constructor_pattern() {
+        assert_eq!(
+            parse_expr("match(result, Ok(value), value, _, 0)").unwrap(),
+            CoreExpr::Match {
+                scrutinee: Box::new(CoreExpr::Var("result".to_string())),
+                arms: vec![
+                    MatchArm {
+                        pattern: "Ok(value)".to_string(),
+                        body: CoreExpr::Var("value".to_string()),
+                    },
+                    MatchArm {
+                        pattern: "_".to_string(),
+                        body: CoreExpr::Literal(LiteralValue::Int(0)),
+                    },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_match_without_pattern_body_pairs() {
+        let err = parse_expr("match(value, 1)").unwrap_err();
+        assert_eq!(
+            err.message,
+            "match expects scrutinee plus pattern/body pairs, got 2 args"
         );
     }
 }
