@@ -34,7 +34,10 @@ pub mod identity;
 pub mod policy;
 pub mod signing;
 
-pub use bundle::{BundleError, BundleStore, InMemoryBundleStore, ObjectBundle};
+pub use bundle::{
+    BundleError, BundleStore, FileBundleStore, FileBundleStoreError, InMemoryBundleStore,
+    ObjectBundle,
+};
 #[cfg(feature = "crypto")]
 pub use crypto::{
     CryptoError, decrypt_aes256gcm, derive_key_argon2, encrypt_aes256gcm, x25519_shared_secret,
