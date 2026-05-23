@@ -22,6 +22,16 @@ use crate::source::ContextSource;
 
 // ── Transport DTOs ────────────────────────────────────────────────────────
 
+/// JSON-RPC method for one-shot context queries.
+pub const CONTEXT_RPC_QUERY_METHOD: &str = "context.query";
+/// JSON-RPC method for stream-shaped context subscriptions.
+pub const CONTEXT_RPC_SUBSCRIBE_METHOD: &str = "context.subscribe";
+/// JSON-RPC method for in-process token authentication.
+pub const CONTEXT_RPC_AUTH_METHOD: &str = "context.auth";
+
+const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
+const JSONRPC_INVALID_PARAMS: i64 = -32602;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextRequest {
     Query {
@@ -94,6 +104,16 @@ impl ContextRpcRequest {
 
     pub fn from_json_slice(bytes: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(bytes)
+    }
+}
+
+impl ContextRequest {
+    fn expected_rpc_method(&self) -> &'static str {
+        match self {
+            ContextRequest::Query { .. } => CONTEXT_RPC_QUERY_METHOD,
+            ContextRequest::Subscribe { .. } => CONTEXT_RPC_SUBSCRIBE_METHOD,
+            ContextRequest::Auth { .. } => CONTEXT_RPC_AUTH_METHOD,
+        }
     }
 }
 
@@ -269,6 +289,35 @@ impl<S> ContextServer<S>
 where
     S: ContextSource + Send + Sync,
 {
+    /// Dispatch a JSON-RPC request envelope through the in-process server.
+    ///
+    /// This is a transport boundary, not a network server: callers still own
+    /// sockets, stdio, MCP, or any other byte transport around this method.
+    pub async fn handle_rpc(&self, request: ContextRpcRequest) -> ContextRpcResponse {
+        if !matches!(
+            request.method.as_str(),
+            CONTEXT_RPC_QUERY_METHOD | CONTEXT_RPC_SUBSCRIBE_METHOD | CONTEXT_RPC_AUTH_METHOD
+        ) {
+            return ContextRpcResponse::error(
+                request.id,
+                JSONRPC_METHOD_NOT_FOUND,
+                format!("method not found: {}", request.method),
+            );
+        }
+
+        let expected = request.params.expected_rpc_method();
+        if request.method != expected {
+            return ContextRpcResponse::error(
+                request.id,
+                JSONRPC_INVALID_PARAMS,
+                format!("method {} does not match request payload", request.method),
+            );
+        }
+
+        let response = self.handle(request.params).await;
+        ContextRpcResponse::result(request.id, response)
+    }
+
     pub async fn handle(&self, request: ContextRequest) -> ContextResponse {
         match request {
             ContextRequest::Auth { token } => match self.authenticate(&token) {
@@ -592,5 +641,87 @@ mod tests {
 
         assert_eq!(decoded, response);
         assert_eq!(reencoded, bytes, "JSON-RPC response must be stable");
+    }
+
+    #[test]
+    fn context_rpc_query_dispatch_returns_result_envelope() {
+        block_on(async {
+            let snapshot = snapshot();
+            let graph = graph();
+            let server = ContextServer::new(source(&snapshot, &graph));
+            let request = ContextRpcRequest::new(
+                "ctx-3",
+                CONTEXT_RPC_QUERY_METHOD,
+                ContextRequest::Query {
+                    query: ContextQuery::Graph {
+                        scope: QueryScope::Full,
+                        budget: QueryBudget::default(),
+                    },
+                    snapshot: SnapshotSelector::ById(snapshot.id),
+                    session: None,
+                },
+            );
+
+            let response = server.handle_rpc(request).await;
+
+            assert_eq!(response.id, "ctx-3");
+            assert!(response.error.is_none());
+            assert!(matches!(response.result, Some(ContextResponse::Result(_))));
+        });
+    }
+
+    #[test]
+    fn context_rpc_unknown_method_returns_jsonrpc_error() {
+        block_on(async {
+            let snapshot = snapshot();
+            let graph = graph();
+            let server = ContextServer::new(source(&snapshot, &graph));
+            let request = ContextRpcRequest::new(
+                "ctx-4",
+                "context.search",
+                ContextRequest::Query {
+                    query: ContextQuery::Graph {
+                        scope: QueryScope::Full,
+                        budget: QueryBudget::default(),
+                    },
+                    snapshot: SnapshotSelector::ById(snapshot.id),
+                    session: None,
+                },
+            );
+
+            let response = server.handle_rpc(request).await;
+
+            assert!(response.result.is_none());
+            assert_eq!(
+                response.error.expect("error").code,
+                JSONRPC_METHOD_NOT_FOUND
+            );
+        });
+    }
+
+    #[test]
+    fn context_rpc_method_payload_mismatch_returns_invalid_params() {
+        block_on(async {
+            let snapshot = snapshot();
+            let graph = graph();
+            let server = ContextServer::new(source(&snapshot, &graph));
+            let request = ContextRpcRequest::new(
+                "ctx-5",
+                CONTEXT_RPC_AUTH_METHOD,
+                ContextRequest::Query {
+                    query: ContextQuery::Graph {
+                        scope: QueryScope::Full,
+                        budget: QueryBudget::default(),
+                    },
+                    snapshot: SnapshotSelector::ById(snapshot.id),
+                    session: None,
+                },
+            );
+
+            let response = server.handle_rpc(request).await;
+
+            assert!(response.result.is_none());
+            assert_eq!(response.error.expect("error").code, JSONRPC_INVALID_PARAMS);
+        });
     }
 }
