@@ -17,8 +17,8 @@ use ail_storage::{
     MigrationError,
     backends::memory::MemoryObjectStore,
     migration::{
-        DomainVersions, MigrationReport, MigrationStore, V0ToV1Migration, default_catalog,
-        write_version,
+        DomainVersions, MigrationDryRunStep, MigrationReport, MigrationStore, V0ToV1Migration,
+        default_catalog, write_version,
     },
 };
 use futures::executor::block_on;
@@ -169,6 +169,135 @@ fn partial_migration_from_v1_reaches_v3() {
             .await
             .expect("apply from v1 must succeed");
         assert_eq!(new_version, 3, "must advance from v1 to v3");
+    });
+}
+
+// ── migration dry-run reports pending steps without writes ───────────────────
+#[test]
+fn dry_run_on_fresh_store_reports_v0_to_v3_without_writing() {
+    block_on(async {
+        let store = Arc::new(MemoryObjectStore::new());
+        let catalog = default_catalog();
+
+        let before = catalog
+            .current_version(Arc::clone(&store))
+            .await
+            .expect("current_version before dry-run");
+        assert_eq!(before, 0);
+
+        let report = catalog
+            .dry_run(Arc::clone(&store))
+            .await
+            .expect("dry_run must succeed");
+
+        assert_eq!(report.current_version, 0);
+        assert_eq!(report.target_version, 3);
+        assert_eq!(
+            report.pending_steps,
+            vec![
+                MigrationDryRunStep {
+                    source_version: 0,
+                    target_version: 1,
+                },
+                MigrationDryRunStep {
+                    source_version: 1,
+                    target_version: 2,
+                },
+                MigrationDryRunStep {
+                    source_version: 2,
+                    target_version: 3,
+                },
+            ]
+        );
+        assert!(!report.already_at_target);
+        assert_eq!(report.blocked_at_version, None);
+
+        let after = catalog
+            .current_version(Arc::clone(&store))
+            .await
+            .expect("current_version after dry-run");
+        assert_eq!(after, before, "dry-run must not write version records");
+    });
+}
+
+// ── migration dry-run from partial version reports remaining steps ───────────
+#[test]
+fn dry_run_from_v1_reports_remaining_steps() {
+    block_on(async {
+        let store = Arc::new(MemoryObjectStore::new());
+        let ms = MigrationStore::new(Arc::clone(&store));
+        write_version(&ms, 1).await.expect("write v1");
+
+        let catalog = default_catalog();
+        let report = catalog
+            .dry_run(Arc::clone(&store))
+            .await
+            .expect("dry_run must succeed");
+
+        assert_eq!(report.current_version, 1);
+        assert_eq!(report.target_version, 3);
+        assert_eq!(
+            report.pending_steps,
+            vec![
+                MigrationDryRunStep {
+                    source_version: 1,
+                    target_version: 2,
+                },
+                MigrationDryRunStep {
+                    source_version: 2,
+                    target_version: 3,
+                },
+            ]
+        );
+        assert!(!report.already_at_target);
+        assert_eq!(report.blocked_at_version, None);
+    });
+}
+
+// ── migration dry-run on latest version reports no pending work ──────────────
+#[test]
+fn dry_run_on_latest_store_reports_already_at_target() {
+    block_on(async {
+        let store = Arc::new(MemoryObjectStore::new());
+        let catalog = default_catalog();
+        catalog
+            .apply(Arc::clone(&store))
+            .await
+            .expect("apply to latest");
+
+        let report = catalog
+            .dry_run(Arc::clone(&store))
+            .await
+            .expect("dry_run must succeed");
+
+        assert_eq!(report.current_version, 3);
+        assert_eq!(report.target_version, 3);
+        assert!(report.pending_steps.is_empty());
+        assert!(report.already_at_target);
+        assert_eq!(report.blocked_at_version, None);
+    });
+}
+
+// ── migration dry-run reports catalog gaps ──────────────────────────────────
+#[test]
+fn dry_run_reports_blocked_version_when_catalog_has_gap() {
+    block_on(async {
+        use ail_storage::migration::{MigrationCatalog, V1ToV2Migration};
+
+        let store = Arc::new(MemoryObjectStore::new());
+        let mut catalog = MigrationCatalog::new();
+        catalog.register(V1ToV2Migration);
+
+        let report = catalog
+            .dry_run(Arc::clone(&store))
+            .await
+            .expect("dry_run must succeed");
+
+        assert_eq!(report.current_version, 0);
+        assert_eq!(report.target_version, 2);
+        assert!(report.pending_steps.is_empty());
+        assert!(!report.already_at_target);
+        assert_eq!(report.blocked_at_version, Some(0));
     });
 }
 

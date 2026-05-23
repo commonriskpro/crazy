@@ -119,6 +119,32 @@ pub struct MigrationReport {
     pub post_snapshot_id: Option<ObjectId>,
 }
 
+// ── MigrationDryRunReport ────────────────────────────────────────────────────
+
+/// A pending migration step reported by [`MigrationCatalog::dry_run`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MigrationDryRunStep {
+    /// Schema version this step expects as input.
+    pub source_version: u32,
+    /// Schema version this step would produce if applied.
+    pub target_version: u32,
+}
+
+/// Read-only migration plan for operational preflight checks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MigrationDryRunReport {
+    /// Schema version currently visible in the object store.
+    pub current_version: u32,
+    /// Highest target version registered in the catalog.
+    pub target_version: u32,
+    /// Ordered migration steps that would run from `current_version`.
+    pub pending_steps: Vec<MigrationDryRunStep>,
+    /// `true` when the store is already at or beyond the catalog target.
+    pub already_at_target: bool,
+    /// Version where planning stopped because the catalog has no contiguous step.
+    pub blocked_at_version: Option<u32>,
+}
+
 // ── Internal object-safe trait ────────────────────────────────────────────────
 
 /// Object-safe, async-capable object store abstraction.
@@ -369,6 +395,48 @@ impl MigrationCatalog {
     ) -> Result<u32, MigrationError> {
         let ms = Self::make_store(store);
         read_version(&ms, self.max_target()).await
+    }
+
+    /// Build a read-only report of migrations that would run.
+    ///
+    /// This method never calls [`Migration::up`] and never writes version records;
+    /// it only reads the current version marker and walks the registered catalog.
+    pub async fn dry_run<S: ObjectStore + Send + Sync + 'static>(
+        &self,
+        store: Arc<S>,
+    ) -> Result<MigrationDryRunReport, MigrationError> {
+        let ms = Self::make_store(store);
+        let target = self.max_target();
+        let current = read_version(&ms, target).await?;
+
+        let mut version = current;
+        let mut pending_steps = Vec::new();
+        if current < target {
+            for migration in &self.migrations {
+                if migration.source_version() != version {
+                    continue;
+                }
+
+                let next_version = migration.target_version();
+                pending_steps.push(MigrationDryRunStep {
+                    source_version: version,
+                    target_version: next_version,
+                });
+                version = next_version;
+
+                if version >= target {
+                    break;
+                }
+            }
+        }
+
+        Ok(MigrationDryRunReport {
+            current_version: current,
+            target_version: target,
+            pending_steps,
+            already_at_target: current >= target,
+            blocked_at_version: (version < target).then_some(version),
+        })
     }
 
     /// Apply all pending migrations to advance `store` to the latest schema version.
