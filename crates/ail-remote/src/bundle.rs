@@ -41,6 +41,11 @@ pub enum BundleError {
         /// The `ObjectId` whose stored key does not match the hash of its bytes.
         object_id: ObjectId,
     },
+    /// A `SnapshotEnvelope` root declares a direct CAS dependency absent from the bundle.
+    MissingSnapshotDependency {
+        /// The CAS dependency declared by the root snapshot envelope.
+        dependency: ObjectId,
+    },
 }
 
 impl fmt::Display for BundleError {
@@ -49,6 +54,12 @@ impl fmt::Display for BundleError {
             BundleError::RootNotFound => write!(f, "bundle root object is not present in the map"),
             BundleError::HashMismatch { object_id } => {
                 write!(f, "hash mismatch for object {object_id}")
+            }
+            BundleError::MissingSnapshotDependency { dependency } => {
+                write!(
+                    f,
+                    "snapshot bundle is missing declared dependency {dependency}"
+                )
             }
         }
     }
@@ -143,8 +154,8 @@ impl ObjectBundle {
     /// by a snapshot envelope root.
     ///
     /// This is intentionally a conservative traversal foundation: raw graph
-    /// objects remain opaque, but snapshot envelopes declare stable object ids
-    /// for the graph root and associated metadata records.
+    /// objects remain opaque, but snapshot envelopes declare stable CAS object
+    /// ids for the graph root and associated metadata records.
     pub async fn from_store_with_snapshot_dependencies<S>(
         root: ObjectId,
         store: &S,
@@ -158,15 +169,17 @@ impl ObjectBundle {
             if dependency == root || objects.contains_key(&dependency) {
                 continue;
             }
-            if let Some(bytes) = store.get(&dependency).await? {
-                objects.insert(dependency, bytes.0);
-            }
+            let bytes = store
+                .get(&dependency)
+                .await?
+                .ok_or(StorageError::NotFound)?;
+            objects.insert(dependency, bytes.0);
         }
         objects.insert(root, root_bytes);
         Ok(Self::new(root, objects))
     }
 
-    /// Return true when this bundle contains at least one direct dependency
+    /// Return true when this bundle contains at least one direct CAS dependency
     /// declared by a `SnapshotEnvelope` root.
     #[must_use]
     pub fn includes_snapshot_envelope_dependencies(&self) -> bool {
@@ -178,14 +191,17 @@ impl ObjectBundle {
             .any(|dependency| dependency != self.root && self.objects.contains_key(&dependency))
     }
 
-    /// Verify that every entry's stored key equals `blake3(bytes)` and that
-    /// the declared root key exists in the map.
+    /// Verify that every entry's stored key equals `blake3(bytes)`, that the
+    /// declared root key exists in the map, and that a snapshot-envelope root's
+    /// declared direct CAS dependencies are also present.
     ///
     /// # Errors
     ///
     /// - `BundleError::RootNotFound` if `root` is absent from `objects`.
     /// - `BundleError::HashMismatch { object_id }` for the first entry whose
     ///   key does not match the hash of its bytes.
+    /// - `BundleError::MissingSnapshotDependency { dependency }` when the root
+    ///   decodes as a `SnapshotEnvelope` but omits a direct declared CAS dependency.
     pub fn verify_integrity(&self) -> Result<(), BundleError> {
         // Check root presence first.
         if !self.objects.contains_key(&self.root) {
@@ -202,6 +218,13 @@ impl ObjectBundle {
             }
         }
 
+        let root_bytes = &self.objects[&self.root];
+        for dependency in snapshot_envelope_dependencies(root_bytes) {
+            if dependency != self.root && !self.objects.contains_key(&dependency) {
+                return Err(BundleError::MissingSnapshotDependency { dependency });
+            }
+        }
+
         Ok(())
     }
 }
@@ -211,7 +234,6 @@ fn snapshot_envelope_dependencies(bytes: &[u8]) -> Vec<ObjectId> {
         return vec![];
     };
     let mut dependencies = vec![snapshot.graph_root_hash];
-    dependencies.extend(snapshot.parent_id);
     dependencies.extend(snapshot.applied_change_id);
     dependencies.extend(snapshot.audit_record_ids);
     dependencies.extend(snapshot.migration_metadata_ids);

@@ -25,6 +25,8 @@ use ail_remote::{
     RemoteExchangeResponse, RemoteSignerPolicy, RemoteSignerRejectionReason,
     RemoteSubmissionOutcome, SignerTrustTier, TrustedRemoteSigner,
 };
+use ail_storage::SnapshotEnvelope;
+use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::object::ObjectId;
 use std::collections::BTreeMap;
 
@@ -99,6 +101,20 @@ fn bundle_from_bytes(bytes: &[u8]) -> ObjectBundle {
     let mut objects = BTreeMap::new();
     objects.insert(root, bytes);
     ObjectBundle::new(root, objects)
+}
+
+fn incomplete_snapshot_bundle() -> (ObjectId, ObjectBundle) {
+    let codec = CborCodec;
+    let snapshot = SnapshotEnvelope {
+        id: ObjectId::from_bytes(b"remote snapshot identity"),
+        graph_root_hash: ObjectId::from_bytes(b"declared graph dependency"),
+        ..Default::default()
+    };
+    let snapshot_bytes = codec.encode(&snapshot).expect("encode snapshot envelope");
+    let root = ObjectId::from_bytes(&snapshot_bytes);
+    let mut objects = BTreeMap::new();
+    objects.insert(root, snapshot_bytes);
+    (root, ObjectBundle::new(root, objects))
 }
 
 // ── Task 6.1a: Valid signed submission → CoordinatorOutcome::Applied ──────
@@ -426,6 +442,34 @@ async fn remote_exchange_rejects_invalid_bundle_integrity() {
             RemoteExchangeResponse::Error { ref code, .. } if code == "E_BUNDLE_INVALID"
         ),
         "invalid bundle must be rejected; got {response:?}"
+    );
+
+    let pull_response = coord
+        .handle_remote_exchange(RemoteExchangeRequest::PullBundle { root })
+        .await;
+
+    assert_eq!(
+        pull_response,
+        RemoteExchangeResponse::BundleMissing { root }
+    );
+}
+
+#[tokio::test]
+async fn remote_exchange_rejects_snapshot_bundle_missing_declared_dependency() {
+    let coord = Coordinator::new(SnapshotId(0), empty_graph());
+    let (root, bundle) = incomplete_snapshot_bundle();
+
+    let response = coord
+        .handle_remote_exchange(RemoteExchangeRequest::PushBundle(bundle))
+        .await;
+
+    assert!(
+        matches!(
+            response,
+            RemoteExchangeResponse::Error { ref code, ref message }
+                if code == "E_BUNDLE_INVALID" && message.contains("missing declared dependency")
+        ),
+        "incomplete snapshot bundle must return stable bundle error code; got {response:?}"
     );
 
     let pull_response = coord
