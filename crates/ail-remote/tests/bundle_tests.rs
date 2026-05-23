@@ -116,11 +116,15 @@ fn snapshot_envelope_bundle_includes_available_direct_dependencies() {
             .put(RawObject(b"audit record".to_vec()))
             .await
             .expect("store audit object");
-        let missing_change_id = ObjectId::from_bytes(b"missing change payload");
+        let declared_change_id = ObjectId::from_bytes(b"declared change payload");
+        store
+            .put(RawObject(b"declared change payload".to_vec()))
+            .await
+            .expect("store declared change object");
         let snapshot = SnapshotEnvelope {
             id: ObjectId::from_bytes(b"snapshot identity"),
             graph_root_hash: graph_id,
-            applied_change_id: Some(missing_change_id),
+            applied_change_id: Some(declared_change_id),
             audit_record_ids: vec![audit_id],
             ..Default::default()
         };
@@ -139,8 +143,93 @@ fn snapshot_envelope_bundle_includes_available_direct_dependencies() {
         assert!(bundle.objects.contains_key(&snapshot_root));
         assert!(bundle.objects.contains_key(&graph_id));
         assert!(bundle.objects.contains_key(&audit_id));
-        assert!(!bundle.objects.contains_key(&missing_change_id));
-        assert_eq!(bundle.objects.len(), 3);
+        assert!(bundle.objects.contains_key(&declared_change_id));
+        assert_eq!(bundle.objects.len(), 4);
+    });
+}
+
+#[test]
+fn non_genesis_snapshot_parent_identity_is_not_required_as_bundle_object() {
+    block_on(async {
+        let codec = CborCodec;
+        let store = MemoryObjectStore::new();
+        let graph_id = store
+            .put(RawObject(b"graph root for child snapshot".to_vec()))
+            .await
+            .expect("store graph object");
+        let parent_identity = ObjectId::from_bytes(b"parent snapshot envelope identity");
+        let snapshot = SnapshotEnvelope {
+            id: ObjectId::from_bytes(b"child snapshot identity"),
+            graph_root_hash: graph_id,
+            parent_id: Some(parent_identity),
+            ..Default::default()
+        };
+        let snapshot_bytes = codec.encode(&snapshot).expect("encode snapshot");
+        let snapshot_root = store
+            .put(RawObject(snapshot_bytes))
+            .await
+            .expect("store child snapshot envelope");
+
+        let bundle = ObjectBundle::from_store_with_snapshot_dependencies(snapshot_root, &store)
+            .await
+            .expect("build bundle without parent object");
+
+        bundle.verify_integrity().expect("bundle must verify");
+        assert!(bundle.objects.contains_key(&snapshot_root));
+        assert!(bundle.objects.contains_key(&graph_id));
+        assert!(!bundle.objects.contains_key(&parent_identity));
+        assert_eq!(bundle.objects.len(), 2);
+    });
+}
+
+#[test]
+fn snapshot_envelope_bundle_rejects_missing_declared_dependency() {
+    let codec = CborCodec;
+    let graph_id = ObjectId::from_bytes(b"declared graph root");
+    let snapshot = SnapshotEnvelope {
+        id: ObjectId::from_bytes(b"snapshot identity"),
+        graph_root_hash: graph_id,
+        ..Default::default()
+    };
+    let snapshot_bytes = codec.encode(&snapshot).expect("encode snapshot");
+    let snapshot_root = ObjectId::from_bytes(&snapshot_bytes);
+    let mut objects = BTreeMap::new();
+    objects.insert(snapshot_root, snapshot_bytes);
+    let bundle = ObjectBundle::new(snapshot_root, objects);
+
+    assert_eq!(
+        bundle.verify_integrity(),
+        Err(BundleError::MissingSnapshotDependency {
+            dependency: graph_id,
+        }),
+        "snapshot bundle must not be trusted when declared dependencies are absent"
+    );
+}
+
+#[test]
+fn snapshot_envelope_bundle_build_fails_when_declared_dependency_missing_from_store() {
+    block_on(async {
+        let codec = CborCodec;
+        let store = MemoryObjectStore::new();
+        let missing_graph_id = ObjectId::from_bytes(b"missing declared graph root");
+        let snapshot = SnapshotEnvelope {
+            id: ObjectId::from_bytes(b"snapshot identity"),
+            graph_root_hash: missing_graph_id,
+            ..Default::default()
+        };
+        let snapshot_bytes = codec.encode(&snapshot).expect("encode snapshot");
+        let snapshot_root = store
+            .put(RawObject(snapshot_bytes))
+            .await
+            .expect("store snapshot envelope");
+
+        let result =
+            ObjectBundle::from_store_with_snapshot_dependencies(snapshot_root, &store).await;
+
+        assert!(
+            matches!(result, Err(ail_storage::error::StorageError::NotFound)),
+            "bundle builder must fail rather than silently omit declared dependencies; got {result:?}"
+        );
     });
 }
 
