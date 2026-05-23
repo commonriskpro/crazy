@@ -656,6 +656,7 @@ The current implemented runtime subset resolves the original open questions for 
 | Typed boundary codec | `RuntimeInstance::invoke_typed(export, args, ValueLayout)` returns a `StructuredValue` by reading WASM linear memory and decoding with `ValueDecoder`. The milestone codec supports `Scalar`, `Record`, `Variant`, `List`, `Option`, `Result`, and `Handle` layouts; full ABI/value-layout parity remains future validation work. |
 | Memory access | `RuntimeInstance::read_wasm_memory(ptr, len)` and `write_wasm_memory(ptr, bytes)` provide direct access to WASM linear memory for structured result decoding. |
 | Handler structured dispatch | `Handler::handle_structured` default method encodes `StructuredValue` args as LE i64 bytes, dispatches to `handle`, and decodes the response as `StructuredValue::Scalar`. |
+| Capability call limits | `ResourceLimits::max_capability_calls` is enforced after the grant check and before handler dispatch; denied ungranted capabilities still return `CapabilityDenied` first. |
 | WASI exposure | Hidden behind the host runtime. The workspace owns direct `wasmtime` usage in `ail-runtime`; programs interact through host calls and exported functions. |
 | Handler execution | In-process Rust `Handler` trait implementations. Verified-module handlers remain future work. |
 | Tracing | OpenTelemetry dependencies exist; runtime audit/reporting is implemented. Full distributed tracing across capability calls remains future hardening. |
