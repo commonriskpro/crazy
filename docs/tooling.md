@@ -479,6 +479,10 @@ ail package explain payments.stripe
 ```
 
 Package install does not grant capabilities.
+Package add, install, publish, and explain report verification evidence from the
+manifest as-is: when no `verification_report` is present, human output shows
+`verification_report: none` and JSON includes `verification_report: null` with
+`verification_report_status: "none"`.
 
 #### package init
 
