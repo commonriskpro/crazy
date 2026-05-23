@@ -86,7 +86,7 @@ impl Default for HandleRegistry {
 /// A decoded WASM return value.
 ///
 /// Scalar values are decoded directly from the raw i64/i32 return.
-/// Compound values (Record, Variant, List) are decoded from WASM linear
+/// Compound values (Record, Tuple, Variant, List) are decoded from WASM linear
 /// memory via a base pointer stored in the raw return value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StructuredValue {
@@ -120,6 +120,7 @@ pub enum ValueLayout {
     Variant {
         tags: Vec<String>,
     },
+    Tuple(Vec<ValueLayout>),
     List(Box<ValueLayout>),
     Option(Box<ValueLayout>),
     Result {
@@ -142,45 +143,48 @@ impl ValueDecoder {
     /// `raw` — the raw i64 return value from the WASM function.
     /// `memory` — the full WASM linear memory slice at the time of decode.
     ///
-    /// Returns `StructuredValue::Unit` for any out-of-bounds memory access.
+    /// Returns `StructuredValue::Unit` for invalid pointers, unknown tags, or
+    /// out-of-bounds memory access.
     pub fn decode(layout: &ValueLayout, raw: i64, memory: &[u8]) -> StructuredValue {
         match layout {
             ValueLayout::Scalar => StructuredValue::Scalar(raw),
 
-            ValueLayout::Record { fields } => {
-                let ptr = raw as i32 as usize;
-                let fields_decoded = fields
-                    .iter()
-                    .enumerate()
-                    .map(|(i, name)| {
-                        let offset = ptr + i * 8;
-                        let val = read_i64_at(memory, offset).unwrap_or(0);
-                        (name.clone(), StructuredValue::Scalar(val))
-                    })
-                    .collect();
-                StructuredValue::Record(fields_decoded)
-            }
+            ValueLayout::Record { fields } => decode_record(fields, raw, memory),
 
-            ValueLayout::Variant { tags } => decode_variant(tags, raw as i32 as usize, memory),
+            ValueLayout::Tuple(elems) => decode_tuple(elems, raw, memory),
 
-            ValueLayout::List(inner) => decode_list(inner, raw as i32 as usize, memory),
+            ValueLayout::Variant { tags } => match ptr_from_raw(raw) {
+                Some(ptr) => decode_variant(tags, ptr, memory),
+                None => StructuredValue::Unit,
+            },
+
+            ValueLayout::List(inner) => match ptr_from_raw(raw) {
+                Some(ptr) => decode_list(inner, ptr, memory),
+                None => StructuredValue::Unit,
+            },
 
             ValueLayout::Option(inner) => {
                 let tags = vec!["None".to_string(), "Some".to_string()];
-                decode_typed_variant(
-                    &tags,
-                    raw as i32 as usize,
-                    memory,
-                    &[
-                        &ValueLayout::Scalar, // None has no meaningful payload
-                        inner.as_ref(),
-                    ],
-                )
+                match ptr_from_raw(raw) {
+                    Some(ptr) => decode_typed_variant(
+                        &tags,
+                        ptr,
+                        memory,
+                        &[
+                            &ValueLayout::Scalar, // None has no meaningful payload
+                            inner.as_ref(),
+                        ],
+                    ),
+                    None => StructuredValue::Unit,
+                }
             }
 
             ValueLayout::Result { ok, err } => {
                 let tags = vec!["Ok".to_string(), "Err".to_string()];
-                decode_typed_variant(&tags, raw as i32 as usize, memory, &[ok, err])
+                match ptr_from_raw(raw) {
+                    Some(ptr) => decode_typed_variant(&tags, ptr, memory, &[ok, err]),
+                    None => StructuredValue::Unit,
+                }
             }
 
             ValueLayout::Handle => StructuredValue::Handle(HandleId(raw as u64)),
@@ -214,6 +218,45 @@ fn read_i32_at(memory: &[u8], offset: usize) -> Option<i32> {
     Some(i32::from_le_bytes(buf))
 }
 
+fn ptr_from_raw(raw: i64) -> Option<usize> {
+    let ptr = i32::try_from(raw).ok()?;
+    usize::try_from(ptr).ok()
+}
+
+fn decode_record(fields: &[String], raw: i64, memory: &[u8]) -> StructuredValue {
+    let Some(ptr) = ptr_from_raw(raw) else {
+        return StructuredValue::Unit;
+    };
+    let mut decoded = Vec::with_capacity(fields.len());
+    for (i, name) in fields.iter().enumerate() {
+        let Some(offset) = ptr.checked_add(i * 8) else {
+            return StructuredValue::Unit;
+        };
+        let Some(val) = read_i64_at(memory, offset) else {
+            return StructuredValue::Unit;
+        };
+        decoded.push((name.clone(), StructuredValue::Scalar(val)));
+    }
+    StructuredValue::Record(decoded)
+}
+
+fn decode_tuple(elems: &[ValueLayout], raw: i64, memory: &[u8]) -> StructuredValue {
+    let Some(ptr) = ptr_from_raw(raw) else {
+        return StructuredValue::Unit;
+    };
+    let mut decoded = Vec::with_capacity(elems.len());
+    for (i, layout) in elems.iter().enumerate() {
+        let Some(offset) = ptr.checked_add(i * 8) else {
+            return StructuredValue::Unit;
+        };
+        let Some(val) = read_i64_at(memory, offset) else {
+            return StructuredValue::Unit;
+        };
+        decoded.push(ValueDecoder::decode(layout, val, memory));
+    }
+    StructuredValue::List(decoded)
+}
+
 /// Decode a variant from WASM memory using a flat tag → `StructuredValue`
 /// mapping.  Each tag always decodes its payload as a `Scalar`.
 fn decode_variant(tags: &[String], ptr: usize, memory: &[u8]) -> StructuredValue {
@@ -221,11 +264,17 @@ fn decode_variant(tags: &[String], ptr: usize, memory: &[u8]) -> StructuredValue
         Some(v) => v as usize,
         None => return StructuredValue::Unit,
     };
-    let tag = tags
-        .get(tag_idx)
-        .cloned()
-        .unwrap_or_else(|| "<unknown>".to_string());
-    let payload = read_i64_at(memory, ptr + 8).map(|v| Box::new(StructuredValue::Scalar(v)));
+    let Some(tag) = tags.get(tag_idx).cloned() else {
+        return StructuredValue::Unit;
+    };
+    let payload_offset = match ptr.checked_add(8) {
+        Some(offset) => offset,
+        None => return StructuredValue::Unit,
+    };
+    let Some(payload_raw) = read_i64_at(memory, payload_offset) else {
+        return StructuredValue::Unit;
+    };
+    let payload = Some(Box::new(StructuredValue::Scalar(payload_raw)));
     StructuredValue::Variant { tag, payload }
 }
 
@@ -243,21 +292,28 @@ fn decode_typed_variant(
         Some(v) => v as usize,
         None => return StructuredValue::Unit,
     };
-    let tag = tags
-        .get(tag_idx)
-        .cloned()
-        .unwrap_or_else(|| "<unknown>".to_string());
+    let Some(tag) = tags.get(tag_idx).cloned() else {
+        return StructuredValue::Unit;
+    };
 
     // Tag 0 for Option::None has no meaningful payload; return payload: None.
     // For all others, decode the payload at ptr+8 using the typed layout.
-    let payload_raw = read_i64_at(memory, ptr + 8);
     let payload = if let Some(layout) = typed_payloads.get(tag_idx) {
         match tag.as_str() {
             "None" => None,
-            _ => payload_raw.map(|raw| Box::new(ValueDecoder::decode(layout, raw, memory))),
+            _ => {
+                let payload_offset = match ptr.checked_add(8) {
+                    Some(offset) => offset,
+                    None => return StructuredValue::Unit,
+                };
+                let Some(payload_raw) = read_i64_at(memory, payload_offset) else {
+                    return StructuredValue::Unit;
+                };
+                Some(Box::new(ValueDecoder::decode(layout, payload_raw, memory)))
+            }
         }
     } else {
-        None
+        return StructuredValue::Unit;
     };
 
     StructuredValue::Variant { tag, payload }
@@ -271,13 +327,16 @@ fn decode_list(inner: &ValueLayout, ptr: usize, memory: &[u8]) -> StructuredValu
         Some(c) if c >= 0 => c as usize,
         _ => return StructuredValue::Unit,
     };
-    let elems = (0..count)
-        .map(|i| {
-            let offset = ptr + 8 + i * 8;
-            let val = read_i64_at(memory, offset).unwrap_or(0);
-            ValueDecoder::decode(inner, val, memory)
-        })
-        .collect();
+    let mut elems = Vec::with_capacity(count);
+    for i in 0..count {
+        let Some(offset) = ptr.checked_add(8 + i * 8) else {
+            return StructuredValue::Unit;
+        };
+        let Some(val) = read_i64_at(memory, offset) else {
+            return StructuredValue::Unit;
+        };
+        elems.push(ValueDecoder::decode(inner, val, memory));
+    }
     StructuredValue::List(elems)
 }
 
@@ -387,6 +446,20 @@ mod tests {
             StructuredValue::Record(vec![
                 ("a".to_string(), StructuredValue::Scalar(10)),
                 ("b".to_string(), StructuredValue::Scalar(32)),
+            ])
+        );
+    }
+
+    #[test]
+    fn decode_tuple_preserves_slot_order() {
+        let mem = make_memory(&[(0, 11), (8, 22)], 16);
+        let layout = ValueLayout::Tuple(vec![ValueLayout::Scalar, ValueLayout::Scalar]);
+        let result = ValueDecoder::decode(&layout, 0, &mem);
+        assert_eq!(
+            result,
+            StructuredValue::List(vec![
+                StructuredValue::Scalar(11),
+                StructuredValue::Scalar(22),
             ])
         );
     }
@@ -524,9 +597,13 @@ mod tests {
         };
         // ptr=0 but memory only has 4 bytes, can't read i64 at offset 0
         let result = ValueDecoder::decode(&layout, 0, &mem);
+        assert_eq!(result, StructuredValue::Unit);
+
+        let list_layout = ValueLayout::List(Box::new(ValueLayout::Scalar));
+        let short_list = make_memory(&[(0, 2), (8, 10)], 16);
         assert_eq!(
-            result,
-            StructuredValue::Record(vec![("x".to_string(), StructuredValue::Scalar(0))])
+            ValueDecoder::decode(&list_layout, 0, &short_list),
+            StructuredValue::Unit
         );
 
         // variant OOB: memory is only 2 bytes, can't read i32 at offset 0
@@ -536,6 +613,29 @@ mod tests {
         };
         let var_result = ValueDecoder::decode(&var_layout, 0, &tiny);
         assert_eq!(var_result, StructuredValue::Unit);
+
+        // variant payload OOB: tag is readable, but payload slot at ptr+8 is not.
+        let mut tag_only = vec![0u8; 4];
+        make_memory_i32_at(&mut tag_only, 0, 0);
+        assert_eq!(
+            ValueDecoder::decode(&var_layout, 0, &tag_only),
+            StructuredValue::Unit
+        );
+    }
+
+    #[test]
+    fn decode_unknown_variant_tag_returns_unit() {
+        let mut mem = vec![0u8; 16];
+        make_memory_i32_at(&mut mem, 0, 2);
+        mem[8..16].copy_from_slice(&99i64.to_le_bytes());
+        let layout = ValueLayout::Variant {
+            tags: vec!["Ok".to_string(), "Err".to_string()],
+        };
+
+        assert_eq!(
+            ValueDecoder::decode(&layout, 0, &mem),
+            StructuredValue::Unit
+        );
     }
 
     #[test]

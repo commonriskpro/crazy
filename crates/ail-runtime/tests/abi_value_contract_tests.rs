@@ -16,6 +16,9 @@ fn descriptor_to_layout(descriptor: &WasmTypeDescriptor) -> ValueLayout {
             fields: fields.clone(),
         },
         WasmTypeDescriptor::Variant { tags } => ValueLayout::Variant { tags: tags.clone() },
+        WasmTypeDescriptor::Tuple(elems) => {
+            ValueLayout::Tuple(elems.iter().map(descriptor_to_layout).collect())
+        }
         WasmTypeDescriptor::List(inner) => ValueLayout::List(Box::new(descriptor_to_layout(inner))),
         WasmTypeDescriptor::Option(inner) => {
             ValueLayout::Option(Box::new(descriptor_to_layout(inner)))
@@ -34,6 +37,28 @@ fn write_i32(memory: &mut [u8], offset: usize, value: i32) {
 
 fn write_i64(memory: &mut [u8], offset: usize, value: i64) {
     memory[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+#[test]
+fn compiler_tuple_descriptor_maps_to_runtime_tuple_layout() {
+    let descriptor = derive_wasm_type(&AnfExpr::TupleNew(vec![
+        AnfExpr::Literal(LiteralValue::Int(3)),
+        AnfExpr::Literal(LiteralValue::Int(5)),
+    ]));
+
+    let layout = descriptor_to_layout(&descriptor);
+    assert_eq!(
+        layout,
+        ValueLayout::Tuple(vec![ValueLayout::Scalar, ValueLayout::Scalar])
+    );
+
+    let mut memory = vec![0; 16];
+    write_i64(&mut memory, 0, 3);
+    write_i64(&mut memory, 8, 5);
+    assert_eq!(
+        ValueDecoder::decode(&layout, 0, &memory),
+        StructuredValue::List(vec![StructuredValue::Scalar(3), StructuredValue::Scalar(5),])
+    );
 }
 
 #[test]

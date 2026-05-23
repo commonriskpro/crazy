@@ -172,6 +172,39 @@ fn invoke_typed_record_decodes_fields() {
 }
 
 #[test]
+fn invoke_typed_record_decodes_three_fields_in_declaration_order() {
+    let expr = AnfExpr::RecordNew {
+        fields: vec![
+            ("first".to_string(), AnfExpr::Literal(LiteralValue::Int(1))),
+            ("second".to_string(), AnfExpr::Literal(LiteralValue::Int(2))),
+            ("third".to_string(), AnfExpr::Literal(LiteralValue::Int(3))),
+        ],
+    };
+    let wasm = compiler_wasm_for_expr(expr, "make_ordered");
+    let mut instance = instantiate(&wasm);
+
+    let layout = ValueLayout::Record {
+        fields: vec![
+            "first".to_string(),
+            "second".to_string(),
+            "third".to_string(),
+        ],
+    };
+    let result = instance
+        .invoke_typed("make_ordered", &[], &layout)
+        .expect("invoke_typed must succeed");
+
+    assert_eq!(
+        result,
+        StructuredValue::Record(vec![
+            ("first".to_string(), StructuredValue::Scalar(1)),
+            ("second".to_string(), StructuredValue::Scalar(2)),
+            ("third".to_string(), StructuredValue::Scalar(3)),
+        ])
+    );
+}
+
+#[test]
 fn invoke_typed_variant_decodes_tag() {
     // VariantNew { tag: "Ok", payload: Some(Int(5)) }
     // The variant tag "Ok" will be assigned discriminant 0 (first encounter).
@@ -219,6 +252,29 @@ fn invoke_typed_list_decodes_elements() {
             StructuredValue::Scalar(1),
             StructuredValue::Scalar(2),
             StructuredValue::Scalar(3),
+        ])
+    );
+}
+
+#[test]
+fn invoke_typed_tuple_decodes_contiguous_slots() {
+    let expr = AnfExpr::TupleNew(vec![
+        AnfExpr::Literal(LiteralValue::Int(8)),
+        AnfExpr::Literal(LiteralValue::Int(13)),
+    ]);
+    let wasm = compiler_wasm_for_expr(expr, "make_tuple");
+    let mut instance = instantiate(&wasm);
+
+    let layout = ValueLayout::Tuple(vec![ValueLayout::Scalar, ValueLayout::Scalar]);
+    let result = instance
+        .invoke_typed("make_tuple", &[], &layout)
+        .expect("invoke_typed must succeed");
+
+    assert_eq!(
+        result,
+        StructuredValue::List(vec![
+            StructuredValue::Scalar(8),
+            StructuredValue::Scalar(13),
         ])
     );
 }
@@ -314,6 +370,32 @@ fn invoke_typed_result_ok_end_to_end() {
         StructuredValue::Variant {
             tag: "Ok".to_string(),
             payload: Some(Box::new(StructuredValue::Scalar(0))),
+        }
+    );
+}
+
+#[test]
+fn invoke_typed_result_err_end_to_end() {
+    let expr = AnfExpr::VariantNew {
+        tag: "Err".to_string(),
+        payload: Some(Box::new(AnfExpr::Literal(LiteralValue::Int(-9)))),
+    };
+    let wasm = compiler_wasm_for_expr(expr, "make_err_val");
+    let mut instance = instantiate(&wasm);
+
+    let layout = ValueLayout::Result {
+        ok: Box::new(ValueLayout::Scalar),
+        err: Box::new(ValueLayout::Scalar),
+    };
+    let result = instance
+        .invoke_typed("make_err_val", &[], &layout)
+        .expect("invoke_typed must succeed");
+
+    assert_eq!(
+        result,
+        StructuredValue::Variant {
+            tag: "Err".to_string(),
+            payload: Some(Box::new(StructuredValue::Scalar(-9))),
         }
     );
 }
