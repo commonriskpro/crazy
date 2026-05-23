@@ -11,8 +11,12 @@
 // Each test cites the spec scenario it exercises in its doc comment.
 
 use assert_cmd::Command;
+use ail_storage::SnapshotEnvelope;
+use ail_storage::codec::{CborCodec, ContentCodec};
+use ail_storage::object::ObjectId;
 use predicates::prelude::*;
 use serde_json::Value;
+use std::fs;
 use std::process::Output;
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -36,6 +40,14 @@ fn parse_json_output(output: &Output) -> Value {
     let text = std::str::from_utf8(&output.stdout).expect("stdout must be UTF-8");
     serde_json::from_str(text.trim())
         .unwrap_or_else(|e| panic!("--json output must parse as JSON: {e}\nRaw: {text}"))
+}
+
+fn write_raw_object(project_dir: &std::path::Path, bytes: Vec<u8>) -> String {
+    let id = ObjectId::from_bytes(&bytes);
+    let objects_dir = project_dir.join(".ail").join("store").join("objects");
+    fs::create_dir_all(&objects_dir).expect("object directory must be created");
+    fs::write(objects_dir.join(id.to_hex()), bytes).expect("object must be written");
+    id.to_hex()
 }
 
 // ── Task 3.2 baseline: dispatch + context + change ────────────────────────
@@ -1592,7 +1604,10 @@ fn remote_push_pull_json_use_local_file_bundle_store() {
         push_json["data"]["transport"],
         "local_file_bundle_store+in_process"
     );
-    assert_eq!(push_json["data"]["bundle_scope"], "single_root_object");
+    assert_eq!(
+        push_json["data"]["bundle_scope"],
+        "single_root_object"
+    );
     assert_eq!(push_json["data"]["object_count"], 1);
     assert!(
         push_json["data"]["note"]
@@ -1625,10 +1640,62 @@ fn remote_push_pull_json_use_local_file_bundle_store() {
     assert_eq!(pull_json["data"]["request"], "PullBundle");
     assert_eq!(pull_json["data"]["root"], root);
     assert_eq!(pull_json["data"]["object_count"], 1);
+    assert_eq!(pull_json["data"]["bundle_scope"], "single_root_object");
     assert_eq!(
         pull_json["data"]["transport"],
         "local_file_bundle_store+in_process"
     );
+}
+
+#[test]
+fn remote_push_pull_snapshot_envelope_json_report_dependency_scope() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let graph_id = {
+        let graph_bytes = b"snapshot envelope graph root".to_vec();
+        let graph_id = ObjectId::from_bytes(&graph_bytes);
+        write_raw_object(dir.path(), graph_bytes);
+        graph_id
+    };
+    let snapshot = SnapshotEnvelope {
+        id: ObjectId::from_bytes(b"cli snapshot envelope"),
+        graph_root_hash: graph_id,
+        ..Default::default()
+    };
+    let snapshot_bytes = CborCodec.encode(&snapshot).expect("snapshot must encode");
+    let snapshot_root = write_raw_object(dir.path(), snapshot_bytes);
+
+    let push_output = ail()
+        .args(["remote", "push", "--root", &snapshot_root, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let push_json = parse_json_output(&push_output);
+    assert_eq!(push_json["status"], "ok");
+    assert_eq!(
+        push_json["data"]["bundle_scope"],
+        "root_with_snapshot_envelope_dependencies"
+    );
+    assert_eq!(push_json["data"]["object_count"], 2);
+
+    let pull_output = ail()
+        .args(["remote", "pull", &snapshot_root, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let pull_json = parse_json_output(&pull_output);
+    assert_eq!(pull_json["status"], "ok");
+    assert_eq!(
+        pull_json["data"]["bundle_scope"],
+        "root_with_snapshot_envelope_dependencies"
+    );
+    assert_eq!(pull_json["data"]["object_count"], 2);
 }
 
 #[test]

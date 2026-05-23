@@ -23,9 +23,10 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use ail_storage::SnapshotEnvelope;
 use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::error::StorageError;
-use ail_storage::object::ObjectId;
+use ail_storage::object::{ObjectId, ObjectStore};
 use serde::{Deserialize, Serialize};
 
 // ── BundleError ───────────────────────────────────────────────────────────
@@ -138,6 +139,45 @@ impl ObjectBundle {
         Self { root, objects }
     }
 
+    /// Build a bundle from `root` plus any directly referenced objects declared
+    /// by a snapshot envelope root.
+    ///
+    /// This is intentionally a conservative traversal foundation: raw graph
+    /// objects remain opaque, but snapshot envelopes declare stable object ids
+    /// for the graph root and associated metadata records.
+    pub async fn from_store_with_snapshot_dependencies<S>(
+        root: ObjectId,
+        store: &S,
+    ) -> Result<Self, StorageError>
+    where
+        S: ObjectStore + Sync,
+    {
+        let root_bytes = store.get(&root).await?.ok_or(StorageError::NotFound)?.0;
+        let mut objects = BTreeMap::new();
+        for dependency in snapshot_envelope_dependencies(&root_bytes) {
+            if dependency == root || objects.contains_key(&dependency) {
+                continue;
+            }
+            if let Some(bytes) = store.get(&dependency).await? {
+                objects.insert(dependency, bytes.0);
+            }
+        }
+        objects.insert(root, root_bytes);
+        Ok(Self::new(root, objects))
+    }
+
+    /// Return true when this bundle contains at least one direct dependency
+    /// declared by a `SnapshotEnvelope` root.
+    #[must_use]
+    pub fn includes_snapshot_envelope_dependencies(&self) -> bool {
+        let Some(root_bytes) = self.objects.get(&self.root) else {
+            return false;
+        };
+        snapshot_envelope_dependencies(root_bytes)
+            .into_iter()
+            .any(|dependency| dependency != self.root && self.objects.contains_key(&dependency))
+    }
+
     /// Verify that every entry's stored key equals `blake3(bytes)` and that
     /// the declared root key exists in the map.
     ///
@@ -164,6 +204,18 @@ impl ObjectBundle {
 
         Ok(())
     }
+}
+
+fn snapshot_envelope_dependencies(bytes: &[u8]) -> Vec<ObjectId> {
+    let Ok(snapshot) = CborCodec.decode::<SnapshotEnvelope>(bytes) else {
+        return vec![];
+    };
+    let mut dependencies = vec![snapshot.graph_root_hash];
+    dependencies.extend(snapshot.parent_id);
+    dependencies.extend(snapshot.applied_change_id);
+    dependencies.extend(snapshot.audit_record_ids);
+    dependencies.extend(snapshot.migration_metadata_ids);
+    dependencies
 }
 
 // ── BundleStore ───────────────────────────────────────────────────────────
