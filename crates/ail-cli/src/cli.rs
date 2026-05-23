@@ -71,7 +71,8 @@ use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_package::{
     ArtifactHashEntry, CapabilityPolicy, CapabilityPolicyEnforcer, CapabilityPolicyVerdict,
     Lockfile, LockfileEntry, PackageDef, PackageKeypair, PackageManifest, PackageRegistry,
-    PublishRequest, RegistryClient, SearchRequest, TrustLevel, VerifyOutcome, VerifyRequest,
+    PackageVerificationReport, PublishRequest, RegistryClient, SearchRequest, SignedPackage,
+    TrustLevel, VerifyOutcome, VerifyRequest,
 };
 use ail_remote::{
     AgentKeypair, FileBundleStore, ObjectBundle, RemoteChangeSet, RemoteExchangeRequest,
@@ -4070,33 +4071,52 @@ async fn cmd_package(
         }
         PackageCmd::Add { package } => {
             let (name, version) = parse_package_spec(&package);
-            install_package_from_registry(store, name, version)?;
+            let installed = install_package_from_registry(store, name, version)?;
+            let entry = &installed.entry;
+            let verification_report_status =
+                verification_report_status(installed.verification_report.is_some());
             let human_msg = format!(
-                "added: {package}\nname: {name}\nversion: {version}\ntrust: verified\nverification_report: accepted\ncapabilities: []\nassumptions: []\nunsafe_surface: []\nadvisories: []\nnote: package install does not grant capabilities"
+                "added: {package}\nname: {}\nversion: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\ncapabilities: []\nassumptions: []\nunsafe_surface: []\nadvisories: []\nnote: package install does not grant capabilities{}",
+                entry.name,
+                entry.version,
+                entry.trust_level,
+                installed.signature_status,
+                format_warnings_for_human(&installed.warnings)
             );
             print_response(
                 mode,
                 &human_msg,
                 json!({
                     "package": package,
-                    "name": name,
-                    "version": version,
-                    "trust": "verified",
-                    "verification_report": "accepted",
+                    "name": entry.name,
+                    "version": entry.version,
+                    "trust": entry.trust_level.to_string(),
+                    "signature_status": installed.signature_status,
+                    "verification_report": installed.verification_report,
+                    "verification_report_status": verification_report_status,
                     "capabilities": [],
                     "assumptions": [],
                     "unsafe_surface": [],
                     "advisories": [],
                     "capabilities_granted": false,
+                    "warnings": installed.warnings,
                 }),
             );
         }
         PackageCmd::Install { package } => {
             let (name, version) = parse_package_spec(&package);
-            let entry = install_package_from_registry(store, name, version)?;
+            let installed = install_package_from_registry(store, name, version)?;
+            let entry = &installed.entry;
+            let verification_report_status =
+                verification_report_status(installed.verification_report.is_some());
             let human_msg = format!(
-                "installed: {}@{}\ntrust: {:?}\npackage_hash: {}\nnote: package install does not grant capabilities",
-                entry.name, entry.version, entry.trust_level, entry.package_hash
+                "installed: {}@{}\ntrust: {:?}\npackage_hash: {}\nsignature: {}\nverification_report: {verification_report_status}\nnote: package install does not grant capabilities{}",
+                entry.name,
+                entry.version,
+                entry.trust_level,
+                entry.package_hash,
+                installed.signature_status,
+                format_warnings_for_human(&installed.warnings)
             );
             print_response(
                 mode,
@@ -4106,8 +4126,12 @@ async fn cmd_package(
                     "name": entry.name,
                     "version": entry.version,
                     "package_hash": entry.package_hash,
-                    "trust": format!("{:?}", entry.trust_level),
+                    "trust": entry.trust_level.to_string(),
+                    "signature_status": installed.signature_status,
+                    "verification_report": installed.verification_report,
+                    "verification_report_status": verification_report_status,
                     "capabilities_granted": false,
+                    "warnings": installed.warnings,
                 }),
             );
         }
@@ -4151,46 +4175,69 @@ async fn cmd_package(
         PackageCmd::Verify => {
             let lockfile = load_package_lockfile(store)?;
             let registry = load_package_registry(store)?;
-            let actual = registry
-                .all()
-                .iter()
-                .map(|manifest| {
-                    manifest
-                        .blake3_hex()
-                        .map(|hash| (manifest.name.as_str(), manifest.version.as_str(), hash))
-                        .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut seen = BTreeSet::new();
+            let mut actual = Vec::new();
+            let mut signature_failures = Vec::new();
+            let mut warnings = Vec::new();
+            for manifest in registry.all() {
+                if !seen.insert((manifest.name.clone(), manifest.version.clone())) {
+                    continue;
+                }
+                match trusted_package_lookup(&registry, &manifest.name, &manifest.version) {
+                    Ok(lookup) => {
+                        if let Some(warning) = lookup.warning {
+                            warnings.push(warning);
+                        }
+                        let hash = lookup
+                            .manifest
+                            .blake3_hex()
+                            .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))?;
+                        actual.push((lookup.manifest.name, lookup.manifest.version, hash));
+                    }
+                    Err(e) => signature_failures.push(e.to_string()),
+                }
+            }
             let actual_refs = actual
                 .iter()
-                .map(|(name, version, hash)| (*name, *version, hash.as_str()))
+                .map(|(name, version, hash)| (name.as_str(), version.as_str(), hash.as_str()))
                 .collect::<Vec<_>>();
             let mismatches = lockfile.verify_integrity(&actual_refs);
-            let verified = mismatches.is_empty();
+            let hash_ok = mismatches.is_empty();
+            let signature_ok = signature_failures.is_empty();
+            let verified = hash_ok && signature_ok;
             let human_msg = format!(
-                "packages: {}\nhash_integrity: {}\nlock_file: {}\npackages_checked: {}",
+                "packages: {}\nhash_integrity: {}\nsignature_integrity: {}\nlock_file: {}\npackages_checked: {}\nwarnings: {}",
                 if verified {
                     "all verified"
                 } else {
                     "verification failed"
                 },
-                if verified { "ok" } else { "mismatch" },
+                if hash_ok { "ok" } else { "mismatch" },
+                if signature_ok { "ok" } else { "failed" },
                 if verified {
                     "consistent"
                 } else {
                     "inconsistent"
                 },
-                lockfile.len()
+                lockfile.len(),
+                warnings.len()
             );
             print_response(
                 mode,
                 &human_msg,
                 json!({
                     "verified": verified,
-                    "hash_integrity": if verified { "ok" } else { "mismatch" },
+                    "hash_integrity": if hash_ok { "ok" } else { "mismatch" },
+                    "signature_integrity": if signature_ok { "ok" } else { "failed" },
                     "lock_file": if verified { "consistent" } else { "inconsistent" },
                     "mismatches": mismatches,
-                    "packages": lockfile.entries,
+                    "signature_failures": signature_failures,
+                    "warnings": warnings,
+                    "packages": lockfile
+                        .entries
+                        .iter()
+                        .map(lockfile_entry_to_json)
+                        .collect::<Vec<_>>(),
                 }),
             );
         }
@@ -4208,7 +4255,7 @@ async fn cmd_package(
             };
             let published = client
                 .publish(PublishRequest {
-                    signed_package: signed,
+                    signed_package: signed.clone(),
                 })
                 .map_err(|e| CliError::Domain(format!("package publish failed: {e:?}")))?;
             if !published.accepted {
@@ -4219,10 +4266,14 @@ async fn cmd_package(
                 ));
             }
             let mut registry = client.registry;
-            registry.register(manifest.clone());
+            registry.register_signed(signed).map_err(|e| {
+                CliError::Domain(format!("package signature verification failed: {e}"))
+            })?;
             save_package_registry(store, &registry)?;
+            let verification_report_status =
+                verification_report_status(manifest.verification_report.is_some());
             let human_msg = format!(
-                "published\nname: {}\nversion: {}\npackage_hash: {hash}\ntrust: {:?}\ncapabilities_manifest: attached\nverification_report: attached",
+                "published\nname: {}\nversion: {}\npackage_hash: {hash}\ntrust: {:?}\nsignature: signed\ncapabilities_manifest: attached\nverification_report: {verification_report_status}",
                 manifest.name, manifest.version, manifest.trust_level
             );
             print_response(
@@ -4233,11 +4284,13 @@ async fn cmd_package(
                     "name": manifest.name,
                     "version": manifest.version,
                     "package_hash": hash,
-                    "trust": format!("{:?}", manifest.trust_level),
+                    "trust": manifest.trust_level.to_string(),
+                    "signature_status": "signed",
                     "log_id": published.log_id,
                     "sequence": published.sequence,
                     "capabilities_manifest": manifest.required_capabilities,
                     "verification_report": manifest.verification_report,
+                    "verification_report_status": verification_report_status,
                 }),
             );
         }
@@ -4257,21 +4310,21 @@ async fn cmd_package(
         PackageCmd::Explain { package } => {
             let (name, version) = package.split_once('@').unwrap_or((&package, "latest"));
             let registry = load_package_registry(store)?;
-            let manifest = find_package_manifest(&registry, name, version)
-                .ok_or_else(|| CliError::NotFound(format!("package not found: {package}")))?;
+            let lookup = trusted_package_lookup(&registry, name, version)?;
+            let manifest = lookup.manifest;
+            let warnings = lookup.warning.into_iter().collect::<Vec<_>>();
+            let verification_report_status =
+                verification_report_status(manifest.verification_report.is_some());
             let human_msg = format!(
-                "package: {package}\nname: {}\nversion: {}\ntrust: {:?}\nverification_report: {}\ncapabilities: {:?}\nassumptions: {}\nunsafe_surface: {}\nadvisories: []",
+                "package: {package}\nname: {}\nversion: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\ncapabilities: {:?}\nassumptions: {}\nunsafe_surface: {}\nadvisories: []{}",
                 manifest.name,
                 manifest.version,
                 manifest.trust_level,
-                if manifest.verification_report.is_some() {
-                    "attached"
-                } else {
-                    "none"
-                },
+                lookup.signature_status,
                 manifest.required_capabilities,
                 manifest.assumptions.len(),
-                manifest.unsafe_surface.len()
+                manifest.unsafe_surface.len(),
+                format_warnings_for_human(&warnings)
             );
             print_response(
                 mode,
@@ -4280,12 +4333,15 @@ async fn cmd_package(
                     "package": package,
                     "name": manifest.name,
                     "version": manifest.version,
-                    "trust": format!("{:?}", manifest.trust_level),
+                    "trust": manifest.trust_level.to_string(),
+                    "signature_status": lookup.signature_status,
                     "verification_report": manifest.verification_report,
+                    "verification_report_status": verification_report_status,
                     "capabilities": manifest.required_capabilities,
                     "assumptions": manifest.assumptions,
                     "unsafe_surface": manifest.unsafe_surface,
                     "advisories": [],
+                    "warnings": warnings,
                 }),
             );
         }
@@ -4545,6 +4601,27 @@ struct ApprovalDecisionRecord {
     created_at: u64,
 }
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct LocalPackageRegistryFile {
+    #[serde(default)]
+    signed_packages: Vec<SignedPackage>,
+    #[serde(default)]
+    legacy_manifests: Vec<PackageManifest>,
+}
+
+struct LocalPackageLookup {
+    manifest: PackageManifest,
+    signature_status: &'static str,
+    warning: Option<String>,
+}
+
+struct InstalledPackage {
+    entry: LockfileEntry,
+    signature_status: &'static str,
+    verification_report: Option<PackageVerificationReport>,
+    warnings: Vec<String>,
+}
+
 struct SemanticDiff {
     added_nodes: Vec<Value>,
     removed_nodes: Vec<Value>,
@@ -4590,13 +4667,33 @@ impl RegistryClient for LocalRegistryClient {
         &self,
         request: ail_package::FetchRequest,
     ) -> Result<ail_package::FetchResponse, Self::Error> {
+        if let Some(signed) = find_signed_package(&self.registry, &request.name, &request.version) {
+            signed
+                .verify()
+                .map_err(|e| format!("signature verification failed: {e}"))?;
+            return Ok(ail_package::FetchResponse {
+                signed_package: Some(signed.clone()),
+                yanked: false,
+                error: None,
+            });
+        }
+
         let manifest = find_package_manifest(&self.registry, &request.name, &request.version);
+        let error = match manifest {
+            None => Some(format!(
+                "package {} {} not found",
+                request.name, request.version
+            )),
+            Some(manifest) if manifest.trust_level == TrustLevel::Verified => Some(format!(
+                "verified package missing local signature: {}@{}",
+                manifest.name, manifest.version
+            )),
+            Some(_) => None,
+        };
         Ok(ail_package::FetchResponse {
             signed_package: None,
             yanked: false,
-            error: manifest
-                .is_none()
-                .then(|| format!("package {} {} not found", request.name, request.version)),
+            error,
         })
     }
 
@@ -4625,13 +4722,16 @@ impl RegistryClient for LocalRegistryClient {
     }
 
     fn verify(&self, request: VerifyRequest) -> Result<ail_package::VerifyResponse, Self::Error> {
-        let Some(manifest) = find_package_manifest(&self.registry, &request.name, &request.version)
-        else {
-            return Ok(ail_package::VerifyResponse {
-                outcome: VerifyOutcome::NotFound,
-            });
+        let lookup = match trusted_package_lookup(&self.registry, &request.name, &request.version) {
+            Ok(lookup) => lookup,
+            Err(CliError::NotFound(_)) => {
+                return Ok(ail_package::VerifyResponse {
+                    outcome: VerifyOutcome::NotFound,
+                });
+            }
+            Err(e) => return Err(e.to_string()),
         };
-        let hash = manifest.blake3_hex().map_err(|e| e.0)?;
+        let hash = lookup.manifest.blake3_hex().map_err(|e| e.0)?;
         let outcome = if hash == request.expected_hash {
             VerifyOutcome::Ok
         } else {
@@ -5009,8 +5109,9 @@ fn package_manifest_path(store: &StoreHandle) -> Result<PathBuf, CliError> {
 
 fn default_memory_package_registry() -> Result<PackageRegistry, CliError> {
     let mut registry = PackageRegistry::new();
+    let keypair = PackageKeypair::from_bytes(&[7u8; 32]);
     for (name, version) in [("payments.stripe", "1.2"), ("payments.stripe", "1.2.0")] {
-        registry.register(PackageManifest::from_def(PackageDef {
+        let manifest = PackageManifest::from_def(PackageDef {
             name: name.to_string(),
             version: version.to_string(),
             trust_level: TrustLevel::Verified,
@@ -5032,7 +5133,13 @@ fn default_memory_package_registry() -> Result<PackageRegistry, CliError> {
             verification_report: None,
             graph_schema: Some(1),
             core_ir_schema: Some(1),
-        }));
+        });
+        let signed = keypair
+            .sign_manifest(manifest)
+            .map_err(|e| CliError::Domain(format!("default package signing failed: {e}")))?;
+        registry
+            .register_signed(signed)
+            .map_err(|e| CliError::Domain(format!("default package signature invalid: {e}")))?;
     }
     Ok(registry)
 }
@@ -5067,9 +5174,21 @@ fn load_package_registry(store: &StoreHandle) -> Result<PackageRegistry, CliErro
         return Ok(registry);
     }
     let bytes = std::fs::read(path)?;
-    let manifests: Vec<PackageManifest> = ciborium::from_reader(bytes.as_slice())
+    if let Ok(file) = ciborium::from_reader::<LocalPackageRegistryFile, _>(bytes.as_slice()) {
+        for signed in file.signed_packages {
+            registry.register_signed(signed).map_err(|e| {
+                CliError::Domain(format!("package signature verification failed: {e}"))
+            })?;
+        }
+        for manifest in file.legacy_manifests {
+            registry.register(manifest);
+        }
+        return Ok(registry);
+    }
+
+    let legacy_manifests: Vec<PackageManifest> = ciborium::from_reader(bytes.as_slice())
         .map_err(|e| CliError::Domain(format!("package registry decoding failed: {e}")))?;
-    for manifest in manifests {
+    for manifest in legacy_manifests {
         registry.register(manifest);
     }
     Ok(registry)
@@ -5082,8 +5201,29 @@ fn save_package_registry(store: &StoreHandle, registry: &PackageRegistry) -> Res
     }
     let dir = packages_dir(store)?;
     std::fs::create_dir_all(&dir)?;
+    let signed_keys = registry
+        .all_signed()
+        .iter()
+        .map(|signed| {
+            (
+                signed.manifest.name.clone(),
+                signed.manifest.version.clone(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let file = LocalPackageRegistryFile {
+        signed_packages: registry.all_signed().to_vec(),
+        legacy_manifests: registry
+            .all()
+            .iter()
+            .filter(|manifest| {
+                !signed_keys.contains(&(manifest.name.clone(), manifest.version.clone()))
+            })
+            .cloned()
+            .collect(),
+    };
     let mut bytes = Vec::new();
-    ciborium::into_writer(&registry.all().to_vec(), &mut bytes)
+    ciborium::into_writer(&file, &mut bytes)
         .map_err(|e| CliError::Domain(format!("package registry encoding failed: {e}")))?;
     std::fs::write(dir.join("registry.cbor"), bytes)?;
     Ok(())
@@ -5136,14 +5276,72 @@ fn find_package_manifest<'a>(
     }
 }
 
+fn find_signed_package<'a>(
+    registry: &'a PackageRegistry,
+    name: &str,
+    version: &str,
+) -> Option<&'a SignedPackage> {
+    if version == "latest" {
+        registry
+            .all_signed()
+            .iter()
+            .rev()
+            .find(|signed| signed.manifest.name == name)
+    } else {
+        registry.lookup_signed_by_name_version(name, version)
+    }
+}
+
+fn format_warnings_for_human(warnings: &[String]) -> String {
+    if warnings.is_empty() {
+        String::new()
+    } else {
+        format!("\nwarnings:\n{}", warnings.join("\n"))
+    }
+}
+
+fn trusted_package_lookup(
+    registry: &PackageRegistry,
+    name: &str,
+    version: &str,
+) -> Result<LocalPackageLookup, CliError> {
+    if let Some(signed) = find_signed_package(registry, name, version) {
+        signed
+            .verify()
+            .map_err(|e| CliError::Domain(format!("package signature verification failed: {e}")))?;
+        return Ok(LocalPackageLookup {
+            manifest: signed.manifest.clone(),
+            signature_status: "signed",
+            warning: None,
+        });
+    }
+
+    let manifest = find_package_manifest(registry, name, version)
+        .ok_or_else(|| CliError::NotFound(format!("package not found: {name}@{version}")))?;
+    if manifest.trust_level == TrustLevel::Verified {
+        return Err(CliError::Domain(format!(
+            "verified package missing local signature: {}@{}",
+            manifest.name, manifest.version
+        )));
+    }
+    Ok(LocalPackageLookup {
+        manifest: manifest.clone(),
+        signature_status: "legacy_unsigned",
+        warning: Some(format!(
+            "legacy unsigned package metadata for {}@{}; trust is not cryptographically verified",
+            manifest.name, manifest.version
+        )),
+    })
+}
+
 fn install_package_from_registry(
     store: &StoreHandle,
     name: &str,
     version: &str,
-) -> Result<LockfileEntry, CliError> {
+) -> Result<InstalledPackage, CliError> {
     let registry = load_package_registry(store)?;
-    let manifest = find_package_manifest(&registry, name, version)
-        .ok_or_else(|| CliError::NotFound(format!("package not found: {name}@{version}")))?;
+    let lookup = trusted_package_lookup(&registry, name, version)?;
+    let manifest = &lookup.manifest;
     let hash = manifest
         .blake3_hex()
         .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))?;
@@ -5160,12 +5358,39 @@ fn install_package_from_registry(
         lockfile.add(entry.clone());
     }
     save_package_lockfile(store, &lockfile)?;
-    Ok(entry)
+    Ok(InstalledPackage {
+        entry,
+        signature_status: lookup.signature_status,
+        verification_report: manifest.verification_report.clone(),
+        warnings: lookup.warning.into_iter().collect(),
+    })
+}
+
+fn verification_report_status(has_report: bool) -> &'static str {
+    if has_report { "attached" } else { "none" }
+}
+
+fn lockfile_entry_to_json(entry: &LockfileEntry) -> Value {
+    json!({
+        "name": &entry.name,
+        "version": &entry.version,
+        "package_hash": &entry.package_hash,
+        "trust_level": entry.trust_level.to_string(),
+        "verification_report_hash": &entry.verification_report_hash,
+        "accepted_assumptions": &entry.accepted_assumptions,
+    })
 }
 
 fn package_manifest_to_json(manifest: &PackageManifest) -> Result<Value, CliError> {
-    serde_json::to_value(manifest)
-        .map_err(|e| CliError::Domain(format!("package manifest json failed: {e}")))
+    let mut value = serde_json::to_value(manifest)
+        .map_err(|e| CliError::Domain(format!("package manifest json failed: {e}")))?;
+    if let Value::Object(object) = &mut value {
+        object.insert(
+            "trust_level".to_string(),
+            Value::String(manifest.trust_level.to_string()),
+        );
+    }
+    Ok(value)
 }
 
 fn validate_local_name(name: &str) -> Result<(), CliError> {

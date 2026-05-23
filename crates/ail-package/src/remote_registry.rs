@@ -456,9 +456,8 @@ pub fn publish_signed(
     registry: &mut crate::registry::PackageRegistry,
     signed: &SignedPackage,
 ) -> Result<PackageManifest, crate::signing::SigningError> {
-    signed.verify()?;
     let manifest = signed.manifest.clone();
-    registry.register(manifest.clone());
+    registry.register_signed(signed.clone())?;
     Ok(manifest)
 }
 

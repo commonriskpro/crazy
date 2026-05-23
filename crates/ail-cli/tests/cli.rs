@@ -10,6 +10,7 @@
 //
 // Each test cites the spec scenario it exercises in its doc comment.
 
+use ail_package::{PackageDef, PackageManifest, SignedPackage, TrustLevel};
 use ail_storage::SnapshotEnvelope;
 use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::object::ObjectId;
@@ -48,6 +49,66 @@ fn write_raw_object(project_dir: &std::path::Path, bytes: Vec<u8>) -> String {
     fs::create_dir_all(&objects_dir).expect("object directory must be created");
     fs::write(objects_dir.join(id.to_hex()), bytes).expect("object must be written");
     id.to_hex()
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct TestPackageRegistryFile {
+    signed_packages: Vec<SignedPackage>,
+    legacy_manifests: Vec<PackageManifest>,
+}
+
+fn package_registry_path(project_dir: &std::path::Path) -> std::path::PathBuf {
+    project_dir
+        .join(".ail")
+        .join("packages")
+        .join("registry.cbor")
+}
+
+fn read_package_registry_file(project_dir: &std::path::Path) -> TestPackageRegistryFile {
+    let bytes = fs::read(package_registry_path(project_dir)).expect("registry file must exist");
+    ciborium::from_reader(bytes.as_slice()).expect("registry file must decode")
+}
+
+fn write_package_registry_file(project_dir: &std::path::Path, file: &TestPackageRegistryFile) {
+    let path = package_registry_path(project_dir);
+    fs::create_dir_all(path.parent().expect("registry path must have parent"))
+        .expect("registry directory must be created");
+    let mut bytes = Vec::new();
+    ciborium::into_writer(file, &mut bytes).expect("registry file must encode");
+    fs::write(path, bytes).expect("registry file must be written");
+}
+
+fn write_legacy_package_registry(project_dir: &std::path::Path, manifests: &[PackageManifest]) {
+    let path = package_registry_path(project_dir);
+    fs::create_dir_all(path.parent().expect("registry path must have parent"))
+        .expect("registry directory must be created");
+    let mut bytes = Vec::new();
+    ciborium::into_writer(manifests, &mut bytes).expect("legacy registry must encode");
+    fs::write(path, bytes).expect("legacy registry file must be written");
+}
+
+fn test_package_manifest(name: &str, version: &str, trust_level: TrustLevel) -> PackageManifest {
+    PackageManifest::from_def(PackageDef {
+        name: name.to_string(),
+        version: version.to_string(),
+        trust_level,
+        required_capabilities: vec![],
+        exported_capabilities: vec![],
+        assumptions: vec![],
+        unsafe_surface: vec![],
+        artifact_hashes: vec![],
+        build_env_hash: None,
+        handlers: vec![],
+        contracts: vec![],
+        exports: vec![],
+        imports: vec![],
+        boundaries: vec![],
+        license: None,
+        provenance: None,
+        verification_report: None,
+        graph_schema: Some(1),
+        core_ir_schema: Some(1),
+    })
 }
 
 // ── Task 3.2 baseline: dispatch + context + change ────────────────────────
@@ -1521,6 +1582,249 @@ fn package_publish_exits_zero() {
         .stdout(predicate::str::contains("publish").or(predicate::str::contains("ok")));
 }
 
+#[test]
+fn package_publish_persists_signed_registry_record() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    ail()
+        .args(["package", "publish", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let registry = read_package_registry_file(dir.path());
+    assert_eq!(registry.signed_packages.len(), 1);
+    assert!(registry.legacy_manifests.is_empty());
+    registry.signed_packages[0]
+        .verify()
+        .expect("persisted signed package must verify");
+}
+
+#[test]
+fn package_publish_reports_missing_verification_report() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    ail()
+        .args(["package", "publish"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("verification_report: none"))
+        .stdout(predicate::str::contains("verification_report: attached").not());
+
+    let json_dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail()
+        .arg("init")
+        .current_dir(json_dir.path())
+        .assert()
+        .success();
+    let output = ail()
+        .args(["package", "publish", "--json"])
+        .current_dir(json_dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["trust"], "verified");
+    assert_eq!(v["data"]["verification_report"], Value::Null);
+    assert_eq!(v["data"]["verification_report_status"], "none");
+}
+
+#[test]
+fn package_init_json_manifest_uses_stable_lowercase_trust_level() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let output = ail()
+        .args([
+            "package",
+            "init",
+            "--name",
+            "stable.pkg",
+            "--version",
+            "1.0.0",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["manifest"]["trust_level"], "verified");
+    assert_ne!(v["data"]["manifest"]["trust_level"], "Verified");
+}
+
+#[test]
+fn package_tampered_signature_fails_verify_and_install() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    ail()
+        .args(["package", "publish"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let mut registry = read_package_registry_file(dir.path());
+    registry.signed_packages[0].sig.signature[0] ^= 0xff;
+    write_package_registry_file(dir.path(), &registry);
+
+    ail()
+        .args(["package", "verify"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("signature verification failed"));
+
+    ail()
+        .args(["package", "install", "local.package@0.1.0"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("signature verification failed"));
+}
+
+#[test]
+fn package_legacy_unsigned_install_is_explicit() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("legacy.pkg", "1.0.0", TrustLevel::Assumed);
+    write_legacy_package_registry(dir.path(), &[manifest]);
+
+    let output = ail()
+        .args(["package", "install", "legacy.pkg@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["trust"], "assumed");
+    assert_eq!(v["data"]["signature_status"], "legacy_unsigned");
+    assert_eq!(v["data"]["verification_report"], Value::Null);
+    assert_eq!(v["data"]["verification_report_status"], "none");
+    assert!(
+        v["data"]["warnings"]
+            .as_array()
+            .is_some_and(|w| !w.is_empty()),
+        "legacy unsigned install must surface a warning; got: {v}"
+    );
+}
+
+#[test]
+fn package_add_legacy_unsigned_does_not_claim_accepted_verification_report() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("legacy.pkg", "1.0.0", TrustLevel::Assumed);
+    write_legacy_package_registry(dir.path(), &[manifest]);
+
+    ail()
+        .args(["package", "add", "legacy.pkg@1.0.0"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("signature: legacy_unsigned"))
+        .stdout(predicate::str::contains("verification_report: none"))
+        .stdout(predicate::str::contains("verification_report: accepted").not());
+}
+
+#[test]
+fn package_legacy_verified_unsigned_install_fails() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("legacy.verified", "1.0.0", TrustLevel::Verified);
+    write_legacy_package_registry(dir.path(), &[manifest]);
+
+    ail()
+        .args(["package", "install", "legacy.verified@1.0.0"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "verified package missing local signature",
+        ));
+}
+
+#[test]
+fn package_legacy_verified_unsigned_explain_fails() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("legacy.verified", "1.0.0", TrustLevel::Verified);
+    write_legacy_package_registry(dir.path(), &[manifest]);
+
+    ail()
+        .args(["package", "explain", "legacy.verified@1.0.0"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "verified package missing local signature",
+        ));
+}
+
+#[test]
+fn package_legacy_unsigned_explain_is_explicit() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("legacy.pkg", "1.0.0", TrustLevel::Assumed);
+    write_legacy_package_registry(dir.path(), &[manifest]);
+
+    let output = ail()
+        .args(["package", "explain", "legacy.pkg@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["trust"], "assumed");
+    assert_eq!(v["data"]["signature_status"], "legacy_unsigned");
+    assert_eq!(v["data"]["verification_report"], Value::Null);
+    assert_eq!(v["data"]["verification_report_status"], "none");
+    assert!(
+        v["data"]["warnings"]
+            .as_array()
+            .is_some_and(|w| !w.is_empty()),
+        "legacy unsigned explain must surface a warning; got: {v}"
+    );
+}
+
+#[test]
+fn package_publish_install_verify_happy_path() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    ail()
+        .args(["package", "publish"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args(["package", "install", "local.package@0.1.0"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("signature: signed"));
+    let verify_output = ail()
+        .args(["package", "verify", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"signature_integrity\":\"ok\""))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&verify_output);
+    assert_eq!(v["data"]["packages"][0]["trust_level"], "verified");
+}
+
 /// SC-PK5: package explain exits 0.
 #[test]
 fn package_explain_exits_zero() {
@@ -1551,6 +1855,9 @@ fn package_add_json_has_package_and_trust() {
         v["data"]["trust"].is_string(),
         "data.trust must be a string; got: {v}"
     );
+    assert_eq!(v["data"]["trust"], "verified");
+    assert_eq!(v["data"]["verification_report"], Value::Null);
+    assert_eq!(v["data"]["verification_report_status"], "none");
 }
 
 /// package audit --json produces JSON with advisories array.
@@ -1609,6 +1916,10 @@ fn package_explain_json_has_package_and_capabilities() {
         v["data"]["capabilities"].is_array(),
         "data.capabilities must be an array; got: {v}"
     );
+    assert_eq!(v["data"]["trust"], "verified");
+    assert_eq!(v["data"]["signature_status"], "signed");
+    assert_eq!(v["data"]["verification_report"], Value::Null);
+    assert_eq!(v["data"]["verification_report_status"], "none");
 }
 
 // ── Remote submit ─────────────────────────────────────────────────────────
@@ -2982,8 +3293,8 @@ fn policy_set_json_has_record_type() {
 
 // ── G31 R2: package full metadata ────────────────────────────────────────
 
-/// SC-PKG1: package add --json includes trust, verification_report, capabilities,
-///          assumptions, unsafe_surface, advisories, capabilities_granted=false.
+/// SC-PKG1: package add --json includes trust, verification_report presence,
+///          capabilities, assumptions, unsafe_surface, advisories, capabilities_granted=false.
 #[test]
 fn package_add_json_has_full_metadata() {
     let output = ail()
@@ -2999,10 +3310,9 @@ fn package_add_json_has_full_metadata() {
         v["data"]["trust"].is_string(),
         "trust must be string; got: {v}"
     );
-    assert!(
-        v["data"]["verification_report"].is_string(),
-        "verification_report must be string; got: {v}"
-    );
+    assert_eq!(v["data"]["trust"], "verified");
+    assert_eq!(v["data"]["verification_report"], Value::Null);
+    assert_eq!(v["data"]["verification_report_status"], "none");
     assert!(
         v["data"]["capabilities"].is_array(),
         "capabilities must be array; got: {v}"

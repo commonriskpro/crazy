@@ -362,6 +362,16 @@ strings, so runtime compares the report hashes with the manifest artifact hashes
 by digest, ignoring manifest roles and ordering. Lower trust tiers keep their
 existing profile-gated behavior.
 
+Local CLI registry persistence stores signed publications as `SignedPackage`
+records. `ail package publish` signs the manifest with the local development key
+and persists the signed record under `.ail/packages/registry.cbor`; later
+`install`, `add`, `verify`, and local fetch paths verify that signature before
+trusting package metadata. Existing unsigned registry files are still decoded as
+legacy metadata. Legacy unsigned packages below `verified` can be installed with
+explicit `signature_status: legacy_unsigned` and warnings, but an unsigned
+`verified` package is rejected instead of being treated as cryptographically
+verified.
+
 ### Reproducibility
 
 Package should be content-addressed:
@@ -480,7 +490,7 @@ The original package questions are resolved for the current implemented package 
 
 | Topic | Status |
 |-------|--------|
-| Registry/signing | Implemented subset of primitives for registry, remote registry, and signing. Production registry operations remain future work. |
+| Registry/signing | Implemented subset of primitives for registry, remote registry, signing, and signed local CLI persistence. Production registry operations remain future work. |
 | Reproducible builds | Required by design for `verified`; metadata primitives exist, ecosystem validation remains future work. |
 | Federated trust | Trust metadata and remote registry primitives exist; cross-org operations remain future work. |
 | Proof checking | Package verification surfaces exist; deep proof distribution policy remains future work. |

@@ -1,6 +1,6 @@
 // ── ail-package::registry ─────────────────────────────────────────────────
 //
-// `PackageRegistry` — in-memory store of `PackageManifest` entries.
+// `PackageRegistry` — in-memory store of package metadata entries.
 //
 // This is a local, in-memory registry only.  No network access or remote
 // registry protocol is implemented here.  See Phase 16+ for remote support.
@@ -12,6 +12,7 @@
 // small (tens of entries) in practice.
 
 use crate::manifest::PackageManifest;
+use crate::signing::{SignedPackage, SigningError};
 use crate::yank::YankRecord;
 
 // ── PackageRegistry ───────────────────────────────────────────────────────
@@ -28,6 +29,7 @@ use crate::yank::YankRecord;
 #[derive(Clone, Debug, Default)]
 pub struct PackageRegistry {
     manifests: Vec<PackageManifest>,
+    signed_packages: Vec<SignedPackage>,
     yanked: Vec<YankRecord>,
 }
 
@@ -47,6 +49,18 @@ impl PackageRegistry {
         self.manifests.push(manifest);
     }
 
+    /// Add a signed package to the registry after verifying its signature.
+    ///
+    /// The manifest is also indexed in `manifests` so existing resolver and
+    /// search paths keep working while callers that need provenance can use
+    /// [`PackageRegistry::lookup_signed_by_name_version`].
+    pub fn register_signed(&mut self, signed: SignedPackage) -> Result<(), SigningError> {
+        signed.verify()?;
+        self.manifests.push(signed.manifest.clone());
+        self.signed_packages.push(signed);
+        Ok(())
+    }
+
     /// Look up a manifest by exact `name` and `version` match.
     ///
     /// Returns the first match in insertion order, or `None` if not found.
@@ -54,6 +68,17 @@ impl PackageRegistry {
         self.manifests
             .iter()
             .find(|m| m.name == name && m.version == version)
+    }
+
+    /// Look up a signed package by exact `name` and `version` match.
+    pub fn lookup_signed_by_name_version(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Option<&SignedPackage> {
+        self.signed_packages
+            .iter()
+            .find(|p| p.manifest.name == name && p.manifest.version == version)
     }
 
     /// Return the total number of registered manifests.
@@ -69,6 +94,11 @@ impl PackageRegistry {
     /// Return all registered manifests in insertion order.
     pub fn all(&self) -> &[PackageManifest] {
         &self.manifests
+    }
+
+    /// Return all signed packages in insertion order.
+    pub fn all_signed(&self) -> &[SignedPackage] {
+        &self.signed_packages
     }
 
     /// Record that a specific package version has been yanked.
@@ -134,6 +164,10 @@ mod tests {
         })
     }
 
+    fn signing_keypair() -> crate::signing::PackageKeypair {
+        crate::signing::PackageKeypair::from_bytes(&[11u8; 32])
+    }
+
     // ── lookup_returns_registered_manifest ────────────────────────────────
     #[test]
     fn lookup_returns_registered_manifest() {
@@ -144,6 +178,34 @@ mod tests {
         let found = reg.lookup_by_name_version("payments.stripe", "2.3.1");
         assert!(found.is_some(), "registered manifest must be findable");
         assert_eq!(found.unwrap(), &m);
+    }
+
+    #[test]
+    fn registry_signing_registers_signed_package() {
+        let mut reg = PackageRegistry::new();
+        let signed = signing_keypair()
+            .sign_manifest(make_manifest("signed.pkg", "1.0.0"))
+            .expect("sign");
+
+        reg.register_signed(signed.clone())
+            .expect("verified signed package");
+
+        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.all_signed(), &[signed]);
+        assert!(reg.lookup_by_name_version("signed.pkg", "1.0.0").is_some());
+    }
+
+    #[test]
+    fn registry_signing_rejects_tampered_package() {
+        let mut reg = PackageRegistry::new();
+        let mut signed = signing_keypair()
+            .sign_manifest(make_manifest("signed.pkg", "1.0.0"))
+            .expect("sign");
+        signed.manifest.version = "9.9.9".to_string();
+
+        assert!(reg.register_signed(signed).is_err());
+        assert!(reg.is_empty());
+        assert!(reg.all_signed().is_empty());
     }
 
     // ── lookup_returns_none_for_unknown_package ───────────────────────────
