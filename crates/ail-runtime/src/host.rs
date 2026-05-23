@@ -189,6 +189,8 @@ pub(crate) struct HostState {
     /// call through `dispatch_host_call` creates a child span and attaches
     /// it to the [`AuditEvent::CapabilityCallExecuted`] event.
     pub(crate) trace_context: Option<TraceContext>,
+    /// Capability calls consumed by the active invocation.
+    pub(crate) capability_calls_used: u64,
 }
 
 // ── RuntimeInstance ───────────────────────────────────────────────────────
@@ -273,6 +275,7 @@ impl RuntimeInstance {
             })
             .collect::<RuntimeResult<Vec<_>>>()?;
 
+        self.store.data_mut().capability_calls_used = 0;
         func.call(&mut self.store, &wasm_args, &mut wasm_results)
             .map_err(|e| RuntimeError::EncodingError(format!("export `{export_name}`: {e}")))?;
 
@@ -485,6 +488,8 @@ pub struct RuntimeHost {
     /// When `Some`, `call_capability` creates a child span derived from this
     /// context and attaches it to the `CapabilityCallExecuted` audit event.
     current_trace_context: Option<TraceContext>,
+    /// Capability calls consumed since the last successful preflight.
+    capability_calls_used: u64,
 }
 
 impl RuntimeHost {
@@ -578,6 +583,7 @@ impl RuntimeHost {
             current_profile: None,
             current_module_name: None,
             current_trace_context: None,
+            capability_calls_used: 0,
         }
     }
 
@@ -665,6 +671,7 @@ impl RuntimeHost {
         if result.is_ok() {
             self.current_profile = Some(Arc::new(profile.clone()));
             self.current_module_name = Some(manifest.module.clone());
+            self.capability_calls_used = 0;
         }
         result
     }
@@ -731,6 +738,40 @@ impl RuntimeHost {
             );
             return Err(err);
         }
+
+        if let Some(max_calls) = self
+            .current_profile
+            .as_ref()
+            .and_then(|p| p.limits().max_capability_calls)
+            && self.capability_calls_used >= max_calls
+        {
+            let err = HostError::LimitExceeded(format!(
+                "max_capability_calls exceeded: limit={max_calls}, used={}",
+                self.capability_calls_used
+            ));
+            let duration_us = start.elapsed().as_micros() as u64;
+            self.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
+                    capability: capability.clone(),
+                    operation: operation.to_string(),
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us,
+                    timestamp,
+                    profile: profile_name,
+                    module: module_name,
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
+                    trace_context: child_trace,
+                },
+            );
+            return Err(err);
+        }
+
+        self.capability_calls_used += 1;
 
         // Step 2: schema/boundary validation (if a definition is registered).
         if let Some(def) = self.schema_registry.get(capability.as_str())
@@ -1158,6 +1199,7 @@ impl RuntimeHost {
                 audit_log: self.audit_log.clone(),
                 limiter: store_limits,
                 trace_context: None,
+                capability_calls_used: 0,
             },
         );
 
@@ -1328,10 +1370,16 @@ fn dispatch_host_call_write(
 
     // Grant check (module-scoped).
     {
-        let state = caller.data();
+        let state = caller.data_mut();
         if !state.profile.grants_capability(&state.module_name, &cap) {
             return None;
         }
+        if let Some(max_calls) = state.profile.limits().max_capability_calls
+            && state.capability_calls_used >= max_calls
+        {
+            return None;
+        }
+        state.capability_calls_used += 1;
     }
 
     // Find the matching handler.
@@ -1411,6 +1459,30 @@ fn dispatch_host_call(
             );
             return Some(-1);
         }
+        if let Some(max_calls) = state.profile.limits().max_capability_calls
+            && state.capability_calls_used >= max_calls
+        {
+            state.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
+                    capability: cap,
+                    operation,
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us: start.elapsed().as_micros() as u64,
+                    timestamp,
+                    profile: profile_name,
+                    module: Some(module_name),
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
+                    trace_context: child_trace,
+                },
+            );
+            return Some(-1);
+        }
+        state.capability_calls_used += 1;
         state
             .handlers
             .iter()
