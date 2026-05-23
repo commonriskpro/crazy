@@ -264,6 +264,39 @@ impl StoreHandle {
             .map(Some)
             .map_err(|e| CliError::Domain(format!("changeset decoding failed: {e}")))
     }
+
+    /// Load raw content-addressed object bytes by id when the backend exposes objects.
+    pub async fn load_raw_object(&self, id: &ObjectId) -> Result<Option<Vec<u8>>, CliError> {
+        let raw = match self {
+            StoreHandle::Memory { objects, .. } => objects.get(id).await?,
+            StoreHandle::File { objects, .. } => objects.get(id).await?,
+            StoreHandle::Postgres(_) => return Ok(None),
+        };
+        Ok(raw.map(|object| object.0))
+    }
+
+    /// Store raw content-addressed object bytes, asserting the expected id.
+    pub async fn save_raw_object(
+        &self,
+        expected_id: &ObjectId,
+        bytes: Vec<u8>,
+    ) -> Result<(), CliError> {
+        let stored_id = match self {
+            StoreHandle::Memory { objects, .. } => objects.put(RawObject(bytes)).await?,
+            StoreHandle::File { objects, .. } => objects.put(RawObject(bytes)).await?,
+            StoreHandle::Postgres(_) => {
+                return Err(CliError::Domain(
+                    "remote pull cannot write raw objects to the Postgres backend yet".to_string(),
+                ));
+            }
+        };
+        if stored_id != *expected_id {
+            return Err(CliError::Domain(format!(
+                "pulled object id mismatch: expected {expected_id}, stored {stored_id}"
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
