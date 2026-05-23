@@ -13,7 +13,11 @@
 //   - Compile once (warm cache), change NodeRef(250), verify re-lowered
 //     count ≤ |{250} ∪ transitive_callers(250)|.
 
-use ail_compiler::{MemoryArtifactCache, compile_incremental, compute_node_hashes};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use ail_compiler::{
+    ArtifactCache, ArtifactEntry, MemoryArtifactCache, compile_incremental, compute_node_hashes,
+};
 use ail_core::semantic_graph::{EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_verify::report::VerificationReport;
 
@@ -32,6 +36,55 @@ fn node(id: u32) -> GraphNode {
 
 fn calls_edge(source: u32, target: u32) -> GraphEdge {
     GraphEdge::new(NodeRef(source), NodeRef(target), EdgeKind::Calls)
+}
+
+#[derive(Default)]
+struct CountingCache {
+    inner: MemoryArtifactCache,
+    hits: AtomicUsize,
+    misses: AtomicUsize,
+    puts: AtomicUsize,
+}
+
+impl CountingCache {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn reset_counters(&self) {
+        self.hits.store(0, Ordering::Relaxed);
+        self.misses.store(0, Ordering::Relaxed);
+        self.puts.store(0, Ordering::Relaxed);
+    }
+
+    fn hits(&self) -> usize {
+        self.hits.load(Ordering::Relaxed)
+    }
+
+    fn misses(&self) -> usize {
+        self.misses.load(Ordering::Relaxed)
+    }
+
+    fn puts(&self) -> usize {
+        self.puts.load(Ordering::Relaxed)
+    }
+}
+
+impl ArtifactCache for CountingCache {
+    fn get(&self, key: &[u8; 32]) -> Option<ArtifactEntry> {
+        let entry = self.inner.get(key);
+        if entry.is_some() {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+        }
+        entry
+    }
+
+    fn put(&self, key: [u8; 32], entry: ArtifactEntry) {
+        self.puts.fetch_add(1, Ordering::Relaxed);
+        self.inner.put(key, entry);
+    }
 }
 
 // ── Task 3.3 — end-to-end compile_incremental scenarios ──────────────────
@@ -179,4 +232,68 @@ fn large_graph_incremental_one_change_recompiles_only_callers() {
     let _ = new_hashes; // silence unused warning — used for docs above
     let result = compile_incremental(&modified_graph, &report, &cache, &prev_hashes).unwrap();
     assert_eq!(result.nodes.len(), n, "output must contain all {n} nodes");
+}
+
+// ── Performance regression evidence — deterministic thresholds ────────────
+
+// Spec scenario: 1,000-node graph — clean suffix is served from cache.
+//
+// GIVEN a warmed 1,000-node linear-chain graph
+// WHEN NodeRef(500) changes and dirtiness propagates to transitive callers
+// THEN exactly 501 nodes are re-lowered and the remaining 499 clean nodes are
+//      cache hits with no cache misses.
+//
+// This is intentionally count-based, not wall-clock based. It turns the
+// Criterion smoke benchmark into CI-safe regression evidence for scalable
+// incremental behavior without binding tests to local machine timing.
+#[test]
+fn large_graph_incremental_performance_regression_one_change_uses_cache_for_clean_suffix() {
+    const NODE_COUNT: usize = 1_000;
+    const CHANGED_NODE_INDEX: usize = NODE_COUNT / 2;
+
+    let graph = ail_testkit::make_large_graph(NODE_COUNT);
+    let report = proven_report();
+    let cache = CountingCache::new();
+
+    let prev_hashes = compute_node_hashes(&graph).unwrap();
+    compile_incremental(&graph, &report, &cache, &Default::default()).unwrap();
+    assert_eq!(
+        cache.puts(),
+        NODE_COUNT,
+        "warm compile should populate one artifact per node"
+    );
+
+    let mut modified_graph = graph.clone();
+    modified_graph.nodes[CHANGED_NODE_INDEX] = GraphNode::new(
+        NodeRef(CHANGED_NODE_INDEX as u32),
+        NodeKind::Function,
+        format!("fn_{CHANGED_NODE_INDEX}_modified"),
+    );
+
+    cache.reset_counters();
+    let result = compile_incremental(&modified_graph, &report, &cache, &prev_hashes).unwrap();
+
+    let expected_dirty_count = CHANGED_NODE_INDEX + 1;
+    let expected_clean_count = NODE_COUNT - expected_dirty_count;
+
+    assert_eq!(
+        result.nodes.len(),
+        NODE_COUNT,
+        "incremental compile must still assemble the complete graph"
+    );
+    assert_eq!(
+        cache.puts(),
+        expected_dirty_count,
+        "only changed node plus transitive callers should be re-lowered"
+    );
+    assert_eq!(
+        cache.hits(),
+        expected_clean_count,
+        "clean suffix should be served from warmed cache"
+    );
+    assert_eq!(
+        cache.misses(),
+        0,
+        "a warmed cache should not miss for clean nodes"
+    );
 }

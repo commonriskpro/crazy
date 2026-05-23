@@ -61,7 +61,7 @@ The product only becomes AI-native when graph, ChangeSet, verifier, compiler, ru
 | Runtime hardening | Strengthen isolation, limits, audit, rollback, replay, and capability dispatch under failure. | Negative runtime tests, fuzz coverage, audit snapshots, limit/revocation tests. |
 | AI-native tooling loop | Turn context -> ChangeSet -> verify -> apply -> repair into a durable workflow. | CLI integration tests with persisted `.ail/` state and machine-readable diagnostics. |
 | Ecosystem path | Clarify package registry, official packages, signing, advisories, and compatibility. | Registry workflow tests, signed package fixtures, release/compatibility docs. |
-| Performance validation | Prove graph, storage, context, compiler, and runtime behavior at realistic sizes. | Benchmarks, regression thresholds, large-graph fixtures, documented bottlenecks. |
+| Performance validation | Prove graph, storage, context, compiler, and runtime behavior at realistic sizes. | Benchmarks, regression thresholds, large-graph fixtures, documented bottlenecks; see [Performance validation](performance.md). |
 
 ## Validation rules
 
