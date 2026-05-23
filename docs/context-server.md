@@ -634,6 +634,7 @@ The first implementation is an in-process semantic context API rather than a tra
 | Summaries | Deterministic renderer in `crates/ail-context/src/summary.rs`. Structured data remains authoritative. |
 | Signing | Distributed signing is handled in remote/bundle primitives, not context responses yet. |
 | Budgets | Response DTOs include limits and budget-related errors; model-tier defaults remain policy work. |
-| Audit/runtime exposure | Redaction and access errors exist at protocol level; full audit exposure policy remains future work. |
+| Freshness | `ContextServer::query` resolves `Latest` when available and sets `freshness_status=stale` plus `query_latest` repair metadata for older snapshots. |
+| Audit/runtime exposure | Field-based node redaction is enforced before slice rendering. Direct queries for redacted targets return `E_ACCESS_DENIED` unless the session trust level satisfies the configured policy; full audit exposure policy remains future work. |
 
 Code references: `crates/ail-context/src/lib.rs`, `builder.rs`, `dto.rs`, `server.rs`, `summary.rs`.

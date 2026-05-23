@@ -50,6 +50,9 @@ pub struct BuildOptions<'a> {
     pub all_snapshots: &'a [SnapshotEnvelope],
     /// When `Some`, compared against `snapshot.id` to detect staleness.
     pub latest_snapshot_id: Option<&'a ail_storage::object::ObjectId>,
+    /// Explicit freshness status when the caller attempted freshness detection
+    /// but could not determine the latest snapshot.
+    pub freshness_status: Option<FreshnessStatus>,
     /// When `Some`, wired into `redaction_state` and `redaction_policy`.
     pub redaction_policy: Option<&'a RedactionPolicy>,
     /// When `true`, caller is considered privileged (bypasses access-denied).
@@ -128,8 +131,9 @@ impl ResponseBuilder {
     ///
     /// # Freshness detection
     ///
-    /// When `opts.latest_snapshot_id` is `Some`, the response `freshness_status`
-    /// is set to `Stale` if the snapshot id does not match.
+    /// When `opts.freshness_status` is `Some`, that explicit status is used.
+    /// Otherwise, when `opts.latest_snapshot_id` is `Some`, the response
+    /// `freshness_status` is set to `Stale` if the snapshot id does not match.
     ///
     /// # Redaction wiring
     ///
@@ -233,23 +237,35 @@ impl ResponseBuilder {
         };
 
         // ── Step 8: Determine freshness status ────────────────────────────
-        let freshness_status = match opts.latest_snapshot_id {
-            None => FreshnessStatus::Fresh,
-            Some(latest_id) => {
-                if *latest_id == snapshot.id {
-                    FreshnessStatus::Fresh
-                } else {
-                    FreshnessStatus::Stale
-                }
-            }
-        };
+        let freshness_status =
+            opts.freshness_status
+                .unwrap_or_else(|| match opts.latest_snapshot_id {
+                    None => FreshnessStatus::Fresh,
+                    Some(latest_id) => {
+                        if *latest_id == snapshot.id {
+                            FreshnessStatus::Fresh
+                        } else {
+                            FreshnessStatus::Stale
+                        }
+                    }
+                });
 
         // ── Step 9: Build repair options for stale responses ──────────────
         let mut repair_options: Vec<RepairOption> = Vec::new();
-        if freshness_status == FreshnessStatus::Stale {
+        if matches!(
+            freshness_status,
+            FreshnessStatus::Stale | FreshnessStatus::Unknown
+        ) {
             repair_options.push(RepairOption {
                 option_id: "query_latest".to_string(),
-                description: "Re-issue the query at the latest snapshot".to_string(),
+                description: match freshness_status {
+                    FreshnessStatus::Stale => "Re-issue the query at the latest snapshot",
+                    FreshnessStatus::Unknown => {
+                        "Retry freshness resolution against the latest snapshot"
+                    }
+                    FreshnessStatus::Fresh => unreachable!(),
+                }
+                .to_string(),
                 suggested_query: query
                     .target()
                     .map(|t| format!("context {:?} snapshot=latest", t)),

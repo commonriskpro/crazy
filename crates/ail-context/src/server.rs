@@ -16,7 +16,7 @@ use ail_storage::object::ObjectId;
 use serde::{Deserialize, Serialize};
 
 use crate::builder::{BuildOptions, ResponseBuilder};
-use crate::dto::{ContextQuery, IndexInfo, RedactionPolicy, SnapshotSelector};
+use crate::dto::{ContextQuery, FreshnessStatus, IndexInfo, RedactionPolicy, SnapshotSelector};
 use crate::error::{ContextError, ContextResult};
 use crate::source::ContextSource;
 
@@ -355,16 +355,27 @@ where
 
         let snapshot = self.source.resolve_snapshot(selector).await?;
         let graph = self.source.load_graph(&snapshot.graph_root_hash).await?;
+        let latest_snapshot_id = self
+            .source
+            .resolve_snapshot(&SnapshotSelector::Latest)
+            .await;
+        let (latest_snapshot_id, freshness_status) = match latest_snapshot_id {
+            Ok(latest) => (Some(latest.id), None),
+            Err(_) => (None, Some(FreshnessStatus::Unknown)),
+        };
         let indexes = match &self.index_cache {
             Some(cache) => cache.load_or_rebuild(&snapshot, &graph)?.indexes,
             None => build_indexes(&snapshot, &graph).indexes,
         };
+        let trust = session.map(|s| s.trust_level).unwrap_or_default();
         let redacted_refs = redacted_refs_for_session(&graph.nodes, &self.config, session);
         let redaction_policy = redaction_policy_for_session(&self.config, session);
         let provenance_sources = vec!["semantic_graph".to_string(), "derived_indexes".to_string()];
         let opts = BuildOptions {
+            latest_snapshot_id: latest_snapshot_id.as_ref(),
+            freshness_status,
             redaction_policy: redaction_policy.as_ref(),
-            authorized: true,
+            authorized: trust >= TrustLevel::Privileged,
             generated_at: 0,
             provenance_sources: &provenance_sources,
             index_info: &indexes,
@@ -496,7 +507,7 @@ mod tests {
     use futures::executor::block_on;
 
     use crate::source::InMemoryContextSource;
-    use crate::{QueryBudget, QueryScope};
+    use crate::{FreshnessStatus, QueryBudget, QueryScope, RedactionState};
 
     fn snapshot() -> SnapshotEnvelope {
         let id = ObjectId::from_bytes(b"server-snapshot");
@@ -515,7 +526,7 @@ mod tests {
         let mut public = GraphNode::new(NodeRef(0), NodeKind::Function, "public");
         let mut sensitive = GraphNode::new(NodeRef(1), NodeKind::Function, "secret");
         public.body_expr = None;
-        sensitive.body_expr = Some("token".to_string());
+        sensitive.body_expr = Some("super-secret-token".to_string());
         SemanticGraph {
             nodes: vec![public, sensitive],
             edges: vec![],
@@ -527,6 +538,31 @@ mod tests {
         source.insert_snapshot(snapshot.clone());
         source.insert_graph(snapshot.graph_root_hash, graph.clone());
         source
+    }
+
+    struct LatestFailingSource {
+        snapshot: SnapshotEnvelope,
+        graph: SemanticGraph,
+    }
+
+    impl ContextSource for LatestFailingSource {
+        async fn resolve_snapshot(
+            &self,
+            selector: &SnapshotSelector,
+        ) -> ContextResult<SnapshotEnvelope> {
+            match selector {
+                SnapshotSelector::ById(id) if *id == self.snapshot.id => Ok(self.snapshot.clone()),
+                SnapshotSelector::ById(_) | SnapshotSelector::Latest => Err(ContextError::Stale),
+            }
+        }
+
+        async fn load_graph(&self, graph_root_hash: &ObjectId) -> ContextResult<SemanticGraph> {
+            if *graph_root_hash == self.snapshot.graph_root_hash {
+                Ok(self.graph.clone())
+            } else {
+                Err(ContextError::Stale)
+            }
+        }
     }
 
     #[test]
@@ -586,8 +622,162 @@ mod tests {
                 .expect("query");
 
             assert!(response.redacted);
+            assert_eq!(response.redaction_state, RedactionState::Restricted);
             assert_eq!(response.structured.len(), 1);
             assert_eq!(response.structured[0].id, NodeRef(0));
+            assert!(!response.summary.contains("secret"));
+
+            let json = serde_json::to_string(&response).expect("response json");
+            assert!(
+                !json.contains("super-secret-token"),
+                "redacted body_expr must not leak through JSON output: {json}"
+            );
+        });
+    }
+
+    #[test]
+    fn public_session_cannot_query_redacted_target_directly() {
+        block_on(async {
+            let snapshot = snapshot();
+            let graph = graph();
+            let server =
+                ContextServer::new(source(&snapshot, &graph)).with_config(ContextServerConfig {
+                    redaction_rules: vec![FieldRedactionRule {
+                        field: "body_expr".to_string(),
+                        min_trust: TrustLevel::Privileged,
+                        category: "secrets".to_string(),
+                    }],
+                    ..Default::default()
+                });
+
+            let result = server
+                .query(
+                    &ContextQuery::Node {
+                        target: NodeRef(1),
+                        scope: QueryScope::Local,
+                        budget: QueryBudget::default(),
+                    },
+                    &SnapshotSelector::ById(snapshot.id),
+                    None,
+                )
+                .await;
+
+            assert_eq!(result, Err(ContextError::AccessDenied));
+        });
+    }
+
+    #[test]
+    fn privileged_session_can_query_sensitive_target() {
+        block_on(async {
+            let snapshot = snapshot();
+            let graph = graph();
+            let server =
+                ContextServer::new(source(&snapshot, &graph)).with_config(ContextServerConfig {
+                    redaction_rules: vec![FieldRedactionRule {
+                        field: "body_expr".to_string(),
+                        min_trust: TrustLevel::Privileged,
+                        category: "secrets".to_string(),
+                    }],
+                    ..Default::default()
+                });
+            let session = AuthSession {
+                principal: "maintainer".to_string(),
+                trust_level: TrustLevel::Privileged,
+            };
+
+            let response = server
+                .query(
+                    &ContextQuery::Node {
+                        target: NodeRef(1),
+                        scope: QueryScope::Local,
+                        budget: QueryBudget::default(),
+                    },
+                    &SnapshotSelector::ById(snapshot.id),
+                    Some(&session),
+                )
+                .await
+                .expect("privileged query");
+
+            assert_eq!(response.redaction_state, RedactionState::None);
+            assert_eq!(response.structured.len(), 1);
+            assert_eq!(
+                response.structured[0].body_expr.as_deref(),
+                Some("super-secret-token")
+            );
+        });
+    }
+
+    #[test]
+    fn by_id_query_against_older_snapshot_reports_stale_freshness() {
+        block_on(async {
+            let graph = graph();
+            let mut older = snapshot();
+            older.id = ObjectId::from_bytes(b"older-server-snapshot");
+            older.created_at = 1;
+            let mut newer = snapshot();
+            newer.id = ObjectId::from_bytes(b"newer-server-snapshot");
+            newer.created_at = 2;
+
+            let source = InMemoryContextSource::new();
+            source.insert_snapshot(older.clone());
+            source.insert_snapshot(newer);
+            source.insert_graph(older.graph_root_hash, graph.clone());
+            let server = ContextServer::new(source);
+
+            let response = server
+                .query(
+                    &ContextQuery::Graph {
+                        scope: QueryScope::Full,
+                        budget: QueryBudget::default(),
+                    },
+                    &SnapshotSelector::ById(older.id),
+                    None,
+                )
+                .await
+                .expect("older snapshot query");
+
+            assert_eq!(response.freshness_status, FreshnessStatus::Stale);
+            assert!(
+                response
+                    .repair_options
+                    .iter()
+                    .any(|option| option.option_id == "query_latest"),
+                "stale context must include a query_latest repair option"
+            );
+        });
+    }
+
+    #[test]
+    fn by_id_query_reports_unknown_when_latest_resolution_fails() {
+        block_on(async {
+            let snapshot = snapshot();
+            let graph = graph();
+            let server = ContextServer::new(LatestFailingSource {
+                snapshot: snapshot.clone(),
+                graph,
+            });
+
+            let response = server
+                .query(
+                    &ContextQuery::Graph {
+                        scope: QueryScope::Full,
+                        budget: QueryBudget::default(),
+                    },
+                    &SnapshotSelector::ById(snapshot.id),
+                    None,
+                )
+                .await
+                .expect("ById query should still return context when only Latest fails");
+
+            assert_eq!(response.freshness_status, FreshnessStatus::Unknown);
+            assert_ne!(response.freshness_status, FreshnessStatus::Fresh);
+            assert!(
+                response
+                    .repair_options
+                    .iter()
+                    .any(|option| option.option_id == "query_latest"),
+                "unknown freshness must include a query_latest repair option"
+            );
         });
     }
 
