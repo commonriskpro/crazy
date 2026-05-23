@@ -36,6 +36,23 @@ fn schema_field_option_carries_none_and_some_variants() {
     assert_eq!(f.variants()[1].fields()[0].name(), "id");
 }
 
+#[test]
+fn schema_field_result_carries_ok_and_err_variants() {
+    let f = SchemaField::result(
+        "payment",
+        vec![SchemaField::new("receipt_id", "String")],
+        vec![SchemaField::new("reason", "String")],
+    );
+
+    assert_eq!(f.name(), "payment");
+    assert_eq!(f.type_name(), "Result");
+    assert_eq!(f.variants().len(), 2);
+    assert_eq!(f.variants()[0].tag(), "Ok");
+    assert_eq!(f.variants()[0].fields()[0].name(), "receipt_id");
+    assert_eq!(f.variants()[1].tag(), "Err");
+    assert_eq!(f.variants()[1].fields()[0].name(), "reason");
+}
+
 // ── CapabilityInputSchema ─────────────────────────────────────────────────
 
 #[test]
