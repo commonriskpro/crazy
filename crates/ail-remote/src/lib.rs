@@ -44,7 +44,10 @@ pub use crypto::{
 };
 pub use error::RemoteError;
 pub use exchange::{RemoteExchangeRequest, RemoteExchangeResponse, RemoteSubmissionOutcome};
-pub use identity::{AgentIdentity, AgentKeypair, SigningError};
+pub use identity::{
+    AgentIdentity, AgentKeypair, PLAINTEXT_DEV_SIGNER_KEY_WARNING, PlaintextDevSignerKeyMaterial,
+    SigningError,
+};
 pub use policy::{
     RemoteConfig, RemoteConfigError, RemoteEndpointConfig, RemoteSignerConfig, RemoteSignerPolicy,
     RemoteSignerRejection, RemoteSignerRejectionReason, SignerTrustTier, TrustedRemoteSigner,

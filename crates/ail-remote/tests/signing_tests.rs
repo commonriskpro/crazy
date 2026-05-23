@@ -10,7 +10,10 @@
 use ail_change::canonical::{CanonicalChangeSet, CanonicalMeta};
 use ail_change::model::{SnapshotId, Timestamp};
 use ail_context::dto::ContextResponse;
-use ail_remote::identity::{AgentIdentity, AgentKeypair, SigningError};
+use ail_remote::identity::{
+    AgentIdentity, AgentKeypair, PLAINTEXT_DEV_SIGNER_KEY_WARNING, PlaintextDevSignerKeyMaterial,
+    SigningError,
+};
 use ail_remote::signing::{RemoteChangeSet, SignedContextSlice};
 use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::graph::SnapshotEnvelope;
@@ -216,4 +219,51 @@ fn remote_changeset_tampered_signature_rejected() {
         Err(SigningError::SignatureInvalid),
         "corrupted signature must return SignatureInvalid"
     );
+}
+
+// ── plaintext_dev_signer_key_json_roundtrip_signs_with_same_identity ──────
+// Durable signer foundation: generated key material can be serialized, loaded,
+// and used to sign as the same public identity. This is local-dev plaintext only.
+#[test]
+fn plaintext_dev_signer_key_json_roundtrip_signs_with_same_identity() {
+    let keypair = AgentKeypair::generate();
+    let material =
+        PlaintextDevSignerKeyMaterial::from_keypair(&keypair, Some("local-dev".to_string()));
+
+    assert_eq!(material.version, PlaintextDevSignerKeyMaterial::VERSION);
+    assert_eq!(material.warning, PLAINTEXT_DEV_SIGNER_KEY_WARNING);
+
+    let json = serde_json::to_string(&material).expect("encode key material json");
+    assert!(
+        json.contains("local development only"),
+        "plaintext key JSON must carry the local-dev warning"
+    );
+    let decoded: PlaintextDevSignerKeyMaterial =
+        serde_json::from_str(&json).expect("decode key material json");
+
+    let loaded_keypair = decoded.to_keypair().expect("load key material");
+    let loaded_identity = decoded.identity().expect("derive loaded identity");
+    assert_eq!(loaded_identity.public_key, keypair.identity().public_key);
+    assert_eq!(loaded_identity.label.as_deref(), Some("local-dev"));
+
+    let payload = b"durable signer key material payload";
+    let signature = loaded_keypair.sign_bytes(payload);
+    loaded_identity
+        .verify_bytes(payload, &signature)
+        .expect("loaded keypair must sign as its loaded identity");
+}
+
+// ── plaintext_dev_signer_key_rejects_public_key_mismatch ──────────────────
+// Loading must fail if persisted public identity no longer matches the secret.
+#[test]
+fn plaintext_dev_signer_key_rejects_public_key_mismatch() {
+    let keypair = AgentKeypair::generate();
+    let other = AgentKeypair::generate();
+    let mut material = PlaintextDevSignerKeyMaterial::from_keypair(&keypair, None);
+    material.public_key_hex =
+        PlaintextDevSignerKeyMaterial::from_keypair(&other, None).public_key_hex;
+
+    let result = material.to_keypair();
+
+    assert!(matches!(result, Err(SigningError::InvalidKeyMaterial(_))));
 }

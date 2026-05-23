@@ -1,6 +1,6 @@
 # Remote collaboration / cryptographic identity
 
-<!-- Implementation Status: fully implemented in crates/ail-remote. AgentIdentity, AgentKeypair, RemoteSignerPolicy, RemoteConfig, ObjectBundle, BundleStore, FileBundleStore, SignedContextSlice, RemoteChangeSet, and RemoteError all exist. Crypto primitives (AES-256-GCM, Argon2id, X25519) exist under feature = "crypto". -->
+<!-- Implementation Status: fully implemented in crates/ail-remote. AgentIdentity, AgentKeypair, PlaintextDevSignerKeyMaterial, RemoteSignerPolicy, RemoteConfig, ObjectBundle, BundleStore, FileBundleStore, SignedContextSlice, RemoteChangeSet, and RemoteError all exist. Crypto primitives (AES-256-GCM, Argon2id, X25519) exist under feature = "crypto". -->
 
 > Full extracted design. Related: [Coordinator](coordinator.md), [Context Server](context-server.md), [AI Change Language](change-language.md), [Storage](storage.md).
 
@@ -90,7 +90,7 @@ Reglas:
 ### AgentKeypair
 
 ```rust
-pub struct AgentKeypair { /* secret key never exposed */ }
+pub struct AgentKeypair { /* secret key field is private */ }
 
 impl AgentKeypair {
     pub fn generate() -> Self
@@ -99,7 +99,13 @@ impl AgentKeypair {
 }
 ```
 
-La clave privada nunca se expone por API pública. `sign_bytes` devuelve 64 bytes raw Ed25519 (no DER).
+La clave privada no se expone por el flujo normal de firma. `sign_bytes` devuelve 64 bytes raw Ed25519 (no DER).
+
+### PlaintextDevSignerKeyMaterial
+
+`PlaintextDevSignerKeyMaterial` es el formato serializable mínimo para persistir un signer local durante desarrollo. Guarda `secret_key_hex`, `public_key_hex`, `label` opcional, `version`, y un warning explícito: es texto plano para desarrollo local, no almacenamiento seguro de secretos de producción.
+
+Al cargar, `to_keypair()` valida que la clave pública guardada coincida con la clave privada. Si no coincide, devuelve `SigningError::InvalidKeyMaterial`. Esto permite que una futura CLI use identidad durable contra `RemoteConfig.allowed_signers` sin cablear todavía lectura de archivos ni transporte.
 
 ### Serialización CBOR
 
