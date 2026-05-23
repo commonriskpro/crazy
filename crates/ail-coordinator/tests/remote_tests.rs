@@ -10,6 +10,7 @@
 // | `invalid_signature_rejected_before_submit` | Invalid signature is rejected before coordinator submit |
 // | `valid_sig_stale_base_triggers_rebase` | Valid signature with stale base triggers rebase |
 // | `local_submit_works_after_remote_submission` | Local submit still works after verify_remote_submission addition |
+// | `remote_exchange_reports_missing_pulled_bundle` | PullBundle returns BundleMissing while no durable bundle store exists |
 
 use ail_change::{
     canonical::{CanonicalChangeSet, CanonicalMeta, CanonicalOp, OpPayload},
@@ -17,7 +18,12 @@ use ail_change::{
 };
 use ail_coordinator::coordinator::{Coordinator, CoordinatorOutcome};
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
-use ail_remote::{AgentKeypair, RemoteChangeSet, RemoteError};
+use ail_remote::{
+    AgentKeypair, ObjectBundle, RemoteChangeSet, RemoteError, RemoteExchangeRequest,
+    RemoteExchangeResponse, RemoteSubmissionOutcome,
+};
+use ail_storage::object::ObjectId;
+use std::collections::BTreeMap;
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -231,5 +237,83 @@ async fn local_submit_works_after_remote_submission() {
             }
         ),
         "local submit must work after remote submission; got {local_result:?}"
+    );
+}
+
+#[tokio::test]
+async fn remote_exchange_submit_maps_to_submission_response() {
+    let coord = Coordinator::new(SnapshotId(0), empty_graph());
+    let kp = AgentKeypair::generate();
+    let rcs = signed_rcs(
+        0,
+        "remote_agent",
+        vec![create_node_op(40, "fn.exchange_submit")],
+        &kp,
+    );
+
+    let response = coord
+        .handle_remote_exchange(RemoteExchangeRequest::SubmitChangeSet(rcs))
+        .await;
+
+    assert_eq!(
+        response,
+        RemoteExchangeResponse::Submission(RemoteSubmissionOutcome::Applied {
+            applied_snapshot_id: SnapshotId(1),
+        })
+    );
+}
+
+#[tokio::test]
+async fn remote_exchange_accepts_integrity_checked_bundle() {
+    let coord = Coordinator::new(SnapshotId(0), empty_graph());
+    let bytes = b"coordinator bundle".to_vec();
+    let root = ObjectId::from_bytes(&bytes);
+    let mut objects = BTreeMap::new();
+    objects.insert(root, bytes);
+    let bundle = ObjectBundle::new(root, objects);
+
+    let response = coord
+        .handle_remote_exchange(RemoteExchangeRequest::PushBundle(bundle))
+        .await;
+
+    assert_eq!(
+        response,
+        RemoteExchangeResponse::BundleAccepted {
+            root,
+            object_count: 1,
+        }
+    );
+}
+
+#[tokio::test]
+async fn remote_exchange_reports_missing_pulled_bundle() {
+    let coord = Coordinator::new(SnapshotId(0), empty_graph());
+    let root = ObjectId::from_bytes(b"missing bundle root");
+
+    let response = coord
+        .handle_remote_exchange(RemoteExchangeRequest::PullBundle { root })
+        .await;
+
+    assert_eq!(response, RemoteExchangeResponse::BundleMissing { root });
+}
+
+#[tokio::test]
+async fn remote_exchange_rejects_invalid_bundle_integrity() {
+    let coord = Coordinator::new(SnapshotId(0), empty_graph());
+    let root = ObjectId::from_bytes(b"expected root");
+    let mut objects = BTreeMap::new();
+    objects.insert(root, b"tampered payload".to_vec());
+    let bundle = ObjectBundle::new(root, objects);
+
+    let response = coord
+        .handle_remote_exchange(RemoteExchangeRequest::PushBundle(bundle))
+        .await;
+
+    assert!(
+        matches!(
+            response,
+            RemoteExchangeResponse::Error { ref code, .. } if code == "E_BUNDLE_INVALID"
+        ),
+        "invalid bundle must be rejected; got {response:?}"
     );
 }

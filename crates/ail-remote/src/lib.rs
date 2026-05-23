@@ -28,6 +28,7 @@ pub mod bundle;
 #[cfg(feature = "crypto")]
 pub mod crypto;
 pub mod error;
+pub mod exchange;
 pub mod identity;
 pub mod signing;
 
@@ -37,5 +38,6 @@ pub use crypto::{
     CryptoError, decrypt_aes256gcm, derive_key_argon2, encrypt_aes256gcm, x25519_shared_secret,
 };
 pub use error::RemoteError;
+pub use exchange::{RemoteExchangeRequest, RemoteExchangeResponse, RemoteSubmissionOutcome};
 pub use identity::{AgentIdentity, AgentKeypair, SigningError};
 pub use signing::{RemoteChangeSet, SignedContextSlice};

@@ -47,6 +47,91 @@ pub enum ContextResponse {
     Authenticated(AuthSession),
 }
 
+/// Minimal JSON-RPC 2.0 envelope for transport adapters.
+///
+/// This keeps context serving transport-agnostic: CLI stdio, MCP, HTTP, or
+/// tests can all serialize the same in-process [`ContextRequest`] without
+/// adding a network server to `ail-context`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContextRpcRequest {
+    #[serde(default = "jsonrpc_version")]
+    pub jsonrpc: String,
+    pub id: String,
+    pub method: String,
+    pub params: ContextRequest,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContextRpcResponse {
+    #[serde(default = "jsonrpc_version")]
+    pub jsonrpc: String,
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<ContextResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ContextRpcError>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextRpcError {
+    pub code: i64,
+    pub message: String,
+}
+
+impl ContextRpcRequest {
+    pub fn new(id: impl Into<String>, method: impl Into<String>, params: ContextRequest) -> Self {
+        Self {
+            jsonrpc: jsonrpc_version(),
+            id: id.into(),
+            method: method.into(),
+            params,
+        }
+    }
+
+    pub fn to_json_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        serde_json::to_vec(self)
+    }
+
+    pub fn from_json_slice(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
+impl ContextRpcResponse {
+    pub fn result(id: impl Into<String>, result: ContextResponse) -> Self {
+        Self {
+            jsonrpc: jsonrpc_version(),
+            id: id.into(),
+            result: Some(result),
+            error: None,
+        }
+    }
+
+    pub fn error(id: impl Into<String>, code: i64, message: impl Into<String>) -> Self {
+        Self {
+            jsonrpc: jsonrpc_version(),
+            id: id.into(),
+            result: None,
+            error: Some(ContextRpcError {
+                code,
+                message: message.into(),
+            }),
+        }
+    }
+
+    pub fn to_json_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        serde_json::to_vec(self)
+    }
+
+    pub fn from_json_slice(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
+fn jsonrpc_version() -> String {
+    "2.0".to_string()
+}
+
 // ── Auth / redaction ──────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -361,8 +446,8 @@ mod tests {
     use ail_storage::graph::SnapshotEnvelope;
     use futures::executor::block_on;
 
-    use crate::{QueryBudget, QueryScope};
     use crate::source::InMemoryContextSource;
+    use crate::{QueryBudget, QueryScope};
 
     fn snapshot() -> SnapshotEnvelope {
         let id = ObjectId::from_bytes(b"server-snapshot");
@@ -472,5 +557,40 @@ mod tests {
 
         let stale = cache.load_fresh(&second).expect("load second");
         assert_eq!(stale, None, "hash mismatch must be stale");
+    }
+
+    #[test]
+    fn context_rpc_request_json_roundtrip_is_stable() {
+        let request = ContextRpcRequest::new(
+            "ctx-1",
+            "context.query",
+            ContextRequest::Query {
+                query: ContextQuery::Graph {
+                    scope: QueryScope::Full,
+                    budget: QueryBudget::bytes(4096),
+                },
+                snapshot: SnapshotSelector::Latest,
+                session: None,
+            },
+        );
+
+        let bytes = request.to_json_bytes().expect("encode request");
+        let decoded = ContextRpcRequest::from_json_slice(&bytes).expect("decode request");
+        let reencoded = decoded.to_json_bytes().expect("re-encode request");
+
+        assert_eq!(decoded, request);
+        assert_eq!(reencoded, bytes, "JSON-RPC encoding must be stable");
+    }
+
+    #[test]
+    fn context_rpc_response_error_json_roundtrip_is_stable() {
+        let response = ContextRpcResponse::error("ctx-2", -32001, "context stale");
+
+        let bytes = response.to_json_bytes().expect("encode response");
+        let decoded = ContextRpcResponse::from_json_slice(&bytes).expect("decode response");
+        let reencoded = decoded.to_json_bytes().expect("re-encode response");
+
+        assert_eq!(decoded, response);
+        assert_eq!(reencoded, bytes, "JSON-RPC response must be stable");
     }
 }

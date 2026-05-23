@@ -29,8 +29,9 @@ pub use error::{
     E_SNAPSHOT_NOT_FOUND,
 };
 pub use server::{
-    AuthSession, ContextRequest, ContextResponse as ServerContextResponse, ContextServer,
-    ContextServerConfig, DerivedIndexCache, DerivedIndexes, FieldRedactionRule, TrustLevel,
+    AuthSession, ContextRequest, ContextResponse as ServerContextResponse, ContextRpcError,
+    ContextRpcRequest, ContextRpcResponse, ContextServer, ContextServerConfig, DerivedIndexCache,
+    DerivedIndexes, FieldRedactionRule, TrustLevel,
 };
 pub use source::{ContextSource, InMemoryContextSource, StoreContextSource};
 pub use summary::render_summary;
