@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tag-release.sh — Create an annotated release tag for the AIL workspace.
+# tag-release.sh - Create an annotated release tag for the AIL workspace.
 #
 # Usage:
 #   VERSION=0.2.0 ./scripts/tag-release.sh
@@ -30,7 +30,7 @@ fi
 
 TAG="v${VERSION}"
 
-# ── Clean worktree check ──────────────────────────────────────────────────────
+# -- Clean worktree check ------------------------------------------------------
 
 if ! git diff --quiet || ! git diff --staged --quiet; then
     echo "error: working tree is not clean. Commit or stash changes before tagging." >&2
@@ -38,17 +38,22 @@ if ! git diff --quiet || ! git diff --staged --quiet; then
     exit 1
 fi
 
-# ── Test suite ───────────────────────────────────────────────────────────────
+# -- Release metadata preflight ------------------------------------------------
+
+echo "==> Running release metadata preflight ..."
+./scripts/release-preflight.sh
+
+# -- Test suite ----------------------------------------------------------------
 
 echo "==> Running cargo test --workspace ..."
 cargo test --workspace
 
-# ── Supply-chain audit ────────────────────────────────────────────────────────
+# -- Supply-chain audit --------------------------------------------------------
 
 echo "==> Running cargo deny check ..."
 cargo deny check
 
-# ── Create annotated tag ──────────────────────────────────────────────────────
+# -- Create annotated tag ------------------------------------------------------
 
 SIGN_FLAG=""
 if [[ "${SIGN:-0}" == "1" ]]; then

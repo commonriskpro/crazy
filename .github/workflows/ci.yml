@@ -36,6 +36,12 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
+      - name: Check release metadata
+        run: |
+          VERSION="$(awk '/^\[workspace\.package\]$/ { p = 1; next } /^\[/ { p = 0 } p && /^version/ { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)"
+          export VERSION
+          ./scripts/release-preflight.sh --allow-unreleased
+
       - name: Build workspace
         run: cargo build --workspace
 

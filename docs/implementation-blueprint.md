@@ -49,7 +49,7 @@ The product only becomes AI-native when graph, ChangeSet, verifier, compiler, ru
 | Packages | Implemented subset | `crates/ail-package/src/lib.rs`, package tests | Registry operations, federation, reproducible-build proof workflows. |
 | Coordination / remote | Implemented subset | `crates/ail-coordinator/src/lib.rs`, `crates/ail-remote/src/lib.rs` | Durable remote sync service, multi-hop collaboration, key management. |
 | Dogfooding | Completed validation milestone | `crates/ail-dogfood/src/lib.rs`, dogfood tests | Real project authoring loop using AIL itself, not only Rust examples. |
-| Release hardening | Implemented subset | `docs/release-policy.md`, `docs/migration-guide.md`, `scripts/tag-release.sh` | Published compatibility guarantees and production release discipline. |
+| Release hardening | Implemented subset | `docs/release-policy.md`, `docs/migration-guide.md`, `scripts/tag-release.sh`, `scripts/release-preflight.sh` | Published compatibility guarantees and production release discipline. |
 
 ## Next recommended milestones
 

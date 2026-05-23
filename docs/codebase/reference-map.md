@@ -28,7 +28,7 @@ Use this when you know the question and need the right document or crate quickly
 | Multi-agent serialization and rebase | [Coordinator](../coordinator.md) | `crates/ail-coordinator/src/coordinator.rs`, `rebase.rs` |
 | Standard library semantic surface | [Standard library](../stdlib.md) | `crates/ail-stdlib/src/lib.rs`, `registry.rs`, `v1.rs`, `exec.rs` |
 | CLI workflows and local project layout | [Tooling](../tooling.md) | `crates/ail-cli/src/cli.rs`, `project.rs`, `store.rs` |
-| Release and compatibility policy | [Release policy](../release-policy.md), [Migration guide](../migration-guide.md) | `Cargo.toml`, `CHANGELOG.md`, `scripts/tag-release.sh` |
+| Release and compatibility policy | [Release policy](../release-policy.md), [Migration guide](../migration-guide.md) | `Cargo.toml`, `CHANGELOG.md`, `scripts/tag-release.sh`, `scripts/release-preflight.sh` |
 | Known risks and validation gaps | [Risks](../risks.md), [Decisions register](../open-questions.md) | Fuzz targets and subsystem tests |
 | Original design conversation | [Historical draft](../history/ai-native-language-draft.md) | Do not treat as implementation evidence |
 
