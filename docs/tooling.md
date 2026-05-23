@@ -484,6 +484,60 @@ manifest as-is: when no `verification_report` is present, human output shows
 `verification_report: none` and JSON includes `verification_report: null` with
 `verification_report_status: "none"`.
 
+#### package audit
+
+Audits the project's installed package lockfile against local package registry
+metadata only. It reads `.ail/packages/lock.cbor` and local registry metadata in
+`.ail/packages/registry.cbor`; it does not fetch a remote advisory database.
+
+Clean audit output is explicit:
+
+```txt
+audit: clean
+packages_checked: <N>
+issues: 0
+blocked: 0
+warnings: 0
+```
+
+Machine output includes `status`, `issues`, and summary counts:
+
+```json
+{
+  "status": "ok",
+  "data": {
+    "status": "blocked|warning|clean",
+    "packages_checked": 1,
+    "issues": [
+      {
+        "package": "payments.stripe",
+        "version": "1.0.0",
+        "kind": "advisory",
+        "status": "blocked",
+        "advisory_id": "adv_123",
+        "advisory_title": "idempotency handler bug",
+        "title": "idempotency handler bug",
+        "severity": "critical",
+        "affected_range": "<1.2.3",
+        "reason": "idempotency handler bug"
+      }
+    ],
+    "summary": {
+      "packages_checked": 1,
+      "issues": 1,
+      "advisories": 1,
+      "yanked": 0,
+      "blocked": 1,
+      "warnings": 0
+    }
+  }
+}
+```
+
+Exit semantics are conservative: yanked packages and high/critical advisories
+are `blocked` and return a non-zero exit after printing the human/JSON audit
+payload. Low/medium advisories are `warning` and return zero.
+
 #### package init
 
 Creates a `PackageManifest` for the current graph and persists it to the project store.

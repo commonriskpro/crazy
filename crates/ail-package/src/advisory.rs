@@ -130,6 +130,20 @@ impl AdvisoryChecker {
             adv.package == name && Self::version_matches(version, &adv.affected_constraint)
         })
     }
+
+    /// Return all advisories that match `name` and `version`.
+    pub fn matches<'a>(
+        name: &str,
+        version: &str,
+        advisories: &'a [SecurityAdvisory],
+    ) -> Vec<&'a SecurityAdvisory> {
+        advisories
+            .iter()
+            .filter(|adv| {
+                adv.package == name && Self::version_matches(version, &adv.affected_constraint)
+            })
+            .collect()
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -234,6 +248,33 @@ mod tests {
         let found = AdvisoryChecker::first_match("payments.stripe", "1.0.0", &advisories);
         assert!(found.is_some(), "first_match must find matching advisory");
         assert_eq!(found.unwrap().id, "adv_001");
+    }
+
+    #[test]
+    fn matches_returns_all_matching_advisories() {
+        let advisories = vec![
+            sample_advisory(),
+            SecurityAdvisory {
+                id: "adv_002".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::High,
+                reason: "second matching advisory".to_string(),
+            },
+            SecurityAdvisory {
+                id: "adv_other".to_string(),
+                package: "other.package".to_string(),
+                affected_constraint: "1.0.0".to_string(),
+                severity: AdvisorySeverity::High,
+                reason: "unrelated".to_string(),
+            },
+        ];
+
+        let matches = AdvisoryChecker::matches("payments.stripe", "1.0.0", &advisories);
+
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].id, "adv_001");
+        assert_eq!(matches[1].id, "adv_002");
     }
 
     // ── RED: severity_display ─────────────────────────────────────────────

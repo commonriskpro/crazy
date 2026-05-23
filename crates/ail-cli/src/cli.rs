@@ -69,10 +69,11 @@ use ail_coordinator::Coordinator;
 use ail_core::semantic_graph::{GraphEdge, GraphNode, NodeKind};
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_package::{
-    ArtifactHashEntry, CapabilityPolicy, CapabilityPolicyEnforcer, CapabilityPolicyVerdict,
-    Lockfile, LockfileEntry, PackageDef, PackageKeypair, PackageManifest, PackageRegistry,
-    PackageVerificationReport, PublishRequest, RegistryClient, SearchRequest, SignedPackage,
-    TrustLevel, VerifyOutcome, VerifyRequest,
+    AdvisoryChecker, AdvisorySeverity, ArtifactHashEntry, CapabilityPolicy,
+    CapabilityPolicyEnforcer, CapabilityPolicyVerdict, Lockfile, LockfileEntry, PackageDef,
+    PackageKeypair, PackageManifest, PackageRegistry, PackageVerificationReport, PublishRequest,
+    RegistryClient, SearchRequest, SecurityAdvisory, SignedPackage, TrustLevel, VerifyOutcome,
+    VerifyRequest, YankRecord,
 };
 use ail_remote::{
     AgentKeypair, FileBundleStore, ObjectBundle, RemoteChangeSet, RemoteExchangeRequest,
@@ -4295,17 +4296,79 @@ async fn cmd_package(
             );
         }
         PackageCmd::Audit => {
-            let human_msg = "audit: no advisories\npackages_checked: 0\nassumptions_valid: true\nunsafe_surface: 0".to_string();
+            let lockfile = load_package_lockfile(store)?;
+            let (registry, advisories) = load_package_registry_with_advisories(store)?;
+            let issues = audit_package_lockfile(&lockfile, &registry, &advisories);
+            let packages_checked = lockfile.len();
+            let advisory_count = issues
+                .iter()
+                .filter(|issue| issue.kind == "advisory")
+                .count();
+            let yanked_count = issues.iter().filter(|issue| issue.kind == "yanked").count();
+            let blocked_count = issues
+                .iter()
+                .filter(|issue| issue.status == "blocked")
+                .count();
+            let warning_count = issues
+                .iter()
+                .filter(|issue| issue.status == "warning")
+                .count();
+            let audit_status = if blocked_count > 0 {
+                "blocked"
+            } else if warning_count > 0 {
+                "warning"
+            } else {
+                "clean"
+            };
+            let issue_lines = issues
+                .iter()
+                .map(PackageAuditIssue::to_human_line)
+                .collect::<Vec<_>>();
+            let human_msg = if issue_lines.is_empty() {
+                format!(
+                    "audit: clean\npackages_checked: {packages_checked}\nissues: 0\nblocked: 0\nwarnings: 0"
+                )
+            } else {
+                format!(
+                    "audit: {audit_status}\npackages_checked: {packages_checked}\nissues: {}\nblocked: {blocked_count}\nwarnings: {warning_count}\n{}",
+                    issues.len(),
+                    issue_lines.join("\n")
+                )
+            };
+            let issue_json = issues
+                .iter()
+                .map(PackageAuditIssue::to_json)
+                .collect::<Vec<_>>();
+            let advisory_json = issue_json
+                .iter()
+                .filter(|issue| issue["kind"] == "advisory")
+                .cloned()
+                .collect::<Vec<_>>();
             print_response(
                 mode,
                 &human_msg,
                 json!({
-                    "advisories": [],
-                    "packages_checked": 0,
+                    "status": audit_status,
+                    "issues": issue_json,
+                    "advisories": advisory_json,
+                    "packages_checked": packages_checked,
                     "assumptions_valid": true,
                     "unsafe_surface": [],
+                    "summary": {
+                        "packages_checked": packages_checked,
+                        "issues": issues.len(),
+                        "advisories": advisory_count,
+                        "yanked": yanked_count,
+                        "blocked": blocked_count,
+                        "warnings": warning_count,
+                    },
                 }),
             );
+            if blocked_count > 0 {
+                return Err(CliError::Domain(format!(
+                    "package audit blocked: {blocked_count} blocked issue(s)"
+                )));
+            }
         }
         PackageCmd::Explain { package } => {
             let (name, version) = package.split_once('@').unwrap_or((&package, "latest"));
@@ -4607,6 +4670,10 @@ struct LocalPackageRegistryFile {
     signed_packages: Vec<SignedPackage>,
     #[serde(default)]
     legacy_manifests: Vec<PackageManifest>,
+    #[serde(default)]
+    advisories: Vec<SecurityAdvisory>,
+    #[serde(default)]
+    yanked: Vec<YankRecord>,
 }
 
 struct LocalPackageLookup {
@@ -4620,6 +4687,86 @@ struct InstalledPackage {
     signature_status: &'static str,
     verification_report: Option<PackageVerificationReport>,
     warnings: Vec<String>,
+}
+
+struct PackageAuditIssue {
+    package: String,
+    version: String,
+    kind: &'static str,
+    status: &'static str,
+    advisory_id: Option<String>,
+    advisory_title: Option<String>,
+    severity: Option<String>,
+    affected_range: Option<String>,
+    reason: Option<String>,
+}
+
+impl PackageAuditIssue {
+    fn advisory(package: &str, version: &str, advisory: &SecurityAdvisory) -> Self {
+        let blocked = advisory.severity >= AdvisorySeverity::High;
+        Self {
+            package: package.to_string(),
+            version: version.to_string(),
+            kind: "advisory",
+            status: if blocked { "blocked" } else { "warning" },
+            advisory_id: Some(advisory.id.clone()),
+            advisory_title: Some(advisory.reason.clone()),
+            severity: Some(advisory.severity.to_string()),
+            affected_range: Some(advisory.affected_constraint.clone()),
+            reason: Some(advisory.reason.clone()),
+        }
+    }
+
+    fn yanked(package: &str, version: &str, yank: &YankRecord) -> Self {
+        Self {
+            package: package.to_string(),
+            version: version.to_string(),
+            kind: "yanked",
+            status: "blocked",
+            advisory_id: None,
+            advisory_title: None,
+            severity: None,
+            affected_range: None,
+            reason: Some(yank.reason.clone()),
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "package": &self.package,
+            "version": &self.version,
+            "kind": self.kind,
+            "status": self.status,
+            "advisory_id": &self.advisory_id,
+            "advisory_title": &self.advisory_title,
+            "title": &self.advisory_title,
+            "severity": &self.severity,
+            "affected_range": &self.affected_range,
+            "reason": &self.reason,
+        })
+    }
+
+    fn to_human_line(&self) -> String {
+        match self.kind {
+            "advisory" => format!(
+                "- advisory {} {}@{} {} {}: {}",
+                self.status,
+                self.package,
+                self.version,
+                self.advisory_id.as_deref().unwrap_or("unknown"),
+                self.severity.as_deref().unwrap_or("unknown"),
+                self.reason.as_deref().unwrap_or("no reason provided")
+            ),
+            "yanked" => format!(
+                "- yanked {} {}@{}: {}",
+                self.status,
+                self.package,
+                self.version,
+                self.reason.as_deref().unwrap_or("no reason provided")
+            ),
+            _ => format!("- {} {}@{}", self.kind, self.package, self.version),
+        }
+    }
 }
 
 struct SemanticDiff {
@@ -5165,33 +5312,49 @@ fn packages_dir(store: &StoreHandle) -> Result<PathBuf, CliError> {
 }
 
 fn load_package_registry(store: &StoreHandle) -> Result<PackageRegistry, CliError> {
+    load_package_registry_with_advisories(store).map(|(registry, _advisories)| registry)
+}
+
+fn load_package_registry_with_advisories(
+    store: &StoreHandle,
+) -> Result<(PackageRegistry, Vec<SecurityAdvisory>), CliError> {
     if !matches!(store, StoreHandle::File { .. }) {
-        return default_memory_package_registry();
+        return Ok((default_memory_package_registry()?, Vec::new()));
     }
     let path = packages_dir(store)?.join("registry.cbor");
-    let mut registry = PackageRegistry::new();
     if !path.exists() {
-        return Ok(registry);
+        return Ok((PackageRegistry::new(), Vec::new()));
     }
     let bytes = std::fs::read(path)?;
     if let Ok(file) = ciborium::from_reader::<LocalPackageRegistryFile, _>(bytes.as_slice()) {
-        for signed in file.signed_packages {
-            registry.register_signed(signed).map_err(|e| {
-                CliError::Domain(format!("package signature verification failed: {e}"))
-            })?;
-        }
-        for manifest in file.legacy_manifests {
-            registry.register(manifest);
-        }
-        return Ok(registry);
+        return registry_from_file(file);
     }
 
     let legacy_manifests: Vec<PackageManifest> = ciborium::from_reader(bytes.as_slice())
         .map_err(|e| CliError::Domain(format!("package registry decoding failed: {e}")))?;
+    let mut registry = PackageRegistry::new();
     for manifest in legacy_manifests {
         registry.register(manifest);
     }
-    Ok(registry)
+    Ok((registry, Vec::new()))
+}
+
+fn registry_from_file(
+    file: LocalPackageRegistryFile,
+) -> Result<(PackageRegistry, Vec<SecurityAdvisory>), CliError> {
+    let mut registry = PackageRegistry::new();
+    for signed in file.signed_packages {
+        registry
+            .register_signed(signed)
+            .map_err(|e| CliError::Domain(format!("package signature verification failed: {e}")))?;
+    }
+    for manifest in file.legacy_manifests {
+        registry.register(manifest);
+    }
+    for yank in file.yanked {
+        registry.yank(yank.name, yank.version, yank.reason);
+    }
+    Ok((registry, file.advisories))
 }
 
 fn save_package_registry(store: &StoreHandle, registry: &PackageRegistry) -> Result<(), CliError> {
@@ -5201,6 +5364,9 @@ fn save_package_registry(store: &StoreHandle, registry: &PackageRegistry) -> Res
     }
     let dir = packages_dir(store)?;
     std::fs::create_dir_all(&dir)?;
+    let existing_advisories = load_package_registry_with_advisories(store)
+        .map(|(_registry, advisories)| advisories)
+        .unwrap_or_default();
     let signed_keys = registry
         .all_signed()
         .iter()
@@ -5213,6 +5379,8 @@ fn save_package_registry(store: &StoreHandle, registry: &PackageRegistry) -> Res
         .collect::<BTreeSet<_>>();
     let file = LocalPackageRegistryFile {
         signed_packages: registry.all_signed().to_vec(),
+        advisories: existing_advisories,
+        yanked: registry.yank_records().to_vec(),
         legacy_manifests: registry
             .all()
             .iter()
@@ -5379,6 +5547,34 @@ fn lockfile_entry_to_json(entry: &LockfileEntry) -> Value {
         "verification_report_hash": &entry.verification_report_hash,
         "accepted_assumptions": &entry.accepted_assumptions,
     })
+}
+
+fn audit_package_lockfile(
+    lockfile: &Lockfile,
+    registry: &PackageRegistry,
+    advisories: &[SecurityAdvisory],
+) -> Vec<PackageAuditIssue> {
+    let mut issues = Vec::new();
+
+    for entry in &lockfile.entries {
+        if let Some(yank) = registry
+            .yank_records()
+            .iter()
+            .find(|yank| yank.name == entry.name && yank.version == entry.version)
+        {
+            issues.push(PackageAuditIssue::yanked(&entry.name, &entry.version, yank));
+        }
+
+        for advisory in AdvisoryChecker::matches(&entry.name, &entry.version, advisories) {
+            issues.push(PackageAuditIssue::advisory(
+                &entry.name,
+                &entry.version,
+                advisory,
+            ));
+        }
+    }
+
+    issues
 }
 
 fn package_manifest_to_json(manifest: &PackageManifest) -> Result<Value, CliError> {

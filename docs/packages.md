@@ -406,6 +406,13 @@ end
 
 Verifier checks advisories during dependency verification.
 
+The local CLI audit path is executable, not decorative: `ail package audit`
+checks installed lockfile entries against advisories and yanks persisted in the
+local registry metadata. Matching yanks and high/critical advisories are reported
+as `blocked` and return non-zero; low/medium advisories are warnings. This local
+workflow does not ingest network advisory databases, federation metadata, or
+Sigstore state.
+
 ### Package capabilities and least privilege
 
 Package may request capabilities, but project grants them.
