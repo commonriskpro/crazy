@@ -10,7 +10,8 @@
 //  - Import != grant: module imports package with required_capabilities but
 //    RuntimeProfile has no CapabilityGrant → CapabilityDenied.
 
-use ail_package::manifest::PackageDef;
+use ail_package::PackageVerificationReport;
+use ail_package::manifest::{ArtifactHashEntry, PackageDef};
 use ail_runtime::{
     CapabilityGrant, CapabilityId, CapabilityManifest, PackageManifest, PreflightFailure,
     ResourceLimits, RuntimeError, RuntimeHost, RuntimeProfile, TrustLevel, blake3_hex_of,
@@ -70,6 +71,35 @@ fn make_package(name: &str, trust: TrustLevel) -> PackageManifest {
     })
 }
 
+fn make_verified_package(name: &str) -> PackageManifest {
+    let artifact_hash = "b".repeat(64);
+    let mut package = make_package(name, TrustLevel::Verified);
+    package.artifact_hashes = vec![ArtifactHashEntry {
+        role: "wasm-binary".to_string(),
+        hash: artifact_hash.clone(),
+    }];
+    package.verification_report = Some(PackageVerificationReport {
+        package: name.to_string(),
+        version: "1.0.0".to_string(),
+        exports_verified: vec![],
+        effects_declared: vec![],
+        assumptions: vec![],
+        unsafe_surface: vec![],
+        artifact_hashes: vec![artifact_hash],
+    });
+    package
+}
+
+fn instantiate_with_package(package: PackageManifest) -> Result<(), RuntimeError> {
+    let wasm = minimal_wasm();
+    let cap_manifest = empty_manifest("test-module");
+    let profile = matching_profile(&wasm, &cap_manifest).with_package_trust(TrustLevel::Unverified);
+
+    let mut host = RuntimeHost::new();
+    host.validate_and_instantiate_with_packages(&wasm, &cap_manifest, &profile, &[package])
+        .map(|_| ())
+}
+
 // ── Spec scenario: Package below minimum trust fails preflight ────────────
 //
 // GIVEN a RuntimeProfile with min_package_trust: Assumed
@@ -124,7 +154,7 @@ fn package_at_min_trust_passes_preflight() {
     let profile = matching_profile(&wasm, &cap_manifest).with_package_trust(TrustLevel::Assumed);
 
     let assumed_pkg = make_package("payments.stripe", TrustLevel::Assumed);
-    let verified_pkg = make_package("core.utils", TrustLevel::Verified);
+    let verified_pkg = make_verified_package("core.utils");
 
     let mut host = RuntimeHost::new();
     let result = host.validate_and_instantiate_with_packages(
@@ -141,6 +171,87 @@ fn package_at_min_trust_passes_preflight() {
 
     let log = host.audit_log();
     assert!(log.events()[0].is_passed());
+}
+
+#[test]
+fn verified_package_without_report_fails_preflight() {
+    let package = make_package("payments.stripe", TrustLevel::Verified);
+
+    match instantiate_with_package(package) {
+        Err(RuntimeError::PreflightFailed(
+            PreflightFailure::PackageVerificationEvidenceInvalid { package, reason },
+        )) => {
+            assert_eq!(package, "payments.stripe");
+            assert!(reason.contains("missing verification_report"));
+        }
+        other => panic!("expected PackageVerificationEvidenceInvalid, got {other:?}"),
+    }
+}
+
+#[test]
+fn verified_package_report_package_must_match_manifest() {
+    let mut package = make_verified_package("payments.stripe");
+    package.verification_report.as_mut().unwrap().package = "other.package".to_string();
+
+    match instantiate_with_package(package) {
+        Err(RuntimeError::PreflightFailed(
+            PreflightFailure::PackageVerificationEvidenceInvalid { package, reason },
+        )) => {
+            assert_eq!(package, "payments.stripe");
+            assert!(reason.contains("package mismatch"));
+        }
+        other => panic!("expected PackageVerificationEvidenceInvalid, got {other:?}"),
+    }
+}
+
+#[test]
+fn verified_package_report_version_must_match_manifest() {
+    let mut package = make_verified_package("payments.stripe");
+    package.verification_report.as_mut().unwrap().version = "2.0.0".to_string();
+
+    match instantiate_with_package(package) {
+        Err(RuntimeError::PreflightFailed(
+            PreflightFailure::PackageVerificationEvidenceInvalid { package, reason },
+        )) => {
+            assert_eq!(package, "payments.stripe");
+            assert!(reason.contains("version mismatch"));
+        }
+        other => panic!("expected PackageVerificationEvidenceInvalid, got {other:?}"),
+    }
+}
+
+#[test]
+fn verified_package_requires_manifest_artifact_hashes() {
+    let mut package = make_verified_package("payments.stripe");
+    package.artifact_hashes.clear();
+
+    match instantiate_with_package(package) {
+        Err(RuntimeError::PreflightFailed(
+            PreflightFailure::PackageVerificationEvidenceInvalid { reason, .. },
+        )) => {
+            assert!(reason.contains("must declare artifact_hashes"));
+        }
+        other => panic!("expected PackageVerificationEvidenceInvalid, got {other:?}"),
+    }
+}
+
+#[test]
+fn verified_package_report_artifacts_must_match_manifest() {
+    let mut package = make_verified_package("payments.stripe");
+    package
+        .verification_report
+        .as_mut()
+        .unwrap()
+        .artifact_hashes = vec!["c".repeat(64)];
+
+    match instantiate_with_package(package) {
+        Err(RuntimeError::PreflightFailed(
+            PreflightFailure::PackageVerificationEvidenceInvalid { reason, .. },
+        )) => {
+            assert!(reason.contains("artifact hashes do not match"));
+        }
+        other => panic!("expected PackageVerificationEvidenceInvalid, got {other:?}"),
+    }
 }
 
 // ── Spec scenario: None min_package_trust skips package gate ─────────────

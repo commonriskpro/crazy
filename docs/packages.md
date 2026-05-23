@@ -354,6 +354,14 @@ package_verification_report
 end
 ```
 
+Runtime package preflight treats `TrustLevel::Verified` as an evidence-backed
+claim. A verified package manifest must include a `verification_report` whose
+`package` and `version` match the manifest, and the manifest must include at
+least one `artifact_hashes` entry. The report stores artifact evidence as hash
+strings, so runtime compares the report hashes with the manifest artifact hashes
+by digest, ignoring manifest roles and ordering. Lower trust tiers keep their
+existing profile-gated behavior.
+
 ### Reproducibility
 
 Package should be content-addressed:

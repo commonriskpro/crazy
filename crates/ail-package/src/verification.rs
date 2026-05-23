@@ -23,6 +23,9 @@ use blake3::Hasher;
 use ciborium::ser::into_writer;
 use serde::{Deserialize, Serialize};
 
+use crate::manifest::PackageManifest;
+use crate::trust::TrustLevel;
+
 // ── PackageVerificationReport ─────────────────────────────────────────────
 
 /// Full verification evidence produced during a package release.
@@ -71,11 +74,120 @@ impl PackageVerificationReport {
     }
 }
 
+// ── Verified package evidence preflight ───────────────────────────────────
+
+/// Local evidence validation failures for `TrustLevel::Verified` packages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PackageVerificationEvidenceError {
+    /// A verified package did not embed a verification report.
+    MissingReport,
+    /// Report package name does not match the manifest package name.
+    PackageMismatch { expected: String, actual: String },
+    /// Report version does not match the manifest version.
+    VersionMismatch { expected: String, actual: String },
+    /// Verified manifests must bind at least one release artifact hash.
+    ManifestArtifactHashesMissing,
+    /// Report artifact evidence does not match manifest artifact hashes.
+    ArtifactHashesMismatch {
+        manifest_hashes: Vec<String>,
+        report_hashes: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for PackageVerificationEvidenceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PackageVerificationEvidenceError::MissingReport => {
+                write!(f, "verified package is missing verification_report")
+            }
+            PackageVerificationEvidenceError::PackageMismatch { expected, actual } => write!(
+                f,
+                "verification_report package mismatch: expected `{expected}`, got `{actual}`"
+            ),
+            PackageVerificationEvidenceError::VersionMismatch { expected, actual } => write!(
+                f,
+                "verification_report version mismatch: expected `{expected}`, got `{actual}`"
+            ),
+            PackageVerificationEvidenceError::ManifestArtifactHashesMissing => {
+                write!(f, "verified package manifest must declare artifact_hashes")
+            }
+            PackageVerificationEvidenceError::ArtifactHashesMismatch {
+                manifest_hashes,
+                report_hashes,
+            } => write!(
+                f,
+                "verification_report artifact hashes do not match manifest artifact_hashes: manifest={manifest_hashes:?}, report={report_hashes:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PackageVerificationEvidenceError {}
+
+/// Validate local verification evidence for a package manifest.
+///
+/// Lower trust tiers intentionally pass through unchanged. For
+/// `TrustLevel::Verified`, the local manifest must carry a verification report
+/// for the same package/version and the report's hash-only artifact evidence
+/// must equal the manifest's role-bound artifact hashes, ignoring order.
+pub fn validate_verified_package_evidence(
+    manifest: &PackageManifest,
+) -> Result<(), PackageVerificationEvidenceError> {
+    if manifest.trust_level != TrustLevel::Verified {
+        return Ok(());
+    }
+
+    let report = manifest
+        .verification_report
+        .as_ref()
+        .ok_or(PackageVerificationEvidenceError::MissingReport)?;
+
+    if report.package != manifest.name {
+        return Err(PackageVerificationEvidenceError::PackageMismatch {
+            expected: manifest.name.clone(),
+            actual: report.package.clone(),
+        });
+    }
+
+    if report.version != manifest.version {
+        return Err(PackageVerificationEvidenceError::VersionMismatch {
+            expected: manifest.version.clone(),
+            actual: report.version.clone(),
+        });
+    }
+
+    if manifest.artifact_hashes.is_empty() {
+        return Err(PackageVerificationEvidenceError::ManifestArtifactHashesMissing);
+    }
+
+    let mut manifest_hashes = manifest
+        .artifact_hashes
+        .iter()
+        .map(|entry| entry.hash.clone())
+        .collect::<Vec<_>>();
+    manifest_hashes.sort();
+
+    let mut report_hashes = report.artifact_hashes.clone();
+    report_hashes.sort();
+
+    if manifest_hashes != report_hashes {
+        return Err(PackageVerificationEvidenceError::ArtifactHashesMismatch {
+            manifest_hashes,
+            report_hashes,
+        });
+    }
+
+    Ok(())
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::manifest::{ArtifactHashEntry, PackageDef, PackageManifest};
+    use crate::trust::TrustLevel;
 
     fn sample_report() -> PackageVerificationReport {
         PackageVerificationReport {
@@ -185,5 +297,146 @@ mod tests {
         assert_eq!(r.package, "payments.stripe");
         assert_eq!(r.version, "1.2.0");
         assert!(r.exports_verified.contains(&"charge".to_string()));
+    }
+
+    fn package_with_evidence(
+        trust_level: TrustLevel,
+        artifact_hashes: Vec<ArtifactHashEntry>,
+        verification_report: Option<PackageVerificationReport>,
+    ) -> PackageManifest {
+        PackageManifest::from_def(PackageDef {
+            name: "payments.stripe".to_string(),
+            version: "1.2.0".to_string(),
+            trust_level,
+            required_capabilities: vec![],
+            exported_capabilities: vec![],
+            assumptions: vec![],
+            unsafe_surface: vec![],
+            artifact_hashes,
+            build_env_hash: None,
+            handlers: vec![],
+            contracts: vec![],
+            exports: vec![],
+            imports: vec![],
+            boundaries: vec![],
+            license: None,
+            provenance: None,
+            verification_report,
+            graph_schema: None,
+            core_ir_schema: None,
+        })
+    }
+
+    #[test]
+    fn verified_package_evidence_accepts_matching_report_and_artifacts() {
+        let hash = "a".repeat(64);
+        let manifest = package_with_evidence(
+            TrustLevel::Verified,
+            vec![ArtifactHashEntry {
+                role: "wasm-binary".to_string(),
+                hash: hash.clone(),
+            }],
+            Some(PackageVerificationReport {
+                package: "payments.stripe".to_string(),
+                version: "1.2.0".to_string(),
+                exports_verified: vec![],
+                effects_declared: vec![],
+                assumptions: vec![],
+                unsafe_surface: vec![],
+                artifact_hashes: vec![hash],
+            }),
+        );
+
+        assert_eq!(validate_verified_package_evidence(&manifest), Ok(()));
+    }
+
+    #[test]
+    fn verified_package_evidence_rejects_missing_report() {
+        let manifest = package_with_evidence(
+            TrustLevel::Verified,
+            vec![ArtifactHashEntry {
+                role: "wasm-binary".to_string(),
+                hash: "a".repeat(64),
+            }],
+            None,
+        );
+
+        assert_eq!(
+            validate_verified_package_evidence(&manifest),
+            Err(PackageVerificationEvidenceError::MissingReport)
+        );
+    }
+
+    #[test]
+    fn verified_package_evidence_rejects_name_version_and_hash_mismatch() {
+        let hash = "a".repeat(64);
+        let mut manifest = package_with_evidence(
+            TrustLevel::Verified,
+            vec![ArtifactHashEntry {
+                role: "wasm-binary".to_string(),
+                hash: hash.clone(),
+            }],
+            Some(PackageVerificationReport {
+                package: "other.package".to_string(),
+                version: "1.2.0".to_string(),
+                exports_verified: vec![],
+                effects_declared: vec![],
+                assumptions: vec![],
+                unsafe_surface: vec![],
+                artifact_hashes: vec![hash.clone()],
+            }),
+        );
+
+        assert!(matches!(
+            validate_verified_package_evidence(&manifest),
+            Err(PackageVerificationEvidenceError::PackageMismatch { .. })
+        ));
+
+        manifest.verification_report.as_mut().unwrap().package = "payments.stripe".to_string();
+        manifest.verification_report.as_mut().unwrap().version = "2.0.0".to_string();
+        assert!(matches!(
+            validate_verified_package_evidence(&manifest),
+            Err(PackageVerificationEvidenceError::VersionMismatch { .. })
+        ));
+
+        manifest.verification_report.as_mut().unwrap().version = "1.2.0".to_string();
+        manifest
+            .verification_report
+            .as_mut()
+            .unwrap()
+            .artifact_hashes = vec!["b".repeat(64)];
+        assert!(matches!(
+            validate_verified_package_evidence(&manifest),
+            Err(PackageVerificationEvidenceError::ArtifactHashesMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn verified_package_evidence_rejects_empty_manifest_artifacts() {
+        let manifest = package_with_evidence(
+            TrustLevel::Verified,
+            vec![],
+            Some(PackageVerificationReport {
+                package: "payments.stripe".to_string(),
+                version: "1.2.0".to_string(),
+                exports_verified: vec![],
+                effects_declared: vec![],
+                assumptions: vec![],
+                unsafe_surface: vec![],
+                artifact_hashes: vec![],
+            }),
+        );
+
+        assert_eq!(
+            validate_verified_package_evidence(&manifest),
+            Err(PackageVerificationEvidenceError::ManifestArtifactHashesMissing)
+        );
+    }
+
+    #[test]
+    fn verified_package_evidence_ignores_lower_trust_tiers() {
+        let manifest = package_with_evidence(TrustLevel::Assumed, vec![], None);
+
+        assert_eq!(validate_verified_package_evidence(&manifest), Ok(()));
     }
 }
