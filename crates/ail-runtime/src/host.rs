@@ -18,7 +18,8 @@
 // Schema enforcement (G29 R2):
 //   When a CapabilityDefinition is registered via `with_capability_definition`,
 //   `call_capability` validates the input payload against the declared
-//   CapabilityInputSchema before dispatching to the handler.
+//   CapabilityInputSchema before dispatching to the handler, then validates
+//   successful handler responses against the declared CapabilityOutputSchema.
 //   Calls for capabilities without a registered schema pass through unchanged.
 //
 // Transaction rollback integration (G29 R2):
@@ -454,8 +455,9 @@ impl fmt::Debug for RuntimeInstance {
 ///
 /// When a [`CapabilityDefinition`] is registered via [`with_capability_definition`],
 /// [`call_capability`] validates the input payload against the declared
-/// `CapabilityInputSchema` before dispatching.  Capabilities without a
-/// registered schema are not validated (pass-through).
+/// `CapabilityInputSchema` before dispatching, then validates successful
+/// handler responses against the declared `CapabilityOutputSchema`.
+/// Capabilities without a registered schema are not validated (pass-through).
 ///
 /// # Preflight
 ///
@@ -677,7 +679,8 @@ impl RuntimeHost {
     /// 2. Validate the input payload against the registered schema (if any).
     /// 3. Find the first handler whose `capabilities()` includes `capability`.
     /// 4. Dispatch to `handler.handle(capability, operation, payload)`.
-    /// 5. Append an [`AuditEvent::CapabilityCallExecuted`] event.
+    /// 5. Validate successful handler responses against the output schema.
+    /// 6. Append an [`AuditEvent::CapabilityCallExecuted`] event.
     pub fn call_capability(
         &mut self,
         capability: &CapabilityId,
@@ -799,7 +802,23 @@ impl RuntimeHost {
         let handler_name = handler.name().to_string();
 
         // Step 4: dispatch.
-        let result = handler.handle(capability, operation, payload);
+        let result = match handler.handle(capability, operation, payload) {
+            Ok(response) => {
+                // Step 5: output schema/boundary validation (if registered).
+                if let Some(def) = self.schema_registry.get(capability.as_str())
+                    && let Err(schema_err) = def.schema().output().validate(&response)
+                {
+                    Err(HostError::ContractViolation(format!(
+                        "schema validation failed for `{}` response: {}",
+                        capability.as_str(),
+                        schema_err.message
+                    )))
+                } else {
+                    Ok(response)
+                }
+            }
+            Err(err) => Err(err),
+        };
         let duration_us = start.elapsed().as_micros() as u64;
         let succeeded = result.is_ok();
         let output_hash = result

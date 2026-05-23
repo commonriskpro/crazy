@@ -6,7 +6,7 @@
 //! - Owns the only direct `wasmtime` dependency in the workspace.
 //! - Enforces a deny-by-default capability policy via preflight checks.
 //! - Validates WASM module hashes and capability manifests before instantiation.
-//! - Enforces payload boundary schemas at capability call sites (G29 R2).
+//! - Enforces input/output boundary schemas at capability call sites (G29 R2).
 //! - Integrates transaction rollback with handler execution flow (G29 R2).
 //! - Verifies replay output hashes against recorded BLAKE3 digests (G29 R2).
 //! - Appends exactly one redacted [`AuditEvent`] per preflight call.
@@ -30,6 +30,7 @@
 //!         │ check grant
 //!         │ validate payload against CapabilityInputSchema (if registered)
 //!         │ HandlerDispatch → Handler::handle
+//!         │ validate response against CapabilityOutputSchema (if registered)
 //!         │ append CapabilityCallExecuted
 //!         ▼
 //! HostResult<Vec<u8>>

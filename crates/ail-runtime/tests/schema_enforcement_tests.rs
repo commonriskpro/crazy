@@ -17,6 +17,61 @@ use ail_runtime::schema::{
     CapabilityDefinition, CapabilityErrorSchema, CapabilityInputSchema, CapabilityOutputSchema,
     CapabilitySchema, SchemaField, SchemaValidationError,
 };
+use ail_runtime::{
+    AuditEvent, CapabilityGrant, CapabilityManifest, InMemoryHandler, ResourceLimits, RuntimeHost,
+    RuntimeProfile, blake3_hex_of,
+};
+use std::sync::Arc;
+
+fn minimal_wasm() -> Vec<u8> {
+    vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]
+}
+
+fn host_with_output_schema(
+    cap_id: &CapabilityId,
+    handler_response: Vec<u8>,
+    output_fields: Vec<SchemaField>,
+) -> RuntimeHost {
+    let wasm = minimal_wasm();
+    let manifest = CapabilityManifest {
+        module: "test".to_string(),
+        requires: vec![cap_id.clone()],
+    };
+    let profile = RuntimeProfile::new(
+        "test".to_string(),
+        blake3_hex_of(&wasm),
+        "vr-hash".to_string(),
+        manifest.blake3_hex().unwrap(),
+        vec![CapabilityGrant {
+            module: "test".to_string(),
+            capability: cap_id.clone(),
+        }],
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+            ..Default::default()
+        },
+    );
+    let def = CapabilityDefinition::new(
+        cap_id.clone(),
+        CapabilitySchema::new(
+            CapabilityInputSchema::new(vec![]),
+            CapabilityOutputSchema::new(output_fields),
+            CapabilityErrorSchema::new(vec![]),
+        ),
+    );
+    let handler = Arc::new(InMemoryHandler::new(
+        "test-handler",
+        vec![cap_id.clone()],
+        handler_response,
+    ));
+    let mut host = RuntimeHost::new()
+        .with_handler(handler)
+        .with_capability_definition(def);
+    host.validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("preflight must pass");
+    host
+}
 
 // ── CapabilityDefinition: schema attachment ───────────────────────────────
 
@@ -350,4 +405,46 @@ fn capability_call_without_registered_schema_passes_through() {
 
     let result = host.call_capability(&cap_id, "emit", b"any payload");
     assert!(result.is_ok(), "no registered schema = payload passthrough");
+}
+
+#[test]
+fn capability_call_with_schema_accepts_valid_handler_response() {
+    let cap_id = CapabilityId::new("payment.charge:PaymentProvider");
+    let response = b"receipt_id=rcpt-42".to_vec();
+    let mut host = host_with_output_schema(
+        &cap_id,
+        response.clone(),
+        vec![SchemaField::new("receipt_id", "String")],
+    );
+
+    let result = host.call_capability(&cap_id, "charge", b"");
+
+    assert_eq!(result, Ok(response));
+    match host.audit_log().events().last() {
+        Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => assert!(*succeeded),
+        other => panic!("expected capability call audit event, got {other:?}"),
+    }
+}
+
+#[test]
+fn capability_call_with_schema_rejects_invalid_handler_response() {
+    let cap_id = CapabilityId::new("payment.charge:PaymentProvider");
+    let mut host = host_with_output_schema(
+        &cap_id,
+        b"order_id=ord-1".to_vec(),
+        vec![SchemaField::new("receipt_id", "String")],
+    );
+
+    let err = host
+        .call_capability(&cap_id, "charge", b"")
+        .expect_err("invalid handler response must fail output schema validation");
+
+    assert!(
+        matches!(err, ail_runtime::HostError::ContractViolation(_)),
+        "expected ContractViolation for invalid response schema, got {err:?}"
+    );
+    match host.audit_log().events().last() {
+        Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => assert!(!*succeeded),
+        other => panic!("expected capability call audit event, got {other:?}"),
+    }
 }
