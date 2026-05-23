@@ -194,6 +194,24 @@ fn lower_core_expr_to_anf_local(
                 if_expr
             }
         }
+        CoreExpr::Match { scrutinee, arms } => {
+            let (scrutinee_name, scrutinee_binding) = atomize_local(scrutinee, fresh, source_ref);
+            let match_expr = AnfExpr::Match {
+                scrutinee: scrutinee_name,
+                arms: arms
+                    .iter()
+                    .map(|arm| crate::anf::AnfMatchArm {
+                        pattern: arm.pattern.clone(),
+                        body: lower_core_expr_to_anf_local(&arm.body, fresh, source_ref),
+                    })
+                    .collect(),
+            };
+            if let Some(binding) = scrutinee_binding {
+                wrap_local_bindings(vec![binding], match_expr)
+            } else {
+                match_expr
+            }
+        }
         CoreExpr::Call { func, args } => lower_core_call_to_anf(func, args, fresh, source_ref),
         CoreExpr::Add(left, right) => {
             lower_core_binary_to_anf("add", left, right, fresh, source_ref)

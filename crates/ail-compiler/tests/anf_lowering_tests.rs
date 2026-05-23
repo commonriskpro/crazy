@@ -20,8 +20,8 @@ use ail_compiler::anf::{ANF_SCHEMA_VERSION, SourceMap};
 use ail_compiler::hash::stable_cbor_bytes;
 use ail_compiler::lower::lower_core_expr_to_anf;
 use ail_compiler::{
-    AnfExpr, CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, StageHashes,
-    lower_to_anf, lower_to_core_ir,
+    AnfExpr, CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, MatchArm,
+    StageHashes, lower_to_anf, lower_to_core_ir,
 };
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_verify::report::VerificationReport;
@@ -428,6 +428,34 @@ fn if_with_call_cond_gets_cond_let_bound() {
         );
     } else {
         panic!("root must be AnfExpr::If");
+    }
+}
+
+#[test]
+fn lower_to_anf_keeps_match_scrutinee_binding_local() {
+    let core = core_ir_with_expr(
+        NodeRef(0),
+        "fn_match",
+        CoreExpr::Match {
+            scrutinee: Box::new(CoreExpr::Literal(LiteralValue::Int(2))),
+            arms: vec![MatchArm {
+                pattern: "_".to_string(),
+                body: CoreExpr::Literal(LiteralValue::Int(20)),
+            }],
+        },
+    );
+
+    let anf = lower_to_anf(&core).expect("lower_to_anf must succeed");
+
+    match &anf.bindings[0].expr {
+        AnfExpr::Let { name, body, .. } => {
+            assert_eq!(name, "anf_0");
+            assert!(
+                matches!(**body, AnfExpr::Match { ref scrutinee, .. } if scrutinee == "anf_0"),
+                "match scrutinee must reference the local let binding"
+            );
+        }
+        other => panic!("expected local let around match scrutinee, got {other:?}"),
     }
 }
 
