@@ -45,7 +45,10 @@ use ail_change::{
     storage_bridge::MemorySnapshotBridge,
 };
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
-use ail_remote::{RemoteChangeSet, RemoteError};
+use ail_remote::{
+    RemoteChangeSet, RemoteError, RemoteExchangeRequest, RemoteExchangeResponse,
+    RemoteSubmissionOutcome,
+};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -275,6 +278,43 @@ impl Coordinator {
             _ => Ok(outcome),
         }
     }
+
+    /// Handle a transport-agnostic remote exchange request.
+    ///
+    /// This is the service-shaped boundary for remote collaboration: callers can
+    /// put it behind a network transport later, while the coordinator remains an
+    /// in-process authority over signed submissions.
+    pub async fn handle_remote_exchange(
+        &self,
+        request: RemoteExchangeRequest,
+    ) -> RemoteExchangeResponse {
+        match request {
+            RemoteExchangeRequest::SubmitChangeSet(rcs) => {
+                match self.verify_remote_submission(rcs).await {
+                    Ok(outcome) => {
+                        RemoteExchangeResponse::Submission(remote_submission_outcome(outcome))
+                    }
+                    Err(err) => RemoteExchangeResponse::Error {
+                        code: remote_error_code(&err).to_string(),
+                        message: err.to_string(),
+                    },
+                }
+            }
+            RemoteExchangeRequest::PushBundle(bundle) => match bundle.verify_integrity() {
+                Ok(()) => RemoteExchangeResponse::BundleAccepted {
+                    root: bundle.root,
+                    object_count: bundle.objects.len(),
+                },
+                Err(err) => RemoteExchangeResponse::Error {
+                    code: "E_BUNDLE_INVALID".to_string(),
+                    message: err.to_string(),
+                },
+            },
+            RemoteExchangeRequest::PullBundle { root } => {
+                RemoteExchangeResponse::BundleMissing { root }
+            }
+        }
+    }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -290,4 +330,37 @@ fn extract_removed_nodes(ops: &[CanonicalOp]) -> BTreeSet<NodeRef> {
             }
         })
         .collect()
+}
+
+fn remote_submission_outcome(outcome: CoordinatorOutcome) -> RemoteSubmissionOutcome {
+    match outcome {
+        CoordinatorOutcome::Applied {
+            applied_snapshot_id,
+        } => RemoteSubmissionOutcome::Applied {
+            applied_snapshot_id,
+        },
+        CoordinatorOutcome::RebaseApplied {
+            rebased_onto,
+            applied_snapshot_id,
+        } => RemoteSubmissionOutcome::RebaseApplied {
+            rebased_onto,
+            applied_snapshot_id,
+        },
+        CoordinatorOutcome::ConflictIrresolvable { reason } => {
+            RemoteSubmissionOutcome::ConflictIrresolvable { reason }
+        }
+        CoordinatorOutcome::StaleBase {
+            current_snapshot_id,
+        } => RemoteSubmissionOutcome::StaleBase {
+            current_snapshot_id,
+        },
+        CoordinatorOutcome::Failed { reason } => RemoteSubmissionOutcome::Failed { reason },
+    }
+}
+
+fn remote_error_code(err: &RemoteError) -> &'static str {
+    match err {
+        RemoteError::SignatureInvalid => "E_SIGNATURE_INVALID",
+        RemoteError::CoordinatorFailed(_) => "E_COORDINATOR_FAILED",
+    }
 }

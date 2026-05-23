@@ -169,6 +169,8 @@ Devuelve el punto de Montgomery crudo. **Se debe pasar por un KDF** (p.ej. `deri
 | `DecryptionFailed` | Tag GCM no coincide (ciphertext alterado, clave incorrecta, o nonce incorrecto) |
 | `KeyDerivationFailed` | Argon2id reportó error (combinación de parámetros inválida) |
 
-### Implementation Notes
+### Notas de implementación
 
-Code references: `crates/ail-remote/src/identity.rs`, `crates/ail-remote/src/signing.rs`, `crates/ail-remote/src/bundle.rs`, `crates/ail-remote/src/crypto.rs`, `crates/ail-remote/src/error.rs`.
+`RemoteExchangeRequest` / `RemoteExchangeResponse` definen el límite de servicio independiente del transporte para enviar changesets firmados e intercambiar bundles de objetos. El `Coordinator` actualmente acepta bundles enviados después de verificar su integridad y devuelve `BundleMissing` para pulls porque todavía no hay un store remoto durable de bundles conectado.
+
+Referencias de código: `crates/ail-remote/src/identity.rs`, `crates/ail-remote/src/signing.rs`, `crates/ail-remote/src/bundle.rs`, `crates/ail-remote/src/exchange.rs`, `crates/ail-remote/src/crypto.rs`, `crates/ail-remote/src/error.rs`, `crates/ail-coordinator/src/coordinator.rs`.

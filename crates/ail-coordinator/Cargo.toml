@@ -16,6 +16,7 @@ serde       = { workspace = true }
 tracing     = { workspace = true, optional = true }
 
 [dev-dependencies]
+ail-storage = { workspace = true }
 tokio = { workspace = true }
 
 [lints]

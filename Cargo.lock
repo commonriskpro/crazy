@@ -138,6 +138,7 @@ dependencies = [
  "ciborium",
  "futures",
  "serde",
+ "serde_json",
  "tempfile",
  "tracing",
 ]
@@ -149,6 +150,7 @@ dependencies = [
  "ail-change",
  "ail-core",
  "ail-remote",
+ "ail-storage",
  "serde",
  "tokio",
  "tracing",
