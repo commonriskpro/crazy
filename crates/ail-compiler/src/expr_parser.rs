@@ -107,6 +107,25 @@ impl Parser<'_> {
                 })
             }
             "match" => parse_match_call(args),
+            "record" => parse_record_call(args),
+            "field" => {
+                let [record, field] = expect_arity::<2>(func, args)?;
+                Ok(CoreExpr::FieldGet {
+                    record: Box::new(record),
+                    field: expect_name("field name", field)?,
+                })
+            }
+            "update" => {
+                let [record, field, value] = expect_arity::<3>(func, args)?;
+                Ok(CoreExpr::FieldUpdate {
+                    record: Box::new(record),
+                    field: expect_name("field name", field)?,
+                    value: Box::new(value),
+                })
+            }
+            "tuple" => Ok(CoreExpr::TupleNew(args)),
+            "variant" => parse_variant_call(args),
+            "list" => Ok(CoreExpr::ListNew(args)),
             "add" => binary(func, args, CoreExpr::Add),
             "sub" => binary(func, args, CoreExpr::Sub),
             "mul" => binary(func, args, CoreExpr::Mul),
@@ -213,6 +232,45 @@ fn parse_match_call(args: Vec<CoreExpr>) -> Result<CoreExpr, ParseError> {
         scrutinee: Box::new(scrutinee),
         arms,
     })
+}
+
+fn parse_record_call(args: Vec<CoreExpr>) -> Result<CoreExpr, ParseError> {
+    if !args.len().is_multiple_of(2) {
+        return Err(ParseError::new(format!(
+            "record expects field/value pairs, got {} args",
+            args.len()
+        )));
+    }
+
+    let mut args = args.into_iter();
+    let mut fields = Vec::new();
+    while let Some(field) = args.next() {
+        let value = args.next().expect("even arg count checked above");
+        fields.push((expect_name("record field name", field)?, value));
+    }
+
+    Ok(CoreExpr::RecordNew { fields })
+}
+
+fn parse_variant_call(args: Vec<CoreExpr>) -> Result<CoreExpr, ParseError> {
+    match args.len() {
+        1 | 2 => {
+            let mut args = args.into_iter();
+            let tag = expect_name("variant tag", args.next().expect("len checked above"))?;
+            let payload = args.next().map(Box::new);
+            Ok(CoreExpr::VariantNew { tag, payload })
+        }
+        actual => Err(ParseError::new(format!(
+            "variant expects 1 or 2 args, got {actual}"
+        ))),
+    }
+}
+
+fn expect_name(context: &str, expr: CoreExpr) -> Result<String, ParseError> {
+    match expr {
+        CoreExpr::Var(name) => Ok(name),
+        _ => Err(ParseError::new(format!("{context} must be an identifier"))),
+    }
 }
 
 fn render_match_pattern(pattern: CoreExpr) -> Result<String, ParseError> {
@@ -381,6 +439,62 @@ mod tests {
                 ],
             }
         );
+    }
+
+    #[test]
+    fn parses_compound_value_forms() {
+        assert_eq!(
+            parse_expr("record(age, 30, score, add(10, 5))").unwrap(),
+            CoreExpr::RecordNew {
+                fields: vec![
+                    ("age".to_string(), CoreExpr::Literal(LiteralValue::Int(30))),
+                    (
+                        "score".to_string(),
+                        CoreExpr::Add(
+                            Box::new(CoreExpr::Literal(LiteralValue::Int(10))),
+                            Box::new(CoreExpr::Literal(LiteralValue::Int(5))),
+                        ),
+                    ),
+                ],
+            }
+        );
+
+        assert_eq!(
+            parse_expr("field(person, age)").unwrap(),
+            CoreExpr::FieldGet {
+                record: Box::new(CoreExpr::Var("person".to_string())),
+                field: "age".to_string(),
+            }
+        );
+
+        assert_eq!(
+            parse_expr("variant(Some, 7)").unwrap(),
+            CoreExpr::VariantNew {
+                tag: "Some".to_string(),
+                payload: Some(Box::new(CoreExpr::Literal(LiteralValue::Int(7)))),
+            }
+        );
+
+        assert_eq!(
+            parse_expr("list(1, 2, 3)").unwrap(),
+            CoreExpr::ListNew(vec![
+                CoreExpr::Literal(LiteralValue::Int(1)),
+                CoreExpr::Literal(LiteralValue::Int(2)),
+                CoreExpr::Literal(LiteralValue::Int(3)),
+            ])
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_compound_value_forms() {
+        let err = parse_expr("record(age, 30, dangling)").unwrap_err();
+        assert_eq!(err.message, "record expects field/value pairs, got 3 args");
+
+        let err = parse_expr("field(person, 1)").unwrap_err();
+        assert_eq!(err.message, "field name must be an identifier");
+
+        let err = parse_expr("variant(Some, 1, 2)").unwrap_err();
+        assert_eq!(err.message, "variant expects 1 or 2 args, got 3");
     }
 
     #[test]

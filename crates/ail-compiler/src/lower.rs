@@ -255,6 +255,91 @@ fn lower_core_expr_to_anf_local(
                 or_expr
             }
         }
+        CoreExpr::FieldGet { record, field } => {
+            let (record_name, record_binding) = atomize_local(record, fresh, source_ref);
+            let field_expr = AnfExpr::FieldGet {
+                record: record_name,
+                field: field.clone(),
+            };
+            if let Some(binding) = record_binding {
+                wrap_local_bindings(vec![binding], field_expr)
+            } else {
+                field_expr
+            }
+        }
+        CoreExpr::FieldUpdate {
+            record,
+            field,
+            value,
+        } => {
+            let (record_name, record_binding) = atomize_local(record, fresh, source_ref);
+            let (value_name, value_binding) = atomize_local(value, fresh, source_ref);
+            let update_expr = AnfExpr::FieldUpdate {
+                record: record_name,
+                field: field.clone(),
+                value: Box::new(AnfExpr::Var(value_name)),
+            };
+            let bindings = [record_binding, value_binding]
+                .into_iter()
+                .flatten()
+                .collect();
+            wrap_local_bindings(bindings, update_expr)
+        }
+        CoreExpr::RecordNew { fields } => {
+            let mut bindings = Vec::new();
+            let mut anf_fields = Vec::with_capacity(fields.len());
+            for (field, value) in fields {
+                let (name, binding) = atomize_local(value, fresh, source_ref);
+                if let Some(binding) = binding {
+                    bindings.push(binding);
+                }
+                anf_fields.push((field.clone(), AnfExpr::Var(name)));
+            }
+            wrap_local_bindings(bindings, AnfExpr::RecordNew { fields: anf_fields })
+        }
+        CoreExpr::TupleNew(elems) => {
+            let mut bindings = Vec::new();
+            let mut anf_elems = Vec::with_capacity(elems.len());
+            for elem in elems {
+                let (name, binding) = atomize_local(elem, fresh, source_ref);
+                if let Some(binding) = binding {
+                    bindings.push(binding);
+                }
+                anf_elems.push(AnfExpr::Var(name));
+            }
+            wrap_local_bindings(bindings, AnfExpr::TupleNew(anf_elems))
+        }
+        CoreExpr::VariantNew { tag, payload } => {
+            let mut bindings = Vec::new();
+            let anf_payload = if let Some(payload) = payload {
+                let (name, binding) = atomize_local(payload, fresh, source_ref);
+                if let Some(binding) = binding {
+                    bindings.push(binding);
+                }
+                Some(Box::new(AnfExpr::Var(name)))
+            } else {
+                None
+            };
+            wrap_local_bindings(
+                bindings,
+                AnfExpr::VariantNew {
+                    tag: tag.clone(),
+                    payload: anf_payload,
+                },
+            )
+        }
+        CoreExpr::ListNew(elems) => {
+            let mut bindings = Vec::new();
+            let mut anf_elems = Vec::with_capacity(elems.len());
+            for elem in elems {
+                let (name, binding) = atomize_local(elem, fresh, source_ref);
+                if let Some(binding) = binding {
+                    bindings.push(binding);
+                }
+                anf_elems.push(AnfExpr::Var(name));
+            }
+            wrap_local_bindings(bindings, AnfExpr::ListNew(anf_elems))
+        }
         _ => lower_core_expr_to_anf(expr, fresh, source_ref, &mut Vec::new()),
     }
 }

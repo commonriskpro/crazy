@@ -1154,7 +1154,7 @@ The Rust Core IR in `crates/ail-compiler/src/core_ir.rs` includes serializable `
 
 Current executable support is narrower than the full IR:
 
-- `expr_parser.rs` only parses the small expression subset needed by current tests.
+- `expr_parser.rs` parses the current prefix-form executable subset: literals, variables, `let`, `if`, `match`, arithmetic/comparison/boolean helpers, and compound value forms (`record`, `field`, `update`, `tuple`, `variant`, `list`).
 - `wasm.rs` emits real bodies for simple values/control flow and effect calls, but many semantic variants still lower to stubs/traps or opaque references.
 - Executable `Match` currently supports integer literal, boolean literal, and wildcard patterns. Constructor-pattern strings such as `Ok(value)` may parse, but WASM/native backends treat them as unsupported and emit a trap rather than binding variant payloads.
-- Full memory/value layout for records, variants, `Result`, `Option`, handles, text, and bytes is still tracked as ABI validation work.
+- Full memory/value layout for handles, text, bytes, and nested structured payloads is still tracked as ABI validation work; records, variants, lists, `Option`, and `Result` are currently executable for scalar-slot payloads.

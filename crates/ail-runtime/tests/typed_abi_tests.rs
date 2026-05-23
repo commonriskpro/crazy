@@ -18,13 +18,16 @@
 use std::sync::Arc;
 
 use ail_compiler::{
-    ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, LiteralValue, SourceMap, StageHashes, emit_wasm,
+    ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, LiteralValue, SourceMap, StageHashes,
+    emit_wasm,
+    lower::{lower_to_anf, lower_to_core_ir},
 };
-use ail_core::semantic_graph::NodeRef;
+use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_runtime::{
     CapabilityGrant, CapabilityId, CapabilityManifest, InMemoryHandler, ResourceLimits,
     RuntimeHost, RuntimeProfile, StructuredValue, ValueDecoder, ValueLayout, blake3_hex_of,
 };
+use ail_verify::report::VerificationReport;
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -53,6 +56,22 @@ fn compiler_wasm_for_expr(expr: AnfExpr, name: &str) -> Vec<u8> {
         expr,
     };
     let anf = sealed_anf(vec![binding]);
+    emit_wasm(&anf).expect("emit_wasm failed").wasm
+}
+
+fn compiler_wasm_for_body_expr(body_expr: &str, name: &str) -> Vec<u8> {
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, name);
+    node.body_expr = Some(body_expr.to_string());
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let report = VerificationReport {
+        entries: vec![],
+        ..Default::default()
+    };
+    let core = lower_to_core_ir(&graph, &report).expect("lower_to_core_ir failed");
+    let anf = lower_to_anf(&core).expect("lower_to_anf failed");
     emit_wasm(&anf).expect("emit_wasm failed").wasm
 }
 
@@ -318,6 +337,43 @@ fn invoke_typed_option_none_end_to_end() {
         StructuredValue::Variant {
             tag: "None".to_string(),
             payload: None,
+        }
+    );
+}
+
+#[test]
+fn body_expr_record_field_get_runs_through_runtime() {
+    let wasm = compiler_wasm_for_body_expr(
+        "field(record(age, 30, score, add(10, 5)), score)",
+        "fn.score",
+    );
+    let mut instance = instantiate(&wasm);
+
+    let result = instance
+        .invoke_typed("score", &[], &ValueLayout::Scalar)
+        .expect("invoke_typed must succeed");
+
+    assert_eq!(result, StructuredValue::Scalar(15));
+}
+
+#[test]
+fn body_expr_option_some_runs_through_runtime() {
+    let wasm = compiler_wasm_for_body_expr("variant(Some, 7)", "fn.make_some_from_body");
+    let mut instance = instantiate(&wasm);
+
+    let result = instance
+        .invoke_typed(
+            "make_some_from_body",
+            &[],
+            &ValueLayout::Option(Box::new(ValueLayout::Scalar)),
+        )
+        .expect("invoke_typed must succeed");
+
+    assert_eq!(
+        result,
+        StructuredValue::Variant {
+            tag: "Some".to_string(),
+            payload: Some(Box::new(StructuredValue::Scalar(7))),
         }
     );
 }

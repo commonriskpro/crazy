@@ -562,6 +562,10 @@ impl<'a> WasmCodegenCtx<'a> {
     fn assign_tag(&mut self, tag: &str) -> u32 {
         if let Some(&existing) = self.variant_tags.get(tag) {
             existing
+        } else if let Some(id) = well_known_variant_tag(tag) {
+            self.next_variant_tag = self.next_variant_tag.max(id + 1);
+            self.variant_tags.insert(tag.to_string(), id);
+            id
         } else {
             let id = self.next_variant_tag;
             self.next_variant_tag += 1;
@@ -616,6 +620,24 @@ impl<'a> WasmCodegenCtx<'a> {
             .iter()
             .rposition(|label| *label == target)
             .map(|idx| (self.labels.len() - 1 - idx) as u32)
+    }
+}
+
+fn well_known_variant_tag(tag: &str) -> Option<u32> {
+    match tag {
+        "None" | "Ok" => Some(0),
+        "Some" | "Err" => Some(1),
+        _ => None,
+    }
+}
+
+fn record_layout_fields(expr: &AnfExpr) -> Option<Vec<String>> {
+    match expr {
+        AnfExpr::RecordNew { fields } => {
+            Some(fields.iter().map(|(field, _)| field.clone()).collect())
+        }
+        AnfExpr::Let { body, .. } => record_layout_fields(body),
+        _ => None,
     }
 }
 
@@ -1129,11 +1151,8 @@ fn emit_anf_expr<'a>(
             // Allocate a fresh local and set it.
             let idx = ctx.bind(name, value_ty);
             insns.push(Instruction::LocalSet(idx));
-            if let AnfExpr::RecordNew { fields } = value.as_ref() {
-                ctx.bind_record_layout(
-                    name,
-                    fields.iter().map(|(field, _)| field.clone()).collect(),
-                );
+            if let Some(fields) = record_layout_fields(value) {
+                ctx.bind_record_layout(name, fields);
             }
             // Emit the body with the new binding in scope.
             emit_anf_expr(body, ctx, functions, insns)
