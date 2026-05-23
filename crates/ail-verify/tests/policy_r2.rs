@@ -21,8 +21,8 @@
 //     R2-11 Pipeline — ChangeSetOp::Verify wired end-to-end with checker→policy
 
 use ail_verify::policy::{
-    ApprovalRecord, ApprovalStrength, POLICY_WEAK_ASSUMPTION, PolicyDecision, PolicyEngine,
-    PolicyInput, PolicyRule,
+    ApprovalRecord, ApprovalStrength, POLICY_PROFILE_GATE, POLICY_UNSAFE_BLOCKED,
+    POLICY_WEAK_ASSUMPTION, PolicyDecision, PolicyEngine, PolicyInput, PolicyRule,
 };
 use ail_verify::policy::{PolicyAudit, PolicyAuditEntry};
 use ail_verify::report::{VerificationEntry, VerificationReport, VerificationState};
@@ -650,6 +650,28 @@ fn prod_blocks_unsafe_without_security_exception() {
 }
 
 #[test]
+fn prod_blocks_unsafe_with_only_weak_security_exception() {
+    let report = report_with(vec![entry("type", "unsafe.fn", VerificationState::Unsafe)]);
+    let input = PolicyInput {
+        report: &report,
+        rules: &[PolicyRule::ProfileGate("prod".into())],
+        approvals: &[weak_approval_for("unsafe.fn")],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+    };
+
+    match PolicyEngine::evaluate(&input) {
+        PolicyDecision::Failed(violations) => assert!(
+            violations.iter().any(|v| v.code == POLICY_UNSAFE_BLOCKED),
+            "prod must reject weak unsafe security exceptions with POLICY_UNSAFE_BLOCKED; got {violations:?}"
+        ),
+        other => panic!("expected prod to reject weak unsafe security exception, got {other:?}"),
+    }
+}
+
+#[test]
 fn prod_passes_unsafe_with_security_exception() {
     // A "security exception" is represented as a Strong approval
     let report = report_with(vec![entry("type", "unsafe.fn", VerificationState::Unsafe)]);
@@ -666,6 +688,136 @@ fn prod_passes_unsafe_with_security_exception() {
     assert!(
         !matches!(decision, PolicyDecision::Failed(_)),
         "prod must allow Unsafe with strong security-exception approval"
+    );
+}
+
+#[test]
+fn prod_blocks_assumed_with_only_weak_approval() {
+    let report = report_with(vec![entry(
+        "boundary",
+        "external.payment",
+        VerificationState::Assumed,
+    )]);
+    let input = PolicyInput {
+        report: &report,
+        rules: &[PolicyRule::ProfileGate("prod".into())],
+        approvals: &[weak_approval_for("external.payment")],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+    };
+
+    match PolicyEngine::evaluate(&input) {
+        PolicyDecision::Failed(violations) => assert!(
+            violations.iter().any(|v| v.code == POLICY_WEAK_ASSUMPTION),
+            "prod must reject weak Assumed approvals with POLICY_WEAK_ASSUMPTION; got {violations:?}"
+        ),
+        other => panic!("expected prod to reject weak Assumed approval, got {other:?}"),
+    }
+}
+
+#[test]
+fn prod_blocks_unverified_even_with_strong_approval() {
+    let report = report_with(vec![entry(
+        "type",
+        "external.ai_response",
+        VerificationState::Unverified,
+    )]);
+    let input = PolicyInput {
+        report: &report,
+        rules: &[PolicyRule::ProfileGate("prod".into())],
+        approvals: &[strong_approval_for("external.ai_response")],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+    };
+
+    match PolicyEngine::evaluate(&input) {
+        PolicyDecision::Failed(violations) => assert!(
+            violations.iter().any(|v| v.code == POLICY_PROFILE_GATE),
+            "prod must reject Unverified regardless of approval records; got {violations:?}"
+        ),
+        other => panic!("expected prod to reject approved Unverified entry, got {other:?}"),
+    }
+}
+
+#[test]
+fn prod_passes_runtime_checked_entry() {
+    let report = report_with(vec![entry(
+        "type",
+        "validated.payload",
+        VerificationState::RuntimeChecked,
+    )]);
+    let input = PolicyInput {
+        report: &report,
+        rules: &[PolicyRule::ProfileGate("prod".into())],
+        approvals: &[],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+    };
+
+    assert_eq!(PolicyEngine::evaluate(&input), PolicyDecision::Passed);
+}
+
+#[test]
+fn prod_audit_classifies_mixed_gate_results() {
+    let report = report_with(vec![
+        entry("type", "safe.fn", VerificationState::Proven),
+        entry(
+            "type",
+            "validated.payload",
+            VerificationState::RuntimeChecked,
+        ),
+        entry("boundary", "external.payment", VerificationState::Assumed),
+        entry(
+            "type",
+            "external.ai_response",
+            VerificationState::Unverified,
+        ),
+        entry("type", "unsafe.fn", VerificationState::Unsafe),
+    ]);
+    let input = PolicyInput {
+        report: &report,
+        rules: &[PolicyRule::ProfileGate("prod".into())],
+        approvals: &[weak_approval_for("unsafe.fn")],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+    };
+
+    let (decision, audit) = PolicyEngine::evaluate_with_audit(&input);
+    assert!(
+        matches!(decision, PolicyDecision::Failed(_)),
+        "mixed prod report with unsafe/unverified/unapproved assumed entries must fail"
+    );
+    assert_eq!(audit.profile, "prod");
+    assert!(
+        audit.entries.iter().any(|e| {
+            e.scope == "safe.fn" && e.state == "proven" && e.gate_decision == "passed"
+        })
+    );
+    assert!(audit.entries.iter().any(|e| {
+        e.scope == "validated.payload"
+            && e.state == "runtime_checked"
+            && e.gate_decision == "passed"
+    }));
+    assert!(audit.entries.iter().any(|e| {
+        e.scope == "external.payment"
+            && e.state == "assumed"
+            && e.gate_decision == "approval_required"
+    }));
+    assert!(audit.entries.iter().any(|e| {
+        e.scope == "external.ai_response" && e.state == "unverified" && e.gate_decision == "failed"
+    }));
+    assert!(
+        audit.entries.iter().any(|e| {
+            e.scope == "unsafe.fn" && e.state == "unsafe" && e.gate_decision == "failed"
+        })
     );
 }
 
