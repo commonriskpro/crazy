@@ -630,10 +630,10 @@ The first implementation is an in-process semantic context API rather than a tra
 | Topic | Implementation status |
 |-------|-----------------------|
 | Query syntax | Structured Rust DTOs in `ail-context`; CLI/transport syntax remains future work. |
-| Transport adapter | `ContextRpcRequest` / `ContextRpcResponse` provide a deterministic JSON-RPC 2.0 envelope without adding a network server. |
+| Transport adapter | `ContextRpcRequest` / `ContextRpcResponse` plus `ContextServer::handle_rpc` provide a deterministic JSON-RPC 2.0 dispatch boundary without adding a network server. |
 | Summaries | Deterministic renderer in `crates/ail-context/src/summary.rs`. Structured data remains authoritative. |
 | Signing | Distributed signing is handled in remote/bundle primitives, not context responses yet. |
 | Budgets | Response DTOs include limits and budget-related errors; model-tier defaults remain policy work. |
 | Audit/runtime exposure | Redaction and access errors exist at protocol level; full audit exposure policy remains future work. |
 
-Code references: `crates/ail-context/src/lib.rs`, `builder.rs`, `dto.rs`, `summary.rs`.
+Code references: `crates/ail-context/src/lib.rs`, `builder.rs`, `dto.rs`, `server.rs`, `summary.rs`.
