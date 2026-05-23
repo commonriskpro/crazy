@@ -2117,6 +2117,63 @@ fn verify_profile_prod_requires_approval() {
         v["data"]["approval_requirements"]["required"], true,
         "prod profile must require approval; got: {v}"
     );
+    assert_eq!(
+        v["data"]["policy_report"]["status"], "approval_required",
+        "prod verify JSON must not report policy as ok while approval is required; got: {v}"
+    );
+    assert_eq!(
+        v["data"]["policy_report"]["blocks_apply"], true,
+        "prod verify JSON must make approval-required blocking state machine-readable; got: {v}"
+    );
+    assert_eq!(
+        v["data"]["policy_report"]["policy_ok"], false,
+        "prod verify JSON must not imply prod is OK before approval; got: {v}"
+    );
+}
+
+#[test]
+fn apply_prod_json_with_yes_marks_operator_confirmation_not_persisted_approval() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let change_id = create_sample_change(dir.path());
+    let output = ail()
+        .args(["apply", &change_id, "--policy", "prod", "--yes", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(
+        v["data"]["pre_apply_gate"]["approval_status"]["required"],
+        true
+    );
+    assert_eq!(
+        v["data"]["pre_apply_gate"]["approval_status"]["operator_confirmed"],
+        true
+    );
+    assert_eq!(
+        v["data"]["pre_apply_gate"]["approval_status"]["persisted_approval"],
+        false
+    );
+    assert_eq!(
+        v["data"]["pre_apply_gate"]["approval_status"]["satisfied_for_this_apply"],
+        true
+    );
+    assert_eq!(
+        v["data"]["pre_apply_gate"]["policy_status"]["status"],
+        "operator_confirmed"
+    );
+    assert_eq!(
+        v["data"]["pre_apply_gate"]["policy_status"]["approval_source"],
+        "operator_confirmation"
+    );
+    assert_eq!(
+        v["data"]["pre_apply_gate"]["policy_status"]["blocks_apply"],
+        false
+    );
 }
 
 // ── G31 R2: apply pre-apply gate ──────────────────────────────────────────
