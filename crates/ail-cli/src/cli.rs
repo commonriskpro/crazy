@@ -420,11 +420,50 @@ enum PackageCmd {
     Publish,
     /// Audit all packages for known security advisories.
     Audit,
+    /// Manage local package advisory metadata.
+    Advisory {
+        #[command(subcommand)]
+        cmd: AdvisoryCmd,
+    },
+    /// Record that a local package version is yanked.
+    Yank {
+        /// Package name to yank.
+        package: String,
+        /// Exact package version to yank.
+        version: String,
+        /// Local reason for yanking this version.
+        #[arg(long)]
+        reason: String,
+    },
+    /// List local package yank records.
+    Yanked,
     /// Explain a package's trust level, capabilities, assumptions, and unsafe surface.
     Explain {
         /// Name of the package to explain (e.g. `payments.stripe`).
         package: String,
     },
+}
+
+#[derive(Subcommand)]
+enum AdvisoryCmd {
+    /// Add a local advisory for a package version constraint.
+    Add {
+        /// Package name affected by this advisory.
+        package: String,
+        /// Version constraint affected by this advisory.
+        constraint: String,
+        /// Stable local advisory id.
+        #[arg(long)]
+        id: String,
+        /// Advisory severity: low, medium, high, or critical.
+        #[arg(long)]
+        severity: String,
+        /// Local reason for the advisory.
+        #[arg(long)]
+        reason: String,
+    },
+    /// List local advisories.
+    List,
 }
 
 // ── RemoteCmd ─────────────────────────────────────────────────────────────
@@ -4370,6 +4409,166 @@ async fn cmd_package(
                 )));
             }
         }
+        PackageCmd::Advisory { cmd } => match cmd {
+            AdvisoryCmd::Add {
+                package,
+                constraint,
+                id,
+                severity,
+                reason,
+            } => {
+                let advisory = SecurityAdvisory {
+                    id: validate_required_package_metadata_field("advisory id", id)?,
+                    package: validate_required_package_metadata_field("package", package)?,
+                    affected_constraint: validate_required_package_metadata_field(
+                        "constraint",
+                        constraint,
+                    )?,
+                    severity: parse_advisory_severity(&severity)?,
+                    reason: validate_required_package_metadata_field("reason", reason)?,
+                };
+                let mut file = load_local_package_registry_file_for_update(store)?;
+                if file
+                    .advisories
+                    .iter()
+                    .any(|existing| existing.id == advisory.id)
+                {
+                    return Err(CliError::Domain(format!(
+                        "local advisory already exists: {}",
+                        advisory.id
+                    )));
+                }
+                file.advisories.push(advisory.clone());
+                save_local_package_registry_file(store, &file)?;
+                let human_msg = format!(
+                    "advisory added\nid: {}\npackage: {}\naffected: {}\nseverity: {}\nreason: {}\nscope: local",
+                    advisory.id,
+                    advisory.package,
+                    advisory.affected_constraint,
+                    advisory.severity,
+                    advisory.reason
+                );
+                print_response(
+                    mode,
+                    &human_msg,
+                    json!({
+                        "status": "recorded",
+                        "scope": "local",
+                        "advisory": advisory_to_json(&advisory),
+                    }),
+                );
+            }
+            AdvisoryCmd::List => {
+                let file = load_local_package_registry_file_for_read(store)?;
+                let advisories = file
+                    .advisories
+                    .iter()
+                    .map(advisory_to_json)
+                    .collect::<Vec<_>>();
+                let human_msg = if file.advisories.is_empty() {
+                    "local advisories: 0".to_string()
+                } else {
+                    format!(
+                        "local advisories: {}\n{}",
+                        file.advisories.len(),
+                        file.advisories
+                            .iter()
+                            .map(|advisory| format!(
+                                "- advisory {} {} {} {}: {}",
+                                advisory.id,
+                                advisory.package,
+                                advisory.affected_constraint,
+                                advisory.severity,
+                                advisory.reason
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                };
+                print_response(
+                    mode,
+                    &human_msg,
+                    json!({
+                        "scope": "local",
+                        "count": file.advisories.len(),
+                        "advisories": advisories,
+                    }),
+                );
+            }
+        },
+        PackageCmd::Yank {
+            package,
+            version,
+            reason,
+        } => {
+            let package = validate_required_package_metadata_field("package", package)?;
+            let version = validate_required_package_metadata_field("version", version)?;
+            let reason = validate_required_package_metadata_field("reason", reason)?;
+            let mut file = load_local_package_registry_file_for_update(store)?;
+            let mut status = "recorded";
+            if let Some(existing) = file
+                .yanked
+                .iter_mut()
+                .find(|yank| yank.name == package && yank.version == version)
+            {
+                existing.reason = reason.clone();
+                status = "updated";
+            } else {
+                file.yanked.push(YankRecord {
+                    name: package.clone(),
+                    version: version.clone(),
+                    reason: reason.clone(),
+                });
+            }
+            save_local_package_registry_file(store, &file)?;
+            let record = YankRecord {
+                name: package,
+                version,
+                reason,
+            };
+            let human_msg = format!(
+                "yank {status}\npackage: {}\nversion: {}\nreason: {}\nscope: local",
+                record.name, record.version, record.reason
+            );
+            print_response(
+                mode,
+                &human_msg,
+                json!({
+                    "status": status,
+                    "scope": "local",
+                    "yanked": yank_to_json(&record),
+                }),
+            );
+        }
+        PackageCmd::Yanked => {
+            let file = load_local_package_registry_file_for_read(store)?;
+            let yanked = file.yanked.iter().map(yank_to_json).collect::<Vec<_>>();
+            let human_msg = if file.yanked.is_empty() {
+                "local yanked packages: 0".to_string()
+            } else {
+                format!(
+                    "local yanked packages: {}\n{}",
+                    file.yanked.len(),
+                    file.yanked
+                        .iter()
+                        .map(|yank| format!(
+                            "- yanked {}@{}: {}",
+                            yank.name, yank.version, yank.reason
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            };
+            print_response(
+                mode,
+                &human_msg,
+                json!({
+                    "scope": "local",
+                    "count": file.yanked.len(),
+                    "yanked": yanked,
+                }),
+            );
+        }
         PackageCmd::Explain { package } => {
             let (name, version) = package.split_once('@').unwrap_or((&package, "latest"));
             let registry = load_package_registry(store)?;
@@ -4664,7 +4863,7 @@ struct ApprovalDecisionRecord {
     created_at: u64,
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 struct LocalPackageRegistryFile {
     #[serde(default)]
     signed_packages: Vec<SignedPackage>,
@@ -5315,28 +5514,66 @@ fn load_package_registry(store: &StoreHandle) -> Result<PackageRegistry, CliErro
     load_package_registry_with_advisories(store).map(|(registry, _advisories)| registry)
 }
 
+fn load_local_package_registry_file_for_read(
+    store: &StoreHandle,
+) -> Result<LocalPackageRegistryFile, CliError> {
+    if !matches!(store, StoreHandle::File { .. }) {
+        return Ok(LocalPackageRegistryFile::default());
+    }
+    load_local_package_registry_file(store)
+}
+
+fn load_local_package_registry_file_for_update(
+    store: &StoreHandle,
+) -> Result<LocalPackageRegistryFile, CliError> {
+    if !matches!(store, StoreHandle::File { .. }) {
+        return Err(CliError::Domain(
+            "local package metadata management requires an initialized file project (.ail); run `ail init`"
+                .to_string(),
+        ));
+    }
+    load_local_package_registry_file(store)
+}
+
+fn load_local_package_registry_file(
+    store: &StoreHandle,
+) -> Result<LocalPackageRegistryFile, CliError> {
+    let path = packages_dir(store)?.join("registry.cbor");
+    if !path.exists() {
+        return Ok(LocalPackageRegistryFile::default());
+    }
+    let bytes = std::fs::read(path)?;
+    if let Ok(file) = ciborium::from_reader::<LocalPackageRegistryFile, _>(bytes.as_slice()) {
+        return Ok(file);
+    }
+    let legacy_manifests: Vec<PackageManifest> = ciborium::from_reader(bytes.as_slice())
+        .map_err(|e| CliError::Domain(format!("package registry decoding failed: {e}")))?;
+    Ok(LocalPackageRegistryFile {
+        legacy_manifests,
+        ..LocalPackageRegistryFile::default()
+    })
+}
+
+fn save_local_package_registry_file(
+    store: &StoreHandle,
+    file: &LocalPackageRegistryFile,
+) -> Result<(), CliError> {
+    let dir = packages_dir(store)?;
+    std::fs::create_dir_all(&dir)?;
+    let mut bytes = Vec::new();
+    ciborium::into_writer(file, &mut bytes)
+        .map_err(|e| CliError::Domain(format!("package registry encoding failed: {e}")))?;
+    std::fs::write(dir.join("registry.cbor"), bytes)?;
+    Ok(())
+}
+
 fn load_package_registry_with_advisories(
     store: &StoreHandle,
 ) -> Result<(PackageRegistry, Vec<SecurityAdvisory>), CliError> {
     if !matches!(store, StoreHandle::File { .. }) {
         return Ok((default_memory_package_registry()?, Vec::new()));
     }
-    let path = packages_dir(store)?.join("registry.cbor");
-    if !path.exists() {
-        return Ok((PackageRegistry::new(), Vec::new()));
-    }
-    let bytes = std::fs::read(path)?;
-    if let Ok(file) = ciborium::from_reader::<LocalPackageRegistryFile, _>(bytes.as_slice()) {
-        return registry_from_file(file);
-    }
-
-    let legacy_manifests: Vec<PackageManifest> = ciborium::from_reader(bytes.as_slice())
-        .map_err(|e| CliError::Domain(format!("package registry decoding failed: {e}")))?;
-    let mut registry = PackageRegistry::new();
-    for manifest in legacy_manifests {
-        registry.register(manifest);
-    }
-    Ok((registry, Vec::new()))
+    registry_from_file(load_local_package_registry_file(store)?)
 }
 
 fn registry_from_file(
@@ -5364,9 +5601,7 @@ fn save_package_registry(store: &StoreHandle, registry: &PackageRegistry) -> Res
     }
     let dir = packages_dir(store)?;
     std::fs::create_dir_all(&dir)?;
-    let existing_advisories = load_package_registry_with_advisories(store)
-        .map(|(_registry, advisories)| advisories)
-        .unwrap_or_default();
+    let existing_advisories = load_local_package_registry_file(store)?.advisories;
     let signed_keys = registry
         .all_signed()
         .iter()
@@ -5395,6 +5630,53 @@ fn save_package_registry(store: &StoreHandle, registry: &PackageRegistry) -> Res
         .map_err(|e| CliError::Domain(format!("package registry encoding failed: {e}")))?;
     std::fs::write(dir.join("registry.cbor"), bytes)?;
     Ok(())
+}
+
+fn parse_advisory_severity(raw: &str) -> Result<AdvisorySeverity, CliError> {
+    match raw.to_ascii_lowercase().as_str() {
+        "low" => Ok(AdvisorySeverity::Low),
+        "medium" => Ok(AdvisorySeverity::Medium),
+        "high" => Ok(AdvisorySeverity::High),
+        "critical" => Ok(AdvisorySeverity::Critical),
+        other => Err(CliError::ParseError(format!(
+            "unsupported advisory severity: {other}; expected low, medium, high, or critical"
+        ))),
+    }
+}
+
+fn validate_required_package_metadata_field(
+    field: &str,
+    value: String,
+) -> Result<String, CliError> {
+    if value.trim().is_empty() {
+        return Err(CliError::ParseError(format!(
+            "package metadata {field} must not be empty"
+        )));
+    }
+    Ok(value)
+}
+
+fn advisory_to_json(advisory: &SecurityAdvisory) -> Value {
+    json!({
+        "id": &advisory.id,
+        "package": &advisory.package,
+        "affected_constraint": &advisory.affected_constraint,
+        "severity": advisory.severity.to_string(),
+        "reason": &advisory.reason,
+        "scope": "local",
+    })
+}
+
+fn yank_to_json(yank: &YankRecord) -> Value {
+    json!({
+        "package": &yank.name,
+        "name": &yank.name,
+        "version": &yank.version,
+        "reason": &yank.reason,
+        "kind": "yanked",
+        "status": "blocked",
+        "scope": "local",
+    })
 }
 
 fn load_package_lockfile(store: &StoreHandle) -> Result<Lockfile, CliError> {
@@ -6502,6 +6784,26 @@ end
         )
         .await;
         assert!(result.is_ok(), "package add must succeed; got: {result:?}");
+    }
+
+    #[test]
+    fn save_package_registry_propagates_corrupt_registry_decode_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        crate::store::init_file_layout(&ail_dir).expect("init layout");
+        let packages_dir = ail_dir.join("packages");
+        std::fs::create_dir_all(&packages_dir).expect("create package dir");
+        std::fs::write(packages_dir.join("registry.cbor"), b"not cbor").expect("write registry");
+
+        let store = crate::store::file_store(ail_dir);
+        let registry = PackageRegistry::new();
+        let err = save_package_registry(&store, &registry)
+            .expect_err("corrupt registry must not be silently overwritten");
+
+        assert!(
+            err.to_string().contains("package registry decoding failed"),
+            "unexpected error: {err}"
+        );
     }
 
     // Scenario: cmd_package explain shows trust/capabilities/assumptions/unsafe/advisories.

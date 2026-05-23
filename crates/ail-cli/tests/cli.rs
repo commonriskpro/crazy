@@ -1643,6 +1643,224 @@ fn package_publish_persists_signed_registry_record() {
 }
 
 #[test]
+fn package_advisory_add_persists_local_metadata_and_preserves_signed_records() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    ail()
+        .args(["package", "publish"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = ail()
+        .args([
+            "package",
+            "advisory",
+            "add",
+            "local.package",
+            "<1.0.0",
+            "--id",
+            "adv_cli_001",
+            "--severity",
+            "high",
+            "--reason",
+            "cli recorded advisory",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["status"], "recorded");
+    assert_eq!(v["data"]["scope"], "local");
+    assert_eq!(v["data"]["advisory"]["severity"], "high");
+    assert_ne!(v["data"]["advisory"]["severity"], "High");
+
+    let registry = read_package_registry_file(dir.path());
+    assert_eq!(registry.signed_packages.len(), 1);
+    registry.signed_packages[0]
+        .verify()
+        .expect("signed package must remain verifiable");
+    assert_eq!(registry.advisories.len(), 1);
+    assert_eq!(registry.advisories[0].id, "adv_cli_001");
+
+    let list_output = ail()
+        .args(["package", "advisory", "list", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let list_json = parse_json_output(&list_output);
+    assert_eq!(list_json["data"]["count"], 1);
+    assert_eq!(list_json["data"]["advisories"][0]["id"], "adv_cli_001");
+    assert_eq!(list_json["data"]["advisories"][0]["severity"], "high");
+}
+
+#[test]
+fn package_advisory_add_rejects_duplicate_id_without_duplicate_record() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let args = [
+        "package",
+        "advisory",
+        "add",
+        "local.package",
+        "<1.0.0",
+        "--id",
+        "adv_cli_duplicate",
+        "--severity",
+        "high",
+        "--reason",
+        "first advisory reason",
+    ];
+    ail().args(args).current_dir(dir.path()).assert().success();
+
+    ail()
+        .args([
+            "package",
+            "advisory",
+            "add",
+            "other.package",
+            "<2.0.0",
+            "--id",
+            "adv_cli_duplicate",
+            "--severity",
+            "critical",
+            "--reason",
+            "duplicate advisory reason",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "local advisory already exists: adv_cli_duplicate",
+        ));
+
+    let registry = read_package_registry_file(dir.path());
+    assert_eq!(registry.advisories.len(), 1);
+    assert_eq!(registry.advisories[0].id, "adv_cli_duplicate");
+    assert_eq!(registry.advisories[0].package, "local.package");
+    assert_eq!(registry.advisories[0].reason, "first advisory reason");
+}
+
+#[test]
+fn package_yank_persists_local_metadata_and_preserves_advisories() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    ail()
+        .args(["package", "publish"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args([
+            "package",
+            "advisory",
+            "add",
+            "local.package",
+            "<1.0.0",
+            "--id",
+            "adv_cli_keep",
+            "--severity",
+            "medium",
+            "--reason",
+            "keep this advisory",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = ail()
+        .args([
+            "package",
+            "yank",
+            "local.package",
+            "0.1.0",
+            "--reason",
+            "bad local release",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["status"], "recorded");
+    assert_eq!(v["data"]["yanked"]["kind"], "yanked");
+    assert_eq!(v["data"]["yanked"]["status"], "blocked");
+
+    let registry = read_package_registry_file(dir.path());
+    assert_eq!(registry.signed_packages.len(), 1);
+    assert_eq!(registry.advisories.len(), 1);
+    assert_eq!(registry.yanked.len(), 1);
+    assert_eq!(registry.yanked[0].name, "local.package");
+
+    let list_output = ail()
+        .args(["package", "yanked", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let list_json = parse_json_output(&list_output);
+    assert_eq!(list_json["data"]["count"], 1);
+    assert_eq!(list_json["data"]["yanked"][0]["status"], "blocked");
+}
+
+#[test]
+fn package_yank_repeated_same_package_version_updates_reason_without_duplicate_record() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    ail()
+        .args([
+            "package",
+            "yank",
+            "local.package",
+            "0.1.0",
+            "--reason",
+            "initial yank reason",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = ail()
+        .args([
+            "package",
+            "yank",
+            "local.package",
+            "0.1.0",
+            "--reason",
+            "updated yank reason",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["status"], "updated");
+    assert_eq!(v["data"]["yanked"]["reason"], "updated yank reason");
+
+    let registry = read_package_registry_file(dir.path());
+    assert_eq!(registry.yanked.len(), 1);
+    assert_eq!(registry.yanked[0].name, "local.package");
+    assert_eq!(registry.yanked[0].version, "0.1.0");
+    assert_eq!(registry.yanked[0].reason, "updated yank reason");
+}
+
+#[test]
 fn package_publish_reports_missing_verification_report() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
@@ -1996,6 +2214,100 @@ fn package_audit_signed_registry_advisory_blocks() {
     assert_eq!(issue["advisory_id"], "adv_signed_001");
     assert_eq!(issue["severity"], "high");
     assert_eq!(issue["affected_range"], "<1.2.0");
+}
+
+#[test]
+fn package_audit_consumes_cli_created_advisory_metadata() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    ail()
+        .args(["package", "publish"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args([
+            "package",
+            "advisory",
+            "add",
+            "local.package",
+            "<1.0.0",
+            "--id",
+            "adv_cli_audit",
+            "--severity",
+            "critical",
+            "--reason",
+            "cli advisory blocks audit",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args(["package", "install", "local.package@0.1.0"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = ail()
+        .args(["package", "audit", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["status"], "blocked");
+    assert_eq!(v["data"]["summary"]["advisories"], 1);
+    assert_eq!(v["data"]["issues"][0]["kind"], "advisory");
+    assert_eq!(v["data"]["issues"][0]["status"], "blocked");
+    assert_eq!(v["data"]["issues"][0]["advisory_id"], "adv_cli_audit");
+    assert_eq!(v["data"]["issues"][0]["severity"], "critical");
+}
+
+#[test]
+fn package_audit_consumes_cli_created_yank_metadata() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    ail()
+        .args(["package", "publish"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args(["package", "install", "local.package@0.1.0"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args([
+            "package",
+            "yank",
+            "local.package",
+            "0.1.0",
+            "--reason",
+            "cli yank blocks audit",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = ail()
+        .args(["package", "audit", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["status"], "blocked");
+    assert_eq!(v["data"]["summary"]["yanked"], 1);
+    assert_eq!(v["data"]["issues"][0]["kind"], "yanked");
+    assert_eq!(v["data"]["issues"][0]["status"], "blocked");
+    assert_eq!(v["data"]["issues"][0]["reason"], "cli yank blocks audit");
 }
 
 #[test]
