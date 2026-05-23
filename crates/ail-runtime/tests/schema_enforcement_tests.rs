@@ -448,3 +448,61 @@ fn capability_call_with_schema_rejects_invalid_handler_response() {
         other => panic!("expected capability call audit event, got {other:?}"),
     }
 }
+
+#[test]
+fn capability_call_with_schema_accepts_valid_nested_handler_response() {
+    let cap_id = CapabilityId::new("payment.charge:PaymentProvider");
+    let response = b"receipt.id=rcpt-42,receipt.risk.score=7".to_vec();
+    let mut host = host_with_output_schema(
+        &cap_id,
+        response.clone(),
+        vec![SchemaField::record(
+            "receipt",
+            vec![
+                SchemaField::new("id", "String"),
+                SchemaField::record("risk", vec![SchemaField::new("score", "u64")]),
+            ],
+        )],
+    );
+
+    let result = host.call_capability(&cap_id, "charge", b"");
+
+    assert_eq!(result, Ok(response));
+    match host.audit_log().events().last() {
+        Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => assert!(*succeeded),
+        other => panic!("expected capability call audit event, got {other:?}"),
+    }
+}
+
+#[test]
+fn capability_call_with_schema_rejects_invalid_nested_handler_response() {
+    let cap_id = CapabilityId::new("payment.charge:PaymentProvider");
+    let mut host = host_with_output_schema(
+        &cap_id,
+        b"receipt.id=rcpt-42".to_vec(),
+        vec![SchemaField::record(
+            "receipt",
+            vec![
+                SchemaField::new("id", "String"),
+                SchemaField::record("risk", vec![SchemaField::new("score", "u64")]),
+            ],
+        )],
+    );
+
+    let err = host
+        .call_capability(&cap_id, "charge", b"")
+        .expect_err("missing nested response field must fail output schema validation");
+
+    assert!(
+        matches!(err, ail_runtime::HostError::ContractViolation(_)),
+        "expected ContractViolation for invalid nested response schema, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("receipt.risk.score"),
+        "error must name missing nested field: {err:?}"
+    );
+    match host.audit_log().events().last() {
+        Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => assert!(!*succeeded),
+        other => panic!("expected capability call audit event, got {other:?}"),
+    }
+}
