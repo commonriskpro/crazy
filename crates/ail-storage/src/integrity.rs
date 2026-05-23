@@ -258,10 +258,10 @@ where
         }
 
         // Check 3: parent_id (when Some) must reference a known snapshot.
-        if let Some(parent_id) = snap.parent_id {
-            if !all_snapshot_ids.contains(&parent_id) {
-                issues.push(IntegrityIssue::OrphanedSnapshot { id: snap.id });
-            }
+        if let Some(parent_id) = snap.parent_id
+            && !all_snapshot_ids.contains(&parent_id)
+        {
+            issues.push(IntegrityIssue::OrphanedSnapshot { id: snap.id });
         }
     }
 
@@ -281,7 +281,7 @@ where
     }
 
     // ── Check 5: reports link to artifact hashes ──────────────────────────
-    for (_cs_id, report_id) in &change_report_map {
+    for report_id in change_report_map.values() {
         if !report_artifact_map.contains_key(report_id) {
             issues.push(IntegrityIssue::ReportMissingArtifact { id: *report_id });
         }

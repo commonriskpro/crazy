@@ -2105,7 +2105,9 @@ async fn cmd_remote_submit(
     remote_changeset.agent.label = Some(signer_ref.to_string());
 
     let response = coordinator
-        .handle_remote_exchange(RemoteExchangeRequest::SubmitChangeSet(remote_changeset))
+        .handle_remote_exchange(RemoteExchangeRequest::SubmitChangeSet(Box::new(
+            remote_changeset,
+        )))
         .await;
     let RemoteExchangeResponse::Submission(outcome) = response else {
         return Err(CliError::Domain(remote_exchange_error_message(response)));

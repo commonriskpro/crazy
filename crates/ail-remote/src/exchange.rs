@@ -13,7 +13,7 @@ use crate::{ObjectBundle, RemoteChangeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RemoteExchangeRequest {
-    SubmitChangeSet(RemoteChangeSet),
+    SubmitChangeSet(Box<RemoteChangeSet>),
     PushBundle(ObjectBundle),
     PullBundle { root: ObjectId },
 }

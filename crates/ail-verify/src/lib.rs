@@ -1,4 +1,5 @@
 // ── ail-verify ────────────────────────────────────────────────────────────
+#![allow(clippy::items_after_test_module)]
 //
 // Pure type/effect/capability verification layer for the AIL semantic graph.
 //

@@ -320,10 +320,10 @@ pub fn evaluate_verification_gate(
                 return true;
             }
             // Time-based expiry.
-            if let (Some(expires_at), Some(now)) = (a.expires_at, now_ms) {
-                if now >= expires_at {
-                    return true;
-                }
+            if let (Some(expires_at), Some(now)) = (a.expires_at, now_ms)
+                && now >= expires_at
+            {
+                return true;
             }
             false
         })
@@ -738,7 +738,7 @@ mod tests {
     #[tokio::test]
     async fn gate_fails_with_revoked_assumption() {
         let revoked = make_assumption(3, AssumptionStatus::Revoked);
-        let result = super::evaluate_verification_gate(&[revoked.clone()], None);
+        let result = super::evaluate_verification_gate(std::slice::from_ref(&revoked), None);
         assert!(matches!(result, super::VerificationGateResult::Fail { .. }));
     }
 

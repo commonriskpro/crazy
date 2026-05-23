@@ -733,34 +733,34 @@ impl RuntimeHost {
         }
 
         // Step 2: schema/boundary validation (if a definition is registered).
-        if let Some(def) = self.schema_registry.get(capability.as_str()) {
-            if let Err(schema_err) = def.schema().input().validate(payload) {
-                let err = HostError::PayloadDecodeError(format!(
-                    "schema validation failed for `{}`: {}",
-                    capability.as_str(),
-                    schema_err.message
-                ));
-                let duration_us = start.elapsed().as_micros() as u64;
-                self.audit_log.lock().expect("audit_log lock").push(
-                    AuditEvent::CapabilityCallExecuted {
-                        capability: capability.clone(),
-                        operation: operation.to_string(),
-                        handler_name: "none".to_string(),
-                        succeeded: false,
-                        duration_us,
-                        timestamp,
-                        profile: profile_name,
-                        module: module_name,
-                        function: None,
-                        input_hash,
-                        output_hash: None,
-                        trace_id,
-                        verification_report_hash: vr_hash,
-                        trace_context: child_trace,
-                    },
-                );
-                return Err(err);
-            }
+        if let Some(def) = self.schema_registry.get(capability.as_str())
+            && let Err(schema_err) = def.schema().input().validate(payload)
+        {
+            let err = HostError::PayloadDecodeError(format!(
+                "schema validation failed for `{}`: {}",
+                capability.as_str(),
+                schema_err.message
+            ));
+            let duration_us = start.elapsed().as_micros() as u64;
+            self.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
+                    capability: capability.clone(),
+                    operation: operation.to_string(),
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us,
+                    timestamp,
+                    profile: profile_name,
+                    module: module_name,
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
+                    trace_context: child_trace,
+                },
+            );
+            return Err(err);
         }
 
         // Step 3: find matching handler.
@@ -984,13 +984,11 @@ impl RuntimeHost {
             .with_verification_report_hash(verification_report_hash)
             .with_summaries(summaries);
 
-        let report = if let Some(hash) = audit_log_hash {
+        if let Some(hash) = audit_log_hash {
             report.with_audit_log_hash(hash)
         } else {
             report
-        };
-
-        report
+        }
     }
 
     // ── private ──────────────────────────────────────────────────────────

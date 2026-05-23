@@ -51,7 +51,7 @@ pub enum ContextRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ContextResponse {
-    Result(crate::dto::ContextResponse),
+    Result(Box<crate::dto::ContextResponse>),
     Error(String),
     Stream(Vec<crate::dto::ContextResponse>),
     Authenticated(AuthSession),
@@ -329,7 +329,7 @@ where
                 snapshot,
                 session,
             } => match self.query(&query, &snapshot, session.as_ref()).await {
-                Ok(response) => ContextResponse::Result(response),
+                Ok(response) => ContextResponse::Result(Box::new(response)),
                 Err(err) => ContextResponse::Error(err.to_string()),
             },
             ContextRequest::Subscribe {

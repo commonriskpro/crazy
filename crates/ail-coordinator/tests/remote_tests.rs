@@ -317,7 +317,7 @@ async fn remote_exchange_submit_maps_to_submission_response() {
     );
 
     let response = coord
-        .handle_remote_exchange(RemoteExchangeRequest::SubmitChangeSet(rcs))
+        .handle_remote_exchange(RemoteExchangeRequest::SubmitChangeSet(Box::new(rcs)))
         .await;
 
     assert_eq!(
@@ -340,7 +340,7 @@ async fn remote_exchange_reports_disallowed_signer_code() {
     );
 
     let response = coord
-        .handle_remote_exchange(RemoteExchangeRequest::SubmitChangeSet(rcs))
+        .handle_remote_exchange(RemoteExchangeRequest::SubmitChangeSet(Box::new(rcs)))
         .await;
 
     assert!(

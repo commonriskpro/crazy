@@ -64,16 +64,18 @@ impl Url {
             query: None,
         })
     }
+}
 
-    /// Return the full URL as a string.
-    pub fn to_string(&self) -> String {
+impl std::fmt::Display for Url {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let port_part = self.port.map(|p| format!(":{p}")).unwrap_or_default();
         let query_part = self
             .query
             .as_deref()
             .map(|q| format!("?{q}"))
             .unwrap_or_default();
-        format!(
+        write!(
+            f,
             "{}://{}{}{}{}",
             self.scheme, self.host, port_part, self.path, query_part
         )

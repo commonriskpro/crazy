@@ -269,17 +269,17 @@ impl ProofObligationPipeline {
                     });
                 }
             }
-            if let Some(refinement) = &node.refinement_ref {
-                if !matches!(refinement.status, RefinementStatus::Proven) {
-                    obligations.push(GeneratedObligation {
-                        obligation: ProofObligation {
-                            predicate: refinement.predicate.clone(),
-                            role: ClauseRole::Ensures,
-                            scope: node.name.clone(),
-                        },
-                        source_stage: "refinement".into(),
-                    });
-                }
+            if let Some(refinement) = &node.refinement_ref
+                && !matches!(refinement.status, RefinementStatus::Proven)
+            {
+                obligations.push(GeneratedObligation {
+                    obligation: ProofObligation {
+                        predicate: refinement.predicate.clone(),
+                        role: ClauseRole::Ensures,
+                        scope: node.name.clone(),
+                    },
+                    source_stage: "refinement".into(),
+                });
             }
             if node
                 .trust_metadata
@@ -389,8 +389,6 @@ impl ProofObligationPipeline {
         } else {
             outcome
         };
-
-        let outcome = outcome;
 
         match outcome {
             SolverOutcome::Proven => ObligationResult {

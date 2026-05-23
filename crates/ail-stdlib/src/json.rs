@@ -146,15 +146,15 @@ fn parse_string(s: &str) -> Result<(String, &str), JsonError> {
 fn parse_array(s: &str) -> Result<(Json, &str), JsonError> {
     let mut items = Vec::new();
     let mut s = s.trim_start();
-    if s.starts_with(']') {
-        return Ok((Json::Array(items), &s[1..]));
+    if let Some(rest) = s.strip_prefix(']') {
+        return Ok((Json::Array(items), rest));
     }
     loop {
         let (val, rest) = parse_value(s)?;
         items.push(val);
         s = rest.trim_start();
-        if s.starts_with(']') {
-            return Ok((Json::Array(items), &s[1..]));
+        if let Some(rest) = s.strip_prefix(']') {
+            return Ok((Json::Array(items), rest));
         }
         if s.starts_with(',') {
             s = &s[1..];
@@ -167,8 +167,8 @@ fn parse_array(s: &str) -> Result<(Json, &str), JsonError> {
 fn parse_object(s: &str) -> Result<(Json, &str), JsonError> {
     let mut map = BTreeMap::new();
     let mut s = s.trim_start();
-    if s.starts_with('}') {
-        return Ok((Json::Object(map), &s[1..]));
+    if let Some(rest) = s.strip_prefix('}') {
+        return Ok((Json::Object(map), rest));
     }
     loop {
         let s_trim = s.trim_start();
@@ -183,8 +183,8 @@ fn parse_object(s: &str) -> Result<(Json, &str), JsonError> {
         let (val, rest) = parse_value(&rest[1..])?;
         map.insert(key, val);
         s = rest.trim_start();
-        if s.starts_with('}') {
-            return Ok((Json::Object(map), &s[1..]));
+        if let Some(rest) = s.strip_prefix('}') {
+            return Ok((Json::Object(map), rest));
         }
         if s.starts_with(',') {
             s = &s[1..];

@@ -183,7 +183,7 @@ static OP_SCHEMAS: &[OpSchemaEntry] = &[
 /// Ops whose verb is not listed in `OP_SCHEMAS` pass validation without error
 /// (they are treated as unconstrained/unknown ops).
 pub fn validate_op_schemas(pcs: &ParsedChangeSet) -> Vec<OpSchemaError> {
-    pcs.parsed_ops.iter().flat_map(|op| check_op(op)).collect()
+    pcs.parsed_ops.iter().flat_map(check_op).collect()
 }
 
 fn check_op(op: &ParsedOp) -> Vec<OpSchemaError> {
@@ -267,11 +267,9 @@ mod tests {
         let errors = validate_op_schemas(&pcs);
         let missing_keys: std::collections::BTreeSet<&str> = errors
             .iter()
-            .filter_map(|e| {
-                if let OpSchemaError::MissingRequiredArg { verb, arg } = e {
+            .filter_map(|e| match e {
+                OpSchemaError::MissingRequiredArg { verb, arg } => {
                     (verb == "add_param").then_some(arg.as_str())
-                } else {
-                    None
                 }
             })
             .collect();

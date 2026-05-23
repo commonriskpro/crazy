@@ -78,12 +78,12 @@ pub fn base64_decode(s: &str) -> Result<Vec<u8>, DecodeError> {
             b'+' => Some(62),
             b'/' => Some(63),
             b'=' => None, // padding
-            _ => return None,
+            _ => None,
         }
     }
     let s = s.as_bytes();
     let len = s.len();
-    if len % 4 != 0 {
+    if !len.is_multiple_of(4) {
         return Err(DecodeError("invalid base64 length".into()));
     }
     let mut out = Vec::with_capacity(len / 4 * 3);
@@ -116,7 +116,7 @@ pub fn hex_encode(data: &[u8]) -> String {
 
 /// Decode a hexadecimal string (case-insensitive) to bytes.
 pub fn hex_decode(s: &str) -> Result<Vec<u8>, DecodeError> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(DecodeError("odd-length hex string".into()));
     }
     (0..s.len())

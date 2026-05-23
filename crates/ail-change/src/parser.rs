@@ -234,6 +234,7 @@ enum Section {
     Ops,
     Expect,
     Approval,
+    #[allow(dead_code)]
     Block,
     Verify,
 }
@@ -377,9 +378,9 @@ pub fn parse_changeset(src: &str) -> Result<ParsedChangeSet, String> {
                 continue;
             }
             // `verify <kv or bare words>` → short form; collect the whole line.
-            if line.starts_with("verify ") {
+            if let Some(rest) = line.strip_prefix("verify ") {
                 // Short form: collect the tail as a single verify entry.
-                verify_lines.push(line["verify ".len()..].trim().to_string());
+                verify_lines.push(rest.trim().to_string());
                 continue;
             }
         }
@@ -908,12 +909,9 @@ pub fn parse_kv_args(args_str: &str) -> OpArgs {
         remaining = &remaining[eq_pos + 1..];
 
         // Parse the value: quoted string or bare word.
-        let (value, rest) = if remaining.starts_with('"') {
+        let (value, rest) = if let Some(stripped) = remaining.strip_prefix('"') {
             // Scan for the closing quote.
-            let end = remaining[1..]
-                .find('"')
-                .map(|p| p + 2)
-                .unwrap_or(remaining.len());
+            let end = stripped.find('"').map(|p| p + 2).unwrap_or(remaining.len());
             let raw = &remaining[..end];
             let value = extract_string_value(raw.trim());
             let rest = remaining[end..].trim_start();

@@ -119,7 +119,10 @@ impl CoherenceChecker {
     fn package_owns(implementor: &str, symbol: &str) -> bool {
         // Strip the kind prefix (e.g., "type.", "cap.", "handler.", "pkg.")
         // and check if the remainder starts with the implementor's namespace.
-        let bare = symbol.splitn(2, '.').nth(1).unwrap_or(symbol);
+        let bare = symbol
+            .split_once('.')
+            .map(|(_, rest)| rest)
+            .unwrap_or(symbol);
         bare == implementor || bare.starts_with(&format!("{implementor}."))
     }
 

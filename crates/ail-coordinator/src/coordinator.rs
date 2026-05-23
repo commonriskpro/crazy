@@ -309,7 +309,7 @@ impl Coordinator {
     ) -> RemoteExchangeResponse {
         match request {
             RemoteExchangeRequest::SubmitChangeSet(rcs) => {
-                match self.verify_remote_submission(rcs).await {
+                match self.verify_remote_submission(*rcs).await {
                     Ok(outcome) => {
                         RemoteExchangeResponse::Submission(remote_submission_outcome(outcome))
                     }

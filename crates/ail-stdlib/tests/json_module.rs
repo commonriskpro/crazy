@@ -56,7 +56,7 @@ fn json_parse_bool() {
 #[test]
 fn json_parse_number() {
     assert_eq!(parse("42").unwrap(), Json::Number(42.0));
-    assert_eq!(parse("-3.14").unwrap(), Json::Number(-3.14));
+    assert_eq!(parse("-2.5").unwrap(), Json::Number(-2.5));
 }
 
 #[test]

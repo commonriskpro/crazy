@@ -62,28 +62,28 @@ fn parse_simple_pred(pred: &str) -> Option<(&str, &str, &str)> {
 /// Check whether `pred` is a constant-only arithmetic tautology
 /// (both sides are integer literals and the comparison is true).
 fn is_constant_tautology(pred: &str) -> bool {
-    if let Some((lhs, op, rhs)) = parse_simple_pred(pred) {
-        if let (Some(l), Some(r)) = (parse_int(lhs), parse_int(rhs)) {
-            return match op {
-                ">=" => l >= r,
-                "<=" => l <= r,
-                "==" => l == r,
-                "!=" => l != r,
-                ">" => l > r,
-                "<" => l < r,
-                _ => false,
-            };
-        }
+    if let Some((lhs, op, rhs)) = parse_simple_pred(pred)
+        && let (Some(l), Some(r)) = (parse_int(lhs), parse_int(rhs))
+    {
+        return match op {
+            ">=" => l >= r,
+            "<=" => l <= r,
+            "==" => l == r,
+            "!=" => l != r,
+            ">" => l > r,
+            "<" => l < r,
+            _ => false,
+        };
     }
     false
 }
 
 /// Check whether `pred` is a reflexive tautology (`x >= x` or `x == x`).
 fn is_reflexive_tautology(pred: &str) -> bool {
-    if let Some((lhs, op, rhs)) = parse_simple_pred(pred) {
-        if lhs == rhs {
-            return matches!(op, ">=" | "==" | "<=");
-        }
+    if let Some((lhs, op, rhs)) = parse_simple_pred(pred)
+        && lhs == rhs
+    {
+        return matches!(op, ">=" | "==" | "<=");
     }
     false
 }
@@ -115,29 +115,27 @@ impl FactDb {
         for constraint in constraints {
             let c = constraint.trim();
             // Equality with constant: `x == N` (use `==` operator)
-            if let Some((lhs, "==", rhs)) = parse_simple_pred(c) {
-                if let Some(val) = parse_int(rhs) {
-                    if parse_int(lhs).is_none() {
-                        // lhs is a variable, rhs is a constant
-                        let entry = lb.entry(lhs.to_string()).or_insert(i64::MIN);
-                        *entry = val;
-                    }
-                }
+            if let Some((lhs, "==", rhs)) = parse_simple_pred(c)
+                && let Some(val) = parse_int(rhs)
+                && parse_int(lhs).is_none()
+            {
+                // lhs is a variable, rhs is a constant
+                let entry = lb.entry(lhs.to_string()).or_insert(i64::MIN);
+                *entry = val;
             }
             // Lower bounds: `x >= N` or `x > N`
-            if let Some((lhs, op, rhs)) = parse_simple_pred(c) {
-                if let Some(val) = parse_int(rhs) {
-                    if parse_int(lhs).is_none() {
-                        let bound = match op {
-                            ">=" => val,
-                            ">" => val.saturating_add(1),
-                            _ => continue,
-                        };
-                        let entry = lb.entry(lhs.to_string()).or_insert(i64::MIN);
-                        if bound > *entry {
-                            *entry = bound;
-                        }
-                    }
+            if let Some((lhs, op, rhs)) = parse_simple_pred(c)
+                && let Some(val) = parse_int(rhs)
+                && parse_int(lhs).is_none()
+            {
+                let bound = match op {
+                    ">=" => val,
+                    ">" => val.saturating_add(1),
+                    _ => continue,
+                };
+                let entry = lb.entry(lhs.to_string()).or_insert(i64::MIN);
+                if bound > *entry {
+                    *entry = bound;
                 }
             }
         }
@@ -168,15 +166,16 @@ impl FactDb {
                 if let Some(plus_pos) = rhs_expr.find('+') {
                     let a = rhs_expr[..plus_pos].trim();
                     let b = rhs_expr[plus_pos + 1..].trim();
-                    if let (Some(&lb_a), Some(&lb_b)) = (lb.get(a), lb.get(b)) {
-                        if lb_a != i64::MIN && lb_b != i64::MIN {
-                            let entry = lb.entry(lhs.to_string()).or_insert(i64::MIN);
-                            let sum_lb = lb_a.saturating_add(lb_b);
-                            if sum_lb > *entry {
-                                *entry = sum_lb;
-                            }
-                            continue;
+                    if let (Some(&lb_a), Some(&lb_b)) = (lb.get(a), lb.get(b))
+                        && lb_a != i64::MIN
+                        && lb_b != i64::MIN
+                    {
+                        let entry = lb.entry(lhs.to_string()).or_insert(i64::MIN);
+                        let sum_lb = lb_a.saturating_add(lb_b);
+                        if sum_lb > *entry {
+                            *entry = sum_lb;
                         }
+                        continue;
                     }
                 }
                 // Try simple alias `x = y`
@@ -184,14 +183,13 @@ impl FactDb {
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
                     && !rhs_expr.is_empty();
-                if rhs_is_ident {
-                    if let Some(&alias_lb) = lb.get(rhs_expr) {
-                        if alias_lb != i64::MIN {
-                            let entry = lb.entry(lhs.to_string()).or_insert(i64::MIN);
-                            if alias_lb > *entry {
-                                *entry = alias_lb;
-                            }
-                        }
+                if rhs_is_ident
+                    && let Some(&alias_lb) = lb.get(rhs_expr)
+                    && alias_lb != i64::MIN
+                {
+                    let entry = lb.entry(lhs.to_string()).or_insert(i64::MIN);
+                    if alias_lb > *entry {
+                        *entry = alias_lb;
                     }
                 }
             }
@@ -210,9 +208,7 @@ impl FactDb {
     /// Returns `Some(true)` if proven, `Some(false)` if disproven,
     /// `None` if the db lacks sufficient information.
     fn prove_pred(&self, predicate: &str) -> Option<bool> {
-        let Some((lhs, op, rhs)) = parse_simple_pred(predicate) else {
-            return None;
-        };
+        let (lhs, op, rhs) = parse_simple_pred(predicate)?;
         // Both sides could be constants or variables.
         let lhs_val = parse_int(lhs).or_else(|| self.lower_bound(lhs));
         let rhs_val = parse_int(rhs);

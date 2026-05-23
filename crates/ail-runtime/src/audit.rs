@@ -25,6 +25,7 @@ use crate::profile::CapabilityId;
 /// Preflight events: one appended per `validate_and_instantiate` call.
 /// Capability call events: one appended per `call_capability` call.
 /// Payloads are redacted: no raw WASM bytes, no user data, no secrets.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuditEvent {
     /// All preflight checks passed; instantiation will proceed.

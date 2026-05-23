@@ -366,7 +366,7 @@ fn compact_out_of_bounds_returns_error() {
 fn compact_single_snapshot_range() {
     let store = make_store();
     let s = snapshot("solo", 100, None, Some("ch1"));
-    save_all(&store, &[s.clone()]);
+    save_all(&store, std::slice::from_ref(&s));
 
     let report = block_on(compact_snapshots(&store, 0, 0)).expect("compact must succeed");
     assert_eq!(report.snapshots_merged, 1);

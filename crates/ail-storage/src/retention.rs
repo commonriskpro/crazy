@@ -195,11 +195,11 @@ where
     };
 
     for id in &all_ids {
-        if !reachable.contains(id) {
-            if let Some(bytes) = store.delete_object(id).await? {
-                report.objects_deleted += 1;
-                report.bytes_freed += bytes;
-            }
+        if !reachable.contains(id)
+            && let Some(bytes) = store.delete_object(id).await?
+        {
+            report.objects_deleted += 1;
+            report.bytes_freed += bytes;
         }
     }
 

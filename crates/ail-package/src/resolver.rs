@@ -316,13 +316,13 @@ impl DependencyResolver {
         }
 
         // Step 5: profile trust gate
-        if let Some(profile) = spec.profile {
-            if TrustGate::evaluate(manifest.trust_level, profile) == TrustGateVerdict::Deny {
-                return Err(ResolverError::ProfilePolicyViolation {
-                    profile,
-                    trust_level: manifest.trust_level,
-                });
-            }
+        if let Some(profile) = spec.profile
+            && TrustGate::evaluate(manifest.trust_level, profile) == TrustGateVerdict::Deny
+        {
+            return Err(ResolverError::ProfilePolicyViolation {
+                profile,
+                trust_level: manifest.trust_level,
+            });
         }
 
         // Step 6: schema compatibility

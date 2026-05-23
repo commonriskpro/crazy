@@ -549,6 +549,7 @@ const KNOWN_PRIMITIVES: &[&str] = &[
     "Int", "String", "Bool", "Float", "Decimal", "Money", "Email",
 ];
 
+#[allow(dead_code)]
 fn validate_op_schemas(canonical: Option<&CanonicalChangeSet>) -> Vec<VerificationEntry> {
     validate_op_schemas_with_graph(canonical, None)
 }
@@ -608,20 +609,19 @@ fn validate_op_schemas_with_graph(
             }
 
             // Version compatibility check (D2)
-            if let Some(version_str) = op.args.get("version") {
-                if let Ok(v) = version_str.parse::<u32>() {
-                    if v > CURRENT_SCHEMA_VERSION {
-                        entries.push(stage_entry(
-                            "03-validate-op-schemas",
-                            VerificationState::Failed,
-                            scope.clone(),
-                            Some(format!(
-                                "E_OP_VERSION_INCOMPATIBLE: op version {v} exceeds current schema version {CURRENT_SCHEMA_VERSION}"
-                            )),
-                        ));
-                        return entries;
-                    }
-                }
+            if let Some(version_str) = op.args.get("version")
+                && let Ok(v) = version_str.parse::<u32>()
+                && v > CURRENT_SCHEMA_VERSION
+            {
+                entries.push(stage_entry(
+                    "03-validate-op-schemas",
+                    VerificationState::Failed,
+                    scope.clone(),
+                    Some(format!(
+                        "E_OP_VERSION_INCOMPATIBLE: op version {v} exceeds current schema version {CURRENT_SCHEMA_VERSION}"
+                    )),
+                ));
+                return entries;
             }
 
             // Type arg validation (D2): must be a known primitive, graph node name,
@@ -651,19 +651,19 @@ fn validate_op_schemas_with_graph(
             }
 
             // Effect arg format validation (D2): must contain ':'
-            if let Some(effect_arg) = op.args.get("effect") {
-                if !effect_arg.contains(':') {
-                    entries.push(stage_entry(
-                        "03-validate-op-schemas",
-                        VerificationState::Failed,
-                        scope.clone(),
-                        Some(format!(
-                            "E_OP_ARG_EFFECT_MALFORMED: effect '{}' must follow 'name:Provider' pattern (missing ':')",
-                            effect_arg
-                        )),
-                    ));
-                    return entries;
-                }
+            if let Some(effect_arg) = op.args.get("effect")
+                && !effect_arg.contains(':')
+            {
+                entries.push(stage_entry(
+                    "03-validate-op-schemas",
+                    VerificationState::Failed,
+                    scope.clone(),
+                    Some(format!(
+                        "E_OP_ARG_EFFECT_MALFORMED: effect '{}' must follow 'name:Provider' pattern (missing ':')",
+                        effect_arg
+                    )),
+                ));
+                return entries;
             }
 
             entries.push(stage_entry(
@@ -863,18 +863,18 @@ fn build_semantic_diff(
     for name in base_names.intersection(&target_names) {
         let base_node = base.nodes.iter().find(|n| n.name == *name);
         let target_node = target_graph.nodes.iter().find(|n| n.name == *name);
-        if let (Some(b), Some(t)) = (base_node, target_node) {
-            if b.type_facts != t.type_facts || b.effect_row != t.effect_row {
-                entries.push(stage_entry(
-                    "05-build-semantic-diff",
-                    VerificationState::Unverified,
-                    name.to_string(),
-                    Some(format!(
-                        "node '{}' type_facts or effect_row changed; verify compatibility",
-                        name
-                    )),
-                ));
-            }
+        if let (Some(b), Some(t)) = (base_node, target_node)
+            && (b.type_facts != t.type_facts || b.effect_row != t.effect_row)
+        {
+            entries.push(stage_entry(
+                "05-build-semantic-diff",
+                VerificationState::Unverified,
+                name.to_string(),
+                Some(format!(
+                    "node '{}' type_facts or effect_row changed; verify compatibility",
+                    name
+                )),
+            ));
         }
     }
 

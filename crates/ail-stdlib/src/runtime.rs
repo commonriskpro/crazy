@@ -34,7 +34,7 @@ impl std::fmt::Display for RuntimeProfile {
 // ── LimitConfig ───────────────────────────────────────────────────────────
 
 /// Resource limits for a runtime execution context.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LimitConfig {
     /// Maximum fuel (computation steps).
     pub max_fuel: Option<u64>,
@@ -44,17 +44,6 @@ pub struct LimitConfig {
     pub max_time_millis: Option<u64>,
     /// Maximum number of spawned tasks.
     pub max_tasks: Option<u32>,
-}
-
-impl Default for LimitConfig {
-    fn default() -> Self {
-        Self {
-            max_fuel: None,
-            max_memory_bytes: None,
-            max_time_millis: None,
-            max_tasks: None,
-        }
-    }
 }
 
 impl LimitConfig {

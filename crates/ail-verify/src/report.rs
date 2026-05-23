@@ -414,7 +414,7 @@ mod tests {
             "blocking field must appear in JSON"
         );
         let decoded: VerificationEntry = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded.blocking, true);
+        assert!(decoded.blocking);
     }
 
     #[test]

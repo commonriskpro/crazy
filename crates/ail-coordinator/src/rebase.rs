@@ -109,6 +109,7 @@ fn extract_node_refs(payload: &OpPayload, out: &mut BTreeSet<NodeRef>) {
 // ── RebaseResult ─────────────────────────────────────────────────────────
 
 /// Outcome of attempting to rebase a stale `CanonicalChangeSet`.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum RebaseResult {
     /// Rebase succeeded; the changeset is now ready to apply against the live
@@ -239,6 +240,7 @@ pub enum MergeResult {
 /// Only nodes and edges from `right` that do not conflict with `left` are
 /// incorporated.  The merged graph always contains all of `left` plus any
 /// non-conflicting additions from `right`.
+#[allow(clippy::doc_overindented_list_items)]
 pub fn semantic_merge(left: &SemanticGraph, right: &SemanticGraph) -> MergeResult {
     // Step 1: index left nodes by NodeRef.
     let left_by_ref: BTreeMap<NodeRef, &GraphNode> = left.nodes.iter().map(|n| (n.id, n)).collect();

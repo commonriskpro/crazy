@@ -660,7 +660,7 @@ fn canonicalize_parsed_inner(pcs: ParsedChangeSet) -> CanonicalChangeSet {
     };
 
     // Stable-sort by canonical phase order.
-    op_pairs.sort_by(|a, b| phase_order(&a.0).cmp(&phase_order(&b.0)));
+    op_pairs.sort_by_key(|a| phase_order(&a.0));
 
     // Materialize defaults, normalize IDs, mark infer ops, compute hashes.
     let canonical_ops: Vec<CanonicalOp> = op_pairs
@@ -728,18 +728,15 @@ fn canonicalize_parsed_inner(pcs: ParsedChangeSet) -> CanonicalChangeSet {
 /// 2. Defaults must be mechanical (no semantic ambiguity).
 /// 3. Defaults must not grant permissions or expose APIs.
 fn materialize_defaults(kind: &ChangeSetOp, verb: &str, args: &mut OpArgs) {
-    match kind {
-        ChangeSetOp::Create => {
-            if matches!(verb, "create_function" | "create_type") {
-                args.entry("visibility".to_string())
-                    .or_insert_with(|| "private".to_string());
-            }
-            if verb == "create_type" {
-                args.entry("derive".to_string())
-                    .or_insert_with(|| "none".to_string());
-            }
+    if kind == &ChangeSetOp::Create {
+        if matches!(verb, "create_function" | "create_type") {
+            args.entry("visibility".to_string())
+                .or_insert_with(|| "private".to_string());
         }
-        _ => {}
+        if verb == "create_type" {
+            args.entry("derive".to_string())
+                .or_insert_with(|| "none".to_string());
+        }
     }
 }
 

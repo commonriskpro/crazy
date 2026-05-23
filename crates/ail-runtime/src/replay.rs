@@ -23,6 +23,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+type ReplayResponseMap = HashMap<(String, String), (Vec<u8>, String)>;
+
 use crate::abi::{HostError, HostResult};
 use crate::handler::Handler;
 use crate::profile::CapabilityId;
@@ -533,7 +535,7 @@ impl Default for ReplayEngine {
 /// recorded BLAKE3 output hash and a `HostError` is returned on mismatch.
 pub struct ReplayHandler {
     /// (cap_str, operation) → (response, recorded_hash)
-    map: Arc<HashMap<(String, String), (Vec<u8>, String)>>,
+    map: Arc<ReplayResponseMap>,
     caps: Vec<CapabilityId>,
     /// When `true`, responses are verified against their recorded hashes.
     verify: bool,

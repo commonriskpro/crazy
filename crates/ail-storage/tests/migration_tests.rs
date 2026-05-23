@@ -400,8 +400,10 @@ fn domain_versions_default_is_all_zeros() {
 // Advancing graph version does not change acl or runtime.
 #[test]
 fn domain_versions_domains_are_independent() {
-    let mut dv = DomainVersions::default();
-    dv.graph = 4;
+    let mut dv = DomainVersions {
+        graph: 4,
+        ..Default::default()
+    };
     assert_eq!(dv.acl, 0, "acl must stay at 0 when only graph advances");
     assert_eq!(
         dv.runtime, 0,

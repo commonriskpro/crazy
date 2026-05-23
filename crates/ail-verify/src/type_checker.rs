@@ -1799,9 +1799,9 @@ impl TypeChecker {
                 }
                 // The interface is "owned" if there is an Interface node
                 // or a Type node with that name in the graph.
-                let interface_owned = ctx.get_by_name(&impl_meta.interface).map_or(false, |n| {
-                    matches!(n.kind, NodeKind::Interface | NodeKind::Type)
-                });
+                let interface_owned = ctx
+                    .get_by_name(&impl_meta.interface)
+                    .is_some_and(|n| matches!(n.kind, NodeKind::Interface | NodeKind::Type));
                 if !interface_owned {
                     entries.push(VerificationEntry {
                         claim: "orphan-rule".into(),
@@ -1912,10 +1912,10 @@ fn infer_expr_type(body: &str, ctx: &TypeContext<'_>) -> Option<String> {
     }
 
     // If expression: look for the else branch and infer from it.
-    if body.starts_with("if ") || body.starts_with("if(") {
-        if let Some(inferred) = infer_if_expr_type(body, ctx) {
-            return Some(inferred);
-        }
+    if (body.starts_with("if ") || body.starts_with("if("))
+        && let Some(inferred) = infer_if_expr_type(body, ctx)
+    {
+        return Some(inferred);
     }
 
     // Call to a known function: bare name or "name(...)" prefix.
@@ -1926,12 +1926,11 @@ fn infer_expr_type(body: &str, ctx: &TypeContext<'_>) -> Option<String> {
         .unwrap_or(body)
         .trim();
 
-    if !callee_name.is_empty() {
-        if let Some(node) = ctx.get_by_name(callee_name) {
-            if let Some(rt) = &node.return_type {
-                return Some(rt.clone());
-            }
-        }
+    if !callee_name.is_empty()
+        && let Some(node) = ctx.get_by_name(callee_name)
+        && let Some(rt) = &node.return_type
+    {
+        return Some(rt.clone());
     }
 
     None

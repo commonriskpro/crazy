@@ -1046,7 +1046,7 @@ impl SemanticGraph {
             if node
                 .effect_row
                 .as_ref()
-                .map_or(false, |r| !r.effects.is_empty())
+                .is_some_and(|r| !r.effects.is_empty())
             {
                 let has_emits = self
                     .edges
