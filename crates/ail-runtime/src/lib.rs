@@ -81,7 +81,7 @@ pub use report::{
 };
 pub use schema::{
     CapabilityDefinition, CapabilityErrorSchema, CapabilityInputSchema, CapabilityOutputSchema,
-    CapabilitySchema, SchemaField, SchemaValidationError,
+    CapabilitySchema, SchemaField, SchemaValidationError, SchemaVariant,
 };
 pub use transaction::{
     CompensationPolicy, CompensationRequired, TransactionEntry, TransactionGroup,

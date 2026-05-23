@@ -506,3 +506,77 @@ fn capability_call_with_schema_rejects_invalid_nested_handler_response() {
         other => panic!("expected capability call audit event, got {other:?}"),
     }
 }
+
+#[test]
+fn capability_call_with_schema_accepts_valid_option_some_handler_response() {
+    let cap_id = CapabilityId::new("payment.lookup:PaymentProvider");
+    let response = b"receipt.$tag=Some,receipt.id=rcpt-42".to_vec();
+    let mut host = host_with_output_schema(
+        &cap_id,
+        response.clone(),
+        vec![SchemaField::option(
+            "receipt",
+            vec![SchemaField::new("id", "String")],
+        )],
+    );
+
+    let result = host.call_capability(&cap_id, "lookup", b"");
+
+    assert_eq!(result, Ok(response));
+    match host.audit_log().events().last() {
+        Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => assert!(*succeeded),
+        other => panic!("expected capability call audit event, got {other:?}"),
+    }
+}
+
+#[test]
+fn capability_call_with_schema_accepts_valid_option_none_handler_response() {
+    let cap_id = CapabilityId::new("payment.lookup:PaymentProvider");
+    let response = b"receipt.$tag=None".to_vec();
+    let mut host = host_with_output_schema(
+        &cap_id,
+        response.clone(),
+        vec![SchemaField::option(
+            "receipt",
+            vec![SchemaField::new("id", "String")],
+        )],
+    );
+
+    let result = host.call_capability(&cap_id, "lookup", b"");
+
+    assert_eq!(result, Ok(response));
+    match host.audit_log().events().last() {
+        Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => assert!(*succeeded),
+        other => panic!("expected capability call audit event, got {other:?}"),
+    }
+}
+
+#[test]
+fn capability_call_with_schema_rejects_invalid_option_some_handler_response() {
+    let cap_id = CapabilityId::new("payment.lookup:PaymentProvider");
+    let mut host = host_with_output_schema(
+        &cap_id,
+        b"receipt.$tag=Some".to_vec(),
+        vec![SchemaField::option(
+            "receipt",
+            vec![SchemaField::new("id", "String")],
+        )],
+    );
+
+    let err = host
+        .call_capability(&cap_id, "lookup", b"")
+        .expect_err("missing Some payload field must fail output schema validation");
+
+    assert!(
+        matches!(err, ail_runtime::HostError::ContractViolation(_)),
+        "expected ContractViolation for invalid option response schema, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("receipt.id"),
+        "error must name missing option payload field: {err:?}"
+    );
+    match host.audit_log().events().last() {
+        Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => assert!(!*succeeded),
+        other => panic!("expected capability call audit event, got {other:?}"),
+    }
+}

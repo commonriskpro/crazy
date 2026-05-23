@@ -19,11 +19,13 @@
 //   Payloads are parsed as comma-separated `key=value` pairs.
 //   Schema validation checks that every declared leaf field path is present as
 //   a key. Nested record fields use dot paths such as `receipt.id` and
-//   `receipt.risk.score`. This is the minimal boundary protocol for this
-//   implementation; a full CBOR/JSON schema validation can replace it without
-//   changing the `validate()` signature.
+//   `receipt.risk.score`. Option fields require a tag key such as
+//   `receipt.$tag=Some`; only `Some` payload fields are required. This is the
+//   minimal boundary protocol for this implementation; a full CBOR/JSON schema
+//   validation can replace it without changing the `validate()` signature.
 
 use crate::profile::CapabilityId;
+use std::collections::HashMap;
 
 // ── SchemaValidationError ─────────────────────────────────────────────────
 
@@ -57,6 +59,34 @@ pub struct SchemaField {
     name: String,
     type_name: String,
     fields: Vec<SchemaField>,
+    variants: Vec<SchemaVariant>,
+}
+
+/// A single tagged branch in a structured schema field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchemaVariant {
+    tag: String,
+    fields: Vec<SchemaField>,
+}
+
+impl SchemaVariant {
+    /// Create a variant branch with optional payload fields.
+    pub fn new(tag: impl Into<String>, fields: Vec<SchemaField>) -> Self {
+        SchemaVariant {
+            tag: tag.into(),
+            fields,
+        }
+    }
+
+    /// Variant tag, e.g. `Some`.
+    pub fn tag(&self) -> &str {
+        &self.tag
+    }
+
+    /// Payload fields required when this variant is selected.
+    pub fn fields(&self) -> &[SchemaField] {
+        &self.fields
+    }
 }
 
 impl SchemaField {
@@ -66,6 +96,7 @@ impl SchemaField {
             name: name.into(),
             type_name: type_name.into(),
             fields: Vec::new(),
+            variants: Vec::new(),
         }
     }
 
@@ -75,6 +106,21 @@ impl SchemaField {
             name: name.into(),
             type_name: "Record".to_string(),
             fields,
+            variants: Vec::new(),
+        }
+    }
+
+    /// Create an option field. `Some` validates the provided payload fields;
+    /// `None` requires no payload.
+    pub fn option(name: impl Into<String>, some_fields: Vec<SchemaField>) -> Self {
+        SchemaField {
+            name: name.into(),
+            type_name: "Option".to_string(),
+            fields: Vec::new(),
+            variants: vec![
+                SchemaVariant::new("None", vec![]),
+                SchemaVariant::new("Some", some_fields),
+            ],
         }
     }
 
@@ -92,15 +138,20 @@ impl SchemaField {
     pub fn fields(&self) -> &[SchemaField] {
         &self.fields
     }
+
+    /// Variant branches for structured option-like validation.
+    pub fn variants(&self) -> &[SchemaVariant] {
+        &self.variants
+    }
 }
 
 // ── payload validation helper ─────────────────────────────────────────────
 
-/// Parse a `key=value,...` encoded payload and return the set of key names.
+/// Parse a `key=value,...` encoded payload and return field values by key.
 ///
 /// This is the minimal boundary protocol: a comma-separated list of
 /// `key=value` pairs.  Empty payloads and empty schemas are always valid.
-fn parse_keys(payload: &[u8]) -> std::collections::HashSet<String> {
+fn parse_fields(payload: &[u8]) -> HashMap<String, String> {
     let s = String::from_utf8_lossy(payload);
     s.split(',')
         .filter_map(|pair| {
@@ -108,8 +159,13 @@ fn parse_keys(payload: &[u8]) -> std::collections::HashSet<String> {
             if pair.is_empty() {
                 None
             } else {
-                let key = pair.split('=').next().unwrap_or("").trim().to_string();
-                if key.is_empty() { None } else { Some(key) }
+                let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+                let key = key.trim().to_string();
+                if key.is_empty() {
+                    None
+                } else {
+                    Some((key, value.trim().to_string()))
+                }
             }
         })
         .collect()
@@ -123,15 +179,15 @@ fn validate_fields(
     if required_fields.is_empty() {
         return Ok(());
     }
-    let keys = parse_keys(payload);
+    let fields = parse_fields(payload);
     for field in required_fields {
-        validate_field_path(&keys, field, "")?;
+        validate_field_path(&fields, field, "")?;
     }
     Ok(())
 }
 
 fn validate_field_path(
-    keys: &std::collections::HashSet<String>,
+    fields: &HashMap<String, String>,
     field: &SchemaField,
     parent_path: &str,
 ) -> Result<(), SchemaValidationError> {
@@ -141,8 +197,26 @@ fn validate_field_path(
         format!("{parent_path}.{}", field.name())
     };
 
+    if !field.variants().is_empty() {
+        let tag_path = format!("{path}.$tag");
+        let tag = fields.get(&tag_path).ok_or_else(|| SchemaValidationError {
+            message: format!("PayloadDecodeError: missing required field `{tag_path}`"),
+        })?;
+        let variant = field
+            .variants()
+            .iter()
+            .find(|variant| variant.tag() == tag)
+            .ok_or_else(|| SchemaValidationError {
+                message: format!("PayloadDecodeError: unknown variant `{tag}` for `{path}`"),
+            })?;
+        for nested in variant.fields() {
+            validate_field_path(fields, nested, &path)?;
+        }
+        return Ok(());
+    }
+
     if field.fields().is_empty() {
-        if !keys.contains(&path) {
+        if !fields.contains_key(&path) {
             return Err(SchemaValidationError {
                 message: format!("PayloadDecodeError: missing required field `{path}`"),
             });
@@ -151,7 +225,7 @@ fn validate_field_path(
     }
 
     for nested in field.fields() {
-        validate_field_path(keys, nested, &path)?;
+        validate_field_path(fields, nested, &path)?;
     }
     Ok(())
 }

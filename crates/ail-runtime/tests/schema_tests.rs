@@ -24,6 +24,18 @@ fn schema_field_debug_contains_name() {
     assert!(debug.contains("amount"), "debug must contain field name");
 }
 
+#[test]
+fn schema_field_option_carries_none_and_some_variants() {
+    let f = SchemaField::option("receipt", vec![SchemaField::new("id", "String")]);
+
+    assert_eq!(f.name(), "receipt");
+    assert_eq!(f.type_name(), "Option");
+    assert_eq!(f.variants().len(), 2);
+    assert_eq!(f.variants()[0].tag(), "None");
+    assert_eq!(f.variants()[1].tag(), "Some");
+    assert_eq!(f.variants()[1].fields()[0].name(), "id");
+}
+
 // ── CapabilityInputSchema ─────────────────────────────────────────────────
 
 #[test]
