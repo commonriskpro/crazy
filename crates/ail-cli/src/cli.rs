@@ -5492,9 +5492,19 @@ mod tests {
     #[tokio::test]
     async fn cmd_apply_allows_prod_with_yes() {
         use crate::store::memory_store;
+        use ail_change::canonical::CanonicalChangeSet;
+
         let store = memory_store();
-        let id = "d".repeat(64);
-        let result = cmd_apply(OutputMode::Human, &id, true, Some("prod"), &store).await;
+        let canonical = CanonicalChangeSet::default();
+        let mut cbor_bytes = Vec::new();
+        ciborium::into_writer(&canonical, &mut cbor_bytes).expect("CBOR encode must succeed");
+        let change_id = ail_storage::object::ObjectId::from_bytes(&cbor_bytes).to_hex();
+        store
+            .save_changeset_payload(&change_id, &cbor_bytes)
+            .await
+            .expect("save must succeed");
+
+        let result = cmd_apply(OutputMode::Human, &change_id, true, Some("prod"), &store).await;
         assert!(
             result.is_ok(),
             "prod with --yes must succeed; got: {result:?}"
