@@ -88,7 +88,10 @@ impl Eq for LiteralValue {}
 /// One arm of a `CoreExpr::Match` expression.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchArm {
-    /// Pattern string (e.g. `"Ok(x)"`, `"None"`, `"_"`).
+    /// Pattern string (e.g. `"Ok(x)"`, `"None"`, `"_"`). Backend execution
+    /// currently supports integer literals, boolean literals, and wildcard;
+    /// constructor payload strings are syntax-only until payload bindings are
+    /// represented in Core/ANF.
     pub pattern: String,
     /// Body expression evaluated when the pattern matches.
     pub body: CoreExpr,

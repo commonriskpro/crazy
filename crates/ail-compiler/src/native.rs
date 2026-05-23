@@ -855,6 +855,7 @@ fn lower_anf_expr_cranelift(
             // pattern doesn't match we jump to the next check block.
             // The wildcard or last arm terminates the chain.
             let n = arms.len();
+            let mut has_merge_predecessor = false;
             for i in 0..n {
                 let arm = &arms[i];
                 let arm_block = builder.create_block();
@@ -866,8 +867,14 @@ fn lower_anf_expr_cranelift(
                     builder.seal_block(arm_block);
                     // Lower arm body and jump to merge.
                     match lower_anf_expr_cranelift(&arm.body, ctx, builder, module) {
-                        LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
-                        LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
+                        LowerResult::Value(v) => {
+                            builder.ins().jump(merge_block, &[v]);
+                            has_merge_predecessor = true;
+                        }
+                        LowerResult::Unit     => {
+                            builder.ins().jump(merge_block, &[]);
+                            has_merge_predecessor = true;
+                        }
                         LowerResult::Terminated => {}
                     }
                     // Wildcard terminates the chain; remaining arms (if any) are unreachable.
@@ -875,10 +882,19 @@ fn lower_anf_expr_cranelift(
                 }
 
                 // Non-wildcard: compute equality check.
-                let pattern_val: i64 = match arm.pattern.as_str() {
+                let pattern_val: i64 = match arm.pattern.trim() {
                     "true"  => 1,
                     "false" => 0,
-                    s       => s.parse::<i64>().unwrap_or(0),
+                    s       => match s.parse::<i64>() {
+                        Ok(value) => value,
+                        Err(_) => {
+                            builder.ins().trap(TrapCode::user(1).unwrap());
+                            if has_merge_predecessor {
+                                break;
+                            }
+                            return LowerResult::Terminated;
+                        }
+                    },
                 };
                 let pat_const = builder.ins().iconst(types::I64, pattern_val);
                 let eq = builder.ins().icmp(IntCC::Equal, scrutinee_i64, pat_const);
@@ -891,8 +907,14 @@ fn lower_anf_expr_cranelift(
                     builder.switch_to_block(arm_block);
                     builder.seal_block(arm_block);
                     match lower_anf_expr_cranelift(&arm.body, ctx, builder, module) {
-                        LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
-                        LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
+                        LowerResult::Value(v) => {
+                            builder.ins().jump(merge_block, &[v]);
+                            has_merge_predecessor = true;
+                        }
+                        LowerResult::Unit     => {
+                            builder.ins().jump(merge_block, &[]);
+                            has_merge_predecessor = true;
+                        }
                         LowerResult::Terminated => {}
                     }
                     // Switch to next_check for the next iteration.
@@ -910,11 +932,21 @@ fn lower_anf_expr_cranelift(
                     builder.switch_to_block(arm_block);
                     builder.seal_block(arm_block);
                     match lower_anf_expr_cranelift(&arm.body, ctx, builder, module) {
-                        LowerResult::Value(v) => { builder.ins().jump(merge_block, &[v]); }
-                        LowerResult::Unit     => { builder.ins().jump(merge_block, &[]); }
+                        LowerResult::Value(v) => {
+                            builder.ins().jump(merge_block, &[v]);
+                            has_merge_predecessor = true;
+                        }
+                        LowerResult::Unit     => {
+                            builder.ins().jump(merge_block, &[]);
+                            has_merge_predecessor = true;
+                        }
                         LowerResult::Terminated => {}
                     }
                 }
+            }
+
+            if !has_merge_predecessor {
+                return LowerResult::Terminated;
             }
 
             builder.switch_to_block(merge_block);
