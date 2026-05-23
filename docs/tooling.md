@@ -475,6 +475,10 @@ ail package search <query>
 ail package verify
 ail package publish
 ail package audit
+ail package advisory add <package> <constraint> --id <id> --severity <low|medium|high|critical> --reason <text>
+ail package advisory list
+ail package yank <package> <version> --reason <text>
+ail package yanked
 ail package explain payments.stripe
 ```
 
@@ -537,6 +541,24 @@ Machine output includes `status`, `issues`, and summary counts:
 Exit semantics are conservative: yanked packages and high/critical advisories
 are `blocked` and return a non-zero exit after printing the human/JSON audit
 payload. Low/medium advisories are `warning` and return zero.
+
+#### package advisory / yank metadata
+
+Local advisory and yank metadata is managed directly in `.ail/packages/registry.cbor`:
+
+```txt
+ail package advisory add payments.stripe "<1.2.3" --id adv_123 --severity critical --reason "idempotency handler bug"
+ail package advisory list
+ail package yank payments.stripe 1.2.0 --reason "bad local release"
+ail package yanked
+```
+
+These commands are local-only admin records. They preserve existing signed package
+records, local advisories, and yank records in the registry CBOR file. They do not
+ingest a remote advisory database and do not mutate any remote registry.
+
+Machine output uses lowercase `severity`, `status`, `kind`, and `trust` values;
+enum debug names are not part of the JSON contract.
 
 #### package init
 

@@ -413,6 +413,20 @@ as `blocked` and return non-zero; low/medium advisories are warnings. This local
 workflow does not ingest network advisory databases, federation metadata, or
 Sigstore state.
 
+Local advisory and yank records are first-class CLI-managed metadata:
+
+```txt
+ail package advisory add payments.stripe "<1.2.3" --id adv_123 --severity critical --reason "idempotency handler bug"
+ail package advisory list
+ail package yank payments.stripe 1.2.0 --reason "bad local release"
+ail package yanked
+```
+
+The commands persist only to `.ail/packages/registry.cbor`. They preserve signed
+package records while adding local metadata, and they do not perform remote
+advisory ingestion, remote registry mutation, Sigstore federation, or key
+management.
+
 ### Package capabilities and least privilege
 
 Package may request capabilities, but project grants them.
