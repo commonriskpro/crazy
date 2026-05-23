@@ -87,6 +87,17 @@ impl Parser<'_> {
 
     fn expr_from_call(&self, func: String, args: Vec<CoreExpr>) -> Result<CoreExpr, ParseError> {
         match func.as_str() {
+            "let" => {
+                let [binding, value, body] = expect_arity::<3>(func, args)?;
+                let CoreExpr::Var(name) = binding else {
+                    return Err(ParseError::new("let binding name must be an identifier"));
+                };
+                Ok(CoreExpr::Let {
+                    name,
+                    value: Box::new(value),
+                    body: Box::new(body),
+                })
+            }
             "if" => {
                 let [cond, then_, else_] = expect_arity::<3>(func, args)?;
                 Ok(CoreExpr::If {
@@ -103,6 +114,20 @@ impl Parser<'_> {
             "eq" => binary(func, args, CoreExpr::Eq),
             "lt" => binary(func, args, CoreExpr::Lt),
             "gt" => binary(func, args, CoreExpr::Gt),
+            "and" => {
+                let [left, right] = expect_arity::<2>(func, args)?;
+                Ok(CoreExpr::And {
+                    left: Box::new(left),
+                    right: Box::new(right),
+                })
+            }
+            "or" => {
+                let [left, right] = expect_arity::<2>(func, args)?;
+                Ok(CoreExpr::Or {
+                    left: Box::new(left),
+                    right: Box::new(right),
+                })
+            }
             _ => Ok(CoreExpr::Call { func, args }),
         }
     }
@@ -215,6 +240,58 @@ mod tests {
                     Box::new(CoreExpr::Var("y".to_string()))
                 ))
             )
+        );
+    }
+
+    #[test]
+    fn parses_let_binding() {
+        assert_eq!(
+            parse_expr("let(total, add(x, y), if(gt(total, 10), total, 0))").unwrap(),
+            CoreExpr::Let {
+                name: "total".to_string(),
+                value: Box::new(CoreExpr::Add(
+                    Box::new(CoreExpr::Var("x".to_string())),
+                    Box::new(CoreExpr::Var("y".to_string()))
+                )),
+                body: Box::new(CoreExpr::If {
+                    cond: Box::new(CoreExpr::Gt(
+                        Box::new(CoreExpr::Var("total".to_string())),
+                        Box::new(CoreExpr::Literal(LiteralValue::Int(10)))
+                    )),
+                    then_: Box::new(CoreExpr::Var("total".to_string())),
+                    else_: Box::new(CoreExpr::Literal(LiteralValue::Int(0))),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_non_identifier_let_binding() {
+        let err = parse_expr("let(add(x, y), 1, 2)").unwrap_err();
+        assert_eq!(err.message, "let binding name must be an identifier");
+    }
+
+    #[test]
+    fn parses_short_circuit_boolean_forms() {
+        assert_eq!(
+            parse_expr("and(flag, gt(total, 0))").unwrap(),
+            CoreExpr::And {
+                left: Box::new(CoreExpr::Var("flag".to_string())),
+                right: Box::new(CoreExpr::Gt(
+                    Box::new(CoreExpr::Var("total".to_string())),
+                    Box::new(CoreExpr::Literal(LiteralValue::Int(0)))
+                )),
+            }
+        );
+        assert_eq!(
+            parse_expr("or(flag, eq(total, 0))").unwrap(),
+            CoreExpr::Or {
+                left: Box::new(CoreExpr::Var("flag".to_string())),
+                right: Box::new(CoreExpr::Eq(
+                    Box::new(CoreExpr::Var("total".to_string())),
+                    Box::new(CoreExpr::Literal(LiteralValue::Int(0)))
+                )),
+            }
         );
     }
 }
