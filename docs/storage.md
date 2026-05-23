@@ -307,6 +307,11 @@ Reglas:
 4. Breaking schema changes require explicit migrator.
 ```
 
+Implementation note: `ail-storage` currently ships a built-in v0 -> v3 catalog
+of structural no-op migrations. `MigrationCatalog::dry_run` reports the current
+version, target version, pending steps, and any catalog gap without applying
+migration bodies or writing version records.
+
 ### Indexes
 
 Indexes are derived, rebuildable artifacts.
