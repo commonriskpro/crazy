@@ -17,10 +17,11 @@
 //
 // Validation protocol (simple key-presence format):
 //   Payloads are parsed as comma-separated `key=value` pairs.
-//   Schema validation checks that every declared field name is present as a
-//   key.  This is the minimal boundary protocol for this implementation;
-//   a full CBOR/JSON schema validation can replace it without changing the
-//   `validate()` signature.
+//   Schema validation checks that every declared leaf field path is present as
+//   a key. Nested record fields use dot paths such as `receipt.id` and
+//   `receipt.risk.score`. This is the minimal boundary protocol for this
+//   implementation; a full CBOR/JSON schema validation can replace it without
+//   changing the `validate()` signature.
 
 use crate::profile::CapabilityId;
 
@@ -47,10 +48,15 @@ impl std::fmt::Display for SchemaValidationError {
 /// representation of the type, e.g. `"String"`, `"u64"`, `"Money"`).
 /// String representations are used to keep the schema layer decoupled from
 /// the type system while still being human-readable.
+///
+/// Record fields can carry nested fields. Validation then requires each leaf
+/// field path in the encoded payload, e.g. `receipt.id=rcpt-1` for a nested
+/// field `id` under record field `receipt`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaField {
     name: String,
     type_name: String,
+    fields: Vec<SchemaField>,
 }
 
 impl SchemaField {
@@ -59,6 +65,16 @@ impl SchemaField {
         SchemaField {
             name: name.into(),
             type_name: type_name.into(),
+            fields: Vec::new(),
+        }
+    }
+
+    /// Create a record field with nested child fields.
+    pub fn record(name: impl Into<String>, fields: Vec<SchemaField>) -> Self {
+        SchemaField {
+            name: name.into(),
+            type_name: "Record".to_string(),
+            fields,
         }
     }
 
@@ -70,6 +86,11 @@ impl SchemaField {
     /// Type descriptor string (e.g. `"String"`, `"Money"`).
     pub fn type_name(&self) -> &str {
         &self.type_name
+    }
+
+    /// Nested fields for structured record validation.
+    pub fn fields(&self) -> &[SchemaField] {
+        &self.fields
     }
 }
 
@@ -104,14 +125,33 @@ fn validate_fields(
     }
     let keys = parse_keys(payload);
     for field in required_fields {
-        if !keys.contains(field.name()) {
+        validate_field_path(&keys, field, "")?;
+    }
+    Ok(())
+}
+
+fn validate_field_path(
+    keys: &std::collections::HashSet<String>,
+    field: &SchemaField,
+    parent_path: &str,
+) -> Result<(), SchemaValidationError> {
+    let path = if parent_path.is_empty() {
+        field.name().to_string()
+    } else {
+        format!("{parent_path}.{}", field.name())
+    };
+
+    if field.fields().is_empty() {
+        if !keys.contains(&path) {
             return Err(SchemaValidationError {
-                message: format!(
-                    "PayloadDecodeError: missing required field `{}`",
-                    field.name()
-                ),
+                message: format!("PayloadDecodeError: missing required field `{path}`"),
             });
         }
+        return Ok(());
+    }
+
+    for nested in field.fields() {
+        validate_field_path(keys, nested, &path)?;
     }
     Ok(())
 }

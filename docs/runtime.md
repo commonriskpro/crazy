@@ -269,6 +269,9 @@ capability payment.charge:PaymentProvider {
 
 El host valida boundary encoding/decoding con el Boundary Protocol.
 
+Nota de implementación actual: el protocolo textual mínimo `key=value` valida claves planas y records
+anidados mediante rutas con punto, por ejemplo `receipt.id=rcpt-42,receipt.risk.score=7`.
+
 ### Handler binding
 
 Handlers interpretan capabilities.
