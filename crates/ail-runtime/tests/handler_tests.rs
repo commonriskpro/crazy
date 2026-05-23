@@ -12,14 +12,16 @@
 //  S7 — Multiple audit events accumulate in call order
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ail_compiler::{
     ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, SourceMap, StageHashes, emit_wasm,
 };
 use ail_core::semantic_graph::NodeRef;
 use ail_runtime::{
-    AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, InMemoryHandler,
-    PreflightFailure, ResourceLimits, RuntimeError, RuntimeHost, RuntimeProfile, blake3_hex_of,
+    AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, Handler, HostResult,
+    InFlightPolicy, InMemoryHandler, PreflightFailure, ResourceLimits, RuntimeError, RuntimeHost,
+    RuntimeProfile, blake3_hex_of,
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -82,6 +84,61 @@ fn matching_profile_with_limits(
         grants,
         limits,
     )
+}
+
+struct CountingHandler {
+    caps: Vec<CapabilityId>,
+    response: Vec<u8>,
+    calls: AtomicUsize,
+}
+
+impl CountingHandler {
+    fn new(cap: CapabilityId, response: Vec<u8>) -> Self {
+        Self {
+            caps: vec![cap],
+            response,
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl Handler for CountingHandler {
+    fn name(&self) -> &str {
+        "counting-handler"
+    }
+
+    fn capabilities(&self) -> &[CapabilityId] {
+        &self.caps
+    }
+
+    fn handle(
+        &self,
+        _capability: &CapabilityId,
+        _operation: &str,
+        _payload: &[u8],
+    ) -> HostResult<Vec<u8>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.response.clone())
+    }
+}
+
+fn assert_last_call_failed_with_handler(host: &RuntimeHost, expected_handler: &str) {
+    let audit = host.audit_log();
+    match audit.events().last() {
+        Some(AuditEvent::CapabilityCallExecuted {
+            succeeded,
+            handler_name,
+            ..
+        }) => {
+            assert!(!succeeded, "denial must be audited as failed");
+            assert_eq!(handler_name, expected_handler);
+        }
+        other => panic!("expected capability audit event, got {other:?}"),
+    }
 }
 
 // ── S1 — Handler dispatches canned response ───────────────────────────────
@@ -289,6 +346,121 @@ fn max_capability_calls_blocks_second_granted_call() {
         }
         other => panic!("unexpected event: {other:?}"),
     }
+}
+
+#[test]
+fn payload_size_limit_denies_before_handler_dispatch() {
+    let wasm = minimal_wasm();
+    let cap = CapabilityId::new("FileRead");
+    let manifest = CapabilityManifest {
+        module: "test".to_string(),
+        requires: vec![cap.clone()],
+    };
+    let grant = CapabilityGrant {
+        module: "test".to_string(),
+        capability: cap.clone(),
+    };
+    let profile = matching_profile_with_limits(
+        &wasm,
+        &manifest,
+        vec![grant],
+        ResourceLimits {
+            payload_size_limit: Some(3),
+            ..Default::default()
+        },
+    );
+
+    let handler = Arc::new(CountingHandler::new(cap.clone(), b"ok".to_vec()));
+    let mut host = RuntimeHost::new().with_handler(handler.clone());
+    host.validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("preflight must pass");
+
+    let err = host
+        .call_capability(&cap, "read", b"abcd")
+        .expect_err("oversized payload must be denied");
+    assert!(
+        matches!(err, ail_runtime::abi::HostError::LimitExceeded(_)),
+        "error must be LimitExceeded, got: {err:?}"
+    );
+    assert_eq!(handler.call_count(), 0, "handler must not run");
+
+    assert_last_call_failed_with_handler(&host, "none");
+}
+
+#[test]
+fn output_size_limit_denies_oversized_handler_response() {
+    let wasm = minimal_wasm();
+    let cap = CapabilityId::new("FileRead");
+    let manifest = CapabilityManifest {
+        module: "test".to_string(),
+        requires: vec![cap.clone()],
+    };
+    let grant = CapabilityGrant {
+        module: "test".to_string(),
+        capability: cap.clone(),
+    };
+    let profile = matching_profile_with_limits(
+        &wasm,
+        &manifest,
+        vec![grant],
+        ResourceLimits {
+            output_size_limit: Some(3),
+            ..Default::default()
+        },
+    );
+
+    let handler = Arc::new(CountingHandler::new(cap.clone(), b"abcd".to_vec()));
+    let mut host = RuntimeHost::new().with_handler(handler.clone());
+    host.validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("preflight must pass");
+
+    let err = host
+        .call_capability(&cap, "read", b"")
+        .expect_err("oversized handler response must be denied");
+    assert!(
+        matches!(err, ail_runtime::abi::HostError::LimitExceeded(_)),
+        "error must be LimitExceeded, got: {err:?}"
+    );
+    assert_eq!(handler.call_count(), 1, "handler runs before output limit");
+
+    assert_last_call_failed_with_handler(&host, "counting-handler");
+}
+
+#[test]
+fn revoked_capability_denies_new_calls_after_preflight() {
+    let wasm = minimal_wasm();
+    let cap = CapabilityId::new("FileRead");
+    let manifest = CapabilityManifest {
+        module: "test".to_string(),
+        requires: vec![cap.clone()],
+    };
+    let grant = CapabilityGrant {
+        module: "test".to_string(),
+        capability: cap.clone(),
+    };
+    let profile = matching_profile(&wasm, &manifest, vec![grant]);
+
+    let handler = Arc::new(CountingHandler::new(cap.clone(), b"ok".to_vec()));
+    let mut host = RuntimeHost::new().with_handler(handler.clone());
+    host.validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("preflight must pass");
+    host.revoke_capability(
+        "test",
+        cap.as_str(),
+        "test-profile",
+        InFlightPolicy::AllowComplete,
+    );
+
+    let err = host
+        .call_capability(&cap, "read", b"")
+        .expect_err("revoked grant must deny new calls");
+    assert!(
+        matches!(err, ail_runtime::abi::HostError::CapabilityDenied(_)),
+        "error must be CapabilityDenied, got: {err:?}"
+    );
+    assert_eq!(handler.call_count(), 0, "handler must not run after revoke");
+
+    assert_last_call_failed_with_handler(&host, "none");
 }
 
 #[test]

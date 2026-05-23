@@ -10,6 +10,9 @@
 // builder field (`with_package_trust`) so existing `RuntimeProfile::new`
 // call sites are unaffected.
 
+use std::ops::Deref;
+use std::sync::{Arc, RwLock, RwLockReadGuard};
+
 use ail_package::trust::TrustLevel;
 
 // ── CapabilityId ─────────────────────────────────────────────────────────
@@ -157,14 +160,36 @@ pub struct RevocationRecord {
 /// host before dispatching any capability call.
 #[derive(Clone, Debug, Default)]
 pub struct CapabilityRevocationRegistry {
-    records: Vec<RevocationRecord>,
+    records: Arc<RwLock<Vec<RevocationRecord>>>,
+}
+
+/// Read-only borrowed view of revocation records.
+///
+/// The registry is shared across cloned hosts/instances, so the slice must stay
+/// protected by the read lock while borrowed. Use
+/// [`CapabilityRevocationRegistry::records_snapshot`] when an owned `Vec` is
+/// needed beyond this guard's lifetime.
+pub struct RevocationRecords<'a>(RwLockReadGuard<'a, Vec<RevocationRecord>>);
+
+impl Deref for RevocationRecords<'_> {
+    type Target = [RevocationRecord];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_slice()
+    }
+}
+
+impl std::fmt::Debug for RevocationRecords<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.deref().fmt(f)
+    }
 }
 
 impl CapabilityRevocationRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
         CapabilityRevocationRegistry {
-            records: Vec::new(),
+            records: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -176,24 +201,42 @@ impl CapabilityRevocationRegistry {
         profile: impl Into<String>,
         in_flight_policy: InFlightPolicy,
     ) {
-        self.records.push(RevocationRecord {
-            module: module.into(),
-            capability: capability.into(),
-            profile: profile.into(),
-            in_flight_policy,
-        });
+        self.records
+            .write()
+            .expect("revocation registry lock must not be poisoned")
+            .push(RevocationRecord {
+                module: module.into(),
+                capability: capability.into(),
+                profile: profile.into(),
+                in_flight_policy,
+            });
     }
 
     /// Return `true` if `module`'s `capability` has been revoked in `profile`.
     pub fn is_revoked(&self, module: &str, capability: &str, profile: &str) -> bool {
         self.records
+            .read()
+            .expect("revocation registry lock must not be poisoned")
             .iter()
             .any(|r| r.module == module && r.capability == capability && r.profile == profile)
     }
 
-    /// All recorded revocations.
-    pub fn records(&self) -> &[RevocationRecord] {
-        &self.records
+    /// Borrowed read-only view of all recorded revocations.
+    ///
+    /// This returns a guard wrapper instead of a bare `&[RevocationRecord]`
+    /// because cloned registries share runtime-mutable state. Returning a bare
+    /// slice would let callers outlive the lock that protects the shared data.
+    pub fn records(&self) -> RevocationRecords<'_> {
+        RevocationRecords(
+            self.records
+                .read()
+                .expect("revocation registry lock must not be poisoned"),
+        )
+    }
+
+    /// Owned snapshot of all recorded revocations.
+    pub fn records_snapshot(&self) -> Vec<RevocationRecord> {
+        self.records().to_vec()
     }
 }
 
