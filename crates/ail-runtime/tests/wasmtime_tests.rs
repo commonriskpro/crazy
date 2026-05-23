@@ -439,6 +439,21 @@ end
 }
 
 #[test]
+fn acl_match_literal_and_wildcard_body_compiles_and_runs() {
+    let acl = "\
+change match_expr_bodies base=0
+author tester
+description match expression bodies
+op create_function id=fn.literal_hit return=Int body=match(2, 1, 10, 2, 20, _, 30)
+op create_function id=fn.wildcard_hit return=Int body=match(9, 1, 10, 2, 20, _, 30)
+end
+";
+
+    assert_eq!(invoke_acl_export(acl, "literal_hit"), RuntimeValue::I64(20));
+    assert_eq!(invoke_acl_export(acl, "wildcard_hit"), RuntimeValue::I64(30));
+}
+
+#[test]
 fn compiler_bool_literal_function_returns_i64_boolean() {
     assert_eq!(
         invoke_compiler_expr(AnfExpr::Literal(LiteralValue::Bool(true)), "fn.flag"),
