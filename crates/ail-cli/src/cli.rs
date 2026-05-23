@@ -95,7 +95,7 @@ use serde_json::{Value, json};
 
 use crate::changeset_input::{ChangeInput, load_parsed_changeset};
 use crate::error::CliError;
-use crate::output::{OutputMode, print_response};
+use crate::output::{OutputMode, print_error_response, print_response};
 use crate::store::{
     StoreHandle, build_store, doctor, file_store, gc, init_file_layout_with_branch,
 };
@@ -1304,20 +1304,37 @@ async fn cmd_verify(
         )));
     }
 
-    // Try to load the stored CanonicalChangeSet and apply it to build the real graph.
-    // Falls back to an empty graph when the changeset is not found in the store.
+    // Try to load the stored CanonicalChangeSet and apply it using the same
+    // live snapshot guard as `ail apply`, so stale-base state is visible here.
+    // Falls back to an empty graph when the changeset is not found in the store,
+    // but keep that state explicit in JSON so tools do not treat it as applyable.
     let mut graph = SemanticGraph {
         nodes: vec![],
         edges: vec![],
     };
-    if let Some(canonical) = store.load_changeset_by_id(change_id).await? {
-        let bridge = SimpleSnapshotBridge(canonical.base_snapshot_id);
+    let maybe_canonical = store.load_changeset_by_id(change_id).await?;
+    let missing_changeset = maybe_canonical.is_none();
+    let mut rebase_required = false;
+    let mut current_snapshot_id_for_rebase = None;
+    if let Some(canonical) = maybe_canonical {
+        let (current_graph, current_snapshot_id) =
+            load_current_graph_with_snapshot_id_for_cli(store).await?;
+        graph = current_graph;
+        let bridge = SimpleSnapshotBridge(current_snapshot_id);
         match ail_change::apply::apply(canonical, &mut graph, &bridge) {
             ChangeSetOutcome::Applied => {}
-            // On rebase/conflict/failure: fall back to the empty graph for verification.
-            ChangeSetOutcome::RebaseRequired { .. }
-            | ChangeSetOutcome::Failed { .. }
-            | ChangeSetOutcome::ConflictIrresolvable { .. } => {
+            // On blocked apply outcomes: fall back to the empty graph for verification.
+            ChangeSetOutcome::RebaseRequired {
+                current_snapshot_id,
+            } => {
+                rebase_required = true;
+                current_snapshot_id_for_rebase = Some(current_snapshot_id.0);
+                graph = SemanticGraph {
+                    nodes: vec![],
+                    edges: vec![],
+                };
+            }
+            ChangeSetOutcome::Failed { .. } | ChangeSetOutcome::ConflictIrresolvable { .. } => {
                 graph = SemanticGraph {
                     nodes: vec![],
                     edges: vec![],
@@ -1444,6 +1461,65 @@ async fn cmd_verify(
         json!({ "required": false, "satisfied": true, "scopes": [] })
     };
 
+    let mut repair_options = Vec::new();
+    if missing_changeset {
+        repair_options.push(json!({
+            "code": "missing_changeset",
+            "next_action": "create_or_fetch_changeset",
+            "description": "Persist the ChangeSet into this .ail project before verify/apply.",
+        }));
+    }
+    if let Some(current_snapshot_id) = current_snapshot_id_for_rebase {
+        repair_options.push(rebase_required_repair_option(current_snapshot_id));
+    }
+    if approval_required {
+        repair_options.push(json!({
+            "code": "approval_required",
+            "next_action": "obtain_approval",
+            "description": "Record approval or rerun apply with explicit operator confirmation when policy allows it.",
+            "scopes": policy_report["approval_required_scopes"],
+        }));
+    }
+    if policy_failed {
+        repair_options.push(json!({
+            "code": "policy_blocked",
+            "next_action": "repair_policy_violations",
+            "description": "Address blocking policy violations before apply.",
+            "violations": policy_report["violations"],
+        }));
+    }
+    if diag_count > 0 {
+        repair_options.push(json!({
+            "code": "verification_diagnostics",
+            "next_action": "repair_diagnostics",
+            "description": "Address verification diagnostics before apply.",
+            "diagnostic_count": diag_count,
+        }));
+    }
+
+    let applyable =
+        !missing_changeset && !rebase_required && !policy_blocks_apply && diag_count == 0;
+    let next_action = if missing_changeset {
+        "create_or_fetch_changeset"
+    } else if rebase_required {
+        "rebase"
+    } else if policy_failed || diag_count > 0 {
+        "repair"
+    } else if approval_required {
+        "obtain_approval"
+    } else {
+        "apply"
+    };
+    let workflow_state = json!({
+        "applyable": applyable,
+        "approval_required": approval_required,
+        "rebase_required": rebase_required,
+        "current_snapshot_id": current_snapshot_id_for_rebase,
+        "missing_changeset": missing_changeset,
+        "next_action": next_action,
+        "repair_options": repair_options,
+    });
+
     let human_msg = format!(
         "change-id: {change_id}\nprofile: {profile}\nentries: {entry_count}\nsummary: {summary}\ndiagnostics: {diag_count}\npolicy: {policy_status}"
     );
@@ -1461,6 +1537,7 @@ async fn cmd_verify(
             "proof_obligations": proof_obligations,
             "policy_report": policy_report,
             "approval_requirements": approval_requirements,
+            "workflow_state": workflow_state,
         }),
     );
     Ok(())
@@ -1550,6 +1627,14 @@ async fn cmd_apply(
             "persisted_approval": false,
             "satisfied_for_this_apply": approval_approved,
         },
+        "workflow_state": {
+            "applyable": approval_approved,
+            "approval_required": approval_required,
+            "rebase_required": false,
+            "missing_changeset": false,
+            "next_action": "apply",
+            "repair_options": [],
+        },
         "target_snapshot": base_snap_hex,
     });
 
@@ -1591,6 +1676,14 @@ async fn cmd_apply(
                     "pre_apply_gate": pre_apply_gate,
                     "change_id": change_id,
                     "new_snapshot_id": new_id_hex,
+                    "workflow_state": {
+                        "applyable": true,
+                        "approval_required": approval_required,
+                        "rebase_required": false,
+                        "missing_changeset": false,
+                        "next_action": "complete",
+                        "repair_options": [],
+                    },
                     "atomic": true,
                 }),
             );
@@ -1598,9 +1691,35 @@ async fn cmd_apply(
         }
         ail_change::model::ChangeSetOutcome::RebaseRequired {
             current_snapshot_id,
-        } => Err(CliError::RebaseRequired {
-            current_snapshot_id: current_snapshot_id.0,
-        }),
+        } => {
+            if mode == OutputMode::Json {
+                let workflow_state = json!({
+                    "applyable": false,
+                    "approval_required": approval_required,
+                    "rebase_required": true,
+                    "current_snapshot_id": current_snapshot_id.0,
+                    "missing_changeset": false,
+                    "next_action": "rebase",
+                    "repair_options": [rebase_required_repair_option(current_snapshot_id.0)],
+                });
+                let mut blocked_gate = pre_apply_gate.clone();
+                blocked_gate["workflow_state"] = workflow_state.clone();
+                print_error_response(json!({
+                    "error": "rebase_required",
+                    "message": format!(
+                        "rebase required: current snapshot is {}",
+                        current_snapshot_id.0
+                    ),
+                    "pre_apply_gate": blocked_gate,
+                    "change_id": change_id,
+                    "workflow_state": workflow_state,
+                    "atomic": true,
+                }));
+            }
+            Err(CliError::RebaseRequired {
+                current_snapshot_id: current_snapshot_id.0,
+            })
+        }
         ail_change::model::ChangeSetOutcome::Failed { reason } => {
             Err(CliError::Domain(format!("apply failed: {reason}")))
         }
@@ -2487,6 +2606,15 @@ fn conflict_reason_message(reason: &ConflictReason) -> &'static str {
             "semantic node content conflict (return type, body, or effects differ)"
         }
     }
+}
+
+fn rebase_required_repair_option(current_snapshot_id: u64) -> Value {
+    json!({
+        "code": "rebase_required",
+        "next_action": "rebase",
+        "description": "Rebase the ChangeSet onto the current snapshot before apply.",
+        "current_snapshot_id": current_snapshot_id,
+    })
 }
 
 /// `ail init` — create .ail/ directory structure and initialize baseline state.

@@ -196,7 +196,22 @@ diagnostics
 proof_obligations
 policy_report
 approval_requirements
+workflow_state
 ```
+
+Machine mode includes `workflow_state` so tools can choose the next step without
+guessing from prose:
+
+```txt
+applyable
+approval_required
+rebase_required
+missing_changeset
+next_action
+repair_options
+```
+
+For stale-base changesets, `verify --json` reports `workflow_state.rebase_required = true`, `applyable = false`, `next_action = "rebase"`, and a `rebase_required` repair option instead of treating the change as applyable.
 
 Rules:
 
@@ -219,6 +234,7 @@ structural_diff
 verification_report status
 policy status
 approval status
+workflow_state
 target snapshot
 ```
 
@@ -229,6 +245,17 @@ Rules:
 2. apply creates new snapshot.
 3. apply is atomic.
 4. apply refuses stale base unless rebase is requested.
+```
+
+In `apply --json`, stale-base failures still exit non-zero and keep the human error on stderr, but stdout includes a machine-readable envelope:
+
+```txt
+status = "error"
+data.error = "rebase_required"
+data.workflow_state.rebase_required = true
+data.workflow_state.applyable = false
+data.workflow_state.next_action = "rebase"
+data.workflow_state.repair_options[] includes code = "rebase_required"
 ```
 
 Automation mode:

@@ -67,6 +67,15 @@ pub fn format_response(mode: OutputMode, human_msg: &str, data: Value) -> String
     }
 }
 
+/// Format a structured error response for `--json` command failures.
+pub fn format_error_response(data: Value) -> String {
+    let mut data_obj = data;
+    if let Some(obj) = data_obj.as_object_mut() {
+        obj.insert("schema_version".to_string(), json!(JSON_OUTPUT_VERSION));
+    }
+    json!({ "status": "error", "data": data_obj }).to_string()
+}
+
 // ── print_response ────────────────────────────────────────────────────────
 
 /// Print a command response to stdout.
@@ -75,6 +84,11 @@ pub fn format_response(mode: OutputMode, human_msg: &str, data: Value) -> String
 /// to stdout via `println!`.
 pub fn print_response(mode: OutputMode, human_msg: &str, data: Value) {
     println!("{}", format_response(mode, human_msg, data));
+}
+
+/// Print a structured `--json` error response to stdout.
+pub fn print_error_response(data: Value) {
+    println!("{}", format_error_response(data));
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────

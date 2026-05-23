@@ -404,6 +404,145 @@ fn json_flag_verify_is_parseable() {
 }
 
 #[test]
+fn verify_json_marks_missing_changeset_as_not_applyable() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let missing_change_id = "ab".repeat(32);
+    let output = ail()
+        .args(["verify", &missing_change_id, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["workflow_state"]["missing_changeset"], true);
+    assert_eq!(v["data"]["workflow_state"]["applyable"], false);
+    assert_eq!(
+        v["data"]["workflow_state"]["next_action"],
+        "create_or_fetch_changeset"
+    );
+    assert!(
+        v["data"]["workflow_state"]["repair_options"]
+            .as_array()
+            .expect("repair_options must be an array")
+            .iter()
+            .any(|option| option["code"] == "missing_changeset"),
+        "missing changeset must surface a repair option; got: {v}"
+    );
+}
+
+#[test]
+fn verify_json_prod_policy_blocked_is_not_applyable() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let change_id = create_sample_change(dir.path());
+
+    let output = ail()
+        .args(["verify", &change_id, "--profile", "prod", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["policy_report"]["status"], "blocked");
+    assert_eq!(v["data"]["workflow_state"]["approval_required"], true);
+    assert_eq!(v["data"]["workflow_state"]["applyable"], false);
+    assert_eq!(v["data"]["workflow_state"]["next_action"], "repair");
+    assert!(
+        v["data"]["workflow_state"]["repair_options"]
+            .as_array()
+            .expect("repair_options must be an array")
+            .iter()
+            .any(|option| option["code"] == "policy_blocked"),
+        "blocked prod policy must surface a repair option; got: {v}"
+    );
+}
+
+#[test]
+fn verify_json_marks_stale_base_as_rebase_required() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let change_id = create_sample_change(dir.path());
+
+    ail()
+        .args(["apply", &change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = ail()
+        .args(["verify", &change_id, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["workflow_state"]["rebase_required"], true);
+    assert_eq!(v["data"]["workflow_state"]["applyable"], false);
+    assert_eq!(v["data"]["workflow_state"]["next_action"], "rebase");
+    assert!(
+        v["data"]["workflow_state"]["repair_options"]
+            .as_array()
+            .expect("repair_options must be an array")
+            .iter()
+            .any(|option| option["code"] == "rebase_required"),
+        "stale changeset must surface a rebase repair option; got: {v}"
+    );
+}
+
+#[test]
+fn apply_json_rebase_required_includes_workflow_state() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let change_id = create_sample_change(dir.path());
+
+    ail()
+        .args(["apply", &change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = ail()
+        .args(["apply", &change_id, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("rebase required"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["data"]["error"], "rebase_required");
+    assert_eq!(v["data"]["workflow_state"]["rebase_required"], true);
+    assert_eq!(v["data"]["workflow_state"]["applyable"], false);
+    assert_eq!(v["data"]["workflow_state"]["next_action"], "rebase");
+    assert_eq!(
+        v["data"]["pre_apply_gate"]["workflow_state"]["rebase_required"],
+        true
+    );
+    assert!(
+        v["data"]["workflow_state"]["repair_options"]
+            .as_array()
+            .expect("repair_options must be an array")
+            .iter()
+            .any(|option| option["code"] == "rebase_required"),
+        "stale apply must surface a rebase repair option; got: {v}"
+    );
+}
+
+#[test]
 fn json_flag_apply_is_parseable() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
@@ -425,6 +564,12 @@ fn json_flag_apply_is_parseable() {
     );
     let id_str = v["data"]["new_snapshot_id"].as_str().unwrap();
     assert!(!id_str.is_empty(), "new_snapshot_id must be non-empty");
+    assert_eq!(v["data"]["workflow_state"]["applyable"], true);
+    assert_eq!(v["data"]["workflow_state"]["next_action"], "complete");
+    assert_eq!(
+        v["data"]["pre_apply_gate"]["workflow_state"]["applyable"],
+        true
+    );
 }
 
 #[test]
