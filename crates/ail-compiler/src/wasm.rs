@@ -13,9 +13,10 @@
 // Every `AnfBinding` becomes a WASM function with a real body emitted from
 // the ANF IR.  The codegen uses WASM locals to represent ANF let-bindings:
 //   - `AnfExpr::Literal(Int(n))` → `i64.const n` + `local.set`
-//   - `AnfExpr::Literal(Bool(b))` → `i32.const 0|1` + `local.set`
+//   - `AnfExpr::Literal(Bool(b))` → `i64.const 0|1` + `local.set`
 //   - `AnfExpr::Literal(Float(f))` → `f64.const f`
-//   - `AnfExpr::Literal(Text/Bytes/Unit)` → `i32.const 0` (opaque ref)
+//   - `AnfExpr::Literal(Text)` → packed `(ptr, len)` i64 into linear memory
+//   - `AnfExpr::Literal(Unit)` → `i32.const 0`
 //   - `AnfExpr::Var(n)` → `local.get <index>`
 //   - `AnfExpr::Call { func, args }` → `call <func_ref>` (host import)
 //   - `AnfExpr::If` → `block/if/else/end`
