@@ -712,7 +712,10 @@ fn disk_store_persists_change_for_compile() {
         .get_output()
         .clone();
     let change_json = parse_json_output(&change_output);
-    assert_eq!(change_json["data"]["status"], "draft", "change must default to draft");
+    assert_eq!(
+        change_json["data"]["status"], "draft",
+        "change must default to draft"
+    );
     let change_id = change_json["data"]["canonical_change"]["change_id"]
         .as_str()
         .expect("change_id must be present")
@@ -1546,6 +1549,101 @@ fn remote_submit_unknown_change_id_fails() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn remote_push_help_mentions_root() {
+    ail()
+        .args(["remote", "push", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--root"));
+}
+
+#[test]
+fn remote_push_pull_json_use_local_file_bundle_store() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let status_output = ail()
+        .args(["status", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let status_json = parse_json_output(&status_output);
+    let root = status_json["data"]["graph_root_hash"]
+        .as_str()
+        .expect("graph_root_hash must be present");
+
+    let push_output = ail()
+        .args(["remote", "push", "--root", root, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let push_json = parse_json_output(&push_output);
+    assert_eq!(push_json["status"], "ok");
+    assert_eq!(push_json["data"]["request"], "PushBundle");
+    assert_eq!(push_json["data"]["root"], root);
+    assert_eq!(
+        push_json["data"]["transport"],
+        "local_file_bundle_store+in_process"
+    );
+    assert_eq!(push_json["data"]["bundle_scope"], "single_root_object");
+    assert_eq!(push_json["data"]["object_count"], 1);
+    assert!(
+        push_json["data"]["note"]
+            .as_str()
+            .expect("note must be a string")
+            .contains("no network transport"),
+        "remote push must be honest about local transport; got: {push_json}"
+    );
+
+    let bundle_path = dir
+        .path()
+        .join(".ail")
+        .join("remote")
+        .join("bundles")
+        .join(format!("{root}.cbor"));
+    assert!(
+        bundle_path.exists(),
+        "push must persist a local bundle file"
+    );
+
+    let pull_output = ail()
+        .args(["remote", "pull", root, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let pull_json = parse_json_output(&pull_output);
+    assert_eq!(pull_json["status"], "ok");
+    assert_eq!(pull_json["data"]["request"], "PullBundle");
+    assert_eq!(pull_json["data"]["root"], root);
+    assert_eq!(pull_json["data"]["object_count"], 1);
+    assert_eq!(
+        pull_json["data"]["transport"],
+        "local_file_bundle_store+in_process"
+    );
+}
+
+#[test]
+fn remote_pull_missing_bundle_fails() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let root = "cd".repeat(32);
+
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    ail()
+        .args(["remote", "pull", &root, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("remote bundle not found"));
 }
 
 // ── G31: doctor ───────────────────────────────────────────────────────────

@@ -74,8 +74,9 @@ use ail_package::{
     PublishRequest, RegistryClient, SearchRequest, TrustLevel, VerifyOutcome, VerifyRequest,
 };
 use ail_remote::{
-    AgentKeypair, RemoteChangeSet, RemoteExchangeRequest, RemoteExchangeResponse,
-    RemoteSignerPolicy, RemoteSubmissionOutcome, SignerTrustTier, TrustedRemoteSigner,
+    AgentKeypair, FileBundleStore, ObjectBundle, RemoteChangeSet, RemoteExchangeRequest,
+    RemoteExchangeResponse, RemoteSignerPolicy, RemoteSubmissionOutcome, SignerTrustTier,
+    TrustedRemoteSigner,
 };
 use ail_runtime::{
     CapabilityManifest, ResourceLimits, RuntimeArg, RuntimeHost, RuntimeProfile, RuntimeValue,
@@ -100,6 +101,10 @@ const REMOTE_SUBMIT_TRANSPORT: &str = "in_process";
 const REMOTE_SUBMIT_KEY_SOURCE: &str = "ephemeral_in_process";
 const REMOTE_SUBMIT_NOTE: &str =
     "local in-process exchange only; no network transport or durable key config is used";
+const REMOTE_BUNDLE_TRANSPORT: &str = "local_file_bundle_store+in_process";
+const REMOTE_BUNDLE_SCOPE: &str = "single_root_object";
+const REMOTE_BUNDLE_NOTE: &str =
+    "local file bundle store only; no network transport or remote config is used";
 
 // ── Cli ───────────────────────────────────────────────────────────────────
 
@@ -430,6 +435,17 @@ enum RemoteCmd {
         /// Local signer key reference label. The current CLI uses an ephemeral key.
         #[arg(long)]
         signer: String,
+    },
+    /// Push one local object into the local file-backed bundle store.
+    Push {
+        /// Root object id to bundle. Only this object is included.
+        #[arg(long)]
+        root: String,
+    },
+    /// Pull one bundle from the local file-backed bundle store into the object store.
+    Pull {
+        /// Root object id of the stored bundle.
+        root: String,
     },
 }
 
@@ -1882,7 +1898,132 @@ async fn cmd_remote(mode: OutputMode, cmd: RemoteCmd, store: &StoreHandle) -> Re
         RemoteCmd::Submit { change_id, signer } => {
             cmd_remote_submit(mode, &change_id, &signer, store).await
         }
+        RemoteCmd::Push { root } => cmd_remote_push(mode, &root, store).await,
+        RemoteCmd::Pull { root } => cmd_remote_pull(mode, &root, store).await,
     }
+}
+
+async fn cmd_remote_push(
+    mode: OutputMode,
+    root_hex: &str,
+    store: &StoreHandle,
+) -> Result<(), CliError> {
+    let root = hex_to_object_id(root_hex)?;
+    let (bundle_store, bundle_store_path) = remote_file_bundle_store(store)?;
+    let object_bytes = store
+        .load_raw_object(&root)
+        .await?
+        .ok_or_else(|| CliError::NotFound(format!("object root not found: {root}")))?;
+
+    let mut objects = BTreeMap::new();
+    objects.insert(root, object_bytes);
+    let bundle = ObjectBundle::new(root, objects);
+    bundle
+        .verify_integrity()
+        .map_err(|e| CliError::Domain(format!("remote bundle invalid: {e}")))?;
+
+    let coordinator = Coordinator::new(
+        SnapshotId(0),
+        SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        },
+    );
+    let response = coordinator
+        .handle_remote_exchange(RemoteExchangeRequest::PushBundle(bundle.clone()))
+        .await;
+    let RemoteExchangeResponse::BundleAccepted { object_count, .. } = response else {
+        return Err(CliError::Domain(remote_exchange_error_message(response)));
+    };
+    bundle_store
+        .try_put_bundle(&bundle)
+        .map_err(|e| CliError::Domain(format!("remote bundle store failed: {e}")))?;
+
+    let bundle_store_path = bundle_store_path.display().to_string();
+    print_response(
+        mode,
+        &format!(
+            "remote push: {root}\ntransport: {REMOTE_BUNDLE_TRANSPORT}\nbundle store: {bundle_store_path}\nbundle scope: {REMOTE_BUNDLE_SCOPE}\nobject count: {object_count}\nnote: {REMOTE_BUNDLE_NOTE}"
+        ),
+        json!({
+            "request": "PushBundle",
+            "root": root.to_hex(),
+            "transport": REMOTE_BUNDLE_TRANSPORT,
+            "bundle_store_path": bundle_store_path,
+            "bundle_scope": REMOTE_BUNDLE_SCOPE,
+            "object_count": object_count,
+            "note": REMOTE_BUNDLE_NOTE,
+        }),
+    );
+    Ok(())
+}
+
+async fn cmd_remote_pull(
+    mode: OutputMode,
+    root_hex: &str,
+    store: &StoreHandle,
+) -> Result<(), CliError> {
+    let root = hex_to_object_id(root_hex)?;
+    let (bundle_store, bundle_store_path) = remote_file_bundle_store(store)?;
+    let bundle = bundle_store
+        .try_get_bundle(&root)
+        .map_err(|e| CliError::Domain(format!("remote bundle store failed: {e}")))?
+        .ok_or_else(|| CliError::NotFound(format!("remote bundle not found: {root}")))?;
+
+    let coordinator = Coordinator::new(
+        SnapshotId(0),
+        SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        },
+    );
+    let accepted = coordinator
+        .handle_remote_exchange(RemoteExchangeRequest::PushBundle(bundle))
+        .await;
+    if !matches!(accepted, RemoteExchangeResponse::BundleAccepted { .. }) {
+        return Err(CliError::Domain(remote_exchange_error_message(accepted)));
+    }
+    let response = coordinator
+        .handle_remote_exchange(RemoteExchangeRequest::PullBundle { root })
+        .await;
+    let RemoteExchangeResponse::Bundle(bundle) = response else {
+        return Err(CliError::Domain(remote_exchange_error_message(response)));
+    };
+
+    let object_count = bundle.objects.len();
+    for (object_id, bytes) in bundle.objects {
+        store.save_raw_object(&object_id, bytes).await?;
+    }
+
+    let bundle_store_path = bundle_store_path.display().to_string();
+    print_response(
+        mode,
+        &format!(
+            "remote pull: {root}\ntransport: {REMOTE_BUNDLE_TRANSPORT}\nbundle store: {bundle_store_path}\nbundle scope: {REMOTE_BUNDLE_SCOPE}\nobject count: {object_count}\nnote: {REMOTE_BUNDLE_NOTE}"
+        ),
+        json!({
+            "request": "PullBundle",
+            "root": root.to_hex(),
+            "transport": REMOTE_BUNDLE_TRANSPORT,
+            "bundle_store_path": bundle_store_path,
+            "bundle_scope": REMOTE_BUNDLE_SCOPE,
+            "object_count": object_count,
+            "note": REMOTE_BUNDLE_NOTE,
+        }),
+    );
+    Ok(())
+}
+
+fn remote_file_bundle_store(store: &StoreHandle) -> Result<(FileBundleStore, PathBuf), CliError> {
+    let StoreHandle::File { ail_dir, .. } = store else {
+        return Err(CliError::Domain(
+            "remote push/pull currently require an initialized file-backed .ail project; no network transport or remote config is used".to_string(),
+        ));
+    };
+    let path = ail_dir.join("remote").join("bundles");
+    let bundle_store = FileBundleStore::new(path.clone())
+        .map_err(|e| CliError::Domain(format!("remote bundle store failed: {e}")))?;
+    Ok((bundle_store, path))
 }
 
 async fn cmd_remote_submit(

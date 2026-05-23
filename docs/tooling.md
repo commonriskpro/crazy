@@ -728,5 +728,6 @@ The current implementation resolves the original tooling questions as follows:
 | `policy list` / `policy add` | Implemented. Rules are persisted as text entries; `policy check` parses capability deny/allow rules from the list. |
 | `package init` / `package install` / `package search` | Implemented against the local in-process registry. `install` adds to the lockfile; `search` queries by name prefix. |
 | `remote submit` | Implemented as `ail remote submit <change-id> --signer <key-ref> [--json]` against the local in-process `Coordinator::handle_remote_exchange` boundary. It does not claim network transport or durable key configuration. |
+| `remote push` / `remote pull` | Implemented as `ail remote push --root <object-id> [--json]` and `ail remote pull <root> [--json]` for initialized file-backed projects. The current bundle scope is one root object only, persisted under `.ail/remote/bundles/` and checked through the in-process bundle exchange boundary. It does not claim network transport or remote config loading. |
 
 Code references: `crates/ail-cli/src/main.rs`, `crates/ail-change/src/parser.rs`, `crates/ail-storage/src/approval.rs`.
