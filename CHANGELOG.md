@@ -27,3 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signing flow stub, lockstep versioning rationale.
 - **Migration guide** (`docs/migration-guide.md`): user-facing v0 → v1 upgrade
   instructions and rollback procedure via snapshot restore.
+- **Release metadata preflight** (`scripts/release-preflight.sh`): verifies that
+  the requested release version matches `Cargo.toml`, workspace crates use
+  lockstep versioning, and the changelog has a release heading before tagging.

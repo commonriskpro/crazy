@@ -17,7 +17,7 @@ This map ties directories and crates to responsibilities. It is based on the cur
 | `crates/` | Rust workspace crates for the AIL toolchain. |
 | `docs/` | Canonical design, implementation, status, and maintainer documentation. |
 | `fuzz/` | `cargo-fuzz` targets for parser, CBOR, and runtime fuzzing. |
-| `scripts/` | Release helper scripts, currently `tag-release.sh`. |
+| `scripts/` | Release helper scripts, including tag creation and metadata preflight. |
 | `.github/workflows/` | CI workflow configuration. |
 | `.atl/` | Local skill-registry cache/docs, not language source of truth. |
 

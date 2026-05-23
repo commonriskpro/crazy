@@ -57,9 +57,13 @@ The script performs these steps:
 
 1. **Validates** that `VERSION` is set and matches `MAJOR.MINOR.PATCH`.
 2. **Checks** that the working tree is clean (no staged or unstaged changes).
-3. **Runs** `cargo test --workspace` — all tests must pass.
-4. **Runs** `cargo deny check` — no license violations, no known advisories.
-5. **Creates** an annotated tag `v$VERSION` with a standard message.
+3. **Runs** `scripts/release-preflight.sh` to verify release metadata:
+   `VERSION` must match `workspace.package.version`, workspace crates must use
+   `version.workspace = true`, and `CHANGELOG.md` must contain a release heading
+   for `VERSION`.
+4. **Runs** `cargo test --workspace` — all tests must pass.
+5. **Runs** `cargo deny check` — no license violations, no known advisories.
+6. **Creates** an annotated tag `v$VERSION` with a standard message.
 
 After the script exits cleanly, push the tag:
 
@@ -103,3 +107,13 @@ Remove the strict regex check in the script before tagging an RC.
 Update `CHANGELOG.md` with every PR that adds a user-visible change. Use the
 `[Unreleased]` section. At release time, rename it to `[VERSION] - YYYY-MM-DD`
 and add a new empty `[Unreleased]` above it.
+
+For CI or PR validation before a release has been cut, run:
+
+```sh
+VERSION=$(awk '/^\[workspace\.package\]$/ { p = 1; next } /^\[/ { p = 0 } p && /^version/ { gsub(/"/, "", $3); print $3; exit }' Cargo.toml) \
+  ./scripts/release-preflight.sh --allow-unreleased
+```
+
+`--allow-unreleased` keeps metadata checks active while allowing the changelog to
+remain under `[Unreleased]` until the actual release branch is prepared.
