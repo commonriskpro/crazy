@@ -10,6 +10,7 @@ use tempfile::TempDir;
 
 use crate::error::StorageResult;
 use crate::object::{ObjectId, ObjectStore, RawObject};
+use crate::retention::{EnumerableObjectStore, MutableObjectStore};
 
 /// A filesystem-backed `ObjectStore` rooted in a temporary directory.
 ///
@@ -43,6 +44,20 @@ impl TempfileObjectStore {
     }
 }
 
+fn object_id_from_hex(hex: &str) -> Option<ObjectId> {
+    if hex.len() != 64 {
+        return None;
+    }
+
+    let mut bytes = [0u8; 32];
+    for (idx, byte) in bytes.iter_mut().enumerate() {
+        let start = idx * 2;
+        *byte = u8::from_str_radix(&hex[start..start + 2], 16).ok()?;
+    }
+
+    Some(ObjectId::from(bytes))
+}
+
 impl ObjectStore for TempfileObjectStore {
     async fn put(&self, object: RawObject) -> StorageResult<ObjectId> {
         let id = ObjectId::from_bytes(&object.0);
@@ -66,5 +81,86 @@ impl ObjectStore for TempfileObjectStore {
 
     async fn exists(&self, id: &ObjectId) -> StorageResult<bool> {
         Ok(self.object_path(id).exists())
+    }
+}
+
+impl EnumerableObjectStore for TempfileObjectStore {
+    async fn get(&self, id: &ObjectId) -> StorageResult<Option<RawObject>> {
+        ObjectStore::get(self, id).await
+    }
+
+    async fn list_object_ids(&self) -> StorageResult<Vec<ObjectId>> {
+        let mut ids = Vec::new();
+        for entry in std::fs::read_dir(&self.root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+
+            if let Some(name) = entry.file_name().to_str()
+                && let Some(id) = object_id_from_hex(name)
+            {
+                ids.push(id);
+            }
+        }
+        ids.sort();
+        Ok(ids)
+    }
+}
+
+impl MutableObjectStore for TempfileObjectStore {
+    async fn delete_object(&self, id: &ObjectId) -> StorageResult<Option<u64>> {
+        let path = self.object_path(id);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+
+        std::fs::remove_file(path)?;
+        Ok(Some(metadata.len()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+    use crate::retention::run_gc;
+
+    #[tokio::test]
+    async fn tempfile_list_object_ids_returns_stored_objects() {
+        let store = TempfileObjectStore::new().expect("tempdir creation must succeed");
+        let id = store
+            .put(RawObject(b"tempfile object".to_vec()))
+            .await
+            .expect("put must succeed");
+
+        let ids = store.list_object_ids().await.expect("list must succeed");
+
+        assert_eq!(ids, vec![id]);
+    }
+
+    #[tokio::test]
+    async fn tempfile_run_gc_deletes_unreachable_object() {
+        let store = TempfileObjectStore::new().expect("tempdir creation must succeed");
+        let keep_id = store
+            .put(RawObject(b"keep".to_vec()))
+            .await
+            .expect("put keep");
+        let drop_id = store
+            .put(RawObject(b"drop".to_vec()))
+            .await
+            .expect("put drop");
+
+        let report = run_gc(&store, &BTreeSet::from([keep_id]))
+            .await
+            .expect("gc must succeed");
+
+        assert_eq!(report.objects_examined, 2);
+        assert_eq!(report.objects_deleted, 1);
+        assert!(store.exists(&keep_id).await.expect("exists keep"));
+        assert!(!store.exists(&drop_id).await.expect("exists drop"));
     }
 }

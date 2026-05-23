@@ -46,15 +46,18 @@ pub use branch::{Branch, BranchRegistry, BranchStore};
 pub use diff::{ObjectBackedStructuralDiffStore, StructuralDiff, StructuralDiffStore};
 pub use export::{ExportBundle, ExportScope, build_export_bundle};
 pub use graph::{ChangeSetLogEntry, GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
-pub use integrity::{IntegrityInput, IntegrityIssue, IntegrityReport, verify_integrity};
+pub use integrity::{
+    IntegrityInput, IntegrityIssue, IntegrityReport, ObjectIntegrityReport, verify_integrity,
+    verify_object_store_integrity,
+};
 pub use migration::{
     DomainMigration, DomainVersions, Migration, MigrationCatalog, MigrationDryRunReport,
     MigrationDryRunStep, MigrationError, MigrationOutput, MigrationReport, V0ToV1Migration,
     V1ToV2Migration, V2ToV3Migration,
 };
 pub use retention::{
-    CompactionReport, GcReport, MutableGraphStore, RetentionPolicy, compact_snapshots,
-    gc_unreferenced,
+    CompactionReport, EnumerableObjectStore, GcReport, MutableGraphStore, MutableObjectStore,
+    RetentionPolicy, compact_snapshots, gc_unreferenced,
 };
 pub use tag::{ReleaseMetadata, Tag, TagRegistry, TagStore};
 pub use tombstone::{ObjectBackedTombstoneStore, Tombstone, TombstoneStore};
