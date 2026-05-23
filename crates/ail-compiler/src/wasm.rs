@@ -81,6 +81,7 @@ pub enum WasmTypeDescriptor {
     Variant {
         tags: Vec<String>,
     },
+    Tuple(Vec<WasmTypeDescriptor>),
     List(Box<WasmTypeDescriptor>),
     Option(Box<WasmTypeDescriptor>),
     Result {
@@ -100,7 +101,10 @@ pub fn derive_wasm_type(expr: &AnfExpr) -> WasmTypeDescriptor {
         AnfExpr::VariantNew { tag, .. } => WasmTypeDescriptor::Variant {
             tags: vec![tag.clone()],
         },
-        AnfExpr::ListNew(_) | AnfExpr::TupleNew(_) => {
+        AnfExpr::TupleNew(elems) => {
+            WasmTypeDescriptor::Tuple(elems.iter().map(derive_wasm_type).collect())
+        }
+        AnfExpr::ListNew(_) => {
             WasmTypeDescriptor::List(Box::new(WasmTypeDescriptor::Scalar(WasmScalarType::I64)))
         }
         AnfExpr::Let { body, .. } => derive_wasm_type(body),
@@ -808,6 +812,7 @@ fn is_structured_descriptor(desc: &WasmTypeDescriptor) -> bool {
         desc,
         WasmTypeDescriptor::Record { .. }
             | WasmTypeDescriptor::Variant { .. }
+            | WasmTypeDescriptor::Tuple(_)
             | WasmTypeDescriptor::List(_)
             | WasmTypeDescriptor::Option(_)
             | WasmTypeDescriptor::Result { .. }
@@ -2651,6 +2656,22 @@ mod tests {
         assert_eq!(
             ty,
             WasmTypeDescriptor::List(Box::new(WasmTypeDescriptor::Scalar(WasmScalarType::I64)))
+        );
+    }
+
+    #[test]
+    fn wasm_type_tuple_new_is_tuple_in_declaration_order() {
+        let expr = AnfExpr::TupleNew(vec![
+            AnfExpr::Literal(LiteralValue::Int(1)),
+            AnfExpr::Literal(LiteralValue::Unit),
+        ]);
+        let ty = derive_wasm_type(&expr);
+        assert_eq!(
+            ty,
+            WasmTypeDescriptor::Tuple(vec![
+                WasmTypeDescriptor::Scalar(WasmScalarType::I64),
+                WasmTypeDescriptor::Scalar(WasmScalarType::I32),
+            ])
         );
     }
 
