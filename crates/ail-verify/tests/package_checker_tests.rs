@@ -9,6 +9,7 @@
 //  - Unsafe package is always blocking (any profile).
 //  - Empty manifest slice produces empty output.
 
+use ail_package::assumption::{AssumptionState, PackageAssumption};
 use ail_package::manifest::{PackageDef, PackageManifest};
 use ail_package::trust::TrustLevel;
 use ail_verify::package_checker::PackageTrustChecker;
@@ -38,6 +39,20 @@ fn make_manifest(name: &str, version: &str, trust: TrustLevel) -> PackageManifes
         graph_schema: None,
         core_ir_schema: None,
     })
+}
+
+fn make_assumed_manifest(name: &str, version: &str) -> PackageManifest {
+    let mut manifest = make_manifest(name, version, TrustLevel::Assumed);
+    manifest.boundaries = vec!["boundary.Stripe".to_string()];
+    manifest.assumptions = vec![PackageAssumption {
+        id: "stripe_idempotency".to_string(),
+        claim: "Stripe honors idempotency keys".to_string(),
+        boundary: "boundary.Stripe".to_string(),
+        owner: "team.payments".to_string(),
+        expires: Some("2026-12-31".to_string()),
+        state: AssumptionState::Active,
+    }];
+    manifest
 }
 
 // ── Spec scenario: Unverified package blocked in prod profile ─────────────
@@ -70,13 +85,20 @@ fn unverified_blocked_in_prod_profile() {
 // THEN the report contains an entry with state `assumed` and blocking: false
 #[test]
 fn assumed_non_blocking_in_dev_profile() {
-    let m = make_manifest("infra.logging", "1.0.0", TrustLevel::Assumed);
+    let m = make_assumed_manifest("infra.logging", "1.0.0");
     let entries = PackageTrustChecker::check(&[m], "dev");
 
     assert_eq!(entries.len(), 1);
     let e = &entries[0];
     assert_eq!(e.state, VerificationState::Assumed, "state must be Assumed");
     assert!(!e.is_blocking(), "Assumed in dev must not block");
+    assert!(
+        e.evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("stripe_idempotency"),
+        "Assumed package should report the assumption evidence"
+    );
 }
 
 // ── Spec scenario: Verified package always passes ─────────────────────────
@@ -124,7 +146,7 @@ fn multiple_manifests_one_entry_each() {
     let manifests = vec![
         make_manifest("pkg.a", "1.0.0", TrustLevel::Verified),
         make_manifest("pkg.b", "1.0.0", TrustLevel::Unverified),
-        make_manifest("pkg.c", "1.0.0", TrustLevel::Assumed),
+        make_assumed_manifest("pkg.c", "1.0.0"),
     ];
 
     let entries = PackageTrustChecker::check(&manifests, "prod");
@@ -138,7 +160,7 @@ fn multiple_manifests_one_entry_each() {
 // TRIANGULATE: Assumed in prod meets the Assumed minimum → non-blocking.
 #[test]
 fn assumed_meets_prod_minimum() {
-    let m = make_manifest("infra.db", "2.0.0", TrustLevel::Assumed);
+    let m = make_assumed_manifest("infra.db", "2.0.0");
     let entries = PackageTrustChecker::check(&[m], "prod");
 
     let e = &entries[0];
@@ -146,5 +168,49 @@ fn assumed_meets_prod_minimum() {
     assert!(
         !e.is_blocking(),
         "Assumed meets prod minimum (Assumed); must not block"
+    );
+}
+
+#[test]
+fn unverified_below_prod_minimum_sets_blocking_field() {
+    let m = make_manifest("payments.stripe", "2.3.1", TrustLevel::Unverified);
+    let entries = PackageTrustChecker::check(&[m], "prod");
+    let e = &entries[0];
+
+    assert_eq!(e.state, VerificationState::Unverified);
+    assert!(e.blocking, "entry.blocking must reflect the prod gate");
+    assert!(e.is_blocking(), "helper must agree with entry.blocking");
+}
+
+#[test]
+fn assumed_without_assumptions_is_blocking_unverified() {
+    let m = make_manifest("payments.stripe", "2.3.1", TrustLevel::Assumed);
+    let entries = PackageTrustChecker::check(&[m], "prod");
+    let e = &entries[0];
+
+    assert_eq!(e.state, VerificationState::Unverified);
+    assert!(e.blocking, "Assumed without assumptions must block");
+    assert!(
+        e.evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("E_PACKAGE_ASSUMPTION_MISSING")
+    );
+}
+
+#[test]
+fn assumed_with_undeclared_assumption_boundary_is_failed() {
+    let mut m = make_assumed_manifest("payments.stripe", "2.3.1");
+    m.boundaries = vec!["boundary.Other".to_string()];
+    let entries = PackageTrustChecker::check(&[m], "prod");
+    let e = &entries[0];
+
+    assert_eq!(e.state, VerificationState::Failed);
+    assert!(e.blocking);
+    assert!(
+        e.evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains("E_PACKAGE_ASSUMPTION_FLOATING")
     );
 }

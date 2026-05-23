@@ -26,6 +26,7 @@
 // - `check_version_constraints`: validates semver expressions on import declarations
 // - `check_deprecated_exports`: flags deprecated exports as advisory entries
 
+use ail_package::assumption::AssumptionState;
 use ail_package::export::ExportStability;
 use ail_package::manifest::PackageManifest;
 use ail_package::trust::TrustLevel;
@@ -98,6 +99,12 @@ impl PackageTrustChecker {
             };
         }
 
+        if trust == TrustLevel::Assumed {
+            if let Some(entry) = Self::check_assumed_package_metadata(manifest, profile_name) {
+                return entry;
+            }
+        }
+
         if trust.satisfies(min_trust) {
             // At or above the minimum — determine state by actual level.
             let state = match trust {
@@ -110,7 +117,19 @@ impl PackageTrustChecker {
                 claim: format!("package-trust[{profile_name}]"),
                 state,
                 scope,
-                evidence: None,
+                evidence: if trust == TrustLevel::Assumed {
+                    Some(format!(
+                        "package assumptions are boundary-scoped: {}",
+                        manifest
+                            .assumptions
+                            .iter()
+                            .map(|a| a.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                } else {
+                    None
+                },
                 blocking: false,
                 repair_options: vec![],
             }
@@ -123,10 +142,103 @@ impl PackageTrustChecker {
                 evidence: Some(format!(
                     "package trust level `{trust}` does not meet profile minimum `{min_trust}`"
                 )),
-                blocking: false,
-                repair_options: vec![],
+                blocking: true,
+                repair_options: vec!["raise_package_trust_or_select_lower_profile".into()],
             }
         }
+    }
+
+    fn check_assumed_package_metadata(
+        manifest: &PackageManifest,
+        profile_name: &str,
+    ) -> Option<VerificationEntry> {
+        let scope = format!("package:{}@{}", manifest.name, manifest.version);
+        let claim = format!("package-trust[{profile_name}]");
+
+        if manifest.assumptions.is_empty() {
+            return Some(VerificationEntry {
+                claim,
+                state: VerificationState::Unverified,
+                scope,
+                evidence: Some(
+                    "E_PACKAGE_ASSUMPTION_MISSING: assumed package must declare boundary-scoped assumptions"
+                        .to_string(),
+                ),
+                blocking: true,
+                repair_options: vec!["add_package_assumption_with_boundary".into()],
+            });
+        }
+
+        if manifest.boundaries.is_empty() {
+            return Some(VerificationEntry {
+                claim,
+                state: VerificationState::Unverified,
+                scope,
+                evidence: Some(
+                    "E_PACKAGE_BOUNDARY_MISSING: assumed package must declare trust boundaries"
+                        .to_string(),
+                ),
+                blocking: true,
+                repair_options: vec!["add_package_boundary".into()],
+            });
+        }
+
+        for assumption in &manifest.assumptions {
+            if assumption.id.trim().is_empty()
+                || assumption.claim.trim().is_empty()
+                || assumption.boundary.trim().is_empty()
+                || assumption.owner.trim().is_empty()
+            {
+                return Some(VerificationEntry {
+                    claim,
+                    state: VerificationState::Failed,
+                    scope,
+                    evidence: Some(
+                        "E_PACKAGE_ASSUMPTION_INVALID: assumption must declare id, claim, boundary, and owner"
+                            .to_string(),
+                    ),
+                    blocking: true,
+                    repair_options: vec!["complete_package_assumption_metadata".into()],
+                });
+            }
+
+            if !manifest
+                .boundaries
+                .iter()
+                .any(|b| b == &assumption.boundary)
+            {
+                return Some(VerificationEntry {
+                    claim,
+                    state: VerificationState::Failed,
+                    scope,
+                    evidence: Some(format!(
+                        "E_PACKAGE_ASSUMPTION_FLOATING: assumption '{}' references undeclared boundary '{}'",
+                        assumption.id, assumption.boundary
+                    )),
+                    blocking: true,
+                    repair_options: vec!["declare_assumption_boundary".into()],
+                });
+            }
+
+            if matches!(
+                assumption.state,
+                AssumptionState::Expired | AssumptionState::Revoked | AssumptionState::FailedReview
+            ) {
+                return Some(VerificationEntry {
+                    claim,
+                    state: VerificationState::Failed,
+                    scope,
+                    evidence: Some(format!(
+                        "E_PACKAGE_ASSUMPTION_INACTIVE: assumption '{}' is {:?}",
+                        assumption.id, assumption.state
+                    )),
+                    blocking: true,
+                    repair_options: vec!["renew_or_replace_package_assumption".into()],
+                });
+            }
+        }
+
+        None
     }
 }
 
@@ -144,10 +256,7 @@ impl PackageTrustChecker {
         let mut entries = Vec::new();
         for m in manifests {
             for import in &m.imports {
-                let scope = format!(
-                    "import:{}@{}@{}",
-                    import.source_package, m.name, m.version
-                );
+                let scope = format!("import:{}@{}@{}", import.source_package, m.name, m.version);
                 let entry = match &import.version_constraint {
                     None => VerificationEntry {
                         claim: "version-constraint".to_string(),
@@ -241,6 +350,7 @@ impl VerificationEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ail_package::assumption::{AssumptionState, PackageAssumption};
     use ail_package::manifest::{PackageDef, PackageManifest};
     use ail_package::trust::TrustLevel;
 
@@ -268,6 +378,20 @@ mod tests {
         })
     }
 
+    fn make_assumed_manifest(name: &str) -> PackageManifest {
+        let mut manifest = make_manifest(name, TrustLevel::Assumed);
+        manifest.boundaries = vec!["boundary.Stripe".to_string()];
+        manifest.assumptions = vec![PackageAssumption {
+            id: "stripe_idempotency".to_string(),
+            claim: "Stripe honors idempotency keys".to_string(),
+            boundary: "boundary.Stripe".to_string(),
+            owner: "team.payments".to_string(),
+            expires: Some("2026-12-31".to_string()),
+            state: AssumptionState::Active,
+        }];
+        manifest
+    }
+
     // ── Spec scenario: Unverified package blocked in prod profile ─────────
     // GIVEN a PackageManifest with trust_level: Unverified
     // AND verification runs with profile `prod`
@@ -291,7 +415,7 @@ mod tests {
     // THEN the report contains an entry with state `assumed` and blocking: false
     #[test]
     fn assumed_non_blocking_in_dev() {
-        let m = make_manifest("infra.logging", TrustLevel::Assumed);
+        let m = make_assumed_manifest("infra.logging");
         let entries = PackageTrustChecker::check(&[m], "dev");
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
@@ -335,7 +459,7 @@ mod tests {
     // prod minimum IS Assumed, so Assumed should PASS in prod).
     #[test]
     fn assumed_passes_in_prod() {
-        let m = make_manifest("payments.stripe", TrustLevel::Assumed);
+        let m = make_assumed_manifest("payments.stripe");
         let entries = PackageTrustChecker::check(&[m], "prod");
         let e = &entries[0];
         assert_eq!(e.state, VerificationState::Assumed);
@@ -355,6 +479,48 @@ mod tests {
         assert!(
             !e.is_blocking(),
             "Unverified meets dev minimum; must not block"
+        );
+    }
+
+    #[test]
+    fn unverified_below_profile_minimum_sets_blocking_field() {
+        let m = make_manifest("experimental.lib", TrustLevel::Unverified);
+        let entries = PackageTrustChecker::check(&[m], "prod");
+        let e = &entries[0];
+        assert_eq!(e.state, VerificationState::Unverified);
+        assert!(e.blocking, "report entry must carry blocking=true");
+        assert!(e.is_blocking(), "helper must agree with blocking field");
+    }
+
+    #[test]
+    fn assumed_without_assumptions_is_blocking_unverified() {
+        let m = make_manifest("payments.stripe", TrustLevel::Assumed);
+        let entries = PackageTrustChecker::check(&[m], "prod");
+        let e = &entries[0];
+        assert_eq!(e.state, VerificationState::Unverified);
+        assert!(e.blocking, "Assumed without assumptions must block");
+        assert!(
+            e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_PACKAGE_ASSUMPTION_MISSING")
+        );
+    }
+
+    #[test]
+    fn assumed_with_floating_assumption_boundary_is_failed() {
+        let mut m = make_assumed_manifest("payments.stripe");
+        m.boundaries.clear();
+        m.boundaries.push("boundary.Other".to_string());
+        let entries = PackageTrustChecker::check(&[m], "prod");
+        let e = &entries[0];
+        assert_eq!(e.state, VerificationState::Failed);
+        assert!(e.blocking);
+        assert!(
+            e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("E_PACKAGE_ASSUMPTION_FLOATING")
         );
     }
 
