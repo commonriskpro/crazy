@@ -170,9 +170,11 @@ impl SchemaField {
 ///
 /// This is the minimal boundary protocol: a comma-separated list of
 /// `key=value` pairs.  Empty payloads and empty schemas are always valid.
-fn parse_fields(payload: &[u8]) -> HashMap<String, String> {
-    let s = String::from_utf8_lossy(payload);
-    s.split(',')
+fn parse_fields(payload: &[u8]) -> Result<HashMap<String, String>, SchemaValidationError> {
+    let s = std::str::from_utf8(payload).map_err(|_| SchemaValidationError {
+        message: "PayloadDecodeError: payload must be valid UTF-8".to_string(),
+    })?;
+    Ok(s.split(',')
         .filter_map(|pair| {
             let pair = pair.trim();
             if pair.is_empty() {
@@ -187,7 +189,7 @@ fn parse_fields(payload: &[u8]) -> HashMap<String, String> {
                 }
             }
         })
-        .collect()
+        .collect())
 }
 
 /// Validate that all `required_fields` are present as keys in `payload`.
@@ -198,7 +200,7 @@ fn validate_fields(
     if required_fields.is_empty() {
         return Ok(());
     }
-    let fields = parse_fields(payload);
+    let fields = parse_fields(payload)?;
     for field in required_fields {
         validate_field_path(&fields, field, "")?;
     }
