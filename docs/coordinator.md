@@ -1,8 +1,8 @@
 # Coordinator / multi-agent serialization
 
-<!-- Implementation Status: fully implemented in crates/ail-coordinator. Coordinator, rebase, conflict classification, semantic merge, and remote submission verification all exist. Conservative rebase (single committed diff) is Phase 13 behavior. -->
+<!-- Status: Implemented subset. `ail-coordinator` contains Coordinator, rebase, conflict classification, semantic merge, and remote submission verification for the current milestone. Durable multi-hop collaboration remains target design. -->
 
-> Full extracted design. Related: [AI Change Language](change-language.md), [Storage](storage.md), [Runtime](runtime.md).
+> Target design. Current implementation scope is called out in the status note and Implementation Notes. Related: [AI Change Language](change-language.md), [Storage](storage.md), [Runtime](runtime.md).
 
 ## Propósito
 

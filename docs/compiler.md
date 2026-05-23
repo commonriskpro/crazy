@@ -1,8 +1,8 @@
 # Compiler pipeline
 
-<!-- Implementation Status: graph-to-Core-IR-to-ANF-to-WASM is implemented with hash chains and source maps. Native body lowering (Phase 8) complete for arithmetic, control-flow (If/Loop/Match), data structures (records/variants/lists/tuples), text literals, and EffectCall. Remaining stubs: concurrency primitives, channels, dynamic dispatch, resource acquire/release. -->
+<!-- Status: Implemented subset. Graph-to-Core-IR-to-ANF-to-WASM exists with hash chains and source maps for the current executable surface. Native body lowering covers arithmetic, control-flow (If/Loop/Match), data structures (records/variants/lists/tuples), text literals, and EffectCall; concurrency primitives, channels, dynamic dispatch, and resource acquire/release remain trap stubs or future work. -->
 
-> Full extracted design. Related: [Core IR](core-ir.md), [Verification](verification.md), [Runtime](runtime.md), [Storage](storage.md).
+> Target design. Current implementation scope is called out in the status note and Implementation Notes. Related: [Core IR](core-ir.md), [Verification](verification.md), [Runtime](runtime.md), [Storage](storage.md).
 
 ## Artefacto ejecutable
 
@@ -24,7 +24,7 @@ checkout.verification.json
 
 El WASM corre en un runtime host que controla efectos externos.
 
-## Compiler pipeline: propuesta completa
+## Compiler pipeline: target design
 
 El compiler convierte snapshots verificados del Semantic Graph en artefactos ejecutables y derivados.
 
@@ -316,8 +316,8 @@ It produces platform-native ELF/Mach-O/COFF object files with:
 - Capability manifest (same schema as WASM backend).
 - Sealed hash chain: `native_hash = blake3(anf_ir_hash || native_bytes)`.
 
-Phase 8 expression lowering is now implemented. The following ANF expression
-families produce real Cranelift IR (no longer trap stubs):
+Phase 8 expression lowering now covers this implemented subset. The following
+ANF expression families produce real Cranelift IR instead of trap stubs:
 - Extended arithmetic: `i64.div_s`, `i64.rem_s`, `i64.and`, `i64.or`, comparisons, `i64.neg`, `i64.eqz`
 - Control flow: `If`, `ShortCircuitAnd`, `ShortCircuitOr`, `Seq`, `RuntimeCheck`
 - Loops: `Loop`, `Break`, `Continue`, `WhileLoop`
@@ -523,15 +523,15 @@ Meaning: after optimization/codegen, validate output preserves ANF/Core semantic
 | Parser | Hand-written ACL parser and hand-written expression parser for the current subset; previous `chumsky`/`lalrpop` placeholder is reversed. |
 | ANF serialization | Exact format decided during implementation; must be deterministic and schema-versioned |
 | SSA / backend | Cranelift for WASM v1. LLVM/native added later if needed. Custom SSA not required. |
-| WASM ABI layout | Implemented: records (i64 fields at 8-byte offsets), variants/Option/Result (i32 tag at offset 0, i64 payload at offset 8), lists (i64 count at offset 0, i64 elements). Descriptors in `WasmArtifact::export_types`. Structured EffectCall results via `host_call_write`. |
+| WASM ABI layout | Implemented subset: records (i64 fields at 8-byte offsets), variants/Option/Result (i32 tag at offset 0, i64 payload at offset 8), lists (i64 count at offset 0, i64 elements). Descriptors in `WasmArtifact::export_types`. Structured EffectCall results via `host_call_write`. Rich ABI/value-layout parity remains validation work. |
 | Memory management | RC vs GC deferred to implementation spike — see [Risks](risks.md) V-08 |
 | Translation validation | Required for `prod`/`critical`; scope per profile. Cranelift source-map and capability-boundary preservation is a validation spike — see [Risks](risks.md) V-03 |
-| Native backend | Cranelift (Phase 8, implemented). `emit_native` produces ELF/Mach-O/COFF with provenance + capability manifest. Phase 8 lowering complete for arithmetic, control-flow, loops, match, text literals, records/variants/lists/tuples, EffectCall. Remaining trap stubs: concurrency, dynamic dispatch, resource lifecycle (Phase 9+). |
+| Native backend | Cranelift implemented subset. `emit_native` produces ELF/Mach-O/COFF with provenance + capability manifest. Phase 8 lowering covers arithmetic, control-flow, loops, match, text literals, records/variants/lists/tuples, and EffectCall. Remaining trap stubs: concurrency, dynamic dispatch, resource lifecycle (Phase 9+). |
 
 ### Implementation Notes
 
 - `emit_wasm` emits executable bodies for integer/bool/control-flow expressions, `AnfExpr::EffectCall` (via `ail/host_call`), and all compound types: `RecordNew`, `VariantNew`, `ListNew`, `TupleNew`.
-- The typed WASM/runtime ABI is implemented: `WasmArtifact::export_types` maps each exported binding name to its `WasmTypeDescriptor`, and the runtime uses `ValueDecoder::decode` via `RuntimeInstance::invoke_typed` to reconstruct `StructuredValue` from linear memory.
+- A typed WASM/runtime boundary subset exists: `WasmArtifact::export_types` maps each exported binding name to its `WasmTypeDescriptor`, and the runtime uses `ValueDecoder::decode` via `RuntimeInstance::invoke_typed` to reconstruct `StructuredValue` from linear memory. This is not full rich ABI/value-layout parity.
 - Structured `EffectCall` results (where the binding body is a Record/Variant/List type) use `ail/host_call_write` instead of `ail/host_call`; the host writes response bytes to `result_buffer_offset` in WASM memory. `WasmArtifact::result_buffer_offset` exposes this offset for callers.
 - Memory layout: records store i64 fields at 8-byte offsets from the base pointer; variants store an i32 tag at offset 0 and an i64 payload at offset 8; lists store an i64 count at offset 0 followed by i64 elements.
 - `emit_native` (Phase 8) now emits real Cranelift IR for arithmetic, control-flow (If/Loop/Match/ShortCircuit/Seq/RuntimeCheck), text literals, memory (records/variants/lists/tuples via stack slots), and EffectCall (imported `host_call`). Concurrency and resource primitives remain as trap stubs.

@@ -1,10 +1,10 @@
 # Standard library shape
 
-<!-- Implementation Status: `ail-stdlib` contains modules matching the semantic-core shape; service capabilities/adapters remain package/runtime concerns. -->
+<!-- Status: Implemented subset. `ail-stdlib` contains semantic-core module descriptors; service capabilities/adapters, compatibility policy, and production-grade API hardening remain package/runtime or future product work. -->
 
-> Full extracted design. Related: [Type system](type-system.md), [Runtime](runtime.md), [Packages](packages.md).
+> Target design. Current implementation scope is called out in the status note and Implementation Notes. Related: [Type system](type-system.md), [Runtime](runtime.md), [Packages](packages.md).
 
-## Standard library shape: propuesta completa
+## Standard library shape: target design
 
 La standard library define la semántica común del lenguaje. No debe ser un framework, pero tampoco puede limitarse a tipos puros si el lenguaje pretende ser general-purpose.
 
@@ -662,11 +662,11 @@ unsafe requires approval
 
 ### Implementation Notes
 
-The current `ail-stdlib` implementation resolves the original v1 questions this way:
+The current implemented `ail-stdlib` subset resolves the original v1 questions this way:
 
 | Topic | Status |
 |-------|--------|
-| v1 size | Semantic-core modules are implemented broadly across `option`, `result`, `numeric`, `decimal`, `text`, `bytes`, collections, time, random, crypto, IO/network/process/env, concurrency/sync, diagnostics, verify, runtime, and capability. |
+| v1 size | Semantic-core module descriptors cover `option`, `result`, `numeric`, `decimal`, `text`, `bytes`, collections, time, random, crypto, IO/network/process/env, concurrency/sync, diagnostics, verify, runtime, and capability. This is an implemented subset, not a production stdlib compatibility promise. |
 | Database capability | Remains outside stdlib core as an official package/runtime capability direction. |
 | Crypto defaults | Modules exist for the documented defaults; production-grade API hardening remains future work. |
 | Async runtime placement | Concurrency primitives live in `concurrent`/`sync`; runtime-facing types live in `runtime`. |

@@ -45,5 +45,5 @@ This map ties directories and crates to responsibilities. It is based on the cur
 - `ail-context` is currently in-process, not a deployed network server.
 - The executable language surface is narrower than the target Core IR/type-system docs.
 - WASM effect dispatch exists, but rich typed ABI/value layout remains validation work.
-- Native backend work proves provenance/object emission; do not assume native execution parity with WASM.
+- Native backend work proves provenance/object emission and lowers a subset; do not assume native execution parity with WASM.
 - CLI command surface exists in code, but docs may describe target workflow depth beyond the current durable behavior of every command.

@@ -1,8 +1,8 @@
 # Context Server protocol
 
-<!-- Implementation Status: implemented as an in-process `ail-context` crate, not a network transport server. -->
+<!-- Status: Implemented subset. `ail-context` provides an in-process server-shaped API; network transport, auth, and distributed freshness remain target design. -->
 
-> Full extracted design. Related: [Storage](storage.md), [Verification](verification.md), [AI Change Language](change-language.md), [Tooling](tooling.md).
+> Target design. Current implementation scope is called out in the status note and Implementation Notes. Related: [Storage](storage.md), [Verification](verification.md), [AI Change Language](change-language.md), [Tooling](tooling.md).
 
 ## Context Server
 
@@ -52,7 +52,7 @@ Invariants:
 
 El contexto deja de ser textual y pasa a ser computable.
 
-## Context Server protocol: propuesta completa
+## Context Server protocol: target design
 
 El Context Server es la capa que permite que LLMs trabajen con contexto semántico preciso sin leer archivos tradicionales.
 

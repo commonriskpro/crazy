@@ -1,8 +1,8 @@
 # Architecture overview
 
-<!-- Implementation Status: core workspace implements the major architecture slices as milestones; some sections remain full-design intent rather than complete feature parity. -->
+<!-- Status: Target design with implemented subset. Core workspace crates implement major architecture slices as validation milestones; some sections remain target design rather than feature parity. -->
 
-> Full extracted design. Start here, then use [README](../README.md) for topic navigation.
+> Target design. Start here, then use [README](../README.md) for topic navigation and implementation status.
 
 ## Original preface
 
@@ -171,7 +171,7 @@ Known deliberate deviations from the original shape:
 
 - Context Server is currently an in-process API, not a network server.
 - WASM ABI is intentionally narrow and i64-oriented for executable milestones.
-- Native backend proves Cranelift/provenance but emits trap stubs.
+- Native backend proves Cranelift/provenance and lowers an implemented subset; it is not full WASM parity.
 - CLI workflow exists as crate/skeleton plus tests, not every command listed in tooling design.
 
 These deviations preserve the design direction while keeping implementation risk bounded.

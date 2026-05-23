@@ -1,10 +1,10 @@
 # Storage / versioning model
 
-<!-- Implementation Status: CAS, GraphStore, Postgres, tempfile filesystem store, retention, migrations, branch/tag/approval/export/integrity primitives exist. Conceptual directory layout is not the filesystem layout. -->
+<!-- Status: Implemented subset. CAS, GraphStore, Postgres, tempfile filesystem store, retention, migrations, branch/tag/approval/export/integrity primitives exist. Conceptual directory layout is target design, not the filesystem layout. -->
 
-> Full extracted design. Related: [AI Change Language](change-language.md), [Context Server](context-server.md), [Verification](verification.md).
+> Target design. Current implementation scope is called out in status notes and Implementation Notes. Related: [AI Change Language](change-language.md), [Context Server](context-server.md), [Verification](verification.md).
 
-## Storage / versioning model: propuesta completa
+## Storage / versioning model: target design
 
 El storage model define dónde vive el programa. En este lenguaje, el source of truth no son archivos de texto, sino un Semantic Graph versionado.
 
@@ -31,7 +31,7 @@ Files/text views = derived artifacts.
 
 ### Object store layout
 
-<!-- Implementation Status: conceptual layout. Current filesystem CAS stores flat `<blake3-hex>` files; Postgres stores `cas_objects` plus `snapshots_index`. -->
+<!-- Status: Target design. Current filesystem CAS stores flat `<blake3-hex>` files; Postgres stores `cas_objects` plus `snapshots_index`. -->
 
 Conceptual layout:
 

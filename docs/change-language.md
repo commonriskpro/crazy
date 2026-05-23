@@ -1,8 +1,8 @@
 # AI Change Language
 
-<!-- Implementation Status: hand-written ACL parser, canonicalizer, typed blocks, verify sections, composition metadata, and apply path exist for the current grammar subset. -->
+<!-- Status: Implemented subset. Hand-written ACL parser, canonicalizer, typed blocks, verify sections, composition metadata, and apply path exist for the current grammar subset. -->
 
-> Full extracted design. Related: [Core IR](core-ir.md), [Verification](verification.md), [Context Server](context-server.md), [Tooling](tooling.md).
+> Target design. Current implementation scope is called out in status notes and Implementation Notes. Related: [Core IR](core-ir.md), [Verification](verification.md), [Context Server](context-server.md), [Tooling](tooling.md).
 
 ## AI Change Language
 
@@ -1291,7 +1291,7 @@ end
 
 ### Grammar formal del Change Language
 
-<!-- Implementation Status: implemented by `crates/ail-change/src/parser.rs`, not a parser generator. The implemented grammar is intentionally narrower than the full protocol design. -->
+<!-- Status: Implemented subset. `crates/ail-change/src/parser.rs` implements the current hand-written grammar; the full protocol design remains broader. -->
 
 Decisión:
 

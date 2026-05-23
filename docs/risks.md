@@ -1,6 +1,6 @@
 # Risks and validation register
 
-<!-- Implementation Status: updated to distinguish mitigated implementation risks from remaining validation risks. -->
+<!-- Status: Validation register. Entries distinguish mitigated implementation risks from remaining validation risks. -->
 
 > Related: [Decisions register](open-questions.md), [Decision log](decision-log.md), [Consistency review](consistency-review.md).
 
@@ -416,23 +416,24 @@ round-trip records, variants, Result/Option, handles, text, and bytes
 prove manifest/schema mismatch is rejected before execution
 ```
 
-#### Native backend execution gap
+#### Native backend execution parity gap
 
-Status: open.
+Status: partly mitigated for the implemented expression subset; parity remains open.
 
 Riesgo:
 
 ```txt
-The native backend currently emits Cranelift object files with trap stubs,
-provenance, and capability manifests. It does not execute lowered expression bodies.
+The native backend emits Cranelift object files with provenance, capability
+manifests, and native lowering for the current Phase 8 expression subset. It
+still uses trap stubs for unsupported families and does not claim WASM parity.
 ```
 
 Mitigación:
 
 ```txt
-treat native as a closed provenance spike, not execution parity
+keep native documented as an implemented subset, not execution parity
 keep WASM as primary executable target
-require native body lowering tests before exposing native run workflows
+require broader native body lowering and parity tests before exposing native run workflows
 ```
 
 Validation:

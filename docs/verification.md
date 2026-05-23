@@ -1,8 +1,8 @@
 # Verification model
 
-<!-- Implementation Status: checker/report infrastructure exists, but the full 23-step pipeline is implemented as a subset across explicit checker modules. -->
+<!-- Status: Implemented subset. Checker/report infrastructure exists across explicit checker modules; the full target pipeline remains broader than current validation coverage. -->
 
-> Full extracted design. Related: [Type system](type-system.md), [AI Change Language](change-language.md), [Runtime](runtime.md), [Compiler](compiler.md).
+> Target design. Current implementation scope is called out in status notes and Implementation Notes. Related: [Type system](type-system.md), [AI Change Language](change-language.md), [Runtime](runtime.md), [Compiler](compiler.md).
 
 ## Verificación
 
@@ -1709,7 +1709,7 @@ El profile/policy decide si el cambio pasa.
 
 #### Pipeline completo
 
-<!-- Implementation Status: full target pipeline. Current implementation covers the subset represented by `ail-verify` checker modules plus compiler/runtime hash checks; not every layer below is complete. -->
+<!-- Status: Target design with implemented subset. Current implementation covers the subset represented by `ail-verify` checker modules plus compiler/runtime hash checks; not every layer below is complete. -->
 
 ```txt
 1. Parse ChangeSet

@@ -1,6 +1,6 @@
 # Release Policy
 
-<!-- Implementation Status: release policy reflects current lockstep workspace versioning and tag script expectations. -->
+<!-- Status: Implemented subset. Release policy reflects current lockstep workspace versioning and tag script expectations. -->
 
 This document describes the versioning contract, tagging procedure, signing policy, and
 lockstep versioning rationale for the AIL workspace.

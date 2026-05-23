@@ -1,6 +1,6 @@
 # Decisions and validation register
 
-<!-- Implementation Status: no unresolved design questions here; implementation gaps are tracked as validation-required items. -->
+<!-- Status: Validation register. No unresolved design questions remain here; implementation gaps are tracked as validation-required items. -->
 
 This register records closed decisions and validation-required items. It replaces the open-questions format; nothing here is unresolved.
 
@@ -125,5 +125,5 @@ See [Risks](risks.md) for the full risk register with mitigation and validation 
 | Context-slice signing key management | Distributed agent trust cannot be established or maintained |
 | WASM memory management: RC vs GC | Memory strategy choice affects performance, correctness, and WASM ABI complexity |
 | Expression parser scope | Current parser only accepts the executable subset (`int`, `bool`, vars, calls, `if`, arithmetic/comparison helpers). Full grammar support is future implementation work. |
-| Native backend execution parity | Cranelift native backend currently emits trap stubs with provenance/manifests; full native expression lowering is future work. |
+| Native backend execution parity | Cranelift native backend lowers an implemented subset with provenance/manifests, while concurrency, dynamic dispatch, resource lifecycle, and full WASM parity remain validation work. |
 | In-WASM host dispatch completeness | Effect calls execute through `ail/host_call`, but host-side dispatch still has intentionally simple payload/value handling. Rich typed boundary layout remains a validation item. |

@@ -1,6 +1,6 @@
 # Consistency review
 
-<!-- Implementation Status: consistency pass rerun against current implementation state. -->
+<!-- Status: Consistency review. This pass tracks docs against current implementation state. -->
 
 ## Reviewed decisions
 
@@ -70,12 +70,12 @@ Status: consistent.
 Status: corrected.
 
 - Avoid scope-reducing MVP framing.
-- Use full product design and full product implementation language.
+- Use target design language for the full product, and implemented-subset language for current code.
 - Internal validation milestones may exist, but should not be presented as scope-reducing MVP.
 
 ## Remaining consistency work
 
 - The raw `docs/history/ai-native-language-draft.md` still contains earlier exploratory/proposal sections and repeated material.
 - Canonical organized docs are now under `docs/`.
-- Full WASM value layout, native body lowering, remote Context Server transport, and large-project performance benchmarks remain known implementation gaps.
+- Full WASM value layout, native execution parity, remote Context Server transport, and large-project performance benchmarks remain known implementation gaps.
 - Future edits should update split docs first, then optionally sync/archive raw draft.

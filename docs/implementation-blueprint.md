@@ -1,6 +1,6 @@
 # Implementation blueprint
 
-<!-- Implementation Status: living roadmap. Completed phases are validation milestones, not production-readiness claims. -->
+<!-- Status: Living roadmap. Completed phases are validation milestones, not production-readiness claims. -->
 
 This is the living implementation roadmap for AIL. It preserves the full product direction while separating completed validation evidence from the remaining production work.
 

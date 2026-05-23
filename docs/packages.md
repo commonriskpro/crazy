@@ -1,10 +1,10 @@
 # Package / trust model
 
-<!-- Implementation Status: package manifest, trust, signing, resolver, registry, advisories, yanking, lockfile, handlers, and policy primitives exist. -->
+<!-- Status: Implemented subset. Package manifest, trust, signing, resolver, registry, advisories, yanking, lockfile, handlers, and policy primitives exist; registry operations, federation, and proof workflows remain target design. -->
 
-> Full extracted design. Related: [Runtime](runtime.md), [Verification](verification.md), [Standard library](stdlib.md), [Storage](storage.md).
+> Target design. Current implementation scope is called out in the status note and Implementation Notes. Related: [Runtime](runtime.md), [Verification](verification.md), [Standard library](stdlib.md), [Storage](storage.md).
 
-## Package / trust model: propuesta completa
+## Package / trust model: target design
 
 El package model define cómo se comparten, importan y verifican unidades reutilizables del ecosistema.
 
@@ -468,11 +468,11 @@ Conflicting impls are compile errors.
 
 ### Implementation Notes
 
-The original package questions are resolved for the current milestone:
+The original package questions are resolved for the current implemented package subset:
 
 | Topic | Status |
 |-------|--------|
-| Registry/signing | Implemented primitives for registry, remote registry, and signing. |
+| Registry/signing | Implemented subset of primitives for registry, remote registry, and signing. Production registry operations remain future work. |
 | Reproducible builds | Required by design for `verified`; metadata primitives exist, ecosystem validation remains future work. |
 | Federated trust | Trust metadata and remote registry primitives exist; cross-org operations remain future work. |
 | Proof checking | Package verification surfaces exist; deep proof distribution policy remains future work. |
