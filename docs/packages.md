@@ -328,6 +328,16 @@ Importing project records approval:
 approve_assumption stripe_idempotency for project.checkout by=security
 ```
 
+In strict verification profiles, the verifier gates active package assumptions by
+assumption scope, not by blanket package approval:
+
+```txt
+package:payments.stripe@1.2.0#assumption:stripe_idempotency
+```
+
+The consumer approval record must cover that exact active assumption scope before
+prod/critical policy accepts the package trust assumption.
+
 ### Package verification report
 
 Package release includes:

@@ -1949,6 +1949,13 @@ approval records
 package trust metadata
 ```
 
+Package assumptions are approved at the active assumption scope in strict
+profiles, for example:
+
+```txt
+package:payments.stripe@1.2.0#assumption:stripe_idempotency
+```
+
 Puede devolver:
 
 ```txt

@@ -248,6 +248,48 @@ fn profile_gate_prod_blocks_unverified() {
     }
 }
 
+#[test]
+fn profile_gate_prod_requires_package_assumption_approval() {
+    let scope = "package:payments.stripe@2.3.1#assumption:stripe_idempotency";
+    let report = report_with(vec![entry(
+        "package-assumption-approval[prod]",
+        scope,
+        VerificationState::Assumed,
+    )]);
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::ProfileGate("prod".into())],
+        approvals = &[]
+    );
+    let decision = PolicyEngine::evaluate(&input);
+
+    assert!(
+        matches!(
+            decision,
+            PolicyDecision::Failed(_) | PolicyDecision::ApprovalRequired(_)
+        ),
+        "prod must block or require approval for unapproved package assumptions"
+    );
+}
+
+#[test]
+fn profile_gate_prod_passes_package_assumption_with_strong_approval() {
+    let scope = "package:payments.stripe@2.3.1#assumption:stripe_idempotency";
+    let report = report_with(vec![entry(
+        "package-assumption-approval[prod]",
+        scope,
+        VerificationState::Assumed,
+    )]);
+    let input = policy_input!(
+        report = &report,
+        rules = &[PolicyRule::ProfileGate("prod".into())],
+        approvals = &[approval_for(scope)]
+    );
+    let decision = PolicyEngine::evaluate(&input);
+
+    assert_eq!(decision, PolicyDecision::Passed);
+}
+
 // ── R6: ProfileGate — draft allows Unverified (with warning) ─────────────
 //
 // NOTE: In Round 2, draft with Unverified returns PassedWithWarnings, not

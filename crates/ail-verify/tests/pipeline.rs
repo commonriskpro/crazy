@@ -8,9 +8,12 @@ use ail_core::semantic_graph::{
     EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, RefinementRef, RefinementStatus,
     SemanticGraph, TrustLevel, TrustMetadata, TypeFacts,
 };
+use ail_package::assumption::{AssumptionState, PackageAssumption};
+use ail_package::manifest::{PackageDef, PackageManifest};
+use ail_package::trust::TrustLevel as PackageTrustLevel;
 use ail_verify::codegen_checker::ArtifactEntry;
 use ail_verify::pipeline::{PipelineContext, VerificationPipeline};
-use ail_verify::policy::{PolicyDecision, PolicyRule};
+use ail_verify::policy::{ApprovalRecord, ApprovalStrength, PolicyDecision, PolicyRule};
 use ail_verify::solver::SimpleSolver;
 
 fn empty_graph() -> SemanticGraph {
@@ -40,6 +43,46 @@ fn make_ctx<'a>(
         artifacts: &[],
         manifest_caps: &[],
         artifact_manifest_hash: None,
+    }
+}
+
+fn assumed_package_manifest() -> PackageManifest {
+    PackageManifest::from_def(PackageDef {
+        name: "payments.stripe".into(),
+        version: "2.3.1".into(),
+        trust_level: PackageTrustLevel::Assumed,
+        required_capabilities: vec![],
+        exported_capabilities: vec![],
+        assumptions: vec![PackageAssumption {
+            id: "stripe_idempotency".into(),
+            claim: "Stripe honors idempotency keys".into(),
+            boundary: "boundary.Stripe".into(),
+            owner: "team.payments".into(),
+            expires: Some("2026-12-31".into()),
+            state: AssumptionState::Active,
+        }],
+        unsafe_surface: vec![],
+        artifact_hashes: vec![],
+        build_env_hash: None,
+        handlers: vec![],
+        contracts: vec![],
+        exports: vec![],
+        imports: vec![],
+        boundaries: vec!["boundary.Stripe".into()],
+        license: None,
+        provenance: None,
+        verification_report: None,
+        graph_schema: None,
+        core_ir_schema: None,
+    })
+}
+
+fn strong_approval(scope: &str) -> ApprovalRecord {
+    ApprovalRecord {
+        scope: scope.into(),
+        approver: "security-team".into(),
+        reason: "approved active package assumption".into(),
+        strength: ApprovalStrength::Strong,
     }
 }
 
@@ -1375,7 +1418,7 @@ fn report_stores_base_snapshot_when_base_graph_provided() {
 // ── Scenario: report stores structural_diff from context ──────────────────
 #[test]
 fn report_stores_structural_diff_from_context() {
-    use ail_verify::policy::{ApprovalRecord, ApprovalStrength, StructuralDiff};
+    use ail_verify::policy::StructuralDiff;
     let graph = empty_graph();
     let solver = SimpleSolver;
     let diff = StructuralDiff { description: "added fn.checkout".into() };
@@ -1432,6 +1475,84 @@ fn report_stores_approvals_from_context() {
     let report = VerificationPipeline::run(&ctx);
     assert_eq!(report.approvals.len(), 1);
     assert_eq!(report.approvals[0].scope, "fn.transfer");
+}
+
+#[test]
+fn prod_pipeline_requires_active_package_assumption_approval() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let manifests = vec![assumed_package_manifest()];
+    let rules = vec![PolicyRule::ProfileGate("prod".into())];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &manifests,
+        profile: "prod",
+        solver: &solver,
+        approvals: &[],
+        rules: &rules,
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &[],
+        artifact_manifest_hash: None,
+    };
+    let report = VerificationPipeline::run_with_changeset(
+        &ctx,
+        Some("change noop base=0\nauthor tester\nend\n"),
+        Some(&graph),
+    );
+    let scope = "package:payments.stripe@2.3.1#assumption:stripe_idempotency";
+
+    assert!(report.entries.iter().any(|entry| {
+        entry.claim == "package-assumption-approval[prod]"
+            && entry.scope == scope
+            && entry.state == ail_verify::report::VerificationState::Assumed
+    }));
+    assert!(matches!(
+        report.policy_decision,
+        Some(PolicyDecision::Failed(_)) | Some(PolicyDecision::ApprovalRequired(_))
+    ));
+}
+
+#[test]
+fn prod_pipeline_passes_active_package_assumption_with_approval() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let manifests = vec![assumed_package_manifest()];
+    let rules = vec![PolicyRule::ProfileGate("prod".into())];
+    let scope = "package:payments.stripe@2.3.1#assumption:stripe_idempotency";
+    let approvals = vec![strong_approval(scope)];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &manifests,
+        profile: "prod",
+        solver: &solver,
+        approvals: &approvals,
+        rules: &rules,
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &[],
+        artifact_manifest_hash: None,
+    };
+    let report = VerificationPipeline::run_with_changeset(
+        &ctx,
+        Some("change noop base=0\nauthor tester\nend\n"),
+        Some(&graph),
+    );
+
+    assert_eq!(report.policy_decision, Some(PolicyDecision::Passed));
+    assert!(report.policy_audit.as_ref().is_some_and(|audit| {
+        audit.entries.iter().any(|entry| {
+            entry.scope == scope
+                && entry.gate_decision == "passed"
+                && entry.approval_used.as_deref() == Some("security-team")
+        })
+    }));
 }
 
 // ── Scenario: canonical change hash added to artifact_hashes ─────────────
