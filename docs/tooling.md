@@ -1,10 +1,10 @@
 # Tooling / developer workflow
 
-<!-- Implementation Status: workspace and CLI skeleton exist; full command surface below is design target, not fully implemented CLI behavior. -->
+<!-- Status: Target design with implemented subset. Workspace and CLI entry points exist; the full command surface below is design target unless called out in Implementation Notes. -->
 
-> Full extracted design. Related: [AI Change Language](change-language.md), [Context Server](context-server.md), [Verification](verification.md), [Runtime](runtime.md).
+> Target design. Current implementation scope is called out in the status note and Implementation Notes. Related: [AI Change Language](change-language.md), [Context Server](context-server.md), [Verification](verification.md), [Runtime](runtime.md).
 
-## Tooling / developer workflow: propuesta completa
+## Tooling / developer workflow: target design
 
 El tooling define cómo humanos, LLMs y sistemas CI interactúan con el lenguaje.
 
@@ -714,7 +714,7 @@ ail run --profile dev module.cart
 
 ### Implementation Notes
 
-The current implementation resolves the original tooling questions as follows:
+The current implemented tooling subset resolves the original tooling questions as follows:
 
 | Topic | Status |
 |-------|--------|

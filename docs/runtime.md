@@ -1,8 +1,8 @@
 # Runtime / capability protocol
 
-<!-- Implementation Status: Wasmtime preflight, handler dispatch, schema checks, rollback integration, replay hashes, reports, and compiled effect dispatch exist. Rich typed ABI/value layout remains incomplete. -->
+<!-- Status: Implemented subset. Wasmtime preflight, handler dispatch, schema checks, rollback integration, replay hashes, reports, and compiled effect dispatch exist for the current milestone. Rich typed ABI/value layout remains validation work. -->
 
-> Full extracted design. Related: [Verification](verification.md), [Compiler](compiler.md), [Package trust](packages.md), [Standard library](stdlib.md).
+> Target design. Current implementation scope is called out in the status note and Implementation Notes. Related: [Verification](verification.md), [Compiler](compiler.md), [Package trust](packages.md), [Standard library](stdlib.md).
 
 ## Capabilities
 
@@ -101,7 +101,7 @@ effects:
 
 El compilador no necesita saber qué es una queue. Solo necesita verificar que la capability existe, que la función la declara y que el runtime puede proveerla.
 
-## Runtime / capability protocol: propuesta completa
+## Runtime / capability protocol: target design
 
 El runtime ejecuta artefactos verificados y controla todo acceso al mundo exterior mediante capabilities explícitas.
 
@@ -648,12 +648,12 @@ Runtime cannot upgrade verification state. It can only enforce and produce evide
 
 ### Implementation Notes
 
-The current runtime implementation resolves the original open questions for the first executable milestone as follows:
+The current implemented runtime subset resolves the original open questions for the first executable milestone as follows:
 
 | Topic | Implementation status |
 |-------|-----------------------|
 | Host call ABI | Scalar calls: `ail/host_call(cap_ptr, cap_len, op_ptr, op_len, args_ptr, args_len) -> i64`. Structured calls: `ail/host_call_write(…, out_ptr, out_max) -> i32` writes handler response bytes to WASM linear memory and returns bytes written. Both are registered in `RuntimeHost::new` and dispatched to `Handler::handle`. |
-| Typed boundary codec | `RuntimeInstance::invoke_typed(export, args, ValueLayout)` returns a `StructuredValue` by reading WASM linear memory and decoding with `ValueDecoder`. Supports `Scalar`, `Record`, `Variant`, `List`, `Option`, `Result`, and `Handle` layouts. |
+| Typed boundary codec | `RuntimeInstance::invoke_typed(export, args, ValueLayout)` returns a `StructuredValue` by reading WASM linear memory and decoding with `ValueDecoder`. The milestone codec supports `Scalar`, `Record`, `Variant`, `List`, `Option`, `Result`, and `Handle` layouts; full ABI/value-layout parity remains future validation work. |
 | Memory access | `RuntimeInstance::read_wasm_memory(ptr, len)` and `write_wasm_memory(ptr, bytes)` provide direct access to WASM linear memory for structured result decoding. |
 | Handler structured dispatch | `Handler::handle_structured` default method encodes `StructuredValue` args as LE i64 bytes, dispatches to `handle`, and decodes the response as `StructuredValue::Scalar`. |
 | WASI exposure | Hidden behind the host runtime. The workspace owns direct `wasmtime` usage in `ail-runtime`; programs interact through host calls and exported functions. |

@@ -1,8 +1,8 @@
 # Core IR and Semantic Graph
 
-<!-- Implementation Status: Core IR data structures cover many designed primitives; executable parsing/lowering currently supports a subset. -->
+<!-- Status: Target design with implemented subset. Core IR data structures cover many designed primitives; executable parsing/lowering currently supports a narrower subset. -->
 
-> Full extracted design. Related: [Type system](type-system.md), [Compiler](compiler.md), [Verification](verification.md), [Storage](storage.md).
+> Target design. Current implementation scope is called out in status notes and code references. Related: [Type system](type-system.md), [Compiler](compiler.md), [Verification](verification.md), [Storage](storage.md).
 
 ## Semantic Program Graph
 

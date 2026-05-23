@@ -1,8 +1,8 @@
 # Remote collaboration / cryptographic identity
 
-<!-- Implementation Status: fully implemented in crates/ail-remote. AgentIdentity, AgentKeypair, PlaintextDevSignerKeyMaterial, RemoteSignerPolicy, RemoteConfig, ObjectBundle, BundleStore, FileBundleStore, SignedContextSlice, RemoteChangeSet, and RemoteError all exist. Crypto primitives (AES-256-GCM, Argon2id, X25519) exist under feature = "crypto". -->
+<!-- Status: Implemented subset. `ail-remote` contains identities, signer policy, object bundles, file bundle storage, signed context slices, remote ChangeSets, and optional crypto primitives. Durable network transport and remote discovery remain target design. -->
 
-> Full extracted design. Related: [Coordinator](coordinator.md), [Context Server](context-server.md), [AI Change Language](change-language.md), [Storage](storage.md).
+> Target design. Current implementation scope is called out in the status note. Related: [Coordinator](coordinator.md), [Context Server](context-server.md), [AI Change Language](change-language.md), [Storage](storage.md).
 
 ## Propósito
 

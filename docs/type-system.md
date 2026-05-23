@@ -1,8 +1,8 @@
 # Type system
 
-<!-- Implementation Status: design remains broader than current checker implementation; type/effect/contract/resource/concurrency checkers exist as milestone subsets. -->
+<!-- Status: Target design with implemented subset. Type/effect/contract/resource/concurrency checkers exist as milestone subsets; the design remains broader than current checker coverage. -->
 
-> Full extracted design. Related: [Core IR](core-ir.md), [Verification](verification.md), [Standard library](stdlib.md).
+> Target design. Current implementation scope is called out in status notes and code references. Related: [Core IR](core-ir.md), [Verification](verification.md), [Standard library](stdlib.md).
 
 ## Type system completo: diseño propuesto
 
