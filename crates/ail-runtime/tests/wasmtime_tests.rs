@@ -424,6 +424,21 @@ end
 }
 
 #[test]
+fn acl_let_and_short_circuit_body_compiles_and_runs() {
+    let acl = "\
+change structured_expr_bodies base=0
+author tester
+description structured expression bodies
+op create_function id=fn.main return=Int body=let(flag, false, and(flag, div(1, 0)))
+end
+";
+
+    let value = invoke_acl_export(acl, "main");
+
+    assert_eq!(value, RuntimeValue::I64(0));
+}
+
+#[test]
 fn compiler_bool_literal_function_returns_i64_boolean() {
     assert_eq!(
         invoke_compiler_expr(AnfExpr::Literal(LiteralValue::Bool(true)), "fn.flag"),

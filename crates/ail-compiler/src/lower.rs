@@ -176,6 +176,11 @@ fn lower_core_expr_to_anf_local(
     source_ref: ail_core::semantic_graph::NodeRef,
 ) -> AnfExpr {
     match expr {
+        CoreExpr::Let { name, value, body } => AnfExpr::Let {
+            name: name.clone(),
+            value: Box::new(lower_core_expr_to_anf_local(value, fresh, source_ref)),
+            body: Box::new(lower_core_expr_to_anf_local(body, fresh, source_ref)),
+        },
         CoreExpr::If { cond, then_, else_ } => {
             let (cond_name, cond_binding) = atomize_local(cond, fresh, source_ref);
             let if_expr = AnfExpr::If {
@@ -208,6 +213,30 @@ fn lower_core_expr_to_anf_local(
         CoreExpr::Eq(left, right) => lower_core_binary_to_anf("eq", left, right, fresh, source_ref),
         CoreExpr::Lt(left, right) => lower_core_binary_to_anf("lt", left, right, fresh, source_ref),
         CoreExpr::Gt(left, right) => lower_core_binary_to_anf("gt", left, right, fresh, source_ref),
+        CoreExpr::And { left, right } => {
+            let (left_name, left_binding) = atomize_local(left, fresh, source_ref);
+            let and_expr = AnfExpr::ShortCircuitAnd {
+                left: left_name,
+                right: Box::new(lower_core_expr_to_anf_local(right, fresh, source_ref)),
+            };
+            if let Some(binding) = left_binding {
+                wrap_local_bindings(vec![binding], and_expr)
+            } else {
+                and_expr
+            }
+        }
+        CoreExpr::Or { left, right } => {
+            let (left_name, left_binding) = atomize_local(left, fresh, source_ref);
+            let or_expr = AnfExpr::ShortCircuitOr {
+                left: left_name,
+                right: Box::new(lower_core_expr_to_anf_local(right, fresh, source_ref)),
+            };
+            if let Some(binding) = left_binding {
+                wrap_local_bindings(vec![binding], or_expr)
+            } else {
+                or_expr
+            }
+        }
         _ => lower_core_expr_to_anf(expr, fresh, source_ref, &mut Vec::new()),
     }
 }
