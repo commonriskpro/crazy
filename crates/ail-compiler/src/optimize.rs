@@ -800,14 +800,8 @@ fn uses_var(expr: &AnfExpr, name: &str) -> bool {
         | AnfExpr::TaskAwait { task: channel }
         | AnfExpr::TaskCancel { task: channel }
         | AnfExpr::CellGet { cell: channel }
-        | AnfExpr::CellNew { init: channel }
-        | AnfExpr::Timeout {
-            duration: channel, ..
-        } => channel == name,
+        | AnfExpr::CellNew { init: channel } => channel == name,
         AnfExpr::RuntimeCheck { cond, .. } => cond == name,
-        AnfExpr::ShortCircuitAnd { left, .. } | AnfExpr::ShortCircuitOr { left, .. } => {
-            left == name
-        }
         AnfExpr::Select { branches } => branches
             .iter()
             .any(|branch| branch.channel == name || uses_var(&branch.body, name)),

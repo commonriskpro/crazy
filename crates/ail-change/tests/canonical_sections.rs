@@ -8,9 +8,9 @@
 //   4. blocks carried into CanonicalChangeSet
 
 use ail_change::acl_migrator::MigrateError;
-use ail_change::canonical::{CanonicalChangeSet, canonicalize_parsed, try_canonicalize_parsed};
+use ail_change::canonical::{canonicalize_parsed, try_canonicalize_parsed};
 use ail_change::model::{ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp};
-use ail_change::parser::{ChangeComposition, parse_changeset};
+use ail_change::parser::parse_changeset;
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -199,7 +199,7 @@ fn canonicalize_carries_verify() {
 // The canonicalizer records that expansion is needed.
 #[test]
 fn infer_boundary_is_marked_for_expansion() {
-    use ail_change::parser::{ParsedChangeSet, ParsedOp};
+    use ail_change::parser::ParsedOp;
     use std::collections::BTreeMap;
 
     let mut args = BTreeMap::new();
@@ -301,8 +301,6 @@ fn canonicalize_records_acl_version_1_0() {
 // With version-aware migration, unknown/future versions cannot be processed.
 #[test]
 fn canonicalize_unknown_acl_version_returns_error() {
-    use ail_change::parser::ParsedChangeSet;
-
     let mut pcs = minimal_parsed(vec![]);
     pcs.acl_version = "2.0".to_string();
 

@@ -11,7 +11,7 @@ use ail_change::{
     model::{
         AssertExists, BlockHash, ChangeSet, ChangeSetMeta, ChangeSetOp, SnapshotId, Timestamp,
     },
-    parser::{OpArgs, ParsedChangeSet, ParsedOp, parse_changeset},
+    parser::{ParsedChangeSet, ParsedOp, parse_changeset},
 };
 use ail_core::semantic_graph::NodeRef;
 

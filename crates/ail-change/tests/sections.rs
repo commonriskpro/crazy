@@ -3,7 +3,7 @@
 // Strict TDD — tests for expect, approval, and composition sections in the
 // ACL parser.
 
-use ail_change::parser::{ApprovalRequirements, ChangeComposition, ExpectClaims, parse_changeset};
+use ail_change::parser::parse_changeset;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Expect section
