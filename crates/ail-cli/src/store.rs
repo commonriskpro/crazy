@@ -469,6 +469,7 @@ pub fn file_store(ail_dir: PathBuf) -> StoreHandle {
     file_handle(ail_dir)
 }
 
+#[cfg(test)]
 pub fn init_file_layout(ail_dir: &Path) -> Result<(), CliError> {
     init_file_layout_with_branch(ail_dir, "main")
 }

@@ -1003,17 +1003,19 @@ fn critical_passes_runtime_checked_entry() {
 #[test]
 fn report_has_policy_audit_field() {
     // Compile-time: VerificationReport must have policy_audit: Option<PolicyAudit>
-    let mut report = VerificationReport::default();
-    report.policy_audit = Some(PolicyAudit {
-        profile: "prod".to_string(),
-        entries: vec![PolicyAuditEntry {
-            scope: "fn.checkout".to_string(),
-            state: "assumed".to_string(),
-            gate_decision: "approval_required".to_string(),
-            approval_used: Some("security-team".to_string()),
-        }],
-        approval_scopes_consulted: vec!["fn.checkout".to_string()],
-    });
+    let report = VerificationReport {
+        policy_audit: Some(PolicyAudit {
+            profile: "prod".to_string(),
+            entries: vec![PolicyAuditEntry {
+                scope: "fn.checkout".to_string(),
+                state: "assumed".to_string(),
+                gate_decision: "approval_required".to_string(),
+                approval_used: Some("security-team".to_string()),
+            }],
+            approval_scopes_consulted: vec!["fn.checkout".to_string()],
+        }),
+        ..Default::default()
+    };
     assert!(report.policy_audit.is_some());
 }
 

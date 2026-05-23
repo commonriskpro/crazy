@@ -98,7 +98,7 @@ fn channel_len_reflects_send_count() {
     let ch = call_pure_stdlib("std.concurrent.channel_new", &[StdlibValue::Int(4)])
         .expect("channel_new must succeed");
 
-    let len0 = call_pure_stdlib("std.concurrent.channel_len", &[ch.clone()]);
+    let len0 = call_pure_stdlib("std.concurrent.channel_len", std::slice::from_ref(&ch));
     assert_eq!(len0, Ok(StdlibValue::Int(0)));
 
     call_pure_stdlib(

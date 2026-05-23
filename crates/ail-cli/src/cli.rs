@@ -926,8 +926,8 @@ fn target_node_name(target: &str) -> &str {
 }
 
 /// Look up the `NodeRef`s of every node whose name matches `target_name`.
-fn node_refs_for_name<'g>(
-    graph: &'g ail_core::semantic_graph::SemanticGraph,
+fn node_refs_for_name(
+    graph: &ail_core::semantic_graph::SemanticGraph,
     name: &str,
 ) -> Vec<ail_core::semantic_graph::NodeRef> {
     graph
@@ -2224,10 +2224,6 @@ fn accepted_compile_report() -> VerificationReport {
     }
 }
 
-fn export_name_for_target(target: &str) -> String {
-    target.rsplit('.').next().unwrap_or(target).to_string()
-}
-
 fn runtime_value_to_string(value: &RuntimeValue) -> String {
     match value {
         RuntimeValue::I64(value) => value.to_string(),
@@ -2262,9 +2258,9 @@ fn parse_eval_expression(expression: &str) -> Result<AnfExpr, CliError> {
     }
 
     let Some(open) = trimmed.find('(') else {
-        return Err(CliError::ParseError(format!(
-            "Failed to parse expression: expected a number or call like add(20, 22)"
-        )));
+        return Err(CliError::ParseError(
+            "Failed to parse expression: expected a number or call like add(20, 22)".to_string(),
+        ));
     };
     let Some(close) = trimmed.rfind(')') else {
         return Err(CliError::ParseError(
@@ -2449,6 +2445,7 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle, branch: &str) -> Result
     use crate::project::{ArtifactKind, ProjectContext};
 
     let ctx = ProjectContext::from_cwd()?;
+    debug_assert_eq!(ctx.root.join(".ail"), ctx.ail_dir);
 
     init_file_layout_with_branch(&ctx.ail_dir, branch)?;
 
@@ -2459,12 +2456,11 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle, branch: &str) -> Result
         ArtifactKind::Report,
         ArtifactKind::Wasm,
     ] {
-        let subdir = ctx.ail_dir.join(match kind {
-            ArtifactKind::Change => "changes",
-            ArtifactKind::Snapshot => "snapshots",
-            ArtifactKind::Report => "reports",
-            ArtifactKind::Wasm => "wasm",
-        });
+        let subdir = ctx
+            .artifact_name(kind, ".init")
+            .parent()
+            .expect("artifact paths must include a subdirectory")
+            .to_path_buf();
         std::fs::create_dir_all(&subdir)?;
     }
 
@@ -3033,7 +3029,7 @@ async fn cmd_diff_snapshots(
         "capabilities_changed": semantic_diff.capabilities_changed,
     });
 
-    let human_lines = vec![
+    let human_lines = [
         format!(
             "creates: {}",
             structural_diff["creates"]
@@ -3345,10 +3341,7 @@ async fn cmd_merge(
         .map(str::to_string)
         .or_else(|| store.current_branch().ok().flatten())
         .unwrap_or_else(|| "main".to_string());
-    let source_snapshot = match branch_head_snapshot(store, branch).await {
-        Ok(snapshot) => Some(snapshot),
-        Err(_) => None,
-    };
+    let source_snapshot = branch_head_snapshot(store, branch).await.ok();
     let target_snapshot =
         match branch_head_snapshot(store, &target_branch).await {
             Ok(snapshot) => Some(snapshot),
@@ -4117,7 +4110,7 @@ async fn cmd_package(
 /// Check whether the snapshot index is fresh relative to stored objects.
 ///
 /// - "ok"   — no objects in store (nothing to be stale against), OR index exists and
-///            is not obviously missing after objects were written.
+///   is not obviously missing after objects were written.
 /// - "warn" — at least one object exists in the store but `index/snapshots.cbor` is absent.
 ///
 /// Finer mtime comparison is not performed to avoid platform portability issues.
@@ -4880,7 +4873,7 @@ fn packages_dir(store: &StoreHandle) -> Result<PathBuf, CliError> {
 
 fn load_package_registry(store: &StoreHandle) -> Result<PackageRegistry, CliError> {
     if !matches!(store, StoreHandle::File { .. }) {
-        return Ok(default_memory_package_registry()?);
+        return default_memory_package_registry();
     }
     let path = packages_dir(store)?.join("registry.cbor");
     let mut registry = PackageRegistry::new();

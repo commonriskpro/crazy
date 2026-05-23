@@ -388,8 +388,7 @@ fn build_export_section_with_memory(
     function_offset: u32,
     export_memory: bool,
 ) -> Option<ExportSection> {
-    let mut exports =
-        build_export_section(bindings, function_offset).unwrap_or_else(ExportSection::new);
+    let mut exports = build_export_section(bindings, function_offset).unwrap_or_default();
     let mut count = usize::from(export_memory);
     if export_memory {
         exports.export("memory", ExportKind::Memory, 0);
@@ -415,12 +414,11 @@ fn function_index(
 
 fn collect_free_vars<'a>(expr: &'a AnfExpr, bound: &mut Vec<&'a str>, out: &mut Vec<&'a str>) {
     match expr {
-        AnfExpr::Var(name) => {
+        AnfExpr::Var(name)
             if !bound.iter().rev().any(|bound_name| *bound_name == name)
-                && !out.iter().any(|existing| *existing == name)
-            {
-                out.push(name);
-            }
+                && !out.iter().any(|existing| *existing == name) =>
+        {
+            out.push(name);
         }
         AnfExpr::Let { name, value, body } => {
             collect_free_vars(value, bound, out);
@@ -485,11 +483,10 @@ fn collect_free_vars<'a>(expr: &'a AnfExpr, bound: &mut Vec<&'a str>, out: &mut 
                 collect_free_vars(expr, bound, out);
             }
         }
-        AnfExpr::VariantNew { payload, .. } => {
-            if let Some(payload) = payload {
-                collect_free_vars(payload, bound, out);
-            }
-        }
+        AnfExpr::VariantNew {
+            payload: Some(payload),
+            ..
+        } => collect_free_vars(payload, bound, out),
         _ => {}
     }
 }
@@ -2790,10 +2787,10 @@ mod tests {
             if let Payload::CodeSectionEntry(body) = payload.unwrap() {
                 let mut reader = body.get_operators_reader().unwrap();
                 while !reader.eof() {
-                    if let Operator::I32Store { memarg } = reader.read().unwrap() {
-                        if memarg.offset == 0 {
-                            saw_i32_store_at_0 = true;
-                        }
+                    if let Operator::I32Store { memarg } = reader.read().unwrap()
+                        && memarg.offset == 0
+                    {
+                        saw_i32_store_at_0 = true;
                     }
                 }
             }

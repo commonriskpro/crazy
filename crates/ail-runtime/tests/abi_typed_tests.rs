@@ -126,9 +126,9 @@ fn runtime_arg_i32_variant_is_constructible() {
 
 #[test]
 fn runtime_arg_f64_variant_is_constructible() {
-    let arg = RuntimeArg::F64(3.14_f64);
+    let arg = RuntimeArg::F64(3.125_f64);
     match &arg {
-        RuntimeArg::F64(v) => assert!((*v - 3.14_f64).abs() < 1e-10),
+        RuntimeArg::F64(v) => assert!((*v - 3.125_f64).abs() < 1e-10),
         _ => panic!("expected RuntimeArg::F64"),
     }
 }
@@ -155,13 +155,13 @@ fn invoke_with_f64_arg_succeeds() {
     let (_, mut instance) = instantiate(&wasm);
 
     let result = instance
-        .invoke("identity", &[RuntimeArg::F64(2.718_f64)])
+        .invoke("identity", &[RuntimeArg::F64(2.75_f64)])
         .expect("invoke with f64 arg must succeed");
 
     match result {
         RuntimeValue::F64(v) => assert!(
-            (v - 2.718_f64).abs() < 1e-10,
-            "f64 identity must return approximately 2.718, got {v}"
+            (v - 2.75_f64).abs() < 1e-10,
+            "f64 identity must return approximately 2.75, got {v}"
         ),
         other => panic!("expected RuntimeValue::F64, got {other:?}"),
     }

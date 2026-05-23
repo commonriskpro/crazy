@@ -25,7 +25,7 @@ fn deterministic_rng_float_in_range() {
     let mut rng = DeterministicRng::new(Seed::new(42));
     for _ in 0..100 {
         let f = rng.random_float();
-        assert!(f >= 0.0 && f < 1.0, "float {f} out of [0,1)");
+        assert!((0.0..1.0).contains(&f), "float {f} out of [0,1)");
     }
 }
 
@@ -41,7 +41,7 @@ fn deterministic_rng_int_range() {
     let mut rng = DeterministicRng::new(Seed::new(7));
     for _ in 0..100 {
         let v = rng.random_int_range(0, 10).unwrap();
-        assert!(v >= 0 && v < 10, "value {v} out of [0,10)");
+        assert!((0..10).contains(&v), "value {v} out of [0,10)");
     }
 }
 

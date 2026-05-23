@@ -456,8 +456,10 @@ fn verification_report_policy_decision_field_serializes() {
         scope: "fn.transfer".to_string(),
         message: "unsafe not approved".to_string(),
     };
-    let mut report = VerificationReport::default();
-    report.policy_decision = Some(PolicyDecision::Failed(vec![violation]));
+    let report = VerificationReport {
+        policy_decision: Some(PolicyDecision::Failed(vec![violation])),
+        ..Default::default()
+    };
 
     // Round-trip through serde_json (test the shape is serializable)
     let json = serde_json::to_string(&report).expect("must serialize");
