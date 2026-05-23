@@ -222,6 +222,7 @@ dependencies = [
  "blake3",
  "ciborium",
  "ed25519-dalek",
+ "futures",
  "rand 0.8.6",
  "serde",
  "serde_json",

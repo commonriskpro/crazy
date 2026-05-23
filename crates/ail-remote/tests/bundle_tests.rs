@@ -10,8 +10,11 @@
 use std::collections::BTreeMap;
 
 use ail_remote::bundle::{BundleError, ObjectBundle};
+use ail_storage::SnapshotEnvelope;
+use ail_storage::backends::memory::MemoryObjectStore;
 use ail_storage::codec::{CborCodec, ContentCodec};
-use ail_storage::object::ObjectId;
+use ail_storage::object::{ObjectId, ObjectStore, RawObject};
+use futures::executor::block_on;
 
 // ── bundle_cbor_roundtrip ─────────────────────────────────────────────────
 // Spec scenario: Bundle CBOR roundtrip.
@@ -98,4 +101,64 @@ fn empty_bundle_cbor_roundtrip() {
     let encoded = codec.encode(&bundle).expect("encode");
     let decoded: ObjectBundle = codec.decode(&encoded).expect("decode");
     assert_eq!(decoded, bundle, "empty bundle must survive CBOR roundtrip");
+}
+
+#[test]
+fn snapshot_envelope_bundle_includes_available_direct_dependencies() {
+    block_on(async {
+        let codec = CborCodec;
+        let store = MemoryObjectStore::new();
+        let graph_id = store
+            .put(RawObject(b"graph root".to_vec()))
+            .await
+            .expect("store graph object");
+        let audit_id = store
+            .put(RawObject(b"audit record".to_vec()))
+            .await
+            .expect("store audit object");
+        let missing_change_id = ObjectId::from_bytes(b"missing change payload");
+        let snapshot = SnapshotEnvelope {
+            id: ObjectId::from_bytes(b"snapshot identity"),
+            graph_root_hash: graph_id,
+            applied_change_id: Some(missing_change_id),
+            audit_record_ids: vec![audit_id],
+            ..Default::default()
+        };
+        let snapshot_bytes = codec.encode(&snapshot).expect("encode snapshot");
+        let snapshot_root = store
+            .put(RawObject(snapshot_bytes))
+            .await
+            .expect("store snapshot envelope");
+
+        let bundle = ObjectBundle::from_store_with_snapshot_dependencies(snapshot_root, &store)
+            .await
+            .expect("build bundle");
+
+        bundle.verify_integrity().expect("bundle must verify");
+        assert!(bundle.includes_snapshot_envelope_dependencies());
+        assert!(bundle.objects.contains_key(&snapshot_root));
+        assert!(bundle.objects.contains_key(&graph_id));
+        assert!(bundle.objects.contains_key(&audit_id));
+        assert!(!bundle.objects.contains_key(&missing_change_id));
+        assert_eq!(bundle.objects.len(), 3);
+    });
+}
+
+#[test]
+fn raw_root_bundle_reports_no_snapshot_envelope_dependencies() {
+    block_on(async {
+        let store = MemoryObjectStore::new();
+        let root = store
+            .put(RawObject(b"raw root object".to_vec()))
+            .await
+            .expect("store raw root");
+
+        let bundle = ObjectBundle::from_store_with_snapshot_dependencies(root, &store)
+            .await
+            .expect("build bundle");
+
+        bundle.verify_integrity().expect("bundle must verify");
+        assert!(!bundle.includes_snapshot_envelope_dependencies());
+        assert_eq!(bundle.objects.len(), 1);
+    });
 }

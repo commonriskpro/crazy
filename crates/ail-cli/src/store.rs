@@ -265,16 +265,6 @@ impl StoreHandle {
             .map_err(|e| CliError::Domain(format!("changeset decoding failed: {e}")))
     }
 
-    /// Load raw content-addressed object bytes by id when the backend exposes objects.
-    pub async fn load_raw_object(&self, id: &ObjectId) -> Result<Option<Vec<u8>>, CliError> {
-        let raw = match self {
-            StoreHandle::Memory { objects, .. } => objects.get(id).await?,
-            StoreHandle::File { objects, .. } => objects.get(id).await?,
-            StoreHandle::Postgres(_) => return Ok(None),
-        };
-        Ok(raw.map(|object| object.0))
-    }
-
     /// Store raw content-addressed object bytes, asserting the expected id.
     pub async fn save_raw_object(
         &self,
