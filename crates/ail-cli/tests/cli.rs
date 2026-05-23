@@ -10,7 +10,10 @@
 //
 // Each test cites the spec scenario it exercises in its doc comment.
 
-use ail_package::{PackageDef, PackageManifest, SignedPackage, TrustLevel};
+use ail_package::{
+    AdvisorySeverity, Lockfile, LockfileEntry, PackageDef, PackageKeypair, PackageManifest,
+    SecurityAdvisory, SignedPackage, TrustLevel, YankRecord,
+};
 use ail_storage::SnapshotEnvelope;
 use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::object::ObjectId;
@@ -53,8 +56,14 @@ fn write_raw_object(project_dir: &std::path::Path, bytes: Vec<u8>) -> String {
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct TestPackageRegistryFile {
+    #[serde(default)]
     signed_packages: Vec<SignedPackage>,
+    #[serde(default)]
     legacy_manifests: Vec<PackageManifest>,
+    #[serde(default)]
+    advisories: Vec<SecurityAdvisory>,
+    #[serde(default)]
+    yanked: Vec<YankRecord>,
 }
 
 fn package_registry_path(project_dir: &std::path::Path) -> std::path::PathBuf {
@@ -62,6 +71,10 @@ fn package_registry_path(project_dir: &std::path::Path) -> std::path::PathBuf {
         .join(".ail")
         .join("packages")
         .join("registry.cbor")
+}
+
+fn package_lockfile_path(project_dir: &std::path::Path) -> std::path::PathBuf {
+    project_dir.join(".ail").join("packages").join("lock.cbor")
 }
 
 fn read_package_registry_file(project_dir: &std::path::Path) -> TestPackageRegistryFile {
@@ -85,6 +98,34 @@ fn write_legacy_package_registry(project_dir: &std::path::Path, manifests: &[Pac
     let mut bytes = Vec::new();
     ciborium::into_writer(manifests, &mut bytes).expect("legacy registry must encode");
     fs::write(path, bytes).expect("legacy registry file must be written");
+}
+
+fn write_package_lockfile(project_dir: &std::path::Path, lockfile: &Lockfile) {
+    let path = package_lockfile_path(project_dir);
+    fs::create_dir_all(path.parent().expect("lockfile path must have parent"))
+        .expect("package directory must be created");
+    let mut bytes = Vec::new();
+    ciborium::into_writer(lockfile, &mut bytes).expect("lockfile must encode");
+    fs::write(path, bytes).expect("lockfile must be written");
+}
+
+fn signed_test_package(manifest: PackageManifest) -> SignedPackage {
+    PackageKeypair::from_bytes(&[17u8; 32])
+        .sign_manifest(manifest)
+        .expect("test package must sign")
+}
+
+fn lockfile_for_manifest(manifest: &PackageManifest) -> Lockfile {
+    let mut lockfile = Lockfile::new();
+    lockfile.add(LockfileEntry {
+        name: manifest.name.clone(),
+        version: manifest.version.clone(),
+        package_hash: manifest.blake3_hex().expect("manifest hash must compute"),
+        trust_level: manifest.trust_level,
+        verification_report_hash: None,
+        accepted_assumptions: vec![],
+    });
+    lockfile
 }
 
 fn test_package_manifest(name: &str, version: &str, trust_level: TrustLevel) -> PackageManifest {
@@ -1876,6 +1917,242 @@ fn package_audit_json_has_advisories() {
         v["data"]["advisories"].is_array(),
         "data.advisories must be an array; got: {v}"
     );
+}
+
+#[test]
+fn package_audit_clean_lockfile_is_explicit_json() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("clean.pkg", "1.0.0", TrustLevel::Assumed);
+    write_legacy_package_registry(dir.path(), std::slice::from_ref(&manifest));
+    ail()
+        .args(["package", "install", "clean.pkg@1.0.0"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = ail()
+        .args(["package", "audit", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["status"], "clean");
+    assert_eq!(v["data"]["packages_checked"], 1);
+    assert_eq!(v["data"]["issues"], Value::Array(vec![]));
+    assert_eq!(v["data"]["summary"]["blocked"], 0);
+    assert_eq!(v["data"]["summary"]["warnings"], 0);
+}
+
+#[test]
+fn package_audit_signed_registry_advisory_blocks() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("signed.vuln", "1.0.0", TrustLevel::Verified);
+    let signed = signed_test_package(manifest.clone());
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![signed],
+            legacy_manifests: vec![],
+            advisories: vec![SecurityAdvisory {
+                id: "adv_signed_001".to_string(),
+                package: "signed.vuln".to_string(),
+                affected_constraint: "<1.2.0".to_string(),
+                severity: AdvisorySeverity::High,
+                reason: "test high severity advisory".to_string(),
+            }],
+            yanked: vec![],
+        },
+    );
+    ail()
+        .args(["package", "install", "signed.vuln@1.0.0"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = ail()
+        .args(["package", "audit", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("package audit blocked"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["status"], "blocked");
+    assert_eq!(v["data"]["summary"]["advisories"], 1);
+    assert_eq!(v["data"]["summary"]["blocked"], 1);
+    let issue = &v["data"]["issues"][0];
+    assert_eq!(issue["package"], "signed.vuln");
+    assert_eq!(issue["version"], "1.0.0");
+    assert_eq!(issue["kind"], "advisory");
+    assert_eq!(issue["status"], "blocked");
+    assert_eq!(issue["advisory_id"], "adv_signed_001");
+    assert_eq!(issue["severity"], "high");
+    assert_eq!(issue["affected_range"], "<1.2.0");
+}
+
+#[test]
+fn package_audit_critical_advisory_blocks_and_fails() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("critical.vuln", "3.0.0", TrustLevel::Assumed);
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![],
+            legacy_manifests: vec![manifest.clone()],
+            advisories: vec![SecurityAdvisory {
+                id: "adv_critical_001".to_string(),
+                package: "critical.vuln".to_string(),
+                affected_constraint: ">=3.0.0, <3.0.1".to_string(),
+                severity: AdvisorySeverity::Critical,
+                reason: "critical severity advisory".to_string(),
+            }],
+            yanked: vec![],
+        },
+    );
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "audit", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("package audit blocked"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["status"], "blocked");
+    assert_eq!(v["data"]["summary"]["blocked"], 1);
+    assert_eq!(v["data"]["summary"]["warnings"], 0);
+    let issue = &v["data"]["issues"][0];
+    assert_eq!(issue["advisory_id"], "adv_critical_001");
+    assert_eq!(issue["status"], "blocked");
+    assert_eq!(issue["severity"], "critical");
+}
+
+#[test]
+fn package_audit_detects_yanked_lockfile_entry() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("yanked.pkg", "2.0.0", TrustLevel::Assumed);
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![],
+            legacy_manifests: vec![manifest.clone()],
+            advisories: vec![],
+            yanked: vec![YankRecord {
+                name: "yanked.pkg".to_string(),
+                version: "2.0.0".to_string(),
+                reason: "bad release".to_string(),
+            }],
+        },
+    );
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "audit", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["status"], "blocked");
+    assert_eq!(v["data"]["summary"]["yanked"], 1);
+    let issue = &v["data"]["issues"][0];
+    assert_eq!(issue["kind"], "yanked");
+    assert_eq!(issue["status"], "blocked");
+    assert_eq!(issue["package"], "yanked.pkg");
+    assert_eq!(issue["reason"], "bad release");
+}
+
+#[test]
+fn package_audit_low_advisory_warns_without_failing() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("warn.pkg", "1.1.0", TrustLevel::Assumed);
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![],
+            legacy_manifests: vec![manifest.clone()],
+            advisories: vec![SecurityAdvisory {
+                id: "adv_low_001".to_string(),
+                package: "warn.pkg".to_string(),
+                affected_constraint: "~1.1.0".to_string(),
+                severity: AdvisorySeverity::Low,
+                reason: "low severity advisory".to_string(),
+            }],
+            yanked: vec![],
+        },
+    );
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "audit", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["status"], "warning");
+    assert_eq!(v["data"]["summary"]["warnings"], 1);
+    assert_eq!(v["data"]["issues"][0]["status"], "warning");
+}
+
+#[test]
+fn package_audit_medium_advisory_warns_without_failing() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("medium.warn", "2.1.0", TrustLevel::Assumed);
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![],
+            legacy_manifests: vec![manifest.clone()],
+            advisories: vec![SecurityAdvisory {
+                id: "adv_medium_001".to_string(),
+                package: "medium.warn".to_string(),
+                affected_constraint: "^2.1.0".to_string(),
+                severity: AdvisorySeverity::Medium,
+                reason: "medium severity advisory".to_string(),
+            }],
+            yanked: vec![],
+        },
+    );
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "audit", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["status"], "warning");
+    assert_eq!(v["data"]["summary"]["blocked"], 0);
+    assert_eq!(v["data"]["summary"]["warnings"], 1);
+    let issue = &v["data"]["issues"][0];
+    assert_eq!(issue["advisory_id"], "adv_medium_001");
+    assert_eq!(issue["status"], "warning");
+    assert_eq!(issue["severity"], "medium");
 }
 
 /// package verify --json produces JSON with verified field.
