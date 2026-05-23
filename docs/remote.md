@@ -53,6 +53,38 @@ pub struct TrustedRemoteSigner {
 
 El default seguro es `deny_all()`: un coordinator creado sin policy explícita rechaza submissions remotos válidamente firmados si el signer no está en la allowlist.
 
+### RemoteConfig
+
+`RemoteConfig` es el DTO serializable para cargar configuración remota de proyecto sin acoplarla a CLI ni transporte. Se puede leer desde JSON, CBOR u otro formato basado en serde, validarla, y convertirla a `RemoteSignerPolicy`.
+
+```rust
+pub struct RemoteConfig {
+    pub allowed_signers: Vec<RemoteSignerConfig>,
+    pub remotes: Vec<RemoteEndpointConfig>,
+}
+
+pub struct RemoteSignerConfig {
+    pub public_key: String, // clave pública Ed25519, hex de 32 bytes
+    pub trust_tier: SignerTrustTier,
+    pub label: Option<String>,
+}
+
+pub struct RemoteEndpointConfig {
+    pub name: String,
+    pub endpoint: String,
+}
+```
+
+Reglas:
+
+```txt
+1. `allowed_signers` vacío es válido y produce `RemoteSignerPolicy::deny_all()`.
+2. Cada `public_key` debe ser hex de 64 caracteres.
+3. Claves duplicadas se rechazan, incluso si difieren solo en mayúsculas/minúsculas.
+4. `remotes` son hints de conexión; no otorgan autoridad criptográfica.
+5. La conversión a policy usa solo `allowed_signers`.
+```
+
 ### AgentKeypair
 
 ```rust
