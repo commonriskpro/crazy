@@ -31,7 +31,7 @@ Status: resolved with deliberate deviation documented.
 
 Status: resolved.
 
-- `implementation-blueprint.md` now marks phase milestones against code evidence.
+- `implementation-blueprint.md` now maps subsystem status against code evidence and remaining production gaps.
 - Milestone completion does not imply every full-design feature is complete.
 
 ### Money
@@ -75,7 +75,7 @@ Status: corrected.
 
 ## Remaining consistency work
 
-- The raw `ai-native-language-draft.md` still contains earlier exploratory/proposal sections and repeated material.
+- The raw `docs/history/ai-native-language-draft.md` still contains earlier exploratory/proposal sections and repeated material.
 - Canonical organized docs are now under `docs/`.
 - Full WASM value layout, native body lowering, remote Context Server transport, and large-project performance benchmarks remain known implementation gaps.
 - Future edits should update split docs first, then optionally sync/archive raw draft.

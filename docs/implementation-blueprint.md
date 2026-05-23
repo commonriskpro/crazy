@@ -1,12 +1,19 @@
 # Implementation blueprint
 
-<!-- Implementation Status: phase table updated to distinguish completed implementation milestones from remaining full-design scope. -->
+<!-- Implementation Status: living roadmap. Completed phases are validation milestones, not production-readiness claims. -->
 
-This blueprint sequences implementation without reducing product scope. Each phase is a validation milestone: it proves a critical part of the full architecture works before the project moves deeper into implementation.
+This is the living implementation roadmap for AIL. It preserves the full product direction while separating completed validation evidence from the remaining production work.
 
-Related: [Architecture](architecture.md), [Decision log](decision-log.md), [Risks](risks.md), [Decisions and validation register](open-questions.md).
+Related: [Codebase guide](CODEBASE-GUIDE.md), [Architecture](architecture.md), [Decision log](decision-log.md), [Risks](risks.md), [Decisions register](open-questions.md).
 
----
+## Status taxonomy
+
+| Status | Meaning |
+|--------|---------|
+| Completed validation milestone | Code and tests prove an architecture slice works. This validates direction; it does not imply the full design is implemented. |
+| Implemented subset | A real implementation exists, but it intentionally covers less than the target design. Scope limits must stay visible in docs and tests. |
+| Production-ready | Hardened for production use with compatibility policy, security review, operational story, benchmark evidence, and failure-mode coverage. This repo does not currently claim production-ready status. |
+| Historical notes | Preserved planning context. Useful for why the project sequenced work this way, not for current status. |
 
 ## Critical path
 
@@ -14,49 +21,83 @@ Related: [Architecture](architecture.md), [Decision log](decision-log.md), [Risk
 Storage / snapshots
   -> Semantic Graph
   -> ChangeSets
-  -> Type/effect verification
-  -> WASM compiler
-  -> Runtime host
+  -> type/effect/contract verification
+  -> compiler pipeline
+  -> WASM runtime host
   -> CLI end-to-end workflow
-  -> Context Server
-  -> Packages and multi-agent collaboration
+  -> context slices
+  -> packages, remote exchange, and coordination
+  -> production hardening
 ```
 
-The product only becomes AI-native when the graph, ChangeSet, verifier, and runtime capability model work together. A compiler without those pieces would be a traditional compiler with AI-adjacent tooling, not this language.
+The product only becomes AI-native when graph, ChangeSet, verifier, compiler, runtime, storage, and context work together. A compiler alone would be traditional language infrastructure with AI-adjacent tooling.
 
----
+## Current milestone map
 
-## Phase map
+| Area | Current status | Evidence | Remaining production gap |
+|------|----------------|----------|--------------------------|
+| Design baseline | Completed validation milestone | `docs/architecture.md`, `docs/decision-log.md`, `docs/open-questions.md` | Keep docs aligned as implementation narrows or expands scope. |
+| Workspace and CLI | Implemented subset | `Cargo.toml`, `crates/ail-cli/src/cli.rs` | Durable workflows, UX polish, and command-depth parity with target tooling. |
+| Storage and snapshots | Implemented subset | `crates/ail-storage/src/lib.rs`, storage tests | Production scale, operational backups, retention defaults, migration runbooks. |
+| Semantic Graph / Core IR | Implemented subset | `crates/ail-core/src/semantic_graph.rs`, roundtrip tests | Full Core IR semantics and executable language coverage. |
+| ChangeSets / ACL | Implemented subset | `crates/ail-change/src/parser.rs`, `canonical.rs`, `apply.rs` | Full operation surface, richer repair loop, compatibility/migration discipline. |
+| Verification | Implemented subset | `crates/ail-verify/src/lib.rs`, pipeline/checker tests | Prod/critical profile rigor, solver limits, translation validation, policy UX. |
+| Compiler | Implemented subset | `crates/ail-compiler/src/lib.rs`, lowering/WASM/native tests | Full executable surface, backend parity, large-project performance evidence. |
+| Runtime | Implemented subset | `crates/ail-runtime/src/lib.rs`, runtime tests | Rich typed WASM ABI, memory/resource model, hardened isolation, operational limits. |
+| Context Server | Implemented subset | `crates/ail-context/src/lib.rs` | Network transport, auth, distributed freshness, redaction operations. |
+| Stdlib | Implemented subset | `crates/ail-stdlib/src/lib.rs`, module tests | Compatibility policy, official packages/adapters, verified contracts. |
+| Packages | Implemented subset | `crates/ail-package/src/lib.rs`, package tests | Registry operations, federation, reproducible-build proof workflows. |
+| Coordination / remote | Implemented subset | `crates/ail-coordinator/src/lib.rs`, `crates/ail-remote/src/lib.rs` | Durable remote sync service, multi-hop collaboration, key management. |
+| Dogfooding | Completed validation milestone | `crates/ail-dogfood/src/lib.rs`, dogfood tests | Real project authoring loop using AIL itself, not only Rust examples. |
+| Release hardening | Implemented subset | `docs/release-policy.md`, `docs/migration-guide.md`, `scripts/tag-release.sh` | Published compatibility guarantees and production release discipline. |
 
-| Phase | Name | Status | Objective | Primary output | Validation / code evidence |
-|------:|------|--------|-----------|----------------|----------------------------|
-| 0 | Design baseline | Completed | Close architecture, risks, and technology choices. | Canonical docs, decision log, risk register. | Open questions converted into decisions or validation items in `docs/open-questions.md`. |
-| 1 | Project/toolchain skeleton | Completed | Create Rust workspace, crate layout, CLI entrypoint, and testing infrastructure. | `ail` crate and workspace test infrastructure. | `Cargo.toml`, `crates/ail-cli/src/main.rs`, `cargo test --workspace`. |
-| 2 | Storage and snapshots foundation | Completed | Define async-native `GraphStore`, CAS abstraction, immutable snapshots, and ChangeSet log. | Snapshot read/write path and artifact-addressed storage. | `crates/ail-storage/src/object.rs`, `graph.rs`, `backends/*`. |
-| 3 | Semantic Graph core | Completed | Model graph nodes, edges, contracts, effects, and capabilities. | Program representation as graph objects. | `crates/ail-core/tests/*roundtrip.rs`. |
-| 4 | AI Change Language / ChangeSets | Completed | Parse, canonicalize, verify shape, and apply semantic ChangeSets transactionally. | ACL parser/canonicalizer/apply path. | `crates/ail-change/src/parser.rs`, `canonical.rs`, `apply.rs`. |
-| 5 | Type/effect checker | Completed milestone | Implement type/effect verification reports. | Explicit checker/report crates. | `crates/ail-verify/src/type_checker.rs`, `effect_checker.rs`, `report.rs`. Scope remains simpler than full language design. |
-| 6 | Contracts and refinements | Completed milestone | Add contract/refinement obligations and solver API. | Contract checker, proof pipeline, Z3 wrapper. | `crates/ail-verify/src/contract_checker.rs`, `proof.rs`, `z3_solver.rs`. |
-| 7 | Compiler IR pipeline | Completed | Lower graph snapshots to Core IR, ANF, and WASM artifacts. | Deterministic hash-linked compiler pipeline. | `crates/ail-compiler/src/core_ir.rs`, `anf.rs`, `wasm.rs`; integration tests. |
-| 8 | Runtime host | Completed milestone | Execute WASM with Wasmtime, capability ABI, deny-by-default policy, and audit events. | RuntimeHost with preflight, handlers, schema checks, reports. | `crates/ail-runtime/src/host.rs`; `effect_runtime_tests.rs`. Full rich ABI remains a gap. |
-| 9 | CLI workflow end-to-end | Completed milestone | Connect local workflow enough to prove text-to-runtime execution. | End-to-end ChangeSet to graph to compiler to runtime test path. | `crates/ail-dogfood/tests/e2e_pipeline.rs`. CLI surface is not yet the full command set in `docs/tooling.md`. |
-| 10 | Context Server | Completed milestone | Serve semantic context slices and deterministic summaries from structured facts. | In-process context API. | `crates/ail-context/src/lib.rs`, `builder.rs`, `summary.rs`. No transport server yet. |
-| 11 | Stdlib semantic core | Completed milestone | Implement core primitives and capability diagnostics. | `ail-stdlib` modules. | `crates/ail-stdlib/src/*` and module tests. |
-| 12 | Packages and trust | Completed milestone | Add package manifests, signing, trust levels, yanking, resolver/policy pieces. | Verifiable package model. | `crates/ail-package/src/*`; package tests. |
-| 13 | Multi-agent coordination | Completed milestone | Add coordinator/rebase/conflict handling. | Coordinator crate and integration tests. | `crates/ail-coordinator/tests/coordinator_integration.rs`. |
-| 14 | Dogfooding milestone | Completed milestone | Represent parts of AIL with its own graph/types/ChangeSet concepts. | Dogfood semantic examples. | `crates/ail-dogfood/src/*`, `tests/dogfood_program.rs`. |
-| 15 | Performance hardening | Completed milestone | Add incremental compilation/cache/index structures. | Incremental compiler/cache path. | `crates/ail-compiler/src/incremental.rs`, `cache.rs`, incremental tests. Large-project benchmark validation remains open. |
-| 16 | Distributed collaboration | Completed milestone | Add bundles, signing, and remote exchange primitives. | Remote bundle/signing crate. | `crates/ail-remote/src/*`. Full remote sync service remains future work. |
-| 17 | Native/backend expansion | Completed spike | Evaluate native artifacts while preserving provenance and manifests. | Cranelift object emission with trap stubs. | `crates/ail-compiler/src/native.rs`; `native_backend_tests.rs`. Native expression lowering is intentionally not done. |
-| 18 | Release hardening | Completed baseline | Add release, migration, compatibility, and docs policy. | Release policy and storage migrations. | `docs/release-policy.md`, `docs/migration-guide.md`, storage migration tests. |
+## Next recommended milestones
 
----
+| Milestone | Goal | Success evidence |
+|-----------|------|------------------|
+| Executable language surface | Expand parsed/lowered/executed expressions toward the documented Core IR subset. | Parser/lowering/codegen/runtime tests for records, variants, `Result`/`Option`, pattern matching, resource/concurrency stubs or explicit rejections. |
+| WASM ABI and memory model | Define and implement typed value layout across compiler and runtime. | ABI spec, memory access tests, schema/value roundtrips, host-call compatibility tests. |
+| Production verification profile | Make `prod` acceptance meaningful and hard to misread. | Policy tests proving unverified/unsafe/assumed handling, translation-validation hooks, report fixtures. |
+| Runtime hardening | Strengthen isolation, limits, audit, rollback, replay, and capability dispatch under failure. | Negative runtime tests, fuzz coverage, audit snapshots, limit/revocation tests. |
+| AI-native tooling loop | Turn context -> ChangeSet -> verify -> apply -> repair into a durable workflow. | CLI integration tests with persisted `.ail/` state and machine-readable diagnostics. |
+| Ecosystem path | Clarify package registry, official packages, signing, advisories, and compatibility. | Registry workflow tests, signed package fixtures, release/compatibility docs. |
+| Performance validation | Prove graph, storage, context, compiler, and runtime behavior at realistic sizes. | Benchmarks, regression thresholds, large-graph fixtures, documented bottlenecks. |
 
-## First implementation block
+## Validation rules
 
-<!-- Implementation Status: historical section. The first block has been completed; later phases are represented in the phase map above. -->
+- A milestone needs executable evidence: tests, fixtures, benchmark output, verification reports, or runnable CLI behavior.
+- Milestones do not reduce product scope; they validate whether the selected architecture survives implementation.
+- Storage and compiler work must measure large-project behavior early.
+- Multi-agent work must preserve the rule that agents propose ChangeSets against base snapshots and the coordinator serializes authoritative commits.
+- Runtime work must preserve deny-by-default semantics; no external effect is available without a capability grant.
+- Docs must state whether they describe target design, implemented subset, or historical context.
 
-The first SDD chain should cover phases 1-3:
+## Historical notes
+
+The original implementation plan sequenced phases through SDD changes:
+
+| SDD change | Covered |
+|------------|---------|
+| `toolchain-foundation` | Workspace, crate layout, CLI skeleton. |
+| `storage-snapshots-foundation` | `GraphStore`, CAS objects, immutable snapshots, ChangeSet log shape. |
+| `semantic-graph-core` | Initial Semantic Graph model. |
+| `changeset-transaction-model` | ACL parser/canonicalizer/apply path. |
+| `type-effect-verification` | Type/effect verification reports. |
+| `contracts-refinements` | Contract/refinement obligations and solver API. |
+| `wasm-compiler-pipeline` | Core IR, ANF, WASM artifacts, manifests. |
+| `runtime-capability-host` | Wasmtime host, deny-by-default grants, audit/reporting. |
+| `cli-end-to-end-workflow` | Local ChangeSet-to-runtime proof path. |
+| `context-server` | In-process semantic context slices. |
+| `stdlib-semantic-core` | Stdlib registry and semantic modules. |
+| `packages-trust-model` | Package manifests, trust, signing, resolver/policy pieces. |
+| `multi-agent-coordination` | Coordinator/rebase/conflict handling. |
+| `dogfooding-milestone` | Self-model examples. |
+| `performance-hardening` | Incremental compiler/cache/index structures. |
+| `distributed-collaboration` | Remote bundles, signing, exchange primitives. |
+| `native-backend-expansion` | Cranelift native object emission spike. |
+| `release-hardening` | Release policy and migration docs. |
+
+The first block was intentionally limited to foundation work:
 
 ```txt
 toolchain-foundation
@@ -64,74 +105,4 @@ toolchain-foundation
   -> semantic-graph-core
 ```
 
-This block proves that the project can persist a semantic program, address objects by hash, and expose the graph as the source of truth before parser, verifier, compiler, or runtime work begins.
-
-### In scope
-
-- Rust workspace and crate boundaries.
-- `ail` CLI skeleton.
-- Async-native `GraphStore` trait.
-- CAS object abstraction.
-- Snapshot identity and immutable snapshot reads.
-- ChangeSet log shape, even before full ACL parsing.
-- Initial semantic graph data model.
-- Fixture-based tests and small storage benchmarks.
-
-### Out of scope
-
-- Full ACL parser.
-- Full type/effect checker.
-- SMT integration.
-- WASM code generation.
-- Runtime host.
-- Distributed collaboration.
-- Package registry.
-
----
-
-## SDD chaining plan
-
-| SDD change | Covers | Depends on |
-|------------|--------|------------|
-| `toolchain-foundation` | Phase 1 | Design baseline |
-| `storage-snapshots-foundation` | Phase 2 | `toolchain-foundation` |
-| `semantic-graph-core` | Phase 3 | `storage-snapshots-foundation` |
-| `changeset-transaction-model` | Phase 4 | `semantic-graph-core` |
-| `type-effect-verification` | Phase 5 | `changeset-transaction-model` |
-| `contracts-refinements` | Phase 6 | `type-effect-verification` |
-| `wasm-compiler-pipeline` | Phase 7 | `type-effect-verification` |
-| `runtime-capability-host` | Phase 8 | `wasm-compiler-pipeline` |
-| `cli-end-to-end-workflow` | Phase 9 | `runtime-capability-host` |
-| `context-server` | Phase 10 | `cli-end-to-end-workflow` |
-| `stdlib-semantic-core` | Phase 11 | `type-effect-verification` |
-| `packages-trust-model` | Phase 12 | `stdlib-semantic-core` |
-| `multi-agent-coordination` | Phase 13 | `context-server`, `storage-snapshots-foundation` |
-| `dogfooding-milestone` | Phase 14 | `cli-end-to-end-workflow`, `stdlib-semantic-core` |
-| `performance-hardening` | Phase 15 | `dogfooding-milestone` |
-| `distributed-collaboration` | Phase 16 | `multi-agent-coordination`, `performance-hardening` |
-| `native-backend-expansion` | Phase 17 | `wasm-compiler-pipeline`, `performance-hardening` |
-| `release-hardening` | Phase 18 | All release-target phases |
-
----
-
-## Validation rules
-
-- A phase is not complete until it produces executable evidence: tests, fixtures, benchmark output, verification reports, or runnable CLI behavior.
-- Validation milestones do not reduce product scope; they prove whether the selected architecture survives contact with implementation.
-- Storage and compiler work must measure large-project behavior early. Compilation must operate from immutable snapshots and caches, not repeated live database queries.
-- Multi-agent work must preserve the rule that agents propose ChangeSets against base snapshots; only the coordinator serializes authoritative commits.
-- Runtime work must preserve deny-by-default semantics; no external effect is available without a capability grant.
-
----
-
-## Next step
-
-<!-- Implementation Status: historical section. The original next step is complete. Current next steps are tracked in the risk register and consistency review. -->
-
-Start the first SDD change:
-
-```txt
-toolchain-foundation
-```
-
-The goal is not to build the language yet. The goal is to create the project skeleton and prove the implementation can grow around the architecture instead of fighting it.
+That plan is complete as historical sequencing. Current work should use the roadmap above and the active validation registers in [Risks](risks.md) and [Decisions register](open-questions.md).

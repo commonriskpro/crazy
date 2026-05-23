@@ -4,9 +4,15 @@ Diseño de un lenguaje general-purpose optimizado para LLMs: el humano dirige in
 
 ## Canonical docs
 
-- `docs/architecture.md` — visión general y arquitectura.
-- `docs/core-ir.md` — Semantic Graph, Core IR, ANF/SSA y primitivas.
-- `docs/type-system.md` — sistema de tipos completo.
+Start with `docs/CODEBASE-GUIDE.md`. It gives the reading order, status legend, implementation reality, and links into the codebase maps.
+
+- `docs/codebase/mental-model.md` — what AIL is and is not.
+- `docs/codebase/repository-map.md` — crates/directories by responsibility.
+- `docs/codebase/reference-map.md` — "if you need X, read Y".
+- `docs/codebase/maintainer-playbook.md` — maintainer checklists by subsystem.
+- `docs/architecture.md` — system overview and architecture.
+- `docs/core-ir.md` — Semantic Graph, Core IR, ANF/SSA, and primitives.
+- `docs/type-system.md` — type-system design.
 - `docs/change-language.md` — AI Change Language.
 - `docs/verification.md` — verification model.
 - `docs/runtime.md` — runtime/capability protocol.
@@ -16,13 +22,13 @@ Diseño de un lenguaje general-purpose optimizado para LLMs: el humano dirige in
 - `docs/compiler.md` — compiler pipeline.
 - `docs/stdlib.md` — standard library shape.
 - `docs/tooling.md` — developer workflow/tooling.
-- `docs/risks.md` — risks and research questions.
-- `docs/decision-log.md` — decisiones aceptadas.
-- `docs/open-questions.md` — closed decisions and validation-required items register.
-- `docs/implementation-blueprint.md` — implementation phases and SDD chain.
-- `docs/consistency-review.md` — revisión de consistencia.
+- `docs/risks.md` — risks and validation register.
+- `docs/decision-log.md` — accepted decisions.
+- `docs/open-questions.md` — closed decisions and validation-required items.
+- `docs/implementation-blueprint.md` — living roadmap and milestone status.
+- `docs/consistency-review.md` — consistency review notes.
 
-`ai-native-language-draft.md` queda como archivo histórico/raw.
+`docs/history/ai-native-language-draft.md` is historical/raw context, not the source of truth.
 
 ## Building & Testing
 
