@@ -1,6 +1,6 @@
 # Remote collaboration / cryptographic identity
 
-<!-- Implementation Status: fully implemented in crates/ail-remote. AgentIdentity, AgentKeypair, ObjectBundle, SignedContextSlice, RemoteChangeSet, and RemoteError all exist. Crypto primitives (AES-256-GCM, Argon2id, X25519) exist under feature = "crypto". -->
+<!-- Implementation Status: fully implemented in crates/ail-remote. AgentIdentity, AgentKeypair, RemoteSignerPolicy, ObjectBundle, SignedContextSlice, RemoteChangeSet, and RemoteError all exist. Crypto primitives (AES-256-GCM, Argon2id, X25519) exist under feature = "crypto". -->
 
 > Full extracted design. Related: [Coordinator](coordinator.md), [Context Server](context-server.md), [AI Change Language](change-language.md), [Storage](storage.md).
 
@@ -34,6 +34,24 @@ pub struct AgentIdentity {
 `label` es informativo. Las decisiones de acceso deben basarse exclusivamente en `public_key`.
 
 `AgentIdentity::verify_bytes(payload, sig)` reconstruye la `VerifyingKey` en cada llamada. La construcción de la clave es barata; no se cachea estado mutable.
+
+### RemoteSignerPolicy
+
+`RemoteSignerPolicy` define una allowlist local de signers remotos autorizados. La decisión se basa en la clave pública exacta (`public_key`) del `AgentIdentity`; `label` y `trust_tier` son metadata local para diagnóstico/auditoría, no material criptográfico.
+
+```rust
+pub struct RemoteSignerPolicy {
+    pub allowed_signers: Vec<TrustedRemoteSigner>,
+}
+
+pub struct TrustedRemoteSigner {
+    pub public_key: [u8; 32],
+    pub trust_tier: SignerTrustTier,
+    pub label: Option<String>,
+}
+```
+
+El default seguro es `deny_all()`: un coordinator creado sin policy explícita rechaza submissions remotos válidamente firmados si el signer no está en la allowlist.
 
 ### AgentKeypair
 
@@ -117,13 +135,17 @@ RemoteChangeSet::sign(changeset, &keypair)  →  Ok(rcs)
 rcs.verify_signature()  →  Ok(()) | Err(SignatureInvalid)
 ```
 
-El `Coordinator` llama `verify_remote_submission(rcs)` que encadena verificación de firma → submit.
+El `Coordinator` llama `verify_remote_submission(rcs)` que encadena verificación de firma → policy de signer → submit.
 
 ## RemoteError
 
 ```txt
 RemoteError::SignatureInvalid
     La firma Ed25519 del envelope no pasó la verificación.
+    El snapshot vivo no avanza.
+
+RemoteError::SignerRejected(rejection)
+    La firma era válida, pero el public_key del signer no está permitido por la policy local.
     El snapshot vivo no avanza.
 
 RemoteError::CoordinatorFailed(reason)

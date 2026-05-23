@@ -21,6 +21,7 @@
 // - [`error`]    — `RemoteError` enum.
 // - [`identity`] — `AgentIdentity`, `AgentKeypair`, `SigningError`.
 // - [`bundle`]   — `ObjectBundle`, `BundleError`.
+// - [`policy`]   — remote signer allowlist policy DTOs.
 // - [`signing`]  — `SignedContextSlice`, `RemoteChangeSet`.
 // - [`crypto`]   — AES-256-GCM, Argon2id, X25519 primitives (feature = "crypto").
 
@@ -30,6 +31,7 @@ pub mod crypto;
 pub mod error;
 pub mod exchange;
 pub mod identity;
+pub mod policy;
 pub mod signing;
 
 pub use bundle::{BundleError, ObjectBundle};
@@ -40,4 +42,8 @@ pub use crypto::{
 pub use error::RemoteError;
 pub use exchange::{RemoteExchangeRequest, RemoteExchangeResponse, RemoteSubmissionOutcome};
 pub use identity::{AgentIdentity, AgentKeypair, SigningError};
+pub use policy::{
+    RemoteSignerPolicy, RemoteSignerRejection, RemoteSignerRejectionReason, SignerTrustTier,
+    TrustedRemoteSigner,
+};
 pub use signing::{RemoteChangeSet, SignedContextSlice};

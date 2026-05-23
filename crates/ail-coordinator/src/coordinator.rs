@@ -47,7 +47,7 @@ use ail_change::{
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_remote::{
     RemoteChangeSet, RemoteError, RemoteExchangeRequest, RemoteExchangeResponse,
-    RemoteSubmissionOutcome,
+    RemoteSignerPolicy, RemoteSubmissionOutcome,
 };
 use tokio::sync::Mutex;
 
@@ -133,12 +133,22 @@ struct CoordinatorState {
 #[derive(Clone)]
 pub struct Coordinator {
     inner: Arc<Mutex<CoordinatorState>>,
+    remote_signer_policy: Arc<RemoteSignerPolicy>,
 }
 
 impl Coordinator {
     /// Create a new `Coordinator` with an empty graph and the given initial
     /// snapshot id.
     pub fn new(initial_snapshot_id: SnapshotId, graph: SemanticGraph) -> Self {
+        Self::with_remote_signer_policy(initial_snapshot_id, graph, RemoteSignerPolicy::deny_all())
+    }
+
+    /// Create a new `Coordinator` with an explicit remote signer policy.
+    pub fn with_remote_signer_policy(
+        initial_snapshot_id: SnapshotId,
+        graph: SemanticGraph,
+        remote_signer_policy: RemoteSignerPolicy,
+    ) -> Self {
         let bridge = MemorySnapshotBridge::new(initial_snapshot_id);
         let state = CoordinatorState {
             graph,
@@ -150,6 +160,7 @@ impl Coordinator {
         };
         Self {
             inner: Arc::new(Mutex::new(state)),
+            remote_signer_policy: Arc::new(remote_signer_policy),
         }
     }
 
@@ -260,6 +271,8 @@ impl Coordinator {
     ///
     /// - Returns `Err(RemoteError::SignatureInvalid)` if signature verification
     ///   fails.  The coordinator's live snapshot does **not** advance.
+    /// - Returns `Err(RemoteError::SignerRejected(_))` if the signature is valid
+    ///   but the signer is not allowed by local policy.
     /// - Returns `Err(RemoteError::CoordinatorFailed(reason))` if `submit()`
     ///   returns a [`CoordinatorOutcome::Failed`] outcome.
     pub async fn verify_remote_submission(
@@ -268,6 +281,9 @@ impl Coordinator {
     ) -> Result<CoordinatorOutcome, RemoteError> {
         rcs.verify_signature()
             .map_err(|_| RemoteError::SignatureInvalid)?;
+        self.remote_signer_policy
+            .check_identity(&rcs.agent)
+            .map_err(RemoteError::SignerRejected)?;
 
         let outcome = self.submit(rcs.changeset).await;
 
@@ -361,6 +377,7 @@ fn remote_submission_outcome(outcome: CoordinatorOutcome) -> RemoteSubmissionOut
 fn remote_error_code(err: &RemoteError) -> &'static str {
     match err {
         RemoteError::SignatureInvalid => "E_SIGNATURE_INVALID",
+        RemoteError::SignerRejected(_) => "E_SIGNER_NOT_ALLOWED",
         RemoteError::CoordinatorFailed(_) => "E_COORDINATOR_FAILED",
     }
 }

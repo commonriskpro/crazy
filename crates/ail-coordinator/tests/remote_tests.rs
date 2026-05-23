@@ -20,7 +20,8 @@ use ail_coordinator::coordinator::{Coordinator, CoordinatorOutcome};
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_remote::{
     AgentKeypair, ObjectBundle, RemoteChangeSet, RemoteError, RemoteExchangeRequest,
-    RemoteExchangeResponse, RemoteSubmissionOutcome,
+    RemoteExchangeResponse, RemoteSignerPolicy, RemoteSignerRejectionReason,
+    RemoteSubmissionOutcome, SignerTrustTier, TrustedRemoteSigner,
 };
 use ail_storage::object::ObjectId;
 use std::collections::BTreeMap;
@@ -79,6 +80,17 @@ fn signed_rcs(
     RemoteChangeSet::sign(changeset, keypair).expect("sign must succeed")
 }
 
+fn coordinator_allowing(keypair: &AgentKeypair) -> Coordinator {
+    let identity = keypair.identity();
+    let policy =
+        RemoteSignerPolicy::from_allowed_signers(vec![TrustedRemoteSigner::from_identity(
+            &identity,
+            SignerTrustTier::Trusted,
+            Some("remote_agent".to_string()),
+        )]);
+    Coordinator::with_remote_signer_policy(SnapshotId(0), empty_graph(), policy)
+}
+
 // ── Task 6.1a: Valid signed submission → CoordinatorOutcome::Applied ──────
 //
 // Spec: Valid signed submission is processed by coordinator
@@ -87,8 +99,8 @@ fn signed_rcs(
 //   THEN it returns Ok(CoordinatorOutcome::Applied { .. })
 #[tokio::test]
 async fn valid_remote_submission_applies() {
-    let coord = Coordinator::new(SnapshotId(0), empty_graph());
     let kp = AgentKeypair::generate();
+    let coord = coordinator_allowing(&kp);
 
     let rcs = signed_rcs(
         0,
@@ -109,6 +121,49 @@ async fn valid_remote_submission_applies() {
     );
 }
 
+#[tokio::test]
+async fn valid_signature_from_disallowed_signer_is_rejected_before_submit() {
+    let coord = Coordinator::new(SnapshotId(0), empty_graph());
+    let kp = AgentKeypair::generate();
+    let identity = kp.identity();
+
+    let rcs = signed_rcs(
+        0,
+        "remote_agent",
+        vec![create_node_op(13, "fn.disallowed")],
+        &kp,
+    );
+    let result = coord.verify_remote_submission(rcs).await;
+
+    match result {
+        Err(RemoteError::SignerRejected(rejection)) => {
+            assert_eq!(rejection.public_key, identity.public_key);
+            assert_eq!(
+                rejection.reason,
+                RemoteSignerRejectionReason::SignerNotAllowed
+            );
+        }
+        other => panic!("disallowed signer must be rejected distinctly; got {other:?}"),
+    }
+
+    let local_result = coord
+        .submit(cs(
+            0,
+            "local_agent",
+            vec![create_node_op(14, "fn.after_policy_reject")],
+        ))
+        .await;
+    assert!(
+        matches!(
+            local_result,
+            CoordinatorOutcome::Applied {
+                applied_snapshot_id: SnapshotId(1)
+            }
+        ),
+        "live snapshot must still be 0 after policy rejection; got {local_result:?}"
+    );
+}
+
 // ── Task 6.1b: Invalid signature rejected before submit ───────────────────
 //
 // Spec: Invalid signature is rejected before coordinator submit
@@ -117,8 +172,8 @@ async fn valid_remote_submission_applies() {
 //   THEN it returns Err(RemoteError::SignatureInvalid) and live snapshot does NOT advance
 #[tokio::test]
 async fn invalid_signature_rejected_before_submit() {
-    let coord = Coordinator::new(SnapshotId(0), empty_graph());
     let kp = AgentKeypair::generate();
+    let coord = coordinator_allowing(&kp);
 
     let mut rcs = signed_rcs(
         0,
@@ -166,7 +221,8 @@ async fn invalid_signature_rejected_before_submit() {
 //   THEN it returns Ok(CoordinatorOutcome::RebaseApplied { .. })
 #[tokio::test]
 async fn valid_sig_stale_base_triggers_rebase() {
-    let coord = Coordinator::new(SnapshotId(0), empty_graph());
+    let kp = AgentKeypair::generate();
+    let coord = coordinator_allowing(&kp);
 
     // Local agent A applies first — advances live snapshot to SnapshotId(1).
     let cs_a = cs(0, "agent_a", vec![create_node_op(20, "fn.first")]);
@@ -177,7 +233,6 @@ async fn valid_sig_stale_base_triggers_rebase() {
     );
 
     // Remote agent signs at base SnapshotId(0) — now stale, disjoint NodeRef.
-    let kp = AgentKeypair::generate();
     let rcs = signed_rcs(
         0,
         "remote_agent",
@@ -206,8 +261,8 @@ async fn valid_sig_stale_base_triggers_rebase() {
 //   THEN it returns CoordinatorOutcome::Applied (no regression)
 #[tokio::test]
 async fn local_submit_works_after_remote_submission() {
-    let coord = Coordinator::new(SnapshotId(0), empty_graph());
     let kp = AgentKeypair::generate();
+    let coord = coordinator_allowing(&kp);
 
     // Remote submission applied first.
     let rcs = signed_rcs(
@@ -242,8 +297,8 @@ async fn local_submit_works_after_remote_submission() {
 
 #[tokio::test]
 async fn remote_exchange_submit_maps_to_submission_response() {
-    let coord = Coordinator::new(SnapshotId(0), empty_graph());
     let kp = AgentKeypair::generate();
+    let coord = coordinator_allowing(&kp);
     let rcs = signed_rcs(
         0,
         "remote_agent",
@@ -260,6 +315,31 @@ async fn remote_exchange_submit_maps_to_submission_response() {
         RemoteExchangeResponse::Submission(RemoteSubmissionOutcome::Applied {
             applied_snapshot_id: SnapshotId(1),
         })
+    );
+}
+
+#[tokio::test]
+async fn remote_exchange_reports_disallowed_signer_code() {
+    let coord = Coordinator::new(SnapshotId(0), empty_graph());
+    let kp = AgentKeypair::generate();
+    let rcs = signed_rcs(
+        0,
+        "remote_agent",
+        vec![create_node_op(41, "fn.exchange_rejected")],
+        &kp,
+    );
+
+    let response = coord
+        .handle_remote_exchange(RemoteExchangeRequest::SubmitChangeSet(rcs))
+        .await;
+
+    assert!(
+        matches!(
+            response,
+            RemoteExchangeResponse::Error { ref code, ref message }
+                if code == "E_SIGNER_NOT_ALLOWED" && message.contains("not allowed")
+        ),
+        "disallowed exchange submit must return signer policy code; got {response:?}"
     );
 }
 
