@@ -1394,6 +1394,160 @@ fn package_explain_json_has_package_and_capabilities() {
     );
 }
 
+// ── Remote submit ─────────────────────────────────────────────────────────
+
+#[test]
+fn remote_submit_help_mentions_signer() {
+    ail()
+        .args(["remote", "submit", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--signer"));
+}
+
+#[test]
+fn remote_submit_json_uses_in_process_exchange() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let change_output = ail()
+        .args([
+            "change",
+            "--file",
+            sample_acl_path().to_str().expect("path must be UTF-8"),
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let change_json = parse_json_output(&change_output);
+    let change_id = change_json["data"]["canonical_change"]["change_id"]
+        .as_str()
+        .expect("change_id must be present");
+
+    let submit_output = ail()
+        .args([
+            "remote",
+            "submit",
+            change_id,
+            "--signer",
+            "local-dev",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&submit_output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["request"], "SubmitChangeSet");
+    assert_eq!(v["data"]["transport"], "in_process");
+    assert_eq!(v["data"]["key_source"], "ephemeral_in_process");
+    assert_eq!(v["data"]["signer"]["key_ref"], "local-dev");
+    assert_eq!(v["data"]["outcome"]["status"], "Applied");
+    assert!(
+        v["data"]["note"]
+            .as_str()
+            .expect("note must be a string")
+            .contains("no network transport"),
+        "remote submit must be honest about local transport; got: {v}"
+    );
+}
+
+#[test]
+fn remote_submit_uses_non_zero_current_snapshot_id() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    ail()
+        .args([
+            "change",
+            "--file",
+            sample_acl_path().to_str().expect("path must be UTF-8"),
+            "--apply",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let base_one_acl = dir.path().join("base-one.acl");
+    std::fs::write(
+        &base_one_acl,
+        r#"change remote_nonzero
+author test-author
+description remote submit after snapshot one
+base 1
+end
+"#,
+    )
+    .expect("base-one ACL must be written");
+
+    let change_output = ail()
+        .args([
+            "change",
+            "--file",
+            base_one_acl.to_str().expect("path must be UTF-8"),
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let change_json = parse_json_output(&change_output);
+    let change_id = change_json["data"]["canonical_change"]["change_id"]
+        .as_str()
+        .expect("change_id must be present");
+
+    let submit_output = ail()
+        .args([
+            "remote",
+            "submit",
+            change_id,
+            "--signer",
+            "local-dev",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&submit_output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["transport"], "in_process");
+    assert_eq!(v["data"]["key_source"], "ephemeral_in_process");
+    assert_eq!(v["data"]["outcome"]["status"], "Applied");
+    assert_eq!(v["data"]["outcome"]["applied_snapshot_id"], 2);
+}
+
+#[test]
+fn remote_submit_unknown_change_id_fails() {
+    let change_id = "ab".repeat(32);
+
+    ail()
+        .args([
+            "remote",
+            "submit",
+            &change_id,
+            "--signer",
+            "local-dev",
+            "--json",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("not found"));
+}
+
 // ── G31: doctor ───────────────────────────────────────────────────────────
 
 /// SC-D1: doctor exits 0 and prints check results.

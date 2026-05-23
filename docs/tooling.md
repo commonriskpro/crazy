@@ -62,6 +62,7 @@ ail refactor
 ail approve
 ail reject
 ail package
+ail remote
 ail policy
 ail doctor
 ail gc
@@ -726,5 +727,6 @@ The current implementation resolves the original tooling questions as follows:
 | `ail gc` | Implemented for the file store. Collects unreachable objects under `.ail/store/objects/`. Not supported for memory or Postgres backends. |
 | `policy list` / `policy add` | Implemented. Rules are persisted as text entries; `policy check` parses capability deny/allow rules from the list. |
 | `package init` / `package install` / `package search` | Implemented against the local in-process registry. `install` adds to the lockfile; `search` queries by name prefix. |
+| `remote submit` | Implemented as `ail remote submit <change-id> --signer <key-ref> [--json]` against the local in-process `Coordinator::handle_remote_exchange` boundary. It does not claim network transport or durable key configuration. |
 
 Code references: `crates/ail-cli/src/main.rs`, `crates/ail-change/src/parser.rs`, `crates/ail-storage/src/approval.rs`.
