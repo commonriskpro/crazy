@@ -74,7 +74,9 @@ pub use resolver::{DependencyResolver, DependencySpec, ResolverError};
 pub use signing::{PackageKeypair, PackageSignature, SignedPackage, SigningError};
 pub use surface::UnsafeSurfaceEntry;
 pub use trust::TrustLevel;
-pub use verification::PackageVerificationReport;
+pub use verification::{
+    PackageVerificationEvidenceError, PackageVerificationReport, validate_verified_package_evidence,
+};
 pub use versioning::{
     CompatibilityClass, CompatibilityEngine, CompatibilityError, MigrationRecord, MigrationStep,
     PackageVersioning,

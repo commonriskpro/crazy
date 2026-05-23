@@ -60,6 +60,14 @@ pub enum PreflightFailure {
         package: String,
     },
 
+    /// A `Verified` package did not provide consistent local verification evidence.
+    PackageVerificationEvidenceInvalid {
+        /// Package name as declared in the manifest.
+        package: String,
+        /// Human-readable evidence validation failure.
+        reason: String,
+    },
+
     /// A required capability has no bound handler.
     ///
     /// Emitted during preflight step 5 when `profile.require_handler_binding`
@@ -108,6 +116,12 @@ impl std::fmt::Display for PreflightFailure {
                     f,
                     "unsafe package not approved: `{package}` has TrustLevel::Unsafe \
                      with no explicit approval in the profile"
+                )
+            }
+            PreflightFailure::PackageVerificationEvidenceInvalid { package, reason } => {
+                write!(
+                    f,
+                    "package verification evidence invalid: `{package}`: {reason}"
                 )
             }
             PreflightFailure::HandlerNotBound { capability } => {

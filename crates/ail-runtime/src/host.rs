@@ -112,6 +112,7 @@ use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBu
 
 use ail_package::manifest::PackageManifest;
 use ail_package::trust::TrustLevel;
+use ail_package::validate_verified_package_evidence;
 
 use crate::abi::{HostError, HostResult};
 use crate::audit::{AuditEvent, AuditLog};
@@ -1236,6 +1237,15 @@ impl RuntimeHost {
                 ));
             }
 
+            validate_verified_package_evidence(m).map_err(|err| {
+                RuntimeError::PreflightFailed(
+                    PreflightFailure::PackageVerificationEvidenceInvalid {
+                        package: m.name.clone(),
+                        reason: err.to_string(),
+                    },
+                )
+            })?;
+
             if let Some(required) = profile.min_package_trust()
                 && !m.trust_level.satisfies(required)
             {
@@ -1443,6 +1453,7 @@ fn failure_parts(err: &RuntimeError) -> (Vec<CapabilityId>, PreflightFailure) {
         RuntimeError::PreflightFailed(
             PreflightFailure::PackageTrustViolation { .. }
             | PreflightFailure::UnsafePackageNotApproved { .. }
+            | PreflightFailure::PackageVerificationEvidenceInvalid { .. }
             | PreflightFailure::HashMismatch { .. }
             | PreflightFailure::WasmValidationError(_)
             | PreflightFailure::HandlerNotBound { .. }
