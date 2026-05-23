@@ -3,6 +3,7 @@ mod cli;
 mod error;
 mod output;
 mod project;
+mod remote_config;
 mod store;
 
 use error::exit_code;

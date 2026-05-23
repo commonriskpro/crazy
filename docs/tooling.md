@@ -727,6 +727,6 @@ The current implementation resolves the original tooling questions as follows:
 | `ail gc` | Implemented for the file store. Collects unreachable objects under `.ail/store/objects/`. Not supported for memory or Postgres backends. |
 | `policy list` / `policy add` | Implemented. Rules are persisted as text entries; `policy check` parses capability deny/allow rules from the list. |
 | `package init` / `package install` / `package search` | Implemented against the local in-process registry. `install` adds to the lockfile; `search` queries by name prefix. |
-| `remote submit` | Implemented as `ail remote submit <change-id> --signer <key-ref> [--json]` against the local in-process `Coordinator::handle_remote_exchange` boundary. It does not claim network transport or durable key configuration. |
+| `remote submit` | Implemented as `ail remote submit <change-id> --signer <key-ref> [--json]` against the local in-process `Coordinator::handle_remote_exchange` boundary. It loads and validates `.ail/remote.json` when present, and missing config defaults to deny-all in the loader, but submit still uses ephemeral in-process signer identity until durable key loading exists. It does not claim network transport. |
 
 Code references: `crates/ail-cli/src/main.rs`, `crates/ail-change/src/parser.rs`, `crates/ail-storage/src/approval.rs`.

@@ -99,7 +99,7 @@ use crate::store::{
 const REMOTE_SUBMIT_TRANSPORT: &str = "in_process";
 const REMOTE_SUBMIT_KEY_SOURCE: &str = "ephemeral_in_process";
 const REMOTE_SUBMIT_NOTE: &str =
-    "local in-process exchange only; no network transport or durable key config is used";
+    "local in-process exchange only; no network transport or durable signer key material is used";
 
 // ── Cli ───────────────────────────────────────────────────────────────────
 
@@ -1907,6 +1907,17 @@ async fn cmd_remote_submit(
         .await?
         .ok_or_else(|| CliError::NotFound(format!("change-id not found: {change_id}")))?;
 
+    let project = crate::project::ProjectContext::from_cwd()?;
+    let remote_config_path = crate::remote_config::remote_config_path(&project.ail_dir);
+    let remote_config_source = if remote_config_path.exists() {
+        "project_file"
+    } else {
+        "missing_default_deny_all"
+    };
+    let loaded_remote_policy = crate::remote_config::load_remote_signer_policy(&project.ail_dir)
+        .map_err(|e| CliError::Domain(e.to_string()))?;
+    let configured_allowed_signers = loaded_remote_policy.allowed_signers.len();
+
     let keypair = AgentKeypair::generate();
     let identity = keypair.identity();
     let policy =
@@ -1928,7 +1939,14 @@ async fn cmd_remote_submit(
         return Err(CliError::Domain(remote_exchange_error_message(response)));
     };
 
-    let human_msg = remote_submit_human(change_id, signer_ref, &identity.public_key, &outcome);
+    let human_msg = remote_submit_human(
+        change_id,
+        signer_ref,
+        &identity.public_key,
+        remote_config_source,
+        configured_allowed_signers,
+        &outcome,
+    );
     print_response(
         mode,
         &human_msg,
@@ -1940,6 +1958,12 @@ async fn cmd_remote_submit(
             "signer": {
                 "key_ref": signer_ref,
                 "public_key": bytes_to_hex(&identity.public_key),
+            },
+            "remote_config": {
+                "path": remote_config_path.display().to_string(),
+                "source": remote_config_source,
+                "allowed_signers": configured_allowed_signers,
+                "applied_to_submit_policy": false,
             },
             "outcome": remote_submission_outcome_json(&outcome),
             "note": REMOTE_SUBMIT_NOTE,
@@ -1961,10 +1985,12 @@ fn remote_submit_human(
     change_id: &str,
     signer_ref: &str,
     public_key: &[u8; 32],
+    remote_config_source: &str,
+    configured_allowed_signers: usize,
     outcome: &RemoteSubmissionOutcome,
 ) -> String {
     format!(
-        "remote submit: {change_id}\nsigner: {signer_ref}\npublic key: {}\ntransport: {REMOTE_SUBMIT_TRANSPORT}\nkey source: {REMOTE_SUBMIT_KEY_SOURCE}\noutcome: {}\nnote: {REMOTE_SUBMIT_NOTE}",
+        "remote submit: {change_id}\nsigner: {signer_ref}\npublic key: {}\ntransport: {REMOTE_SUBMIT_TRANSPORT}\nkey source: {REMOTE_SUBMIT_KEY_SOURCE}\nremote config: {remote_config_source} ({configured_allowed_signers} allowed signers, not applied to ephemeral submit policy)\noutcome: {}\nnote: {REMOTE_SUBMIT_NOTE}",
         bytes_to_hex(public_key),
         remote_submission_outcome_label(outcome),
     )
