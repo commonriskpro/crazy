@@ -4133,6 +4133,7 @@ async fn cmd_package(
                     "trust": entry.trust_level.to_string(),
                     "signature_status": installed.signature_status,
                     "verification_report": installed.verification_report,
+                    "verification_report_hash": entry.verification_report_hash,
                     "verification_report_status": verification_report_status,
                     "capabilities": [],
                     "assumptions": [],
@@ -4169,6 +4170,7 @@ async fn cmd_package(
                     "trust": entry.trust_level.to_string(),
                     "signature_status": installed.signature_status,
                     "verification_report": installed.verification_report,
+                    "verification_report_hash": entry.verification_report_hash,
                     "verification_report_status": verification_report_status,
                     "capabilities_granted": false,
                     "warnings": installed.warnings,
@@ -4217,6 +4219,7 @@ async fn cmd_package(
             let registry = load_package_registry(store)?;
             let mut seen = BTreeSet::new();
             let mut actual = Vec::new();
+            let mut actual_by_package = BTreeMap::new();
             let mut signature_failures = Vec::new();
             let mut warnings = Vec::new();
             for manifest in registry.all() {
@@ -4232,6 +4235,16 @@ async fn cmd_package(
                             .manifest
                             .blake3_hex()
                             .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))?;
+                        let report_hash = verification_report_hash_for_manifest(&lookup.manifest)?;
+                        actual_by_package.insert(
+                            (
+                                lookup.manifest.name.clone(),
+                                lookup.manifest.version.clone(),
+                            ),
+                            RegistryPackageIntegrity {
+                                verification_report_hash: report_hash,
+                            },
+                        );
                         actual.push((lookup.manifest.name, lookup.manifest.version, hash));
                     }
                     Err(e) => signature_failures.push(e.to_string()),
@@ -4242,11 +4255,14 @@ async fn cmd_package(
                 .map(|(name, version, hash)| (name.as_str(), version.as_str(), hash.as_str()))
                 .collect::<Vec<_>>();
             let mismatches = lockfile.verify_integrity(&actual_refs);
+            let report_mismatches =
+                verification_report_hash_mismatches(&lockfile, &actual_by_package);
             let hash_ok = mismatches.is_empty();
             let signature_ok = signature_failures.is_empty();
-            let verified = hash_ok && signature_ok;
+            let report_hash_ok = report_mismatches.is_empty();
+            let verified = hash_ok && signature_ok && report_hash_ok;
             let human_msg = format!(
-                "packages: {}\nhash_integrity: {}\nsignature_integrity: {}\nlock_file: {}\npackages_checked: {}\nwarnings: {}",
+                "packages: {}\nhash_integrity: {}\nsignature_integrity: {}\nverification_report_integrity: {}\nlock_file: {}\npackages_checked: {}\nwarnings: {}",
                 if verified {
                     "all verified"
                 } else {
@@ -4254,6 +4270,7 @@ async fn cmd_package(
                 },
                 if hash_ok { "ok" } else { "mismatch" },
                 if signature_ok { "ok" } else { "failed" },
+                if report_hash_ok { "ok" } else { "mismatch" },
                 if verified {
                     "consistent"
                 } else {
@@ -4262,24 +4279,43 @@ async fn cmd_package(
                 lockfile.len(),
                 warnings.len()
             );
-            print_response(
-                mode,
-                &human_msg,
-                json!({
-                    "verified": verified,
-                    "hash_integrity": if hash_ok { "ok" } else { "mismatch" },
-                    "signature_integrity": if signature_ok { "ok" } else { "failed" },
-                    "lock_file": if verified { "consistent" } else { "inconsistent" },
-                    "mismatches": mismatches,
-                    "signature_failures": signature_failures,
-                    "warnings": warnings,
-                    "packages": lockfile
-                        .entries
-                        .iter()
-                        .map(lockfile_entry_to_json)
-                        .collect::<Vec<_>>(),
-                }),
-            );
+            let response_data = json!({
+                "verified": verified,
+                "hash_integrity": if hash_ok { "ok" } else { "mismatch" },
+                "signature_integrity": if signature_ok { "ok" } else { "failed" },
+                "verification_report_integrity": if report_hash_ok { "ok" } else { "mismatch" },
+                "lock_file": if verified { "consistent" } else { "inconsistent" },
+                "mismatches": mismatches,
+                "verification_report_mismatches": report_mismatches
+                    .iter()
+                    .map(verification_report_hash_mismatch_to_json)
+                    .collect::<Vec<_>>(),
+                "signature_failures": signature_failures,
+                "warnings": warnings,
+                "packages": lockfile
+                    .entries
+                    .iter()
+                    .map(lockfile_entry_to_json)
+                    .collect::<Vec<_>>(),
+            });
+            if !report_hash_ok {
+                let message = format!(
+                    "package verification failed: {} verification report hash mismatch(es)",
+                    report_mismatches.len()
+                );
+                if mode == OutputMode::Json {
+                    let mut error_data = response_data;
+                    if let Some(obj) = error_data.as_object_mut() {
+                        obj.insert("error".to_string(), json!("package_verification_failed"));
+                        obj.insert("message".to_string(), json!(message.clone()));
+                    }
+                    print_error_response(error_data);
+                } else {
+                    print_response(mode, &human_msg, response_data);
+                }
+                return Err(CliError::Domain(message));
+            }
+            print_response(mode, &human_msg, response_data);
         }
         PackageCmd::Publish => {
             let manifest = load_or_create_package_manifest(store).await?;
@@ -4898,6 +4934,18 @@ struct PackageAuditIssue {
     severity: Option<String>,
     affected_range: Option<String>,
     reason: Option<String>,
+}
+
+struct RegistryPackageIntegrity {
+    verification_report_hash: Option<String>,
+}
+
+struct VerificationReportHashMismatch {
+    package: String,
+    version: String,
+    reason: &'static str,
+    lockfile_hash: Option<String>,
+    registry_hash: Option<String>,
 }
 
 impl PackageAuditIssue {
@@ -5795,21 +5843,32 @@ fn install_package_from_registry(
     let hash = manifest
         .blake3_hex()
         .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))?;
+    let verification_report_hash = verification_report_hash_for_manifest(manifest)?;
     let entry = LockfileEntry {
         name: manifest.name.clone(),
         version: manifest.version.clone(),
         package_hash: hash,
         trust_level: manifest.trust_level,
-        verification_report_hash: None,
+        verification_report_hash,
         accepted_assumptions: vec![],
     };
     let mut lockfile = load_package_lockfile(store)?;
-    if lockfile.get(&entry.name, &entry.version).is_none() {
+    let stored_entry = if let Some(existing) = lockfile
+        .entries
+        .iter_mut()
+        .find(|existing| existing.name == entry.name && existing.version == entry.version)
+    {
+        existing.package_hash = entry.package_hash.clone();
+        existing.trust_level = entry.trust_level;
+        existing.verification_report_hash = entry.verification_report_hash.clone();
+        existing.clone()
+    } else {
         lockfile.add(entry.clone());
-    }
+        entry
+    };
     save_package_lockfile(store, &lockfile)?;
     Ok(InstalledPackage {
-        entry,
+        entry: stored_entry,
         signature_status: lookup.signature_status,
         verification_report: manifest.verification_report.clone(),
         warnings: lookup.warning.into_iter().collect(),
@@ -5818,6 +5877,72 @@ fn install_package_from_registry(
 
 fn verification_report_status(has_report: bool) -> &'static str {
     if has_report { "attached" } else { "none" }
+}
+
+fn verification_report_hash_for_manifest(
+    manifest: &PackageManifest,
+) -> Result<Option<String>, CliError> {
+    manifest
+        .verification_report
+        .as_ref()
+        .map(|report| {
+            report
+                .blake3_hex()
+                .map_err(|e| CliError::Domain(format!("verification report hash failed: {e}")))
+        })
+        .transpose()
+}
+
+fn verification_report_hash_mismatches(
+    lockfile: &Lockfile,
+    actual_by_package: &BTreeMap<(String, String), RegistryPackageIntegrity>,
+) -> Vec<VerificationReportHashMismatch> {
+    lockfile
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            let actual = actual_by_package.get(&(entry.name.clone(), entry.version.clone()));
+            let registry_hash = actual.and_then(|actual| actual.verification_report_hash.clone());
+            match (&entry.verification_report_hash, registry_hash) {
+                (Some(lockfile_hash), Some(registry_hash)) if lockfile_hash != &registry_hash => {
+                    Some(VerificationReportHashMismatch {
+                        package: entry.name.clone(),
+                        version: entry.version.clone(),
+                        reason: "hash_mismatch",
+                        lockfile_hash: Some(lockfile_hash.clone()),
+                        registry_hash: Some(registry_hash),
+                    })
+                }
+                (Some(lockfile_hash), None) if actual.is_some() => {
+                    Some(VerificationReportHashMismatch {
+                        package: entry.name.clone(),
+                        version: entry.version.clone(),
+                        reason: "registry_report_missing",
+                        lockfile_hash: Some(lockfile_hash.clone()),
+                        registry_hash: None,
+                    })
+                }
+                (None, Some(registry_hash)) => Some(VerificationReportHashMismatch {
+                    package: entry.name.clone(),
+                    version: entry.version.clone(),
+                    reason: "lockfile_report_hash_missing",
+                    lockfile_hash: None,
+                    registry_hash: Some(registry_hash),
+                }),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn verification_report_hash_mismatch_to_json(mismatch: &VerificationReportHashMismatch) -> Value {
+    json!({
+        "package": &mismatch.package,
+        "version": &mismatch.version,
+        "reason": mismatch.reason,
+        "lockfile_hash": &mismatch.lockfile_hash,
+        "registry_hash": &mismatch.registry_hash,
+    })
 }
 
 fn lockfile_entry_to_json(entry: &LockfileEntry) -> Value {
