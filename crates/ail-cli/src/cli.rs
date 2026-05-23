@@ -1441,13 +1441,14 @@ async fn cmd_apply(
     }
 
     use ail_change::apply::apply as apply_changeset;
-    use ail_change::canonical::{CanonicalChangeSet, CanonicalMeta};
-    use ail_change::model::Timestamp;
 
     let snapshots = store.list_snapshots().await?;
-    let current_snapshot_id = SnapshotId(snapshots.len() as u64);
-    let base_snap_hex = snapshots
-        .last()
+    let current_snapshot = store
+        .head_snapshot()
+        .await?
+        .or_else(|| latest_snapshot(&snapshots).cloned());
+    let base_snap_hex = current_snapshot
+        .as_ref()
         .map(|s| s.id.to_hex())
         .unwrap_or_else(|| "(genesis)".to_string());
 
@@ -1486,23 +1487,14 @@ async fn cmd_apply(
         "target_snapshot": base_snap_hex,
     });
 
+    let (mut graph, current_snapshot_id) =
+        load_current_graph_with_snapshot_id_for_cli(store).await?;
     let bridge = SimpleSnapshotBridge(current_snapshot_id);
-    let mut graph = SemanticGraph {
-        nodes: vec![],
-        edges: vec![],
-    };
 
-    let canonical = CanonicalChangeSet {
-        meta: CanonicalMeta {
-            author: "cli".to_string(),
-            description: "<applied via change-id>".to_string(),
-            timestamp: Timestamp(0),
-        },
-        base_snapshot_id: current_snapshot_id,
-        preconditions: vec![],
-        ops: vec![],
-        ..Default::default()
-    };
+    let canonical = store
+        .load_changeset_by_id(change_id)
+        .await?
+        .ok_or_else(|| CliError::NotFound(format!("change-id not found: {change_id}")))?;
 
     let outcome = apply_changeset(canonical, &mut graph, &bridge);
 
@@ -1510,7 +1502,7 @@ async fn cmd_apply(
         ail_change::model::ChangeSetOutcome::Applied => {
             let change_oid = hex_to_object_id(change_id)?;
             let graph_root = store.save_graph(&graph).await?;
-            let parent_id = snapshots.last().map(|s| s.id);
+            let parent_id = current_snapshot.map(|s| s.id);
             let new_envelope = SnapshotEnvelope {
                 id: ObjectId::from_bytes(&format!("snapshot-after-{change_id}").into_bytes()),
                 graph_root_hash: graph_root,
@@ -5418,14 +5410,17 @@ mod tests {
         assert!(result.is_ok(), "cmd_impact must succeed; got: {result:?}");
     }
 
-    // Scenario: cmd_apply async succeeds with valid id + memory store.
+    // Scenario: cmd_apply refuses valid-looking ids when no ChangeSet payload exists.
     #[tokio::test]
-    async fn cmd_apply_memory_store_succeeds() {
+    async fn cmd_apply_memory_store_requires_stored_changeset() {
         use crate::store::memory_store;
         let store = memory_store();
         let id = "b".repeat(64);
         let result = cmd_apply(OutputMode::Human, &id, false, None, &store).await;
-        assert!(result.is_ok(), "cmd_apply must succeed; got: {result:?}");
+        assert!(
+            matches!(result, Err(CliError::NotFound(_))),
+            "cmd_apply must reject missing ChangeSet payload; got: {result:?}"
+        );
     }
 
     // Scenario: change creates a graph snapshot that compile can load.

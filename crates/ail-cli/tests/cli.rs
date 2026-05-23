@@ -733,7 +733,19 @@ fn disk_store_persists_change_for_compile() {
         .expect("change_id must be present")
         .to_string();
 
-    // Step 2: apply the draft to create a snapshot.
+    // Step 2: verify the draft from persisted .ail state.
+    let verify_output = ail()
+        .args(["verify", &change_id, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let verify_json = parse_json_output(&verify_output);
+    assert_eq!(verify_json["status"], "ok");
+    assert!(verify_json["data"]["verification_report"].is_object());
+
+    // Step 3: apply the draft to create a snapshot.
     ail()
         .args(["apply", &change_id])
         .current_dir(dir.path())
@@ -760,8 +772,32 @@ fn disk_store_persists_change_for_compile() {
     let status_json = parse_json_output(&status_output);
     assert_eq!(status_json["status"], "ok");
     assert_eq!(status_json["data"]["snapshot_count"], 2);
+    assert_eq!(status_json["data"]["graph_nodes"], 1);
     assert!(status_json["data"]["head_snapshot"].is_string());
     assert!(status_json["data"]["last_change_at"].is_string());
+
+    let context_output = ail()
+        .args(["context", "fn.sample", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let context_json = parse_json_output(&context_output);
+    assert_eq!(context_json["status"], "ok");
+    assert_eq!(context_json["data"]["context"]["target"], "fn.sample");
+    assert!(context_json["data"]["context"]["nodes"].is_array());
+
+    let run_output = ail()
+        .args(["run", "--profile", "dev", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let run_json = parse_json_output(&run_output);
+    assert_eq!(run_json["status"], "ok");
+    assert_eq!(run_json["data"]["outcome"], "PreflightPassed");
 
     dir.child(".ail/HEAD").assert(predicate::path::exists());
     dir.child(".ail/refs/branches/main")
