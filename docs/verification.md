@@ -107,7 +107,7 @@ Por contexto:
 ```txt
 Public API / production:
   unverified = block
-  unsafe = block
+  unsafe = block por default; prod solo permite security exception explícita y fuerte
   assumed = approval required
 
 Internal draft:
@@ -470,6 +470,8 @@ y qué opciones de reparación/degradación existen.
 
 ### Verification profiles
 
+<!-- Implementation Status: `ail-verify::PolicyEngine` currently implements these profiles as report gates over already-classified `VerificationState` entries. It does not itself prove that a `runtime_checked` entry has a materialized runtime check; upstream checker/report producers must classify that correctly. -->
+
 Decisión:
 
 ```txt
@@ -576,17 +578,18 @@ Permite:
 
 ```txt
 proven
-runtime_checked
-approved assumptions
+runtime_checked (si el productor del report materializó el runtime check)
+assumed con strong approval
+unsafe solo con strong security-exception approval
 ```
 
 Bloquea:
 
 ```txt
 failed
-unsafe salvo security exception
 unverified
-unapproved assumptions
+assumed sin strong approval
+unsafe sin strong security-exception approval
 ```
 
 #### critical
@@ -597,7 +600,7 @@ Permite:
 
 ```txt
 proven
-runtime_checked solo si policy lo acepta
+runtime_checked (el gate actual acepta el estado clasificado)
 assumed solo con strong approval
 ```
 
@@ -606,6 +609,7 @@ Bloquea:
 ```txt
 unverified
 unsafe
+failed
 weak assumptions
 ```
 

@@ -369,7 +369,7 @@ impl PolicyEngine {
                 let gate_decision = Self::gate_decision_for(&profile, e.state, &e.scope, approval);
                 PolicyAuditEntry {
                     scope: e.scope.clone(),
-                    state: format!("{:?}", e.state).to_lowercase(),
+                    state: Self::state_label(e.state).to_string(),
                     gate_decision,
                     approval_used: approval.map(|a| a.approver.clone()),
                 }
@@ -568,6 +568,17 @@ impl PolicyEngine {
             GateResult::Warn(_, _) => "warning".to_string(),
             GateResult::RequireApproval => "approval_required".to_string(),
             GateResult::Pass => "passed".to_string(),
+        }
+    }
+
+    fn state_label(state: VerificationState) -> &'static str {
+        match state {
+            VerificationState::Proven => "proven",
+            VerificationState::RuntimeChecked => "runtime_checked",
+            VerificationState::Assumed => "assumed",
+            VerificationState::Unverified => "unverified",
+            VerificationState::Unsafe => "unsafe",
+            VerificationState::Failed => "failed",
         }
     }
 
