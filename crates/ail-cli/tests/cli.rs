@@ -2843,7 +2843,8 @@ fn doctor_json_has_overall_and_all_check_names() {
 ///  4. `ail verify <change_id> --profile dev --json` → policy_report present
 ///  5. `ail diff --semantic change.add_checkout --json` → exits 0
 ///  6. `ail apply <change_id> --json` → new_snapshot_id present
-///  All steps assert schema_version == "1".
+///
+/// All steps assert schema_version == "1".
 #[test]
 fn llm_agent_loop_e2e_with_schema_version() {
     use assert_fs::TempDir;

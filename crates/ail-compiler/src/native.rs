@@ -365,7 +365,6 @@ struct NativeCodegenCtx<'a> {
     record_layouts: BTreeMap<String, Vec<String>>,
     /// Tag discriminant table: tag string → u32 id (first-encounter order).
     variant_tags: BTreeMap<String, u32>,
-    next_variant_tag: u32,
     /// Interned data object IDs for text literals and EffectCall strings.
     data_ids: &'a [DataId],
     /// Layout describing which strings map to which data_ids index.
@@ -391,7 +390,6 @@ impl<'a> NativeCodegenCtx<'a> {
             labels: Vec::new(),
             record_layouts: BTreeMap::new(),
             variant_tags: BTreeMap::new(),
-            next_variant_tag: 0,
             data_ids,
             data_layout,
             host_call_id,
@@ -576,7 +574,7 @@ fn lower_anf_expr_cranelift(
                     return LowerResult::Terminated;
                 }
                 let data_id = ctx.data_ids[idx];
-                let gv = module.declare_data_in_func(data_id, &mut builder.func);
+                let gv = module.declare_data_in_func(data_id, builder.func);
                 let ptr = builder.ins().symbol_value(types::I64, gv);
                 // Pack: (len as i64) << 32 | ptr
                 let len_val = builder.ins().iconst(types::I64, len as i64);
@@ -901,8 +899,7 @@ fn lower_anf_expr_cranelift(
             // The wildcard or last arm terminates the chain.
             let n = arms.len();
             let mut has_merge_predecessor = false;
-            for i in 0..n {
-                let arm = &arms[i];
+            for (i, arm) in arms.iter().enumerate() {
                 let arm_block = builder.create_block();
 
                 if arm.pattern == "_" {
@@ -1048,9 +1045,10 @@ fn lower_anf_expr_cranelift(
             let last_idx = exprs.len() - 1;
             for expr in &exprs[..last_idx] {
                 // Lower each non-last expression; result is intentionally dropped.
-                match lower_anf_expr_cranelift(expr, ctx, builder, module) {
-                    LowerResult::Terminated => return LowerResult::Terminated,
-                    _ => {}
+                if let LowerResult::Terminated =
+                    lower_anf_expr_cranelift(expr, ctx, builder, module)
+                {
+                    return LowerResult::Terminated;
                 }
             }
             lower_anf_expr_cranelift(&exprs[last_idx], ctx, builder, module)
@@ -1145,7 +1143,7 @@ fn lower_anf_expr_cranelift(
                 }
                 Some(malloc_id) => {
                     let size_val = builder.ins().iconst(types::I64, byte_size);
-                    let malloc_ref = module.declare_func_in_func(malloc_id, &mut builder.func);
+                    let malloc_ref = module.declare_func_in_func(malloc_id, builder.func);
                     let call = builder.ins().call(malloc_ref, &[size_val]);
                     let ptr = builder.inst_results(call)[0];
                     for (idx, (_, field_expr)) in fields.iter().enumerate() {
@@ -1226,7 +1224,7 @@ fn lower_anf_expr_cranelift(
                 }
                 Some(malloc_id) => {
                     let size_val = builder.ins().iconst(types::I64, 16);
-                    let malloc_ref = module.declare_func_in_func(malloc_id, &mut builder.func);
+                    let malloc_ref = module.declare_func_in_func(malloc_id, builder.func);
                     let call = builder.ins().call(malloc_ref, &[size_val]);
                     let ptr = builder.inst_results(call)[0];
                     let tag_val = builder.ins().iconst(types::I64, tag_id);
@@ -1270,7 +1268,7 @@ fn lower_anf_expr_cranelift(
                 }
                 Some(malloc_id) => {
                     let size_val = builder.ins().iconst(types::I64, byte_size);
-                    let malloc_ref = module.declare_func_in_func(malloc_id, &mut builder.func);
+                    let malloc_ref = module.declare_func_in_func(malloc_id, builder.func);
                     let call = builder.ins().call(malloc_ref, &[size_val]);
                     let ptr = builder.inst_results(call)[0];
                     let len_val = builder.ins().iconst(types::I64, elems.len() as i64);
@@ -1313,7 +1311,7 @@ fn lower_anf_expr_cranelift(
                 }
                 Some(malloc_id) => {
                     let size_val = builder.ins().iconst(types::I64, byte_size);
-                    let malloc_ref = module.declare_func_in_func(malloc_id, &mut builder.func);
+                    let malloc_ref = module.declare_func_in_func(malloc_id, builder.func);
                     let call = builder.ins().call(malloc_ref, &[size_val]);
                     let ptr = builder.inst_results(call)[0];
                     for (i, elem) in elems.iter().enumerate() {
@@ -1365,12 +1363,12 @@ fn lower_anf_expr_cranelift(
             // Capability + func name pointers from data section.
             let (cap_idx, cap_len) = ctx.data_layout.get(capability.as_str());
             let (op_idx, op_len) = ctx.data_layout.get(func.as_str());
-            let cap_gv = module.declare_data_in_func(ctx.data_ids[cap_idx], &mut builder.func);
-            let op_gv = module.declare_data_in_func(ctx.data_ids[op_idx], &mut builder.func);
+            let cap_gv = module.declare_data_in_func(ctx.data_ids[cap_idx], builder.func);
+            let op_gv = module.declare_data_in_func(ctx.data_ids[op_idx], builder.func);
             let cap_ptr = builder.ins().symbol_value(types::I64, cap_gv);
             let op_ptr = builder.ins().symbol_value(types::I64, op_gv);
 
-            let host_call_ref = module.declare_func_in_func(host_call_id, &mut builder.func);
+            let host_call_ref = module.declare_func_in_func(host_call_id, builder.func);
             let call_args = [
                 cap_ptr,
                 builder.ins().iconst(types::I64, cap_len as i64),
@@ -1429,11 +1427,11 @@ fn lower_anf_expr_cranelift(
             match ctx.malloc_id {
                 None => {
                     builder.ins().trap(TrapCode::user(1).unwrap());
-                    return LowerResult::Terminated;
+                    LowerResult::Terminated
                 }
                 Some(malloc_id) => {
                     let size_val = builder.ins().iconst(types::I64, byte_size);
-                    let malloc_ref = module.declare_func_in_func(malloc_id, &mut builder.func);
+                    let malloc_ref = module.declare_func_in_func(malloc_id, builder.func);
                     let call = builder.ins().call(malloc_ref, &[size_val]);
                     let ptr = builder.inst_results(call)[0];
                     // Store count
@@ -1467,11 +1465,11 @@ fn lower_anf_expr_cranelift(
             match ctx.malloc_id {
                 None => {
                     builder.ins().trap(TrapCode::user(1).unwrap());
-                    return LowerResult::Terminated;
+                    LowerResult::Terminated
                 }
                 Some(malloc_id) => {
                     let size_val = builder.ins().iconst(types::I64, byte_size);
-                    let malloc_ref = module.declare_func_in_func(malloc_id, &mut builder.func);
+                    let malloc_ref = module.declare_func_in_func(malloc_id, builder.func);
                     let call = builder.ins().call(malloc_ref, &[size_val]);
                     let ptr = builder.inst_results(call)[0];
                     let count = builder.ins().iconst(types::I64, elements.len() as i64);
@@ -1659,11 +1657,11 @@ fn lower_anf_expr_cranelift(
         AnfExpr::CellNew { init } => match ctx.malloc_id {
             None => {
                 builder.ins().trap(TrapCode::user(1).unwrap());
-                return LowerResult::Terminated;
+                LowerResult::Terminated
             }
             Some(malloc_id) => {
                 let size_val = builder.ins().iconst(types::I64, 8);
-                let malloc_ref = module.declare_func_in_func(malloc_id, &mut builder.func);
+                let malloc_ref = module.declare_func_in_func(malloc_id, builder.func);
                 let call = builder.ins().call(malloc_ref, &[size_val]);
                 let ptr = builder.inst_results(call)[0];
                 let init_val = ctx
@@ -1776,7 +1774,7 @@ fn lower_anf_expr_cranelift(
             }
 
             // Return the function's address as I64.
-            let func_ref = module.declare_func_in_func(lambda_id, &mut builder.func);
+            let func_ref = module.declare_func_in_func(lambda_id, builder.func);
             let ptr = builder.ins().func_addr(types::I64, func_ref);
             LowerResult::Value(ptr)
         }
@@ -1790,10 +1788,10 @@ fn lower_anf_expr_cranelift(
             emit_runtime_call(ctx, builder, module, 1u64, &[func.as_str()], args)
         }
         AnfExpr::TaskAwait { task } => {
-            emit_runtime_call(ctx, builder, module, 2u64, &[], &[task.clone()])
+            emit_runtime_call(ctx, builder, module, 2u64, &[], std::slice::from_ref(task))
         }
         AnfExpr::TaskCancel { task } => {
-            emit_runtime_call(ctx, builder, module, 3u64, &[], &[task.clone()])
+            emit_runtime_call(ctx, builder, module, 3u64, &[], std::slice::from_ref(task))
         }
         AnfExpr::TaskGroup { body } => {
             // TaskGroup: lower body for side effects, then emit runtime notification.
@@ -1822,13 +1820,25 @@ fn lower_anf_expr_cranelift(
             &[],
             &[channel.clone(), value.clone()],
         ),
-        AnfExpr::ChannelReceive { channel } => {
-            emit_runtime_call(ctx, builder, module, 7u64, &[], &[channel.clone()])
-        }
+        AnfExpr::ChannelReceive { channel } => emit_runtime_call(
+            ctx,
+            builder,
+            module,
+            7u64,
+            &[],
+            std::slice::from_ref(channel),
+        ),
         AnfExpr::Select { .. } => emit_runtime_call(ctx, builder, module, 8u64, &[], &[]),
         AnfExpr::Timeout { duration, body } => {
             let _ = lower_anf_expr_cranelift(body, ctx, builder, module);
-            emit_runtime_call(ctx, builder, module, 9u64, &[], &[duration.clone()])
+            emit_runtime_call(
+                ctx,
+                builder,
+                module,
+                9u64,
+                &[],
+                std::slice::from_ref(duration),
+            )
         }
         AnfExpr::Dispatch {
             handler,
@@ -1844,9 +1854,14 @@ fn lower_anf_expr_cranelift(
             all_args.extend(args.iter().cloned());
             emit_runtime_call(ctx, builder, module, 11u64, &[], &all_args)
         }
-        AnfExpr::ResourceRelease { handle } => {
-            emit_runtime_call(ctx, builder, module, 12u64, &[], &[handle.clone()])
-        }
+        AnfExpr::ResourceRelease { handle } => emit_runtime_call(
+            ctx,
+            builder,
+            module,
+            12u64,
+            &[],
+            std::slice::from_ref(handle),
+        ),
 
         _ => {
             builder.ins().trap(TrapCode::user(1).unwrap());
@@ -1899,7 +1914,7 @@ fn emit_runtime_call(
     let op_val = builder.ins().iconst(types::I64, op as i64);
     let args_len = builder.ins().iconst(types::I64, args_count as i64);
 
-    let runtime_ref = module.declare_func_in_func(runtime_id, &mut builder.func);
+    let runtime_ref = module.declare_func_in_func(runtime_id, builder.func);
     let call = builder
         .ins()
         .call(runtime_ref, &[op_val, args_ptr, args_len]);
@@ -1907,6 +1922,14 @@ fn emit_runtime_call(
 }
 
 // ── lower_binding ─────────────────────────────────────────────────────────
+
+struct LowerBindingEnv<'a> {
+    data_ids: &'a [DataId],
+    data_layout: &'a NativeDataLayout,
+    host_call_id: Option<FuncId>,
+    malloc_id: Option<FuncId>,
+    runtime_call_id: Option<FuncId>,
+}
 
 /// Lower one `AnfBinding` into a compiled Cranelift function inside `module`.
 ///
@@ -1921,12 +1944,7 @@ fn lower_binding(
     module: &mut ObjectModule,
     name: &str,
     expr: &crate::anf::AnfExpr,
-    cumulative_offset: u64,
-    data_ids: &[DataId],
-    data_layout: &NativeDataLayout,
-    host_call_id: Option<FuncId>,
-    malloc_id: Option<FuncId>,
-    runtime_call_id: Option<FuncId>,
+    env: LowerBindingEnv<'_>,
 ) -> Result<u64, CompileError> {
     // Infer return type from the expression before building the function.
     let ret_ty = infer_cranelift_return_type(expr);
@@ -1949,9 +1967,10 @@ fn lower_binding(
         builder.switch_to_block(block);
         builder.seal_block(block);
 
-        let mut codegen_ctx = NativeCodegenCtx::new(data_ids, data_layout, host_call_id);
-        codegen_ctx.malloc_id = malloc_id;
-        codegen_ctx.runtime_call_id = runtime_call_id;
+        let mut codegen_ctx =
+            NativeCodegenCtx::new(env.data_ids, env.data_layout, env.host_call_id);
+        codegen_ctx.malloc_id = env.malloc_id;
+        codegen_ctx.runtime_call_id = env.runtime_call_id;
         match lower_anf_expr_cranelift(expr, &mut codegen_ctx, &mut builder, module) {
             LowerResult::Value(val) => {
                 builder.ins().return_(&[val]);
@@ -1980,9 +1999,6 @@ fn lower_binding(
         .code_info()
         .total_size;
 
-    // The provenance offset is where this function starts: current cumulative
-    // offset before we add this function's size.
-    let _ = cumulative_offset; // consumed by caller; returned is the NEW offset
     Ok(u64::from(code_size))
 }
 
@@ -2102,12 +2118,13 @@ pub fn emit_native_with_profile(
             &mut module,
             &binding.name,
             &binding.expr,
-            cumulative_offset,
-            &data_ids,
-            &data_layout,
-            host_call_id,
-            malloc_id,
-            runtime_call_id,
+            LowerBindingEnv {
+                data_ids: &data_ids,
+                data_layout: &data_layout,
+                host_call_id,
+                malloc_id,
+                runtime_call_id,
+            },
         )?;
         cumulative_offset += code_size;
     }

@@ -16,8 +16,6 @@ use ail_compiler::{
 };
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_verify::report::VerificationReport;
-#[allow(unused_imports)]
-use ciborium;
 
 // ── helpers ──────────────────────────────────────────────────────────────
 

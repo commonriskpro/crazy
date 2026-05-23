@@ -40,17 +40,19 @@ fn artifact_hashes_round_trip_cbor() {
     use ciborium::from_reader;
     use ciborium::into_writer;
 
-    let mut report = VerificationReport::default();
-    report.artifact_hashes = vec![
-        ArtifactHash {
-            artifact: "canonical_change".into(),
-            hash: "abc123".into(),
-        },
-        ArtifactHash {
-            artifact: "core_ir".into(),
-            hash: "def456".into(),
-        },
-    ];
+    let report = VerificationReport {
+        artifact_hashes: vec![
+            ArtifactHash {
+                artifact: "canonical_change".into(),
+                hash: "abc123".into(),
+            },
+            ArtifactHash {
+                artifact: "core_ir".into(),
+                hash: "def456".into(),
+            },
+        ],
+        ..Default::default()
+    };
 
     let mut buf = Vec::new();
     into_writer(&report, &mut buf).expect("CBOR serialization must succeed");
@@ -73,15 +75,17 @@ fn degradation_event_round_trip_cbor() {
     use ciborium::from_reader;
     use ciborium::into_writer;
 
-    let mut report = VerificationReport::default();
-    report.degradation_events = vec![DegradationEvent {
-        obligation_id: "po_001".into(),
-        source_stage: "resource".into(),
-        from_state: VerificationState::Proven,
-        to_state: VerificationState::Assumed,
-        reason: "policy allows degradation at boundary".into(),
-        repair_options: vec!["add_runtime_check".into()],
-    }];
+    let report = VerificationReport {
+        degradation_events: vec![DegradationEvent {
+            obligation_id: "po_001".into(),
+            source_stage: "resource".into(),
+            from_state: VerificationState::Proven,
+            to_state: VerificationState::Assumed,
+            reason: "policy allows degradation at boundary".into(),
+            repair_options: vec!["add_runtime_check".into()],
+        }],
+        ..Default::default()
+    };
 
     let mut buf = Vec::new();
     into_writer(&report, &mut buf).expect("serialize");
@@ -142,11 +146,13 @@ fn artifact_hash_with_empty_hash_round_trips() {
     use ciborium::from_reader;
     use ciborium::into_writer;
 
-    let mut report = VerificationReport::default();
-    report.artifact_hashes = vec![ArtifactHash {
-        artifact: "wasm".into(),
-        hash: String::new(), // not yet computed
-    }];
+    let report = VerificationReport {
+        artifact_hashes: vec![ArtifactHash {
+            artifact: "wasm".into(),
+            hash: String::new(), // not yet computed
+        }],
+        ..Default::default()
+    };
 
     let mut buf = Vec::new();
     into_writer(&report, &mut buf).unwrap();

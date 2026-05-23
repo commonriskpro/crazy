@@ -454,10 +454,11 @@ pub fn inline_small_pure(bindings: Vec<AnfBinding>) -> Vec<AnfBinding> {
     let small_fns: BTreeMap<String, (Vec<String>, AnfExpr)> = bindings
         .iter()
         .filter_map(|b| {
-            if let AnfExpr::Lambda { params, body } = &b.expr {
-                if is_pure(body) && anf_node_count(body) <= 3 {
-                    return Some((b.name.clone(), (params.clone(), *body.clone())));
-                }
+            if let AnfExpr::Lambda { params, body } = &b.expr
+                && is_pure(body)
+                && anf_node_count(body) <= 3
+            {
+                return Some((b.name.clone(), (params.clone(), *body.clone())));
             }
             None
         })
@@ -482,15 +483,15 @@ fn inline_calls_in_expr(
 ) -> AnfExpr {
     match expr {
         AnfExpr::Call { ref func, ref args } => {
-            if let Some((params, body)) = small_fns.get(func) {
-                if params.len() == args.len() {
-                    let subst: BTreeMap<String, String> = params
-                        .iter()
-                        .zip(args.iter())
-                        .map(|(p, a)| (p.clone(), a.clone()))
-                        .collect();
-                    return substitute_vars(body.clone(), &subst);
-                }
+            if let Some((params, body)) = small_fns.get(func)
+                && params.len() == args.len()
+            {
+                let subst: BTreeMap<String, String> = params
+                    .iter()
+                    .zip(args.iter())
+                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .collect();
+                return substitute_vars(body.clone(), &subst);
             }
             expr
         }

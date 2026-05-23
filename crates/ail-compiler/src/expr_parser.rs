@@ -191,7 +191,7 @@ impl Parser<'_> {
 }
 
 fn parse_match_call(args: Vec<CoreExpr>) -> Result<CoreExpr, ParseError> {
-    if args.len() < 3 || args.len() % 2 == 0 {
+    if args.len() < 3 || args.len().is_multiple_of(2) {
         return Err(ParseError::new(format!(
             "match expects scrutinee plus pattern/body pairs, got {} args",
             args.len()

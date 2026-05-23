@@ -362,7 +362,7 @@ mod tests {
         mem
     }
 
-    fn make_memory_i32_at(mem: &mut Vec<u8>, offset: usize, val: i32) {
+    fn make_memory_i32_at(mem: &mut [u8], offset: usize, val: i32) {
         let bytes = val.to_le_bytes();
         mem[offset..offset + 4].copy_from_slice(&bytes);
     }
