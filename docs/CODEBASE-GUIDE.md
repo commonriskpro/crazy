@@ -9,6 +9,7 @@ Use this as the entry point for the AIL docs. The canonical material lives in `d
 3. Use [Reference map](codebase/reference-map.md) when you know the question but not the document.
 4. Use [Maintainer playbook](codebase/maintainer-playbook.md) before changing a subsystem.
 5. Use [Implementation blueprint](implementation-blueprint.md) to separate completed validation milestones from remaining product work.
+6. Use [Wave operating model](wave-operating-model.md) when planning or executing a multi-wave implementation run.
 
 ## Status legend
 
