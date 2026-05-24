@@ -4,6 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+## Enable the Z3 SMT solver backend.
+##
+## When this feature is compiled in, `ail verify --solver z3` routes proof
+## obligations through `ail_verify::z3_solver::Z3Solver` instead of the
+## conservative `SimpleSolver`.  System Z3 libraries are required at link time.
+## Default builds intentionally omit this feature so CI on machines without Z3
+## stays green.
+z3-solver = ["ail-verify/z3-solver"]
+
 [[bin]]
 name = "ail"
 path = "src/main.rs"

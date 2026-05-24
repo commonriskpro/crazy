@@ -176,6 +176,13 @@ enum Commands {
         /// Verification profile (e.g. `dev`, `prod`).
         #[arg(long, default_value = "dev")]
         profile: String,
+        /// Solver backend to use for proof obligations.
+        ///
+        /// `simple` (default) uses the conservative built-in solver.
+        /// `z3` uses the Z3 SMT solver — only available when ail-cli is
+        /// compiled with `--features z3-solver`; otherwise returns an error.
+        #[arg(long, default_value = "simple")]
+        solver: String,
     },
 
     /// Apply a ChangeSet and persist a new snapshot (shows pre-apply gate).
@@ -528,9 +535,11 @@ pub async fn run() -> Result<(), CliError> {
             )
             .await
         }
-        Commands::Verify { change_id, profile } => {
-            cmd_verify(mode, &change_id, &profile, &store).await
-        }
+        Commands::Verify {
+            change_id,
+            profile,
+            solver,
+        } => cmd_verify(mode, &change_id, &profile, &solver, &store).await,
         Commands::Apply {
             change_id,
             yes,

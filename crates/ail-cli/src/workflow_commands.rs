@@ -16,8 +16,9 @@ use ail_core::semantic_graph::SemanticGraph;
 use ail_storage::{SnapshotEnvelope, object::ObjectId};
 use ail_verify::pipeline::{PipelineContext, VerificationPipeline};
 use ail_verify::policy::{PolicyDecision, PolicyEngine, PolicyInput, PolicyRule};
+use ail_verify::proof::ProofObligation;
 use ail_verify::report::VerificationReport;
-use ail_verify::solver::SimpleSolver;
+use ail_verify::solver::{SimpleSolver, Solver, SolverOutcome};
 use serde_json::{Value, json};
 
 use crate::cli::{
@@ -28,9 +29,79 @@ use crate::error::CliError;
 use crate::output::{OutputMode, print_error_response, print_response};
 use crate::store::StoreHandle;
 
+// ── Solver selection ──────────────────────────────────────────────────────
+
+/// Concrete solver backend selected at CLI dispatch time.
+///
+/// `Simple` is always available; `Z3` is only present when the `z3-solver`
+/// cargo feature is compiled in.  The enum implements `Solver` by delegating
+/// to the inner type, so it coerces directly to `&dyn Solver`.
+enum AnySolver {
+    Simple(SimpleSolver),
+    #[cfg(feature = "z3-solver")]
+    Z3(ail_verify::z3_solver::Z3Solver),
+}
+
+impl std::fmt::Debug for AnySolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnySolver::Simple(_) => write!(f, "AnySolver::Simple"),
+            #[cfg(feature = "z3-solver")]
+            AnySolver::Z3(_) => write!(f, "AnySolver::Z3"),
+        }
+    }
+}
+
+impl Solver for AnySolver {
+    fn solve(&self, obligation: &ProofObligation) -> SolverOutcome {
+        match self {
+            AnySolver::Simple(s) => s.solve(obligation),
+            #[cfg(feature = "z3-solver")]
+            AnySolver::Z3(s) => s.solve(obligation),
+        }
+    }
+
+    fn solve_with_constraints(
+        &self,
+        obligation: &ProofObligation,
+        constraints: &[&str],
+    ) -> SolverOutcome {
+        match self {
+            AnySolver::Simple(s) => s.solve_with_constraints(obligation, constraints),
+            #[cfg(feature = "z3-solver")]
+            AnySolver::Z3(s) => s.solve_with_constraints(obligation, constraints),
+        }
+    }
+}
+
+/// Build the solver requested by `name`.
+///
+/// - `"simple"` or `""` → `SimpleSolver` (always available).
+/// - `"z3"` → `Z3Solver` when `z3-solver` feature is compiled in; otherwise
+///   returns a deterministic `CliError::Domain` explaining how to recompile.
+/// - Any other name → `CliError::Domain` listing the valid options.
+fn build_solver(name: &str) -> Result<AnySolver, CliError> {
+    match name {
+        "simple" | "" => Ok(AnySolver::Simple(SimpleSolver)),
+        "z3" => {
+            #[cfg(feature = "z3-solver")]
+            return Ok(AnySolver::Z3(ail_verify::z3_solver::Z3Solver::new()));
+            #[cfg(not(feature = "z3-solver"))]
+            Err(CliError::Domain(
+                "solver 'z3' requires the z3-solver cargo feature; \
+                 recompile ail-cli with --features z3-solver"
+                    .to_string(),
+            ))
+        }
+        other => Err(CliError::Domain(format!(
+            "unknown solver '{other}'; supported values: simple, z3"
+        ))),
+    }
+}
+
 // ── Public dispatch ───────────────────────────────────────────────────────
 
-/// `ail verify <change-id> [--profile=<name>]`
+/// `ail verify <change-id> [--profile=<name>] [--solver=<name>]`
 ///
 /// Run the Checker on the ChangeSet, evaluate policy, and surface repair
 /// options.  Does not mutate the graph.
@@ -38,6 +109,7 @@ pub(crate) async fn cmd_verify(
     mode: OutputMode,
     change_id: &str,
     profile: &str,
+    solver_name: &str,
     store: &StoreHandle,
 ) -> Result<(), CliError> {
     if !is_valid_change_id(change_id) {
@@ -107,12 +179,12 @@ pub(crate) async fn cmd_verify(
     // is None (we hold the canonical binary form, not the raw text), and those
     // entries must not trigger the prod profile gate — they indicate "text
     // unavailable", not "content is unverified".
-    let solver = SimpleSolver;
+    let any_solver = build_solver(solver_name)?;
     let pipeline_ctx = PipelineContext {
         graph: &graph,
         manifests: &[],
         profile,
-        solver: &solver,
+        solver: &any_solver,
         approvals: &[],
         rules: &[], // empty — policy evaluated separately below
         structural_diff: None,
@@ -614,7 +686,8 @@ fn rebase_required_repair_option(current_snapshot_id: u64) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::is_changeset_meta_stage_claim;
+    use super::{build_solver, is_changeset_meta_stage_claim};
+    use crate::error::CliError;
 
     #[test]
     fn recognises_changeset_meta_stage_claims_only() {
@@ -625,5 +698,81 @@ mod tests {
         assert!(!is_changeset_meta_stage_claim("19-anf-lowering"));
         assert!(!is_changeset_meta_stage_claim("1-parse-changeset"));
         assert!(!is_changeset_meta_stage_claim(""));
+    }
+
+    // ── Solver selection — ZI-1 ───────────────────────────────────────────
+
+    // Scenario ZI-1a: "simple" name resolves without error.
+    //   GIVEN solver_name = "simple"
+    //   WHEN build_solver is called
+    //   THEN Ok is returned (SimpleSolver is always available)
+    #[test]
+    fn build_solver_simple_name_ok() {
+        assert!(
+            build_solver("simple").is_ok(),
+            "build_solver('simple') must always succeed"
+        );
+    }
+
+    // Scenario ZI-1b: empty string resolves to simple solver.
+    //   GIVEN solver_name = ""
+    //   WHEN build_solver is called
+    //   THEN Ok is returned (empty string treated as default)
+    #[test]
+    fn build_solver_empty_name_ok() {
+        assert!(
+            build_solver("").is_ok(),
+            "build_solver('') must succeed (default = simple)"
+        );
+    }
+
+    // Scenario ZI-1c: unknown solver name returns a deterministic error.
+    //   GIVEN solver_name = "llm"
+    //   WHEN build_solver is called
+    //   THEN Err(CliError::Domain) is returned containing "supported"
+    #[test]
+    fn build_solver_unknown_name_returns_domain_error() {
+        let err = build_solver("llm").expect_err("unknown solver must fail");
+        let msg = format!("{err}");
+        assert!(
+            matches!(err, CliError::Domain(_)),
+            "unknown solver must produce CliError::Domain; got: {msg}"
+        );
+        assert!(
+            msg.contains("supported"),
+            "error message must list supported values; got: {msg}"
+        );
+    }
+
+    // Scenario ZI-1d: "z3" without the feature returns a clear error.
+    //   GIVEN solver_name = "z3" AND z3-solver feature NOT compiled
+    //   WHEN build_solver is called
+    //   THEN Err(CliError::Domain) is returned mentioning the feature flag
+    #[cfg(not(feature = "z3-solver"))]
+    #[test]
+    fn build_solver_z3_without_feature_returns_domain_error() {
+        let err = build_solver("z3").expect_err("z3 without feature must fail");
+        let msg = format!("{err}");
+        assert!(
+            matches!(err, CliError::Domain(_)),
+            "z3 without feature must produce CliError::Domain; got: {msg}"
+        );
+        assert!(
+            msg.contains("z3-solver"),
+            "error must mention the z3-solver feature flag; got: {msg}"
+        );
+    }
+
+    // Scenario ZI-1e: "z3" WITH the feature resolves successfully.
+    //   GIVEN solver_name = "z3" AND z3-solver feature IS compiled
+    //   WHEN build_solver is called
+    //   THEN Ok is returned (Z3Solver constructed without panic)
+    #[cfg(feature = "z3-solver")]
+    #[test]
+    fn build_solver_z3_with_feature_ok() {
+        assert!(
+            build_solver("z3").is_ok(),
+            "build_solver('z3') must succeed when z3-solver feature is compiled"
+        );
     }
 }

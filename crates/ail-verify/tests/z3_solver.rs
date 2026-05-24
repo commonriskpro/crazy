@@ -35,6 +35,7 @@ mod z3_solver_tests {
     fn solve(predicate: &str) -> SolverOutcome {
         let solver = Z3Solver::new();
         let oblig = ProofObligation {
+            scope: String::new(),
             predicate: predicate.to_string(),
             role: ClauseRole::Requires,
         };
@@ -44,6 +45,7 @@ mod z3_solver_tests {
     fn solve_ensures(predicate: &str) -> SolverOutcome {
         let solver = Z3Solver::new();
         let oblig = ProofObligation {
+            scope: String::new(),
             predicate: predicate.to_string(),
             role: ClauseRole::Ensures,
         };
@@ -135,6 +137,7 @@ mod z3_solver_tests {
         // (fast path). The key property: it must NOT panic.
         let solver = Z3Solver::with_timeout_ms(1);
         let oblig = ProofObligation {
+            scope: String::new(),
             predicate: "x > 0 || x <= 0".to_string(),
             role: ClauseRole::Requires,
         };
@@ -149,6 +152,7 @@ mod z3_solver_tests {
     fn solve_is_deterministic_for_tautology() {
         let solver = Z3Solver::new();
         let oblig = ProofObligation {
+            scope: String::new(),
             predicate: "x > 0 || x <= 0".to_string(),
             role: ClauseRole::Requires,
         };
@@ -161,6 +165,7 @@ mod z3_solver_tests {
     fn solve_is_deterministic_for_unsupported() {
         let solver = Z3Solver::new();
         let oblig = ProofObligation {
+            scope: String::new(),
             predicate: "user.age >= 18".to_string(),
             role: ClauseRole::Requires,
         };
