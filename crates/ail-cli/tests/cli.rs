@@ -56,7 +56,7 @@ fn version_exits_zero_and_prints_version() {
 /// Spec scenario: unknown subcommand rejected
 ///   GIVEN `ail frobnicate` is invoked
 ///   WHEN dispatch runs
-///   THEN stderr lists the ten subcommands; exit code 2
+///   THEN stderr lists available subcommands including link; exit code 2
 #[test]
 fn unknown_subcommand_lists_ten() {
     ail()
@@ -65,7 +65,7 @@ fn unknown_subcommand_lists_ten() {
         .failure()
         .code(2)
         .stderr(predicate::str::contains(
-            "Available subcommands: context, change, verify, apply, compile, run, eval, \
+            "Available subcommands: context, change, verify, apply, compile, run, link, eval, \
              init, status, inspect, diff",
         ));
 }

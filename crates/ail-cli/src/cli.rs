@@ -15,6 +15,7 @@
 // | verify   <change-id>     | Run Checker on the named ChangeSet (--profile)        |
 // | apply    <change-id>     | Apply ChangeSet with full pre-apply gate display      |
 // | compile  --target --profile  lower → ANF → emit_wasm                      |
+// | link     --profile [--output]    link native object → executable           |
 // | run      --profile [module] [--replay] preflight + runtime report         |
 // | init                     | Create .ail/ dirs, genesis snapshot, baseline state   |
 // | status                   | Snapshot/branch/pending/verify/indexes/runtime/pkg    |
@@ -64,6 +65,7 @@ use crate::error::CliError;
 use crate::eval_commands::cmd_eval;
 use crate::graph_query_commands::{cmd_callers, cmd_effects, cmd_impact, cmd_proofs};
 use crate::inspect_commands::cmd_inspect;
+use crate::link_commands::{SystemLinker, cmd_link};
 use crate::output::OutputMode;
 use crate::package_commands::cmd_package;
 use crate::policy_commands::cmd_policy;
@@ -207,6 +209,21 @@ enum Commands {
         /// Replay a recorded trace by its id.
         #[arg(long)]
         replay: Option<String>,
+    },
+
+    /// Link a compiled native object file into an executable.
+    ///
+    /// Resolves the latest persisted native artifact for the given profile and
+    /// invokes the system linker (`cc` on Unix, `link.exe` on Windows).
+    /// Run `ail compile --target native` first to produce the object file.
+    Link {
+        /// Compilation profile to link (e.g. `dev`, `prod`).
+        #[arg(long, default_value = "dev")]
+        profile: String,
+        /// Output executable path.
+        /// Defaults to the object path with the `.o` extension stripped.
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
     },
 
     /// Evaluate an inline expression without initializing a project.
@@ -478,7 +495,7 @@ pub async fn run() -> Result<(), CliError> {
         let _ = err.print();
         if kind == ErrorKind::InvalidSubcommand {
             eprintln!(
-                "Available subcommands: context, change, verify, apply, compile, run, \
+                "Available subcommands: context, change, verify, apply, compile, run, link, \
                  eval, init, status, inspect, diff, rollback, rebase, merge, refactor, \
                  approve, reject, policy, package, remote, doctor, gc"
             );
@@ -547,6 +564,9 @@ pub async fn run() -> Result<(), CliError> {
                 &store,
             )
             .await
+        }
+        Commands::Link { profile, output } => {
+            cmd_link(mode, &profile, output.as_deref(), &store, &SystemLinker)
         }
         Commands::Eval { expression } => cmd_eval(mode, &expression),
         Commands::Init { branch } => cmd_init(mode, &store, &branch).await,
@@ -700,3 +720,7 @@ mod tests_report_persistence;
 #[cfg(test)]
 #[path = "tests/doctor.rs"]
 mod tests_doctor;
+
+#[cfg(test)]
+#[path = "tests/link.rs"]
+mod tests_link;
