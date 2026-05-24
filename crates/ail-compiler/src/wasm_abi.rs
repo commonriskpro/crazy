@@ -414,21 +414,59 @@ pub(crate) fn binding_params(binding: &AnfBinding) -> Vec<&str> {
     params
 }
 
+/// Returns the `params` field of a top-level `Lambda` expression, or `&[]`
+/// for non-Lambda expressions.
+///
+/// Used by `binding_signatures` and `build_code_section` to include the
+/// Lambda's own call parameters (distinct from captures) in the WASM function
+/// signature.  For a top-level Lambda binding the WASM function emits the
+/// Lambda body directly, so its params are additional WASM function locals
+/// beyond the captured-variable locals that come from `binding_params`.
+pub(crate) fn lambda_body_params(expr: &AnfExpr) -> &[String] {
+    match expr {
+        AnfExpr::Lambda { params, .. } => params,
+        _ => &[],
+    }
+}
+
 pub(crate) fn binding_result(binding: &AnfBinding) -> Option<ValType> {
-    let mut locals = binding_params(binding)
-        .into_iter()
-        .map(|name| (name.to_string(), ValType::I64))
-        .collect();
-    infer_expr_type(&binding.expr, &mut locals)
-        .filter(|ty| matches!(ty, ValType::I64 | ValType::I32))
+    match &binding.expr {
+        // For a top-level Lambda binding the WASM function emits the Lambda
+        // body directly (captures + Lambda params in scope).  Infer the
+        // result type from the body, not from the Lambda node itself (which
+        // would always return I32 for the nested-closure-ptr path).
+        AnfExpr::Lambda { params, body, .. } => {
+            let mut locals: Vec<(String, ValType)> = binding_params(binding)
+                .into_iter()
+                .map(|name| (name.to_string(), ValType::I64))
+                .collect();
+            // Add the Lambda's own params after the captured-variable locals.
+            locals.extend(params.iter().map(|p| (p.clone(), ValType::I64)));
+            infer_expr_type(body, &mut locals)
+                .filter(|ty| matches!(ty, ValType::I64 | ValType::I32))
+        }
+        expr => {
+            let mut locals = binding_params(binding)
+                .into_iter()
+                .map(|name| (name.to_string(), ValType::I64))
+                .collect();
+            infer_expr_type(expr, &mut locals)
+                .filter(|ty| matches!(ty, ValType::I64 | ValType::I32))
+        }
+    }
 }
 
 pub(crate) fn binding_signatures(bindings: &[AnfBinding]) -> Vec<WasmSignature> {
     bindings
         .iter()
-        .map(|binding| WasmSignature {
-            param_count: binding_params(binding).len(),
-            result: binding_result(binding),
+        .map(|binding| {
+            // For Lambda bindings: WASM params = captures + Lambda's own params.
+            let capture_count = binding_params(binding).len();
+            let lambda_param_count = lambda_body_params(&binding.expr).len();
+            WasmSignature {
+                param_count: capture_count + lambda_param_count,
+                result: binding_result(binding),
+            }
         })
         .collect()
 }
@@ -615,7 +653,16 @@ impl EffectDataLayout {
                     self.collect_expr(&arm.body);
                 }
             }
-            AnfExpr::Lambda { body, .. } => self.collect_expr(body),
+            AnfExpr::Lambda { captures, body, .. } => {
+                // A Lambda sub-expression with captures will emit a closure env
+                // struct in linear memory (via emit_alloc).  Mark needs_memory
+                // so the WASM module includes the linear-memory and bump-
+                // allocator-global sections required by emit_alloc.
+                if !captures.is_empty() {
+                    self.needs_memory = true;
+                }
+                self.collect_expr(body);
+            }
             AnfExpr::RecordNew { fields } => {
                 self.needs_memory = true;
                 for (_, expr) in fields {

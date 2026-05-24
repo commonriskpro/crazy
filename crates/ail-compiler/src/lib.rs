@@ -8,8 +8,13 @@
 //! - Maintains a BLAKE3 hash chain across every stage for reproducibility.
 //! - Emits structurally valid WASM via `wasm-encoder`; function bodies emit
 //!   real IR for arithmetic, control-flow, EffectCall, and compound types
-//!   (records/variants/lists/tuples). Lambda and concurrency expressions are
-//!   stubs in the WASM path.
+//!   (records/variants/lists/tuples).
+//!   **WASM Lambda**: top-level Lambda bindings emit the body directly with
+//!   captures and Lambda params as WASM function locals.  Nested Lambda
+//!   sub-expressions emit a closure env in linear memory matching the native
+//!   backend layout: `[fn_idx: i64, cap_count: i64, cap0: i64, ...]`; the
+//!   `fn_idx` field is a placeholder (0) until a future element-section pass
+//!   adds call_indirect support.  Concurrency expressions are stubs.
 //! - Emits platform-native object files via Cranelift (Phase 17); Phase 8
 //!   expression lowering covers arithmetic, control-flow, loops, match, text
 //!   literals, records/variants/lists/tuples, EffectCall, and Lambda.

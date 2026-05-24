@@ -838,11 +838,63 @@ fn emit_anf_expr<'a>(
             }
         }
 
-        // ── Lambda ───────────────────────────────────────────────────────
-        // Lambdas are hoisted to top-level WASM functions.
-        // At this stage, emit an opaque function reference (i32.const 0).
-        AnfExpr::Lambda { .. } => {
-            insns.push(Instruction::I32Const(0));
+        // ── Lambda (nested sub-expression) ───────────────────────────────
+        // When a Lambda appears as a sub-expression (not the top-level body
+        // of a binding — that case is handled in build_code_section), emit a
+        // closure env struct in linear memory.
+        //
+        // Layout (matches native backend PR2):
+        //   [fn_idx: i64, cap_count: i64, cap0: i64, ..., capN-1: i64]
+        //
+        // fn_idx: WASM function table index — emitted as 0 (placeholder).
+        //   Full function hoisting and call_indirect require a future
+        //   element-section pass; this slice proves captured values are
+        //   stored in the env.
+        // cap_count: number of captured variables (as i64).
+        // cap_i: value of the i-th captured variable, zero-extended to i64.
+        //
+        // Limitation: the Lambda body is not hoisted here — invocation
+        // through the closure env is deferred to the next closure slice.
+        AnfExpr::Lambda {
+            params: _,
+            captures,
+            body: _,
+        } => {
+            let cap_count = captures.len();
+            // Allocate: fn_idx (8 B) + cap_count (8 B) + N × 8 B.
+            let byte_size = ((2 + cap_count) * 8).max(8) as i32;
+            emit_alloc(byte_size, insns);
+            let ptr_local = ctx.bind("__closure_env", ValType::I32);
+            insns.push(Instruction::LocalSet(ptr_local));
+
+            // fn_idx at offset 0 (placeholder = 0 until element-section pass).
+            insns.push(Instruction::LocalGet(ptr_local));
+            insns.push(Instruction::I64Const(0));
+            store_i64_at(0, insns);
+
+            // cap_count at offset 8.
+            insns.push(Instruction::LocalGet(ptr_local));
+            insns.push(Instruction::I64Const(cap_count as i64));
+            store_i64_at(8, insns);
+
+            // Each captured value at offset 16, 24, …
+            for (i, cap_name) in captures.iter().enumerate() {
+                let offset = (16 + i * 8) as u64;
+                insns.push(Instruction::LocalGet(ptr_local));
+                if let Some((idx, ty)) = ctx.lookup(cap_name) {
+                    insns.push(Instruction::LocalGet(idx));
+                    // Zero-extend I32 captures to I64 for uniform storage.
+                    if ty == ValType::I32 {
+                        insns.push(Instruction::I64ExtendI32U);
+                    }
+                } else {
+                    // Capture not in scope — emit 0 as a defensive fallback.
+                    insns.push(Instruction::I64Const(0));
+                }
+                store_i64_at(offset, insns);
+            }
+
+            insns.push(Instruction::LocalGet(ptr_local));
             Some(ValType::I32)
         }
 
@@ -934,11 +986,25 @@ pub(crate) fn build_code_section(
     let mut codes = CodeSection::new();
     let functions = function_index(bindings, function_offset);
     for binding in bindings {
-        let params = binding_params(binding);
-        let mut ctx = WasmCodegenCtx::new(params, effect_data);
+        // For a top-level Lambda binding, emit the Lambda body directly so
+        // that both captures (WASM function params via binding_params) and
+        // Lambda-own params are in scope.  For non-Lambda bindings, emit the
+        // expression as before.
+        //
+        // This avoids hitting the nested-Lambda arm in emit_anf_expr (which
+        // emits a closure env pointer instead of the body).
+        let (body_to_emit, lambda_own_params): (&AnfExpr, &[String]) = match &binding.expr {
+            AnfExpr::Lambda { params, body, .. } => (body.as_ref(), params.as_slice()),
+            other => (other, &[]),
+        };
+
+        let mut all_params = binding_params(binding);
+        all_params.extend(lambda_own_params.iter().map(String::as_str));
+
+        let mut ctx = WasmCodegenCtx::new(all_params, effect_data);
         let mut insns: Vec<Instruction<'_>> = Vec::new();
 
-        let emitted_ty = emit_anf_expr(&binding.expr, &mut ctx, &functions, &mut insns);
+        let emitted_ty = emit_anf_expr(body_to_emit, &mut ctx, &functions, &mut insns);
 
         if binding_result(binding).is_none() && emitted_ty.is_some() {
             insns.push(Instruction::Drop);
