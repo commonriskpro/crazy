@@ -13,8 +13,13 @@ tokio           = { workspace = true }
 tokio-postgres  = { workspace = true }
 
 [dev-dependencies]
-futures  = { workspace = true }
-tokio    = { workspace = true }
+criterion = { workspace = true }
+futures   = { workspace = true }
+tokio     = { workspace = true }
+
+[[bench]]
+name    = "storage_perf"
+harness = false
 
 [lints]
 workspace = true
