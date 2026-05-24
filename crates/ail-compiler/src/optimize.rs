@@ -134,17 +134,26 @@ fn optimize_expr(expr: AnfExpr, env: &mut BTreeMap<String, LiteralValue>) -> Anf
         },
         AnfExpr::Lambda {
             params,
-            captures,
+            captures: _,
             body,
         } => {
             let mut nested_env = env.clone();
             for param in &params {
                 nested_env.remove(param);
             }
+            let optimized_body = optimize_expr(*body, &mut nested_env);
+            // Recompute captures from the optimized body: constant-folding may
+            // have eliminated references to captured vars, making the old list
+            // stale and causing `uses_var` false positives in dead-let DCE.
+            // This is a single traversal — cheap; no broad optimizer refactor.
+            let mut bound: Vec<&str> = params.iter().map(String::as_str).collect();
+            let mut free_in_body: Vec<&str> = Vec::new();
+            crate::wasm_abi::collect_free_vars(&optimized_body, &mut bound, &mut free_in_body);
+            let captures = free_in_body.into_iter().map(str::to_string).collect();
             AnfExpr::Lambda {
                 params,
                 captures,
-                body: Box::new(optimize_expr(*body, &mut nested_env)),
+                body: Box::new(optimized_body),
             }
         }
         AnfExpr::TaskGroup { body } => AnfExpr::TaskGroup {
@@ -540,13 +549,22 @@ fn inline_calls_in_expr(
         },
         AnfExpr::Lambda {
             params,
-            captures,
+            captures: _,
             body,
-        } => AnfExpr::Lambda {
-            params,
-            captures,
-            body: Box::new(inline_calls_in_expr(*body, small_fns)),
-        },
+        } => {
+            let inlined_body = inline_calls_in_expr(*body, small_fns);
+            // Recompute captures: inlining a call inside the body may have
+            // replaced a captured-var argument, leaving the old list stale.
+            let mut bound: Vec<&str> = params.iter().map(String::as_str).collect();
+            let mut free_in_body: Vec<&str> = Vec::new();
+            crate::wasm_abi::collect_free_vars(&inlined_body, &mut bound, &mut free_in_body);
+            let captures = free_in_body.into_iter().map(str::to_string).collect();
+            AnfExpr::Lambda {
+                params,
+                captures,
+                body: Box::new(inlined_body),
+            }
+        }
         AnfExpr::RecordNew { fields } => AnfExpr::RecordNew {
             fields: fields
                 .into_iter()
@@ -1177,6 +1195,73 @@ mod tests {
             }
         } else {
             panic!("expected outer Let");
+        }
+    }
+
+    // W2: optimize_expr prunes stale captures when constant-folding removes a
+    // captured var reference from the lambda body.
+    #[test]
+    fn optimize_expr_prunes_stale_captures_after_constant_folding() {
+        // Lambda captures ["x"], but the body is `let _a = x in 42`.
+        // After constant-folding removes the unused let, body becomes Literal(42)
+        // and "x" is no longer free — captures must be empty after optimization.
+        let lambda = AnfExpr::Lambda {
+            params: vec![],
+            captures: vec!["x".to_string()],
+            body: Box::new(AnfExpr::Let {
+                name: "_a".to_string(),
+                value: Box::new(AnfExpr::Var("x".to_string())),
+                body: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
+            }),
+        };
+        let result = optimize_bindings(vec![binding(lambda)]);
+        if let AnfExpr::Lambda { captures, .. } = &result[0].expr {
+            assert!(
+                captures.is_empty(),
+                "stale capture 'x' must be pruned after constant-folding removes its use"
+            );
+        } else {
+            panic!("expected Lambda");
+        }
+    }
+
+    // W2: inline_calls_in_expr prunes stale captures when inlining replaces a
+    // call that used a captured arg with a literal body that does not.
+    #[test]
+    fn inline_calls_prunes_stale_captures_after_inlining() {
+        // fn.const = Lambda { params: ["_v"], body: Literal(0) }
+        // outer   = Lambda { params: [], captures: ["x"],
+        //                    body: Call("fn.const", ["x"]) }
+        // After inlining fn.const the body becomes Literal(0); "x" no longer free.
+        let const_binding = AnfBinding {
+            source_ref: ail_core::semantic_graph::NodeRef(0),
+            name: "fn.const".to_string(),
+            expr: AnfExpr::Lambda {
+                params: vec!["_v".to_string()],
+                captures: vec![],
+                body: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            },
+        };
+        let outer_binding = AnfBinding {
+            source_ref: ail_core::semantic_graph::NodeRef(1),
+            name: "fn.outer".to_string(),
+            expr: AnfExpr::Lambda {
+                params: vec![],
+                captures: vec!["x".to_string()],
+                body: Box::new(AnfExpr::Call {
+                    func: "fn.const".to_string(),
+                    args: vec!["x".to_string()],
+                }),
+            },
+        };
+        let result = inline_small_pure(vec![const_binding, outer_binding]);
+        if let AnfExpr::Lambda { captures, .. } = &result[1].expr {
+            assert!(
+                captures.is_empty(),
+                "stale capture 'x' must be pruned after fn.const is inlined away"
+            );
+        } else {
+            panic!("expected Lambda");
         }
     }
 
