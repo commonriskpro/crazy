@@ -1714,6 +1714,358 @@ fn prod_pipeline_passes_active_package_assumption_with_approval() {
     }));
 }
 
+// ── Package trust gate: prod/critical pipeline integration ────────────────
+//
+// These tests prove that package trust violations (Unsafe, Unverified, Assumed)
+// produce the correct `policy_decision` when the pipeline runs with a
+// `ProfileGate("prod")` or `ProfileGate("critical")` rule.
+//
+// Evidence path:
+//  Stage 16: PackageTrustChecker::check → VerificationEntry with trust state
+//  Stage 17: PolicyEngine::evaluate_with_audit → policy_decision
+
+fn unsafe_package_manifest() -> PackageManifest {
+    PackageManifest::from_def(PackageDef {
+        name: "sketchy.ffi".into(),
+        version: "0.1.0".into(),
+        trust_level: PackageTrustLevel::Unsafe,
+        required_capabilities: vec![],
+        exported_capabilities: vec![],
+        assumptions: vec![],
+        unsafe_surface: vec![],
+        artifact_hashes: vec![],
+        build_env_hash: None,
+        handlers: vec![],
+        contracts: vec![],
+        exports: vec![],
+        imports: vec![],
+        boundaries: vec![],
+        license: None,
+        provenance: None,
+        verification_report: None,
+        graph_schema: None,
+        core_ir_schema: None,
+        reproducible_evidence: None,
+    })
+}
+
+fn unverified_package_manifest() -> PackageManifest {
+    PackageManifest::from_def(PackageDef {
+        name: "experimental.lib".into(),
+        version: "1.0.0".into(),
+        trust_level: PackageTrustLevel::Unverified,
+        required_capabilities: vec![],
+        exported_capabilities: vec![],
+        assumptions: vec![],
+        unsafe_surface: vec![],
+        artifact_hashes: vec![],
+        build_env_hash: None,
+        handlers: vec![],
+        contracts: vec![],
+        exports: vec![],
+        imports: vec![],
+        boundaries: vec![],
+        license: None,
+        provenance: None,
+        verification_report: None,
+        graph_schema: None,
+        core_ir_schema: None,
+        reproducible_evidence: None,
+    })
+}
+
+// GIVEN a manifest with TrustLevel::Unsafe AND profile "prod" with ProfileGate rule
+// WHEN VerificationPipeline::run is called
+// THEN policy_decision is Failed (unsafe always blocked in prod)
+#[test]
+fn unsafe_package_in_prod_fails_pipeline() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let manifests = vec![unsafe_package_manifest()];
+    let rules = vec![PolicyRule::ProfileGate("prod".into())];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &manifests,
+        profile: "prod",
+        solver: &solver,
+        approvals: &[],
+        rules: &rules,
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &[],
+        artifact_manifest_hash: None,
+    };
+
+    let report = VerificationPipeline::run(&ctx);
+
+    // Stage 16 must contain an Unsafe entry for the package
+    assert!(
+        report.entries.iter().any(|e| {
+            e.claim.contains("package-trust")
+                && e.state == ail_verify::report::VerificationState::Unsafe
+                && e.scope.contains("sketchy.ffi")
+        }),
+        "Stage 16 must emit Unsafe entry for TrustLevel::Unsafe package; entries: {:?}",
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim.contains("package"))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(report.policy_decision, Some(PolicyDecision::Failed(_))),
+        "Unsafe package in prod must produce Failed policy decision; got {:?}",
+        report.policy_decision
+    );
+}
+
+// GIVEN a manifest with TrustLevel::Unsafe AND profile "critical" with ProfileGate rule
+// WHEN VerificationPipeline::run is called
+// THEN policy_decision is Failed (critical always blocks Unsafe, no approval exemption)
+#[test]
+fn unsafe_package_in_critical_fails_pipeline() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let manifests = vec![unsafe_package_manifest()];
+    let rules = vec![PolicyRule::ProfileGate("critical".into())];
+    // Even a Strong approval does NOT save Unsafe in critical
+    let approvals = vec![strong_approval("package:sketchy.ffi@0.1.0")];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &manifests,
+        profile: "critical",
+        solver: &solver,
+        approvals: &approvals,
+        rules: &rules,
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &[],
+        artifact_manifest_hash: None,
+    };
+
+    let report = VerificationPipeline::run(&ctx);
+
+    assert!(
+        matches!(report.policy_decision, Some(PolicyDecision::Failed(_))),
+        "Unsafe package in critical must produce Failed even with Strong approval; got {:?}",
+        report.policy_decision
+    );
+}
+
+// GIVEN a manifest with TrustLevel::Unverified AND profile "prod" with ProfileGate rule
+// WHEN VerificationPipeline::run is called
+// THEN policy_decision is Failed (prod blocks Unverified)
+#[test]
+fn unverified_package_in_prod_fails_pipeline() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let manifests = vec![unverified_package_manifest()];
+    let rules = vec![PolicyRule::ProfileGate("prod".into())];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &manifests,
+        profile: "prod",
+        solver: &solver,
+        approvals: &[],
+        rules: &rules,
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &[],
+        artifact_manifest_hash: None,
+    };
+
+    let report = VerificationPipeline::run(&ctx);
+
+    // Stage 16 must contain a blocking Unverified entry
+    assert!(
+        report.entries.iter().any(|e| {
+            e.claim.contains("package-trust")
+                && e.state == ail_verify::report::VerificationState::Unverified
+                && e.blocking
+                && e.scope.contains("experimental.lib")
+        }),
+        "Stage 16 must emit blocking Unverified entry for Unverified package in prod; entries: {:?}",
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim.contains("package"))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(report.policy_decision, Some(PolicyDecision::Failed(_))),
+        "Unverified package in prod must produce Failed policy decision; got {:?}",
+        report.policy_decision
+    );
+}
+
+// GIVEN a manifest with TrustLevel::Unverified AND profile "critical" with ProfileGate rule
+// WHEN VerificationPipeline::run is called
+// THEN policy_decision is Failed (critical blocks Unverified, same as prod)
+#[test]
+fn unverified_package_in_critical_fails_pipeline() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let manifests = vec![unverified_package_manifest()];
+    let rules = vec![PolicyRule::ProfileGate("critical".into())];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &manifests,
+        profile: "critical",
+        solver: &solver,
+        approvals: &[],
+        rules: &rules,
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &[],
+        artifact_manifest_hash: None,
+    };
+
+    let report = VerificationPipeline::run(&ctx);
+
+    // Stage 16 must label this blocking (minimum_trust_for_profile("critical") = Assumed)
+    assert!(
+        report.entries.iter().any(|e| {
+            e.claim.contains("package-trust")
+                && e.state == ail_verify::report::VerificationState::Unverified
+                && e.blocking
+                && e.scope.contains("experimental.lib")
+        }),
+        "Stage 16 must emit blocking Unverified entry for Unverified package in critical; entries: {:?}",
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim.contains("package"))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(report.policy_decision, Some(PolicyDecision::Failed(_))),
+        "Unverified package in critical must produce Failed policy decision; got {:?}",
+        report.policy_decision
+    );
+}
+
+// GIVEN a manifest with TrustLevel::Assumed (with valid boundary/assumption)
+//   AND profile "critical" with ProfileGate rule
+//   AND no approval record
+// WHEN VerificationPipeline::run is called
+// THEN policy_decision is ApprovalRequired or Failed (Strong approval needed)
+#[test]
+fn assumed_package_in_critical_requires_approval() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let manifests = vec![assumed_package_manifest()];
+    let rules = vec![PolicyRule::ProfileGate("critical".into())];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &manifests,
+        profile: "critical",
+        solver: &solver,
+        approvals: &[],
+        rules: &rules,
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &[],
+        artifact_manifest_hash: None,
+    };
+
+    let report = VerificationPipeline::run(&ctx);
+
+    // Stage 16 must contain an Assumed entry requiring approval
+    assert!(
+        report.entries.iter().any(|e| {
+            e.claim.contains("package") && e.state == ail_verify::report::VerificationState::Assumed
+        }),
+        "Stage 16 must emit Assumed entry for Assumed package in critical; entries: {:?}",
+        report
+            .entries
+            .iter()
+            .filter(|e| e.claim.contains("package"))
+            .collect::<Vec<_>>()
+    );
+    // Without Strong approval the decision must be ApprovalRequired or Failed
+    assert!(
+        matches!(
+            report.policy_decision,
+            Some(PolicyDecision::Failed(_)) | Some(PolicyDecision::ApprovalRequired(_))
+        ),
+        "Assumed package in critical without approval must produce ApprovalRequired or Failed; got {:?}",
+        report.policy_decision
+    );
+}
+
+// GIVEN a manifest with TrustLevel::Assumed (with valid boundary/assumption)
+//   AND profile "critical" with ProfileGate rule
+//   AND a Strong approval covering the per-assumption scope
+//   AND a valid (noop) changeset so changeset stages resolve to Proven
+// WHEN VerificationPipeline::run_with_changeset is called
+// THEN policy_decision is Passed
+#[test]
+fn assumed_package_in_critical_with_strong_approval_passes() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let manifests = vec![assumed_package_manifest()];
+    let rules = vec![PolicyRule::ProfileGate("critical".into())];
+    // The per-assumption scope emitted by PackageTrustChecker in critical profile
+    let scope = "package:payments.stripe@2.3.1#assumption:stripe_idempotency";
+    let approvals = vec![strong_approval(scope)];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &manifests,
+        profile: "critical",
+        solver: &solver,
+        approvals: &approvals,
+        rules: &rules,
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &[],
+        artifact_manifest_hash: None,
+    };
+    // Use a noop changeset + base graph so Stages 1–5 produce Proven entries.
+    // Without these, skipped-changeset Unverified entries would trigger the
+    // critical profile gate and cause unrelated violations.
+    let report = VerificationPipeline::run_with_changeset(
+        &ctx,
+        Some("change noop base=0\nauthor tester\nend\n"),
+        Some(&graph),
+    );
+
+    assert_eq!(
+        report.policy_decision,
+        Some(PolicyDecision::Passed),
+        "Assumed package in critical with Strong approval must produce Passed; got {:?}",
+        report.policy_decision
+    );
+    // Audit must record the approval used for that scope
+    assert!(
+        report.policy_audit.as_ref().is_some_and(|audit| {
+            audit.entries.iter().any(|e| {
+                e.scope == scope
+                    && e.gate_decision == "passed"
+                    && e.approval_used.as_deref() == Some("security-team")
+            })
+        }),
+        "audit must record Strong approval used for assumed package scope"
+    );
+}
+
 // ── Scenario: canonical change hash added to artifact_hashes ─────────────
 // GIVEN a valid changeset text is provided to run_with_changeset
 // WHEN the pipeline completes

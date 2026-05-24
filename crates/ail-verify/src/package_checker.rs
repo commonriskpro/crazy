@@ -6,6 +6,7 @@
 //
 // | Profile | Minimum trust tier | Unsafe allowed  |
 // |---------|-------------------|-----------------|
+// | critical| Assumed           | No (blocking)   |
 // | prod    | Assumed           | No (blocking)   |
 // | staging | Assumed           | No (blocking)   |
 // | dev     | Unverified        | No (blocking)   |
@@ -40,11 +41,15 @@ use crate::report::{VerificationEntry, VerificationState};
 
 /// Resolve the minimum trust tier required for a profile name.
 ///
-/// `prod` and `staging` require at least `Assumed`.
+/// `prod`, `staging`, and `critical` require at least `Assumed`.
+/// `TrustGate::evaluate` (ail-package/policy.rs) maps `Unverified` to `Deny`
+/// for all three of these profiles; the minimum here reflects that matrix so
+/// Stage 16 entries are correctly labeled `blocking=true` before the policy
+/// engine runs at Stage 17.
 /// All other profiles (including `dev`) require at least `Unverified`.
 fn minimum_trust_for_profile(profile_name: &str) -> TrustLevel {
     match profile_name {
-        "prod" | "staging" => TrustLevel::Assumed,
+        "prod" | "staging" | "critical" => TrustLevel::Assumed,
         _ => TrustLevel::Unverified,
     }
 }
