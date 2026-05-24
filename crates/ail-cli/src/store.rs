@@ -166,7 +166,9 @@ impl StoreHandle {
         match self {
             StoreHandle::Memory { objects, .. } => Ok(objects.put(RawObject(bytes)).await?),
             StoreHandle::File { objects, .. } => Ok(objects.put(RawObject(bytes)).await?),
-            StoreHandle::Postgres(_) => Ok(ObjectId::from_bytes(&bytes)),
+            StoreHandle::Postgres(_) => Err(CliError::Domain(
+                "save_graph is not supported for the Postgres backend".to_string(),
+            )),
         }
     }
 
@@ -189,7 +191,9 @@ impl StoreHandle {
                     .map(Some)
                     .map_err(|e| CliError::Domain(format!("graph decoding failed: {e}")))
             }
-            StoreHandle::Postgres(_) => Ok(None),
+            StoreHandle::Postgres(_) => Err(CliError::Domain(
+                "load_graph is not supported for the Postgres backend".to_string(),
+            )),
         }
     }
 
@@ -198,8 +202,6 @@ impl StoreHandle {
     /// The `change_id_hex` MUST be the 64-char hex encoding of `blake3(cbor_bytes)`,
     /// which is how `cmd_change` derives it.  This invariant lets `load_changeset_by_id`
     /// retrieve the bytes by decoding the hex back to the content-addressed key.
-    ///
-    /// Postgres: no-op (changeset retrieval not supported by that backend).
     pub async fn save_changeset_payload(
         &self,
         change_id_hex: &str,
@@ -214,23 +216,22 @@ impl StoreHandle {
                 objects.put(RawObject(cbor_bytes.to_vec())).await?;
                 Ok(())
             }
-            // Postgres: changeset payload storage not supported; return Ok silently.
-            StoreHandle::Postgres(_) => {
-                let _ = change_id_hex;
-                Ok(())
-            }
+            StoreHandle::Postgres(_) => Err(CliError::Domain(format!(
+                "save_changeset_payload({change_id_hex}) is not supported for the Postgres backend"
+            ))),
         }
     }
 
     /// Load the raw CBOR bytes for a `CanonicalChangeSet` by its change-id and decode it.
     ///
     /// Returns `Ok(None)` when the change-id is not found in the store (triggers fallback
-    /// in `cmd_verify`).  Returns `Ok(None)` for Postgres (not supported).
+    /// in `cmd_verify`).
     ///
     /// # Errors
     ///
-    /// Returns `Err` if the change-id hex is malformed (not 64-char lowercase hex) or
-    /// if CBOR decoding fails (corrupt stored object).
+    /// Returns `Err` if the change-id hex is malformed (not 64-char lowercase hex),
+    /// if CBOR decoding fails (corrupt stored object), or if the active backend is Postgres
+    /// (not supported).
     pub async fn load_changeset_by_id(
         &self,
         change_id_hex: &str,
@@ -253,7 +254,11 @@ impl StoreHandle {
         let raw = match self {
             StoreHandle::Memory { objects, .. } => objects.get(&oid).await?,
             StoreHandle::File { objects, .. } => objects.get(&oid).await?,
-            StoreHandle::Postgres(_) => return Ok(None),
+            StoreHandle::Postgres(_) => {
+                return Err(CliError::Domain(
+                    "load_changeset_by_id is not supported for the Postgres backend".to_string(),
+                ));
+            }
         };
 
         let Some(raw) = raw else {
@@ -1076,6 +1081,132 @@ mod tests {
         assert_eq!(
             result, None,
             "unknown change-id must return None (fallback)"
+        );
+    }
+
+    // ── Postgres backend: explicit unsupported errors ──────────────────────
+    //
+    // These tests require a live Postgres instance and are gated with #[ignore].
+    // Run with: cargo test -p ail-cli -- --include-ignored
+    // Requires: AIL_TEST_DB_URL env var pointing to a Postgres instance.
+    //
+    // NOTE: Constructing `StoreHandle::Postgres` requires `PostgresGraphStore::connect()`
+    // which performs a real TCP handshake and schema setup.  Live-DB-free unit tests
+    // for these arms are not feasible without a significant trait-object refactor of
+    // `StoreHandle`.  The integration tests below verify the explicit error contract.
+
+    // Scenario: Postgres backend save_graph returns an explicit unsupported error.
+    //   GIVEN a Postgres StoreHandle connected to a live DB
+    //   WHEN save_graph is called
+    //   THEN Err(CliError::Domain(_)) is returned containing "not supported for the Postgres backend"
+    #[tokio::test]
+    #[ignore = "requires AIL_TEST_DB_URL pointing to a live Postgres instance"]
+    async fn postgres_save_graph_returns_unsupported_error() {
+        let url = std::env::var("AIL_TEST_DB_URL")
+            .expect("AIL_TEST_DB_URL must be set for Postgres integration tests");
+        let store = connect_postgres(&url).await.expect("connect must succeed");
+        let graph = SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
+
+        let err = store
+            .save_graph(&graph)
+            .await
+            .expect_err("save_graph must fail for Postgres");
+
+        let msg = format!("{err}");
+        assert!(
+            matches!(err, CliError::Domain(_)),
+            "must be CliError::Domain; got: {msg}"
+        );
+        assert!(
+            msg.contains("not supported for the Postgres backend"),
+            "error must mention unsupported backend; got: {msg}"
+        );
+    }
+
+    // Scenario: Postgres backend load_graph returns an explicit unsupported error.
+    //   GIVEN a Postgres StoreHandle connected to a live DB
+    //   WHEN load_graph is called
+    //   THEN Err(CliError::Domain(_)) is returned containing "not supported for the Postgres backend"
+    #[tokio::test]
+    #[ignore = "requires AIL_TEST_DB_URL pointing to a live Postgres instance"]
+    async fn postgres_load_graph_returns_unsupported_error() {
+        let url = std::env::var("AIL_TEST_DB_URL")
+            .expect("AIL_TEST_DB_URL must be set for Postgres integration tests");
+        let store = connect_postgres(&url).await.expect("connect must succeed");
+        let dummy_root = ObjectId::from_bytes(b"postgres-load-graph-test");
+
+        let err = store
+            .load_graph(&dummy_root)
+            .await
+            .expect_err("load_graph must fail for Postgres");
+
+        let msg = format!("{err}");
+        assert!(
+            matches!(err, CliError::Domain(_)),
+            "must be CliError::Domain; got: {msg}"
+        );
+        assert!(
+            msg.contains("not supported for the Postgres backend"),
+            "error must mention unsupported backend; got: {msg}"
+        );
+    }
+
+    // Scenario: Postgres backend save_changeset_payload returns an explicit unsupported error.
+    //   GIVEN a Postgres StoreHandle connected to a live DB
+    //   WHEN save_changeset_payload is called
+    //   THEN Err(CliError::Domain(_)) is returned containing "not supported for the Postgres backend"
+    #[tokio::test]
+    #[ignore = "requires AIL_TEST_DB_URL pointing to a live Postgres instance"]
+    async fn postgres_save_changeset_payload_returns_unsupported_error() {
+        let url = std::env::var("AIL_TEST_DB_URL")
+            .expect("AIL_TEST_DB_URL must be set for Postgres integration tests");
+        let store = connect_postgres(&url).await.expect("connect must succeed");
+        let (_, cbor_bytes, change_id) = minimal_canonical();
+
+        let err = store
+            .save_changeset_payload(&change_id, &cbor_bytes)
+            .await
+            .expect_err("save_changeset_payload must fail for Postgres");
+
+        let msg = format!("{err}");
+        assert!(
+            matches!(err, CliError::Domain(_)),
+            "must be CliError::Domain; got: {msg}"
+        );
+        assert!(
+            msg.contains("not supported for the Postgres backend"),
+            "error must mention unsupported backend; got: {msg}"
+        );
+    }
+
+    // Scenario: Postgres backend load_changeset_by_id returns an explicit unsupported error.
+    //   GIVEN a Postgres StoreHandle connected to a live DB
+    //   WHEN load_changeset_by_id is called
+    //   THEN Err(CliError::Domain(_)) is returned containing "not supported for the Postgres backend"
+    #[tokio::test]
+    #[ignore = "requires AIL_TEST_DB_URL pointing to a live Postgres instance"]
+    async fn postgres_load_changeset_by_id_returns_unsupported_error() {
+        let url = std::env::var("AIL_TEST_DB_URL")
+            .expect("AIL_TEST_DB_URL must be set for Postgres integration tests");
+        let store = connect_postgres(&url).await.expect("connect must succeed");
+        let unknown_id = "a".repeat(64);
+
+        let err = store
+            .load_changeset_by_id(&unknown_id)
+            .await
+            .expect_err("load_changeset_by_id must fail for Postgres");
+
+        let msg = format!("{err}");
+        assert!(
+            matches!(err, CliError::Domain(_)),
+            "must be CliError::Domain; got: {msg}"
+        );
+        assert!(
+            msg.contains("not supported for the Postgres backend"),
+            "error must mention unsupported backend; got: {msg}"
         );
     }
 }
