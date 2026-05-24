@@ -1780,6 +1780,18 @@ fn verify_profile_dev_has_policy_and_approval() {
         v["data"]["proof_obligations"].is_array(),
         "proof_obligations must be array; got: {v}"
     );
+    assert!(
+        v["data"]["degradation_events"].is_array(),
+        "degradation_events must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["solver_diagnostics"].is_array(),
+        "solver_diagnostics must be array; got: {v}"
+    );
+    assert!(
+        v["data"]["artifact_hashes"].is_array(),
+        "artifact_hashes must be array; got: {v}"
+    );
 }
 
 /// SC-VER2: verify with --profile prod has approval_requirements.required=true.

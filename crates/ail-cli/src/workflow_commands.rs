@@ -3,7 +3,9 @@
 // Handlers for the verify/apply workflow: `ail verify` and `ail apply`.
 //
 // These two commands form the core change-application pipeline:
-//   verify  → run the Checker + policy gate, surface diagnostics and repair options
+//   verify  → run the full VerificationPipeline (21 stages) + policy gate,
+//             surface diagnostics, proof obligations, degradation events,
+//             and repair options
 //   apply   → run the pre-apply gate, atomically apply the ChangeSet, emit a snapshot
 //
 // Both commands share `rebase_required_repair_option`, which is defined here
@@ -12,8 +14,10 @@
 use ail_change::model::ChangeSetOutcome;
 use ail_core::semantic_graph::SemanticGraph;
 use ail_storage::{SnapshotEnvelope, object::ObjectId};
-use ail_verify::checker::Checker;
+use ail_verify::pipeline::{PipelineContext, VerificationPipeline};
 use ail_verify::policy::{PolicyDecision, PolicyEngine, PolicyInput, PolicyRule};
+use ail_verify::report::VerificationReport;
+use ail_verify::solver::SimpleSolver;
 use serde_json::{Value, json};
 
 use crate::cli::{
@@ -54,9 +58,14 @@ pub(crate) async fn cmd_verify(
     let missing_changeset = maybe_canonical.is_none();
     let mut rebase_required = false;
     let mut current_snapshot_id_for_rebase = None;
+    // `base_graph` is the graph state before applying the changeset; used by
+    // the pipeline's semantic-diff stage to compute structural change information.
+    let mut base_graph: Option<SemanticGraph> = None;
     if let Some(canonical) = maybe_canonical {
         let (current_graph, current_snapshot_id) =
             load_current_graph_with_snapshot_id_for_cli(store).await?;
+        // Preserve a copy of the pre-change graph for the pipeline diff stage.
+        base_graph = Some(current_graph.clone());
         graph = current_graph;
         let bridge = SimpleSnapshotBridge(current_snapshot_id);
         match ail_change::apply::apply(canonical, &mut graph, &bridge) {
@@ -71,19 +80,72 @@ pub(crate) async fn cmd_verify(
                     nodes: vec![],
                     edges: vec![],
                 };
+                base_graph = None;
             }
             ChangeSetOutcome::Failed { .. } | ChangeSetOutcome::ConflictIrresolvable { .. } => {
                 graph = SemanticGraph {
                     nodes: vec![],
                     edges: vec![],
                 };
+                base_graph = None;
             }
         }
     }
-    let report = Checker::check(&graph);
+
+    // ── Run the full 21-stage VerificationPipeline ────────────────────────
+    // Replaces the shallow `Checker::check` path with the canonical pipeline
+    // that covers resource lifecycle, concurrency, boundary, codegen, ANF
+    // checks, proof obligations, degradation events, and solver diagnostics.
+    //
+    // Conservative defaults preserve current behaviour: empty manifests,
+    // grants, approvals, and artifacts skip the corresponding optional stages.
+    //
+    // We run the pipeline with no policy rules so Stage 17 always returns
+    // Passed.  The profile-gate policy is then evaluated separately on the
+    // CONTENT entries (stages 6+) only.  This preserves existing workflow
+    // behaviour: stages 1–5 produce Unverified entries when `changeset_text`
+    // is None (we hold the canonical binary form, not the raw text), and those
+    // entries must not trigger the prod profile gate — they indicate "text
+    // unavailable", not "content is unverified".
+    let solver = SimpleSolver;
+    let pipeline_ctx = PipelineContext {
+        graph: &graph,
+        manifests: &[],
+        profile,
+        solver: &solver,
+        approvals: &[],
+        rules: &[], // empty — policy evaluated separately below
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &[],
+        artifact_manifest_hash: None,
+    };
+    // `changeset_text` is None: we hold the canonical (binary) form only.
+    // Stages 1–5 will emit Unverified entries; stages 6–23 run normally.
+    let pipeline_report =
+        VerificationPipeline::run_with_changeset(&pipeline_ctx, None, base_graph.as_ref());
+
+    // ── Separate policy evaluation on content-only entries ────────────────
+    // Filter out pipeline meta-stage entries (stages 01–05) whose Unverified
+    // state is caused by the absence of raw changeset text, not by content
+    // verification failures.  Only graph-content entries (stage 06 onwards)
+    // feed the profile-gate policy decision.
+    let content_entries: Vec<_> = pipeline_report
+        .entries
+        .iter()
+        .filter(|e| !is_changeset_meta_stage_claim(&e.claim))
+        .cloned()
+        .collect();
+    let content_report = VerificationReport {
+        entries: content_entries,
+        ..Default::default()
+    };
     let policy_rules = [PolicyRule::ProfileGate(profile.to_string())];
     let policy_input = PolicyInput {
-        report: &report,
+        report: &content_report,
         rules: &policy_rules,
         approvals: &[],
         structural_diff: None,
@@ -92,6 +154,9 @@ pub(crate) async fn cmd_verify(
         package_trust_metadata: &[],
     };
     let (policy_decision, policy_audit) = PolicyEngine::evaluate_with_audit(&policy_input);
+
+    // Use the full pipeline report for summary / diagnostics display.
+    let report = &pipeline_report;
     let mut approval_required_scopes = match &policy_decision {
         PolicyDecision::ApprovalRequired(scopes) => scopes.clone(),
         _ => Vec::new(),
@@ -157,11 +222,57 @@ pub(crate) async fn cmd_verify(
         })
         .collect();
     let diag_count = diagnostics.len();
-    // Proof obligations: derived from verification entries.
-    let proof_obligations: Vec<Value> = report
-        .entries
+    // Proof obligations: first-class obligation ledger from the full pipeline.
+    // These are richer than the shallow entry-derived list — each entry carries
+    // its obligation id, source stage, resolution attempts, and degradation path.
+    let proof_obligations: Vec<Value> = pipeline_report
+        .proof_obligations
         .iter()
-        .map(|e| json!({ "claim": e.claim, "state": format!("{:?}", e.state) }))
+        .map(|o| {
+            json!({
+                "id": o.id,
+                "source_stage": o.source_stage,
+                "state": format!("{:?}", o.state),
+            })
+        })
+        .collect();
+
+    // Degradation events: every state downgrade recorded by the pipeline.
+    // Pipeline-only field — not available from the shallow Checker path.
+    let degradation_events: Vec<Value> = pipeline_report
+        .degradation_events
+        .iter()
+        .map(|d| {
+            json!({
+                "obligation_id": d.obligation_id,
+                "source_stage": d.source_stage,
+                "from_state": format!("{:?}", d.from_state),
+                "to_state": format!("{:?}", d.to_state),
+                "reason": d.reason,
+            })
+        })
+        .collect();
+
+    // Solver diagnostics: structured timeout/unsupported/resource-limited outcomes.
+    // Pipeline-only field.
+    let solver_diagnostics: Vec<Value> = pipeline_report
+        .solver_diagnostics
+        .iter()
+        .map(|s| {
+            json!({
+                "obligation_id": s.obligation_id,
+                "source_stage": s.source_stage,
+                "status": s.status.as_str(),
+                "reason": s.reason,
+            })
+        })
+        .collect();
+
+    // Artifact hashes: codegen consistency hashes from the pipeline.
+    let artifact_hashes: Vec<Value> = pipeline_report
+        .artifact_hashes
+        .iter()
+        .map(|h| json!({ "artifact": h.artifact, "hash": h.hash }))
         .collect();
     let policy_violations = match &policy_decision {
         PolicyDecision::Failed(violations) => json!(violations),
@@ -272,7 +383,11 @@ pub(crate) async fn cmd_verify(
                 "summary": summary,
             },
             "diagnostics": diagnostics,
+            // Pipeline-derived fields (not present in the shallow Checker path):
             "proof_obligations": proof_obligations,
+            "degradation_events": degradation_events,
+            "solver_diagnostics": solver_diagnostics,
+            "artifact_hashes": artifact_hashes,
             "policy_report": policy_report,
             "approval_requirements": approval_requirements,
             "workflow_state": workflow_state,
@@ -469,6 +584,24 @@ pub(crate) async fn cmd_apply(
 
 // ── Private helpers ───────────────────────────────────────────────────────
 
+/// Return `true` if the claim belongs to a pipeline meta-stage (stages 01–05).
+///
+/// Stages 01–05 are changeset-text-dependent pipeline infrastructure stages:
+///   01-parse-changeset, 02-canonicalize-changeset, 03-validate-op-schemas,
+///   04-resolve-graph-references, 05-build-semantic-diff.
+///
+/// When `changeset_text` is `None` (CLI holds canonical binary, not raw text),
+/// these stages emit `Unverified` entries that should NOT trigger the profile-
+/// gate policy decision.  Stage 06 onwards are graph-content stages and ARE
+/// subject to policy evaluation.
+fn is_changeset_meta_stage_claim(claim: &str) -> bool {
+    claim.starts_with("01-")
+        || claim.starts_with("02-")
+        || claim.starts_with("03-")
+        || claim.starts_with("04-")
+        || claim.starts_with("05-")
+}
+
 /// Build the JSON repair option for a rebase-required outcome.
 fn rebase_required_repair_option(current_snapshot_id: u64) -> Value {
     json!({
@@ -477,4 +610,20 @@ fn rebase_required_repair_option(current_snapshot_id: u64) -> Value {
         "description": "Rebase the ChangeSet onto the current snapshot before apply.",
         "current_snapshot_id": current_snapshot_id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_changeset_meta_stage_claim;
+
+    #[test]
+    fn recognises_changeset_meta_stage_claims_only() {
+        assert!(is_changeset_meta_stage_claim("01-parse-changeset"));
+        assert!(is_changeset_meta_stage_claim("02-canonicalize-changeset"));
+        assert!(is_changeset_meta_stage_claim("05-build-semantic-diff"));
+        assert!(!is_changeset_meta_stage_claim("06-resource-lifecycle"));
+        assert!(!is_changeset_meta_stage_claim("19-anf-lowering"));
+        assert!(!is_changeset_meta_stage_claim("1-parse-changeset"));
+        assert!(!is_changeset_meta_stage_claim(""));
+    }
 }
