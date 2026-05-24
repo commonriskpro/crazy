@@ -29,7 +29,7 @@ use crate::builtin_targets::runtime_anf_for_target;
 use crate::cli::{bytes_to_hex, load_current_graph_for_cli};
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
-use crate::store::StoreHandle;
+use crate::store::{StoreHandle, WasmArtifactBytes};
 
 // ── Private helpers ───────────────────────────────────────────────────────
 
@@ -156,17 +156,41 @@ pub(crate) async fn cmd_compile(
         .hash_chain
         .wasm_hash
         .map(|h| bytes_to_hex(&h))
-        .unwrap_or_else(|| "<none>".to_string());
+        .ok_or_else(|| CliError::Domain("compile wasm (missing wasm hash)".to_string()))?;
     let wasm_size = artifact.wasm.len();
     let capabilities_count = artifact.capabilities_manifest.entries.len();
 
     // Serialize the real capabilities manifest — one entry per ANF binding.
     let capabilities_manifest = serde_json::to_value(&artifact.capabilities_manifest)
         .map_err(|e| CliError::Domain(format!("compile (capabilities manifest): {e}")))?;
+    let capabilities_manifest_json_bytes = serde_json::to_vec(&artifact.capabilities_manifest)
+        .map_err(|e| CliError::Domain(format!("compile (capabilities manifest bytes): {e}")))?;
     let semantic_source_map: Value = serde_json::from_slice(&artifact.source_map_json)
         .map_err(|e| CliError::Domain(format!("compile (source map sidecar): {e}")))?;
     let artifact_manifest: Value = serde_json::from_slice(&artifact.artifact_manifest_json)
         .map_err(|e| CliError::Domain(format!("compile (artifact sidecar): {e}")))?;
+
+    // ── Persist WASM artifact to .ail/wasm/ (file-backed stores only) ─────
+    let persisted_paths = store.save_wasm_artifact(
+        &wasm_hash,
+        profile,
+        target,
+        WasmArtifactBytes {
+            wasm: &artifact.wasm,
+            source_map_json: &artifact.source_map_json,
+            artifact_manifest_json: &artifact.artifact_manifest_json,
+            capabilities_manifest_json: &capabilities_manifest_json_bytes,
+        },
+    )?;
+    let persisted = persisted_paths.as_ref().map(|p| {
+        json!({
+            "wasm_path": p.wasm_path.to_string_lossy(),
+            "source_map_path": p.source_map_path.to_string_lossy(),
+            "manifest_path": p.manifest_path.to_string_lossy(),
+            "capabilities_path": p.capabilities_path.to_string_lossy(),
+        })
+    });
+
     // Compiler report.
     let compiler_report = json!({
         "profile": profile,
@@ -191,6 +215,7 @@ pub(crate) async fn cmd_compile(
             "semantic_source_map": semantic_source_map,
             "artifact_manifest": artifact_manifest,
             "compiler_report": compiler_report,
+            "persisted_paths": persisted,
         }),
     );
     Ok(())
