@@ -531,6 +531,7 @@ fn apply_stale_base_returns_rebase_required() {
     use ail_change::apply::apply as apply_changeset;
     use ail_change::canonical::{CanonicalChangeSet, CanonicalMeta};
     use ail_change::model::{ChangeSetOutcome, Timestamp};
+    use ail_core::semantic_graph::SemanticGraph;
 
     let bridge = SimpleSnapshotBridge(SnapshotId(1));
     let mut graph = SemanticGraph {

@@ -16,6 +16,7 @@ mod package_output;
 mod package_registry_io;
 mod policy_commands;
 mod project;
+mod project_commands;
 mod remote_commands;
 mod remote_config;
 mod run_commands;
