@@ -19,11 +19,13 @@ use ail_compiler::{
     emit_native_with_profile, emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir,
 };
 use ail_runtime::{
-    AuditEvent, CapabilityManifest, ResourceLimits, RuntimeArg, RuntimeHost, RuntimeProfile,
-    blake3_hex_of,
+    AuditEvent, CapabilityId, CapabilityManifest, ResourceLimits, RuntimeArg, RuntimeHost,
+    RuntimeProfile, blake3_hex_of,
 };
 use ail_verify::report::VerificationReport;
 use serde_json::{Value, json};
+
+use ail_core::semantic_graph::SemanticGraph;
 
 use crate::builtin_targets::runtime_anf_for_target;
 use crate::cli::{bytes_to_hex, load_current_graph_for_cli};
@@ -48,6 +50,29 @@ fn parse_runtime_args(args: &[String]) -> Result<Vec<RuntimeArg>, CliError> {
             })
         })
         .collect()
+}
+
+/// Derive runtime `CapabilityId`s from a semantic graph.
+///
+/// Walks every node and collects all capability names from
+/// `node.capability_reqs.caps`.  Results are deduplicated and sorted
+/// lexicographically so that the resulting `CapabilityManifest` is
+/// deterministic for the same graph input.
+///
+/// Returns an empty `Vec` when the graph has no nodes with capability
+/// requirements — the correct result for graphs that perform no external
+/// capability calls.
+fn derive_runtime_capability_ids(graph: &SemanticGraph) -> Vec<CapabilityId> {
+    use std::collections::BTreeSet;
+
+    let unique: BTreeSet<String> = graph
+        .nodes
+        .iter()
+        .filter_map(|n| n.capability_reqs.as_ref())
+        .flat_map(|reqs| reqs.caps.iter().cloned())
+        .collect();
+
+    unique.into_iter().map(CapabilityId::new).collect()
 }
 
 /// Detect the native object format name for the current compilation target.
@@ -224,30 +249,38 @@ pub(crate) async fn cmd_run(
     }
 
     let module_name = module.unwrap_or("(default)");
-    let artifact = if let Some(anf) = runtime_anf_for_target(module_name) {
-        emit_wasm_with_profile(&anf, profile)
-            .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?
+
+    // Built-in targets have no associated semantic graph, so their runtime
+    // capability requirements are empty by definition.  Project graph targets
+    // derive real `CapabilityId`s from `node.capability_reqs.caps` in the
+    // loaded graph, making preflight capability grants meaningful.
+    let (artifact, runtime_capability_ids) = if let Some(anf) = runtime_anf_for_target(module_name)
+    {
+        let artifact = emit_wasm_with_profile(&anf, profile)
+            .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?;
+        (artifact, vec![])
     } else {
         let graph = load_current_graph_for_cli(store).await?;
+        // Derive capability IDs before the graph enters the compiler
+        // pipeline — compiler functions all take `&SemanticGraph`, so this
+        // shared borrow is always valid.
+        let capability_ids = derive_runtime_capability_ids(&graph);
         // Use an accepted (empty/Proven) report for the e2e pipeline.
         // A full verify pass would reject the graph because the type checker
         // flags newly-materialised nodes as Unverified — expected at this stage.
         let report = accepted_compile_report();
-
         let core = lower_to_core_ir(&graph, &report)
             .map_err(|e| CliError::Domain(format!("Failed to lower graph to Core IR: {e}")))?;
         let anf = lower_to_anf_with_graph(&core, &graph)
             .map_err(|e| CliError::Domain(format!("Failed to lower Core IR to ANF: {e}")))?;
-        emit_wasm_with_profile(&anf, profile)
-            .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?
+        let artifact = emit_wasm_with_profile(&anf, profile)
+            .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?;
+        (artifact, capability_ids)
     };
-    // NOTE: until compiled artifacts carry runnable capability requirements all
-    // the way into `ail run`, this synthetic manifest intentionally reports no
-    // required grants.  Preflight is still real; grant cardinality is not yet a
-    // complete capability summary.
+
     let manifest = CapabilityManifest {
         module: module_name.to_string(),
-        requires: vec![],
+        requires: runtime_capability_ids,
     };
     let module_hash = blake3_hex_of(&artifact.wasm);
     let manifest_hash = manifest
@@ -348,5 +381,119 @@ pub(crate) async fn cmd_run(
             Ok(())
         }
         Err(e) => Err(CliError::PreflightFailed(format!("{e}"))),
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use ail_core::semantic_graph::{CapabilityReqs, GraphNode, NodeKind, NodeRef, SemanticGraph};
+    use ail_runtime::CapabilityId;
+
+    use super::derive_runtime_capability_ids;
+
+    fn node_with_caps(id: u32, caps: Vec<&str>) -> GraphNode {
+        let mut n = GraphNode::new(NodeRef(id), NodeKind::Function, format!("fn_{id}"));
+        n.capability_reqs = Some(CapabilityReqs {
+            caps: caps.into_iter().map(str::to_owned).collect(),
+        });
+        n
+    }
+
+    // Scenario: empty graph → no capability IDs.
+    #[test]
+    fn derive_empty_graph_returns_empty() {
+        let graph = SemanticGraph {
+            nodes: vec![],
+            edges: vec![],
+        };
+        assert!(
+            derive_runtime_capability_ids(&graph).is_empty(),
+            "empty graph must produce empty capability IDs"
+        );
+    }
+
+    // Scenario: graph with nodes that have no capability_reqs → empty.
+    #[test]
+    fn derive_nodes_without_capability_reqs_returns_empty() {
+        let graph = SemanticGraph {
+            nodes: vec![GraphNode::new(NodeRef(0), NodeKind::Function, "fn_a")],
+            edges: vec![],
+        };
+        assert!(
+            derive_runtime_capability_ids(&graph).is_empty(),
+            "nodes without capability_reqs must not contribute any IDs"
+        );
+    }
+
+    // Scenario: graph with one node that has capability_reqs → returns them.
+    //
+    // This test FAILS with the old behaviour where `CapabilityManifest.requires`
+    // was always `vec![]` regardless of graph content.
+    #[test]
+    fn derive_single_node_with_caps_returns_non_empty() {
+        let graph = SemanticGraph {
+            nodes: vec![node_with_caps(0, vec!["net:read", "fs:write"])],
+            edges: vec![],
+        };
+        let ids = derive_runtime_capability_ids(&graph);
+        assert_eq!(
+            ids.len(),
+            2,
+            "one node with 2 caps must produce 2 capability IDs; got: {ids:?}"
+        );
+        assert!(
+            ids.contains(&CapabilityId::new("net:read")),
+            "must include net:read; got: {ids:?}"
+        );
+        assert!(
+            ids.contains(&CapabilityId::new("fs:write")),
+            "must include fs:write; got: {ids:?}"
+        );
+    }
+
+    // Scenario: same capability name in two nodes → deduplicated to one entry.
+    //
+    // This test FAILS with the old behaviour (always-zero list never contained
+    // duplicates to deduplicate, so the deduplication logic was never tested).
+    #[test]
+    fn derive_deduplicates_capability_ids() {
+        let graph = SemanticGraph {
+            nodes: vec![
+                node_with_caps(0, vec!["net:read"]),
+                node_with_caps(1, vec!["net:read", "fs:write"]),
+            ],
+            edges: vec![],
+        };
+        let ids = derive_runtime_capability_ids(&graph);
+        assert_eq!(
+            ids.len(),
+            2,
+            "duplicate cap must appear only once; got: {ids:?}"
+        );
+    }
+
+    // Scenario: capabilities from multiple nodes are sorted lexicographically.
+    //
+    // Determinism requirement: the same graph must always produce the same
+    // ordered list, regardless of node insertion order.
+    #[test]
+    fn derive_is_sorted_for_determinism() {
+        let graph = SemanticGraph {
+            nodes: vec![
+                node_with_caps(0, vec!["z:last"]),
+                node_with_caps(1, vec!["a:first"]),
+                node_with_caps(2, vec!["m:middle"]),
+            ],
+            edges: vec![],
+        };
+        let ids = derive_runtime_capability_ids(&graph);
+        let names: Vec<&str> = ids.iter().map(CapabilityId::as_str).collect();
+        assert_eq!(
+            names,
+            vec!["a:first", "m:middle", "z:last"],
+            "capability IDs must be sorted lexicographically; got: {names:?}"
+        );
     }
 }
