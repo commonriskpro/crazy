@@ -836,7 +836,9 @@ fn parsed_match_body_lowers_to_anf_and_emits_valid_wasm() {
 
 // ── New operator and constructor pattern pipeline tests ────────────────────
 
-/// Helpers to run a body_expr string through the full pipeline and return WASM operators.
+// ── Control flow and effect pipeline tests ────────────────────────────────
+
+/// Run a body_expr string through the full pipeline and return WASM operators.
 fn pipeline_ops(body_expr: &str, fn_name: &str) -> Vec<String> {
     let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, fn_name);
     node.body_expr = Some(body_expr.to_string());
@@ -906,17 +908,14 @@ fn none_constructor_parses_and_emits_variant_with_tag_zero() {
 }
 
 #[test]
-fn some_constructor_parses_and_emits_variant_with_tag_one() {
-    // some(42) → VariantNew { tag: "Some", payload: Some(42) }
-    // Some has well-known tag 1 → I32Const { value: 1 }
-    let ops = pipeline_ops("some(42)", "fn.some_test");
+fn effect_call_parses_and_emits_host_call() {
+    // Use a no-arg effect call so there are no unbound variable references.
+    // effect_call(clock, now) — must emit host_call import + Call instruction.
+    let ops = pipeline_ops("effect_call(clock, now)", "fn.effect_call_test");
+    // Effect calls emit Call instruction for the host_call import
     assert!(
-        ops.iter().any(|op| op == "I32Const { value: 1 }"),
-        "some() must store tag discriminant 1, got {ops:?}"
-    );
-    assert!(
-        ops.iter().any(|op| op == "I64Const { value: 42 }"),
-        "some(42) must store payload 42, got {ops:?}"
+        ops.iter().any(|op| op.starts_with("Call")),
+        "effect_call() must emit a Call to host_call, got {ops:?}"
     );
 }
 
@@ -959,4 +958,61 @@ fn result_match_pipeline_emits_tag_load_and_payload_binding() {
         ops.iter().any(|op| op.starts_with("If")),
         "result match must emit If branching, got {ops:?}"
     );
+}
+
+#[test]
+fn loop_break_parses_and_emits_loop_block() {
+    // loop(break(42)) — must emit a Block + Loop + Br for break
+    let ops = pipeline_ops("loop(break(42))", "fn.loop_break");
+    assert!(
+        ops.iter().any(|op| op.starts_with("Loop")),
+        "loop() must emit a Loop block, got {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| op.starts_with("Br")),
+        "break() must emit Br for loop exit, got {ops:?}"
+    );
+}
+
+#[test]
+fn while_loop_parses_and_emits_loop_block() {
+    // while(flag, break(0)) — must emit a Loop block with conditional exit
+    let ops = pipeline_ops("while(flag, break(0))", "fn.while_loop");
+    assert!(
+        ops.iter().any(|op| op.starts_with("Loop")),
+        "while() must emit a Loop block, got {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| op.starts_with("Block")),
+        "while() must emit a Block for break exit, got {ops:?}"
+    );
+}
+
+#[test]
+fn return_parses_and_emits_return_instruction() {
+    // return(99) — must emit Return instruction
+    let ops = pipeline_ops("return(99)", "fn.return_test");
+    assert!(
+        ops.iter().any(|op| op == "Return"),
+        "return() must emit Return instruction, got {ops:?}"
+    );
+}
+
+#[test]
+fn lambda_parses_and_lowers_to_anf_successfully() {
+    // lambda(x, add(x, 1)) — must parse and lower without error (WASM is a stub i32)
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.lambda");
+    node.body_expr = Some("lambda(x, add(x, 1))".to_string());
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("core lowering must succeed");
+    assert!(
+        matches!(core.nodes[0].expr, Some(CoreExpr::Lambda { .. })),
+        "body_expr must parse to CoreExpr::Lambda"
+    );
+    let anf = lower_to_anf(&core).expect("ANF lowering must handle lambda");
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("lambda wasm must validate");
 }

@@ -292,6 +292,142 @@ impl Parser<'_> {
                     right: Box::new(right),
                 })
             }
+            // ── Control flow ─────────────────────────────────────────────
+            //
+            // `loop(body)` — infinite loop; exits via `break(value)`.
+            "loop" => {
+                let [body] = expect_arity::<1>(func, args)?;
+                Ok(CoreExpr::Loop {
+                    body: Box::new(body),
+                    termination: None,
+                })
+            }
+            // `while(cond, body)` — structured while loop.
+            "while" => {
+                let [cond, body] = expect_arity::<2>(func, args)?;
+                Ok(CoreExpr::WhileLoop {
+                    cond: Box::new(cond),
+                    body: Box::new(body),
+                    termination: None,
+                })
+            }
+            // `break(value)` — exit the nearest enclosing loop.
+            "break" => {
+                let [value] = expect_arity::<1>(func, args)?;
+                Ok(CoreExpr::Break {
+                    value: Box::new(value),
+                })
+            }
+            // `continue()` — restart the nearest enclosing loop.
+            "continue" => {
+                if !args.is_empty() {
+                    return Err(ParseError::new(format!(
+                        "continue expects 0 args, got {}",
+                        args.len()
+                    )));
+                }
+                Ok(CoreExpr::Continue)
+            }
+            // `return(value)` — explicit early return.
+            "return" => {
+                let [value] = expect_arity::<1>(func, args)?;
+                Ok(CoreExpr::Return {
+                    value: Box::new(value),
+                })
+            }
+            // ── Effects ──────────────────────────────────────────────────
+            //
+            // `effect_call(capability, operation, arg1, arg2, ...)`
+            //
+            // `capability` and `operation` must be identifiers.
+            // Remaining args are the call arguments.
+            "effect_call" => {
+                if args.len() < 2 {
+                    return Err(ParseError::new(format!(
+                        "effect_call expects at least 2 args (capability, operation), got {}",
+                        args.len()
+                    )));
+                }
+                let mut args = args.into_iter();
+                let capability = expect_name("capability name", args.next().expect("len checked"))?;
+                let op = expect_name("operation name", args.next().expect("len checked"))?;
+                let call_args: Vec<CoreExpr> = args.collect();
+                Ok(CoreExpr::EffectCall {
+                    capability,
+                    func: op,
+                    args: call_args,
+                })
+            }
+            // ── Lambda ───────────────────────────────────────────────────
+            //
+            // `lambda(param1, param2, ..., body)` — anonymous function.
+            //
+            // Convention: all but the last argument are parameter names
+            // (must be identifiers); the last argument is the body expression.
+            // `lambda(body)` creates a zero-parameter lambda.
+            "lambda" => {
+                if args.is_empty() {
+                    return Err(ParseError::new(
+                        "lambda expects at least 1 arg (body expression)",
+                    ));
+                }
+                let mut all = args;
+                let body = all.pop().expect("len checked above");
+                let mut params = Vec::with_capacity(all.len());
+                for param_expr in all {
+                    params.push(expect_name("lambda parameter", param_expr)?);
+                }
+                Ok(CoreExpr::Lambda {
+                    params,
+                    body: Box::new(body),
+                })
+            }
+            // ── Collection iteration ─────────────────────────────────────
+            //
+            // `foreach(binding, collection, body)` — structured iteration.
+            // Parses correctly; WASM emit is a stub (trap) pending lowering.
+            "foreach" => {
+                let [binding, collection, body] = expect_arity::<3>(func, args)?;
+                Ok(CoreExpr::ForEach {
+                    binding: expect_name("foreach binding", binding)?,
+                    collection: Box::new(collection),
+                    body: Box::new(body),
+                })
+            }
+            // `fold(init, list, func)` — left fold over a collection.
+            // Parses correctly; WASM emit is a stub (trap) pending lowering.
+            "fold" => {
+                let [init, list, f] = expect_arity::<3>(func, args)?;
+                Ok(CoreExpr::Fold {
+                    init: Box::new(init),
+                    list: Box::new(list),
+                    func: Box::new(f),
+                })
+            }
+            // ── Mutable cells ────────────────────────────────────────────
+            //
+            // `cell_new(init)` — create a mutable cell.
+            "cell_new" => {
+                let [init] = expect_arity::<1>(func, args)?;
+                Ok(CoreExpr::CellNew {
+                    init: Box::new(init),
+                })
+            }
+            // `cell_get(cell)` — read the current value of a cell.
+            "cell_get" => {
+                let [cell] = expect_arity::<1>(func, args)?;
+                Ok(CoreExpr::CellGet {
+                    cell: Box::new(cell),
+                })
+            }
+            // `cell_set(cell, value)` — write a new value into a cell.
+            "cell_set" => {
+                let [cell, value] = expect_arity::<2>(func, args)?;
+                Ok(CoreExpr::CellSet {
+                    cell: Box::new(cell),
+                    value: Box::new(value),
+                })
+            }
             _ => Ok(CoreExpr::Call { func, args }),
         }
     }
@@ -799,6 +935,188 @@ mod tests {
                         body: CoreExpr::Literal(LiteralValue::Int(-1)),
                     },
                 ],
+            }
+        );
+    }
+
+    // ── Control flow forms ───────────────────────────────────────────────
+
+    #[test]
+    fn parses_loop_break_continue() {
+        assert_eq!(
+            parse_expr("loop(break(42))").unwrap(),
+            CoreExpr::Loop {
+                body: Box::new(CoreExpr::Break {
+                    value: Box::new(CoreExpr::Literal(LiteralValue::Int(42))),
+                }),
+                termination: None,
+            }
+        );
+        assert_eq!(
+            parse_expr("loop(continue())").unwrap(),
+            CoreExpr::Loop {
+                body: Box::new(CoreExpr::Continue),
+                termination: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_while_loop() {
+        assert_eq!(
+            parse_expr("while(flag, break(0))").unwrap(),
+            CoreExpr::WhileLoop {
+                cond: Box::new(CoreExpr::Var("flag".to_string())),
+                body: Box::new(CoreExpr::Break {
+                    value: Box::new(CoreExpr::Literal(LiteralValue::Int(0))),
+                }),
+                termination: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_return_expression() {
+        assert_eq!(
+            parse_expr("return(x)").unwrap(),
+            CoreExpr::Return {
+                value: Box::new(CoreExpr::Var("x".to_string())),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_continue_with_arguments() {
+        let err = parse_expr("continue(1)").unwrap_err();
+        assert_eq!(err.message, "continue expects 0 args, got 1");
+    }
+
+    // ── Effect and lambda forms ──────────────────────────────────────────
+
+    #[test]
+    fn parses_effect_call() {
+        assert_eq!(
+            parse_expr("effect_call(database.read, Cart, cartId)").unwrap(),
+            CoreExpr::EffectCall {
+                capability: "database.read".to_string(),
+                func: "Cart".to_string(),
+                args: vec![CoreExpr::Var("cartId".to_string())],
+            }
+        );
+        // No-arg effect call
+        assert_eq!(
+            parse_expr("effect_call(clock, now)").unwrap(),
+            CoreExpr::EffectCall {
+                capability: "clock".to_string(),
+                func: "now".to_string(),
+                args: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_effect_call_without_enough_args() {
+        let err = parse_expr("effect_call(clock)").unwrap_err();
+        assert!(
+            err.message.contains("at least 2 args"),
+            "expected 'at least 2 args' error, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn parses_lambda_expressions() {
+        // Zero-param lambda
+        assert_eq!(
+            parse_expr("lambda(42)").unwrap(),
+            CoreExpr::Lambda {
+                params: vec![],
+                body: Box::new(CoreExpr::Literal(LiteralValue::Int(42))),
+            }
+        );
+        // Single-param lambda
+        assert_eq!(
+            parse_expr("lambda(x, add(x, 1))").unwrap(),
+            CoreExpr::Lambda {
+                params: vec!["x".to_string()],
+                body: Box::new(CoreExpr::Add(
+                    Box::new(CoreExpr::Var("x".to_string())),
+                    Box::new(CoreExpr::Literal(LiteralValue::Int(1)))
+                )),
+            }
+        );
+        // Multi-param lambda
+        assert_eq!(
+            parse_expr("lambda(x, y, add(x, y))").unwrap(),
+            CoreExpr::Lambda {
+                params: vec!["x".to_string(), "y".to_string()],
+                body: Box::new(CoreExpr::Add(
+                    Box::new(CoreExpr::Var("x".to_string())),
+                    Box::new(CoreExpr::Var("y".to_string()))
+                )),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_lambda_with_no_arguments() {
+        let err = parse_expr("lambda()").unwrap_err();
+        assert!(
+            err.message.contains("at least 1 arg"),
+            "expected 'at least 1 arg' error, got: {}",
+            err.message
+        );
+    }
+
+    // ── Collection and cell forms ────────────────────────────────────────
+
+    #[test]
+    fn parses_foreach_and_fold() {
+        assert_eq!(
+            parse_expr("foreach(item, items, add(acc, item))").unwrap(),
+            CoreExpr::ForEach {
+                binding: "item".to_string(),
+                collection: Box::new(CoreExpr::Var("items".to_string())),
+                body: Box::new(CoreExpr::Add(
+                    Box::new(CoreExpr::Var("acc".to_string())),
+                    Box::new(CoreExpr::Var("item".to_string()))
+                )),
+            }
+        );
+        assert_eq!(
+            parse_expr("fold(0, items, add_item)").unwrap(),
+            CoreExpr::Fold {
+                init: Box::new(CoreExpr::Literal(LiteralValue::Int(0))),
+                list: Box::new(CoreExpr::Var("items".to_string())),
+                func: Box::new(CoreExpr::Var("add_item".to_string())),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_cell_operations() {
+        assert_eq!(
+            parse_expr("cell_new(0)").unwrap(),
+            CoreExpr::CellNew {
+                init: Box::new(CoreExpr::Literal(LiteralValue::Int(0))),
+            }
+        );
+        assert_eq!(
+            parse_expr("cell_get(counter)").unwrap(),
+            CoreExpr::CellGet {
+                cell: Box::new(CoreExpr::Var("counter".to_string())),
+            }
+        );
+        assert_eq!(
+            parse_expr("cell_set(counter, add(cell_get(counter), 1))").unwrap(),
+            CoreExpr::CellSet {
+                cell: Box::new(CoreExpr::Var("counter".to_string())),
+                value: Box::new(CoreExpr::Add(
+                    Box::new(CoreExpr::CellGet {
+                        cell: Box::new(CoreExpr::Var("counter".to_string()))
+                    }),
+                    Box::new(CoreExpr::Literal(LiteralValue::Int(1)))
+                )),
             }
         );
     }
