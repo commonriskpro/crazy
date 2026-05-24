@@ -1095,6 +1095,85 @@ fn inspect_invalid_format_exits_one() {
         .code(1);
 }
 
+/// Feature-F: inspect report --json returns real Checker-derived status.
+///   GIVEN no stored reports (memory store fallback to default graph)
+///   WHEN `ail inspect report ver_123 --json` runs
+///   THEN exit 0; data.status is a real VerificationState (NOT "accepted")
+///   NOTE: old stub returned "accepted" unconditionally — this FAILS with the stub.
+#[test]
+fn inspect_report_json_has_real_status_not_accepted() {
+    let output = ail()
+        .args(["--json", "inspect", "report", "ver_123"])
+        .output()
+        .expect("ail must run");
+    assert!(
+        output.status.success(),
+        "inspect report must succeed; stderr: {}",
+        std::str::from_utf8(&output.stderr).unwrap_or("(non-utf8)")
+    );
+    let v = parse_json_output(&output);
+    let status = v["data"]["status"].as_str().unwrap_or("");
+    assert_ne!(
+        status, "accepted",
+        "inspect report status must be a real VerificationState, not the stub 'accepted'; got: {v}"
+    );
+    assert!(
+        !status.is_empty(),
+        "inspect report status must not be empty; got: {v}"
+    );
+}
+
+/// Feature-F: inspect artifact --json returns real non-null hash.
+///   GIVEN a compilable default graph
+///   WHEN `ail inspect artifact program.wasm --json` runs
+///   THEN exit 0; data.hash is a non-null string (real WASM hash)
+///   NOTE: old stub returned hash:null — this FAILS with the stub.
+#[test]
+fn inspect_artifact_json_has_non_null_hash() {
+    let output = ail()
+        .args(["--json", "inspect", "artifact", "program.wasm"])
+        .output()
+        .expect("ail must run");
+    assert!(
+        output.status.success(),
+        "inspect artifact must succeed; stderr: {}",
+        std::str::from_utf8(&output.stderr).unwrap_or("(non-utf8)")
+    );
+    let v = parse_json_output(&output);
+    assert!(
+        !v["data"]["hash"].is_null(),
+        "inspect artifact hash must be non-null (real WASM hash); got: {v}"
+    );
+    let hash_str = v["data"]["hash"].as_str().unwrap_or("");
+    assert_eq!(
+        hash_str.len(),
+        64,
+        "inspect artifact hash must be a 64-char hex string; got: {hash_str}"
+    );
+    assert!(
+        v["data"]["semantic_source_map"].is_object(),
+        "inspect artifact must expose computed source-map metadata; got: {v}"
+    );
+    assert!(
+        v["data"]["capabilities_manifest"]["entries"].is_array(),
+        "inspect artifact capabilities_manifest must use entries schema; got: {v}"
+    );
+}
+
+/// Feature-F: inspect capability exits 1 for unknown capability.
+///   GIVEN a capability name not in any registered package
+///   WHEN `ail inspect capability unknown.cap` runs
+///   THEN exit 1 with NotFound
+///   NOTE: old stub returned exit 0 unconditionally — this FAILS with the stub.
+#[test]
+fn inspect_capability_unknown_exits_one() {
+    ail()
+        .args(["inspect", "capability", "unknown.capability.xyz"])
+        .assert()
+        .failure()
+        .code(1);
+}
+
 /// Spec scenario: diff with missing snapshot exits 1.
 ///   GIVEN snapshot <a> not in store
 ///   WHEN `ail diff <a>..<b>` runs (range notation)
@@ -2308,12 +2387,26 @@ fn inspect_artifact_returns_artifact_metadata() {
         v["data"]["name"].is_string(),
         "name must be string; got: {v}"
     );
+    assert!(
+        v["data"]["semantic_source_map"].is_object(),
+        "semantic_source_map must be object; got: {v}"
+    );
+    assert_eq!(
+        v["data"]["capabilities_manifest_source"], "not_available_for_wasm",
+        "WASM inspect should explicitly label capability manifest availability; got: {v}"
+    );
 }
 
 /// SC-INS4: inspect capability returns provider/granted/assumptions.
+/// Feature-F update: inspect capability for an unregistered capability exits 1.
+///
+/// The old stub returned exit 0 unconditionally. The real implementation
+/// queries the package registry and returns NotFound when no registered package
+/// exports the requested capability.
+/// `payment.charge:PaymentProvider` is not in the default (no-file-store) registry.
 #[test]
 fn inspect_capability_returns_capability_metadata() {
-    let output = ail()
+    ail()
         .args([
             "inspect",
             "capability",
@@ -2321,25 +2414,9 @@ fn inspect_capability_returns_capability_metadata() {
             "--json",
         ])
         .assert()
-        .success()
-        .get_output()
-        .clone();
-
-    let v = parse_json_output(&output);
-    assert_eq!(v["status"], "ok");
-    assert_eq!(v["data"]["type"], "capability");
-    assert!(
-        v["data"]["provider"].is_string(),
-        "provider must be string; got: {v}"
-    );
-    assert!(
-        v["data"]["granted"].is_boolean(),
-        "granted must be boolean; got: {v}"
-    );
-    assert!(
-        v["data"]["assumptions"].is_array(),
-        "assumptions must be array; got: {v}"
-    );
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("not found"));
 }
 
 // ── G31 R2: diff semantic ─────────────────────────────────────────────────
