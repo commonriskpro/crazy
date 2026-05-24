@@ -5,14 +5,20 @@
 ///
 /// # Module overview
 ///
-/// - [`error`]   — [`ContextError`](error::ContextError) enum and [`ContextResult`](error::ContextResult) alias.
-/// - [`dto`]     — Query/response/selector DTOs.
-/// - [`source`]  — [`ContextSource`](source::ContextSource) trait and adapters.
-/// - [`builder`] — [`ResponseBuilder`](builder::ResponseBuilder) for bounded slices.
-/// - [`summary`] — Deterministic summary renderer.
+/// - [`error`]     — [`ContextError`](error::ContextError) enum and [`ContextResult`](error::ContextResult) alias.
+/// - [`dto`]       — Query/response/selector DTOs.
+/// - [`source`]    — [`ContextSource`](source::ContextSource) trait and adapters.
+/// - [`builder`]   — [`ResponseBuilder`](builder::ResponseBuilder) for bounded slices.
+/// - [`selection`] — Candidate collection and query-specific info helpers.
+/// - [`redaction`] — Redaction filtering and access-shaping.
+/// - [`freshness`] — Freshness detection and repair-option construction.
+/// - [`summary`]   — Deterministic summary renderer.
 pub mod builder;
 pub mod dto;
 pub mod error;
+pub(crate) mod freshness;
+pub(crate) mod redaction;
+pub(crate) mod selection;
 pub mod server;
 pub mod source;
 pub mod summary;
