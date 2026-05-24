@@ -40,6 +40,8 @@ mod native_codegen;
 mod native_types;
 pub mod optimize;
 pub mod wasm;
+mod wasm_abi;
+mod wasm_artifact;
 
 #[cfg(test)]
 mod spike_v03;
