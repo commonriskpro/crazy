@@ -1,4 +1,5 @@
 use super::*;
+use crate::diagnostic_commands::{doctor_index_freshness, doctor_schema_compatibility};
 use crate::package_commands::package_manifest_for_current_graph;
 use crate::package_registry_io::save_package_registry;
 use ail_package::PackageRegistry;
