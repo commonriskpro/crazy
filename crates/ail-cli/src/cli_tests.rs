@@ -1437,6 +1437,19 @@ async fn cmd_inspect_artifact_prefers_persisted_native_over_on_demand() {
         .await
         .expect("native compile must succeed");
 
+    // Prove the persisted native branch is taken: load_native_artifact must return Some.
+    // This is the exact condition cmd_inspect uses to choose the persisted_native_artifact
+    // branch over on-demand compilation.
+    let persisted = store
+        .load_native_artifact("dev.o")
+        .expect("load_native_artifact must not error")
+        .expect("load_native_artifact must return Some after compile --target native");
+    assert_eq!(
+        persisted.target, "native",
+        "persisted artifact target must be \"native\"; got: {:?}",
+        persisted.target
+    );
+
     // Inspect — load_wasm_artifact returns None, load_native_artifact matches "dev".
     let result = cmd_inspect(OutputMode::Human, "artifact", "dev.o", &store).await;
     assert!(

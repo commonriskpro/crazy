@@ -428,6 +428,7 @@ impl StoreHandle {
         if let Some(existing) = entries.iter_mut().find(|e| e.hash == hash) {
             existing.stored_at = stored_at;
             existing.profile = profile.to_string();
+            existing.target = target.to_string();
         } else {
             entries.push(WasmArtifactIndexEntry {
                 hash: hash.to_string(),
@@ -491,6 +492,7 @@ impl StoreHandle {
         if let Some(existing) = entries.iter_mut().find(|e| e.hash == hash) {
             existing.stored_at = stored_at;
             existing.profile = profile.to_string();
+            existing.target = target.to_string();
         } else {
             entries.push(NativeArtifactIndexEntry {
                 hash: hash.to_string(),
