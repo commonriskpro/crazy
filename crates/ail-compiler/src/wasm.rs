@@ -54,120 +54,19 @@ use wasm_encoder::{
 
 use crate::anf::{AnfExpr, AnfIr, SourceMap, SourceMapEntry};
 use crate::artifact_manifest::ArtifactManifest;
-use crate::core_ir::{LiteralValue, StageHashes};
+use crate::core_ir::LiteralValue;
 use crate::error::CompileError;
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
+// Public re-exports: maintain the pre-existing surface of `ail_compiler::wasm`.
+// These also bring the names into scope within this module.
+pub use crate::wasm_abi::{WasmScalarType, WasmTypeDescriptor, derive_wasm_type};
+pub use crate::wasm_artifact::WasmArtifact;
 
-// ── WasmTypeDescriptor ───────────────────────────────────────────────────
-
-/// Scalar WASM primitive types used in the type descriptor.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum WasmScalarType {
-    I64,
-    F64,
-    I32,
-}
-
-/// Describes the return type of an exported WASM function for use by the
-/// runtime decoder when reconstructing a `StructuredValue` from linear memory.
-///
-/// Populated by `emit_wasm` into `WasmArtifact::export_types`.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum WasmTypeDescriptor {
-    Scalar(WasmScalarType),
-    Record {
-        fields: Vec<String>,
-    },
-    Variant {
-        tags: Vec<String>,
-    },
-    Tuple(Vec<WasmTypeDescriptor>),
-    List(Box<WasmTypeDescriptor>),
-    Option(Box<WasmTypeDescriptor>),
-    Result {
-        ok: Box<WasmTypeDescriptor>,
-        err: Box<WasmTypeDescriptor>,
-    },
-    Handle,
-}
-
-/// Derive the `WasmTypeDescriptor` for an `AnfExpr` by recursively inspecting
-/// the expression tree.  Used to populate `WasmArtifact::export_types`.
-pub fn derive_wasm_type(expr: &AnfExpr) -> WasmTypeDescriptor {
-    match expr {
-        AnfExpr::RecordNew { fields } => WasmTypeDescriptor::Record {
-            fields: fields.iter().map(|(f, _)| f.clone()).collect(),
-        },
-        AnfExpr::VariantNew { tag, .. } => WasmTypeDescriptor::Variant {
-            tags: vec![tag.clone()],
-        },
-        AnfExpr::TupleNew(elems) => {
-            WasmTypeDescriptor::Tuple(elems.iter().map(derive_wasm_type).collect())
-        }
-        AnfExpr::ListNew(_) => {
-            WasmTypeDescriptor::List(Box::new(WasmTypeDescriptor::Scalar(WasmScalarType::I64)))
-        }
-        AnfExpr::Let { body, .. } => derive_wasm_type(body),
-        AnfExpr::Literal(LiteralValue::Float(_)) => WasmTypeDescriptor::Scalar(WasmScalarType::F64),
-        AnfExpr::Literal(LiteralValue::Unit) => WasmTypeDescriptor::Scalar(WasmScalarType::I32),
-        _ => WasmTypeDescriptor::Scalar(WasmScalarType::I64),
-    }
-}
-
-// ── WasmArtifact ─────────────────────────────────────────────────────────
-
-/// Output of the third pipeline stage: a valid WASM binary with provenance
-/// and a fully sealed hash chain.
-///
-/// In Phase 7, every function body is a `[unreachable, end]` stub.
-/// Expression lowering is deferred to Phase 8.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WasmArtifact {
-    /// Encoded WASM binary; passes `wasmparser::validate` structural checks.
-    pub wasm: Vec<u8>,
-    /// Semantic source map with `wasm_offset` populated for every binding.
-    ///
-    /// One entry per `AnfBinding` in binding order.  `native_offset` is always
-    /// `None` in WASM artifacts (populated only by `emit_native`).
-    pub source_map: SourceMap,
-    /// Maps each `NodeRef` from the source graph to its byte offset in the
-    /// WASM code section (i.e., the position of the body-size LEB128 byte
-    /// for that function's entry in the encoded binary).
-    /// Kept as a derived compatibility index; prefer `source_map` for new code.
-    /// Empty when the input `AnfIr` has no bindings.
-    pub provenance: BTreeMap<NodeRef, u32>,
-    /// Hash chain extended through the WASM stage.
-    /// `hash_chain.wasm_hash` is `Some(...)` after `emit_wasm` completes.
-    /// `hash_chain.source_map_hash` is `Some(...)` after `emit_wasm` completes.
-    /// `hash_chain.artifact_manifest_hash` is `Some(...)` after `emit_wasm`.
-    pub hash_chain: StageHashes,
-    /// Profile-bound artifact manifest for this WASM artifact.
-    ///
-    /// Can be serialized as `program.artifact.json` by callers.
-    /// Includes the full hash chain and compiler version.
-    pub artifact_manifest: ArtifactManifest,
-    /// JSON-serialized `SourceMap` — content for `program.source_map.json`.
-    ///
-    /// Callers write this to disk as the source-map sidecar for debugging,
-    /// profiling, and runtime error mapping.
-    pub source_map_json: Vec<u8>,
-    /// JSON-serialized `ArtifactManifest` — content for `program.artifact.json`.
-    ///
-    /// Callers write this to disk as the artifact metadata sidecar.
-    pub artifact_manifest_json: Vec<u8>,
-    /// Maps each exported function name to its `WasmTypeDescriptor`.
-    ///
-    /// Populated by `emit_wasm` from the expression trees of exported bindings.
-    /// Used by the runtime's `invoke_typed` to decode structured return values.
-    pub export_types: BTreeMap<String, WasmTypeDescriptor>,
-    /// Offset in WASM linear memory where `host_call_write` writes structured
-    /// effect call results.
-    ///
-    /// `Some(offset)` when the module imports `ail/host_call_write` (i.e. at
-    /// least one exported binding uses a structured EffectCall).
-    /// `None` for modules that do not use `host_call_write`.
-    pub result_buffer_offset: Option<i32>,
-}
+use crate::wasm_abi::{
+    EffectDataLayout, RESULT_BUFFER_MAX, WasmSignature, binding_params, binding_result,
+    binding_signatures, export_name, infer_expr_type, record_layout_fields, well_known_variant_tag,
+};
+use crate::wasm_artifact::code_entry_offsets;
 
 // ── build_type_section ────────────────────────────────────────────────────
 
@@ -233,113 +132,11 @@ fn build_type_section_with_host_call(
     types
 }
 
-fn literal_type(lit: &LiteralValue) -> ValType {
-    match lit {
-        LiteralValue::Int(_) | LiteralValue::Bool(_) | LiteralValue::Text(_) => ValType::I64,
-        LiteralValue::Unit => ValType::I32,
-        LiteralValue::Float(_) => ValType::F64,
-    }
-}
-
-fn infer_expr_type(expr: &AnfExpr, locals: &mut Vec<(String, ValType)>) -> Option<ValType> {
-    match expr {
-        AnfExpr::Literal(lit) => Some(literal_type(lit)),
-        AnfExpr::Var(name) => locals
-            .iter()
-            .rev()
-            .find(|(n, _)| n == name)
-            .map(|(_, ty)| *ty),
-        AnfExpr::Let { name, value, body } => {
-            let value_ty = infer_expr_type(value, locals).unwrap_or(ValType::I32);
-            locals.push((name.clone(), value_ty));
-            let body_ty = infer_expr_type(body, locals);
-            locals.pop();
-            body_ty
-        }
-        AnfExpr::If {
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            let then_ty = infer_expr_type(then_branch, locals);
-            let else_ty = infer_expr_type(else_branch, locals);
-            if then_ty == else_ty { then_ty } else { None }
-        }
-        AnfExpr::Match { arms, .. } => {
-            let first_ty = arms
-                .first()
-                .and_then(|arm| infer_expr_type(&arm.body, locals));
-            if arms
-                .iter()
-                .all(|arm| infer_expr_type(&arm.body, locals) == first_ty)
-            {
-                first_ty
-            } else {
-                None
-            }
-        }
-        AnfExpr::Return(inner) => infer_expr_type(inner, locals),
-        AnfExpr::ShortCircuitAnd { .. } | AnfExpr::ShortCircuitOr { .. } => Some(ValType::I64),
-        AnfExpr::Loop { body } => infer_expr_type(body, locals),
-        AnfExpr::Break { value } => infer_expr_type(value, locals),
-        AnfExpr::Continue | AnfExpr::WhileLoop { .. } => None,
-        AnfExpr::RecordNew { .. }
-        | AnfExpr::TupleNew(_)
-        | AnfExpr::VariantNew { .. }
-        | AnfExpr::ListNew(_)
-        | AnfExpr::Lambda { .. }
-        | AnfExpr::Seq(_) => Some(ValType::I32),
-        AnfExpr::FieldGet { .. } | AnfExpr::Call { .. } => Some(ValType::I64),
-        AnfExpr::EffectCall { .. } => Some(ValType::I64),
-        AnfExpr::Placeholder
-        | AnfExpr::Dispatch { .. }
-        | AnfExpr::TaskSpawn { .. }
-        | AnfExpr::TaskAwait { .. }
-        | AnfExpr::TaskCancel { .. }
-        | AnfExpr::TaskGroup { .. }
-        | AnfExpr::ChannelNew { .. }
-        | AnfExpr::ChannelSend { .. }
-        | AnfExpr::ChannelReceive { .. }
-        | AnfExpr::Select { .. }
-        | AnfExpr::Timeout { .. }
-        | AnfExpr::CellNew { .. }
-        | AnfExpr::CellGet { .. }
-        | AnfExpr::CellSet { .. }
-        | AnfExpr::RuntimeCheck { .. }
-        | AnfExpr::ResourceAcquire { .. }
-        | AnfExpr::ResourceRelease { .. }
-        // ola5 Gap 2 — new primitives
-        | AnfExpr::Assume { .. }
-        | AnfExpr::Abort { .. }
-        | AnfExpr::ForEach { .. }
-        | AnfExpr::Fold { .. } => None,
-        AnfExpr::MapNew { .. }
-        | AnfExpr::SetNew { .. }
-        | AnfExpr::IndexGet { .. } => Some(ValType::I64),
-        AnfExpr::FieldUpdate { value, .. } => infer_expr_type(value, locals).or(Some(ValType::I32)),
-    }
-}
-
 // ── build_function_section ────────────────────────────────────────────────
 
 /// Build a function section referencing type index 0 for every function.
 ///
 /// Returns `None` when `n_functions == 0`.
-fn binding_result(binding: &crate::anf::AnfBinding) -> Option<ValType> {
-    let mut locals = binding_params(binding)
-        .into_iter()
-        .map(|name| (name.to_string(), ValType::I64))
-        .collect();
-    infer_expr_type(&binding.expr, &mut locals)
-        .filter(|ty| matches!(ty, ValType::I64 | ValType::I32))
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct WasmSignature {
-    param_count: usize,
-    result: Option<ValType>,
-}
-
 fn build_function_section(
     signatures: &[WasmSignature],
     type_offset: u32,
@@ -352,20 +149,6 @@ fn build_function_section(
         functions.function(type_offset + type_idx as u32);
     }
     Some(functions)
-}
-
-fn export_name(binding_name: &str) -> String {
-    let local = binding_name.rsplit('.').next().unwrap_or(binding_name);
-    local
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 fn build_export_section(
@@ -414,101 +197,6 @@ fn function_index(
         functions.insert(export_name(&binding.name), function_offset + idx as u32);
     }
     functions
-}
-
-fn collect_free_vars<'a>(expr: &'a AnfExpr, bound: &mut Vec<&'a str>, out: &mut Vec<&'a str>) {
-    match expr {
-        AnfExpr::Var(name)
-            if !bound.iter().rev().any(|bound_name| *bound_name == name)
-                && !out.iter().any(|existing| *existing == name) =>
-        {
-            out.push(name);
-        }
-        AnfExpr::Let { name, value, body } => {
-            collect_free_vars(value, bound, out);
-            bound.push(name);
-            collect_free_vars(body, bound, out);
-            bound.pop();
-        }
-        AnfExpr::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => {
-            if !bound.iter().rev().any(|bound_name| *bound_name == cond)
-                && !out.iter().any(|existing| *existing == cond)
-            {
-                out.push(cond);
-            }
-            collect_free_vars(then_branch, bound, out);
-            collect_free_vars(else_branch, bound, out);
-        }
-        AnfExpr::Call { args, .. } => {
-            for arg in args {
-                if !bound.iter().rev().any(|bound_name| *bound_name == arg)
-                    && !out.iter().any(|existing| *existing == arg)
-                {
-                    out.push(arg);
-                }
-            }
-        }
-        AnfExpr::Return(inner)
-        | AnfExpr::ShortCircuitAnd { right: inner, .. }
-        | AnfExpr::ShortCircuitOr { right: inner, .. }
-        | AnfExpr::Loop { body: inner }
-        | AnfExpr::Break { value: inner }
-        | AnfExpr::FieldUpdate { value: inner, .. } => collect_free_vars(inner, bound, out),
-        AnfExpr::WhileLoop { cond, body } => {
-            if !bound.iter().rev().any(|bound_name| *bound_name == cond)
-                && !out.iter().any(|existing| *existing == cond)
-            {
-                out.push(cond);
-            }
-            collect_free_vars(body, bound, out);
-        }
-        AnfExpr::Seq(exprs) | AnfExpr::TupleNew(exprs) | AnfExpr::ListNew(exprs) => {
-            for expr in exprs {
-                collect_free_vars(expr, bound, out);
-            }
-        }
-        AnfExpr::Match { arms, .. } => {
-            for arm in arms {
-                collect_free_vars(&arm.body, bound, out);
-            }
-        }
-        AnfExpr::Lambda { params, body } => {
-            let original_len = bound.len();
-            bound.extend(params.iter().map(String::as_str));
-            collect_free_vars(body, bound, out);
-            bound.truncate(original_len);
-        }
-        AnfExpr::RecordNew { fields } => {
-            for (_, expr) in fields {
-                collect_free_vars(expr, bound, out);
-            }
-        }
-        AnfExpr::VariantNew {
-            payload: Some(payload),
-            ..
-        } => collect_free_vars(payload, bound, out),
-        _ => {}
-    }
-}
-
-fn binding_params(binding: &crate::anf::AnfBinding) -> Vec<&str> {
-    let mut params = Vec::new();
-    collect_free_vars(&binding.expr, &mut Vec::new(), &mut params);
-    params
-}
-
-fn binding_signatures(bindings: &[crate::anf::AnfBinding]) -> Vec<WasmSignature> {
-    bindings
-        .iter()
-        .map(|binding| WasmSignature {
-            param_count: binding_params(binding).len(),
-            result: binding_result(binding),
-        })
-        .collect()
 }
 
 // ── WasmCodegenCtx ────────────────────────────────────────────────────────
@@ -625,198 +313,6 @@ impl<'a> WasmCodegenCtx<'a> {
             .rposition(|label| *label == target)
             .map(|idx| (self.labels.len() - 1 - idx) as u32)
     }
-}
-
-fn well_known_variant_tag(tag: &str) -> Option<u32> {
-    match tag {
-        "None" | "Ok" => Some(0),
-        "Some" | "Err" => Some(1),
-        _ => None,
-    }
-}
-
-fn record_layout_fields(expr: &AnfExpr) -> Option<Vec<String>> {
-    match expr {
-        AnfExpr::RecordNew { fields } => {
-            Some(fields.iter().map(|(field, _)| field.clone()).collect())
-        }
-        AnfExpr::Let { body, .. } => record_layout_fields(body),
-        _ => None,
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct EffectDataLayout {
-    strings: BTreeMap<String, (i32, i32)>,
-    next_offset: i32,
-    args_offset: i32,
-    /// Offset of the structured result buffer in WASM linear memory.
-    /// Set when `needs_host_call_write` is true; placed after the args area.
-    result_buffer_offset: i32,
-    needs_host_call: bool,
-    /// True when at least one EffectCall in a binding has a structured return type
-    /// (Record, Variant, List, Option, or Result). Causes `ail/host_call_write`
-    /// to be imported and used in place of `ail/host_call` for those calls.
-    needs_host_call_write: bool,
-    needs_memory: bool,
-}
-
-impl EffectDataLayout {
-    fn for_bindings(bindings: &[crate::anf::AnfBinding]) -> Self {
-        let mut layout = Self::default();
-        for binding in bindings {
-            layout.collect_expr(&binding.expr);
-        }
-        if layout.needs_host_call {
-            layout.args_offset = layout.next_offset.max(1);
-        }
-        // Detect structured EffectCall: any binding that both (a) contains an
-        // EffectCall and (b) has a structured return type needs host_call_write.
-        if layout.needs_host_call {
-            for binding in bindings {
-                if has_effect_call(&binding.expr)
-                    && is_structured_descriptor(&derive_wasm_type(&binding.expr))
-                {
-                    layout.needs_host_call_write = true;
-                    break;
-                }
-            }
-        }
-        if layout.needs_host_call_write {
-            // Reserve the result buffer after the args area.
-            layout.result_buffer_offset = layout.args_offset + MAX_ARGS_BYTES;
-        }
-        layout
-    }
-
-    fn collect_expr(&mut self, expr: &AnfExpr) {
-        match expr {
-            AnfExpr::Literal(LiteralValue::Text(s)) => {
-                self.intern(s);
-                self.needs_memory = true;
-            }
-            AnfExpr::EffectCall {
-                capability, func, ..
-            } => {
-                self.needs_host_call = true;
-                self.intern(capability);
-                self.intern(func);
-            }
-            AnfExpr::Let { value, body, .. } => {
-                self.collect_expr(value);
-                self.collect_expr(body);
-            }
-            AnfExpr::FieldGet { .. } => {
-                self.needs_memory = true;
-            }
-            AnfExpr::FieldUpdate { value, .. } => {
-                self.needs_memory = true;
-                self.collect_expr(value);
-            }
-            AnfExpr::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                self.collect_expr(then_branch);
-                self.collect_expr(else_branch);
-            }
-            AnfExpr::Return(inner)
-            | AnfExpr::ShortCircuitAnd { right: inner, .. }
-            | AnfExpr::ShortCircuitOr { right: inner, .. }
-            | AnfExpr::Loop { body: inner }
-            | AnfExpr::Break { value: inner } => self.collect_expr(inner),
-            AnfExpr::WhileLoop { body, .. } => self.collect_expr(body),
-            AnfExpr::Seq(exprs) | AnfExpr::TupleNew(exprs) | AnfExpr::ListNew(exprs) => {
-                if !matches!(expr, AnfExpr::Seq(_)) {
-                    self.needs_memory = true;
-                }
-                for expr in exprs {
-                    self.collect_expr(expr);
-                }
-            }
-            AnfExpr::Match { arms, .. } => {
-                for arm in arms {
-                    self.collect_expr(&arm.body);
-                }
-            }
-            AnfExpr::Lambda { body, .. } => self.collect_expr(body),
-            AnfExpr::RecordNew { fields } => {
-                self.needs_memory = true;
-                for (_, expr) in fields {
-                    self.collect_expr(expr);
-                }
-            }
-            AnfExpr::VariantNew { payload, .. } => {
-                self.needs_memory = true;
-                if let Some(payload) = payload {
-                    self.collect_expr(payload);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn intern(&mut self, value: &str) {
-        if self.strings.contains_key(value) {
-            return;
-        }
-        let ptr = self.next_offset;
-        let len = value.len() as i32;
-        self.strings.insert(value.to_string(), (ptr, len));
-        self.next_offset += len.max(1);
-    }
-
-    fn string(&self, value: &str) -> (i32, i32) {
-        self.strings[value]
-    }
-}
-
-/// Maximum bytes the host may write into the result buffer.
-const RESULT_BUFFER_MAX: i32 = 1024;
-
-/// Maximum args slots reserved in the args buffer (8 args × 8 bytes = 64).
-const MAX_ARGS_BYTES: i32 = 64;
-
-/// Returns true if `expr` or any sub-expression is an `EffectCall`.
-fn has_effect_call(expr: &AnfExpr) -> bool {
-    match expr {
-        AnfExpr::EffectCall { .. } => true,
-        AnfExpr::Let { value, body, .. } => has_effect_call(value) || has_effect_call(body),
-        AnfExpr::If {
-            then_branch,
-            else_branch,
-            ..
-        } => has_effect_call(then_branch) || has_effect_call(else_branch),
-        AnfExpr::Return(inner)
-        | AnfExpr::ShortCircuitAnd { right: inner, .. }
-        | AnfExpr::ShortCircuitOr { right: inner, .. }
-        | AnfExpr::Loop { body: inner }
-        | AnfExpr::Break { value: inner }
-        | AnfExpr::FieldUpdate { value: inner, .. } => has_effect_call(inner),
-        AnfExpr::WhileLoop { body, .. } => has_effect_call(body),
-        AnfExpr::Seq(exprs) | AnfExpr::TupleNew(exprs) | AnfExpr::ListNew(exprs) => {
-            exprs.iter().any(has_effect_call)
-        }
-        AnfExpr::RecordNew { fields } => fields.iter().any(|(_, e)| has_effect_call(e)),
-        AnfExpr::VariantNew { payload, .. } => payload.as_deref().is_some_and(has_effect_call),
-        AnfExpr::Match { arms, .. } => arms.iter().any(|arm| has_effect_call(&arm.body)),
-        AnfExpr::Lambda { body, .. } => has_effect_call(body),
-        _ => false,
-    }
-}
-
-/// Returns true when `desc` is a compound/structured type (not a plain scalar).
-fn is_structured_descriptor(desc: &WasmTypeDescriptor) -> bool {
-    matches!(
-        desc,
-        WasmTypeDescriptor::Record { .. }
-            | WasmTypeDescriptor::Variant { .. }
-            | WasmTypeDescriptor::Tuple(_)
-            | WasmTypeDescriptor::List(_)
-            | WasmTypeDescriptor::Option(_)
-            | WasmTypeDescriptor::Result { .. }
-    )
 }
 
 fn build_import_section(
@@ -1604,65 +1100,6 @@ fn build_code_section(
     Some(codes)
 }
 
-// ── leb128_u32 ────────────────────────────────────────────────────────────
-
-/// Decode one LEB128-encoded unsigned 32-bit integer from `bytes`.
-///
-/// Returns `(value, bytes_consumed)`.  Panics if `bytes` is empty or the
-/// encoding exceeds 5 bytes (which cannot happen for a valid WASM binary).
-fn leb128_u32(bytes: &[u8]) -> (u32, usize) {
-    let mut result = 0u32;
-    let mut shift = 0u32;
-    let mut n = 0usize;
-    for &b in bytes {
-        result |= u32::from(b & 0x7f) << shift;
-        shift += 7;
-        n += 1;
-        if b & 0x80 == 0 {
-            break;
-        }
-    }
-    (result, n)
-}
-
-// ── code_entry_offsets ────────────────────────────────────────────────────
-
-/// Scan `wasm` for the code section (section id 10) and return the absolute
-/// byte offset of each code-entry header (the LEB128-encoded body-size
-/// prefix) in function order.
-///
-/// Returns an empty `Vec` when the module contains no code section.
-fn code_entry_offsets(wasm: &[u8]) -> Vec<u32> {
-    const HEADER_LEN: usize = 8; // 4-byte magic + 4-byte version
-    let mut pos = HEADER_LEN;
-
-    while pos < wasm.len() {
-        let section_id = wasm[pos];
-        pos += 1;
-
-        let (section_size, leb_len) = leb128_u32(&wasm[pos..]);
-        let content_start = pos + leb_len;
-        pos = content_start + section_size as usize;
-
-        if section_id == 10 {
-            // Code section: content = LEB128(count) + entries
-            let (count, count_len) = leb128_u32(&wasm[content_start..]);
-            let mut entry_pos = content_start + count_len;
-            let mut offsets = Vec::with_capacity(count as usize);
-
-            for _ in 0..count {
-                offsets.push(entry_pos as u32);
-                let (entry_size, entry_size_len) = leb128_u32(&wasm[entry_pos..]);
-                entry_pos += entry_size_len + entry_size as usize;
-            }
-
-            return offsets;
-        }
-    }
-
-    Vec::new()
-}
-
 // ── emit_wasm ─────────────────────────────────────────────────────────────
 
 /// Emit a structurally valid WASM module from an `AnfIr`.
@@ -1853,6 +1290,9 @@ mod tests {
 
     use super::*;
     use crate::lower::{lower_to_anf, lower_to_core_ir};
+    // Make internal helpers visible to tests in this module.
+    use crate::core_ir::StageHashes;
+    use crate::wasm_abi::{EffectDataLayout, WasmScalarType, WasmTypeDescriptor, derive_wasm_type};
 
     fn proven_report() -> VerificationReport {
         VerificationReport {
