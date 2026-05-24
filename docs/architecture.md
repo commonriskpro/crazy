@@ -178,19 +178,22 @@ These deviations preserve the design direction while keeping implementation risk
 
 ## Crate map
 
+<!-- Dependencies reflect production [dependencies] in each crate's Cargo.toml (not dev-dependencies). -->
+<!-- For dependency direction rules see docs/codebase/contract-discipline.md. -->
+
 | Crate | Role | Key dependencies |
 |-------|------|-----------------|
 | `ail-core` | Semantic Graph IR, type system primitives, node/edge/effect/contract types | (no workspace deps) |
-| `ail-change` | AI Change Language parser, canonicalizer, apply engine, ACL format | `ail-core` |
-| `ail-compiler` | Core IR → ANF lowering, WASM emit, native emit, source maps | `ail-core`, `ail-change`, `ail-verify` |
+| `ail-change` | AI Change Language parser, canonicalizer, apply engine, ACL format | `ail-core`; optional `ail-storage` (`storage-bridge` feature) |
+| `ail-compiler` | Core IR → ANF lowering, WASM emit, native emit, source maps | `ail-core`, `ail-verify` |
 | `ail-verify` | Type checker, effect checker, proof obligations, verification reports | `ail-core`, `ail-change`, `ail-package` |
-| `ail-storage` | Object store (memory, file, Postgres), snapshot envelopes, graph store, CBOR codec | `ail-core` |
-| `ail-context` | Context Server, semantic query engine, hash-bound context slices, derived index cache | `ail-core`, `ail-storage`, `ail-change` |
+| `ail-storage` | Object store (memory, file, Postgres), snapshot envelopes, graph store, CBOR codec | (no workspace deps) |
+| `ail-context` | Context Server, semantic query engine, hash-bound context slices, derived index cache | `ail-core`, `ail-storage` |
 | `ail-runtime` | WASM host (Wasmtime), capability manifest, runtime profiles, resource limits, audit log | `ail-package` |
 | `ail-stdlib` | Standard library registry, capability definitions, built-in module metadata | `ail-core` |
-| `ail-package` | Package manifest, lockfile, trust levels, capability policy enforcer, registry client | `ail-core`, `ail-storage` |
+| `ail-package` | Package manifest, lockfile, trust levels, capability policy enforcer, registry client | `ail-core` |
 | `ail-remote` | Agent identity (Ed25519), ObjectBundle, SignedContextSlice, RemoteChangeSet; optional AES-256-GCM/Argon2id/X25519 primitives under `feature = "crypto"` | `ail-storage`, `ail-change`, `ail-context` |
 | `ail-coordinator` | Multi-agent ChangeSet serialization via `tokio::sync::Mutex`; semantic rebase; conflict classification; `verify_remote_submission` | `ail-core`, `ail-change`, `ail-remote` |
-| `ail-dogfood` | Self-referential validation: builds `SemanticGraph` and `ChangeSet` that model the toolchain's own types; projects stdlib registry to graph | `ail-core`, `ail-change`, `ail-stdlib` |
+| `ail-dogfood` | Self-referential validation: builds `SemanticGraph` and `ChangeSet` that model the toolchain's own types; projects stdlib registry to graph | `ail-core`, `ail-change`, `ail-compiler`, `ail-context`, `ail-runtime`, `ail-storage`, `ail-stdlib`, `ail-verify` |
 | `ail-testkit` | Shared test fixtures: `make_semantic_graph()`, `make_large_graph(n)`, `make_snapshot_envelope()`, `fixture!()` macro, re-exports of in-memory store types | `ail-core`, `ail-storage` |
-| `ail-cli` | `ail` binary: full CLI surface, `StoreHandle` abstraction (memory/file/Postgres), command dispatch | all crates |
+| `ail-cli` | `ail` binary: full CLI surface, `StoreHandle` abstraction (memory/file/Postgres), command dispatch | `ail-change`, `ail-compiler`, `ail-coordinator`, `ail-context`, `ail-core`, `ail-package`, `ail-remote`, `ail-runtime`, `ail-storage`, `ail-verify` |
