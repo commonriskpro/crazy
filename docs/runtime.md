@@ -293,6 +293,8 @@ Rules:
 5. Handler binding is explicit per profile/environment.
 ```
 
+Implementation note: rule 4 is target design only. The `Handler` trait (`crates/ail-runtime/src/handler.rs`) has no `trust_level()` method. The runtime currently gates capability dispatch by package trust level (from profile grants), not by a per-handler trust declaration. Per-handler trust enforcement is a data-model gap, not a currently enforced property.
+
 ### Handler execution model
 
 Handlers pueden ejecutarse:
@@ -320,6 +322,8 @@ unsafe native handler requires strong approval
 remote handler requires boundary contract
 unverified handler blocked in prod/critical unless policy exception
 ```
+
+Implementation note: handler trust-level classification and the blocking rules above are target design. The `Handler` trait does not declare a trust level; the runtime does not inspect handler trust at dispatch time. These rules apply at package-import policy gates, not at handler execution.
 
 ### Runtime checks
 
@@ -506,6 +510,8 @@ handlers receive secrets through host-controlled vault
 secret reads are audited/redacted
 ```
 
+Implementation note: "host-controlled vault" is target design. Current code (`crates/ail-runtime/src/profile.rs`) only provides a `SecretEntry`/`secrets_mapping` data model mapping logical secret IDs to vault paths. There is no vault client, no `secret.read` capability dispatch implementation, and no secret injection into handlers. Secret access through a real vault is a future milestone.
+
 ### Capability lifecycle
 
 Capabilities can be:
@@ -533,6 +539,8 @@ allow_complete
 cancel
 timeout_then_cancel
 ```
+
+Implementation note: in-flight policy is stored in `RevocationRecord.in_flight_policy` (`crates/ail-runtime/src/profile.rs`) but is not currently enforced. The host (`crates/ail-runtime/src/host.rs`) performs a boolean `is_revoked` check and returns `CapabilityDenied` for new calls only. The `allow_complete`/`cancel`/`timeout_then_cancel` semantics are target design.
 
 ### Runtime profile
 
@@ -587,6 +595,8 @@ Before running, host validates:
 7. assumptions used by profile are active/not expired
 ```
 
+Implementation note: step 7 is target design. Current `host_preflight` (`crates/ail-runtime/src/host_preflight.rs`) does not inspect assumption expiry. Expired assumptions are tracked in storage but are not enforced as a preflight gate.
+
 If not:
 
 ```txt
@@ -637,7 +647,7 @@ Runtime cannot upgrade verification state. It can only enforce and produce evide
 1. WASM has no direct world access.
 2. Every world access is a capability call.
 3. Every capability call requires grant + handler binding.
-4. Every handler declares internal effects and trust.
+4. Every handler declares internal effects and trust.  [trust declaration: target design]
 5. Runtime is deny-by-default.
 6. Runtime validates artifact hashes before execution.
 7. Runtime audits capability calls.
@@ -659,6 +669,10 @@ The current implemented runtime subset resolves the original open questions for 
 | Capability call limits | `ResourceLimits::max_capability_calls` is enforced after the grant check and before handler dispatch; denied ungranted capabilities still return `CapabilityDenied` first. |
 | WASI exposure | Hidden behind the host runtime. The workspace owns direct `wasmtime` usage in `ail-runtime`; programs interact through host calls and exported functions. |
 | Handler execution | In-process Rust `Handler` trait implementations. Verified-module handlers remain future work. |
+| Handler trust enforcement | The `Handler` trait has no `trust_level()` method. Handler trust-level rules (§Handler binding, §Handler execution model) are target design only; the runtime gates on package trust via profile grants. |
+| Startup assumption expiry (step 7) | `host_preflight` does not enforce assumption expiry. Step 7 in §Startup validation is target design. |
+| Secret vault | Only `SecretEntry`/`secrets_mapping` data model exists in `profile.rs`. No vault client, `secret.read` dispatch, or secret injection is implemented. §Security model secret rules are target design. |
+| In-flight revocation policy | `InFlightPolicy` enum variants are stored but not enforced. `revoke_capability` denies new calls only (`CapabilityDenied`). `allow_complete`/`cancel`/`timeout_then_cancel` semantics are target design. |
 | Tracing | OpenTelemetry dependencies exist; runtime audit/reporting is implemented. Full distributed tracing across capability calls remains future hardening. |
 | Sync/async calls | Current host capability calls are synchronous from the Rust API perspective. Async-native capability typing remains part of the full design, not this milestone. |
 
