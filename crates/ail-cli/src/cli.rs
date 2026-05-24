@@ -55,6 +55,7 @@ use ail_change::{
     model::{ChangeSetOutcome, ConflictReason, SnapshotId},
     parser::parse_changeset,
 };
+use ail_compiler::{emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir};
 use ail_context::{
     AuthSession, ContextQuery, ContextRequest, ContextServer, ContextServerConfig,
     DerivedIndexCache, FieldRedactionRule, InMemoryContextSource, QueryBudget, QueryScope,
@@ -65,6 +66,8 @@ use ail_core::semantic_graph::{NodeRef, Provenance, SemanticGraph};
 use ail_runtime::blake3_hex_of;
 use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::{SnapshotEnvelope, graph::ChangeSetLogEntry, object::ObjectId};
+use ail_verify::checker::Checker;
+use ail_verify::report::VerificationReport;
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
@@ -78,7 +81,7 @@ use crate::eval_commands::cmd_eval;
 use crate::graph_query_commands::{cmd_callers, cmd_effects, cmd_impact, cmd_proofs};
 use crate::output::{OutputMode, print_response};
 use crate::package_commands::cmd_package;
-use crate::package_registry_io::load_package_lockfile;
+use crate::package_registry_io::{load_package_lockfile, load_package_registry};
 use crate::policy_commands::cmd_policy;
 use crate::remote_commands::cmd_remote;
 use crate::run_commands::{cmd_compile, cmd_run};
@@ -1630,46 +1633,138 @@ async fn cmd_inspect(
             }
         }
         "report" => {
-            // Inspect verification report by id.
-            let human_msg =
-                format!("type: report\nid: {id}\nstatus: accepted\nentries: 0\ndiagnostics: 0");
+            // Derive a real VerificationReport from the current graph.
+            // Reports are computed on demand; the id is used as a reference label.
+            let graph = load_current_graph_for_cli(store).await?;
+            let report = Checker::check(&graph);
+            let summary = format!("{:?}", report.summary());
+            let entries_count = report.entries.len();
+            let diagnostics_count = report.diagnostics.len();
+            let proof_obligations_count = report.proof_obligations.len();
+            let entries_json: Vec<Value> = report
+                .entries
+                .iter()
+                .map(|e| {
+                    json!({
+                        "claim": e.claim,
+                        "state": format!("{:?}", e.state),
+                        "scope": e.scope,
+                        "blocking": e.blocking,
+                    })
+                })
+                .collect();
+            let diagnostics_json: Vec<Value> = report
+                .diagnostics
+                .iter()
+                .map(|d| serde_json::to_value(d).unwrap_or_else(|_| json!({ "code": "" })))
+                .collect();
+            let human_msg = format!(
+                "type: report\nid: {id}\nsource: derived_from_current_graph\nsummary: {summary}\nentries: {entries_count}\ndiagnostics: {diagnostics_count}"
+            );
             print_response(
                 mode,
                 &human_msg,
                 json!({
                     "type": "report",
                     "id": id,
-                    "status": "accepted",
-                    "entries": [],
-                    "diagnostics": [],
-                    "proof_obligations": [],
+                    "source": "derived_from_current_graph",
+                    "status": summary,
+                    "entries": entries_json,
+                    "diagnostics": diagnostics_json,
+                    "proof_obligations": proof_obligations_count,
                 }),
             );
         }
         "artifact" => {
-            // Inspect compiled artifact by name or path.
-            let human_msg =
-                format!("type: artifact\nname: {id}\nhash: (not yet compiled)\nprofile: unknown");
+            // Compile the current graph on demand and return real artifact metadata.
+            // The id is used as the artifact label. Source is explicitly
+            // "computed_on_demand" — no persisted artifact is claimed.
+            let graph = load_current_graph_for_cli(store).await?;
+            let empty_report = VerificationReport {
+                entries: vec![],
+                ..Default::default()
+            };
+            let core = lower_to_core_ir(&graph, &empty_report)
+                .map_err(|e| CliError::Domain(format!("inspect artifact (core-ir): {e}")))?;
+            let anf = lower_to_anf_with_graph(&core, &graph)
+                .map_err(|e| CliError::Domain(format!("inspect artifact (anf): {e}")))?;
+            let artifact = emit_wasm_with_profile(&anf, "dev")
+                .map_err(|e| CliError::Domain(format!("inspect artifact (emit): {e}")))?;
+            let wasm_hash = artifact.hash_chain.wasm_hash.map(|h| bytes_to_hex(&h));
+            let profile = artifact.artifact_manifest.profile.clone();
+            let compiler_version = artifact.artifact_manifest.compiler_version.clone();
+            let artifact_manifest_val: Value =
+                serde_json::from_slice(&artifact.artifact_manifest_json).unwrap_or(Value::Null);
+            let semantic_source_map_val: Value =
+                serde_json::from_slice(&artifact.source_map_json).unwrap_or(Value::Null);
+            let human_msg = format!(
+                "type: artifact\nname: {id}\nsource: computed_on_demand\nprofile: {profile}\nhash: {}\ncompiler: {compiler_version}",
+                wasm_hash.as_deref().unwrap_or("(none)")
+            );
             print_response(
                 mode,
                 &human_msg,
                 json!({
                     "type": "artifact",
                     "name": id,
-                    "hash": null,
-                    "profile": null,
-                    "capabilities_manifest": null,
-                    "semantic_source_map": null,
+                    "source": "computed_on_demand",
+                    "hash": wasm_hash,
+                    "profile": profile,
+                    "compiler_version": compiler_version,
+                    "capabilities_manifest": { "entries": [] },
+                    "capabilities_manifest_source": "not_available_for_wasm",
+                    "semantic_source_map": semantic_source_map_val,
+                    "artifact_manifest": artifact_manifest_val,
                 }),
             );
         }
         "capability" => {
-            // Inspect capability by name:Provider.
+            // Query the package registry for real capability/trust/assumption data.
+            // id format: "cap_name" or "cap_name:provider_filter"
+            // Returns NotFound when no registered package exports this capability.
             let parts: Vec<&str> = id.splitn(2, ':').collect();
             let cap_name = parts[0];
-            let provider = parts.get(1).copied().unwrap_or("(unknown)");
+            let provider_filter = parts.get(1).copied();
+            let registry = load_package_registry(store)?;
+            let exporters: Vec<_> = registry
+                .all()
+                .iter()
+                .filter(|m| m.exported_capabilities.iter().any(|c| c == cap_name))
+                .filter(|m| provider_filter.map(|p| m.name.contains(p)).unwrap_or(true))
+                .collect();
+            if exporters.is_empty() {
+                return Err(CliError::NotFound(format!(
+                    "capability not found: {cap_name}"
+                )));
+            }
+            let provider = exporters
+                .first()
+                .map(|m| m.name.as_str())
+                .unwrap_or("(unknown)");
+            let assumptions: Vec<Value> = exporters
+                .iter()
+                .flat_map(|m| {
+                    m.assumptions
+                        .iter()
+                        .map(|a| serde_json::to_value(a).unwrap_or_else(|_| json!({})))
+                })
+                .collect();
+            let unsafe_surface: Vec<Value> = exporters
+                .iter()
+                .flat_map(|m| {
+                    m.unsafe_surface
+                        .iter()
+                        .map(|u| serde_json::to_value(u).unwrap_or_else(|_| json!({})))
+                })
+                .collect();
+            let trust_levels: Vec<String> = exporters
+                .iter()
+                .map(|m| format!("{:?}", m.trust_level))
+                .collect();
             let human_msg = format!(
-                "type: capability\nname: {cap_name}\nprovider: {provider}\ngranted: false\nassumptions: 0"
+                "type: capability\nname: {cap_name}\nprovider: {provider}\nregistered: true\ngrant_scope: registry_export\nassumptions: {}\nunsafe_surface: {}",
+                assumptions.len(),
+                unsafe_surface.len(),
             );
             print_response(
                 mode,
@@ -1678,9 +1773,13 @@ async fn cmd_inspect(
                     "type": "capability",
                     "name": cap_name,
                     "provider": provider,
-                    "granted": false,
-                    "assumptions": [],
-                    "unsafe_surface": [],
+                    "registered": true,
+                    "exported_by_registered_package": true,
+                    "granted": true,
+                    "grant_scope": "registry_export",
+                    "trust": trust_levels,
+                    "assumptions": assumptions,
+                    "unsafe_surface": unsafe_surface,
                 }),
             );
         }
