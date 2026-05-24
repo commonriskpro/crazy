@@ -46,8 +46,16 @@ impl Parser<'_> {
             return Err(ParseError::new("expected expression"));
         }
 
-        if let Some(n) = self.parse_int()? {
-            return Ok(CoreExpr::Literal(LiteralValue::Int(n)));
+        // String literal: "..."
+        if self.peek() == Some('"') {
+            let s = self.parse_string_literal()?;
+            return Ok(CoreExpr::Literal(LiteralValue::Text(s)));
+        }
+
+        // Numeric literal: integer or float.
+        // Float check: try parsing a number with an embedded '.'.
+        if let Some(lit) = self.parse_number()? {
+            return Ok(CoreExpr::Literal(lit));
         }
 
         let ident = self.parse_ident()?;
@@ -62,6 +70,101 @@ impl Parser<'_> {
 
         let args = self.parse_args()?;
         self.expr_from_call(ident, args)
+    }
+
+    /// Parse a quoted string literal `"..."`.
+    ///
+    /// Supports `\\` and `\"` escape sequences. Returns the unescaped content.
+    fn parse_string_literal(&mut self) -> Result<String, ParseError> {
+        // Consume opening `"`
+        assert_eq!(self.peek(), Some('"'));
+        self.pos += 1;
+        let mut result = String::new();
+        loop {
+            match self.peek() {
+                None => {
+                    return Err(ParseError::new("unterminated string literal"));
+                }
+                Some('"') => {
+                    self.pos += 1;
+                    return Ok(result);
+                }
+                Some('\\') => {
+                    self.pos += 1;
+                    match self.peek() {
+                        Some('"') => {
+                            self.pos += 1;
+                            result.push('"');
+                        }
+                        Some('\\') => {
+                            self.pos += 1;
+                            result.push('\\');
+                        }
+                        Some('n') => {
+                            self.pos += 1;
+                            result.push('\n');
+                        }
+                        Some('t') => {
+                            self.pos += 1;
+                            result.push('\t');
+                        }
+                        other => {
+                            return Err(ParseError::new(format!(
+                                "unsupported escape sequence: \\{:?}",
+                                other
+                            )));
+                        }
+                    }
+                }
+                Some(ch) => {
+                    self.pos += ch.len_utf8();
+                    result.push(ch);
+                }
+            }
+        }
+    }
+
+    /// Parse a numeric literal — integer or float.
+    ///
+    /// Returns `None` if the current position is not at a numeric token.
+    /// Tries float first (requires a `.` in the number); falls back to int.
+    fn parse_number(&mut self) -> Result<Option<LiteralValue>, ParseError> {
+        let start = self.pos;
+        // Optional leading minus.
+        if self.peek() == Some('-') {
+            self.pos += 1;
+        }
+        let digits_start = self.pos;
+        while self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
+            self.pos += 1;
+        }
+        if digits_start == self.pos {
+            // No digits consumed — not a number.
+            self.pos = start;
+            return Ok(None);
+        }
+
+        // Check for decimal point followed by at least one digit → float.
+        if self.peek() == Some('.')
+            && self.input[self.pos + 1..].starts_with(|ch: char| ch.is_ascii_digit())
+        {
+            self.pos += 1; // consume '.'
+            while self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
+                self.pos += 1;
+            }
+            let text = &self.input[start..self.pos];
+            let value = text
+                .parse::<f64>()
+                .map_err(|_| ParseError::new(format!("float literal out of range: {text}")))?;
+            return Ok(Some(LiteralValue::Float(value)));
+        }
+
+        // Pure integer.
+        let text = &self.input[start..self.pos];
+        let value = text
+            .parse::<i64>()
+            .map_err(|_| ParseError::new(format!("integer literal out of range: {text}")))?;
+        Ok(Some(LiteralValue::Int(value)))
     }
 
     fn parse_args(&mut self) -> Result<Vec<CoreExpr>, ParseError> {
@@ -132,8 +235,49 @@ impl Parser<'_> {
             "div" => binary(func, args, CoreExpr::Div),
             "mod" => binary(func, args, CoreExpr::Mod),
             "eq" => binary(func, args, CoreExpr::Eq),
+            "ne" => binary(func, args, CoreExpr::Ne),
             "lt" => binary(func, args, CoreExpr::Lt),
+            "le" => binary(func, args, CoreExpr::Le),
             "gt" => binary(func, args, CoreExpr::Gt),
+            "ge" => binary(func, args, CoreExpr::Ge),
+            "not" => {
+                let [operand] = expect_arity::<1>(func, args)?;
+                Ok(CoreExpr::Not(Box::new(operand)))
+            }
+            // Convenience constructors for Option/Result variants.
+            "none" => {
+                if !args.is_empty() {
+                    return Err(ParseError::new(format!(
+                        "none expects 0 args, got {}",
+                        args.len()
+                    )));
+                }
+                Ok(CoreExpr::VariantNew {
+                    tag: "None".to_string(),
+                    payload: None,
+                })
+            }
+            "some" => {
+                let [payload] = expect_arity::<1>(func, args)?;
+                Ok(CoreExpr::VariantNew {
+                    tag: "Some".to_string(),
+                    payload: Some(Box::new(payload)),
+                })
+            }
+            "ok" => {
+                let [payload] = expect_arity::<1>(func, args)?;
+                Ok(CoreExpr::VariantNew {
+                    tag: "Ok".to_string(),
+                    payload: Some(Box::new(payload)),
+                })
+            }
+            "err" => {
+                let [payload] = expect_arity::<1>(func, args)?;
+                Ok(CoreExpr::VariantNew {
+                    tag: "Err".to_string(),
+                    payload: Some(Box::new(payload)),
+                })
+            }
             "and" => {
                 let [left, right] = expect_arity::<2>(func, args)?;
                 Ok(CoreExpr::And {
@@ -150,25 +294,6 @@ impl Parser<'_> {
             }
             _ => Ok(CoreExpr::Call { func, args }),
         }
-    }
-
-    fn parse_int(&mut self) -> Result<Option<i64>, ParseError> {
-        let start = self.pos;
-        if self.peek() == Some('-') {
-            self.pos += 1;
-        }
-        let digits_start = self.pos;
-        while self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
-            self.pos += 1;
-        }
-        if digits_start == self.pos {
-            self.pos = start;
-            return Ok(None);
-        }
-        self.input[start..self.pos]
-            .parse::<i64>()
-            .map(Some)
-            .map_err(|_| ParseError::new("integer literal is out of range"))
     }
 
     fn parse_ident(&mut self) -> Result<String, ParseError> {
@@ -503,6 +628,198 @@ mod tests {
         assert_eq!(
             err.message,
             "match expects scrutinee plus pattern/body pairs, got 2 args"
+        );
+    }
+
+    // ── New comparison and boolean operators ─────────────────────────────
+
+    #[test]
+    fn parses_ne_le_ge_comparison_operators() {
+        assert_eq!(
+            parse_expr("ne(x, y)").unwrap(),
+            CoreExpr::Ne(
+                Box::new(CoreExpr::Var("x".to_string())),
+                Box::new(CoreExpr::Var("y".to_string()))
+            )
+        );
+        assert_eq!(
+            parse_expr("le(x, 10)").unwrap(),
+            CoreExpr::Le(
+                Box::new(CoreExpr::Var("x".to_string())),
+                Box::new(CoreExpr::Literal(LiteralValue::Int(10)))
+            )
+        );
+        assert_eq!(
+            parse_expr("ge(score, 0)").unwrap(),
+            CoreExpr::Ge(
+                Box::new(CoreExpr::Var("score".to_string())),
+                Box::new(CoreExpr::Literal(LiteralValue::Int(0)))
+            )
+        );
+    }
+
+    #[test]
+    fn parses_not_operator() {
+        assert_eq!(
+            parse_expr("not(flag)").unwrap(),
+            CoreExpr::Not(Box::new(CoreExpr::Var("flag".to_string())))
+        );
+        // not applied to a comparison
+        assert_eq!(
+            parse_expr("not(eq(x, 0))").unwrap(),
+            CoreExpr::Not(Box::new(CoreExpr::Eq(
+                Box::new(CoreExpr::Var("x".to_string())),
+                Box::new(CoreExpr::Literal(LiteralValue::Int(0)))
+            )))
+        );
+    }
+
+    // ── Float and string literals ────────────────────────────────────────
+
+    #[test]
+    fn parses_float_literals() {
+        match parse_expr("3.14").unwrap() {
+            CoreExpr::Literal(LiteralValue::Float(f)) => {
+                assert!((f - 3.14).abs() < 1e-10, "expected 3.14, got {f}");
+            }
+            other => panic!("expected Float literal, got {other:?}"),
+        }
+        match parse_expr("-2.5").unwrap() {
+            CoreExpr::Literal(LiteralValue::Float(f)) => {
+                assert!((f - (-2.5)).abs() < 1e-10, "expected -2.5, got {f}");
+            }
+            other => panic!("expected Float literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_string_literals() {
+        assert_eq!(
+            parse_expr("\"hello\"").unwrap(),
+            CoreExpr::Literal(LiteralValue::Text("hello".to_string()))
+        );
+        assert_eq!(
+            parse_expr("\"hello world\"").unwrap(),
+            CoreExpr::Literal(LiteralValue::Text("hello world".to_string()))
+        );
+        // Escape sequences
+        assert_eq!(
+            parse_expr("\"say \\\"hi\\\"\"").unwrap(),
+            CoreExpr::Literal(LiteralValue::Text("say \"hi\"".to_string()))
+        );
+        assert_eq!(
+            parse_expr("\"line\\nnewline\"").unwrap(),
+            CoreExpr::Literal(LiteralValue::Text("line\nnewline".to_string()))
+        );
+    }
+
+    #[test]
+    fn rejects_unterminated_string_literal() {
+        let err = parse_expr("\"unterminated").unwrap_err();
+        assert_eq!(err.message, "unterminated string literal");
+    }
+
+    // ── Option/Result convenience constructors ───────────────────────────
+
+    #[test]
+    fn parses_option_result_convenience_constructors() {
+        assert_eq!(
+            parse_expr("none()").unwrap(),
+            CoreExpr::VariantNew {
+                tag: "None".to_string(),
+                payload: None,
+            }
+        );
+        assert_eq!(
+            parse_expr("some(42)").unwrap(),
+            CoreExpr::VariantNew {
+                tag: "Some".to_string(),
+                payload: Some(Box::new(CoreExpr::Literal(LiteralValue::Int(42)))),
+            }
+        );
+        assert_eq!(
+            parse_expr("ok(x)").unwrap(),
+            CoreExpr::VariantNew {
+                tag: "Ok".to_string(),
+                payload: Some(Box::new(CoreExpr::Var("x".to_string()))),
+            }
+        );
+        assert_eq!(
+            parse_expr("err(msg)").unwrap(),
+            CoreExpr::VariantNew {
+                tag: "Err".to_string(),
+                payload: Some(Box::new(CoreExpr::Var("msg".to_string()))),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_none_with_arguments() {
+        let err = parse_expr("none(x)").unwrap_err();
+        assert_eq!(err.message, "none expects 0 args, got 1");
+    }
+
+    // ── Match with Option/Result constructor patterns ─────────────────────
+
+    #[test]
+    fn parses_match_with_option_constructor_patterns() {
+        // match(opt, Some(v), v, None, 0)
+        assert_eq!(
+            parse_expr("match(opt, Some(v), v, None, 0)").unwrap(),
+            CoreExpr::Match {
+                scrutinee: Box::new(CoreExpr::Var("opt".to_string())),
+                arms: vec![
+                    MatchArm {
+                        pattern: "Some(v)".to_string(),
+                        body: CoreExpr::Var("v".to_string()),
+                    },
+                    MatchArm {
+                        pattern: "None".to_string(),
+                        body: CoreExpr::Literal(LiteralValue::Int(0)),
+                    },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn parses_match_with_result_constructor_patterns() {
+        // match(result, Ok(val), val, Err(e), -1)
+        assert_eq!(
+            parse_expr("match(result, Ok(val), val, Err(e), -1)").unwrap(),
+            CoreExpr::Match {
+                scrutinee: Box::new(CoreExpr::Var("result".to_string())),
+                arms: vec![
+                    MatchArm {
+                        pattern: "Ok(val)".to_string(),
+                        body: CoreExpr::Var("val".to_string()),
+                    },
+                    MatchArm {
+                        pattern: "Err(e)".to_string(),
+                        body: CoreExpr::Literal(LiteralValue::Int(-1)),
+                    },
+                ],
+            }
+        );
+    }
+
+    // ── Nested expressions with new operators ────────────────────────────
+
+    #[test]
+    fn parses_nested_range_check_with_le_ge() {
+        // and(ge(x, 0), le(x, 100))  — checks 0 <= x <= 100
+        assert_eq!(
+            parse_expr("and(ge(x, 0), le(x, 100))").unwrap(),
+            CoreExpr::And {
+                left: Box::new(CoreExpr::Ge(
+                    Box::new(CoreExpr::Var("x".to_string())),
+                    Box::new(CoreExpr::Literal(LiteralValue::Int(0)))
+                )),
+                right: Box::new(CoreExpr::Le(
+                    Box::new(CoreExpr::Var("x".to_string())),
+                    Box::new(CoreExpr::Literal(LiteralValue::Int(100)))
+                )),
+            }
         );
     }
 }

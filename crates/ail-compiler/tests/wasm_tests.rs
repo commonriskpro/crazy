@@ -647,8 +647,13 @@ fn anf_match_on_i64_literal_emits_real_branching() {
     );
 }
 
+// Previously these tested that constructor patterns traps (they were unimplemented).
+// Now that constructor pattern matching is implemented, they verify the CORRECT behavior.
+
 #[test]
-fn unsupported_constructor_match_traps_instead_of_running_arm_body() {
+fn constructor_match_ok_with_payload_binding_runs_arm_body() {
+    // match(Ok(7)) { Ok(value) => 99 }
+    // Should match the Ok arm and return 99 (not trap).
     let ops = emit_valid_wasm(
         AnfExpr::Let {
             name: "result".to_string(),
@@ -664,21 +669,25 @@ fn unsupported_constructor_match_traps_instead_of_running_arm_body() {
                 }],
             }),
         },
-        "fn.unsupported_constructor_match",
+        "fn.constructor_match_ok",
     );
 
+    // Must emit a tag load (I32Load) and comparison — not an unconditional trap.
     assert!(
-        ops.iter().any(|op| op == "Unreachable"),
-        "unsupported constructor patterns must trap explicitly, got {ops:?}"
+        ops.iter().any(|op| op.starts_with("I32Load")),
+        "constructor match must emit I32Load for tag check, got {ops:?}"
     );
+    // The arm body (99) must be reachable.
     assert!(
-        !ops.iter().any(|op| op == "I64Const { value: 99 }"),
-        "unsupported constructor pattern must not run its arm body: {ops:?}"
+        ops.iter().any(|op| op == "I64Const { value: 99 }"),
+        "constructor arm body must be emitted, got {ops:?}"
     );
 }
 
 #[test]
-fn unsupported_constructor_match_with_wildcard_traps_before_fallback() {
+fn constructor_match_ok_with_wildcard_fallback_works() {
+    // match(Ok(7)) { Ok(value) => 99, _ => 0 }
+    // Should match the Ok arm (not fall through to wildcard).
     let ops = emit_valid_wasm(
         AnfExpr::Let {
             name: "result".to_string(),
@@ -700,20 +709,48 @@ fn unsupported_constructor_match_with_wildcard_traps_before_fallback() {
                 ],
             }),
         },
-        "fn.unsupported_constructor_match_with_wildcard",
+        "fn.constructor_match_ok_with_wildcard",
+    );
+
+    // Must emit a tag load and a real if-else (not an unconditional trap before the wildcard).
+    assert!(
+        ops.iter().any(|op| op.starts_with("I32Load")),
+        "constructor match must emit I32Load for tag check, got {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| op == "I64Const { value: 99 }"),
+        "Ok arm body must be emitted, got {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| op == "I64Const { value: 0 }"),
+        "wildcard fallback body must be emitted, got {ops:?}"
+    );
+}
+
+#[test]
+fn multi_binding_constructor_pattern_traps() {
+    // Multi-binding patterns like `"Ok(a, b)"` are not yet supported — must trap.
+    let ops = emit_valid_wasm(
+        AnfExpr::Let {
+            name: "v".to_string(),
+            value: Box::new(AnfExpr::VariantNew {
+                tag: "Ok".to_string(),
+                payload: Some(Box::new(AnfExpr::Literal(LiteralValue::Int(1)))),
+            }),
+            body: Box::new(AnfExpr::Match {
+                scrutinee: "v".to_string(),
+                arms: vec![ail_compiler::anf::AnfMatchArm {
+                    pattern: "Ok(a, b)".to_string(),
+                    body: AnfExpr::Literal(LiteralValue::Int(1)),
+                }],
+            }),
+        },
+        "fn.multi_binding_trap",
     );
 
     assert!(
         ops.iter().any(|op| op == "Unreachable"),
-        "unsupported constructor patterns must trap before fallback, got {ops:?}"
-    );
-    assert!(
-        !ops.iter().any(|op| op == "I64Const { value: 99 }"),
-        "unsupported constructor pattern must not run its arm body: {ops:?}"
-    );
-    assert!(
-        !ops.iter().any(|op| op == "I64Const { value: 0 }"),
-        "unsupported constructor pattern must not silently fall through to wildcard: {ops:?}"
+        "multi-binding constructor patterns must trap (unsupported), got {ops:?}"
     );
 }
 
@@ -794,5 +831,132 @@ fn parsed_match_body_lowers_to_anf_and_emits_valid_wasm() {
     assert!(
         ops.iter().any(|op| op.starts_with("If")),
         "parsed match must emit branch cascade, got {ops:?}"
+    );
+}
+
+// ── New operator and constructor pattern pipeline tests ────────────────────
+
+/// Helpers to run a body_expr string through the full pipeline and return WASM operators.
+fn pipeline_ops(body_expr: &str, fn_name: &str) -> Vec<String> {
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, fn_name);
+    node.body_expr = Some(body_expr.to_string());
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let core = lower_to_core_ir(&graph, &proven_report())
+        .unwrap_or_else(|e| panic!("core lowering failed for {body_expr:?}: {e:?}"));
+    let anf = lower_to_anf(&core)
+        .unwrap_or_else(|e| panic!("ANF lowering failed for {body_expr:?}: {e:?}"));
+    let artifact =
+        emit_wasm(&anf).unwrap_or_else(|e| panic!("emit_wasm failed for {body_expr:?}: {e:?}"));
+    wasmparser::validate(&artifact.wasm)
+        .unwrap_or_else(|e| panic!("wasm validation failed for {body_expr:?}: {e:?}"));
+    operators(&artifact.wasm)
+}
+
+#[test]
+fn ne_operator_parses_and_emits_valid_wasm() {
+    // ne(x, 0) parsed from body_expr should lower to ANF call + I64Ne
+    let ops = pipeline_ops("ne(x, 0)", "fn.ne_test");
+    assert!(
+        ops.iter().any(|op| op == "I64Ne"),
+        "ne() must emit I64Ne, got {ops:?}"
+    );
+}
+
+#[test]
+fn le_operator_parses_and_emits_valid_wasm() {
+    let ops = pipeline_ops("le(score, 100)", "fn.le_test");
+    assert!(
+        ops.iter().any(|op| op == "I64LeS"),
+        "le() must emit I64LeS, got {ops:?}"
+    );
+}
+
+#[test]
+fn ge_operator_parses_and_emits_valid_wasm() {
+    let ops = pipeline_ops("ge(score, 0)", "fn.ge_test");
+    assert!(
+        ops.iter().any(|op| op == "I64GeS"),
+        "ge() must emit I64GeS, got {ops:?}"
+    );
+}
+
+#[test]
+fn not_operator_parses_and_emits_valid_wasm() {
+    // not(flag) should emit I64Eqz (logical negation)
+    let ops = pipeline_ops("not(flag)", "fn.not_test");
+    assert!(
+        ops.iter().any(|op| op == "I64Eqz"),
+        "not() must emit I64Eqz, got {ops:?}"
+    );
+}
+
+#[test]
+fn none_constructor_parses_and_emits_variant_with_tag_zero() {
+    // none() → VariantNew { tag: "None", payload: None }
+    // None has well-known tag 0 → I32Const { value: 0 } in tag slot
+    let ops = pipeline_ops("none()", "fn.none_test");
+    // Must allocate memory and store tag=0
+    assert!(
+        ops.iter().any(|op| op == "I32Const { value: 0 }"),
+        "none() must store tag discriminant 0, got {ops:?}"
+    );
+}
+
+#[test]
+fn some_constructor_parses_and_emits_variant_with_tag_one() {
+    // some(42) → VariantNew { tag: "Some", payload: Some(42) }
+    // Some has well-known tag 1 → I32Const { value: 1 }
+    let ops = pipeline_ops("some(42)", "fn.some_test");
+    assert!(
+        ops.iter().any(|op| op == "I32Const { value: 1 }"),
+        "some() must store tag discriminant 1, got {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| op == "I64Const { value: 42 }"),
+        "some(42) must store payload 42, got {ops:?}"
+    );
+}
+
+#[test]
+fn option_match_pipeline_emits_tag_load_and_branching() {
+    // Full pipeline: parse match, lower, emit, validate
+    // match(some(7), Some(v), v, None, 0)
+    let ops = pipeline_ops(
+        "let(opt, some(7), match(opt, Some(v), v, None, 0))",
+        "fn.option_match",
+    );
+    // Must emit I32Load (tag read) and conditional branching
+    assert!(
+        ops.iter().any(|op| op.starts_with("I32Load")),
+        "option match must emit I32Load for tag check, got {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| op.starts_with("If")),
+        "option match must emit If branching, got {ops:?}"
+    );
+}
+
+#[test]
+fn result_match_pipeline_emits_tag_load_and_payload_binding() {
+    // match(ok(99), Ok(val), val, Err(e), -1)
+    let ops = pipeline_ops(
+        "let(res, ok(99), match(res, Ok(val), val, Err(e), -1))",
+        "fn.result_match",
+    );
+    // Must emit I32Load (tag), I64Load (payload binding), and branching
+    assert!(
+        ops.iter().any(|op| op.starts_with("I32Load")),
+        "result match must emit I32Load for tag check, got {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| op.starts_with("I64Load")),
+        "result match must emit I64Load to bind payload, got {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| op.starts_with("If")),
+        "result match must emit If branching, got {ops:?}"
     );
 }

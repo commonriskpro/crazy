@@ -90,6 +90,14 @@ pub enum CoreExpr {
     Lt(Box<CoreExpr>, Box<CoreExpr>),
     /// Signed integer greater-than comparison.
     Gt(Box<CoreExpr>, Box<CoreExpr>),
+    /// Integer not-equal comparison.
+    Ne(Box<CoreExpr>, Box<CoreExpr>),
+    /// Signed integer less-than-or-equal comparison.
+    Le(Box<CoreExpr>, Box<CoreExpr>),
+    /// Signed integer greater-than-or-equal comparison.
+    Ge(Box<CoreExpr>, Box<CoreExpr>),
+    /// Boolean negation: `!x` — produces `false` when `x` is truthy, `true` otherwise.
+    Not(Box<CoreExpr>),
     /// An anonymous pure or effectful function.
     Lambda {
         params: Vec<String>,
