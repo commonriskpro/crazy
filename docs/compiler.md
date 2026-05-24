@@ -328,14 +328,98 @@ ANF expression families produce real Cranelift IR instead of trap stubs:
 - Collections: `ListNew` (length header + elements), `TupleNew` (elements only)
 - Effects: `EffectCall` (calls imported `host_call(I64×6)→I64`)
 
-Remaining as trap stubs (Phase 9+): `Lambda`, `TaskSpawn`, `ChannelSend`,
-`ChannelReceive`, `Dispatch`, `ResourceAcquire`, `ResourceRelease`, `TaskAwait`,
-`TaskCancel`, `TaskGroup`, and concurrency primitives.
+`Lambda` compiles without closure capture: params are bound as I64 arguments,
+the body is lowered, and the function address is returned as I64. Closure
+captures are deferred to Phase 9+.
+
+Remaining as `ail_runtime_call` dispatch stubs (Phase 9+): `TaskSpawn`,
+`TaskAwait`, `TaskCancel`, `TaskGroup`, `ChannelNew`, `ChannelSend`,
+`ChannelReceive`, `Select`, `Timeout`, `Dispatch`, `ResourceAcquire`,
+`ResourceRelease`. These emit a real Cranelift call to the imported
+`ail_runtime_call` function; the runtime implementation is not yet provided.
 
 Records/lists/variants are stack-allocated (not heap). Returned pointers are
 invalid after function return. Full heap model deferred to Phase 9.
 
 The WASM pipeline is unaffected by native backend changes.
+
+#### Native-1 binary/object smoke: honest scope
+
+**What `emit_native` produces:** a platform-native OBJECT FILE (ELF on Linux,
+Mach-O on macOS, COFF on Windows). It is NOT a linked, runnable executable.
+
+```txt
+emit_native(anf) → NativeArtifact {
+    native_bytes:            ELF / Mach-O / COFF object file bytes
+    provenance:              BTreeMap<NodeRef, u64>  (code section byte offsets)
+    source_map:              SourceMapEntry per binding, native_offset populated
+    capabilities_manifest:   same schema as WASM backend
+    hash_chain.native_hash:  blake3(anf_ir_hash || native_bytes)
+    source_map_json:         JSON sidecar for program.source_map.json
+    artifact_manifest_json:  JSON sidecar for program.artifact.json
+}
+```
+
+**Current limitations (Native-1 slice):**
+
+```txt
+- No linker invocation. A system linker (cc, lld) is required to produce
+  a runnable executable from the emitted object file.
+- No runtime host: imported stubs (host_call, __ail_malloc, ail_runtime_call)
+  must be supplied at link time.
+- No self-hosting: ail-compiler itself is not compiled by ail-compiler.
+- Lambda compiles: params bound, body lowered, address returned as I64.
+  Closure captures are deferred to Phase 9+.
+- Concurrency, dynamic dispatch, resource lifecycle, and channel primitives
+  dispatch via imported `ail_runtime_call`; the runtime implementation is not
+  yet provided (Phase 9+). Arithmetic, control-flow, loops, match, text
+  literals, records/variants/lists/tuples, EffectCall, and Lambda produce
+  real Cranelift IR.
+- Records/lists/variants are stack-allocated. Returned pointers are invalid
+  after function return. Full heap model deferred to Phase 9.
+```
+
+**Tests proving the current object smoke path (`tests/native_object_smoke_tests.rs`):**
+
+```txt
+- Magic bytes validation: emitted bytes start with the platform-native
+  object file magic (ELF 7F 45 4C 46, Mach-O CF FA ED FE).
+- Determinism: same AnfIr → byte-identical native_bytes and native_hash.
+- Provenance: provenance map covers every binding with correct NodeRefs
+  and monotonically non-decreasing offsets.
+- Hash chain: native_hash = blake3(anf_ir_hash || native_bytes).
+- Source map: native_offset populated for every binding after emit_native.
+- Sidecars: source_map_json and artifact_manifest_json are valid JSON.
+- Wave 6B gate: prod/critical profiles reject missing change_set; pass when populated.
+- Arithmetic: i64.add/sub/mul emit real Cranelift IR, not trap stubs.
+```
+
+**WASM/native parity smoke (`tests/wasm_native_parity_smoke_tests.rs`):**
+
+```txt
+- Both backends accept the same AnfIr without error.
+- Provenance maps cover the same NodeRefs (structural parity).
+- Source maps have the same entry count and node_ids.
+- Hash chains are independent: emit_wasm does not set native_hash;
+  emit_native does not set wasm_hash.
+- wasm_hash ≠ native_hash for the same input (different formulas/content).
+- Each backend populates only its own offset field (wasm_offset or native_offset).
+- Simple expressions (int, bool, i64.add, If) compile in both backends.
+- i64.sub produces different output than Placeholder in both backends.
+```
+
+**Path to real binary / self-hosting:**
+
+```txt
+Phase 9:  Heap model — __ail_malloc supplied by runtime; records/variants/lists
+          survive function return.
+Phase 9:  Linker integration — emit_native output linked with cc/lld + ail_runtime.a
+          to produce a runnable native binary.
+Phase 10: ABI stabilization — ail_runtime_call, host_call signatures frozen.
+Phase 11+: Full expression body lowering — Lambda, closures, concurrency.
+Phase N:  Self-hosting — ail-compiler's own source compiled by ail-compiler.
+          Requires: full language surface + runtime + linker + bootstrapping sequence.
+```
 
 WASM output:
 
@@ -536,7 +620,7 @@ Meaning: after optimization/codegen, validate output preserves ANF/Core semantic
 | WASM ABI layout | Implemented subset: records (i64 fields at 8-byte offsets), variants/Option/Result (i32 tag at offset 0, i64 payload at offset 8), lists (i64 count at offset 0, i64 elements). Descriptors in `WasmArtifact::export_types`. Structured EffectCall results via `host_call_write`. Rich ABI/value-layout parity remains validation work. |
 | Memory management | RC vs GC deferred to implementation spike — see [Risks](risks.md) V-08 |
 | Translation validation | Required for `prod`/`critical`; scope per profile. Cranelift source-map and capability-boundary preservation is a validation spike — see [Risks](risks.md) V-03 |
-| Native backend | Cranelift implemented subset. `emit_native` produces ELF/Mach-O/COFF with provenance + capability manifest. Phase 8 lowering covers arithmetic, control-flow, loops, match, text literals, records/variants/lists/tuples, and EffectCall. Remaining trap stubs: concurrency, dynamic dispatch, resource lifecycle (Phase 9+). |
+| Native backend | Cranelift implemented subset. `emit_native` produces ELF/Mach-O/COFF with provenance + capability manifest. Phase 8 lowering covers arithmetic, control-flow, loops, match, text literals, records/variants/lists/tuples, EffectCall, and Lambda (no closure capture). Remaining `ail_runtime_call` dispatch stubs: concurrency, dynamic dispatch, resource lifecycle (Phase 9+). |
 
 ### Implementation Notes
 
@@ -544,7 +628,7 @@ Meaning: after optimization/codegen, validate output preserves ANF/Core semantic
 - A typed WASM/runtime boundary subset exists: `WasmArtifact::export_types` maps each exported binding name to its `WasmTypeDescriptor`, and the runtime uses `ValueDecoder::decode` via `RuntimeInstance::invoke_typed` to reconstruct `StructuredValue` from linear memory. This is not full rich ABI/value-layout parity.
 - Structured `EffectCall` results (where the binding body is a Record/Variant/List type) use `ail/host_call_write` instead of `ail/host_call`; the host writes response bytes to `result_buffer_offset` in WASM memory. `WasmArtifact::result_buffer_offset` exposes this offset for callers.
 - Memory layout: records store i64 fields at 8-byte offsets from the base pointer; variants store an i32 tag at offset 0 and an i64 payload at offset 8; lists store an i64 count at offset 0 followed by i64 elements.
-- `emit_native` (Phase 8) now emits real Cranelift IR for arithmetic, control-flow (If/Loop/Match/ShortCircuit/Seq/RuntimeCheck), text literals, memory (records/variants/lists/tuples via stack slots), and EffectCall (imported `host_call`). Concurrency and resource primitives remain as trap stubs.
+- `emit_native` (Phase 8) now emits real Cranelift IR for arithmetic, control-flow (If/Loop/Match/ShortCircuit/Seq/RuntimeCheck), text literals, memory (records/variants/lists/tuples via stack slots), EffectCall (imported `host_call`), and Lambda (params bound, body lowered, address returned as I64; no closure capture). Concurrency and resource primitives (`TaskSpawn`, `ChannelSend`/`ChannelReceive`, `Dispatch`, `ResourceAcquire`/`ResourceRelease`, etc.) dispatch via imported `ail_runtime_call`; the runtime implementation is not yet provided (Phase 9+).
 - Source-map hardening currently validates per-binding `change_set` only for `prod`/`production`/`critical` backend profiles. It does not yet prove semantic equivalence after optimization or enforce full verification-report/profile matching.
 
 Code references: `crates/ail-compiler/src/expr_parser.rs`, `core_ir.rs`, `anf.rs`, `wasm.rs`, `native.rs`.

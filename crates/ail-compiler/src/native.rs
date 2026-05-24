@@ -8,11 +8,13 @@
 // The `anf_ir_hash` field in `stage_hashes` must be `Some(...)`.
 // If it is `None`, `Err(CompileError::NativeEncodingError)` is returned.
 //
-// # What is emitted (Phase 17)
+// # What is emitted (Phase 17 + Phase 8 expression lowering)
 //
-// Every `AnfBinding` becomes a native function stub:
-//   - Signature: `() -> ()` (SystemV calling convention).
-//   - Body: one `trap` instruction (user trap code 1).
+// Every `AnfBinding` becomes a native function with real Cranelift IR for
+// the current Phase 8 subset: arithmetic, control-flow, loops, match, text
+// literals, records/variants/lists/tuples, EffectCall, and Lambda (params
+// bound, body lowered, address returned; no closure capture). Concurrency
+// and resource ops dispatch via imported `ail_runtime_call`.
 //
 // An `AnfIr` with zero bindings produces a minimal valid object file
 // (no code section; platform-native ELF/Mach-O/COFF header only).
@@ -260,8 +262,12 @@ pub struct CapabilitiesManifest {
 /// Output of the native backend stage: a platform-native object file with
 /// provenance, a capabilities manifest, and a fully sealed hash chain.
 ///
-/// In Phase 17 every function body is a `trap` stub.
-/// Expression lowering is deferred to Phase 8+.
+/// Phase 8 expression lowering is implemented for the current subset:
+/// arithmetic, control-flow, loops, match, text literals,
+/// records/variants/lists/tuples, EffectCall, and Lambda (params bound, body
+/// lowered; no closure capture). Concurrency and resource ops dispatch via
+/// imported `ail_runtime_call`; the runtime implementation is deferred to
+/// Phase 9+.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeArtifact {
     /// Platform-native object bytes (ELF / Mach-O / COFF).
