@@ -7,6 +7,7 @@ mod cli_helpers;
 mod diagnostic_commands;
 mod error;
 mod eval_commands;
+mod graph_loading;
 mod graph_query_commands;
 mod output;
 mod package_commands;
