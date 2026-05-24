@@ -74,6 +74,7 @@ pub struct AnfMatchArm {
     /// - tag-only constructor patterns (e.g. `"None"`) on I32 (variant pointer) scrutinees.
     /// - single-binding constructor patterns (e.g. `"Ok(val)"`, `"Some(x)"`) — loads
     ///   the payload from offset 8 in linear memory and binds it before evaluating the body.
+    ///
     /// Multi-binding patterns (e.g. `"Ok(a, b)"`) are not yet supported and emit Unreachable.
     pub pattern: String,
     /// Body expression evaluated when the pattern matches.

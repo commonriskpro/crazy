@@ -18,6 +18,7 @@ pub struct MatchArm {
     /// - tag-only constructor (e.g. `"None"`) on variant-pointer (I32) scrutinees.
     /// - single-binding constructor (e.g. `"Ok(val)"`, `"Some(x)"`) on variant-pointer
     ///   scrutinees — binds the payload at memory offset 8.
+    ///
     /// Multi-binding patterns (e.g. `"Ok(a, b)"`) are not yet supported.
     pub pattern: String,
     /// Body expression evaluated when the pattern matches.

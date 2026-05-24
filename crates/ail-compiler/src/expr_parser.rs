@@ -813,6 +813,7 @@ mod tests {
     // ── Float and string literals ────────────────────────────────────────
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is intentional parser test data, not a PI approximation
     fn parses_float_literals() {
         match parse_expr("3.14").unwrap() {
             CoreExpr::Literal(LiteralValue::Float(f)) => {
