@@ -191,3 +191,79 @@ fn report_enrichment_is_set() {
     assert_eq!(report.schema_version, "verification/1.0");
     assert_eq!(report.summary_counts.verified_count, 1);
 }
+
+// ── repair_options: EffectChecker ─────────────────────────────────────────
+
+#[test]
+fn undeclared_effect_carries_repair_options() {
+    // R1: Failed entry must have at least one actionable repair option.
+    let fn_node = node(0, NodeKind::Function, "db_fn2");
+    let db_node = node(1, NodeKind::Effect, "Database");
+    let graph = SemanticGraph {
+        nodes: vec![fn_node, db_node],
+        edges: vec![emits_edge(0, 1)],
+    };
+    let report = EffectChecker::check(&graph);
+    let entry = report
+        .entries
+        .iter()
+        .find(|e| e.scope == "db_fn2")
+        .unwrap();
+    assert_eq!(entry.state, VerificationState::Failed);
+    assert!(
+        !entry.repair_options.is_empty(),
+        "R1 Failed entry must carry at least one repair option"
+    );
+    assert!(
+        entry
+            .repair_options
+            .iter()
+            .any(|r| r.contains("effect_row")),
+        "at least one repair option must mention 'effect_row'"
+    );
+}
+
+#[test]
+fn unused_declared_effect_carries_repair_options() {
+    // R2: Assumed entry must have at least one actionable repair option.
+    let mut fn_node = node(0, NodeKind::Function, "unused_fn2");
+    fn_node.effect_row = Some(EffectRow {
+        effects: vec!["FileSystem".into()],
+    });
+    let graph = SemanticGraph {
+        nodes: vec![fn_node],
+        edges: vec![],
+    };
+    let report = EffectChecker::check(&graph);
+    let entry = report
+        .entries
+        .iter()
+        .find(|e| e.scope == "unused_fn2")
+        .unwrap();
+    assert_eq!(entry.state, VerificationState::Assumed);
+    assert!(
+        !entry.repair_options.is_empty(),
+        "R2 Assumed entry must carry at least one repair option"
+    );
+}
+
+#[test]
+fn proven_effect_entry_has_no_repair_options() {
+    // R3/R4: Proven entries must have empty repair_options.
+    let fn_node = node(0, NodeKind::Function, "pure_fn2");
+    let graph = SemanticGraph {
+        nodes: vec![fn_node],
+        edges: vec![],
+    };
+    let report = EffectChecker::check(&graph);
+    let entry = report
+        .entries
+        .iter()
+        .find(|e| e.scope == "pure_fn2")
+        .unwrap();
+    assert_eq!(entry.state, VerificationState::Proven);
+    assert!(
+        entry.repair_options.is_empty(),
+        "Proven entries must have no repair options"
+    );
+}
