@@ -13,6 +13,7 @@ fn descriptor_to_layout(descriptor: &WasmTypeDescriptor) -> ValueLayout {
     match descriptor {
         WasmTypeDescriptor::Scalar(_) => ValueLayout::Scalar,
         WasmTypeDescriptor::Text => ValueLayout::Text,
+        WasmTypeDescriptor::Bytes => ValueLayout::Bytes,
         WasmTypeDescriptor::Record { fields } => ValueLayout::Record {
             fields: fields.clone(),
         },
@@ -181,8 +182,8 @@ fn runtime_decodes_option_result_and_handle_contract_shapes() {
 }
 
 #[test]
-fn text_unit_and_bytes_limitations_are_explicit() {
-    // Text: compiler now emits WasmTypeDescriptor::Text (not Scalar).
+fn text_unit_and_bytes_descriptors_map_to_runtime_layouts() {
+    // Text: compiler emits WasmTypeDescriptor::Text (not Scalar).
     // The runtime decodes packed (len << 32 | ptr) into StructuredValue::Text.
     let text_descriptor = derive_wasm_type(&AnfExpr::Literal(LiteralValue::Text("hi".into())));
     assert_eq!(text_descriptor, WasmTypeDescriptor::Text);
@@ -205,7 +206,17 @@ fn text_unit_and_bytes_limitations_are_explicit() {
         StructuredValue::Scalar(0)
     );
 
-    // Bytes is present in the target/core type design, but the implemented ANF
-    // ABI has no Bytes literal or WasmTypeDescriptor::Bytes variant yet. The
-    // exhaustive descriptor_to_layout match intentionally has no Bytes arm.
+    // Bytes: WasmTypeDescriptor::Bytes maps to ValueLayout::Bytes.
+    // Decoded from the same packed (len << 32 | ptr) encoding as Text,
+    // but produces StructuredValue::Bytes — no UTF-8 assumption.
+    assert_eq!(
+        descriptor_to_layout(&WasmTypeDescriptor::Bytes),
+        ValueLayout::Bytes
+    );
+    // ptr=0x80, len=16 → packed i64 = (16 << 32) | 0x80
+    let bytes_packed = (16i64 << 32) | 0x80i64;
+    assert_eq!(
+        ValueDecoder::decode(&ValueLayout::Bytes, bytes_packed, &[]),
+        StructuredValue::Bytes { ptr: 0x80, len: 16 }
+    );
 }
