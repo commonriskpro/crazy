@@ -3,9 +3,9 @@
 // Handler for `ail link`.
 //
 // Resolves a persisted native artifact by profile (via StoreHandle::load_native_artifact),
-// validates the object path exists on disk, then invokes the system linker
-// through an injectable LinkerBoundary.  Returns a clear Domain error when
-// the artifact is missing or the linker is unavailable.
+// then invokes the system linker through an injectable LinkerBoundary.
+// Returns a clear Domain error when the artifact is missing or the linker is
+// unavailable.
 //
 // Types:
 //   LinkerBoundary           — injectable trait for linker invocation
@@ -117,13 +117,14 @@ impl LinkerBoundary for SystemLinker {
 
 /// `ail link --profile <name> [--output <path>]`
 ///
-/// Resolves the latest persisted native artifact for `profile`, validates the
-/// object file is present on disk, then links it into an executable via the
-/// injectable `linker` boundary.
+/// Resolves the latest persisted native artifact for `profile`, then links it
+/// into an executable via the injectable `linker` boundary.
+///
+/// Default output path: `./<profile>` in the current working directory (e.g.
+/// `./dev`).  Pass `--output` to override.
 ///
 /// Errors (all `CliError::Domain`):
 /// - No native artifact persisted for `profile` — suggests running `ail compile`.
-/// - Object file missing from disk (index is stale) — suggests re-compiling.
 /// - System linker unavailable or exited non-zero.
 pub(crate) fn cmd_link(
     mode: OutputMode,
@@ -140,24 +141,21 @@ pub(crate) fn cmd_link(
         ))
     })?;
 
-    // 2. Validate the object file is present on disk.
+    // 2. Determine output path.
+    //    Default: `./<profile>` in the current working directory (e.g. `./dev`).
+    //    Explicit --output overrides.
+    //
+    //    TODO(W3): load_native_artifact reads object_bytes into memory even though
+    //    cmd_link only needs artifact.paths.object_path.  Introduce a lighter
+    //    load_native_artifact_paths() that skips the file read for link-only callers.
     let object_path = &artifact.paths.object_path;
-    if !object_path.exists() {
-        return Err(CliError::Domain(format!(
-            "native object file not found: {}; \
-             re-run `ail compile --target native --profile {profile}`",
-            object_path.display()
-        )));
-    }
-
-    // 3. Determine output path (strip `.o` extension from object path by default).
     let output_path: PathBuf = if let Some(p) = output {
         p.to_path_buf()
     } else {
-        object_path.with_extension("")
+        PathBuf::from(profile)
     };
 
-    // 4. Invoke linker through the boundary.
+    // 3. Invoke linker through the boundary.
     let result = linker.link(object_path, &output_path)?;
 
     let human_msg = format!(

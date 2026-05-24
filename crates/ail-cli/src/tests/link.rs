@@ -1,5 +1,6 @@
 use super::*;
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use crate::error::CliError;
@@ -35,6 +36,37 @@ impl LinkerBoundary for FailingLinker {
         Err(CliError::Domain(
             "linker 'cc' unavailable: no such file or directory".to_string(),
         ))
+    }
+}
+
+/// Test double: records the output_path it received so tests can assert on it.
+struct CapturingLinker {
+    captured_output: RefCell<Option<PathBuf>>,
+}
+
+impl CapturingLinker {
+    fn new() -> Self {
+        Self {
+            captured_output: RefCell::new(None),
+        }
+    }
+
+    fn captured_output(&self) -> Option<PathBuf> {
+        self.captured_output.borrow().clone()
+    }
+}
+
+impl LinkerBoundary for CapturingLinker {
+    fn link(&self, object_path: &Path, output_path: &Path) -> Result<LinkerResult, CliError> {
+        *self.captured_output.borrow_mut() = Some(output_path.to_path_buf());
+        Ok(LinkerResult {
+            command: format!(
+                "capturing-cc {} -o {}",
+                object_path.display(),
+                output_path.display()
+            ),
+            output_path: output_path.to_path_buf(),
+        })
     }
 }
 
@@ -324,5 +356,56 @@ fn cmd_link_json_mode_succeeds() {
     assert!(
         result.is_ok(),
         "cmd_link in Json mode must succeed; got: {result:?}"
+    );
+}
+
+// Scenario: default output path is the profile name in the current directory.
+//   GIVEN a file store with a saved native artifact for profile "myapp"
+//   WHEN cmd_link is called with no --output (None)
+//   THEN the linker receives an output_path whose file name equals the profile name
+#[test]
+fn cmd_link_default_output_path_uses_profile_name() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    let store = file_store(ail_dir.clone());
+
+    let fake_hash = "f".repeat(64);
+    store
+        .save_native_artifact(
+            &fake_hash,
+            "myapp",
+            "native",
+            NativeArtifactBytes {
+                object: b"obj-myapp",
+                source_map_json: b"{}",
+                artifact_manifest_json: b"{}",
+                capabilities_manifest_json: b"{\"entries\":[]}",
+            },
+        )
+        .expect("save must succeed");
+
+    let capturing = CapturingLinker::new();
+    let result = cmd_link(OutputMode::Human, "myapp", None, &store, &capturing);
+    assert!(
+        result.is_ok(),
+        "cmd_link must succeed with persisted artifact; got: {result:?}"
+    );
+
+    let output = capturing
+        .captured_output()
+        .expect("CapturingLinker must have recorded an output path");
+    let file_name = output
+        .file_name()
+        .expect("output path must have a file name")
+        .to_string_lossy();
+    assert_eq!(
+        file_name, "myapp",
+        "default output path file name must equal the profile name; got: {output:?}"
+    );
+    // Must NOT contain the artifact store directory.
+    assert!(
+        !output.to_string_lossy().contains(".ail"),
+        "default output path must not be buried in .ail/; got: {output:?}"
     );
 }
