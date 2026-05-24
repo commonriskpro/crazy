@@ -35,8 +35,26 @@
 // | test     | pass   | pass           | pass (test)    | pass       | block  | block  |
 // | staging  | pass   | pass           | need approval  | block      | block  | block  |
 // | prod     | pass   | pass           | strong approval| block      | strong | block  |
-// | critical | pass   | pass           | strong only    | block      | block  | block  |
-// | unknown  | pass   | pass           | strong only    | block      | block  | block  |
+// | critical | pass   | warn*          | strong only    | block      | block  | block  |
+// | unknown  | pass   | warn*          | strong only    | block      | block  | block  |
+//
+// * RuntimeChecked in critical/unknown profiles emits POLICY_RUNTIME_CHECK_ADVISORY
+//   (PassedWithWarnings, not Failed).  This distinguishes a runtime assertion from a
+//   formal proof and surfaces the advisory to callers without hard-blocking.
+//
+// # Critical-specific additional checks
+//
+// In addition to the entry-level gate above, `ProfileGate("critical")` (and unknown
+// profiles) run a solver-diagnostic sweep:
+//
+//   - If `report.solver_diagnostics` contains any entry (Timeout, ResourceLimited,
+//     or Unsupported), each is emitted as a `POLICY_SOLVER_DIAGNOSTIC_BLOCKED`
+//     violation, hard-blocking the changeset.
+//   - This ensures that proof obligations where the solver could not confirm
+//     correctness (due to timeout, resource exhaustion, or unsupported predicates)
+//     do not silently pass in critical contexts.
+//   - `prod` profile does NOT apply this check; solver diagnostics are informational
+//     in prod (the obligation is Assumed with Strong approval).
 //
 // # Strict-by-default
 //
@@ -76,6 +94,21 @@ pub const POLICY_PUBLIC_API_CHANGED: &str = "POLICY_PUBLIC_API_CHANGED";
 
 /// Policy violation: the fraction of non-proven entries exceeds the allowed ratio.
 pub const POLICY_PROOF_SUFFICIENCY: &str = "POLICY_PROOF_SUFFICIENCY";
+
+/// Policy violation: a critical (or unknown) profile blocks an unresolved solver diagnostic.
+///
+/// Emitted when `report.solver_diagnostics` contains a `Timeout`, `ResourceLimited`,
+/// or `Unsupported` entry and the active profile is `critical` or unknown.
+/// Stable code for machine-readable tooling; never changes once assigned.
+pub const POLICY_SOLVER_DIAGNOSTIC_BLOCKED: &str = "POLICY_SOLVER_DIAGNOSTIC_BLOCKED";
+
+/// Policy warning: a `RuntimeChecked` entry in `critical` profile is advisory.
+///
+/// `RuntimeChecked` is accepted by the critical gate but emits this warning because
+/// a runtime assertion is not equivalent to a formal proof.  Callers that require
+/// complete formal coverage should treat this warning as actionable.
+/// Not emitted in `prod` or other profiles.
+pub const POLICY_RUNTIME_CHECK_ADVISORY: &str = "POLICY_RUNTIME_CHECK_ADVISORY";
 
 // ── ApprovalStrength ──────────────────────────────────────────────────────
 
@@ -539,6 +572,30 @@ impl PolicyEngine {
             }
         }
 
+        // ── Solver-diagnostic sweep (critical and unknown profiles only) ───
+        //
+        // A solver diagnostic (Timeout, ResourceLimited, Unsupported) means the
+        // proof engine could not confirm correctness.  In critical (and unknown)
+        // profiles this is a hard block: unresolved solver outcomes cannot be
+        // approved away.  Prod and lighter profiles leave them informational.
+        let is_critical_like = profile == "critical"
+            || !matches!(profile, "draft" | "dev" | "test" | "staging" | "prod");
+        if is_critical_like {
+            for diag in &report.solver_diagnostics {
+                violations.push(PolicyViolation {
+                    code: POLICY_SOLVER_DIAGNOSTIC_BLOCKED.to_string(),
+                    scope: diag.obligation_id.clone(),
+                    message: format!(
+                        "critical profile blocks unresolved solver diagnostic '{}' \
+                         ({}): {}",
+                        diag.obligation_id,
+                        diag.status.as_str(),
+                        diag.reason,
+                    ),
+                });
+            }
+        }
+
         if !violations.is_empty() {
             PolicyDecision::Failed(violations)
         } else if !approval_scopes.is_empty() {
@@ -734,8 +791,28 @@ impl PolicyEngine {
                 },
             },
 
-            // RuntimeChecked — passes in all profiles (materialised check present).
-            VerificationState::RuntimeChecked => GateResult::Pass,
+            // RuntimeChecked — passes in all profiles; critical/unknown emit an advisory
+            // warning because a runtime assertion is not equivalent to a formal proof.
+            VerificationState::RuntimeChecked => match profile {
+                "critical" => GateResult::Warn(
+                    POLICY_RUNTIME_CHECK_ADVISORY.to_string(),
+                    "critical profile: entry has RuntimeChecked state — \
+                     a runtime assertion is not a formal proof; \
+                     consider upgrading to Proven for critical invariants"
+                        .to_string(),
+                ),
+                // STRICT-BY-DEFAULT: unknown profiles mirror critical for RuntimeChecked.
+                p if !matches!(p, "draft" | "dev" | "test" | "staging" | "prod") => {
+                    GateResult::Warn(
+                        POLICY_RUNTIME_CHECK_ADVISORY.to_string(),
+                        format!(
+                            "unknown profile '{p}' treated as conservative — \
+                             RuntimeChecked entry carries advisory warning"
+                        ),
+                    )
+                }
+                _ => GateResult::Pass,
+            },
 
             // Proven — always passes in every profile.
             VerificationState::Proven => GateResult::Pass,
