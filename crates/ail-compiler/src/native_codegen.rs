@@ -219,6 +219,3 @@ pub(crate) fn infer_cranelift_return_type(
         _ => None,
     }
 }
-
-// ── lower_anf_expr_cranelift (re-exported from native_lower) ─────────────
-pub(crate) use crate::native_lower::lower_anf_expr_cranelift;

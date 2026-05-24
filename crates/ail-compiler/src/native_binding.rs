@@ -20,9 +20,8 @@ use cranelift_module::{DataId, FuncId, Linkage, Module};
 use cranelift_object::ObjectModule;
 
 use crate::error::CompileError;
-use crate::native_codegen::{
-    LowerResult, NativeCodegenCtx, infer_cranelift_return_type, lower_anf_expr_cranelift,
-};
+use crate::native_codegen::{LowerResult, NativeCodegenCtx, infer_cranelift_return_type};
+use crate::native_lower::lower_anf_expr_cranelift;
 use crate::native_types::NativeDataLayout;
 
 // ── LowerBindingEnv ───────────────────────────────────────────────────────
