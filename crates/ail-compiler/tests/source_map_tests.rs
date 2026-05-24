@@ -18,8 +18,8 @@ use ail_compiler::{
     lower::{lower_to_anf, lower_to_anf_with_graph, lower_to_core_ir},
 };
 use ail_core::semantic_graph::{
-    ContractClauses, EffectRow, GraphNode, NodeKind, NodeRef, Provenance, RuntimeCheckMeta,
-    SemanticGraph,
+    ContractClauses, EdgeKind, EffectRow, GraphEdge, GraphNode, NodeKind, NodeRef, Provenance,
+    RefinementRef, RefinementStatus, RuntimeCheckMeta, SemanticGraph,
 };
 use ail_verify::report::VerificationReport;
 
@@ -445,7 +445,98 @@ fn lower_to_anf_with_graph_leaves_none_when_no_graph_data() {
     );
     assert!(
         entry.proof_obligation_ref.is_none(),
-        "proof_obligation_ref must always be None (upstream not producing yet)"
+        "proof_obligation_ref must be None when node has no refinement_ref or Proves edge"
+    );
+}
+
+// RED → GREEN: lower_to_anf_with_graph threads proof_obligation_ref from
+// GraphNode.refinement_ref as "proof.refinement.<node_name>".
+#[test]
+fn lower_to_anf_with_graph_threads_proof_obligation_ref_from_refinement() {
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn_balance");
+    node.refinement_ref = Some(RefinementRef {
+        base_type: "Int".to_string(),
+        predicate: "value >= 0".to_string(),
+        status: RefinementStatus::Proven,
+        erased: false,
+    });
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+
+    let proof_ref = anf.source_map.entries[0].proof_obligation_ref.as_ref();
+    assert!(
+        proof_ref.is_some(),
+        "proof_obligation_ref must be Some when GraphNode has refinement_ref"
+    );
+    assert_eq!(
+        proof_ref.unwrap().0,
+        "proof.refinement.fn_balance",
+        "proof_obligation_ref must be derived as 'proof.refinement.<node_name>'"
+    );
+}
+
+// RED → GREEN: lower_to_anf_with_graph threads proof_obligation_ref from a
+// Proves edge as "proof.<target_node_name>" when no refinement_ref exists.
+#[test]
+fn lower_to_anf_with_graph_threads_proof_obligation_ref_from_proves_edge() {
+    let source_node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn_transfer");
+    let target_node = GraphNode::new(NodeRef(1), NodeKind::Contract, "invariant.no_negative");
+    let proves_edge = GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Proves);
+    let graph = SemanticGraph {
+        nodes: vec![source_node, target_node],
+        edges: vec![proves_edge],
+    };
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+
+    // Entry 0 is fn_transfer (source of the Proves edge).
+    let proof_ref = anf.source_map.entries[0].proof_obligation_ref.as_ref();
+    assert!(
+        proof_ref.is_some(),
+        "proof_obligation_ref must be Some for a node that is the source of a Proves edge"
+    );
+    assert_eq!(
+        proof_ref.unwrap().0,
+        "proof.invariant.no_negative",
+        "proof_obligation_ref must be 'proof.<target_name>' from the Proves edge"
+    );
+    // Entry 1 (target node) has no proves edge and no refinement_ref → None.
+    assert!(
+        anf.source_map.entries[1].proof_obligation_ref.is_none(),
+        "target of a Proves edge must not receive proof_obligation_ref itself"
+    );
+}
+
+// TRIANGULATE: refinement_ref takes priority over Proves edge for
+// proof_obligation_ref when both are present on the same node.
+#[test]
+fn proof_obligation_ref_refinement_takes_priority_over_proves_edge() {
+    let mut source_node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn_dual");
+    source_node.refinement_ref = Some(RefinementRef {
+        base_type: "Int".to_string(),
+        predicate: "x > 0".to_string(),
+        status: RefinementStatus::Unverified,
+        erased: false,
+    });
+    let target_node = GraphNode::new(NodeRef(1), NodeKind::Contract, "contract.something");
+    let proves_edge = GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Proves);
+    let graph = SemanticGraph {
+        nodes: vec![source_node, target_node],
+        edges: vec![proves_edge],
+    };
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+
+    let proof_ref = anf.source_map.entries[0].proof_obligation_ref.as_ref();
+    assert!(proof_ref.is_some());
+    assert_eq!(
+        proof_ref.unwrap().0,
+        "proof.refinement.fn_dual",
+        "refinement_ref must take priority over Proves edge for proof_obligation_ref"
     );
 }
 

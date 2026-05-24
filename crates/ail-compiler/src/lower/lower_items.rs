@@ -9,8 +9,8 @@
 use std::collections::BTreeMap;
 
 use ail_core::semantic_graph::{
-    BlockRef, ContractRef, EffectRef, NodeKind, NodeRef, ProofObligationRef, RuntimeCheckRef,
-    SemanticGraph,
+    BlockRef, ContractRef, EdgeKind, EffectRef, NodeKind, NodeRef, ProofObligationRef,
+    RuntimeCheckRef, SemanticGraph,
 };
 
 use crate::anf::{AnfBinding, AnfExpr, SourceMap, SourceMapEntry};
@@ -168,6 +168,12 @@ pub(super) struct NodeProvenance {
     pub(super) contract_ref: Option<String>,
     /// First declared effect from `GraphNode.effect_row.effects`, if any.
     pub(super) effect_ref: Option<String>,
+    /// Proof obligation ref derived from the node.
+    ///
+    /// Populated from two sources (first wins):
+    /// 1. `GraphNode.refinement_ref` → `"proof.refinement.<node_name>"`
+    /// 2. A `Proves` edge from this node → `"proof.<target_name>"`
+    pub(super) proof_obligation_ref: Option<String>,
     /// Content hash of the first `RuntimeCheckMeta` in
     /// `GraphNode.runtime_checks`, if any.
     pub(super) runtime_check_ref: Option<String>,
@@ -177,13 +183,39 @@ pub(super) struct NodeProvenance {
 ///
 /// Used by `lower_to_anf_with_graph` to enrich `SourceMapEntry` fields
 /// without changing the `lower_to_anf` public API.
+///
+/// `proof_obligation_ref` is populated from two sources (first wins):
+/// 1. `GraphNode.refinement_ref` — any node with a refinement predicate
+///    gets `"proof.refinement.<node_name>"`.
+/// 2. A `Proves` edge from the node — the first `Proves` edge whose source
+///    matches the node id produces `"proof.<target_name>"`.
 pub(super) fn extract_provenance_lookup(
     graph: &SemanticGraph,
 ) -> BTreeMap<NodeRef, NodeProvenance> {
+    // First pass: collect proof refs from `Proves` edges.
+    // source_node → "proof.<target_node_name>" (first edge wins).
+    let mut edge_proof_refs: BTreeMap<NodeRef, String> = BTreeMap::new();
+    for edge in &graph.edges {
+        if edge.kind == EdgeKind::Proves
+            && let Some(target) = graph.nodes.iter().find(|n| n.id == edge.target)
+        {
+            edge_proof_refs
+                .entry(edge.source)
+                .or_insert_with(|| format!("proof.{}", target.name));
+        }
+    }
+
     graph
         .nodes
         .iter()
         .map(|gn| {
+            // Refinement-based proof ref takes priority over edge-derived one.
+            let proof_obligation_ref = gn
+                .refinement_ref
+                .as_ref()
+                .map(|_| format!("proof.refinement.{}", gn.name))
+                .or_else(|| edge_proof_refs.get(&gn.id).cloned());
+
             let prov = NodeProvenance {
                 change_set: gn.provenance.as_ref().map(|p| p.change_id.clone()),
                 block_ref: match gn.kind {
@@ -198,6 +230,7 @@ pub(super) fn extract_provenance_lookup(
                     .effect_row
                     .as_ref()
                     .and_then(|er| er.effects.first().cloned()),
+                proof_obligation_ref,
                 runtime_check_ref: gn
                     .runtime_checks
                     .as_ref()
@@ -215,9 +248,8 @@ pub(super) fn extract_provenance_lookup(
 /// in the lookup for the binding's `source_ref`.  Fields for which no
 /// upstream data exists remain `None`.
 ///
-/// `proof_obligation_ref` is always `None` — the upstream pipeline does not
-/// yet produce proof obligation metadata.  The field is plumbed correctly so
-/// that when upstream starts producing it, it flows through automatically.
+/// `proof_obligation_ref` is populated when the originating graph node carries
+/// a refinement predicate or is the source of a `Proves` edge; otherwise `None`.
 pub(super) fn build_enriched_source_map(
     bindings: &[AnfBinding],
     lookup: &BTreeMap<NodeRef, NodeProvenance>,
@@ -239,9 +271,9 @@ pub(super) fn build_enriched_source_map(
                 effect_ref: prov
                     .and_then(|p| p.effect_ref.as_ref())
                     .map(|s| EffectRef(s.clone())),
-                // No upstream proof-obligation data yet — field plumbed for
-                // future use.
-                proof_obligation_ref: None::<ProofObligationRef>,
+                proof_obligation_ref: prov
+                    .and_then(|p| p.proof_obligation_ref.as_ref())
+                    .map(|s| ProofObligationRef(s.clone())),
                 runtime_check_ref: prov
                     .and_then(|p| p.runtime_check_ref.as_ref())
                     .map(|s| RuntimeCheckRef(s.clone())),
