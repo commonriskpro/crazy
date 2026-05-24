@@ -31,7 +31,8 @@ use crate::builtin_targets::runtime_anf_for_target;
 use crate::cli::{bytes_to_hex, load_current_graph_for_cli};
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
-use crate::store::{NativeArtifactBytes, StoreHandle, WasmArtifactBytes};
+use crate::store::StoreHandle;
+use crate::store_artifacts::{NativeArtifactBytes, WasmArtifactBytes};
 
 // ── Private helpers ───────────────────────────────────────────────────────
 
