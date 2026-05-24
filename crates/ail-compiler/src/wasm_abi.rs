@@ -119,6 +119,27 @@ pub fn derive_wasm_type(expr: &AnfExpr) -> WasmTypeDescriptor {
         AnfExpr::Literal(LiteralValue::Float(_)) => WasmTypeDescriptor::Scalar(WasmScalarType::F64),
         AnfExpr::Literal(LiteralValue::Unit) => WasmTypeDescriptor::Scalar(WasmScalarType::I32),
         AnfExpr::Literal(LiteralValue::Text(_)) => WasmTypeDescriptor::Text,
+        // LIMITATION: `EffectCall` return types cannot be structurally derived
+        // at this compilation stage.  ANF expressions carry no return-type
+        // annotation and there are no handler descriptors available here, so
+        // the compiler has no information about what concrete type a capability
+        // operation actually produces.
+        //
+        // We therefore always return `Scalar(I64)`, which is the raw value
+        // placed in the WASM return slot by the `ail/host_call` import (the
+        // host packs the result handle or small integer into that slot).
+        //
+        // Resolving this limitation requires one of:
+        //   - ANF return-type annotations propagated from the type-checker, or
+        //   - A handler-descriptor table passed into `derive_wasm_type` so it
+        //     can look up the declared return type of the effect operation.
+        //
+        // Until then, callers that need structured EffectCall return descriptors
+        // (e.g. `is_structured_descriptor` + `needs_host_call_write`) must be
+        // driven by the surrounding expression context (e.g. the binding body
+        // being a `RecordNew` that consumes the effect result) rather than by
+        // the `EffectCall` node itself.
+        AnfExpr::EffectCall { .. } => WasmTypeDescriptor::Scalar(WasmScalarType::I64),
         _ => WasmTypeDescriptor::Scalar(WasmScalarType::I64),
     }
 }
