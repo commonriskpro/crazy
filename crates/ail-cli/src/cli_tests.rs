@@ -51,7 +51,7 @@ fn encode_cbor_returns_bytes_for_serializable_value() {
 async fn cmd_verify_rejects_invalid_change_id() {
     use crate::store::memory_store;
     let store = memory_store();
-    let result = cmd_verify(OutputMode::Human, &"a".repeat(63), "dev", &store).await;
+    let result = cmd_verify(OutputMode::Human, &"a".repeat(63), "dev", "simple", &store).await;
     assert!(matches!(result, Err(CliError::NotFound(_))));
 }
 
@@ -61,7 +61,7 @@ async fn cmd_verify_succeeds_for_valid_change_id() {
     use crate::store::memory_store;
     let store = memory_store();
     let id = "a".repeat(64);
-    let result = cmd_verify(OutputMode::Human, &id, "dev", &store).await;
+    let result = cmd_verify(OutputMode::Human, &id, "dev", "simple", &store).await;
     assert!(result.is_ok(), "cmd_verify must succeed; got: {result:?}");
 }
 
@@ -71,7 +71,7 @@ async fn cmd_verify_prod_profile_has_approval_requirements() {
     use crate::store::memory_store;
     let store = memory_store();
     let id = "a".repeat(64);
-    let result = cmd_verify(OutputMode::Json, &id, "prod", &store).await;
+    let result = cmd_verify(OutputMode::Json, &id, "prod", "simple", &store).await;
     assert!(
         result.is_ok(),
         "cmd_verify prod must succeed; got: {result:?}"
@@ -1307,7 +1307,7 @@ async fn cmd_verify_with_stored_changeset_uses_real_graph() {
         .await
         .expect("save must succeed");
 
-    let result = cmd_verify(OutputMode::Human, &change_id, "dev", &store).await;
+    let result = cmd_verify(OutputMode::Human, &change_id, "dev", "simple", &store).await;
     assert!(
         result.is_ok(),
         "cmd_verify with stored changeset must succeed; got: {result:?}"
@@ -1324,7 +1324,7 @@ async fn cmd_verify_fallback_on_unknown_id_succeeds() {
 
     let store = memory_store();
     let unknown_id = "c".repeat(64);
-    let result = cmd_verify(OutputMode::Human, &unknown_id, "dev", &store).await;
+    let result = cmd_verify(OutputMode::Human, &unknown_id, "dev", "simple", &store).await;
     assert!(
         result.is_ok(),
         "cmd_verify with unknown id must succeed (fallback); got: {result:?}"
@@ -1452,7 +1452,7 @@ async fn cmd_verify_json_output_has_schema_version() {
     let change_id = "d".repeat(64);
     // Verify succeeds — schema_version injection is covered by output::tests,
     // but we confirm the cmd_verify path produces valid JSON mode output.
-    let result = cmd_verify(OutputMode::Json, &change_id, "dev", &store).await;
+    let result = cmd_verify(OutputMode::Json, &change_id, "dev", "simple", &store).await;
     assert!(
         result.is_ok(),
         "cmd_verify Json mode must succeed; got: {result:?}"
@@ -2320,7 +2320,7 @@ async fn cmd_verify_json_succeeds_with_full_pipeline() {
 
     // Exercises the full VerificationPipeline path including ANF stages (19-20),
     // proof obligations, degradation events, and solver diagnostics.
-    let result = cmd_verify(OutputMode::Json, &change_id, "dev", &store).await;
+    let result = cmd_verify(OutputMode::Json, &change_id, "dev", "simple", &store).await;
     assert!(
         result.is_ok(),
         "cmd_verify Json must succeed with the full pipeline path; got: {result:?}"
@@ -2374,5 +2374,101 @@ fn pipeline_runs_to_completion_stage_23() {
             .iter()
             .map(|e| e.claim.as_str())
             .collect::<Vec<_>>()
+    );
+}
+
+// ── Feature I: Z3 solver CLI selection ───────────────────────────────────
+//
+// These tests prove the solver-selection contract at the cmd_verify boundary:
+// - "simple" always works.
+// - "z3" without the feature returns a deterministic CliError::Domain.
+// - "z3" WITH the feature succeeds (only runs when compiled with z3-solver).
+// - An unknown name returns CliError::Domain.
+
+// Scenario ZI-2a: cmd_verify with solver="simple" succeeds.
+//   GIVEN a valid change-id and solver="simple"
+//   WHEN cmd_verify is called
+//   THEN Ok is returned (simple solver is always available)
+#[tokio::test]
+async fn cmd_verify_with_simple_solver_succeeds() {
+    use crate::store::memory_store;
+
+    let store = memory_store();
+    let id = "e".repeat(64);
+    let result = cmd_verify(OutputMode::Human, &id, "dev", "simple", &store).await;
+    assert!(
+        result.is_ok(),
+        "cmd_verify with solver='simple' must succeed; got: {result:?}"
+    );
+}
+
+// Scenario ZI-2b: cmd_verify with solver="z3" WITHOUT the feature returns a
+//   deterministic CliError::Domain — NOT a panic, NOT an ICE, NOT a cryptic
+//   linker error.
+//   GIVEN solver="z3" AND z3-solver feature NOT compiled
+//   WHEN cmd_verify is called with a valid change-id
+//   THEN Err(CliError::Domain) is returned mentioning "z3-solver"
+#[cfg(not(feature = "z3-solver"))]
+#[tokio::test]
+async fn cmd_verify_z3_without_feature_returns_domain_error() {
+    use crate::store::memory_store;
+
+    let store = memory_store();
+    // Must be a valid hex id so is_valid_change_id passes and we reach solver
+    // dispatch before the id-validation early return.
+    let id = "1".repeat(64);
+    let result = cmd_verify(OutputMode::Human, &id, "dev", "z3", &store).await;
+    let err = result.expect_err("z3 without feature must fail");
+    let msg = format!("{err}");
+    assert!(
+        matches!(err, CliError::Domain(_)),
+        "z3 without feature must return CliError::Domain; got: {msg}"
+    );
+    assert!(
+        msg.contains("z3-solver"),
+        "error must mention the z3-solver feature flag; got: {msg}"
+    );
+}
+
+// Scenario ZI-2c: cmd_verify with solver="z3" WITH the feature succeeds.
+//   GIVEN solver="z3" AND z3-solver feature IS compiled
+//   WHEN cmd_verify is called with a valid change-id
+//   THEN Ok is returned (Z3Solver runs through the full pipeline)
+#[cfg(feature = "z3-solver")]
+#[tokio::test]
+async fn cmd_verify_z3_with_feature_succeeds() {
+    use crate::store::memory_store;
+
+    let store = memory_store();
+    let id = "2".repeat(64);
+    let result = cmd_verify(OutputMode::Human, &id, "dev", "z3", &store).await;
+    assert!(
+        result.is_ok(),
+        "cmd_verify with solver='z3' (feature enabled) must succeed; got: {result:?}"
+    );
+}
+
+// Scenario ZI-2d: cmd_verify with unknown solver name returns a domain error.
+//   GIVEN solver="omega" (not a recognised solver name)
+//   WHEN cmd_verify is called with a valid hex change-id
+//   THEN Err(CliError::Domain) listing supported values is returned
+#[tokio::test]
+async fn cmd_verify_unknown_solver_returns_domain_error() {
+    use crate::store::memory_store;
+
+    let store = memory_store();
+    // Must be a valid 64-char hex string so is_valid_change_id passes and we
+    // reach the solver-selection branch before the id-validation early return.
+    let id = "0".repeat(64);
+    let result = cmd_verify(OutputMode::Human, &id, "dev", "omega", &store).await;
+    let err = result.expect_err("unknown solver must fail");
+    let msg = format!("{err}");
+    assert!(
+        matches!(err, CliError::Domain(_)),
+        "unknown solver must return CliError::Domain; got: {msg}"
+    );
+    assert!(
+        msg.contains("supported"),
+        "error must list supported solver values; got: {msg}"
     );
 }
