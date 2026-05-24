@@ -287,6 +287,15 @@ pub(crate) fn collect_free_vars<'a>(
                 }
             }
         }
+        AnfExpr::EffectCall { args, .. } => {
+            for arg in args {
+                if !bound.iter().rev().any(|bound_name| *bound_name == arg)
+                    && !out.iter().any(|existing| *existing == arg)
+                {
+                    out.push(arg);
+                }
+            }
+        }
         AnfExpr::Return(inner)
         | AnfExpr::ShortCircuitAnd { right: inner, .. }
         | AnfExpr::ShortCircuitOr { right: inner, .. }

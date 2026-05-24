@@ -10,7 +10,8 @@ use crate::core_ir::{LiteralValue, StageHashes};
 use crate::error::CompileError;
 use crate::lower::{lower_to_anf, lower_to_core_ir};
 use crate::wasm_abi::{
-    EffectDataLayout, WasmScalarType, WasmSignature, WasmTypeDescriptor, derive_wasm_type,
+    EffectDataLayout, WasmScalarType, WasmSignature, WasmTypeDescriptor, binding_params,
+    collect_free_vars, derive_wasm_type,
 };
 use crate::wasm_sections::build_type_section;
 
@@ -1128,6 +1129,68 @@ fn derive_wasm_type_let_body_effect_call_is_scalar_i64() {
         derive_wasm_type(&expr),
         WasmTypeDescriptor::Scalar(WasmScalarType::I64),
         "Let body EffectCall must derive Scalar(I64): limitation applies through Let nesting"
+    );
+}
+
+// ── collect_free_vars: EffectCall args ────────────────────────────────────
+
+// Scenario: EffectCall args that are not locally bound are collected as free vars.
+// Proves the gap fixed: EffectCall previously fell through to `_ => {}` in
+// collect_free_vars, silently dropping its arg references from binding_params.
+#[test]
+fn collect_free_vars_effect_call_args_are_included() {
+    // Let "x" = 1 in EffectCall { args: ["x", "y"] }
+    // "x" is bound by the Let so it must NOT appear in free vars.
+    // "y" is free — it must appear.
+    let expr = AnfExpr::Let {
+        name: "x".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+        body: Box::new(AnfExpr::EffectCall {
+            capability: "io".to_string(),
+            func: "write".to_string(),
+            args: vec!["x".to_string(), "y".to_string()],
+        }),
+    };
+    let mut bound = vec![];
+    let mut out = vec![];
+    collect_free_vars(&expr, &mut bound, &mut out);
+    assert!(
+        !out.contains(&"x"),
+        "bound var 'x' must not appear in free vars; got: {out:?}"
+    );
+    assert!(
+        out.contains(&"y"),
+        "free var 'y' must appear in free vars; got: {out:?}"
+    );
+}
+
+// Scenario: binding_params reports EffectCall args as parameters.
+// binding_params is the pub(crate) path consumed by binding_signatures.
+// A bare EffectCall binding with two args must produce param_count == 2.
+#[test]
+fn binding_params_includes_effect_call_args() {
+    let binding = AnfBinding {
+        name: "fn_effect".to_string(),
+        source_ref: NodeRef(0),
+        expr: AnfExpr::EffectCall {
+            capability: "cap".to_string(),
+            func: "op".to_string(),
+            args: vec!["a".to_string(), "b".to_string()],
+        },
+    };
+    let params = binding_params(&binding);
+    assert_eq!(
+        params.len(),
+        2,
+        "binding_params must include both EffectCall args; got: {params:?}"
+    );
+    assert!(
+        params.contains(&"a"),
+        "param 'a' must be present; got: {params:?}"
+    );
+    assert!(
+        params.contains(&"b"),
+        "param 'b' must be present; got: {params:?}"
     );
 }
 
