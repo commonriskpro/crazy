@@ -97,7 +97,10 @@ impl EffectChecker {
                         scope,
                         evidence: Some(format!("E_EFFECT_UNDECLARED: {}", names.join(", "))),
                         blocking: true,
-                        repair_options: vec![],
+                        repair_options: vec![
+                            "add the missing effect to the node's effect_row declaration".into(),
+                            "remove the Emits edge if the effect emission is unintended".into(),
+                        ],
                     };
                 }
 
@@ -111,7 +114,11 @@ impl EffectChecker {
                         scope,
                         evidence: Some(format!("E_EFFECT_UNUSED: {}", names.join(", "))),
                         blocking: false,
-                        repair_options: vec![],
+                        repair_options: vec![
+                            "remove the unused effect declaration from effect_row".into(),
+                            "add an Emits edge to connect the declared effect to its target node"
+                                .into(),
+                        ],
                     };
                 }
 

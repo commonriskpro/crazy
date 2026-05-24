@@ -106,12 +106,13 @@ impl TranslationValidator {
 
         // Emit a single summary Proven when the graph passes all checks.
         if entries.is_empty() {
-            entries.push(make_entry(
-                "translation-validation/summary",
-                VerificationState::Proven,
-                "translation_validation",
-                Some("all translation validation checks passed".into()),
-            ));
+        entries.push(make_entry(
+            "translation-validation/summary",
+            VerificationState::Proven,
+            "translation_validation",
+            Some("all translation validation checks passed".into()),
+            vec![],
+        ));
         }
 
         entries
@@ -145,6 +146,12 @@ fn check_shape(graph: &SemanticGraph) -> Vec<VerificationEntry> {
                      return_type; return type is required for typed Core IR lowering",
                     node.name
                 )),
+                vec![
+                    "declare a return type annotation on the function signature".into(),
+                    "if the function is a trait method, add a concrete return type to the \
+                     implementation"
+                        .into(),
+                ],
             ));
         } else {
             entries.push(make_entry(
@@ -155,6 +162,7 @@ fn check_shape(graph: &SemanticGraph) -> Vec<VerificationEntry> {
                     "function '{}' has body_expr and declared return_type; shape consistent",
                     node.name
                 )),
+                vec![],
             ));
         }
     }
@@ -196,6 +204,7 @@ fn check_effect_provenance(graph: &SemanticGraph) -> Vec<VerificationEntry> {
                     "{} declared effect(s) follow 'name:Provider' format; provenance traceable",
                     row.effects.len()
                 )),
+                vec![],
             ));
         } else {
             entries.push(make_entry(
@@ -208,6 +217,13 @@ fn check_effect_provenance(graph: &SemanticGraph) -> Vec<VerificationEntry> {
                     malformed.join(", "),
                     node.name
                 )),
+                vec![
+                    "reformat the effect declaration to 'name:Provider' (e.g., 'db:Postgres')"
+                        .into(),
+                    "verify the effect name uses the canonical 'name:Provider' handler-binding \
+                     format"
+                        .into(),
+                ],
             ));
         }
     }
@@ -323,6 +339,7 @@ fn check_effect_obligations(graph: &SemanticGraph) -> Vec<VerificationEntry> {
                      obligation satisfied",
                     body_effects.len()
                 )),
+                vec![],
             ));
         } else {
             entries.push(make_entry(
@@ -335,6 +352,10 @@ fn check_effect_obligations(graph: &SemanticGraph) -> Vec<VerificationEntry> {
                     node.name,
                     undeclared.join(", ")
                 )),
+                vec![
+                    "add the missing effect(s) to the function's effect_row declaration".into(),
+                    "remove the effect call from the body if the effect is unintended".into(),
+                ],
             ));
         }
     }
@@ -383,6 +404,16 @@ fn check_evidence_sufficiency(graph: &SemanticGraph) -> Vec<VerificationEntry> {
                     row.effects.len(),
                     row.effects.join(", ")
                 )),
+                vec![
+                    "provide a body_expr with at least one effect call to serve as \
+                     implementation evidence"
+                        .into(),
+                    "add runtime_checks entries to serve as evidence for the declared effects"
+                        .into(),
+                    "move the function to a less restrictive profile if critical evidence is not \
+                     required"
+                        .into(),
+                ],
             ));
         } else {
             entries.push(make_entry(
@@ -395,6 +426,7 @@ fn check_evidence_sufficiency(graph: &SemanticGraph) -> Vec<VerificationEntry> {
                     node.name,
                     row.effects.len()
                 )),
+                vec![],
             ));
         }
     }
@@ -423,6 +455,7 @@ fn make_entry(
     state: VerificationState,
     scope: impl Into<String>,
     evidence: Option<String>,
+    repair_options: Vec<String>,
 ) -> VerificationEntry {
     let blocking = matches!(state, VerificationState::Failed | VerificationState::Unsafe);
     VerificationEntry {
@@ -431,7 +464,7 @@ fn make_entry(
         scope: scope.into(),
         evidence,
         blocking,
-        repair_options: vec![],
+        repair_options,
     }
 }
 
@@ -825,5 +858,189 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].state, VerificationState::Proven);
         assert_eq!(entries[0].scope, "translation_validation");
+    }
+
+    // ── repair_options: TV-1 ─────────────────────────────────────────────
+
+    #[test]
+    fn tv1_repair_options_non_empty_when_no_return_type() {
+        let node = fn_node_with_body(0, "fn.no_rt", "let x = 1 in x");
+        let graph = single_node_graph(node);
+        let entries = check_shape(&graph);
+        let e = entries.iter().find(|e| e.scope == "fn.no_rt").unwrap();
+        assert_eq!(e.state, VerificationState::Unverified);
+        assert!(
+            !e.repair_options.is_empty(),
+            "TV-1 Unverified entry must carry at least one repair option"
+        );
+        assert!(
+            e.repair_options
+                .iter()
+                .any(|r| r.contains("return type")),
+            "at least one repair option must mention 'return type'"
+        );
+    }
+
+    #[test]
+    fn tv1_repair_options_empty_when_shape_valid() {
+        let node = fn_node_with_body_and_return(0, "fn.ok_rt", "let x = 1 in x");
+        let graph = single_node_graph(node);
+        let entries = check_shape(&graph);
+        let e = entries.iter().find(|e| e.scope == "fn.ok_rt").unwrap();
+        assert_eq!(e.state, VerificationState::Proven);
+        assert!(
+            e.repair_options.is_empty(),
+            "TV-1 Proven entry must have no repair options"
+        );
+    }
+
+    // ── repair_options: TV-2 ─────────────────────────────────────────────
+
+    #[test]
+    fn tv2_repair_options_non_empty_when_effect_malformed() {
+        let node = fn_node_with_effects(0, "fn.mal", &["db"]); // no :Provider
+        let graph = single_node_graph(node);
+        let entries = check_effect_provenance(&graph);
+        let e = entries.iter().find(|e| e.scope == "fn.mal").unwrap();
+        assert_eq!(e.state, VerificationState::Unverified);
+        assert!(
+            !e.repair_options.is_empty(),
+            "TV-2 Unverified entry must carry at least one repair option"
+        );
+        assert!(
+            e.repair_options
+                .iter()
+                .any(|r| r.contains("name:Provider")),
+            "at least one repair option must mention the 'name:Provider' format"
+        );
+    }
+
+    #[test]
+    fn tv2_repair_options_empty_when_provenance_valid() {
+        let node = fn_node_with_effects(0, "fn.good_prov", &["db:Postgres"]);
+        let graph = single_node_graph(node);
+        let entries = check_effect_provenance(&graph);
+        let e = entries
+            .iter()
+            .find(|e| e.scope == "fn.good_prov")
+            .unwrap();
+        assert_eq!(e.state, VerificationState::Proven);
+        assert!(
+            e.repair_options.is_empty(),
+            "TV-2 Proven entry must have no repair options"
+        );
+    }
+
+    // ── repair_options: TV-3 ─────────────────────────────────────────────
+
+    #[test]
+    fn tv3_repair_options_non_empty_when_effect_undeclared() {
+        let node = fn_node_full(
+            0,
+            "fn.undecl",
+            "emit_effect(net)",
+            &[], // net not declared
+            Some("Unit"),
+        );
+        let graph = single_node_graph(node);
+        let entries = TranslationValidator::check(&graph, "prod");
+        let e = entries
+            .iter()
+            .find(|e| {
+                e.scope == "fn.undecl"
+                    && e.claim == "translation-validation/effect-obligation"
+            })
+            .unwrap();
+        assert_eq!(e.state, VerificationState::Failed);
+        assert!(
+            !e.repair_options.is_empty(),
+            "TV-3 Failed entry must carry at least one repair option"
+        );
+        assert!(
+            e.repair_options
+                .iter()
+                .any(|r| r.contains("effect_row")),
+            "at least one repair option must mention 'effect_row'"
+        );
+    }
+
+    #[test]
+    fn tv3_repair_options_empty_when_effects_declared() {
+        let node = fn_node_full(
+            0,
+            "fn.decl_ok",
+            "emit_effect(net)",
+            &["net:Http"],
+            Some("Unit"),
+        );
+        let graph = single_node_graph(node);
+        let entries = TranslationValidator::check(&graph, "prod");
+        let e = entries.iter().find(|e| {
+            e.scope == "fn.decl_ok" && e.claim == "translation-validation/effect-obligation"
+        });
+        if let Some(e) = e {
+            assert_eq!(e.state, VerificationState::Proven);
+            assert!(
+                e.repair_options.is_empty(),
+                "TV-3 Proven entry must have no repair options"
+            );
+        }
+    }
+
+    // ── repair_options: TV-4 ─────────────────────────────────────────────
+
+    #[test]
+    fn tv4_repair_options_non_empty_when_no_evidence() {
+        let node = fn_node_with_effects(0, "fn.no_ev", &["io:Console"]);
+        // No body_expr, no runtime_checks
+        let graph = single_node_graph(node);
+        let entries = TranslationValidator::check(&graph, "critical");
+        let e = entries
+            .iter()
+            .find(|e| {
+                e.scope == "fn.no_ev"
+                    && e.claim == "translation-validation/evidence-sufficiency"
+            })
+            .unwrap();
+        assert_eq!(e.state, VerificationState::Failed);
+        assert!(
+            !e.repair_options.is_empty(),
+            "TV-4 Failed entry must carry at least one repair option"
+        );
+        assert!(
+            e.repair_options.iter().any(|r| r.contains("body_expr")),
+            "at least one repair option must mention 'body_expr'"
+        );
+        assert!(
+            e.repair_options
+                .iter()
+                .any(|r| r.contains("runtime_checks")),
+            "at least one repair option must mention 'runtime_checks'"
+        );
+    }
+
+    #[test]
+    fn tv4_repair_options_empty_when_evidence_present() {
+        let node = fn_node_full(
+            0,
+            "fn.ev_ok",
+            "emit_effect(io)",
+            &["io:Console"],
+            Some("Unit"),
+        );
+        let graph = single_node_graph(node);
+        let entries = TranslationValidator::check(&graph, "critical");
+        let e = entries
+            .iter()
+            .find(|e| {
+                e.scope == "fn.ev_ok"
+                    && e.claim == "translation-validation/evidence-sufficiency"
+            })
+            .unwrap();
+        assert_eq!(e.state, VerificationState::Proven);
+        assert!(
+            e.repair_options.is_empty(),
+            "TV-4 Proven entry must have no repair options"
+        );
     }
 }

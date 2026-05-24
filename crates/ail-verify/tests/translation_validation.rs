@@ -598,6 +598,99 @@ fn unknown_profile_runs_tv3_and_tv4_strict_by_default() {
     );
 }
 
+// ── repair_options in integration tests ──────────────────────────────────
+
+/// TV-1 violations surfaced through the full pipeline must carry repair options.
+#[test]
+fn tv1_pipeline_repair_options_present_on_violation() {
+    let node = fn_with_body(0, "fn.nrt", "let x = 1 in x", None);
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "dev", &[]);
+    let report = VerificationPipeline::run(&ctx);
+
+    let e = find_tv_entry(&report.entries, "fn.nrt", "shape").unwrap();
+    assert_eq!(e.state, VerificationState::Unverified);
+    assert!(
+        !e.repair_options.is_empty(),
+        "TV-1 pipeline entry must carry repair options; got none"
+    );
+}
+
+/// TV-2 violations surfaced through the full pipeline must carry repair options.
+#[test]
+fn tv2_pipeline_repair_options_present_on_violation() {
+    let node = fn_with_effects(0, "fn.mal2", &["no_colon"]);
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "dev", &[]);
+    let report = VerificationPipeline::run(&ctx);
+
+    let e = find_tv_entry(&report.entries, "fn.mal2", "provenance").unwrap();
+    assert_eq!(e.state, VerificationState::Unverified);
+    assert!(
+        !e.repair_options.is_empty(),
+        "TV-2 pipeline entry must carry repair options; got none"
+    );
+}
+
+/// TV-3 violations surfaced through the full pipeline must carry repair options.
+#[test]
+fn tv3_pipeline_repair_options_present_on_violation() {
+    let node = fn_full(0, "fn.undecl2", "emit_effect(crypto)", "Bool", &[]);
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "prod", &[]);
+    let report = VerificationPipeline::run(&ctx);
+
+    let e = find_tv_entry(&report.entries, "fn.undecl2", "effect-obligation").unwrap();
+    assert_eq!(e.state, VerificationState::Failed);
+    assert!(
+        !e.repair_options.is_empty(),
+        "TV-3 pipeline entry must carry repair options; got none"
+    );
+}
+
+/// TV-4 violations surfaced through the full pipeline must carry repair options.
+#[test]
+fn tv4_pipeline_repair_options_present_on_violation() {
+    let node = fn_with_effects(0, "fn.ev2", &["io:Console"]);
+    // No body_expr, no runtime_checks
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+    let ctx = make_ctx(&graph, &solver, "critical", &[]);
+    let report = VerificationPipeline::run(&ctx);
+
+    let e = find_tv_entry(&report.entries, "fn.ev2", "evidence-sufficiency").unwrap();
+    assert_eq!(e.state, VerificationState::Failed);
+    assert!(
+        !e.repair_options.is_empty(),
+        "TV-4 pipeline entry must carry repair options; got none"
+    );
+    assert!(
+        e.repair_options.iter().any(|r| r.contains("body_expr")),
+        "at least one TV-4 repair option must mention 'body_expr'"
+    );
+    assert!(
+        e.repair_options
+            .iter()
+            .any(|r| r.contains("runtime_checks")),
+        "at least one TV-4 repair option must mention 'runtime_checks'"
+    );
+}
+
 // ── Empty graph ───────────────────────────────────────────────────────────
 
 #[test]
