@@ -1364,11 +1364,12 @@ fn stage3_op_with_multi_segment_qualified_type_passes() {
     );
 }
 
-// ── Ola5 Gap-2: Stage 19 — ANF Placeholder check ─────────────────────────
+// ── Ola5 Gap-2: Stage 19 — ANF body-less function structured diagnostic ───
 
 #[test]
 fn stage19_function_node_without_body_produces_placeholder_entry() {
-    // A Function node with no body_expr is a Placeholder → Stage 19 must flag it Unverified
+    // A Function node with no body_expr must produce a structured E_ANF_NO_BODY
+    // diagnostic in Stage 19 (Unverified).
     let node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.no_body");
     let graph = SemanticGraph {
         nodes: vec![node],
@@ -1385,12 +1386,11 @@ fn stage19_function_node_without_body_produces_placeholder_entry() {
             && e.evidence
                 .as_deref()
                 .unwrap_or("")
-                .to_lowercase()
-                .contains("placeholder")
+                .starts_with("E_ANF_NO_BODY")
     });
     assert!(
         entry.is_some(),
-        "Function node with no body_expr must produce Unverified Stage 19 entry with Placeholder; entries: {:?}",
+        "Function node with no body_expr must produce Unverified Stage 19 entry with E_ANF_NO_BODY; entries: {:?}",
         report
             .entries
             .iter()
@@ -1401,7 +1401,7 @@ fn stage19_function_node_without_body_produces_placeholder_entry() {
 
 #[test]
 fn stage19_non_function_node_without_body_does_not_flag_placeholder() {
-    // Module/Type/Capability nodes with no body_expr are NOT Placeholders
+    // Module/Type/Capability nodes with no body_expr must NOT produce E_ANF_NO_BODY.
     let module_node = GraphNode::new(NodeRef(0), NodeKind::Module, "mod.payments");
     let type_node = GraphNode::new(NodeRef(1), NodeKind::Type, "Amount");
     let graph = SemanticGraph {
@@ -1413,18 +1413,17 @@ fn stage19_non_function_node_without_body_does_not_flag_placeholder() {
 
     let report = VerificationPipeline::run(&ctx);
 
-    let placeholder_entry = report.entries.iter().find(|e| {
+    let no_body_entry = report.entries.iter().find(|e| {
         e.claim == "19-lower-to-anf"
             && e.state == ail_verify::report::VerificationState::Unverified
             && e.evidence
                 .as_deref()
                 .unwrap_or("")
-                .to_lowercase()
-                .contains("placeholder")
+                .starts_with("E_ANF_NO_BODY")
     });
     assert!(
-        placeholder_entry.is_none(),
-        "Non-function nodes without body must NOT produce Placeholder Stage 19 entry"
+        no_body_entry.is_none(),
+        "Non-function nodes without body must NOT produce E_ANF_NO_BODY Stage 19 entry"
     );
 }
 

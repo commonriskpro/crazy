@@ -66,9 +66,10 @@ pub(super) fn lower_anf(graph: &SemanticGraph) -> Vec<VerificationEntry> {
     use ail_core::semantic_graph::NodeKind;
     let mut entries = Vec::new();
 
-    // Placeholder check (Ola5 Gap-2): Function nodes with no body_expr are
-    // structural placeholders.  Flag each one individually as Unverified so
-    // callers can distinguish missing implementations from verified ones.
+    // Body-less function check: Function nodes with no body_expr cannot be
+    // lowered to ANF.  Each such node gets a structured diagnostic entry so
+    // callers can programmatically distinguish missing implementations from
+    // verified ones.  The error code `E_ANF_NO_BODY` is machine-parseable.
     for node in &graph.nodes {
         if node.kind == NodeKind::Function && node.body_expr.is_none() {
             entries.push(stage_entry(
@@ -76,7 +77,7 @@ pub(super) fn lower_anf(graph: &SemanticGraph) -> Vec<VerificationEntry> {
                 VerificationState::Unverified,
                 node.name.clone(),
                 Some(format!(
-                    "Placeholder: function '{}' has no body expression; ANF lowering deferred",
+                    "E_ANF_NO_BODY: function '{}' has no body expression",
                     node.name
                 )),
             ));
@@ -480,6 +481,98 @@ mod tests {
                 .unwrap_or("")
                 .contains("E_ANF_RESOURCE_ORDER"),
             "resource order violation must produce E_ANF_RESOURCE_ORDER"
+        );
+    }
+
+    // ── Body-less function structured diagnostics ─────────────────────────
+
+    // RED → GREEN: A Function node with no body_expr produces a structured
+    // E_ANF_NO_BODY diagnostic in stage 19-lower-to-anf.
+    #[test]
+    fn bodyless_function_produces_e_anf_no_body_diagnostic() {
+        use super::lower_anf;
+
+        let node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn_stub");
+        // No body_expr set — this is the body-less case.
+        let graph = SemanticGraph {
+            nodes: vec![node],
+            edges: vec![],
+        };
+        let entries = lower_anf(&graph);
+        // Must include exactly one entry for the body-less function.
+        let stub_entry = entries
+            .iter()
+            .find(|e| e.scope == "fn_stub")
+            .expect("must have an entry for fn_stub");
+        assert_eq!(
+            stub_entry.state,
+            VerificationState::Unverified,
+            "body-less function must be Unverified, not Proven or Failed"
+        );
+        assert!(
+            stub_entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("E_ANF_NO_BODY"),
+            "evidence must start with structured code E_ANF_NO_BODY, got: {:?}",
+            stub_entry.evidence
+        );
+        assert!(
+            stub_entry
+                .evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("fn_stub"),
+            "evidence must include the function name"
+        );
+    }
+
+    // TRIANGULATE: Multiple body-less functions each get their own E_ANF_NO_BODY entry.
+    #[test]
+    fn multiple_bodyless_functions_each_get_e_anf_no_body_entry() {
+        use super::lower_anf;
+
+        let graph = SemanticGraph {
+            nodes: vec![
+                GraphNode::new(NodeRef(0), NodeKind::Function, "fn_a"),
+                GraphNode::new(NodeRef(1), NodeKind::Function, "fn_b"),
+            ],
+            edges: vec![],
+        };
+        let entries = lower_anf(&graph);
+        let no_body_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                e.evidence
+                    .as_deref()
+                    .unwrap_or("")
+                    .starts_with("E_ANF_NO_BODY")
+            })
+            .collect();
+        assert_eq!(
+            no_body_entries.len(),
+            2,
+            "each body-less function must have its own E_ANF_NO_BODY entry"
+        );
+    }
+
+    // TRIANGULATE: A Function WITH a body does not produce E_ANF_NO_BODY.
+    #[test]
+    fn function_with_body_does_not_produce_e_anf_no_body() {
+        use super::lower_anf;
+
+        let graph = graph_with_body("let x = 1 in x");
+        let entries = lower_anf(&graph);
+        let has_no_body = entries.iter().any(|e| {
+            e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("E_ANF_NO_BODY")
+        });
+        assert!(
+            !has_no_body,
+            "a function with a body must not produce E_ANF_NO_BODY"
         );
     }
 }
