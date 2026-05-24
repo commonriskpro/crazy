@@ -16,6 +16,7 @@ use ail_core::semantic_graph::NodeRef;
 
 use crate::anf::SourceMap;
 use crate::artifact_manifest::ArtifactManifest;
+use crate::capabilities::CapabilitiesManifest;
 use crate::core_ir::StageHashes;
 use crate::wasm_abi::WasmTypeDescriptor;
 
@@ -65,6 +66,12 @@ pub struct WasmArtifact {
     /// Populated by `emit_wasm` from the expression trees of exported bindings.
     /// Used by the runtime's `invoke_typed` to decode structured return values.
     pub export_types: BTreeMap<String, WasmTypeDescriptor>,
+    /// Capability manifest listing all binding names and their source provenance.
+    ///
+    /// One entry per `AnfBinding` in binding order.  Follows the same schema
+    /// as `NativeArtifact.capabilities_manifest` so CLI consumers can parse
+    /// `capabilities_manifest.entries` uniformly across targets.
+    pub capabilities_manifest: CapabilitiesManifest,
     /// Offset in WASM linear memory where `host_call_write` writes structured
     /// effect call results.
     ///

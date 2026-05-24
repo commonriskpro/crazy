@@ -58,6 +58,7 @@ use wasm_encoder::Module;
 
 use crate::anf::{AnfIr, SourceMap, SourceMapEntry};
 use crate::artifact_manifest::ArtifactManifest;
+use crate::capabilities::CapabilitiesManifest;
 use crate::error::CompileError;
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
 // Public re-exports: maintain the pre-existing surface of `ail_compiler::wasm`.
@@ -200,9 +201,16 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     hash_chain.wasm_hash = Some(wasm_hash);
     hash_chain.source_map_hash = Some(source_map_hash);
 
-    // Build ArtifactManifest from the complete hash chain.
-    let capabilities_manifest_bytes = stable_cbor_bytes(&anf.bindings)?;
+    // Build capability manifest from bindings — one entry per AnfBinding.
+    let capabilities_manifest = CapabilitiesManifest::from_bindings(&anf.bindings);
+
+    // Seal: capabilities_manifest_hash = blake3(cbor(capabilities_manifest)).
+    // Uses the same manifest bytes that are stored in WasmArtifact so the hash
+    // is consistent with the real manifest (not a proxy over raw bindings).
+    let capabilities_manifest_bytes = stable_cbor_bytes(&capabilities_manifest)?;
     let capabilities_manifest_hash = hash_with_parent(&[], &capabilities_manifest_bytes);
+
+    // Build ArtifactManifest from the complete hash chain.
     let artifact_manifest = ArtifactManifest {
         profile: profile.to_string(),
         compiler_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -249,6 +257,7 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         wasm,
         source_map,
         provenance,
+        capabilities_manifest,
         hash_chain,
         artifact_manifest,
         source_map_json,

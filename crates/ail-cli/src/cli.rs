@@ -1693,6 +1693,8 @@ async fn cmd_inspect(
             let wasm_hash = artifact.hash_chain.wasm_hash.map(|h| bytes_to_hex(&h));
             let profile = artifact.artifact_manifest.profile.clone();
             let compiler_version = artifact.artifact_manifest.compiler_version.clone();
+            let capabilities_manifest_val =
+                serde_json::to_value(&artifact.capabilities_manifest).unwrap_or(Value::Null);
             let artifact_manifest_val: Value =
                 serde_json::from_slice(&artifact.artifact_manifest_json).unwrap_or(Value::Null);
             let semantic_source_map_val: Value =
@@ -1711,8 +1713,8 @@ async fn cmd_inspect(
                     "hash": wasm_hash,
                     "profile": profile,
                     "compiler_version": compiler_version,
-                    "capabilities_manifest": { "entries": [] },
-                    "capabilities_manifest_source": "not_available_for_wasm",
+                    "capabilities_manifest": capabilities_manifest_val,
+                    "capabilities_manifest_source": "computed_from_wasm_bindings",
                     "semantic_source_map": semantic_source_map_val,
                     "artifact_manifest": artifact_manifest_val,
                 }),

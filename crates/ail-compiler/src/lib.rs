@@ -28,6 +28,7 @@
 pub mod anf;
 pub mod artifact_manifest;
 pub mod cache;
+pub mod capabilities;
 pub mod compiler_report;
 pub mod core_ir;
 pub mod error;
@@ -54,6 +55,7 @@ pub use anf::{
 };
 pub use artifact_manifest::ArtifactManifest;
 pub use cache::{ArtifactCache, ArtifactEntry, MemoryArtifactCache};
+pub use capabilities::{CapabilitiesManifest, CapabilityEntry};
 pub use compiler_report::{CompilerReport, CompilerWarning, StageRecord};
 pub use core_ir::{
     CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, MatchArm, SelectClause,
@@ -66,8 +68,6 @@ pub use lower::{
     is_report_accepted, lower_core_expr_to_anf, lower_to_anf, lower_to_anf_with_graph,
     lower_to_core_ir, nominal_to_core_type,
 };
-pub use native::{
-    CapabilitiesManifest, CapabilityEntry, NativeArtifact, emit_native, emit_native_with_profile,
-};
+pub use native::{NativeArtifact, emit_native, emit_native_with_profile};
 pub use optimize::optimize_bindings;
 pub use wasm::{WasmArtifact, emit_wasm, emit_wasm_with_profile};

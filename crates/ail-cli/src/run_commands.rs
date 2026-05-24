@@ -158,11 +158,11 @@ pub(crate) async fn cmd_compile(
         .map(|h| bytes_to_hex(&h))
         .unwrap_or_else(|| "<none>".to_string());
     let wasm_size = artifact.wasm.len();
+    let capabilities_count = artifact.capabilities_manifest.entries.len();
 
-    // WASM artifacts do not yet carry a full capability manifest sidecar, but
-    // expose the same top-level schema as native artifacts so JSON consumers
-    // can parse `capabilities_manifest.entries` uniformly across targets.
-    let capabilities_manifest = json!({ "entries": [] });
+    // Serialize the real capabilities manifest — one entry per ANF binding.
+    let capabilities_manifest = serde_json::to_value(&artifact.capabilities_manifest)
+        .map_err(|e| CliError::Domain(format!("compile (capabilities manifest): {e}")))?;
     let semantic_source_map: Value = serde_json::from_slice(&artifact.source_map_json)
         .map_err(|e| CliError::Domain(format!("compile (source map sidecar): {e}")))?;
     let artifact_manifest: Value = serde_json::from_slice(&artifact.artifact_manifest_json)
@@ -177,7 +177,7 @@ pub(crate) async fn cmd_compile(
     });
 
     let human_msg = format!(
-        "target: {target}\nprofile: {profile}\nwasm bytes: {wasm_size}\nwasm-hash: {wasm_hash}\ncapabilities: 0\nwarnings: 0"
+        "target: {target}\nprofile: {profile}\nwasm bytes: {wasm_size}\nwasm-hash: {wasm_hash}\ncapabilities: {capabilities_count}\nwarnings: 0"
     );
     print_response(
         mode,
