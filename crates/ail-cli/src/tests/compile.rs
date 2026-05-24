@@ -299,7 +299,8 @@ fn compile_gate_rejects_unsafe_entry() {
 // Scenario: the verify_graph_for_compile function accepts the current CLI graph.
 //   GIVEN the built-in CLI graph (fn.answer + fn.checkout)
 //   WHEN verify_graph_for_compile is called
-//   THEN it returns Ok — the current graph has no Failed/Unsafe entries
+//   THEN it returns Ok — TypeChecker + EffectChecker produce no Failed/Unsafe entries
+//        for this clean graph
 #[test]
 fn verify_graph_for_compile_accepts_current_graph() {
     use crate::compile_commands::verify_graph_for_compile;
@@ -308,8 +309,85 @@ fn verify_graph_for_compile_accepts_current_graph() {
     let result = verify_graph_for_compile(&graph);
     assert!(
         result.is_ok(),
-        "compile gate must accept the current CLI graph (Checker only produces Proven/Unverified \
-         for this graph, never Failed/Unsafe); got: {result:?}"
+        "compile gate must accept the current CLI graph (TypeChecker + EffectChecker \
+         produce no Failed/Unsafe entries for this graph); got: {result:?}"
+    );
+}
+
+// Scenario: verify_graph_for_compile blocks a graph with a null return type.
+//   GIVEN a graph with a Function node whose return_type is "null"
+//   WHEN verify_graph_for_compile is called
+//   THEN TypeChecker emits E_NULL_IN_CORE_IR (Failed) and the gate returns Err
+//
+// This exercises the actual TypeChecker path inside verify_graph_for_compile
+// and proves the gate is non-theatrical: real type violations produce blocking entries.
+#[test]
+fn verify_graph_for_compile_blocks_null_return_type() {
+    use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
+
+    use crate::compile_commands::verify_graph_for_compile;
+
+    let mut fn_node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.bad_return");
+    fn_node.return_type = Some("null".to_string()); // violates null-policy (E_NULL_IN_CORE_IR)
+
+    let graph = SemanticGraph {
+        nodes: vec![fn_node],
+        edges: vec![],
+    };
+
+    let result = verify_graph_for_compile(&graph);
+    assert!(
+        result.is_err(),
+        "compile gate must block a graph whose function returns 'null' \
+         (TypeChecker emits E_NULL_IN_CORE_IR → Failed); got: {result:?}"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("compile blocked"),
+        "error message must mention 'compile blocked'; got: {err_msg}"
+    );
+}
+
+// Scenario: verify_graph_for_compile blocks a graph with an undeclared emitted effect.
+//   GIVEN a Function node with an Emits edge to "IO" but no effect_row declaring "IO"
+//   WHEN verify_graph_for_compile is called
+//   THEN EffectChecker emits E_EFFECT_UNDECLARED (Failed) and the gate returns Err
+//
+// This exercises the actual EffectChecker path inside verify_graph_for_compile
+// and proves the gate catches effect-safety violations, not just type violations.
+#[test]
+fn verify_graph_for_compile_blocks_undeclared_emitted_effect() {
+    use ail_core::semantic_graph::{
+        EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph,
+    };
+
+    use crate::compile_commands::verify_graph_for_compile;
+
+    // "IO" is a side-effect node referenced by the Emits edge.
+    let effect_node = GraphNode::new(NodeRef(0), NodeKind::Function, "IO");
+
+    // Caller emits IO via a graph edge but declares no effect_row — violation.
+    let caller = GraphNode::new(NodeRef(1), NodeKind::Function, "fn.impure");
+    // no effect_row declared on caller
+
+    let emits_edge = GraphEdge::new(NodeRef(1), NodeRef(0), EdgeKind::Emits);
+
+    let graph = SemanticGraph {
+        nodes: vec![effect_node, caller],
+        edges: vec![emits_edge],
+    };
+
+    let result = verify_graph_for_compile(&graph);
+    assert!(
+        result.is_err(),
+        "compile gate must block a graph where a function emits an effect \
+         without declaring it in effect_row (EffectChecker emits E_EFFECT_UNDECLARED → Failed); \
+         got: {result:?}"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("compile blocked"),
+        "error message must mention 'compile blocked'; got: {err_msg}"
     );
 }
 
