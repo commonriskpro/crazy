@@ -200,6 +200,16 @@ pub(crate) async fn cmd_verify(
     let pipeline_report =
         VerificationPipeline::run_with_changeset(&pipeline_ctx, None, base_graph.as_ref());
 
+    // ── Persist the verification report ──────────────────────────────────
+    // Non-fatal: if the store is memory-only or Postgres, this is a no-op
+    // (or stores in memory without a sidecar).  Failures are silenced so
+    // that verify never fails purely due to report persistence I/O.
+    let report_hash_hex = store
+        .save_verification_report(change_id, &pipeline_report)
+        .await
+        .ok()
+        .map(|h| h.to_hex());
+
     // ── Separate policy evaluation on content-only entries ────────────────
     // Filter out pipeline meta-stage entries (stages 01–05) whose Unverified
     // state is caused by the absence of raw changeset text, not by content
@@ -450,6 +460,7 @@ pub(crate) async fn cmd_verify(
         json!({
             "change_id": change_id,
             "profile": profile,
+            "verification_report_hash": report_hash_hex,
             "verification_report": {
                 "entries": entries_json,
                 "summary": summary,
@@ -579,13 +590,24 @@ pub(crate) async fn cmd_apply(
             let change_oid = hex_to_object_id(change_id)?;
             let graph_root = store.save_graph(&graph).await?;
             let parent_id = current_snapshot.map(|s| s.id);
+
+            // Try to attach a previously persisted verification report hash.
+            // Non-fatal: if no report was persisted (Memory store, first apply
+            // without a prior verify, or I/O failure) the hash stays None.
+            let verification_report_hash = store
+                .load_verification_report_by_change_id(change_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|(_, hash)| *hash.as_bytes());
+
             let new_envelope = SnapshotEnvelope {
                 id: ObjectId::from_bytes(&format!("snapshot-after-{change_id}").into_bytes()),
                 graph_root_hash: graph_root,
                 parent_id,
                 applied_change_id: Some(change_oid),
                 created_at: unix_ms_now(),
-                verification_report_hash: None,
+                verification_report_hash,
                 ..Default::default()
             };
             let new_id = store.save_snapshot(&new_envelope).await?;

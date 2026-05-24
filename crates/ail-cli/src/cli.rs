@@ -1642,10 +1642,35 @@ async fn cmd_inspect(
             }
         }
         "report" => {
-            // Derive a real VerificationReport from the current graph.
-            // Reports are computed on demand; the id is used as a reference label.
-            let graph = load_current_graph_for_cli(store).await?;
-            let report = Checker::check(&graph);
+            // Try to load a persisted VerificationReport:
+            //   1. If `id` is a 64-char hex hash → load by hash from the object store.
+            //   2. Otherwise treat `id` as a change-id and load via the sidecar index.
+            //   3. If neither is found → derive from the current graph (fallback).
+            let (report, source, resolved_id) = if is_valid_change_id(id) {
+                // Try hash lookup first.
+                let hash_oid = hex_to_object_id(id)?;
+                if let Some(r) = store.load_verification_report_by_hash(&hash_oid).await? {
+                    (r, "persisted_by_hash", id.to_string())
+                } else if let Some((r, hash)) =
+                    store.load_verification_report_by_change_id(id).await?
+                {
+                    (r, "persisted_by_change_id", hash.to_hex())
+                } else {
+                    let graph = load_current_graph_for_cli(store).await?;
+                    let r = Checker::check(&graph);
+                    (r, "derived_from_current_graph", id.to_string())
+                }
+            } else {
+                // id is not a valid 64-char hex; try it as a change-id sidecar lookup.
+                if let Some((r, hash)) = store.load_verification_report_by_change_id(id).await? {
+                    (r, "persisted_by_change_id", hash.to_hex())
+                } else {
+                    let graph = load_current_graph_for_cli(store).await?;
+                    let r = Checker::check(&graph);
+                    (r, "derived_from_current_graph", id.to_string())
+                }
+            };
+
             let summary = format!("{:?}", report.summary());
             let entries_count = report.entries.len();
             let diagnostics_count = report.diagnostics.len();
@@ -1668,15 +1693,15 @@ async fn cmd_inspect(
                 .map(|d| serde_json::to_value(d).unwrap_or_else(|_| json!({ "code": "" })))
                 .collect();
             let human_msg = format!(
-                "type: report\nid: {id}\nsource: derived_from_current_graph\nsummary: {summary}\nentries: {entries_count}\ndiagnostics: {diagnostics_count}"
+                "type: report\nid: {resolved_id}\nsource: {source}\nsummary: {summary}\nentries: {entries_count}\ndiagnostics: {diagnostics_count}"
             );
             print_response(
                 mode,
                 &human_msg,
                 json!({
                     "type": "report",
-                    "id": id,
-                    "source": "derived_from_current_graph",
+                    "id": resolved_id,
+                    "source": source,
                     "status": summary,
                     "entries": entries_json,
                     "diagnostics": diagnostics_json,
