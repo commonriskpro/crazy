@@ -29,8 +29,13 @@ pub const CONTEXT_RPC_SUBSCRIBE_METHOD: &str = "context.subscribe";
 /// JSON-RPC method for in-process token authentication.
 pub const CONTEXT_RPC_AUTH_METHOD: &str = "context.auth";
 
-const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
-const JSONRPC_INVALID_PARAMS: i64 = -32602;
+/// JSON-RPC 2.0 parse error: the incoming line could not be deserialized.
+///
+/// The response id is `""` when the id cannot be recovered from a malformed
+/// envelope — a known limitation of using `String` for id.
+pub const JSONRPC_PARSE_ERROR: i64 = -32700;
+pub(crate) const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
+pub(crate) const JSONRPC_INVALID_PARAMS: i64 = -32602;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextRequest {
@@ -137,6 +142,15 @@ impl ContextRpcResponse {
                 message: message.into(),
             }),
         }
+    }
+
+    /// Build a parse-error response for a line that could not be deserialized.
+    ///
+    /// The id is `""` because the id cannot be recovered from a malformed
+    /// envelope.  This is a pragmatic compromise; JSON-RPC 2.0 §5.1 requires
+    /// `null` for id, but our struct uses `String`.
+    pub fn parse_error(message: impl Into<String>) -> Self {
+        Self::error("", JSONRPC_PARSE_ERROR, message)
     }
 
     pub fn to_json_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
