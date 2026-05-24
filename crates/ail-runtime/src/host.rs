@@ -52,7 +52,8 @@ use crate::audit::{AuditEvent, AuditLog};
 use crate::error::RuntimeResult;
 use crate::handler::Handler;
 use crate::host_dispatch::{
-    HostState, dispatch_host_call, dispatch_host_call_write, unix_timestamp_micros,
+    ClockFn, HostState, default_clock_fn, dispatch_host_call, dispatch_host_call_write,
+    unix_timestamp_micros,
 };
 use crate::manifest::{CapabilityManifest, blake3_hex_of};
 use crate::profile::{CapabilityId, CapabilityRevocationRegistry, InFlightPolicy, RuntimeProfile};
@@ -136,6 +137,19 @@ pub struct RuntimeHost {
     capability_calls_used: u64,
     /// Runtime-mutable revocations for active profile grants.
     revocations: CapabilityRevocationRegistry,
+    /// Injectable clock for rate limit window tracking (nanoseconds since epoch).
+    ///
+    /// Replaced via [`with_clock_fn`] for deterministic testing.
+    ///
+    /// [`with_clock_fn`]: RuntimeHost::with_clock_fn
+    clock_fn: ClockFn,
+    /// Fixed-window call counters for `rate_limits` enforcement on the
+    /// host-side `call_capability` path (same semantics as `HostState`).
+    rate_limit_windows: HashMap<Option<String>, (u64, u64)>,
+    /// In-flight concurrent calls on the host-side `call_capability` path.
+    concurrent_calls: u64,
+    /// Host-call recursion depth on the host-side `call_capability` path.
+    call_depth: u64,
 }
 
 impl RuntimeHost {
@@ -232,6 +246,10 @@ impl RuntimeHost {
             current_trace_context: None,
             capability_calls_used: 0,
             revocations: CapabilityRevocationRegistry::new(),
+            clock_fn: default_clock_fn(),
+            rate_limit_windows: HashMap::new(),
+            concurrent_calls: 0,
+            call_depth: 0,
         }
     }
 
@@ -261,6 +279,26 @@ impl RuntimeHost {
     /// Install an existing revocation registry for this host.
     pub fn with_revocation_registry(mut self, registry: CapabilityRevocationRegistry) -> Self {
         self.revocations = registry;
+        self
+    }
+
+    /// Replace the clock used for rate limit window tracking.
+    ///
+    /// The clock must return nanoseconds since Unix epoch.  The default is the
+    /// system wall clock.  Inject a controllable counter in tests to make rate
+    /// limit assertions fully deterministic without any `sleep` calls.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use std::sync::Arc;
+    /// use std::sync::atomic::{AtomicU64, Ordering};
+    ///
+    /// let clock = Arc::new(AtomicU64::new(0));
+    /// let clock_fn = { let c = clock.clone(); Arc::new(move || c.load(Ordering::SeqCst)) };
+    /// let host = RuntimeHost::new().with_clock_fn(clock_fn);
+    /// ```
+    pub fn with_clock_fn(mut self, clock: Arc<dyn Fn() -> u64 + Send + Sync>) -> Self {
+        self.clock_fn = clock;
         self
     }
 
@@ -341,6 +379,7 @@ impl RuntimeHost {
             manifest,
             profile,
             package_manifests,
+            self.clock_fn.clone(),
         );
         let event = crate::host_preflight::build_audit_event(&result, profile, wasm);
         self.audit_log.lock().expect("audit_log lock").push(event);
@@ -512,12 +551,122 @@ impl RuntimeHost {
             return Err(err);
         }
 
+        // Rate limit enforcement.
+        {
+            let rate_limits_vec = self
+                .current_profile
+                .as_ref()
+                .and_then(|p| p.limits().rate_limits.clone())
+                .unwrap_or_default();
+            if !crate::host_dispatch::check_rate_limits(
+                &rate_limits_vec,
+                &self.clock_fn,
+                &mut self.rate_limit_windows,
+                capability,
+            ) {
+                let err = HostError::LimitExceeded(format!(
+                    "rate_limit exceeded for capability `{}`",
+                    capability.as_str()
+                ));
+                let duration_us = start.elapsed().as_micros() as u64;
+                self.audit_log.lock().expect("audit_log lock").push(
+                    AuditEvent::CapabilityCallExecuted {
+                        capability: capability.clone(),
+                        operation: operation.to_string(),
+                        handler_name: "none".to_string(),
+                        succeeded: false,
+                        duration_us,
+                        timestamp,
+                        profile: profile_name,
+                        module: module_name,
+                        function: None,
+                        input_hash,
+                        output_hash: None,
+                        trace_id,
+                        verification_report_hash: vr_hash,
+                        trace_context: child_trace,
+                    },
+                );
+                return Err(err);
+            }
+        }
+
+        // Concurrency limit enforcement.
+        if let Some(max_concurrent) = self
+            .current_profile
+            .as_ref()
+            .and_then(|p| p.limits().concurrency_limit)
+            && self.concurrent_calls >= max_concurrent
+        {
+            let err = HostError::LimitExceeded(format!(
+                "concurrency_limit exceeded: limit={max_concurrent}, in_flight={}",
+                self.concurrent_calls
+            ));
+            let duration_us = start.elapsed().as_micros() as u64;
+            self.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
+                    capability: capability.clone(),
+                    operation: operation.to_string(),
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us,
+                    timestamp,
+                    profile: profile_name,
+                    module: module_name,
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
+                    trace_context: child_trace,
+                },
+            );
+            return Err(err);
+        }
+
+        // Recursion stack (call depth) limit enforcement.
+        if let Some(max_depth) = self
+            .current_profile
+            .as_ref()
+            .and_then(|p| p.limits().recursion_stack_limit)
+            && self.call_depth >= max_depth
+        {
+            let err = HostError::LimitExceeded(format!(
+                "recursion_stack_limit exceeded: limit={max_depth}, depth={}",
+                self.call_depth
+            ));
+            let duration_us = start.elapsed().as_micros() as u64;
+            self.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
+                    capability: capability.clone(),
+                    operation: operation.to_string(),
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us,
+                    timestamp,
+                    profile: profile_name,
+                    module: module_name,
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
+                    trace_context: child_trace,
+                },
+            );
+            return Err(err);
+        }
+
         self.capability_calls_used += 1;
+        self.concurrent_calls += 1;
+        self.call_depth += 1;
 
         // Step 2: schema/boundary validation (if a definition is registered).
         if let Some(def) = self.schema_registry.get(capability.as_str())
             && let Err(schema_err) = def.schema().input().validate(payload)
         {
+            self.concurrent_calls -= 1;
+            self.call_depth -= 1;
             let err = HostError::PayloadDecodeError(format!(
                 "schema validation failed for `{}`: {}",
                 capability.as_str(),
@@ -552,6 +701,8 @@ impl RuntimeHost {
             .find(|h| h.capabilities().contains(capability));
 
         let Some(handler) = handler else {
+            self.concurrent_calls -= 1;
+            self.call_depth -= 1;
             let err = HostError::HandlerNotBound(capability.as_str().to_string());
             let duration_us = start.elapsed().as_micros() as u64;
             self.audit_log.lock().expect("audit_log lock").push(
@@ -611,6 +762,10 @@ impl RuntimeHost {
             .as_ref()
             .ok()
             .map(|bytes| blake3_hex_of(bytes.as_slice()));
+
+        // Decrement in-flight counters before audit to keep state consistent.
+        self.concurrent_calls -= 1;
+        self.call_depth -= 1;
 
         // Step 5: audit.
         self.audit_log

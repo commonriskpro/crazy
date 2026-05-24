@@ -22,7 +22,7 @@ use ail_package::validate_verified_package_evidence;
 use crate::audit::{AuditEvent, AuditLog};
 use crate::error::{PreflightFailure, RuntimeError, RuntimeResult};
 use crate::handler::Handler;
-use crate::host_dispatch::{HostState, RuntimeInstance, instantiate_inner};
+use crate::host_dispatch::{ClockFn, HostState, RuntimeInstance, instantiate_inner};
 use crate::manifest::{CapabilityManifest, blake3_hex_of};
 use crate::profile::{CapabilityId, CapabilityRevocationRegistry, RuntimeProfile};
 use wasmtime::{Engine, Linker};
@@ -147,6 +147,7 @@ pub(crate) fn preflight_inner(
     manifest: &CapabilityManifest,
     profile: &RuntimeProfile,
     package_manifests: &[PackageManifest],
+    clock_fn: ClockFn,
 ) -> RuntimeResult<RuntimeInstance> {
     // Stage 0 — Package trust gate.
     if !package_manifests.is_empty() {
@@ -198,6 +199,7 @@ pub(crate) fn preflight_inner(
         wasm,
         profile,
         &manifest.module,
+        clock_fn,
     )?;
 
     // Stage 6 — Handler binding check (opt-in).
