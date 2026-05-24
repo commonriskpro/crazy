@@ -2610,6 +2610,14 @@ fn policy_check_json_has_violations_and_rules_checked() {
         v["data"]["rules_checked"].is_array(),
         "rules_checked must be array; got: {v}"
     );
+    assert_eq!(
+        v["data"]["engine_status"], "blocked",
+        "prod policy check over default graph must expose PolicyEngine blocked status; got: {v}"
+    );
+    assert!(
+        v["data"]["engine_approval_required"].is_array(),
+        "engine_approval_required must be a stable array field; got: {v}"
+    );
 }
 
 /// SC-POL2: policy explain --json includes enforced_on field.
