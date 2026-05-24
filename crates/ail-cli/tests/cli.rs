@@ -11,7 +11,8 @@
 // Each test cites the spec scenario it exercises in its doc comment.
 
 use ail_package::{
-    AdvisorySeverity, Lockfile, LockfileEntry, PackageDef, PackageKeypair, PackageManifest,
+    AdvisorySeverity, CompatibilityClass, Lockfile, LockfileEntry, MigrationRecord, MigrationStep,
+    PackageCompatibilityMetadata, PackageDef, PackageKeypair, PackageManifest,
     PackageVerificationReport, SecurityAdvisory, SignedPackage, TrustLevel, YankRecord,
 };
 use ail_storage::SnapshotEnvelope;
@@ -66,6 +67,20 @@ struct TestPackageRegistryFile {
     yanked: Vec<YankRecord>,
 }
 
+#[derive(serde::Serialize)]
+struct TestPackageRegistryFileWithCompatibility {
+    #[serde(default)]
+    signed_packages: Vec<SignedPackage>,
+    #[serde(default)]
+    legacy_manifests: Vec<PackageManifest>,
+    #[serde(default)]
+    compatibility_metadata: Vec<PackageCompatibilityMetadata>,
+    #[serde(default)]
+    advisories: Vec<SecurityAdvisory>,
+    #[serde(default)]
+    yanked: Vec<YankRecord>,
+}
+
 fn package_registry_path(project_dir: &std::path::Path) -> std::path::PathBuf {
     project_dir
         .join(".ail")
@@ -83,6 +98,18 @@ fn read_package_registry_file(project_dir: &std::path::Path) -> TestPackageRegis
 }
 
 fn write_package_registry_file(project_dir: &std::path::Path, file: &TestPackageRegistryFile) {
+    let path = package_registry_path(project_dir);
+    fs::create_dir_all(path.parent().expect("registry path must have parent"))
+        .expect("registry directory must be created");
+    let mut bytes = Vec::new();
+    ciborium::into_writer(file, &mut bytes).expect("registry file must encode");
+    fs::write(path, bytes).expect("registry file must be written");
+}
+
+fn write_package_registry_file_with_compatibility(
+    project_dir: &std::path::Path,
+    file: &TestPackageRegistryFileWithCompatibility,
+) {
     let path = package_registry_path(project_dir);
     fs::create_dir_all(path.parent().expect("registry path must have parent"))
         .expect("registry directory must be created");
@@ -172,6 +199,32 @@ fn test_package_manifest_with_report(name: &str, version: &str) -> PackageManife
     }];
     manifest.verification_report = Some(test_verification_report(name, version));
     manifest
+}
+
+fn test_migration(package: &str, from_version: &str, to_version: &str) -> MigrationRecord {
+    MigrationRecord {
+        package: package.to_string(),
+        from_version: from_version.to_string(),
+        to_version: to_version.to_string(),
+        steps: vec![MigrationStep {
+            changed: "capability old.charge".to_string(),
+            replacement: "capability new.charge".to_string(),
+        }],
+    }
+}
+
+fn compatibility_metadata(
+    package: &str,
+    version: &str,
+    compatibility: CompatibilityClass,
+    migrations: Vec<MigrationRecord>,
+) -> PackageCompatibilityMetadata {
+    PackageCompatibilityMetadata {
+        package: package.to_string(),
+        version: version.to_string(),
+        compatibility,
+        migrations,
+    }
 }
 
 // ── Task 3.2 baseline: dispatch + context + change ────────────────────────
@@ -2377,6 +2430,256 @@ fn package_verify_reports_legacy_lockfile_missing_report_hash() {
         Value::Null
     );
     assert!(v["data"]["verification_report_mismatches"][0]["registry_hash"].is_string());
+}
+
+#[test]
+fn package_install_compatible_upgrade_succeeds_without_migration_metadata() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let current = test_package_manifest("compat.pkg", "1.0.0", TrustLevel::Assumed);
+    let target = test_package_manifest("compat.pkg", "1.1.0", TrustLevel::Assumed);
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![],
+            legacy_manifests: vec![target],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&current));
+
+    let output = ail()
+        .args(["package", "install", "compat.pkg@1.1.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["installed"], true);
+    assert_eq!(v["data"]["version"], "1.1.0");
+    assert_eq!(v["data"]["compatibility_issues"], Value::Array(vec![]));
+
+    let lockfile_bytes = fs::read(package_lockfile_path(dir.path())).expect("lockfile must exist");
+    let lockfile: Lockfile =
+        ciborium::from_reader(lockfile_bytes.as_slice()).expect("decode lockfile");
+    assert_eq!(lockfile.entries.len(), 1);
+    assert_eq!(lockfile.entries[0].version, "1.1.0");
+}
+
+#[test]
+fn package_install_breaking_upgrade_without_migration_metadata_is_blocked() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let current = test_package_manifest("breaking.pkg", "1.0.0", TrustLevel::Assumed);
+    let target = test_package_manifest("breaking.pkg", "2.0.0", TrustLevel::Assumed);
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![],
+            legacy_manifests: vec![target],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&current));
+
+    let output = ail()
+        .args(["package", "install", "breaking.pkg@2.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("package compatibility blocked"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    let issue = &v["data"]["compatibility_issues"][0];
+    assert_eq!(issue["package"], "breaking.pkg");
+    assert_eq!(issue["current_version"], "1.0.0");
+    assert_eq!(issue["target_version"], "2.0.0");
+    assert_eq!(issue["kind"], "migration");
+    assert_eq!(issue["status"], "blocked");
+    assert_eq!(issue["migration_hash"], Value::Null);
+}
+
+#[test]
+fn package_install_breaking_upgrade_with_migration_metadata_is_allowed_with_warning() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let current = test_package_manifest("migrated.pkg", "1.0.0", TrustLevel::Assumed);
+    let target = test_package_manifest("migrated.pkg", "2.0.0", TrustLevel::Assumed);
+    write_package_registry_file_with_compatibility(
+        dir.path(),
+        &TestPackageRegistryFileWithCompatibility {
+            signed_packages: vec![],
+            legacy_manifests: vec![target],
+            compatibility_metadata: vec![compatibility_metadata(
+                "migrated.pkg",
+                "2.0.0",
+                CompatibilityClass::Major,
+                vec![test_migration("migrated.pkg", "1.0.0", "2.0.0")],
+            )],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&current));
+
+    let output = ail()
+        .args(["package", "install", "migrated.pkg@2.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    let issue = &v["data"]["compatibility_issues"][0];
+    assert_eq!(issue["package"], "migrated.pkg");
+    assert_eq!(issue["current_version"], "1.0.0");
+    assert_eq!(issue["target_version"], "2.0.0");
+    assert_eq!(issue["kind"], "migration");
+    assert_eq!(issue["status"], "warning");
+    assert!(issue["migration_hash"].is_string());
+    assert_eq!(issue["migration_id"], Value::Null);
+}
+
+#[test]
+fn package_install_breaking_upgrade_rejects_migration_for_unrelated_source_version() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let current = test_package_manifest("route.pkg", "1.0.0", TrustLevel::Assumed);
+    let target = test_package_manifest("route.pkg", "2.0.0", TrustLevel::Assumed);
+    write_package_registry_file_with_compatibility(
+        dir.path(),
+        &TestPackageRegistryFileWithCompatibility {
+            signed_packages: vec![],
+            legacy_manifests: vec![target],
+            compatibility_metadata: vec![compatibility_metadata(
+                "route.pkg",
+                "2.0.0",
+                CompatibilityClass::Major,
+                vec![test_migration("route.pkg", "999.0.0", "2.0.0")],
+            )],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&current));
+
+    let output = ail()
+        .args(["package", "install", "route.pkg@2.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("package compatibility blocked"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    let issue = &v["data"]["compatibility_issues"][0];
+    assert_eq!(issue["package"], "route.pkg");
+    assert_eq!(issue["current_version"], "1.0.0");
+    assert_eq!(issue["target_version"], "2.0.0");
+    assert_eq!(issue["kind"], "migration");
+    assert_eq!(issue["status"], "blocked");
+    assert_eq!(issue["migration_hash"], Value::Null);
+}
+
+#[test]
+fn package_verify_reports_invalid_local_compatibility_metadata() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("verify.compat", "2.0.0", TrustLevel::Assumed);
+    write_package_registry_file_with_compatibility(
+        dir.path(),
+        &TestPackageRegistryFileWithCompatibility {
+            signed_packages: vec![],
+            legacy_manifests: vec![manifest.clone()],
+            compatibility_metadata: vec![compatibility_metadata(
+                "verify.compat",
+                "2.0.0",
+                CompatibilityClass::Major,
+                vec![],
+            )],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "verify", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("compatibility issue"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["verified"], false);
+    assert_eq!(v["data"]["compatibility_integrity"], "blocked");
+    let issue = &v["data"]["compatibility_issues"][0];
+    assert_eq!(issue["package"], "verify.compat");
+    assert_eq!(issue["current_version"], "2.0.0");
+    assert_eq!(issue["target_version"], "2.0.0");
+    assert_eq!(issue["kind"], "migration");
+    assert_eq!(issue["status"], "blocked");
+    assert!(
+        issue["reason"]
+            .as_str()
+            .is_some_and(|reason| reason == reason.to_ascii_lowercase())
+    );
+}
+
+#[test]
+fn package_verify_reports_migration_metadata_warning_json_shape() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("verify.migration", "2.0.0", TrustLevel::Assumed);
+    write_package_registry_file_with_compatibility(
+        dir.path(),
+        &TestPackageRegistryFileWithCompatibility {
+            signed_packages: vec![],
+            legacy_manifests: vec![manifest.clone()],
+            compatibility_metadata: vec![compatibility_metadata(
+                "verify.migration",
+                "2.0.0",
+                CompatibilityClass::Major,
+                vec![test_migration("verify.migration", "1.0.0", "2.0.0")],
+            )],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "verify", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["compatibility_integrity"], "warning");
+    let issue = &v["data"]["compatibility_issues"][0];
+    assert_eq!(issue["package"], "verify.migration");
+    assert_eq!(issue["current_version"], "2.0.0");
+    assert_eq!(issue["target_version"], "2.0.0");
+    assert_eq!(issue["kind"], "migration");
+    assert_eq!(issue["status"], "warning");
+    assert!(issue["reason"].is_string());
+    assert_eq!(issue["migration_id"], Value::Null);
+    assert!(issue["migration_hash"].is_string());
 }
 
 /// SC-PK5: package explain exits 0.

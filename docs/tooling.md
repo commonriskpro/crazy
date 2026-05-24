@@ -602,6 +602,42 @@ verification_report: <attached|none>
 note: package install does not grant capabilities
 ```
 
+If the lockfile already contains the same package at a different version,
+`package install` treats the operation as a local upgrade. Patch/minor upgrades
+are accepted. Major upgrades, or target versions locally declared with
+`compatibility: major`, require local migration metadata in
+`.ail/packages/registry.cbor`; without it, install is blocked. With migration
+metadata whose package, normalized `from_version`, and normalized `to_version`
+match the actual upgrade path, install succeeds and reports a warning plus the
+local migration hash.
+
+Machine output includes stable local compatibility issue objects:
+
+```json
+{
+  "package": "payments.stripe",
+  "current_version": "1.0.0",
+  "target_version": "2.0.0",
+  "kind": "migration",
+  "status": "blocked",
+  "reason": "breaking upgrade requires local migration metadata",
+  "migration_id": null,
+  "migration_hash": null
+}
+```
+
+This is local metadata enforcement only. The CLI does not contact a remote
+migration service and does not execute package migrations.
+
+#### package verify
+
+Verifies package lockfile integrity against the local registry. In addition to
+hash, signature, and verification report hash checks, machine output includes
+`compatibility_integrity` and `compatibility_issues` for installed entries whose
+local compatibility/migration metadata is invalid or migration-bearing. Blocked
+compatibility issues return a non-zero exit after printing the JSON payload;
+warnings return zero.
+
 #### package search
 
 Searches the local package registry for packages matching a query string.

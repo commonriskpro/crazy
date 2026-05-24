@@ -252,11 +252,25 @@ major: breaking signatures/contracts/effects
 Breaking changes require migration metadata:
 
 ```txt
-migration payments.stripe 1.x -> 2.0
+migration payments.stripe 1.0.0 -> 2.0.0
   changed capability payment.charge
   replacement payment.authorize + payment.capture
 end
 ```
+
+Current CLI enforcement is local-only. The local registry can store compatibility
+metadata for a package version, including `compatibility` and migration records.
+When `ail package install` upgrades an already locked package to a different
+major version, or to a version locally declared as `major`, the install is
+blocked unless the target version has local migration metadata. When migration
+metadata for the same package and normalized `from_version`/`to_version` upgrade
+path exists, install is allowed but reports a warning with the deterministic
+migration hash so reviewers can see which local record justified the upgrade.
+
+`ail package verify` also checks installed lockfile entries against local
+compatibility metadata and reports invalid or migration-bearing metadata in
+`compatibility_issues`. This is metadata enforcement only: there is no remote
+registry migration service and no package migration execution engine.
 
 ### Dependency resolution
 
@@ -399,6 +413,13 @@ lockfile hash whose registry report is now missing, or a legacy lockfile entry
 missing the hash while the registry still has a report is reported as
 `verification_report_integrity: "mismatch"`. This is local hash pinning only; it
 does not validate remote proofs, transparency logs, or external attestations.
+
+Compatibility and migration metadata follows the same local-only discipline.
+`ail package verify` reports `compatibility_integrity: "ok"`, `"warning"`, or
+`"blocked"` and includes stable `compatibility_issues` objects with `package`,
+`current_version`, `target_version`, `kind`, `status`, `reason`, `migration_id`,
+and `migration_hash` fields. These fields describe local registry metadata only;
+they do not imply a remote migration catalog or an executed migration.
 
 ### Revocation and advisories
 
