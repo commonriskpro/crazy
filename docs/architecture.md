@@ -134,30 +134,32 @@ Solo puede quedar sin implementar temporalmente.
 
 ## Matriz de diseño completo
 
-| Área | Decisión necesaria | Estado actual | Implementación sugerida |
+> The "Alcance de diseño" column below records **design completeness** — every listed area is in scope for the full product. It does NOT reflect current implementation status. For implementation status see [Implementation Notes](#implementation-notes) below.
+
+| Área | Decisión necesaria | Estado actual | Alcance de diseño |
 |---|---|---|---|
-| Source of truth | Programa como Semantic Graph / Core IR, no como source files clásicos. | Decidido | Producto completo |
-| AI Change Language | Formato exacto de ChangeSets que escriben los LLMs. | Decidido | Producto completo |
-| Semantic Core IR | Primitivas completas del lenguaje interno verificable. | Decidido | Producto completo |
-| Compiler IR | ANF como compiler IR principal; SSA como backend artifact. | Decidido | Producto completo |
-| Type system | Primitives, records, variants, generics, refinements, interfaces, resources. | Decidido | Producto completo |
-| Error model | `Result`, `Option`, `PatchField`, sin excepciones implícitas. | Decidido | Producto completo |
-| Effects/capabilities | Efectos extensibles, handlers, runtime grants. | Decidido | Producto completo |
-| Contracts | `requires`, `ensures`, `invariant`, proof obligations. | Decidido | Producto completo |
-| Verification model | Estados explícitos y profiles. | Decidido | Producto completo |
-| Refactor model | Refactors como operaciones semánticas verificadas. | Decidido | Producto completo |
-| Package system | Trust, imports/exports, capabilities, assumptions, unsafe surface. | Decidido | Producto completo |
-| Storage/versioning | Graph store, snapshots, ChangeSet history, hashes, GC/retention. | Decidido | Producto completo |
-| Context Server | Semantic slices hash-bound para LLMs. | Decidido | Producto completo |
-| Runtime host | WASM host deny-by-default con capabilities, handlers, limits, audit. | Decidido | Producto completo |
-| Executable target | WASM primero; native posible después. | Decidido | Producto completo |
-| Concurrency | `can_suspend` effect + task/channel primitives. | Decidido | Producto completo |
-| Resource lifecycle | `Handle<Resource, Mode>` con `Affine`, `Linear`, `Shared`. | Decidido | Producto completo |
-| FFI/boundaries | Boundaries con trust, contracts, assumptions, approvals. | Decidido | Producto completo |
-| Standard library | Semántica común + capabilities definitions. | Decidido | Producto completo |
-| Tooling | CLI/workflows sobre graph snapshots y ChangeSets. | Decidido | Producto completo |
-| Security model | Least privilege, deny-by-default, audit, package/runtime trust. | Decidido | Producto completo |
-| LLM repair loop | Diagnósticos estructurados con repair options. | Decidido | Producto completo |
+| Source of truth | Programa como Semantic Graph / Core IR, no como source files clásicos. | Decidido | En alcance |
+| AI Change Language | Formato exacto de ChangeSets que escriben los LLMs. | Decidido | En alcance |
+| Semantic Core IR | Primitivas completas del lenguaje interno verificable. | Decidido | En alcance |
+| Compiler IR | ANF como compiler IR principal; SSA es Cranelift-interno, no un artefacto de etapa. | Decidido | En alcance |
+| Type system | Primitives, records, variants, generics, refinements, interfaces, resources. | Decidido | En alcance |
+| Error model | `Result`, `Option`, `PatchField`, sin excepciones implícitas. | Decidido | En alcance |
+| Effects/capabilities | Efectos extensibles, handlers, runtime grants. | Decidido | En alcance |
+| Contracts | `requires`, `ensures`, `invariant`, proof obligations. | Decidido | En alcance |
+| Verification model | Estados explícitos y profiles. | Decidido | En alcance |
+| Refactor model | Refactors como operaciones semánticas verificadas. | Decidido | En alcance |
+| Package system | Trust, imports/exports, capabilities, assumptions, unsafe surface. | Decidido | En alcance |
+| Storage/versioning | Graph store, snapshots, ChangeSet history, hashes, GC/retention. | Decidido | En alcance |
+| Context Server | Semantic slices hash-bound para LLMs. | Decidido | En alcance |
+| Runtime host | WASM host deny-by-default con capabilities, handlers, limits, audit. | Decidido | En alcance |
+| Executable target | WASM primero; native posible después. | Decidido | En alcance |
+| Concurrency | `can_suspend` effect + task/channel primitives. | Decidido | En alcance (emit stubs en impl actual) |
+| Resource lifecycle | `Handle<Resource, Mode>` con `Affine`, `Linear`, `Shared`. | Decidido | En alcance (acquire/release emit stubs en impl actual) |
+| FFI/boundaries | Boundaries con trust, contracts, assumptions, approvals. | Decidido | En alcance |
+| Standard library | Semántica común + capabilities definitions. | Decidido | En alcance |
+| Tooling | CLI/workflows sobre graph snapshots y ChangeSets. | Decidido | En alcance |
+| Security model | Least privilege, deny-by-default, audit, package/runtime trust. | Decidido | En alcance |
+| LLM repair loop | Diagnósticos estructurados con repair options. | Decidido | En alcance |
 
 ## Implementación
 
