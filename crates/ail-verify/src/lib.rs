@@ -46,6 +46,7 @@ pub mod proof;
 pub mod report;
 pub mod resource_checker;
 pub mod solver;
+pub mod translation_validator;
 pub mod type_checker;
 pub(crate) mod type_diagnostics;
 pub(crate) mod type_obligations;
@@ -70,4 +71,8 @@ pub use proof::{
 pub use report::{
     ArtifactHash, DegradationEvent, SolverDiagnostic, SolverDiagnosticStatus, VerificationEntry,
     VerificationReport, VerificationState,
+};
+pub use translation_validator::{
+    E_TV_EFFECT_MALFORMED, E_TV_EFFECT_UNDECLARED, E_TV_INSUFFICIENT_EVIDENCE,
+    E_TV_SHAPE_NO_RETURN_TYPE, TranslationValidator,
 };
