@@ -57,9 +57,14 @@ use crate::source::ContextSource;
 // `serve` is being called re-entrantly (e.g. from inside a ContextSource
 // implementation that somehow calls back into the transport).
 //
-// The guard is a thread-local boolean that is set for the lifetime of each
-// `block_on` call and cleared before returning.  A debug assertion fires
-// when reentrancy is detected, pointing callers toward `serve_async`.
+// The guard is a thread-local boolean.  `BlockOnGuard` sets it to `true` on
+// construction and resets it to `false` in its `Drop` impl.  Using RAII
+// ensures the flag is always cleared — even when `block_on` panics and the
+// stack unwinds — so subsequent calls on the same thread do not see a stale
+// `true` and hit the debug assertion spuriously.
+//
+// A debug assertion fires when reentrancy is detected, pointing callers
+// toward `serve_async`.
 //
 // NOTE: this guard does NOT detect "called from inside a Tokio async task"
 // because `ail-context` deliberately avoids a Tokio dependency.  If you
@@ -67,6 +72,23 @@ use crate::source::ContextSource;
 // of `serve` to avoid blocking an executor thread.
 thread_local! {
     static BLOCK_ON_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// RAII guard that sets `BLOCK_ON_ACTIVE` to `true` on construction and
+/// resets it to `false` on drop — even when the guarded code panics.
+struct BlockOnGuard;
+
+impl BlockOnGuard {
+    fn new() -> Self {
+        BLOCK_ON_ACTIVE.with(|g| g.set(true));
+        Self
+    }
+}
+
+impl Drop for BlockOnGuard {
+    fn drop(&mut self) {
+        BLOCK_ON_ACTIVE.with(|g| g.set(false));
+    }
 }
 
 // ── TransportError ────────────────────────────────────────────────────────
@@ -242,13 +264,13 @@ where
             "StdioTransport::serve is not re-entrant on the same OS thread; \
              if you are inside an async executor use serve_async instead"
         );
-        BLOCK_ON_ACTIVE.with(|g| g.set(true));
-        let response = match serde_json::from_str::<ContextRpcRequest>(line) {
+        // BlockOnGuard resets the flag in Drop, so a panic inside block_on
+        // cannot leave BLOCK_ON_ACTIVE stuck at true on this thread.
+        let _guard = BlockOnGuard::new();
+        match serde_json::from_str::<ContextRpcRequest>(line) {
             Ok(request) => block_on(self.server.handle_rpc(request)),
             Err(e) => ContextRpcResponse::parse_error(e.to_string()),
-        };
-        BLOCK_ON_ACTIVE.with(|g| g.set(false));
-        response
+        }
     }
 
     /// Async version of `handle_line`; awaits `handle_rpc` directly.
