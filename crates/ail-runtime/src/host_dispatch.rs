@@ -9,7 +9,7 @@
 //   - WASM host imports: `dispatch_host_call`, `dispatch_host_call_write`
 //   - Helpers: `unix_timestamp_micros`, `CapabilityAuditContext`
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -616,12 +616,20 @@ pub(crate) fn check_rate_limits(
     }
 
     // Pass 2: update all applicable windows (only reached if all checks pass).
+    // Track which keys have already been incremented so that duplicate RateLimit
+    // entries sharing the same key (e.g. two global `capability: None` entries)
+    // do not double-count a single call.
+    let mut updated_keys: HashSet<Option<String>> = HashSet::new();
     for rl in rate_limits {
         let applies = rl.capability.is_none() || rl.capability.as_deref() == Some(cap.as_str());
         if !applies {
             continue;
         }
         let key = rl.capability.clone();
+        if !updated_keys.insert(key.clone()) {
+            // This key was already incremented by an earlier duplicate entry.
+            continue;
+        }
         let window = windows.entry(key).or_insert((now, 0));
         if now.saturating_sub(window.0) >= WINDOW_NANOS {
             *window = (now, 1); // start a fresh window

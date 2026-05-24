@@ -371,6 +371,51 @@ fn combined_limits_enforce_independently() {
     );
 }
 
+// ── RLE6: duplicate global limits — no double-counting ────────────────────
+
+/// Two global `RateLimit` entries with the same key must behave as if only
+/// one entry exists: the window counter increments once per call, not twice.
+///
+/// With two globals of max_calls_per_second=2, a buggy double-increment
+/// would exhaust the limit after only one call.  The correct behaviour
+/// allows two calls in the window before denying the third.
+#[test]
+fn duplicate_global_rate_limits_increment_window_once_per_call() {
+    let cap = CapabilityId::new("io");
+    let clock = FakeClock::new(1_000_000_000);
+    let limits = ResourceLimits {
+        rate_limits: Some(vec![
+            RateLimit {
+                capability: None, // global limit — first entry
+                max_calls_per_second: 2,
+            },
+            RateLimit {
+                capability: None, // global limit — duplicate key
+                max_calls_per_second: 2,
+            },
+        ]),
+        ..Default::default()
+    };
+    let mut host = make_host(cap.clone(), limits, Some(clock.as_fn()));
+
+    // Call 1: allowed (window count → 1, not 2)
+    assert!(
+        host.call_capability(&cap, "op", &[]).is_ok(),
+        "first call must succeed with duplicate global limits"
+    );
+    // Call 2: allowed (window count → 2, not 4 / already-exceeded)
+    assert!(
+        host.call_capability(&cap, "op", &[]).is_ok(),
+        "second call must succeed — window increments once per call, not twice"
+    );
+    // Call 3: denied (window count = 2 >= limit = 2)
+    let result = host.call_capability(&cap, "op", &[]);
+    assert!(
+        matches!(result, Err(HostError::LimitExceeded(_))),
+        "third call must be denied — limit is 2, got {result:?}"
+    );
+}
+
 // ── audit: denied calls are recorded ─────────────────────────────────────
 
 /// A call denied by the rate limit appends exactly one failed audit event.
