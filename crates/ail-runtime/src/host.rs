@@ -748,7 +748,7 @@ impl RuntimeHost {
             }
         }
 
-        let summaries: Vec<CapabilityCallSummary> = totals
+        let mut summaries: Vec<CapabilityCallSummary> = totals
             .into_iter()
             .map(|(cap_str, (total, ok, err))| CapabilityCallSummary {
                 capability: CapabilityId::new(cap_str),
@@ -757,6 +757,8 @@ impl RuntimeHost {
                 failed: err,
             })
             .collect();
+        // Sort by capability name for deterministic output order.
+        summaries.sort_by(|a, b| a.capability.as_str().cmp(b.capability.as_str()));
 
         // Compute audit log hash: BLAKE3 over the concatenation of all event
         // debug representations (stable, deterministic for the same event set).

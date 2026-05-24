@@ -201,7 +201,14 @@ pub(crate) async fn cmd_run(
 
             // Post-invoke: aggregate capability call statistics from the full audit
             // log (includes any CapabilityCallExecuted events produced during invoke).
-            let report = host.emit_report(RuntimeReportStatus::Completed, "run");
+            // Derive the report status from the actual invoke outcome — never hardcode
+            // Completed when the invocation may have failed.
+            let invoke_status = if invoke_result.is_ok() {
+                RuntimeReportStatus::Completed
+            } else {
+                RuntimeReportStatus::Failed
+            };
+            let report = host.emit_report(invoke_status, "run");
             let capability_call_summary: Vec<Value> = report
                 .capability_summaries()
                 .iter()
