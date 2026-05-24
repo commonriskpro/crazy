@@ -17,6 +17,7 @@
 
 use ail_change::canonical::CanonicalChangeSet;
 use ail_core::semantic_graph::SemanticGraph;
+use ail_verify::report::VerificationReport;
 use std::path::{Path, PathBuf};
 
 use ail_storage::{
@@ -291,6 +292,95 @@ impl StoreHandle {
             )));
         }
         Ok(())
+    }
+
+    /// Persist a `VerificationReport` as a CBOR-encoded content-addressed object.
+    ///
+    /// The report is CBOR-encoded with `ciborium` and stored under its BLAKE3 hash.
+    /// For file-backed stores a sidecar at `.ail/reports/<change_id>` is also written
+    /// so the report can later be resolved by the originating change-id.
+    ///
+    /// Returns the `ObjectId` (BLAKE3 hash of the CBOR bytes).
+    ///
+    /// Postgres report persistence is not implemented yet and returns an
+    /// explicit unsupported-backend error rather than a fake content hash.
+    pub async fn save_verification_report(
+        &self,
+        change_id: &str,
+        report: &VerificationReport,
+    ) -> Result<ObjectId, CliError> {
+        let mut bytes = Vec::new();
+        ciborium::into_writer(report, &mut bytes)
+            .map_err(|e| CliError::Domain(format!("report encoding failed: {e}")))?;
+
+        match self {
+            StoreHandle::Memory { objects, .. } => Ok(objects.put(RawObject(bytes)).await?),
+            StoreHandle::File {
+                objects, ail_dir, ..
+            } => {
+                let id = objects.put(RawObject(bytes)).await?;
+                // Sidecar: .ail/reports/<change_id> → hex hash of the report object.
+                let sidecar = ail_dir.join("reports").join(change_id);
+                atomic_write_text(&sidecar, &format!("{}\n", id.to_hex()))
+                    .map_err(CliError::Storage)?;
+                Ok(id)
+            }
+            StoreHandle::Postgres(_) => Err(CliError::Domain(
+                "save_verification_report is not supported for the Postgres backend".to_string(),
+            )),
+        }
+    }
+
+    /// Load a `VerificationReport` by its BLAKE3 content-addressed hash.
+    ///
+    /// Returns `Ok(None)` when the object is absent from the store.
+    /// Postgres always returns `Ok(None)` (report storage not supported).
+    pub async fn load_verification_report_by_hash(
+        &self,
+        hash: &ObjectId,
+    ) -> Result<Option<VerificationReport>, CliError> {
+        let raw = match self {
+            StoreHandle::Memory { objects, .. } => objects.get(hash).await?,
+            StoreHandle::File { objects, .. } => objects.get(hash).await?,
+            StoreHandle::Postgres(_) => return Ok(None),
+        };
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        ciborium::from_reader(raw.0.as_slice())
+            .map(Some)
+            .map_err(|e| CliError::Domain(format!("report decoding failed: {e}")))
+    }
+
+    /// Load a `VerificationReport` by the `change_id` of the verify run that produced it.
+    ///
+    /// File-backed stores resolve the sidecar at `.ail/reports/<change_id>` to obtain
+    /// the report hash, then load the object.
+    /// Memory and Postgres stores always return `Ok(None)`.
+    ///
+    /// On success returns `Some((report, hash))` where `hash` is the BLAKE3 hash of the
+    /// CBOR-encoded report.
+    pub async fn load_verification_report_by_change_id(
+        &self,
+        change_id: &str,
+    ) -> Result<Option<(VerificationReport, ObjectId)>, CliError> {
+        let StoreHandle::File { ail_dir, .. } = self else {
+            return Ok(None);
+        };
+        let sidecar = ail_dir.join("reports").join(change_id);
+        if !sidecar.exists() {
+            return Ok(None);
+        }
+        let content = std::fs::read_to_string(&sidecar).map_err(CliError::Io)?;
+        let hex = content.trim();
+        if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(CliError::Domain(format!(
+                "corrupt report sidecar for {change_id}: bad hash '{hex}'"
+            )));
+        }
+        let hash = hex_to_object_id(hex).map_err(CliError::Storage)?;
+        let report = self.load_verification_report_by_hash(&hash).await?;
+        Ok(report.map(|r| (r, hash)))
     }
 }
 
@@ -1208,5 +1298,130 @@ mod tests {
             msg.contains("not supported for the Postgres backend"),
             "error must mention unsupported backend; got: {msg}"
         );
+    }
+
+    // ── T4: save/load verification report ────────────────────────────────
+
+    fn minimal_report() -> VerificationReport {
+        VerificationReport::default()
+    }
+
+    // Scenario: memory store save + load by hash roundtrip.
+    //   GIVEN a memory StoreHandle and a VerificationReport
+    //   WHEN save_verification_report then load_verification_report_by_hash
+    //   THEN the loaded report equals the original
+    #[tokio::test]
+    async fn save_load_verification_report_by_hash_memory() {
+        let store = memory_store();
+        let change_id = "c".repeat(64);
+        let report = minimal_report();
+
+        let hash = store
+            .save_verification_report(&change_id, &report)
+            .await
+            .expect("save_verification_report must succeed for memory store");
+
+        let loaded = store
+            .load_verification_report_by_hash(&hash)
+            .await
+            .expect("load_verification_report_by_hash must succeed");
+
+        assert_eq!(
+            loaded,
+            Some(report),
+            "loaded report must equal the saved report"
+        );
+    }
+
+    // TRIANGULATE: file store roundtrip — save + load by hash + sidecar.
+    //   GIVEN a file StoreHandle backed by a TempDir
+    //   WHEN save_verification_report then load by hash AND by change_id
+    //   THEN both load paths return the same report
+    #[tokio::test]
+    async fn save_load_verification_report_file_store_roundtrip() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        init_file_layout(&ail_dir).expect("init layout");
+        // Create the reports subdirectory (normally created by `ail init`).
+        std::fs::create_dir_all(ail_dir.join("reports")).expect("create reports dir");
+        let store = file_store(ail_dir.clone());
+        let change_id = "d".repeat(64);
+        let report = minimal_report();
+
+        let hash = store
+            .save_verification_report(&change_id, &report)
+            .await
+            .expect("save_verification_report must succeed for file store");
+
+        // Load by hash.
+        let by_hash = store
+            .load_verification_report_by_hash(&hash)
+            .await
+            .expect("load_verification_report_by_hash must succeed")
+            .expect("report must be present when loaded by hash");
+        assert_eq!(by_hash, report, "hash-loaded report must match original");
+
+        // Load by change_id via sidecar.
+        let by_change_id = store
+            .load_verification_report_by_change_id(&change_id)
+            .await
+            .expect("load_verification_report_by_change_id must succeed")
+            .expect("report must be present when loaded by change_id");
+        assert_eq!(
+            by_change_id.0, report,
+            "change-id-loaded report must match original"
+        );
+        assert_eq!(
+            by_change_id.1, hash,
+            "change-id-loaded hash must match the stored hash"
+        );
+
+        // Sidecar file exists at the expected path.
+        assert!(
+            ail_dir.join("reports").join(&change_id).exists(),
+            "sidecar file must exist at .ail/reports/<change_id>"
+        );
+    }
+
+    // TRIANGULATE: memory store load by change_id returns None (no sidecar).
+    //   GIVEN a memory StoreHandle with a saved report
+    //   WHEN load_verification_report_by_change_id is called
+    //   THEN Ok(None) is returned (memory store has no sidecar index)
+    #[tokio::test]
+    async fn load_verification_report_by_change_id_memory_returns_none() {
+        let store = memory_store();
+        let change_id = "e".repeat(64);
+        let report = minimal_report();
+        store
+            .save_verification_report(&change_id, &report)
+            .await
+            .expect("save must succeed");
+
+        let result = store
+            .load_verification_report_by_change_id(&change_id)
+            .await
+            .expect("must not error");
+
+        assert_eq!(
+            result, None,
+            "memory store must return None for change-id sidecar lookup"
+        );
+    }
+
+    // TRIANGULATE: load by hash on unknown returns None.
+    //   GIVEN a memory store with no reports
+    //   WHEN load_verification_report_by_hash is called with an unknown hash
+    //   THEN Ok(None) is returned
+    #[tokio::test]
+    async fn load_verification_report_by_hash_unknown_returns_none() {
+        let store = memory_store();
+        let unknown = ObjectId::from([0xffu8; 32]);
+
+        let result = store
+            .load_verification_report_by_hash(&unknown)
+            .await
+            .expect("must not error");
+
+        assert_eq!(result, None, "unknown hash must return None");
     }
 }
