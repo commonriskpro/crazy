@@ -126,15 +126,17 @@ fn bench_cas_put_idempotent(c: &mut Criterion) {
     let p = make_payload(4_096);
     let store = MemoryObjectStore::new();
     rt.block_on(async {
-        store
-            .put(RawObject(p.clone()))
-            .await
-            .expect("pre-warm put");
+        store.put(RawObject(p.clone())).await.expect("pre-warm put");
     });
     c.bench_function("cas_put_idempotent_4k", |b| {
         b.iter(|| {
             rt.block_on(async {
-                black_box(store.put(RawObject(p.clone())).await.expect("idempotent put"))
+                black_box(
+                    store
+                        .put(RawObject(p.clone()))
+                        .await
+                        .expect("idempotent put"),
+                )
             })
         });
     });
@@ -150,9 +152,7 @@ fn bench_cas_get(c: &mut Criterion) {
             rt.block_on(async { store.put(RawObject(p.clone())).await.expect("pre-warm put") });
         g.throughput(Throughput::Bytes(size as u64));
         g.bench_with_input(BenchmarkId::from_parameter(size), &id, |b, id| {
-            b.iter(|| {
-                rt.block_on(async { black_box(store.get(id).await.expect("get")) })
-            });
+            b.iter(|| rt.block_on(async { black_box(store.get(id).await.expect("get")) }));
         });
     }
     g.finish();
@@ -216,9 +216,7 @@ fn bench_snapshot_list(c: &mut Criterion) {
         let store = populated_store(&rt, n);
         g.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
-                rt.block_on(async {
-                    black_box(store.list_snapshots().await.expect("list"))
-                });
+                rt.block_on(async { black_box(store.list_snapshots().await.expect("list")) });
             });
         });
     }
@@ -234,9 +232,7 @@ fn bench_snapshot_load(c: &mut Criterion) {
     });
     c.bench_function("snapshot_load_by_id", |b| {
         b.iter(|| {
-            rt.block_on(async {
-                black_box(store.load_snapshot(&snap.id).await.expect("load"))
-            });
+            rt.block_on(async { black_box(store.load_snapshot(&snap.id).await.expect("load")) });
         });
     });
 }

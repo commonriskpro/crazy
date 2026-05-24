@@ -149,8 +149,8 @@ where
         writer: &mut W,
         response: &ContextRpcResponse,
     ) -> Result<(), TransportError> {
-        let bytes = serde_json::to_vec(response)
-            .map_err(|e| TransportError::Encode(e.to_string()))?;
+        let bytes =
+            serde_json::to_vec(response).map_err(|e| TransportError::Encode(e.to_string()))?;
         writer.write_all(&bytes).map_err(TransportError::Write)?;
         writer.write_all(b"\n").map_err(TransportError::Write)?;
         writer.flush().map_err(TransportError::Write)?;
@@ -171,7 +171,7 @@ mod tests {
     use super::*;
     use crate::dto::{ContextQuery, SnapshotSelector};
     use crate::server::{
-        ContextRequest, ContextResponse, CONTEXT_RPC_AUTH_METHOD, CONTEXT_RPC_QUERY_METHOD,
+        CONTEXT_RPC_AUTH_METHOD, CONTEXT_RPC_QUERY_METHOD, ContextRequest, ContextResponse,
         JSONRPC_INVALID_PARAMS, JSONRPC_METHOD_NOT_FOUND, JSONRPC_PARSE_ERROR,
     };
     use crate::source::InMemoryContextSource;
@@ -261,7 +261,11 @@ mod tests {
         assert_eq!(responses.len(), 1);
         let resp = &responses[0];
         assert_eq!(resp.id, "t-1");
-        assert!(resp.error.is_none(), "unexpected RPC error: {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "unexpected RPC error: {:?}",
+            resp.error
+        );
         assert!(
             matches!(resp.result, Some(ContextResponse::Result(_))),
             "expected Result variant, got: {:?}",
@@ -283,7 +287,10 @@ mod tests {
 
         assert_eq!(responses.len(), 1);
         let resp = &responses[0];
-        assert!(resp.result.is_none(), "result must be absent for parse errors");
+        assert!(
+            resp.result.is_none(),
+            "result must be absent for parse errors"
+        );
         let err = resp.error.as_ref().expect("error field must be present");
         assert_eq!(
             err.code, JSONRPC_PARSE_ERROR,
@@ -515,7 +522,10 @@ mod tests {
             2,
             "both the parse error and the valid request must produce responses"
         );
-        assert_eq!(responses[0].error.as_ref().unwrap().code, JSONRPC_PARSE_ERROR);
+        assert_eq!(
+            responses[0].error.as_ref().unwrap().code,
+            JSONRPC_PARSE_ERROR
+        );
         assert_eq!(responses[1].id, "t-8");
         assert!(responses[1].error.is_none());
     }

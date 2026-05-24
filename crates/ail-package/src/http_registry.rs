@@ -741,13 +741,11 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let bad_addr = listener.local_addr().unwrap().to_string();
         std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                if let Ok(mut conn) = stream {
-                    // Drain request so the client does not get a broken-pipe write error.
-                    let mut buf = [0u8; 4096];
-                    let _ = <TcpStream as Read>::read(&mut conn, &mut buf);
-                    write_response(&mut conn, 500, b"{\"error\":\"forced\"}");
-                }
+            for mut conn in listener.incoming().flatten() {
+                // Drain request so the client does not get a broken-pipe write error.
+                let mut buf = [0u8; 4096];
+                let _ = <TcpStream as Read>::read(&mut conn, &mut buf);
+                write_response(&mut conn, 500, b"{\"error\":\"forced\"}");
             }
         });
 

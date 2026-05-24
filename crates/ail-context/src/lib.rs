@@ -39,10 +39,10 @@ pub use error::{
 };
 pub use server::{
     AuthSession, CONTEXT_RPC_AUTH_METHOD, CONTEXT_RPC_QUERY_METHOD, CONTEXT_RPC_SUBSCRIBE_METHOD,
-    JSONRPC_PARSE_ERROR, ContextRequest, ContextResponse as ServerContextResponse, ContextRpcError,
-    ContextRpcRequest, ContextRpcResponse, ContextServer, ContextServerConfig, DerivedIndexCache,
-    DerivedIndexes, FieldRedactionRule, TrustLevel,
+    ContextRequest, ContextResponse as ServerContextResponse, ContextRpcError, ContextRpcRequest,
+    ContextRpcResponse, ContextServer, ContextServerConfig, DerivedIndexCache, DerivedIndexes,
+    FieldRedactionRule, JSONRPC_PARSE_ERROR, TrustLevel,
 };
-pub use transport::{StdioTransport, TransportError};
 pub use source::{ContextSource, InMemoryContextSource, StoreContextSource};
 pub use summary::render_summary;
+pub use transport::{StdioTransport, TransportError};
