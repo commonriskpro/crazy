@@ -12,6 +12,7 @@ mod eval_commands;
 mod graph_loading;
 mod graph_query_commands;
 mod inspect_commands;
+mod link_commands;
 mod output;
 mod package_commands;
 mod package_output;
