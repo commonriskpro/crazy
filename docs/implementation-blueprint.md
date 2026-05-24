@@ -4,7 +4,7 @@
 
 This is the living implementation roadmap for AIL. It preserves the full product direction while separating completed validation evidence from the remaining production work.
 
-Related: [Codebase guide](CODEBASE-GUIDE.md), [Architecture](architecture.md), [Decision log](decision-log.md), [Risks](risks.md), [Decisions register](open-questions.md).
+Related: [Codebase guide](CODEBASE-GUIDE.md), [Architecture](architecture.md), [Decision log](decision-log.md), [Risks](risks.md), [Decisions register](open-questions.md), [Wave operating model](wave-operating-model.md).
 
 ## Status taxonomy
 
