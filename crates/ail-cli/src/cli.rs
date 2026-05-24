@@ -221,7 +221,7 @@ enum Commands {
         #[arg(long, default_value = "dev")]
         profile: String,
         /// Output executable path.
-        /// Defaults to the object path with the `.o` extension stripped.
+        /// Defaults to the profile name in the current directory.
         #[arg(long, short = 'o')]
         output: Option<PathBuf>,
     },
