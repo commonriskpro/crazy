@@ -2154,6 +2154,7 @@ pub fn emit_native_with_profile(
     let source_map = SourceMap {
         entries: source_map_entries,
     };
+    source_map.validate_required_provenance(profile, &anf.bindings)?;
 
     // Seal: source_map_hash = blake3(source_map_cbor_bytes).
     let source_map_bytes = stable_cbor_bytes(&source_map)

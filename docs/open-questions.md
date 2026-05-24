@@ -118,7 +118,7 @@ See [Risks](risks.md) for the full risk register with mitigation and validation 
 |------|----------------|
 | Refinement predicate expressiveness / solver performance | Too many `runtime_checked`/`unverified` outcomes; solver too slow on real programs |
 | Formal semantics sufficiency for `critical` profile | `critical` profile cannot make meaningful guarantees |
-| Cranelift source-map and capability-boundary preservation | Compiler loses provenance and audit trail through codegen |
+| Cranelift source-map and capability-boundary preservation | Partially validated: compiler tests now cover enriched source-map propagation, capability `source_ref` preservation, deterministic source-map/manifest hashes, and prod/critical rejection when per-binding ChangeSet provenance is missing. Remaining risk is full translation validation and complete profile/report policy enforcement. |
 | Postgres + CAS graph store: scale and compile latency on large apps | Compilation becomes slow at scale; may require FDB or architectural change |
 | Handler isolation latency | Capability isolation overhead makes runtime unusable at scale |
 | Distributed graph collaboration protocol | Multi-agent coordination breaks under concurrent ChangeSets |

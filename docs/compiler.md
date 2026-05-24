@@ -1,6 +1,6 @@
 # Compiler pipeline
 
-<!-- Status: Implemented subset. Graph-to-Core-IR-to-ANF-to-WASM exists with hash chains and source maps for the current executable surface. Native body lowering covers arithmetic, control-flow (If/Loop/Match), data structures (records/variants/lists/tuples), text literals, and EffectCall; concurrency primitives, channels, dynamic dispatch, and resource acquire/release remain trap stubs or future work. -->
+<!-- Status: Implemented subset. Graph-to-Core-IR-to-ANF-to-WASM exists with hash chains and source maps for the current executable surface. Native body lowering covers arithmetic, control-flow (If/Loop/Match), data structures (records/variants/lists/tuples), text literals, and EffectCall; concurrency primitives, channels, dynamic dispatch, and resource acquire/release remain trap stubs or future work. Prod/critical backend profiles now require per-binding ChangeSet provenance in source maps, but full profile/report matching and translation validation remain future work. -->
 
 > Target design. Current implementation scope is called out in the status note and Implementation Notes. Related: [Core IR](core-ir.md), [Verification](verification.md), [Runtime](runtime.md), [Storage](storage.md).
 
@@ -375,6 +375,16 @@ Manifest must match verification report.
 
 Source maps point back to semantic graph, not only text lines.
 
+Implemented subset: `lower_to_anf_with_graph` enriches source map entries with
+available `ChangeSet`, derived `BlockRef`, derived `ContractRef`, first
+`EffectRef`, and first `RuntimeCheckRef`. `emit_wasm_with_profile` and
+`emit_native_with_profile` clone those entries, add backend byte offsets, emit
+JSON sidecars, and seal `source_map_hash` from deterministic CBOR. For `prod`,
+`production`, and `critical` profiles, codegen rejects artifacts whose emitted
+source map entries lack `ChangeSet` provenance. Other references remain optional
+because not every graph node has a contract, effect, runtime check, or proof
+obligation.
+
 Fields:
 
 ```txt
@@ -535,5 +545,6 @@ Meaning: after optimization/codegen, validate output preserves ANF/Core semantic
 - Structured `EffectCall` results (where the binding body is a Record/Variant/List type) use `ail/host_call_write` instead of `ail/host_call`; the host writes response bytes to `result_buffer_offset` in WASM memory. `WasmArtifact::result_buffer_offset` exposes this offset for callers.
 - Memory layout: records store i64 fields at 8-byte offsets from the base pointer; variants store an i32 tag at offset 0 and an i64 payload at offset 8; lists store an i64 count at offset 0 followed by i64 elements.
 - `emit_native` (Phase 8) now emits real Cranelift IR for arithmetic, control-flow (If/Loop/Match/ShortCircuit/Seq/RuntimeCheck), text literals, memory (records/variants/lists/tuples via stack slots), and EffectCall (imported `host_call`). Concurrency and resource primitives remain as trap stubs.
+- Source-map hardening currently validates per-binding `change_set` only for `prod`/`production`/`critical` backend profiles. It does not yet prove semantic equivalence after optimization or enforce full verification-report/profile matching.
 
 Code references: `crates/ail-compiler/src/expr_parser.rs`, `core_ir.rs`, `anf.rs`, `wasm.rs`, `native.rs`.
