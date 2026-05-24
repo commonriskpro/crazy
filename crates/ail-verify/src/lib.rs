@@ -64,5 +64,6 @@ pub use proof::{
     ProofObligationPipeline,
 };
 pub use report::{
-    ArtifactHash, DegradationEvent, VerificationEntry, VerificationReport, VerificationState,
+    ArtifactHash, DegradationEvent, SolverDiagnostic, SolverDiagnosticStatus, VerificationEntry,
+    VerificationReport, VerificationState,
 };

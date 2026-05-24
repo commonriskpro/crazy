@@ -681,6 +681,15 @@ proof_obligations
   ...
 end
 
+solver_diagnostics
+  diagnostic <proof_obligation_id>
+    status timeout | resource_limited | unsupported
+    source_stage <contract|refinement|resource|concurrency|boundary|...>
+    reason "..."
+    repair_options [...]
+  end
+end
+
 diagnostics
   ...
 end
@@ -713,6 +722,34 @@ approval_required
 ```
 
 Warnings no son status principal; viven en entries/diagnostics.
+
+#### Solver diagnostics
+
+El report expone diagnósticos estructurados para intentos de solver que no producen prueba mecánica:
+
+```txt
+timeout
+resource_limited
+unsupported
+```
+
+Estos status son strings estables del formato serializado. No deben depender de nombres internos de enums de Rust.
+
+La implementación actual deriva `solver_diagnostics` sólo desde intentos `solver` del proof-obligation ledger:
+
+- `timeout`, `resource_limited` y `unsupported` se reconocen desde outcomes explícitos del intento de solver cuando existan.
+- `timeout`, `resource_limited` y `unsupported` también se reconocen desde prefijos estables, solver-scoped, de outcome/evidence: `solver_timeout:`, `solver_resource_limited:`, `solver_unsupported:`.
+- `degradation_reason` y texto libre sin esos prefijos no se clasifican para evitar inventar semántica a partir de prosa genérica.
+
+Cada diagnóstico incluye repair guidance. En general:
+
+```txt
+timeout           dividir/simplificar la obligación, aportar invariantes locales, o materializar runtime check
+resource_limited  reducir espacio de búsqueda, separar predicados, o usar assumption/check explícito
+unsupported       reescribir al fragmento soportado, agregar runtime check, o registrar assumption aprobada por policy
+```
+
+Implementation note: this is report plumbing. `SimpleSolver` remains conservative and may not enforce real wall-clock timeouts or resource budgets unless a concrete solver implementation provides those outcomes/reasons.
 
 #### Artifact consistency
 
