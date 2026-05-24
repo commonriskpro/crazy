@@ -29,10 +29,12 @@ pub const CONTEXT_RPC_SUBSCRIBE_METHOD: &str = "context.subscribe";
 /// JSON-RPC method for in-process token authentication.
 pub const CONTEXT_RPC_AUTH_METHOD: &str = "context.auth";
 
-/// JSON-RPC 2.0 parse error: the incoming line could not be deserialized.
+/// JSON-RPC 2.0 parse error code (-32700): the incoming line could not be
+/// deserialized as a valid request envelope.
 ///
-/// The response id is `""` when the id cannot be recovered from a malformed
-/// envelope — a known limitation of using `String` for id.
+/// When this error is returned the response `id` is `""` rather than the
+/// spec-required `null`; see [`ContextRpcResponse::parse_error`] for the
+/// rationale and the compliance note.
 pub const JSONRPC_PARSE_ERROR: i64 = -32700;
 pub(crate) const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
 pub(crate) const JSONRPC_INVALID_PARAMS: i64 = -32602;
@@ -146,9 +148,20 @@ impl ContextRpcResponse {
 
     /// Build a parse-error response for a line that could not be deserialized.
     ///
-    /// The id is `""` because the id cannot be recovered from a malformed
-    /// envelope.  This is a pragmatic compromise; JSON-RPC 2.0 §5.1 requires
-    /// `null` for id, but our struct uses `String`.
+    /// # JSON-RPC 2.0 §5.1 non-compliance
+    ///
+    /// The spec mandates `"id": null` whenever the id cannot be recovered from
+    /// a malformed request (§5.1: *"If there was an error in detecting the id
+    /// in the Request object (e.g. Parse error/Invalid Request), it MUST be
+    /// Null."*).  This implementation emits `"id": ""` instead because
+    /// `ContextRpcResponse::id` is typed as `String`, which cannot represent
+    /// JSON `null`.
+    ///
+    /// **Clients MUST tolerate `"id": ""`** on parse-error responses.
+    /// Achieving full compliance requires replacing `id: String` with a type
+    /// that can represent `null` (e.g. `Option<String>` or
+    /// `serde_json::Value`), which is a breaking wire-format change deferred
+    /// to a future revision.
     pub fn parse_error(message: impl Into<String>) -> Self {
         Self::error("", JSONRPC_PARSE_ERROR, message)
     }

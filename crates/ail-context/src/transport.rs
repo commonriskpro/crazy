@@ -18,8 +18,10 @@
 // - Each response is a single JSON object followed by `\n`.
 // - Empty lines are ignored.
 // - Malformed JSON produces a JSON-RPC parse-error response (`-32700`).
-//   The response id is `""` because the id cannot be recovered from a
-//   malformed envelope.
+//   The response id is `""` (not the spec-required `null`) because
+//   `ContextRpcResponse::id` is typed as `String`, which has no null
+//   representation.  See [`server::ContextRpcResponse::parse_error`] for
+//   the full rationale.  Clients MUST tolerate `"id": ""` on parse errors.
 // - Read I/O errors stop the serve loop with `TransportError::Read`.
 // - Write I/O errors stop the serve loop with `TransportError::Write`.
 
@@ -136,7 +138,12 @@ where
         }
     }
 
-    /// Serialize a response to a newline-terminated JSON line.
+    /// Serialize a response to a newline-terminated JSON line and flush.
+    ///
+    /// The flush is mandatory: when `writer` is a buffered sink (e.g.
+    /// `BufWriter<Stdout>`), omitting it leaves the response in the kernel
+    /// buffer and the client hangs indefinitely waiting for bytes that never
+    /// arrive.  For unbuffered or in-memory sinks the flush is a no-op.
     fn write_response<W: Write>(
         &self,
         writer: &mut W,
@@ -146,6 +153,7 @@ where
             .map_err(|e| TransportError::Encode(e.to_string()))?;
         writer.write_all(&bytes).map_err(TransportError::Write)?;
         writer.write_all(b"\n").map_err(TransportError::Write)?;
+        writer.flush().map_err(TransportError::Write)?;
         Ok(())
     }
 }
@@ -433,6 +441,54 @@ mod tests {
             err.code,
             redecoded.error.as_ref().unwrap().code,
             "parse-error code must survive JSON round-trip"
+        );
+    }
+
+    // ── flush_called_once_per_response ────────────────────────────────────
+    // Spec: write_response flushes after every response so that buffered
+    //       writers (BufWriter<Stdout>) deliver bytes to the client
+    //       immediately rather than accumulating them indefinitely.
+    //
+    // RED: write_response omitted the flush call.
+    // GREEN: writer.flush() added after write_all(b"\n").
+    #[test]
+    fn flush_called_once_per_response() {
+        struct FlushCountingWriter {
+            inner: Vec<u8>,
+            flush_count: usize,
+        }
+
+        impl std::io::Write for FlushCountingWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.inner.write(buf)
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flush_count += 1;
+                Ok(())
+            }
+        }
+
+        let t = make_transport();
+        let r1 = valid_query_request("t-flush-1");
+        let r2 = valid_query_request("t-flush-2");
+        let input = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&r1).unwrap(),
+            serde_json::to_string(&r2).unwrap(),
+        );
+
+        let reader = Cursor::new(input.as_bytes());
+        let mut writer = FlushCountingWriter {
+            inner: Vec::new(),
+            flush_count: 0,
+        };
+        t.serve(reader, &mut writer)
+            .expect("serve must not error for well-behaved I/O");
+
+        assert_eq!(
+            writer.flush_count, 2,
+            "flush must be called exactly once per response (once per request here)"
         );
     }
 
