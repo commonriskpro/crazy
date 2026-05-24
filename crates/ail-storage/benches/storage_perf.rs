@@ -170,7 +170,8 @@ fn bench_codec(c: &mut Criterion) {
     });
     c.bench_function("cbor_decode_snapshot", |b| {
         b.iter(|| {
-            let _: SnapshotEnvelope = codec.decode(&encoded).expect("decode");
+            let decoded: SnapshotEnvelope = codec.decode(&encoded).expect("decode");
+            black_box(decoded)
         });
     });
     c.bench_function("cbor_roundtrip_snapshot", |b| {
