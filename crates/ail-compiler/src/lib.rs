@@ -36,6 +36,8 @@ pub mod hash;
 pub mod incremental;
 pub mod lower;
 pub mod native;
+mod native_codegen;
+mod native_types;
 pub mod optimize;
 pub mod wasm;
 
