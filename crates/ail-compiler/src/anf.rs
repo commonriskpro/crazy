@@ -67,9 +67,14 @@ pub struct AnfSelectClause {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnfMatchArm {
     /// Pattern string (e.g. `"Ok(x)"`, `"None"`, `"_"`). Backend execution
-    /// currently supports integer literals, boolean literals, and wildcard;
-    /// constructor payload strings are syntax-only until payload bindings are
-    /// represented in Core/ANF.
+    /// supports:
+    /// - integer literal patterns (e.g. `"42"`, `"-1"`) on I64 scrutinees.
+    /// - boolean literal patterns (`"true"`, `"false"`) on I64/I32 scrutinees.
+    /// - wildcard `"_"` — unconditionally matches.
+    /// - tag-only constructor patterns (e.g. `"None"`) on I32 (variant pointer) scrutinees.
+    /// - single-binding constructor patterns (e.g. `"Ok(val)"`, `"Some(x)"`) — loads
+    ///   the payload from offset 8 in linear memory and binds it before evaluating the body.
+    /// Multi-binding patterns (e.g. `"Ok(a, b)"`) are not yet supported and emit Unreachable.
     pub pattern: String,
     /// Body expression evaluated when the pattern matches.
     pub body: AnfExpr,

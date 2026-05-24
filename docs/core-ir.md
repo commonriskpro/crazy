@@ -1154,7 +1154,17 @@ The Rust Core IR in `crates/ail-compiler/src/core_ir.rs` includes serializable `
 
 Current executable support is narrower than the full IR:
 
-- `expr_parser.rs` parses the current prefix-form executable subset: literals, variables, `let`, `if`, `match`, arithmetic/comparison/boolean helpers, and compound value forms (`record`, `field`, `update`, `tuple`, `variant`, `list`).
-- `wasm.rs` emits real bodies for simple values/control flow and effect calls, but many semantic variants still lower to stubs/traps or opaque references.
-- Executable `Match` currently supports integer literal, boolean literal, and wildcard patterns. Constructor-pattern strings such as `Ok(value)` may parse, but WASM/native backends treat them as unsupported and emit a trap rather than binding variant payloads.
+- `expr_parser.rs` parses the prefix-form executable subset (expanded in `feat/expr-parser-expand`):
+  - **Literals**: integers, floats (`3.14`, `-2.5`), booleans, strings (`"text"`, with `\\`/`\"` escapes), unit.
+  - **Arithmetic/comparison**: `add`, `sub`, `mul`, `div`, `mod`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`.
+  - **Boolean short-circuit**: `and`, `or`.
+  - **Compound values**: `record`, `field`, `update`, `tuple`, `variant`, `list`.
+  - **Option/Result conveniences**: `none()`, `some(x)`, `ok(x)`, `err(x)`.
+  - **Control flow**: `let`, `if`, `match`, `loop`, `while`, `break`, `continue`, `return`.
+  - **Effects**: `effect_call(capability, operation, args...)`.
+  - **Lambdas**: `lambda(params..., body)` — all but last arg are param names.
+  - **Iteration**: `foreach(binding, collection, body)`, `fold(init, list, func)` — parse correctly; WASM emit is a stub.
+  - **Cells**: `cell_new(init)`, `cell_get(cell)`, `cell_set(cell, value)`.
+- `wasm.rs` emits real bodies for simple values, control flow, and effect calls; collection iteration (`foreach`, `fold`), tasks, channels, and resources still emit stubs/traps.
+- Executable `Match` supports integer literal, boolean literal, wildcard, tag-only constructor (`None`), and single-binding constructor (`Ok(val)`, `Some(x)`, `Err(e)`) patterns. The WASM backend loads the i32 tag at offset 0 and, for payload-binding patterns, loads the i64 payload at offset 8. Multi-binding patterns (e.g. `Ok(a, b)`) are not yet supported and emit `Unreachable`.
 - Full memory/value layout for handles, text, bytes, and nested structured payloads is still tracked as ABI validation work; records, variants, lists, `Option`, and `Result` are currently executable for scalar-slot payloads.
