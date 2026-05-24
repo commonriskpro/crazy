@@ -242,6 +242,7 @@ dependencies = [
  "blake3",
  "ciborium",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "wasm-encoder 0.244.0",

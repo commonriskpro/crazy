@@ -33,42 +33,61 @@ pub struct HandleId(pub u64);
 
 // ── HandleRegistry ────────────────────────────────────────────────────────
 
-/// Tracks active handles.  `create` returns a fresh `HandleId` starting
-/// at 1.  `release` marks a handle as inactive and returns whether the
-/// handle was previously active.
+/// Tracks active handles with reference counts.
+///
+/// Each handle starts with a reference count of 1 after `create`.
+/// `clone_handle` increments the count.  `release` decrements the count and
+/// returns `true` only when the count reaches zero (the handle is fully
+/// released).  Handles with mode Linear or Affine are expected to be released
+/// exactly once; Shared handles may be cloned and released multiple times.
 pub struct HandleRegistry {
     next: u64,
-    active: BTreeMap<u64, bool>,
+    /// Maps handle id → reference count.  Count 0 means the handle was fully
+    /// released; the entry is kept for idempotent `release` / `contains` calls.
+    ref_counts: BTreeMap<u64, u32>,
 }
 
 impl HandleRegistry {
     pub fn new() -> Self {
         HandleRegistry {
             next: 1,
-            active: BTreeMap::new(),
+            ref_counts: BTreeMap::new(),
         }
     }
 
-    /// Create a new handle and return its ID.
+    /// Create a new handle with an initial reference count of 1.
     pub fn create(&mut self) -> HandleId {
         let id = self.next;
         self.next += 1;
-        self.active.insert(id, true);
+        self.ref_counts.insert(id, 1);
         HandleId(id)
     }
 
-    /// Return whether the given handle is currently active.
-    pub fn contains(&self, id: HandleId) -> bool {
-        self.active.get(&id.0).copied().unwrap_or(false)
+    /// Increment the reference count for `id`.  Returns `true` if the handle
+    /// was active; `false` if it was never created or already fully released.
+    pub fn clone_handle(&mut self, id: HandleId) -> bool {
+        match self.ref_counts.get_mut(&id.0) {
+            Some(count) if *count > 0 => {
+                *count += 1;
+                true
+            }
+            _ => false,
+        }
     }
 
-    /// Release a handle.  Returns `true` if the handle was active; `false`
-    /// if it was already released or was never created.
+    /// Return whether the given handle is currently active (ref count > 0).
+    pub fn contains(&self, id: HandleId) -> bool {
+        self.ref_counts.get(&id.0).copied().unwrap_or(0) > 0
+    }
+
+    /// Decrement the reference count for `id`.  Returns `true` when the count
+    /// reaches zero (the handle is fully released).  Returns `false` if the
+    /// handle was already fully released or was never created.
     pub fn release(&mut self, id: HandleId) -> bool {
-        match self.active.get_mut(&id.0) {
-            Some(active @ true) => {
-                *active = false;
-                true
+        match self.ref_counts.get_mut(&id.0) {
+            Some(count) if *count > 0 => {
+                *count -= 1;
+                *count == 0
             }
             _ => false,
         }
@@ -114,6 +133,10 @@ pub enum StructuredValue {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ValueLayout {
     Scalar,
+    /// A UTF-8 text value packed as `(len as i64) << 32 | (ptr as i64)` in
+    /// the raw i64 return slot.  Decoded to `StructuredValue::Text { ptr, len }`
+    /// without reading WASM linear memory.
+    Text,
     Record {
         fields: Vec<String>,
     },
@@ -148,6 +171,13 @@ impl ValueDecoder {
     pub fn decode(layout: &ValueLayout, raw: i64, memory: &[u8]) -> StructuredValue {
         match layout {
             ValueLayout::Scalar => StructuredValue::Scalar(raw),
+
+            ValueLayout::Text => {
+                // Packed encoding: upper 32 bits = len, lower 32 bits = ptr.
+                let ptr = (raw & 0xFFFF_FFFF) as i32;
+                let len = ((raw >> 32) & 0xFFFF_FFFF) as i32;
+                StructuredValue::Text { ptr, len }
+            }
 
             ValueLayout::Record { fields } => decode_record(fields, raw, memory),
 

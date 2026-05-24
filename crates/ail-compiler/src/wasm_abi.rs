@@ -26,6 +26,42 @@ use wasm_encoder::ValType;
 use crate::anf::{AnfBinding, AnfExpr};
 use crate::core_ir::LiteralValue;
 
+// ── ABI versioning ────────────────────────────────────────────────────────
+
+/// Current WASM ABI version.  Increment this when the typed-value layout
+/// contract changes in a backward-incompatible way.
+pub const ABI_VERSION: u32 = 1;
+
+/// A versioned envelope for the per-export type descriptors emitted by the
+/// compiler.  Callers that own a `WasmArtifact` can construct an
+/// `AbiDescriptor` from `export_types` and pass it across a process boundary
+/// (e.g. serialise to JSON) so the runtime can check compatibility before
+/// invoking typed exports.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AbiDescriptor {
+    /// Layout version.  Must equal [`ABI_VERSION`] for the current runtime to
+    /// decode the exports without an upgrade path.
+    pub abi_version: u32,
+    /// Maps each exported function name to its [`WasmTypeDescriptor`].
+    pub exports: BTreeMap<String, WasmTypeDescriptor>,
+}
+
+impl AbiDescriptor {
+    /// Wrap `exports` with the current [`ABI_VERSION`].
+    pub fn new(exports: BTreeMap<String, WasmTypeDescriptor>) -> Self {
+        Self {
+            abi_version: ABI_VERSION,
+            exports,
+        }
+    }
+
+    /// Returns `true` when this descriptor's version matches the current
+    /// runtime's expected ABI version.
+    pub fn is_compatible(&self) -> bool {
+        self.abi_version == ABI_VERSION
+    }
+}
+
 // ── WasmTypeDescriptor ───────────────────────────────────────────────────
 
 /// Scalar WASM primitive types used in the type descriptor.
@@ -43,6 +79,10 @@ pub enum WasmScalarType {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WasmTypeDescriptor {
     Scalar(WasmScalarType),
+    /// A UTF-8 text value packed as `(len as i64) << 32 | (ptr as i64)` in
+    /// the raw i64 WASM return slot.  The runtime unpacks this into
+    /// `StructuredValue::Text { ptr, len }` without a separate memory read.
+    Text,
     Record {
         fields: Vec<String>,
     },
@@ -78,6 +118,7 @@ pub fn derive_wasm_type(expr: &AnfExpr) -> WasmTypeDescriptor {
         AnfExpr::Let { body, .. } => derive_wasm_type(body),
         AnfExpr::Literal(LiteralValue::Float(_)) => WasmTypeDescriptor::Scalar(WasmScalarType::F64),
         AnfExpr::Literal(LiteralValue::Unit) => WasmTypeDescriptor::Scalar(WasmScalarType::I32),
+        AnfExpr::Literal(LiteralValue::Text(_)) => WasmTypeDescriptor::Text,
         _ => WasmTypeDescriptor::Scalar(WasmScalarType::I64),
     }
 }

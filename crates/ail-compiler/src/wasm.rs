@@ -62,7 +62,9 @@ use crate::capabilities::CapabilitiesManifest;
 use crate::error::CompileError;
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
 // Public re-exports: maintain the pre-existing surface of `ail_compiler::wasm`.
-pub use crate::wasm_abi::{WasmScalarType, WasmTypeDescriptor, derive_wasm_type};
+pub use crate::wasm_abi::{
+    ABI_VERSION, AbiDescriptor, WasmScalarType, WasmTypeDescriptor, derive_wasm_type,
+};
 pub use crate::wasm_artifact::WasmArtifact;
 
 use crate::wasm_abi::{EffectDataLayout, binding_result, binding_signatures, export_name};
@@ -253,6 +255,8 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         None
     };
 
+    let abi_descriptor = AbiDescriptor::new(export_types.clone());
+
     Ok(WasmArtifact {
         wasm,
         source_map,
@@ -263,6 +267,7 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         source_map_json,
         artifact_manifest_json,
         export_types,
+        abi_descriptor,
         result_buffer_offset,
     })
 }
