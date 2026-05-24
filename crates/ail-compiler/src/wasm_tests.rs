@@ -1081,6 +1081,56 @@ fn host_call_write_call_passes_out_ptr() {
     );
 }
 
+// ── derive_wasm_type EffectCall limitation tests ──────────────────────────
+//
+// LIMITATION: `derive_wasm_type` always returns `Scalar(I64)` for an
+// `EffectCall` node because:
+//   - ANF expressions carry no return-type annotation at this stage.
+//   - There are no handler descriptors available to look up the declared
+//     return type of the capability operation.
+//
+// This is intentional and explicitly documented here so future implementors
+// know what to fix: either propagate return-type annotations from the
+// type-checker into ANF, or pass a handler-descriptor table into
+// `derive_wasm_type`.
+
+// Scenario: bare EffectCall derives Scalar(I64).
+// Proves the explicit arm fires and the fallback wildcard is not relied on.
+#[test]
+fn derive_wasm_type_effect_call_is_scalar_i64() {
+    let expr = AnfExpr::EffectCall {
+        capability: "test.cap".to_string(),
+        func: "op".to_string(),
+        args: vec![],
+    };
+    assert_eq!(
+        derive_wasm_type(&expr),
+        WasmTypeDescriptor::Scalar(WasmScalarType::I64),
+        "EffectCall must derive Scalar(I64): no ANF return-type annotation available"
+    );
+}
+
+// Scenario: Let { body: EffectCall } also derives Scalar(I64).
+// The Let arm recurses into `body`; the EffectCall arm then fires.
+// Documents that the limitation persists through nested Let bindings.
+#[test]
+fn derive_wasm_type_let_body_effect_call_is_scalar_i64() {
+    let expr = AnfExpr::Let {
+        name: "result".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+        body: Box::new(AnfExpr::EffectCall {
+            capability: "io".to_string(),
+            func: "read".to_string(),
+            args: vec![],
+        }),
+    };
+    assert_eq!(
+        derive_wasm_type(&expr),
+        WasmTypeDescriptor::Scalar(WasmScalarType::I64),
+        "Let body EffectCall must derive Scalar(I64): limitation applies through Let nesting"
+    );
+}
+
 // ── Feature-H: WASM capability manifest ──────────────────────────────────
 
 // Scenario: WasmArtifact carries a capabilities_manifest with one entry per binding.
