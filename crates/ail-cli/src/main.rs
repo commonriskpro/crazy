@@ -3,6 +3,7 @@ mod branch_commands;
 mod builtin_targets;
 mod changeset_input;
 mod cli;
+mod cli_helpers;
 mod diagnostic_commands;
 mod error;
 mod eval_commands;

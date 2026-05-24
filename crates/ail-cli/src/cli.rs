@@ -47,12 +47,10 @@
 // Fallback: in-memory store (no persistence across invocations).
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use ail_change::{
-    apply::SnapshotBridge,
     canonical::{canonicalize, canonicalize_parsed},
-    model::{ChangeSetOutcome, ConflictReason, SnapshotId},
+    model::SnapshotId,
     parser::parse_changeset,
 };
 use ail_compiler::{emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir};
@@ -61,7 +59,7 @@ use ail_context::{
     DerivedIndexCache, FieldRedactionRule, InMemoryContextSource, QueryBudget, QueryScope,
     SnapshotSelector, TrustLevel as ContextTrustLevel,
 };
-use ail_core::semantic_graph::{GraphEdge, GraphNode, NodeKind};
+use ail_core::semantic_graph::{GraphNode, NodeKind};
 use ail_core::semantic_graph::{NodeRef, Provenance, SemanticGraph};
 use ail_runtime::blake3_hex_of;
 use ail_storage::codec::{CborCodec, ContentCodec};
@@ -71,6 +69,8 @@ use ail_verify::report::VerificationReport;
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
+
+pub(crate) use crate::cli_helpers::*;
 
 use crate::approval_commands::{cmd_approve, cmd_reject};
 use crate::branch_commands::{cmd_diff, cmd_merge, cmd_rebase, cmd_refactor, cmd_rollback};
@@ -949,29 +949,7 @@ fn node_ref_for_cli_target(target: &str, graph: &SemanticGraph) -> Result<NodeRe
         .ok_or_else(|| CliError::NotFound(format!("node not found: {target}")))
 }
 
-/// `ail impact <target>` — show impact analysis for a target node.
-///
-/// Returns which nodes are transitively affected by changes to this target.
-/// Output is hash-bound to the current snapshot.
-/// Resolve a target string (e.g. "fn.cart_total", "type.CartItem") to the node
-/// names to search for.  The convention is `<kind>.<name>` — we match by the
-/// suffix after the last `.`, or the whole string when no `.` is present.
-pub(crate) fn target_node_name(target: &str) -> &str {
-    target.rsplit('.').next().unwrap_or(target)
-}
-
-/// Look up the `NodeRef`s of every node whose name matches `target_name`.
-pub(crate) fn node_refs_for_name(
-    graph: &ail_core::semantic_graph::SemanticGraph,
-    name: &str,
-) -> Vec<ail_core::semantic_graph::NodeRef> {
-    graph
-        .nodes
-        .iter()
-        .filter(|n| n.name == name)
-        .map(|n| n.id)
-        .collect()
-}
+// target_node_name, node_refs_for_name → crate::cli_helpers (re-exported above)
 
 // graph query commands (impact, callers, effects, proofs) → crate::graph_query_commands
 
@@ -1244,40 +1222,8 @@ async fn snapshot_id_from_parent_chain(
     Ok(SnapshotId(depth))
 }
 
-pub(crate) fn latest_snapshot(snapshots: &[SnapshotEnvelope]) -> Option<&SnapshotEnvelope> {
-    snapshots.iter().max_by_key(|snapshot| snapshot.created_at)
-}
-
-fn format_unix_ms(ms: u64) -> String {
-    if ms == 0 {
-        "(unknown)".to_string()
-    } else {
-        format!("{ms} ms since Unix epoch")
-    }
-}
-
-fn changeset_outcome_message(outcome: &ChangeSetOutcome) -> &'static str {
-    match outcome {
-        ChangeSetOutcome::Applied => "applied",
-        ChangeSetOutcome::RebaseRequired { .. } => "rebase required",
-        ChangeSetOutcome::Failed { .. } => "change failed",
-        ChangeSetOutcome::ConflictIrresolvable { reason } => conflict_reason_message(reason),
-    }
-}
-
-pub(crate) fn conflict_reason_message(reason: &ConflictReason) -> &'static str {
-    match reason {
-        ConflictReason::SameNodeModifiedIncompatibly => "same node was modified incompatibly",
-        ConflictReason::NodeDeletedWhileModified => {
-            "node was deleted while another change modified it"
-        }
-        ConflictReason::PublicApiConflict => "public API changes conflict",
-        ConflictReason::InvariantTouchedConcurrently => "invariant changes conflict",
-        ConflictReason::IncompatibleNodeModification => {
-            "semantic node content conflict (return type, body, or effects differ)"
-        }
-    }
-}
+// latest_snapshot, format_unix_ms, changeset_outcome_message, conflict_reason_message
+// → crate::cli_helpers (re-exported above)
 
 /// `ail init` — create .ail/ directory structure and initialize baseline state.
 ///
@@ -1952,120 +1898,14 @@ async fn cmd_inspect(
 // doctor_index_freshness, doctor_schema_compatibility, cmd_doctor, cmd_gc → crate::diagnostic_commands
 
 // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
-
-pub(crate) fn node_to_json(node: &GraphNode) -> Value {
-    serde_json::to_value(node).unwrap_or_else(|_| json!({ "name": node.name }))
-}
-
-fn edge_to_json(edge: &GraphEdge) -> Value {
-    serde_json::to_value(edge).unwrap_or_else(|_| {
-        json!({
-            "source": edge.source.0,
-            "target": edge.target.0,
-            "kind": format!("{:?}", edge.kind),
-        })
-    })
-}
-
-/// A minimal `SnapshotBridge` that always returns a fixed id.
-pub(crate) struct SimpleSnapshotBridge(pub(crate) SnapshotId);
-
-impl SnapshotBridge for SimpleSnapshotBridge {
-    fn current_snapshot_id(&self) -> SnapshotId {
-        self.0
-    }
-}
-
-/// Create a minimal ChangeSet from a free-text description string.
-fn make_text_changeset(text: &str) -> ail_change::model::ChangeSet {
-    use ail_change::model::{ChangeSet, ChangeSetMeta, Timestamp};
-    ChangeSet {
-        meta: ChangeSetMeta {
-            author: "cli".to_string(),
-            description: text.to_string(),
-            timestamp: Timestamp(unix_ms_now()),
-        },
-        base_snapshot_id: SnapshotId(0),
-        ops: vec![],
-    }
-}
-
-/// Determine the input source label for human output.
-fn input_source_label(from_stdin: bool) -> &'static str {
-    if from_stdin { "stdin" } else { "file" }
-}
-
-/// Build a structural diff preview from a slice of change ops.
-/// At this stage the graph is empty so all ops are treated as additions.
-fn build_structural_diff_preview(ops: &[ail_change::model::ChangeSetOp]) -> Value {
-    json!({
-        "creates": ops.len(),
-        "modifies": 0,
-        "deletes": 0,
-        "connects": 0,
-        "disconnects": 0,
-        "exposes": 0,
-        "hides": 0,
-        "effects_changed": 0,
-        "contracts_changed": 0,
-        "capabilities_changed": 0,
-    })
-}
-
-/// Encode a value as CBOR bytes.
-fn encode_cbor<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, CliError> {
-    let mut buf = Vec::new();
-    ciborium::into_writer(value, &mut buf)
-        .map_err(|e| CliError::Domain(format!("CBOR encoding failed: {e}")))?;
-    Ok(buf)
-}
-
-/// Encode a byte slice as a lowercase hex string.
-pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Return `true` if `id` is a valid 64-character lowercase hex string.
-pub(crate) fn is_valid_change_id(id: &str) -> bool {
-    id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-/// Convert a 64-char hex string into an `ObjectId`.
-pub(crate) fn hex_to_object_id(hex: &str) -> Result<ObjectId, CliError> {
-    if hex.len() != 64 {
-        return Err(CliError::Domain(format!(
-            "invalid id length: {}",
-            hex.len()
-        )));
-    }
-    let mut bytes = [0u8; 32];
-    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-        let s =
-            std::str::from_utf8(chunk).map_err(|_| CliError::Domain("non-UTF8 hex".to_string()))?;
-        bytes[i] = u8::from_str_radix(s, 16)
-            .map_err(|_| CliError::Domain(format!("invalid hex byte: {s}")))?;
-    }
-    Ok(ObjectId::from(bytes))
-}
-
-/// Return the current time as Unix milliseconds.
-pub(crate) fn unix_ms_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-/// Return the `.ail/` directory path for a file-backed store.
-/// Returns an error for in-memory or Postgres stores.
-pub(crate) fn ail_dir_for_store(store: &StoreHandle) -> Result<PathBuf, CliError> {
-    match store {
-        StoreHandle::File { ail_dir, .. } => Ok(ail_dir.clone()),
-        _ => Err(CliError::Domain(
-            "persistent .ail storage is not active".to_string(),
-        )),
-    }
-}
+//
+// All pure helpers (bytes_to_hex, hex_to_object_id, is_valid_change_id,
+// unix_ms_now, format_unix_ms, ail_dir_for_store, conflict_reason_message,
+// changeset_outcome_message, encode_cbor, make_text_changeset,
+// input_source_label, build_structural_diff_preview, node_to_json,
+// edge_to_json, target_node_name, node_refs_for_name, latest_snapshot,
+// SimpleSnapshotBridge) have been moved to crate::cli_helpers and are
+// re-exported above via `pub(crate) use crate::cli_helpers::*`.
 
 // ── UNIT TESTS ────────────────────────────────────────────────────────────
 
