@@ -516,7 +516,9 @@ impl StoreHandle {
     /// Lookup order:
     /// 1. If `name` is a 64-char hex string → exact hash match in index.
     /// 2. Strip `.o` suffix → match against `profile` in index (latest by `stored_at`).
-    /// 3. Return the latest entry overall.
+    /// 3. If no profile match and the name carries no foreign extension, return the
+    ///    latest entry overall.  Names with a foreign extension (e.g. `"dev.wasm"`)
+    ///    suppress the fallback so they cannot resolve via the native index.
     ///
     /// Returns `Ok(None)` when no persisted artifact is found or when using a
     /// non-file-backed backend.
@@ -537,12 +539,21 @@ impl StoreHandle {
             entries.iter().find(|e| e.hash == name)
         } else {
             // Profile-name match (strip optional .o suffix), then fall back to latest.
+            // Suppress the fallback when the name carries a foreign extension (e.g. ".wasm"):
+            // those names belong to other artifact types and must not resolve via native fallback.
             let profile_guess = name.strip_suffix(".o").unwrap_or(name);
+            let has_foreign_ext = name.contains('.') && !name.ends_with(".o");
             entries
                 .iter()
                 .filter(|e| e.profile == profile_guess)
                 .max_by_key(|e| e.stored_at)
-                .or_else(|| entries.iter().max_by_key(|e| e.stored_at))
+                .or_else(|| {
+                    if has_foreign_ext {
+                        None
+                    } else {
+                        entries.iter().max_by_key(|e| e.stored_at)
+                    }
+                })
         };
 
         let Some(entry) = entry else {
@@ -2275,5 +2286,52 @@ mod tests {
 
         assert_eq!(loaded.hash, fake_hash);
         assert_eq!(loaded.profile, "prod");
+    }
+
+    // Regression: load_native_artifact must NOT fall back to latest for foreign-extension names.
+    //   GIVEN a file store with one saved native artifact (profile "dev")
+    //   WHEN load_native_artifact is called with "dev.wasm" (foreign extension)
+    //   THEN Ok(None) is returned (fallback suppressed)
+    //   AND  load_native_artifact("dev.o") still returns Some (own extension unaffected)
+    #[test]
+    fn load_native_artifact_suppresses_fallback_for_foreign_extension() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        init_file_layout(&ail_dir).expect("init layout");
+        let store = file_store(ail_dir);
+
+        let fake_hash = "f".repeat(64);
+        store
+            .save_native_artifact(
+                &fake_hash,
+                "dev",
+                "native",
+                NativeArtifactBytes {
+                    object: b"native-regression",
+                    source_map_json: b"{}",
+                    artifact_manifest_json: b"{}",
+                    capabilities_manifest_json: b"{\"entries\":[]}",
+                },
+            )
+            .expect("save must succeed");
+
+        // Foreign extension: must NOT fall back to the persisted native artifact.
+        let result = store
+            .load_native_artifact("dev.wasm")
+            .expect("load must not error");
+        assert!(
+            result.is_none(),
+            "load_native_artifact must return None for a .wasm-suffixed name (foreign extension); \
+             fallback-to-latest must be suppressed"
+        );
+
+        // Own extension: must still resolve correctly.
+        let result = store
+            .load_native_artifact("dev.o")
+            .expect("load must not error");
+        assert!(
+            result.is_some(),
+            "load_native_artifact must still return Some for 'dev.o' (own extension)"
+        );
     }
 }
