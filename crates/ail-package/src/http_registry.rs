@@ -200,8 +200,9 @@ fn handle_connection(stream: &mut TcpStream, client: &InMemoryRegistryClient) {
                     write_response(stream, 200, &body);
                 }
                 Err(e) => {
-                    let msg = format!("{{\"error\":\"{e}\"}}");
-                    write_response(stream, 500, msg.as_bytes());
+                    let msg = serde_json::to_vec(&serde_json::json!({"error": e.to_string()}))
+                        .unwrap_or_else(|_| b"{\"error\":\"internal error\"}".to_vec());
+                    write_response(stream, 500, &msg);
                 }
             }
         }
@@ -216,8 +217,9 @@ fn handle_connection(stream: &mut TcpStream, client: &InMemoryRegistryClient) {
                     write_response(stream, 200, &body);
                 }
                 Err(e) => {
-                    let msg = format!("{{\"error\":\"{e}\"}}");
-                    write_response(stream, 500, msg.as_bytes());
+                    let msg = serde_json::to_vec(&serde_json::json!({"error": e.to_string()}))
+                        .unwrap_or_else(|_| b"{\"error\":\"internal error\"}".to_vec());
+                    write_response(stream, 500, &msg);
                 }
             }
         }
@@ -232,8 +234,9 @@ fn handle_connection(stream: &mut TcpStream, client: &InMemoryRegistryClient) {
                     write_response(stream, 200, &body);
                 }
                 Err(e) => {
-                    let msg = format!("{{\"error\":\"{e}\"}}");
-                    write_response(stream, 500, msg.as_bytes());
+                    let msg = serde_json::to_vec(&serde_json::json!({"error": e.to_string()}))
+                        .unwrap_or_else(|_| b"{\"error\":\"internal error\"}".to_vec());
+                    write_response(stream, 500, &msg);
                 }
             }
         }
@@ -248,8 +251,9 @@ fn handle_connection(stream: &mut TcpStream, client: &InMemoryRegistryClient) {
                     write_response(stream, 200, &body);
                 }
                 Err(e) => {
-                    let msg = format!("{{\"error\":\"{e}\"}}");
-                    write_response(stream, 500, msg.as_bytes());
+                    let msg = serde_json::to_vec(&serde_json::json!({"error": e.to_string()}))
+                        .unwrap_or_else(|_| b"{\"error\":\"internal error\"}".to_vec());
+                    write_response(stream, 500, &msg);
                 }
             }
         }
@@ -270,6 +274,8 @@ pub enum HttpClientError {
     Protocol(String),
     /// JSON serialization / deserialization error.
     Json(String),
+    /// Server returned a non-2xx HTTP status code.
+    Server { status: u16, body: String },
 }
 
 impl std::fmt::Display for HttpClientError {
@@ -278,6 +284,9 @@ impl std::fmt::Display for HttpClientError {
             HttpClientError::Transport(m) => write!(f, "transport: {m}"),
             HttpClientError::Protocol(m) => write!(f, "protocol: {m}"),
             HttpClientError::Json(m) => write!(f, "json: {m}"),
+            HttpClientError::Server { status, body } => {
+                write!(f, "server error {status}: {body}")
+            }
         }
     }
 }
@@ -348,9 +357,18 @@ impl HttpRegistryClient {
             }
         }
 
-        // Extract Content-Length.
         let header_text = std::str::from_utf8(&resp_buf)
             .map_err(|_| HttpClientError::Protocol("non-UTF-8 response headers".into()))?;
+
+        // Parse HTTP status code from the response line: "HTTP/1.1 NNN Reason".
+        let resp_status: u16 = header_text
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        // Extract Content-Length.
         let mut content_length: usize = 0;
         for line in header_text.lines() {
             let lower = line.to_lowercase();
@@ -364,6 +382,15 @@ impl HttpRegistryClient {
         stream
             .read_exact(&mut body_buf)
             .map_err(|e| HttpClientError::Transport(e.to_string()))?;
+
+        // Non-2xx → surface as a distinct error, not a JSON decode failure.
+        if !(200..300).contains(&resp_status) {
+            let body = String::from_utf8_lossy(&body_buf).into_owned();
+            return Err(HttpClientError::Server {
+                status: resp_status,
+                body,
+            });
+        }
 
         Ok(body_buf)
     }
@@ -671,6 +698,71 @@ mod tests {
             resp.error.is_some(),
             "not-found fetch must include an error"
         );
+    }
+
+    // ── post_json_404_returns_server_error ───────────────────────────────
+    // Spec: requesting an unknown path surfaces HttpClientError::Server { status: 404 },
+    // not HttpClientError::Json.
+    #[test]
+    fn post_json_404_returns_server_error() {
+        let addr = start_server();
+        let client = HttpRegistryClient::new(&addr);
+        let result = client.post_json("/nonexistent", b"{}");
+        match result {
+            Err(HttpClientError::Server { status, .. }) => {
+                assert_eq!(status, 404, "unknown path must yield a 404 server error");
+            }
+            other => panic!("expected Server error, got {other:?}"),
+        }
+    }
+
+    // ── post_json_400_bad_body_returns_server_error ──────────────────────
+    // Spec: sending invalid JSON to a valid endpoint yields
+    // HttpClientError::Server { status: 400 }, not HttpClientError::Json.
+    #[test]
+    fn post_json_400_bad_body_returns_server_error() {
+        let addr = start_server();
+        let client = HttpRegistryClient::new(&addr);
+        let result = client.post_json("/api/v1/publish", b"this is not json");
+        match result {
+            Err(HttpClientError::Server { status, .. }) => {
+                assert_eq!(status, 400, "malformed body must yield a 400 server error");
+            }
+            other => panic!("expected Server error, got {other:?}"),
+        }
+    }
+
+    // ── post_json_500_returns_server_error ───────────────────────────────
+    // Spec: a server returning 500 yields HttpClientError::Server { status: 500 },
+    // with the body preserved for diagnosis.
+    #[test]
+    fn post_json_500_returns_server_error() {
+        // Spawn a minimal server that always replies 500.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let bad_addr = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut conn) = stream {
+                    // Drain request so the client does not get a broken-pipe write error.
+                    let mut buf = [0u8; 4096];
+                    let _ = <TcpStream as Read>::read(&mut conn, &mut buf);
+                    write_response(&mut conn, 500, b"{\"error\":\"forced\"}");
+                }
+            }
+        });
+
+        let client = HttpRegistryClient::new(&bad_addr);
+        let result = client.post_json("/api/v1/publish", b"{}");
+        match result {
+            Err(HttpClientError::Server { status, body }) => {
+                assert_eq!(status, 500, "forced 500 must yield a 500 server error");
+                assert!(
+                    body.contains("forced"),
+                    "error body must be forwarded to caller: {body}"
+                );
+            }
+            other => panic!("expected Server error, got {other:?}"),
+        }
     }
 
     // ── http_publish_sequence_numbers ─────────────────────────────────────
