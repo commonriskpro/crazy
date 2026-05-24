@@ -1396,6 +1396,90 @@ fn closure_capture_lambda_effect_call_arg_captured() {
 
 // ── End closure-capture tests ─────────────────────────────────────────────
 
+// ── WASM ABI surface: Bytes + ResourceAcquire→Handle expansion ───────────
+
+// WasmTypeDescriptor::Bytes exists and round-trips through serde.
+#[test]
+fn wasm_type_descriptor_bytes_exists_and_serialises() {
+    let desc = WasmTypeDescriptor::Bytes;
+    let json = serde_json::to_string(&desc).expect("Bytes must serialise to JSON");
+    assert_eq!(
+        json, "\"Bytes\"",
+        "WasmTypeDescriptor::Bytes must serialise as the string \"Bytes\""
+    );
+    let roundtrip: WasmTypeDescriptor =
+        serde_json::from_str(&json).expect("Bytes must deserialise from JSON");
+    assert_eq!(roundtrip, WasmTypeDescriptor::Bytes);
+}
+
+// Bytes is a distinct variant from Scalar and Text.
+#[test]
+fn wasm_type_descriptor_bytes_is_distinct_from_scalar_and_text() {
+    let bytes = WasmTypeDescriptor::Bytes;
+    assert_ne!(bytes, WasmTypeDescriptor::Text);
+    assert_ne!(bytes, WasmTypeDescriptor::Scalar(WasmScalarType::I64));
+    assert_ne!(bytes, WasmTypeDescriptor::Scalar(WasmScalarType::I32));
+}
+
+// derive_wasm_type for ResourceAcquire must return Handle.
+//
+// ResourceAcquire is the only ANF node whose contract guarantees a resource
+// handle return; all other node shapes fall to Scalar(I64) or another
+// specific variant.
+#[test]
+fn derive_wasm_type_resource_acquire_is_handle() {
+    let expr = AnfExpr::ResourceAcquire {
+        resource: "db.connection".to_string(),
+        args: vec![],
+    };
+    assert_eq!(
+        derive_wasm_type(&expr),
+        WasmTypeDescriptor::Handle,
+        "ResourceAcquire must derive Handle"
+    );
+}
+
+// Let { body: ResourceAcquire } also derives Handle (Let recurses into body).
+#[test]
+fn derive_wasm_type_let_body_resource_acquire_is_handle() {
+    let expr = AnfExpr::Let {
+        name: "h".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+        body: Box::new(AnfExpr::ResourceAcquire {
+            resource: "fs.file".to_string(),
+            args: vec![],
+        }),
+    };
+    assert_eq!(
+        derive_wasm_type(&expr),
+        WasmTypeDescriptor::Handle,
+        "Let body ResourceAcquire must derive Handle"
+    );
+}
+
+// Bool literal derives Scalar(I64) — explicit arm, not wildcard fallback.
+#[test]
+fn derive_wasm_type_bool_literal_is_scalar_i64() {
+    let expr = AnfExpr::Literal(LiteralValue::Bool(true));
+    assert_eq!(
+        derive_wasm_type(&expr),
+        WasmTypeDescriptor::Scalar(WasmScalarType::I64),
+        "Bool literal must derive Scalar(I64)"
+    );
+}
+
+// Int literal derives Scalar(I64) — explicit arm, triangulates with Bool arm.
+// (Already covered by `wasm_type_int_literal_is_scalar_i64`; kept here for
+// locality with the Bool arm test above.)
+#[test]
+fn derive_wasm_type_int_literal_explicit_arm() {
+    let expr = AnfExpr::Literal(LiteralValue::Int(0));
+    assert_eq!(
+        derive_wasm_type(&expr),
+        WasmTypeDescriptor::Scalar(WasmScalarType::I64),
+    );
+}
+
 // Scenario: capabilities_manifest serialises to JSON with entries array.
 // Spec: JSON consumers must be able to parse capabilities_manifest.entries uniformly.
 #[test]

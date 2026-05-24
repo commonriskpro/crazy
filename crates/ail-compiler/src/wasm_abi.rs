@@ -83,6 +83,14 @@ pub enum WasmTypeDescriptor {
     /// the raw i64 WASM return slot.  The runtime unpacks this into
     /// `StructuredValue::Text { ptr, len }` without a separate memory read.
     Text,
+    /// A raw byte buffer packed as `(len as i64) << 32 | (ptr as i64)` in
+    /// the raw i64 WASM return slot.  Decoded to
+    /// `StructuredValue::Bytes { ptr, len }` without a memory read.
+    ///
+    /// Unlike [`WasmTypeDescriptor::Text`], no UTF-8 assumption is made —
+    /// the bytes are treated as opaque.  Used for capability operations that
+    /// return binary payloads (e.g. serialised CBOR, cryptographic digests).
+    Bytes,
     Record {
         fields: Vec<String>,
     },
@@ -101,6 +109,24 @@ pub enum WasmTypeDescriptor {
 
 /// Derive the `WasmTypeDescriptor` for an `AnfExpr` by recursively inspecting
 /// the expression tree.  Used to populate `WasmArtifact::export_types`.
+///
+/// # Coverage of `Option`, `Result`, `Bytes`, and `Handle`
+///
+/// `Handle` is determinable when the top-level expression is
+/// `ResourceAcquire` — that node is defined as yielding a resource handle.
+///
+/// `Option` and `Result` are NOT derivable from current ANF shapes because
+/// there are no dedicated `AnfExpr::OptionNew` or `AnfExpr::ResultNew`
+/// constructors.  A `VariantNew { tag: "None" | "Some" | "Ok" | "Err" }`
+/// cannot be reliably distinguished from a user-defined enum with those tag
+/// names without type-checker annotations in the ANF nodes.  Until such
+/// annotations are propagated, callers that require Option/Result descriptors
+/// must construct them from an external type-descriptor table.
+///
+/// `Bytes` is also NOT derivable: no ANF node in the current core type surface
+/// produces a byte-buffer value, so no expression shape maps to
+/// `WasmTypeDescriptor::Bytes`.  Bytes descriptors must come from an external
+/// type-descriptor table until the ANF/core type surface can produce them.
 pub fn derive_wasm_type(expr: &AnfExpr) -> WasmTypeDescriptor {
     match expr {
         AnfExpr::RecordNew { fields } => WasmTypeDescriptor::Record {
@@ -116,14 +142,32 @@ pub fn derive_wasm_type(expr: &AnfExpr) -> WasmTypeDescriptor {
             WasmTypeDescriptor::List(Box::new(WasmTypeDescriptor::Scalar(WasmScalarType::I64)))
         }
         AnfExpr::Let { body, .. } => derive_wasm_type(body),
+        // ── Literal arms — explicit to avoid relying on the wildcard ──────
         AnfExpr::Literal(LiteralValue::Float(_)) => WasmTypeDescriptor::Scalar(WasmScalarType::F64),
         AnfExpr::Literal(LiteralValue::Unit) => WasmTypeDescriptor::Scalar(WasmScalarType::I32),
         AnfExpr::Literal(LiteralValue::Text(_)) => WasmTypeDescriptor::Text,
-        // LIMITATION: `EffectCall` return types cannot be structurally derived
-        // at this compilation stage.  ANF expressions carry no return-type
-        // annotation and there are no handler descriptors available here, so
-        // the compiler has no information about what concrete type a capability
-        // operation actually produces.
+        // Int and Bool both inhabit the i64 WASM slot (see `literal_type`).
+        AnfExpr::Literal(LiteralValue::Int(_)) | AnfExpr::Literal(LiteralValue::Bool(_)) => {
+            WasmTypeDescriptor::Scalar(WasmScalarType::I64)
+        }
+        // ── ResourceAcquire → Handle ──────────────────────────────────────
+        //
+        // `ResourceAcquire` is the only ANF node whose semantic contract
+        // guarantees a handle return: the expression yields an opaque resource
+        // handle packed into the i64 return slot as a u64 ID.
+        //
+        // Other concurrency/cell primitives (ChannelNew, CellNew, TaskSpawn)
+        // also produce handle-like values at the language level, but their
+        // ABI representation is still evolving; they remain in the wildcard
+        // fallback until their return layout is stabilised.
+        AnfExpr::ResourceAcquire { .. } => WasmTypeDescriptor::Handle,
+        // ── EffectCall limitation ─────────────────────────────────────────
+        //
+        // `EffectCall` return types cannot be structurally derived at this
+        // compilation stage.  ANF expressions carry no return-type annotation
+        // and there are no handler descriptors available here, so the compiler
+        // has no information about what concrete type a capability operation
+        // actually produces.
         //
         // We therefore always return `Scalar(I64)`, which is the raw value
         // placed in the WASM return slot by the `ail/host_call` import (the
