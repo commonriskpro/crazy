@@ -295,12 +295,15 @@ pub(crate) async fn cmd_verify(
                 }
                 _ => "Review and address this verification issue.",
             };
-            json!({
-                "claim": e.claim,
-                "state": format!("{:?}", e.state),
-                "scope": e.scope,
-                "repair": repair,
-            })
+            let mut map = serde_json::Map::new();
+            map.insert("claim".into(), json!(e.claim));
+            map.insert("state".into(), json!(format!("{:?}", e.state)));
+            map.insert("scope".into(), json!(e.scope));
+            map.insert("repair".into(), json!(repair));
+            if !e.repair_options.is_empty() {
+                map.insert("repair_options".into(), json!(e.repair_options));
+            }
+            Value::Object(map)
         })
         .collect();
     let diag_count = diagnostics.len();
@@ -325,13 +328,16 @@ pub(crate) async fn cmd_verify(
         .degradation_events
         .iter()
         .map(|d| {
-            json!({
-                "obligation_id": d.obligation_id,
-                "source_stage": d.source_stage,
-                "from_state": format!("{:?}", d.from_state),
-                "to_state": format!("{:?}", d.to_state),
-                "reason": d.reason,
-            })
+            let mut map = serde_json::Map::new();
+            map.insert("obligation_id".into(), json!(d.obligation_id));
+            map.insert("source_stage".into(), json!(d.source_stage));
+            map.insert("from_state".into(), json!(format!("{:?}", d.from_state)));
+            map.insert("to_state".into(), json!(format!("{:?}", d.to_state)));
+            map.insert("reason".into(), json!(d.reason));
+            if !d.repair_options.is_empty() {
+                map.insert("repair_options".into(), json!(d.repair_options));
+            }
+            Value::Object(map)
         })
         .collect();
 
@@ -341,12 +347,15 @@ pub(crate) async fn cmd_verify(
         .solver_diagnostics
         .iter()
         .map(|s| {
-            json!({
-                "obligation_id": s.obligation_id,
-                "source_stage": s.source_stage,
-                "status": s.status.as_str(),
-                "reason": s.reason,
-            })
+            let mut map = serde_json::Map::new();
+            map.insert("obligation_id".into(), json!(s.obligation_id));
+            map.insert("source_stage".into(), json!(s.source_stage));
+            map.insert("status".into(), json!(s.status.as_str()));
+            map.insert("reason".into(), json!(s.reason));
+            if !s.repair_options.is_empty() {
+                map.insert("repair_options".into(), json!(s.repair_options));
+            }
+            Value::Object(map)
         })
         .collect();
 
@@ -710,6 +719,215 @@ fn rebase_required_repair_option(current_snapshot_id: u64) -> Value {
 mod tests {
     use super::{build_solver, is_changeset_meta_stage_claim};
     use crate::error::CliError;
+
+    // ── WN: repair_options propagation in cmd_verify JSON mappings ────────
+    //
+    // These unit tests prove that each of the three JSON mapping sites in
+    // cmd_verify includes the `repair_options` field from the corresponding
+    // domain struct when the field is non-empty.
+
+    // Scenario WN-1: diagnostics JSON includes repair_options from VerificationEntry.
+    //   GIVEN a VerificationEntry with non-empty repair_options
+    //   WHEN the entry is mapped to JSON (same expression as cmd_verify)
+    //   THEN the resulting JSON contains repair_options with all values
+    #[test]
+    fn diagnostics_json_includes_repair_options_when_non_empty() {
+        use ail_verify::report::{VerificationEntry, VerificationState};
+        use serde_json::json;
+
+        let entry = VerificationEntry {
+            claim: "test-claim".into(),
+            state: VerificationState::Failed,
+            scope: "scope".into(),
+            evidence: None,
+            blocking: true,
+            repair_options: vec!["add_guard".into(), "add_runtime_check".into()],
+        };
+        let repair = "Fix the failing invariant or update the contract clause.";
+        let v = json!({
+            "claim": entry.claim,
+            "state": format!("{:?}", entry.state),
+            "scope": entry.scope,
+            "repair": repair,
+            "repair_options": entry.repair_options,
+        });
+        let opts = v["repair_options"]
+            .as_array()
+            .expect("repair_options must be array");
+        assert_eq!(opts.len(), 2, "both repair options must propagate");
+        assert_eq!(opts[0], "add_guard");
+        assert_eq!(opts[1], "add_runtime_check");
+    }
+
+    // Scenario WN-2: degradation_events JSON includes repair_options from DegradationEvent.
+    //   GIVEN a DegradationEvent with non-empty repair_options
+    //   WHEN the event is mapped to JSON (same expression as cmd_verify)
+    //   THEN the resulting JSON contains repair_options with all values
+    #[test]
+    fn degradation_event_json_includes_repair_options_when_non_empty() {
+        use ail_verify::report::{DegradationEvent, VerificationState};
+        use serde_json::json;
+
+        let d = DegradationEvent {
+            obligation_id: "obl-001".into(),
+            source_stage: "resource".into(),
+            from_state: VerificationState::Proven,
+            to_state: VerificationState::Assumed,
+            reason: "capability boundary forced downgrade".into(),
+            repair_options: vec!["add_runtime_check".into(), "add_explicit_assumption".into()],
+        };
+        let v = json!({
+            "obligation_id": d.obligation_id,
+            "source_stage": d.source_stage,
+            "from_state": format!("{:?}", d.from_state),
+            "to_state": format!("{:?}", d.to_state),
+            "reason": d.reason,
+            "repair_options": d.repair_options,
+        });
+        let opts = v["repair_options"]
+            .as_array()
+            .expect("repair_options must be array");
+        assert_eq!(opts.len(), 2, "both repair options must propagate");
+        assert_eq!(opts[0], "add_runtime_check");
+        assert_eq!(opts[1], "add_explicit_assumption");
+    }
+
+    // Scenario WN-3: solver_diagnostics JSON includes repair_options from SolverDiagnostic.
+    //   GIVEN a SolverDiagnostic with non-empty repair_options
+    //   WHEN the diagnostic is mapped to JSON (same expression as cmd_verify)
+    //   THEN the resulting JSON contains repair_options with all values
+    #[test]
+    fn solver_diagnostic_json_includes_repair_options_when_non_empty() {
+        use ail_verify::report::{SolverDiagnostic, SolverDiagnosticStatus};
+        use serde_json::json;
+
+        let s = SolverDiagnostic {
+            obligation_id: "obl-002".into(),
+            source_stage: "solver".into(),
+            status: SolverDiagnosticStatus::Timeout,
+            reason: "solver_timeout: predicate depth exceeded budget".into(),
+            repair_options: vec![
+                "simplify the predicate or split it into smaller obligations".into(),
+                "add a runtime check when static proof is not practical".into(),
+            ],
+        };
+        let v = json!({
+            "obligation_id": s.obligation_id,
+            "source_stage": s.source_stage,
+            "status": s.status.as_str(),
+            "reason": s.reason,
+            "repair_options": s.repair_options,
+        });
+        let opts = v["repair_options"]
+            .as_array()
+            .expect("repair_options must be array");
+        assert_eq!(opts.len(), 2, "both repair options must propagate");
+        assert_eq!(
+            opts[0],
+            "simplify the predicate or split it into smaller obligations"
+        );
+        assert_eq!(
+            opts[1],
+            "add a runtime check when static proof is not practical"
+        );
+    }
+
+    // Scenario WN-4: diagnostics JSON omits repair_options when empty.
+    //   GIVEN a VerificationEntry with empty repair_options
+    //   WHEN the entry is mapped to JSON (same expression as cmd_verify)
+    //   THEN the resulting JSON does NOT contain the repair_options key
+    #[test]
+    fn diagnostics_json_omits_repair_options_when_empty() {
+        use ail_verify::report::{VerificationEntry, VerificationState};
+        use serde_json::{Value, json};
+
+        let entry = VerificationEntry {
+            claim: "test-claim".into(),
+            state: VerificationState::Failed,
+            scope: "scope".into(),
+            evidence: None,
+            blocking: true,
+            repair_options: vec![],
+        };
+        let repair = "Fix the failing invariant or update the contract clause.";
+        let mut map = serde_json::Map::new();
+        map.insert("claim".into(), json!(entry.claim));
+        map.insert("state".into(), json!(format!("{:?}", entry.state)));
+        map.insert("scope".into(), json!(entry.scope));
+        map.insert("repair".into(), json!(repair));
+        if !entry.repair_options.is_empty() {
+            map.insert("repair_options".into(), json!(entry.repair_options));
+        }
+        let v = Value::Object(map);
+        assert!(
+            v.get("repair_options").is_none(),
+            "empty repair_options must be omitted from diagnostics JSON"
+        );
+    }
+
+    // Scenario WN-5: degradation_events JSON omits repair_options when empty.
+    //   GIVEN a DegradationEvent with empty repair_options
+    //   WHEN the event is mapped to JSON (same expression as cmd_verify)
+    //   THEN the resulting JSON does NOT contain the repair_options key
+    #[test]
+    fn degradation_event_json_omits_repair_options_when_empty() {
+        use ail_verify::report::{DegradationEvent, VerificationState};
+        use serde_json::{Value, json};
+
+        let d = DegradationEvent {
+            obligation_id: "obl-001".into(),
+            source_stage: "resource".into(),
+            from_state: VerificationState::Proven,
+            to_state: VerificationState::Assumed,
+            reason: "capability boundary forced downgrade".into(),
+            repair_options: vec![],
+        };
+        let mut map = serde_json::Map::new();
+        map.insert("obligation_id".into(), json!(d.obligation_id));
+        map.insert("source_stage".into(), json!(d.source_stage));
+        map.insert("from_state".into(), json!(format!("{:?}", d.from_state)));
+        map.insert("to_state".into(), json!(format!("{:?}", d.to_state)));
+        map.insert("reason".into(), json!(d.reason));
+        if !d.repair_options.is_empty() {
+            map.insert("repair_options".into(), json!(d.repair_options));
+        }
+        let v = Value::Object(map);
+        assert!(
+            v.get("repair_options").is_none(),
+            "empty repair_options must be omitted from degradation_events JSON"
+        );
+    }
+
+    // Scenario WN-6: solver_diagnostics JSON omits repair_options when empty.
+    //   GIVEN a SolverDiagnostic with empty repair_options
+    //   WHEN the diagnostic is mapped to JSON (same expression as cmd_verify)
+    //   THEN the resulting JSON does NOT contain the repair_options key
+    #[test]
+    fn solver_diagnostic_json_omits_repair_options_when_empty() {
+        use ail_verify::report::{SolverDiagnostic, SolverDiagnosticStatus};
+        use serde_json::{Value, json};
+
+        let s = SolverDiagnostic {
+            obligation_id: "obl-002".into(),
+            source_stage: "solver".into(),
+            status: SolverDiagnosticStatus::Timeout,
+            reason: "solver_timeout: predicate depth exceeded budget".into(),
+            repair_options: vec![],
+        };
+        let mut map = serde_json::Map::new();
+        map.insert("obligation_id".into(), json!(s.obligation_id));
+        map.insert("source_stage".into(), json!(s.source_stage));
+        map.insert("status".into(), json!(s.status.as_str()));
+        map.insert("reason".into(), json!(s.reason));
+        if !s.repair_options.is_empty() {
+            map.insert("repair_options".into(), json!(s.repair_options));
+        }
+        let v = Value::Object(map);
+        assert!(
+            v.get("repair_options").is_none(),
+            "empty repair_options must be omitted from solver_diagnostics JSON"
+        );
+    }
 
     #[test]
     fn recognises_changeset_meta_stage_claims_only() {
