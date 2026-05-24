@@ -13,6 +13,7 @@
 /// - [`redaction`] — Redaction filtering and access-shaping.
 /// - [`freshness`] — Freshness detection and repair-option construction.
 /// - [`summary`]   — Deterministic summary renderer.
+pub(crate) mod assembly;
 pub mod builder;
 pub mod dto;
 pub mod error;
