@@ -56,6 +56,10 @@ pub mod report;
 pub mod schema;
 pub mod transaction;
 
+// Private implementation modules — not part of the public API.
+mod host_dispatch;
+mod host_preflight;
+
 pub use ail_package::manifest::PackageManifest;
 pub use ail_package::trust::TrustLevel;
 
