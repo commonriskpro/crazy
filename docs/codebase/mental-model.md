@@ -16,6 +16,7 @@ AIL is a general-purpose programming language and toolchain designed around sema
 - A ChangeSet protocol for LLM-authored semantic edits.
 - A verifier/compiler/runtime pipeline that tracks types, effects, contracts, capabilities, provenance, and profile-bound artifacts.
 - A context model where AI tools ask for semantic slices instead of scraping source files.
+- A language targeting Rust-level mature reliability — memory/resource safety and zero-cost abstractions — achieved via Semantic Graph-visible ownership (Handle modes), resource lifecycle, effects, and capabilities that lower through Core IR → ANF → SSA to efficient executables.
 
 ## What AIL is not
 
@@ -23,6 +24,7 @@ AIL is a general-purpose programming language and toolchain designed around sema
 - Not a prompt wrapper around existing source files.
 - Not RAG over a repository.
 - Not a claim that LLM output is trusted because it looks plausible.
+- Not a Rust clone. AIL targets Rust-level reliability without adopting Rust's borrow-checker model or lifetime syntax.
 - Not production-ready language infrastructure yet.
 
 ## Core model

@@ -16,6 +16,12 @@
 - WASM is first executable target; native can come later.
 - Runtime is deny-by-default capability host.
 
+### Maturity direction
+
+- **Reliability target**: Rust-level mature, usable reliability — memory/resource safety and zero-cost abstractions. This is the bar; prototypes and "mostly works" are not acceptable end states.
+- **Not a Rust clone**: AIL does not adopt Rust's borrow-checker model, lifetime annotations, or surface syntax. The mechanism is different.
+- **The mechanism**: memory/resource safety and zero-cost abstractions are achieved via Semantic Graph-visible ownership (Handle<Resource, Mode> with Copy/Affine/Linear/Shared modes), resource lifecycle enforcement, effects, and capabilities — all represented as first-class nodes/edges in the Semantic Graph, verified before lowering, and lowered through Core IR → ANF → SSA → executable target without runtime overhead.
+
 ## Type system
 
 - Nominal by default; structural only via explicit constraints.

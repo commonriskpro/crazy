@@ -1010,19 +1010,19 @@ Esto es clave para no perder precisión de effects en funciones genéricas.
 
 ### 17. Memoria y ownership
 
-Decisión propuesta: no copiar Rust completo como modelo obligatorio del Core IR, pero sí diseñar recursos con ownership explícito.
+**Decisión**: AIL targets Rust-level mature, usable reliability — memory/resource safety and zero-cost abstractions — but is not a Rust clone. The mechanism is different: ownership, resource lifecycle, and safety guarantees are encoded as first-class Semantic Graph nodes (Handle<Resource, Mode>, EffectRow, CapabilityDef), verified before lowering, and lowered through Core IR → ANF → SSA to efficient code without runtime overhead or borrow-checker syntax.
 
 Capas:
 
 ```txt
 Values            inmutables por defecto
 Cells             mutación local explícita
-Handles           recursos externos con lifecycle
+Handles           recursos externos con lifecycle (Affine/Linear/Shared/Copy)
 Shared resources  requieren capability/concurrency-safe type
 Unsafe memory     solo boundary unsafe
 ```
 
-Esto deja abierta la puerta a optimización nativa sin meter lifetimes en todo el lenguaje surface.
+El Semantic Graph hace visible lo que Rust hace mediante el borrow checker en texto: quién posee qué, qué efectos se emiten, qué capabilities se requieren. El resultado es la misma confiabilidad sin necesitar lifetime annotations en el lenguaje surface.
 
 ### 18. Operaciones derivadas, no core
 
