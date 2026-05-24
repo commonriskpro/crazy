@@ -12,6 +12,7 @@ use ail_runtime::{HandleId, StructuredValue, ValueDecoder, ValueLayout};
 fn descriptor_to_layout(descriptor: &WasmTypeDescriptor) -> ValueLayout {
     match descriptor {
         WasmTypeDescriptor::Scalar(_) => ValueLayout::Scalar,
+        WasmTypeDescriptor::Text => ValueLayout::Text,
         WasmTypeDescriptor::Record { fields } => ValueLayout::Record {
             fields: fields.clone(),
         },
@@ -181,15 +182,16 @@ fn runtime_decodes_option_result_and_handle_contract_shapes() {
 
 #[test]
 fn text_unit_and_bytes_limitations_are_explicit() {
+    // Text: compiler now emits WasmTypeDescriptor::Text (not Scalar).
+    // The runtime decodes packed (len << 32 | ptr) into StructuredValue::Text.
     let text_descriptor = derive_wasm_type(&AnfExpr::Literal(LiteralValue::Text("hi".into())));
+    assert_eq!(text_descriptor, WasmTypeDescriptor::Text);
+    assert_eq!(descriptor_to_layout(&text_descriptor), ValueLayout::Text);
+    // ptr=0x40, len=2 → packed i64 = (2 << 32) | 0x40
+    let packed = (2i64 << 32) | 0x40i64;
     assert_eq!(
-        text_descriptor,
-        WasmTypeDescriptor::Scalar(WasmScalarType::I64)
-    );
-    assert_eq!(descriptor_to_layout(&text_descriptor), ValueLayout::Scalar);
-    assert_eq!(
-        ValueDecoder::decode(&ValueLayout::Scalar, 0x0000_0002_0000_0040, &[]),
-        StructuredValue::Scalar(0x0000_0002_0000_0040)
+        ValueDecoder::decode(&ValueLayout::Text, packed, &[]),
+        StructuredValue::Text { ptr: 0x40, len: 2 }
     );
 
     let unit_descriptor = derive_wasm_type(&AnfExpr::Literal(LiteralValue::Unit));

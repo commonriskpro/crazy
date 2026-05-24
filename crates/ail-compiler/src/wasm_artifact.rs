@@ -18,7 +18,7 @@ use crate::anf::SourceMap;
 use crate::artifact_manifest::ArtifactManifest;
 use crate::capabilities::CapabilitiesManifest;
 use crate::core_ir::StageHashes;
-use crate::wasm_abi::WasmTypeDescriptor;
+use crate::wasm_abi::{AbiDescriptor, WasmTypeDescriptor};
 
 // ── WasmArtifact ─────────────────────────────────────────────────────────
 
@@ -66,6 +66,12 @@ pub struct WasmArtifact {
     /// Populated by `emit_wasm` from the expression trees of exported bindings.
     /// Used by the runtime's `invoke_typed` to decode structured return values.
     pub export_types: BTreeMap<String, WasmTypeDescriptor>,
+    /// Versioned ABI descriptor wrapping `export_types`.
+    ///
+    /// Callers may serialise this and pass it across a process boundary so the
+    /// runtime can call `AbiDescriptor::is_compatible()` before invoking typed
+    /// exports.  Always constructed with the current [`ABI_VERSION`].
+    pub abi_descriptor: AbiDescriptor,
     /// Capability manifest listing all binding names and their source provenance.
     ///
     /// One entry per `AnfBinding` in binding order.  Follows the same schema
