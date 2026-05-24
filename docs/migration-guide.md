@@ -1,6 +1,7 @@
 # Migration Guide
 
 <!-- Status: Implemented subset. Documents current storage schema migrations; future migrations must extend this file. -->
+<!-- Release metadata: latest-storage-schema=3; compatibility-breaking=false -->
 
 This document describes how to upgrade an existing AIL object store across schema
 versions, and how to roll back if something goes wrong.

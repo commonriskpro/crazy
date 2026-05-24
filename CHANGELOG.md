@@ -29,4 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instructions and rollback procedure via snapshot restore.
 - **Release metadata preflight** (`scripts/release-preflight.sh`): verifies that
   the requested release version matches `Cargo.toml`, workspace crates use
-  lockstep versioning, and the changelog has a release heading before tagging.
+  lockstep versioning, the changelog has a release heading before tagging, and
+  migration compatibility metadata agrees with the implemented storage schema
+  target.
