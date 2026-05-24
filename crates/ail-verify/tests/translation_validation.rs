@@ -25,13 +25,6 @@ use ail_verify::{
     E_TV_SHAPE_NO_RETURN_TYPE,
 };
 
-// Construct SimpleSolver (zero-size struct, no Default impl)
-macro_rules! solver {
-    () => {
-        SimpleSolver
-    };
-}
-
 // ── Test helpers ──────────────────────────────────────────────────────────
 
 fn empty_graph() -> SemanticGraph {
@@ -111,7 +104,7 @@ fn has_evidence_code(entry: &ail_verify::report::VerificationEntry, code: &str) 
 
 #[test]
 fn tv1_shape_unverified_in_dev_when_no_return_type() {
-    let mut node = fn_with_body(0, "fn.no_rt", "let x = 1 in x", None);
+    let node = fn_with_body(0, "fn.no_rt", "let x = 1 in x", None);
     // deliberately no return_type
     let graph = SemanticGraph {
         nodes: vec![node],

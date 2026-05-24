@@ -224,6 +224,16 @@ fn check_effect_provenance(graph: &SemanticGraph) -> Vec<VerificationEntry> {
 /// lowering stage and Stage 20 ordering checks.
 ///
 /// Returns a deduplicated list of identifier strings found in the body.
+///
+/// # Scan assumptions
+///
+/// - Each keyword scan advances past the closing `)` after a match, skipping
+///   re-scanning of already-consumed characters.  If no `)` is found after a
+///   keyword, the scan resumes after the keyword itself.
+/// - When no keyword is matched at the current position, the scanner advances
+///   one byte at a time.
+/// - Effect identifiers must consist solely of `[A-Za-z0-9_.:]+` characters;
+///   any other character inside the parentheses causes the call to be ignored.
 fn extract_body_effects(body: &str) -> Vec<String> {
     use std::collections::BTreeSet;
 
@@ -243,9 +253,16 @@ fn extract_body_effects(body: &str) -> Vec<String> {
                     {
                         found.insert(ident.to_string());
                     }
+                    // Advance past the closing paren to avoid re-scanning
+                    // characters already consumed by this match.
+                    pos = inner_start + close + 1;
+                } else {
+                    // No closing paren — skip past the keyword itself.
+                    pos = inner_start;
                 }
+            } else {
+                pos += 1;
             }
-            pos += 1;
         }
     }
 

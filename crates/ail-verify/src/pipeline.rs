@@ -238,16 +238,20 @@ impl VerificationPipeline {
         //   - all profiles: shape (TV-1) and effect provenance (TV-2)
         //   - prod/staging/critical: control-flow/effect obligations (TV-3)
         //   - critical/unknown:      evidence sufficiency (TV-4)
+        let tv_entries = TranslationValidator::check(ctx.graph, ctx.profile);
+        // Stage header state reflects the worst outcome across all TV entries
+        // so that the summary accurately signals failures without requiring
+        // callers to scan the full entry list.
+        let tv_header_state = worst_state(tv_entries.iter().map(|e| &e.state));
         all_entries.push(stage_entry(
             "translation-validation",
-            VerificationState::Proven,
+            tv_header_state,
             "translation_validation",
             Some(format!(
                 "profile '{}': translation validation executed",
                 ctx.profile
             )),
         ));
-        let tv_entries = TranslationValidator::check(ctx.graph, ctx.profile);
         all_entries.extend(tv_entries);
 
         // ── Stage 7: Type check ───────────────────────────────────────────
@@ -568,6 +572,29 @@ fn graph_snapshot_id(graph: &SemanticGraph) -> String {
     let mut names: Vec<&str> = graph.nodes.iter().map(|n| n.name.as_str()).collect();
     names.sort_unstable();
     format!("snap:{}:{}", graph.nodes.len(), names.join("|"))
+}
+
+/// Return the worst `VerificationState` across an iterator of states.
+///
+/// Severity order (highest first): `Failed` > `Unsafe` > `Unverified` >
+/// `Assumed` > `RuntimeChecked` > `Proven`.  When the iterator is empty,
+/// `Proven` is returned so that a stage with no entries is considered passing.
+fn worst_state<'a>(states: impl Iterator<Item = &'a VerificationState>) -> VerificationState {
+    use VerificationState::*;
+    fn severity(s: &VerificationState) -> u8 {
+        match s {
+            Failed => 5,
+            Unsafe => 4,
+            Unverified => 3,
+            Assumed => 2,
+            RuntimeChecked => 1,
+            Proven => 0,
+        }
+    }
+    states
+        .max_by_key(|s| severity(s))
+        .cloned()
+        .unwrap_or(Proven)
 }
 
 fn stage_entry(
