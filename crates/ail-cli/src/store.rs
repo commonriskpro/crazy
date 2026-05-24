@@ -14,24 +14,37 @@
 //
 // `build_store` constructs the appropriate variant from the optional URL and
 // is the sole entry-point for store creation in the CLI.
+//
+// File-store implementation details live in `store_file`.
+// Doctor / GC report types and logic live in `store_doctor`.
 
 use ail_change::canonical::CanonicalChangeSet;
 use ail_core::semantic_graph::SemanticGraph;
 use ail_verify::report::VerificationReport;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use ail_storage::{
     GraphStore, ObjectBackedGraphStore, PostgresGraphStore, SnapshotEnvelope,
     backends::memory::MemoryObjectStore,
-    codec::{CborCodec, ContentCodec},
-    error::StorageError,
     error::StorageResult,
     graph::ChangeSetLogEntry,
     object::{ObjectId, ObjectStore, RawObject},
 };
-use serde::{Deserialize, Serialize};
 
 use crate::error::CliError;
+// ── Re-exports (keep `crate::store::X` stable for all callers) ───────────
+
+pub use crate::store_doctor::{doctor, gc};
+#[cfg(test)]
+pub use crate::store_file::init_file_layout;
+pub use crate::store_file::{
+    FileObjectStore, atomic_write, init_file_layout_with_branch, is_object_file_name,
+};
+
+use crate::store_file::{
+    branch_ref_path, current_branch, hex_to_object_id, read_branch_ref, update_snapshot_index,
+    validate_branch_name, write_object_ref,
+};
 
 // ── StoreHandle ───────────────────────────────────────────────────────────
 
@@ -321,7 +334,7 @@ impl StoreHandle {
                 let id = objects.put(RawObject(bytes)).await?;
                 // Sidecar: .ail/reports/<change_id> → hex hash of the report object.
                 let sidecar = ail_dir.join("reports").join(change_id);
-                atomic_write_text(&sidecar, &format!("{}\n", id.to_hex()))
+                atomic_write(&sidecar, format!("{}\n", id.to_hex()).as_bytes())
                     .map_err(CliError::Storage)?;
                 Ok(id)
             }
@@ -384,130 +397,6 @@ impl StoreHandle {
     }
 }
 
-// ── StoreDoctorReport / StoreGcReport ────────────────────────────────────
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct StoreDoctorReport {
-    pub total_objects: usize,
-    pub valid_objects: usize,
-    pub corrupted_objects: usize,
-    pub unreachable_objects: usize,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct StoreGcReport {
-    pub objects_before: usize,
-    pub objects_after: usize,
-    pub bytes_freed: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct SnapshotIndexEntry {
-    id: ObjectId,
-    created_at: u64,
-}
-
-// ── FileObjectStore ───────────────────────────────────────────────────────
-
-#[derive(Clone, Debug)]
-pub struct FileObjectStore {
-    objects_dir: PathBuf,
-}
-
-impl FileObjectStore {
-    fn new(ail_dir: &Path) -> Self {
-        Self {
-            objects_dir: ail_dir.join("store").join("objects"),
-        }
-    }
-
-    /// Expose construction for test helpers (e.g. doctor unit tests).
-    #[cfg(test)]
-    pub fn new_for_test(ail_dir: &Path) -> Self {
-        Self::new(ail_dir)
-    }
-
-    fn object_path(&self, id: &ObjectId) -> PathBuf {
-        self.objects_dir.join(id.to_hex())
-    }
-
-    fn find_snapshot(&self, id: &ObjectId) -> StorageResult<Option<SnapshotEnvelope>> {
-        if !self.objects_dir.exists() {
-            return Ok(None);
-        }
-
-        for entry in std::fs::read_dir(&self.objects_dir)? {
-            let path = entry?.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if !is_object_file_name(file_name) {
-                continue;
-            }
-            let bytes = std::fs::read(&path)?;
-            verify_object_bytes(file_name, &bytes)?;
-            let Ok(snapshot) = CborCodec.decode::<SnapshotEnvelope>(&bytes) else {
-                continue;
-            };
-            if snapshot.id == *id {
-                return Ok(Some(snapshot));
-            }
-        }
-        Ok(None)
-    }
-
-    fn list_snapshots_from_index(&self, ail_dir: &Path) -> StorageResult<Vec<SnapshotEnvelope>> {
-        let entries = read_snapshot_index(ail_dir)?;
-        if entries.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let mut snapshots = Vec::new();
-        for entry in entries {
-            let Some(snapshot) = self.find_snapshot(&entry.id)? else {
-                return Err(StorageError::NotFound);
-            };
-            snapshots.push(snapshot);
-        }
-        Ok(snapshots)
-    }
-}
-
-impl ObjectStore for FileObjectStore {
-    async fn put(&self, object: RawObject) -> StorageResult<ObjectId> {
-        std::fs::create_dir_all(&self.objects_dir)?;
-        let id = ObjectId::from_bytes(&object.0);
-        let path = self.object_path(&id);
-        if !path.exists() {
-            atomic_write(&path, &object.0)?;
-        }
-        Ok(id)
-    }
-
-    async fn get(&self, id: &ObjectId) -> StorageResult<Option<RawObject>> {
-        let path = self.object_path(id);
-        if path.exists() {
-            let bytes = std::fs::read(path)?;
-            if ObjectId::from_bytes(&bytes) != *id {
-                return Err(StorageError::Codec(format!(
-                    "object hash mismatch: expected {}",
-                    id.to_hex()
-                )));
-            }
-            Ok(Some(RawObject(bytes)))
-        } else {
-            Ok(None)
-        }
-    }
-
-    async fn exists(&self, id: &ObjectId) -> StorageResult<bool> {
-        Ok(self.object_path(id).exists())
-    }
-}
-
 // ── build_store ───────────────────────────────────────────────────────────
 
 /// Construct the appropriate `StoreHandle` from an optional database URL.
@@ -566,102 +455,6 @@ pub fn file_store(ail_dir: PathBuf) -> StoreHandle {
     file_handle(ail_dir)
 }
 
-#[cfg(test)]
-pub fn init_file_layout(ail_dir: &Path) -> Result<(), CliError> {
-    init_file_layout_with_branch(ail_dir, "main")
-}
-
-pub fn init_file_layout_with_branch(ail_dir: &Path, branch: &str) -> Result<(), CliError> {
-    validate_branch_name(branch).map_err(CliError::Storage)?;
-    std::fs::create_dir_all(ail_dir.join("refs").join("branches"))?;
-    std::fs::create_dir_all(ail_dir.join("store").join("objects"))?;
-    std::fs::create_dir_all(ail_dir.join("index"))?;
-    write_head(ail_dir, branch).map_err(CliError::Storage)?;
-    let branch_ref = branch_ref_path(ail_dir, branch).map_err(CliError::Storage)?;
-    if !branch_ref.exists() {
-        atomic_write_text(&branch_ref, "").map_err(CliError::Storage)?;
-    }
-    Ok(())
-}
-
-pub fn doctor(ail_dir: &Path) -> StorageResult<StoreDoctorReport> {
-    let objects_dir = ail_dir.join("store").join("objects");
-    let mut object_ids = Vec::new();
-    let mut corrupted_objects = 0usize;
-
-    if objects_dir.exists() {
-        for entry in std::fs::read_dir(&objects_dir)? {
-            let path = entry?.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if !is_object_file_name(file_name) {
-                continue;
-            }
-            let bytes = std::fs::read(&path)?;
-            if verify_object_bytes(file_name, &bytes).is_ok() {
-                object_ids.push(hex_to_object_id(file_name)?);
-            } else {
-                corrupted_objects += 1;
-            }
-        }
-    }
-
-    let total_objects = object_ids.len() + corrupted_objects;
-    let reachable = reachable_objects(ail_dir)?;
-    let unreachable_objects = object_ids
-        .iter()
-        .filter(|id| !reachable.contains(id))
-        .count();
-
-    Ok(StoreDoctorReport {
-        total_objects,
-        valid_objects: object_ids.len(),
-        corrupted_objects,
-        unreachable_objects,
-    })
-}
-
-pub fn gc(ail_dir: &Path) -> StorageResult<StoreGcReport> {
-    let objects_dir = ail_dir.join("store").join("objects");
-    let reachable = reachable_objects(ail_dir)?;
-    let mut objects_before = 0usize;
-    let mut objects_after = 0usize;
-    let mut bytes_freed = 0u64;
-
-    if objects_dir.exists() {
-        for entry in std::fs::read_dir(&objects_dir)? {
-            let path = entry?.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if !is_object_file_name(file_name) {
-                continue;
-            }
-            objects_before += 1;
-            let id = hex_to_object_id(file_name)?;
-            if reachable.contains(&id) {
-                objects_after += 1;
-            } else {
-                bytes_freed += std::fs::metadata(&path)?.len();
-                std::fs::remove_file(&path)?;
-            }
-        }
-    }
-
-    Ok(StoreGcReport {
-        objects_before,
-        objects_after,
-        bytes_freed,
-    })
-}
-
 fn file_handle(ail_dir: PathBuf) -> StoreHandle {
     let objects = FileObjectStore::new(&ail_dir);
     StoreHandle::File {
@@ -669,168 +462,6 @@ fn file_handle(ail_dir: PathBuf) -> StoreHandle {
         objects,
         ail_dir,
     }
-}
-
-fn write_object_ref(path: &Path, id: &ObjectId) -> StorageResult<()> {
-    atomic_write_text(path, &format!("{}\n", id.to_hex()))
-}
-
-fn write_head(ail_dir: &Path, branch: &str) -> StorageResult<()> {
-    atomic_write_text(
-        &ail_dir.join("HEAD"),
-        &format!("ref: refs/branches/{branch}\n"),
-    )
-}
-
-fn atomic_write_text(path: &Path, content: &str) -> StorageResult<()> {
-    atomic_write(path, content.as_bytes())
-}
-
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> StorageResult<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp_path = path.with_extension("tmp");
-    std::fs::write(&tmp_path, bytes)?;
-    std::fs::rename(tmp_path, path)?;
-    Ok(())
-}
-
-fn current_branch(ail_dir: &Path) -> StorageResult<String> {
-    let head_path = ail_dir.join("HEAD");
-    if !head_path.exists() {
-        return Ok("main".to_string());
-    }
-    let head = std::fs::read_to_string(head_path)?;
-    let head = head.trim();
-    let Some(branch) = head.strip_prefix("ref: refs/branches/") else {
-        return Ok("main".to_string());
-    };
-    validate_branch_name(branch)?;
-    Ok(branch.to_string())
-}
-
-fn branch_ref_path(ail_dir: &Path, branch: &str) -> StorageResult<PathBuf> {
-    validate_branch_name(branch)?;
-    Ok(ail_dir.join("refs").join("branches").join(branch))
-}
-
-fn read_branch_ref(path: &Path) -> StorageResult<Option<ObjectId>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = std::fs::read_to_string(path)?;
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(hex_to_object_id(trimmed)?))
-}
-
-fn read_snapshot_index(ail_dir: &Path) -> StorageResult<Vec<SnapshotIndexEntry>> {
-    let path = ail_dir.join("index").join("snapshots.cbor");
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-    let bytes = std::fs::read(path)?;
-    CborCodec.decode::<Vec<SnapshotIndexEntry>>(&bytes)
-}
-
-fn update_snapshot_index(ail_dir: &Path, snapshot: &SnapshotEnvelope) -> StorageResult<()> {
-    let mut entries = read_snapshot_index(ail_dir)?;
-    if let Some(existing) = entries.iter_mut().find(|entry| entry.id == snapshot.id) {
-        existing.created_at = snapshot.created_at;
-    } else {
-        entries.push(SnapshotIndexEntry {
-            id: snapshot.id,
-            created_at: snapshot.created_at,
-        });
-    }
-    entries.sort_by_key(|entry| entry.created_at);
-
-    let bytes = CborCodec.encode(&entries)?;
-    atomic_write(&ail_dir.join("index").join("snapshots.cbor"), &bytes)
-}
-
-fn reachable_objects(ail_dir: &Path) -> StorageResult<std::collections::BTreeSet<ObjectId>> {
-    let objects = FileObjectStore::new(ail_dir);
-    let mut reachable = std::collections::BTreeSet::new();
-    let branches_dir = ail_dir.join("refs").join("branches");
-
-    if branches_dir.exists() {
-        for entry in std::fs::read_dir(branches_dir)? {
-            let path = entry?.path();
-            if !path.is_file() {
-                continue;
-            }
-            let mut next = read_branch_ref(&path)?;
-            while let Some(snapshot_id) = next {
-                let Some(snapshot) = objects.find_snapshot(&snapshot_id)? else {
-                    break;
-                };
-                let snapshot_cas = ObjectId::from_bytes(&CborCodec.encode(&snapshot)?);
-                if !reachable.insert(snapshot_cas) {
-                    break;
-                }
-                reachable.insert(snapshot.graph_root_hash);
-                if let Some(change_id) = snapshot.applied_change_id {
-                    reachable.insert(change_id);
-                }
-                if let Some(report_hash) = snapshot.verification_report_hash {
-                    reachable.insert(ObjectId::from(report_hash));
-                }
-                next = snapshot.parent_id;
-            }
-        }
-    }
-
-    Ok(reachable)
-}
-
-fn verify_object_bytes(file_name: &str, bytes: &[u8]) -> StorageResult<()> {
-    let expected = hex_to_object_id(file_name)?;
-    let actual = ObjectId::from_bytes(bytes);
-    if expected != actual {
-        return Err(StorageError::Codec(format!(
-            "object hash mismatch: expected {file_name}, actual {}",
-            actual.to_hex()
-        )));
-    }
-    Ok(())
-}
-
-pub(crate) fn is_object_file_name(name: &str) -> bool {
-    name.len() == 64 && name.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-fn validate_branch_name(branch: &str) -> StorageResult<()> {
-    if branch.is_empty()
-        || branch.starts_with('/')
-        || branch.contains('/')
-        || branch.contains("..")
-        || branch.contains('\\')
-        || branch.chars().any(char::is_whitespace)
-    {
-        return Err(StorageError::Codec(format!(
-            "invalid branch name: {branch}"
-        )));
-    }
-    Ok(())
-}
-
-fn hex_to_object_id(hex: &str) -> StorageResult<ObjectId> {
-    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(StorageError::Codec(format!("invalid object id: {hex}")));
-    }
-
-    let mut bytes = [0u8; 32];
-    for (idx, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
-        let s = std::str::from_utf8(chunk)
-            .map_err(|e| StorageError::Codec(format!("invalid object id: {e}")))?;
-        bytes[idx] = u8::from_str_radix(s, 16)
-            .map_err(|e| StorageError::Codec(format!("invalid object id: {e}")))?;
-    }
-    Ok(ObjectId::from(bytes))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
