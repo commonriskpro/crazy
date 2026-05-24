@@ -674,6 +674,212 @@ fn host_call_write_memory_write_failure_emits_failed_audit_event() {
     );
 }
 
+// ── Helpers for two-cap asymmetry regression tests ───────────────────────
+
+/// Build a WASM module that calls `ail/host_call` twice in sequence:
+/// first with `cap_a` (stored at ptr 0), then with `cap_b` (stored at ptr 64).
+/// The module returns the i64 result of the second call.
+///
+/// Memory layout: [0..63] = cap_a name, [64..127] = cap_b name,
+///                [128..129] = "op", [192..] = args (0 words).
+fn two_cap_host_call_wasm(cap_a: &str, cap_b: &str) -> Vec<u8> {
+    const CAP_A_PTR: i32 = 0;
+    const CAP_B_PTR: i32 = 64;
+    const OP_PTR: i32 = 128;
+    const ARGS_PTR: i32 = 192;
+
+    let mut module = Module::new();
+
+    let mut types = TypeSection::new();
+    // type 0: host_call signature (cap_ptr, cap_len, op_ptr, op_len, args_ptr, args_len) -> i64
+    types.ty().function(
+        vec![
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+        ],
+        vec![ValType::I64],
+    );
+    // type 1: main signature
+    types.ty().function(vec![], vec![ValType::I64]);
+    module.section(&types);
+
+    let mut imports = ImportSection::new();
+    imports.import("ail", "host_call", EntityType::Function(0));
+    module.section(&imports);
+
+    let mut functions = FunctionSection::new();
+    functions.function(1);
+    module.section(&functions);
+
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+    module.section(&memories);
+
+    let mut exports = ExportSection::new();
+    exports.export("memory", ExportKind::Memory, 0);
+    exports.export("main", ExportKind::Func, 1);
+    module.section(&exports);
+
+    let mut codes = CodeSection::new();
+    let mut f = Function::new(vec![]);
+    // First call: cap-A (result dropped)
+    f.instruction(&Instruction::I32Const(CAP_A_PTR));
+    f.instruction(&Instruction::I32Const(cap_a.len() as i32));
+    f.instruction(&Instruction::I32Const(OP_PTR));
+    f.instruction(&Instruction::I32Const(2));
+    f.instruction(&Instruction::I32Const(ARGS_PTR));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::Call(0));
+    f.instruction(&Instruction::Drop);
+    // Second call: cap-B (result returned)
+    f.instruction(&Instruction::I32Const(CAP_B_PTR));
+    f.instruction(&Instruction::I32Const(cap_b.len() as i32));
+    f.instruction(&Instruction::I32Const(OP_PTR));
+    f.instruction(&Instruction::I32Const(2));
+    f.instruction(&Instruction::I32Const(ARGS_PTR));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::Call(0));
+    f.instruction(&Instruction::End);
+    codes.function(&f);
+    module.section(&codes);
+
+    let mut data = DataSection::new();
+    data.active(0, &ConstExpr::i32_const(CAP_A_PTR), cap_a.bytes());
+    data.active(0, &ConstExpr::i32_const(CAP_B_PTR), cap_b.bytes());
+    data.active(0, &ConstExpr::i32_const(OP_PTR), "op".bytes());
+    module.section(&data);
+
+    module.finish()
+}
+
+/// Build a WASM module that calls `ail/host_call_write` twice in sequence:
+/// first with `cap_a`, then with `cap_b`.  Returns the i32 bytes-written
+/// result of the second call.
+fn two_cap_host_call_write_wasm(cap_a: &str, cap_b: &str) -> Vec<u8> {
+    const CAP_A_PTR: i32 = 0;
+    const CAP_B_PTR: i32 = 64;
+    const OP_PTR: i32 = 128;
+    const ARGS_PTR: i32 = 192;
+    const OUT_PTR: i32 = 256;
+    const OUT_MAX: i32 = 64;
+
+    let mut module = Module::new();
+
+    let mut types = TypeSection::new();
+    // type 0: host_call_write (cap_ptr, cap_len, op_ptr, op_len, args_ptr, args_len, out_ptr, out_max) -> i32
+    types.ty().function(
+        vec![
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+        ],
+        vec![ValType::I32],
+    );
+    // type 1: main signature
+    types.ty().function(vec![], vec![ValType::I32]);
+    module.section(&types);
+
+    let mut imports = ImportSection::new();
+    imports.import("ail", "host_call_write", EntityType::Function(0));
+    module.section(&imports);
+
+    let mut functions = FunctionSection::new();
+    functions.function(1);
+    module.section(&functions);
+
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+    module.section(&memories);
+
+    let mut exports = ExportSection::new();
+    exports.export("memory", ExportKind::Memory, 0);
+    exports.export("main", ExportKind::Func, 1);
+    module.section(&exports);
+
+    let mut codes = CodeSection::new();
+    let mut f = Function::new(vec![]);
+    // First call: cap-A (result dropped)
+    f.instruction(&Instruction::I32Const(CAP_A_PTR));
+    f.instruction(&Instruction::I32Const(cap_a.len() as i32));
+    f.instruction(&Instruction::I32Const(OP_PTR));
+    f.instruction(&Instruction::I32Const(2));
+    f.instruction(&Instruction::I32Const(ARGS_PTR));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(OUT_PTR));
+    f.instruction(&Instruction::I32Const(OUT_MAX));
+    f.instruction(&Instruction::Call(0));
+    f.instruction(&Instruction::Drop);
+    // Second call: cap-B (result returned)
+    f.instruction(&Instruction::I32Const(CAP_B_PTR));
+    f.instruction(&Instruction::I32Const(cap_b.len() as i32));
+    f.instruction(&Instruction::I32Const(OP_PTR));
+    f.instruction(&Instruction::I32Const(2));
+    f.instruction(&Instruction::I32Const(ARGS_PTR));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(OUT_PTR));
+    f.instruction(&Instruction::I32Const(OUT_MAX));
+    f.instruction(&Instruction::Call(0));
+    f.instruction(&Instruction::End);
+    codes.function(&f);
+    module.section(&codes);
+
+    let mut data = DataSection::new();
+    data.active(0, &ConstExpr::i32_const(CAP_A_PTR), cap_a.bytes());
+    data.active(0, &ConstExpr::i32_const(CAP_B_PTR), cap_b.bytes());
+    data.active(0, &ConstExpr::i32_const(OP_PTR), "op".bytes());
+    module.section(&data);
+
+    module.finish()
+}
+
+/// Build a profile that grants two capabilities to the given manifest module.
+fn profile_granting_two_caps_with_limits(
+    wasm: &[u8],
+    manifest: &CapabilityManifest,
+    cap_a: CapabilityId,
+    cap_b: CapabilityId,
+    limits: ResourceLimits,
+) -> RuntimeProfile {
+    RuntimeProfile::new(
+        "asymm-test".to_string(),
+        blake3_hex_of(wasm),
+        "a".repeat(64),
+        manifest.blake3_hex().expect("manifest hash"),
+        vec![
+            CapabilityGrant {
+                module: manifest.module.clone(),
+                capability: cap_a,
+            },
+            CapabilityGrant {
+                module: manifest.module.clone(),
+                capability: cap_b,
+            },
+        ],
+        limits,
+    )
+}
+
 // ── Scenario R-4c: granted but no handler → returns -1 ───────────────────
 
 #[test]
@@ -718,5 +924,114 @@ fn wasm_call_to_granted_but_unbound_capability_returns_minus_one() {
     assert!(
         has_no_handler_event,
         "no-handler call must produce a failed audit event"
+    );
+}
+
+// ── Increment-asymmetry regression (pre-existing, matches main) ───────────
+//
+// `dispatch_host_call`       — increments BEFORE handler lookup.
+// `dispatch_host_call_write` — increments AFTER  handler is found.
+//
+// Both behaviors are intentional and match the original monolithic host.rs in
+// main verbatim.  The tests below lock them in to prevent silent regressions.
+
+/// `dispatch_host_call` increments `capability_calls_used` before checking for
+/// a handler.  A granted-but-unbound call therefore exhausts the call budget,
+/// causing a subsequent call to a *bound* handler to be rejected.
+///
+/// Sequence (max_calls = 1):
+///   1. Call cap-A (granted, no handler) → slot consumed (count = 1), returns -1.
+///   2. Call cap-B (granted, has handler) → count 1 >= 1 → limit exceeded, -1.
+///
+/// The handler for cap-B must NOT be invoked.
+#[test]
+fn dispatch_host_call_unbound_consumes_max_call_slot() {
+    let cap_a = CapabilityId::new("asymm.hc-unbound");
+    let cap_b = CapabilityId::new("asymm.hc-bound");
+    let handler_b = Arc::new(TrackingHandler::new("handler-b", cap_b.clone()));
+
+    let wasm = two_cap_host_call_wasm(cap_a.as_str(), cap_b.as_str());
+    let manifest = CapabilityManifest {
+        module: "asymm-hc-test".to_string(),
+        requires: vec![cap_a.clone(), cap_b.clone()],
+    };
+    let profile = profile_granting_two_caps_with_limits(
+        &wasm,
+        &manifest,
+        cap_a.clone(),
+        cap_b.clone(),
+        ResourceLimits {
+            max_capability_calls: Some(1),
+            ..Default::default()
+        },
+    );
+    let mut host = RuntimeHost::new().with_handler(handler_b.clone());
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("preflight must pass");
+
+    let result = instance.invoke("main", &[]).expect("invoke must not trap");
+
+    // cap-A consumed the only slot; cap-B is rejected by the limit check.
+    assert_eq!(
+        result,
+        RuntimeValue::I64(-1),
+        "cap-B must be rejected because the unbound cap-A call consumed the slot"
+    );
+    assert_eq!(
+        handler_b.call_count(),
+        0,
+        "handler-b must not be called when the call slot is exhausted by an unbound cap"
+    );
+}
+
+/// `dispatch_host_call_write` increments `capability_calls_used` only after a
+/// handler is found.  A granted-but-unbound call therefore does NOT exhaust
+/// the call budget, allowing a subsequent call to a *bound* handler to succeed.
+///
+/// Sequence (max_calls = 1):
+///   1. Call cap-A (granted, no handler) → slot NOT consumed (count stays 0), -1.
+///   2. Call cap-B (granted, has handler) → count 0 < 1 → handler runs → bytes written.
+///
+/// The handler for cap-B MUST be invoked and the call MUST succeed.
+#[test]
+fn dispatch_host_call_write_unbound_does_not_consume_slot() {
+    let cap_a = CapabilityId::new("asymm.hw-unbound");
+    let cap_b = CapabilityId::new("asymm.hw-bound");
+    let handler_b = Arc::new(TrackingHandler::new("handler-b-write", cap_b.clone()));
+
+    let wasm = two_cap_host_call_write_wasm(cap_a.as_str(), cap_b.as_str());
+    let manifest = CapabilityManifest {
+        module: "asymm-hw-test".to_string(),
+        requires: vec![cap_a.clone(), cap_b.clone()],
+    };
+    let profile = profile_granting_two_caps_with_limits(
+        &wasm,
+        &manifest,
+        cap_a.clone(),
+        cap_b.clone(),
+        ResourceLimits {
+            max_capability_calls: Some(1),
+            ..Default::default()
+        },
+    );
+    let mut host = RuntimeHost::new().with_handler(handler_b.clone());
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("preflight must pass");
+
+    let result = instance.invoke("main", &[]).expect("invoke must not trap");
+
+    // cap-A did NOT consume a slot; cap-B succeeds and writes 8 bytes (the
+    // TrackingHandler returns 99_i64 as 8 LE bytes).
+    assert_eq!(
+        result,
+        RuntimeValue::I32(8),
+        "cap-B must succeed because the unbound cap-A call did not consume a slot"
+    );
+    assert_eq!(
+        handler_b.call_count(),
+        1,
+        "handler-b must be called exactly once"
     );
 }
