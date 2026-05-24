@@ -727,7 +727,11 @@ fn invoke_typed_text_multibyte_len_is_byte_length() {
     // because 'é' (U+00E9) encodes as 0xC3 0xA9.
     let literal = "café";
     assert_eq!(literal.len(), 5, "sanity: café is 5 bytes in UTF-8");
-    assert_eq!(literal.chars().count(), 4, "sanity: café is 4 Unicode chars");
+    assert_eq!(
+        literal.chars().count(),
+        4,
+        "sanity: café is 4 Unicode chars"
+    );
 
     let expr = AnfExpr::Literal(LiteralValue::Text(literal.to_string()));
     let wasm = compiler_wasm_for_expr(expr, "get_cafe");
@@ -742,7 +746,10 @@ fn invoke_typed_text_multibyte_len_is_byte_length() {
         other => panic!("expected StructuredValue::Text, got {other:?}"),
     };
 
-    assert_eq!(len, 5, "len must be the UTF-8 byte length (5), not char count (4)");
+    assert_eq!(
+        len, 5,
+        "len must be the UTF-8 byte length (5), not char count (4)"
+    );
 
     let bytes = instance
         .read_wasm_memory(ptr, len as usize)
@@ -755,5 +762,8 @@ fn invoke_typed_text_multibyte_len_is_byte_length() {
     );
     // Confirm the bytes can be decoded back to the original string.
     let recovered = std::str::from_utf8(&bytes).expect("bytes must be valid UTF-8");
-    assert_eq!(recovered, literal, "recovered string must equal original literal");
+    assert_eq!(
+        recovered, literal,
+        "recovered string must equal original literal"
+    );
 }

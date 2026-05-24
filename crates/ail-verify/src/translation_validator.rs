@@ -106,13 +106,13 @@ impl TranslationValidator {
 
         // Emit a single summary Proven when the graph passes all checks.
         if entries.is_empty() {
-        entries.push(make_entry(
-            "translation-validation/summary",
-            VerificationState::Proven,
-            "translation_validation",
-            Some("all translation validation checks passed".into()),
-            vec![],
-        ));
+            entries.push(make_entry(
+                "translation-validation/summary",
+                VerificationState::Proven,
+                "translation_validation",
+                Some("all translation validation checks passed".into()),
+                vec![],
+            ));
         }
 
         entries
@@ -874,9 +874,7 @@ mod tests {
             "TV-1 Unverified entry must carry at least one repair option"
         );
         assert!(
-            e.repair_options
-                .iter()
-                .any(|r| r.contains("return type")),
+            e.repair_options.iter().any(|r| r.contains("return type")),
             "at least one repair option must mention 'return type'"
         );
     }
@@ -908,9 +906,7 @@ mod tests {
             "TV-2 Unverified entry must carry at least one repair option"
         );
         assert!(
-            e.repair_options
-                .iter()
-                .any(|r| r.contains("name:Provider")),
+            e.repair_options.iter().any(|r| r.contains("name:Provider")),
             "at least one repair option must mention the 'name:Provider' format"
         );
     }
@@ -920,10 +916,7 @@ mod tests {
         let node = fn_node_with_effects(0, "fn.good_prov", &["db:Postgres"]);
         let graph = single_node_graph(node);
         let entries = check_effect_provenance(&graph);
-        let e = entries
-            .iter()
-            .find(|e| e.scope == "fn.good_prov")
-            .unwrap();
+        let e = entries.iter().find(|e| e.scope == "fn.good_prov").unwrap();
         assert_eq!(e.state, VerificationState::Proven);
         assert!(
             e.repair_options.is_empty(),
@@ -947,8 +940,7 @@ mod tests {
         let e = entries
             .iter()
             .find(|e| {
-                e.scope == "fn.undecl"
-                    && e.claim == "translation-validation/effect-obligation"
+                e.scope == "fn.undecl" && e.claim == "translation-validation/effect-obligation"
             })
             .unwrap();
         assert_eq!(e.state, VerificationState::Failed);
@@ -957,9 +949,7 @@ mod tests {
             "TV-3 Failed entry must carry at least one repair option"
         );
         assert!(
-            e.repair_options
-                .iter()
-                .any(|r| r.contains("effect_row")),
+            e.repair_options.iter().any(|r| r.contains("effect_row")),
             "at least one repair option must mention 'effect_row'"
         );
     }
@@ -998,8 +988,7 @@ mod tests {
         let e = entries
             .iter()
             .find(|e| {
-                e.scope == "fn.no_ev"
-                    && e.claim == "translation-validation/evidence-sufficiency"
+                e.scope == "fn.no_ev" && e.claim == "translation-validation/evidence-sufficiency"
             })
             .unwrap();
         assert_eq!(e.state, VerificationState::Failed);
@@ -1033,8 +1022,7 @@ mod tests {
         let e = entries
             .iter()
             .find(|e| {
-                e.scope == "fn.ev_ok"
-                    && e.claim == "translation-validation/evidence-sufficiency"
+                e.scope == "fn.ev_ok" && e.claim == "translation-validation/evidence-sufficiency"
             })
             .unwrap();
         assert_eq!(e.state, VerificationState::Proven);

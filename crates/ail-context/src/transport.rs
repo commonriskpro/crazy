@@ -744,7 +744,11 @@ mod tests {
         let output = serve_str_async(&t, &input);
         let responses = parse_responses(&output);
 
-        assert_eq!(responses.len(), 2, "parse error and valid request must both respond");
+        assert_eq!(
+            responses.len(),
+            2,
+            "parse error and valid request must both respond"
+        );
         assert_eq!(
             responses[0].error.as_ref().unwrap().code,
             JSONRPC_PARSE_ERROR

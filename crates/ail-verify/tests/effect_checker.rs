@@ -204,11 +204,7 @@ fn undeclared_effect_carries_repair_options() {
         edges: vec![emits_edge(0, 1)],
     };
     let report = EffectChecker::check(&graph);
-    let entry = report
-        .entries
-        .iter()
-        .find(|e| e.scope == "db_fn2")
-        .unwrap();
+    let entry = report.entries.iter().find(|e| e.scope == "db_fn2").unwrap();
     assert_eq!(entry.state, VerificationState::Failed);
     assert!(
         !entry.repair_options.is_empty(),
