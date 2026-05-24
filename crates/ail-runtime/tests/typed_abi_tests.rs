@@ -2,6 +2,7 @@
 //
 // TASK D-3: Tests for RuntimeInstance::invoke_typed.
 // TASK F-3: Tests for dispatch_host_call_write.
+// TASK H-1: End-to-end Text ABI roundtrip.
 //
 // Spec scenarios:
 //  D-3:
@@ -14,6 +15,11 @@
 //  - host_call_write_writes_handler_result_to_wasm_memory
 //  - host_call_write_returns_bytes_written
 //  - host_call_write_denied_capability_returns_minus_one
+//
+//  H-1:
+//  - invoke_typed_text_packed_encoding_roundtrip
+//  - invoke_typed_text_memory_bytes_match_literal
+//  - invoke_typed_text_multibyte_len_is_byte_length
 
 use std::sync::Arc;
 
@@ -633,4 +639,121 @@ fn host_call_write_denied_capability_returns_minus_one() {
         bytes_written, -1,
         "bytes_written must be -1 when capability is denied"
     );
+}
+
+// ── H-1: Text ABI end-to-end roundtrip ───────────────────────────────────
+//
+// These tests verify the full pipeline:
+//   ail-compiler (emit_wasm) → WASM module → RuntimeInstance::invoke_typed
+//
+// ABI contract for Text (from docs/abi-value-contract.md):
+//   The compiler packs Text as a single i64: (len_bytes << 32) | ptr
+//   where ptr is the byte offset of the UTF-8 data in WASM linear memory.
+//   The runtime decoder unpacks ptr and len WITHOUT reading memory.
+//   To verify actual bytes the caller must read_wasm_memory(ptr, len).
+//
+// For a binding whose only string is the literal itself, the compiler's
+// EffectDataLayout assigns ptr = 0 (first intern gets next_offset = 0).
+
+#[test]
+fn invoke_typed_text_packed_encoding_roundtrip() {
+    // Compile a Text literal through the full WASM path and verify that
+    // invoke_typed decodes the packed i64 into StructuredValue::Text with
+    // the correct ptr and len — without any memory read.
+    let literal = "hello";
+    let expr = AnfExpr::Literal(LiteralValue::Text(literal.to_string()));
+    let wasm = compiler_wasm_for_expr(expr, "get_hello");
+    let mut instance = instantiate(&wasm);
+
+    let result = instance
+        .invoke_typed("get_hello", &[], &ValueLayout::Text)
+        .expect("invoke_typed must succeed");
+
+    // The EffectDataLayout interns the first (and only) string at ptr = 0.
+    // len is the UTF-8 byte length of the literal.
+    assert_eq!(
+        result,
+        StructuredValue::Text {
+            ptr: 0,
+            len: literal.len() as i32,
+        },
+        "packed Text encoding must decode to ptr=0, len=byte_length"
+    );
+}
+
+#[test]
+fn invoke_typed_text_memory_bytes_match_literal() {
+    // Full roundtrip: compile, instantiate, invoke, then read WASM linear
+    // memory at the decoded ptr to verify the UTF-8 bytes match the original
+    // literal.  This closes the loop that ValueDecoder itself does not close
+    // (the decoder unpacks ptr/len but does not read memory).
+    let literal = "hello";
+    let expr = AnfExpr::Literal(LiteralValue::Text(literal.to_string()));
+    let wasm = compiler_wasm_for_expr(expr, "get_text");
+    let mut instance = instantiate(&wasm);
+
+    let result = instance
+        .invoke_typed("get_text", &[], &ValueLayout::Text)
+        .expect("invoke_typed must succeed");
+
+    let (ptr, len) = match result {
+        StructuredValue::Text { ptr, len } => (ptr, len),
+        other => panic!("expected StructuredValue::Text, got {other:?}"),
+    };
+
+    assert_eq!(
+        len,
+        literal.len() as i32,
+        "decoded len must equal UTF-8 byte length of the literal"
+    );
+
+    // A Text literal binding forces the compiler to include a memory export,
+    // so read_wasm_memory is always available here.
+    let bytes = instance
+        .read_wasm_memory(ptr, len as usize)
+        .expect("read_wasm_memory must succeed for a text-bearing module");
+
+    assert_eq!(
+        bytes.as_slice(),
+        literal.as_bytes(),
+        "WASM linear memory at ptr must contain the UTF-8 bytes of the literal"
+    );
+}
+
+#[test]
+fn invoke_typed_text_multibyte_len_is_byte_length() {
+    // Verifies that `len` in StructuredValue::Text is the UTF-8 *byte* count,
+    // not the Unicode scalar count.  "café" has 4 chars but 5 UTF-8 bytes
+    // because 'é' (U+00E9) encodes as 0xC3 0xA9.
+    let literal = "café";
+    assert_eq!(literal.len(), 5, "sanity: café is 5 bytes in UTF-8");
+    assert_eq!(literal.chars().count(), 4, "sanity: café is 4 Unicode chars");
+
+    let expr = AnfExpr::Literal(LiteralValue::Text(literal.to_string()));
+    let wasm = compiler_wasm_for_expr(expr, "get_cafe");
+    let mut instance = instantiate(&wasm);
+
+    let result = instance
+        .invoke_typed("get_cafe", &[], &ValueLayout::Text)
+        .expect("invoke_typed must succeed");
+
+    let (ptr, len) = match result {
+        StructuredValue::Text { ptr, len } => (ptr, len),
+        other => panic!("expected StructuredValue::Text, got {other:?}"),
+    };
+
+    assert_eq!(len, 5, "len must be the UTF-8 byte length (5), not char count (4)");
+
+    let bytes = instance
+        .read_wasm_memory(ptr, len as usize)
+        .expect("read_wasm_memory must succeed");
+
+    assert_eq!(
+        bytes.as_slice(),
+        literal.as_bytes(),
+        "WASM memory at ptr must contain the exact UTF-8 byte sequence of the literal"
+    );
+    // Confirm the bytes can be decoded back to the original string.
+    let recovered = std::str::from_utf8(&bytes).expect("bytes must be valid UTF-8");
+    assert_eq!(recovered, literal, "recovered string must equal original literal");
 }
