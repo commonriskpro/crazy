@@ -629,7 +629,7 @@ The first implementation is an in-process semantic context API rather than a tra
 
 | Topic | Implementation status |
 |-------|-----------------------|
-| Query syntax | Structured Rust DTOs in `ail-context`; CLI/transport syntax remains future work. |
+| Query syntax | All protocol-doc query variants (`context`, `impact`, `callers`, `callees`, `effects`, `contracts`, `proofs`, `resources`, `boundaries`, `history`, `why`, `diff`, `risks`, `todo`, `refactor_context`, `extract_candidates`, `move_safety`, `capabilities`, `handlers`, `concurrency`, `tasks`, `assumptions`, plus `graph`) are implemented as `ContextQuery` enum variants with graph traversal handlers in `selection.rs`. CLI/transport syntax remains future work. |
 | Transport adapter | `StdioTransport` in `crates/ail-context/src/transport.rs` provides newline-delimited JSON-RPC framing over `ContextServer::handle_rpc`. `ContextRpcRequest` / `ContextRpcResponse` remain the shared envelope; HTTP and MCP adapters can reuse them without changing the server. |
 | Summaries | Deterministic renderer in `crates/ail-context/src/summary.rs`. Structured data remains authoritative. |
 | Signing | Distributed signing is handled in remote/bundle primitives, not context responses yet. |
