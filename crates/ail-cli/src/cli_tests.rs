@@ -111,7 +111,7 @@ async fn cmd_compile_native_target_succeeds() {
 async fn cmd_run_succeeds() {
     use crate::store::memory_store;
     let store = memory_store();
-    let result = cmd_run(OutputMode::Human, "dev", None, &[], None, &store).await;
+    let result = cmd_run(OutputMode::Human, "dev", "wasm", None, &[], None, &store).await;
     assert!(result.is_ok(), "cmd_run must succeed; got: {result:?}");
 }
 
@@ -123,6 +123,7 @@ async fn cmd_run_with_module_succeeds() {
     let result = cmd_run(
         OutputMode::Human,
         "dev",
+        "wasm",
         Some("module.checkout"),
         &[],
         None,
@@ -143,6 +144,7 @@ async fn cmd_run_with_replay_succeeds() {
     let result = cmd_run(
         OutputMode::Human,
         "test",
+        "wasm",
         None,
         &[],
         Some("trace_123"),
@@ -152,6 +154,55 @@ async fn cmd_run_with_replay_succeeds() {
     assert!(
         result.is_ok(),
         "cmd_run with replay must succeed; got: {result:?}"
+    );
+}
+
+// Scenario: cmd_run with native target returns explicit Domain error.
+//   GIVEN target == "native"
+//   WHEN cmd_run is called
+//   THEN Err(CliError::Domain(...)) mentioning "native" is returned
+#[tokio::test]
+async fn cmd_run_native_target_returns_domain_error() {
+    use crate::store::memory_store;
+    let store = memory_store();
+    let result = cmd_run(OutputMode::Human, "dev", "native", None, &[], None, &store).await;
+    match &result {
+        Err(CliError::Domain(msg)) => assert!(
+            msg.contains("native"),
+            "error must mention 'native'; got: {msg}"
+        ),
+        other => panic!("expected Domain error for native target; got: {other:?}"),
+    }
+}
+
+// Scenario: cmd_compile with native target produces native-specific JSON fields.
+//   GIVEN target == "native"
+//   WHEN cmd_compile is called
+//   THEN it returns Ok (native object emitted via emit_native_with_profile)
+#[tokio::test]
+async fn cmd_compile_native_target_routes_to_native_backend() {
+    use crate::store::memory_store;
+    let store = memory_store();
+    // Verify routing: native target must succeed (calls emit_native_with_profile).
+    let result = cmd_compile(OutputMode::Human, "dev", "native", &store).await;
+    assert!(
+        result.is_ok(),
+        "cmd_compile native must succeed via emit_native_with_profile; got: {result:?}"
+    );
+}
+
+// Scenario: cmd_compile wasm target still succeeds (contract unchanged).
+//   GIVEN target == "wasm"
+//   WHEN cmd_compile is called
+//   THEN it returns Ok with WASM artifact
+#[tokio::test]
+async fn cmd_compile_wasm_target_still_succeeds() {
+    use crate::store::memory_store;
+    let store = memory_store();
+    let result = cmd_compile(OutputMode::Human, "dev", "wasm", &store).await;
+    assert!(
+        result.is_ok(),
+        "cmd_compile wasm must still succeed; got: {result:?}"
     );
 }
 

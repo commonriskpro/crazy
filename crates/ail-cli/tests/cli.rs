@@ -1964,6 +1964,84 @@ fn compile_with_native_target_exits_zero() {
         .success();
 }
 
+/// SC-CMP4: compile --target native --json includes native object fields, not WASM fields.
+///
+/// Asserts that the native backend is actually reached (emit_native_with_profile):
+/// - `object_format` identifies ELF/Mach-O/COFF
+/// - `native_bytes` is a non-negative integer (the object file size)
+/// - `native_hash` is a non-null string (Blake3 hex of the object bytes)
+/// - `compiler_report.stages` includes "emit_native", not "emit_wasm"
+/// - the artifact is NOT labelled as a WASM artifact
+#[test]
+fn compile_native_json_has_object_fields() {
+    let output = ail()
+        .args([
+            "compile",
+            "--target",
+            "native",
+            "--profile",
+            "dev",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok", "native compile must succeed; got: {v}");
+
+    // object_format must be a non-empty string (ELF / Mach-O / COFF).
+    assert!(
+        v["data"]["object_format"].is_string()
+            && !v["data"]["object_format"].as_str().unwrap_or("").is_empty(),
+        "object_format must be a non-empty string; got: {v}"
+    );
+
+    // native_bytes must be a non-negative integer.
+    assert!(
+        v["data"]["native_bytes"].is_number(),
+        "native_bytes must be a number; got: {v}"
+    );
+
+    // native_hash must be the sealed native object hash, never the fallback sentinel.
+    assert!(
+        v["data"]["native_hash"]
+            .as_str()
+            .is_some_and(|h| h.len() == 64 && h != "<none>"),
+        "native_hash must be a 64-char blake3 hex string; got: {v}"
+    );
+
+    // compiler_report.stages must include "emit_native".
+    let stages = &v["data"]["compiler_report"]["stages"];
+    assert!(
+        stages
+            .as_array()
+            .is_some_and(|s| s.iter().any(|e| e.as_str() == Some("emit_native"))),
+        "compiler_report.stages must include emit_native; got: {stages}"
+    );
+
+    // Must NOT include WASM-specific top-level fields.
+    assert!(
+        v["data"]["wasm_bytes"].is_null(),
+        "native compile must not include wasm_bytes; got: {v}"
+    );
+    assert!(
+        v["data"]["wasm_hash"].is_null(),
+        "native compile must not include wasm_hash; got: {v}"
+    );
+
+    // capabilities_manifest and artifact_manifest sidecars must be present.
+    assert!(
+        v["data"]["capabilities_manifest"].is_object(),
+        "capabilities_manifest must be object; got: {v}"
+    );
+    assert!(
+        v["data"]["artifact_manifest"].is_object(),
+        "artifact_manifest must be object; got: {v}"
+    );
+}
+
 // ── G31 R2: run with module and replay ───────────────────────────────────
 
 /// SC-RUN1: run with module argument succeeds.
@@ -2004,6 +2082,59 @@ fn run_json_has_full_runtime_report() {
         v["data"]["runtime_check_results"].is_object(),
         "runtime_check_results must be object; got: {v}"
     );
+}
+
+/// SC-RUN4: run --json runtime_check_results.artifact_hash is derived from
+/// actual preflight (object with "passed" and "hash"), not a hardcoded string.
+#[test]
+fn run_json_runtime_checks_artifact_hash_is_derived() {
+    let output = ail()
+        .args(["run", "--profile", "dev", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    let checks = &v["data"]["runtime_check_results"];
+
+    // artifact_hash must be an object (derived), not a plain "ok" string.
+    assert!(
+        checks["artifact_hash"].is_object(),
+        "runtime_check_results.artifact_hash must be an object; got: {checks}"
+    );
+    assert_eq!(
+        checks["artifact_hash"]["passed"], true,
+        "artifact_hash.passed must be true after successful preflight; got: {checks}"
+    );
+    assert!(
+        checks["artifact_hash"]["hash"].is_string(),
+        "artifact_hash.hash must be a string; got: {checks}"
+    );
+
+    // capability_grants must be an object with required/denied counts.
+    assert!(
+        checks["capability_grants"].is_object(),
+        "runtime_check_results.capability_grants must be an object; got: {checks}"
+    );
+    assert_eq!(
+        checks["capability_grants"]["denied"], 0,
+        "capability_grants.denied must be 0; got: {checks}"
+    );
+}
+
+/// SC-RUN5: run --target native exits with code 1 and explicit error message.
+///
+/// Native linked execution is not supported; the CLI must return a deterministic
+/// error rather than silently falling back to WASM execution.
+#[test]
+fn run_native_target_exits_one_with_explicit_error() {
+    ail()
+        .args(["run", "--target", "native", "--profile", "dev"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("native"));
 }
 
 /// SC-RUN3: run with --replay trace_id includes replay info in JSON.
