@@ -160,6 +160,10 @@ pub enum AnfExpr {
         params: Vec<String>,
         /// Free variables of `body` relative to `params`, collected during
         /// ANF lowering.  These names must be in scope at the call site.
+        ///
+        /// `#[serde(default)]` ensures backward compatibility with CBOR artifacts
+        /// produced before this field existed: missing key → empty Vec.
+        #[serde(default)]
         captures: Vec<String>,
         body: Box<AnfExpr>,
     },
