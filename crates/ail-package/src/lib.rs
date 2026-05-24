@@ -78,7 +78,8 @@ pub use verification::{
     PackageVerificationEvidenceError, PackageVerificationReport, validate_verified_package_evidence,
 };
 pub use versioning::{
-    CompatibilityClass, CompatibilityEngine, CompatibilityError, MigrationRecord, MigrationStep,
+    CompatibilityClass, CompatibilityEngine, CompatibilityError, LocalCompatibilityIssue,
+    LocalCompatibilityIssueKind, MigrationRecord, MigrationStep, PackageCompatibilityMetadata,
     PackageVersioning,
 };
 pub use yank::YankRecord;

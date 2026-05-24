@@ -70,10 +70,11 @@ use ail_core::semantic_graph::{GraphEdge, GraphNode, NodeKind};
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_package::{
     AdvisoryChecker, AdvisorySeverity, ArtifactHashEntry, CapabilityPolicy,
-    CapabilityPolicyEnforcer, CapabilityPolicyVerdict, Lockfile, LockfileEntry, PackageDef,
-    PackageKeypair, PackageManifest, PackageRegistry, PackageVerificationReport, PublishRequest,
-    RegistryClient, SearchRequest, SecurityAdvisory, SignedPackage, TrustLevel, VerifyOutcome,
-    VerifyRequest, YankRecord,
+    CapabilityPolicyEnforcer, CapabilityPolicyVerdict, CompatibilityEngine, CompatibilityError,
+    LocalCompatibilityIssue, LocalCompatibilityIssueKind, Lockfile, LockfileEntry,
+    PackageCompatibilityMetadata, PackageDef, PackageKeypair, PackageManifest, PackageRegistry,
+    PackageVerificationReport, PublishRequest, RegistryClient, SearchRequest, SecurityAdvisory,
+    SignedPackage, TrustLevel, VerifyOutcome, VerifyRequest, YankRecord,
 };
 use ail_remote::{
     AgentKeypair, FileBundleStore, ObjectBundle, RemoteChangeSet, RemoteExchangeRequest,
@@ -4111,7 +4112,16 @@ async fn cmd_package(
         }
         PackageCmd::Add { package } => {
             let (name, version) = parse_package_spec(&package);
-            let installed = install_package_from_registry(store, name, version)?;
+            let installed = match install_package_from_registry(store, name, version)? {
+                PackageInstallResult::Installed(installed) => *installed,
+                PackageInstallResult::Blocked(issues) => {
+                    emit_package_compatibility_blocked(mode, &issues);
+                    return Err(CliError::Domain(format!(
+                        "package compatibility blocked: {} blocked issue(s)",
+                        issues.len()
+                    )));
+                }
+            };
             let entry = &installed.entry;
             let verification_report_status =
                 verification_report_status(installed.verification_report.is_some());
@@ -4141,12 +4151,22 @@ async fn cmd_package(
                     "advisories": [],
                     "capabilities_granted": false,
                     "warnings": installed.warnings,
+                    "compatibility_issues": installed.compatibility_issues.iter().map(package_compatibility_issue_to_json).collect::<Vec<_>>(),
                 }),
             );
         }
         PackageCmd::Install { package } => {
             let (name, version) = parse_package_spec(&package);
-            let installed = install_package_from_registry(store, name, version)?;
+            let installed = match install_package_from_registry(store, name, version)? {
+                PackageInstallResult::Installed(installed) => *installed,
+                PackageInstallResult::Blocked(issues) => {
+                    emit_package_compatibility_blocked(mode, &issues);
+                    return Err(CliError::Domain(format!(
+                        "package compatibility blocked: {} blocked issue(s)",
+                        issues.len()
+                    )));
+                }
+            };
             let entry = &installed.entry;
             let verification_report_status =
                 verification_report_status(installed.verification_report.is_some());
@@ -4174,6 +4194,7 @@ async fn cmd_package(
                     "verification_report_status": verification_report_status,
                     "capabilities_granted": false,
                     "warnings": installed.warnings,
+                    "compatibility_issues": installed.compatibility_issues.iter().map(package_compatibility_issue_to_json).collect::<Vec<_>>(),
                 }),
             );
         }
@@ -4216,7 +4237,8 @@ async fn cmd_package(
         }
         PackageCmd::Verify => {
             let lockfile = load_package_lockfile(store)?;
-            let registry = load_package_registry(store)?;
+            let (registry, compatibility_metadata) =
+                load_package_registry_with_compatibility(store)?;
             let mut seen = BTreeSet::new();
             let mut actual = Vec::new();
             let mut actual_by_package = BTreeMap::new();
@@ -4257,12 +4279,28 @@ async fn cmd_package(
             let mismatches = lockfile.verify_integrity(&actual_refs);
             let report_mismatches =
                 verification_report_hash_mismatches(&lockfile, &actual_by_package);
+            let compatibility_issues =
+                package_compatibility_issues_for_verify(&lockfile, &compatibility_metadata)?;
             let hash_ok = mismatches.is_empty();
             let signature_ok = signature_failures.is_empty();
             let report_hash_ok = report_mismatches.is_empty();
-            let verified = hash_ok && signature_ok && report_hash_ok;
+            let compatibility_blocked = compatibility_issues
+                .iter()
+                .any(|issue| issue.status == "blocked");
+            let compatibility_warning = compatibility_issues
+                .iter()
+                .any(|issue| issue.status == "warning");
+            let compatibility_integrity = if compatibility_blocked {
+                "blocked"
+            } else if compatibility_warning {
+                "warning"
+            } else {
+                "ok"
+            };
+            let compatibility_ok = !compatibility_blocked;
+            let verified = hash_ok && signature_ok && report_hash_ok && compatibility_ok;
             let human_msg = format!(
-                "packages: {}\nhash_integrity: {}\nsignature_integrity: {}\nverification_report_integrity: {}\nlock_file: {}\npackages_checked: {}\nwarnings: {}",
+                "packages: {}\nhash_integrity: {}\nsignature_integrity: {}\nverification_report_integrity: {}\ncompatibility_integrity: {}\nlock_file: {}\npackages_checked: {}\nwarnings: {}",
                 if verified {
                     "all verified"
                 } else {
@@ -4271,6 +4309,7 @@ async fn cmd_package(
                 if hash_ok { "ok" } else { "mismatch" },
                 if signature_ok { "ok" } else { "failed" },
                 if report_hash_ok { "ok" } else { "mismatch" },
+                compatibility_integrity,
                 if verified {
                     "consistent"
                 } else {
@@ -4284,11 +4323,16 @@ async fn cmd_package(
                 "hash_integrity": if hash_ok { "ok" } else { "mismatch" },
                 "signature_integrity": if signature_ok { "ok" } else { "failed" },
                 "verification_report_integrity": if report_hash_ok { "ok" } else { "mismatch" },
+                "compatibility_integrity": compatibility_integrity,
                 "lock_file": if verified { "consistent" } else { "inconsistent" },
                 "mismatches": mismatches,
                 "verification_report_mismatches": report_mismatches
                     .iter()
                     .map(verification_report_hash_mismatch_to_json)
+                    .collect::<Vec<_>>(),
+                "compatibility_issues": compatibility_issues
+                    .iter()
+                    .map(package_compatibility_issue_to_json)
                     .collect::<Vec<_>>(),
                 "signature_failures": signature_failures,
                 "warnings": warnings,
@@ -4302,6 +4346,26 @@ async fn cmd_package(
                 let message = format!(
                     "package verification failed: {} verification report hash mismatch(es)",
                     report_mismatches.len()
+                );
+                if mode == OutputMode::Json {
+                    let mut error_data = response_data;
+                    if let Some(obj) = error_data.as_object_mut() {
+                        obj.insert("error".to_string(), json!("package_verification_failed"));
+                        obj.insert("message".to_string(), json!(message.clone()));
+                    }
+                    print_error_response(error_data);
+                } else {
+                    print_response(mode, &human_msg, response_data);
+                }
+                return Err(CliError::Domain(message));
+            }
+            if compatibility_blocked {
+                let message = format!(
+                    "package verification failed: {} compatibility issue(s)",
+                    compatibility_issues
+                        .iter()
+                        .filter(|issue| issue.status == "blocked")
+                        .count()
                 );
                 if mode == OutputMode::Json {
                     let mut error_data = response_data;
@@ -4906,6 +4970,8 @@ struct LocalPackageRegistryFile {
     #[serde(default)]
     legacy_manifests: Vec<PackageManifest>,
     #[serde(default)]
+    compatibility_metadata: Vec<PackageCompatibilityMetadata>,
+    #[serde(default)]
     advisories: Vec<SecurityAdvisory>,
     #[serde(default)]
     yanked: Vec<YankRecord>,
@@ -4922,6 +4988,24 @@ struct InstalledPackage {
     signature_status: &'static str,
     verification_report: Option<PackageVerificationReport>,
     warnings: Vec<String>,
+    compatibility_issues: Vec<PackageCompatibilityCliIssue>,
+}
+
+enum PackageInstallResult {
+    Installed(Box<InstalledPackage>),
+    Blocked(Vec<PackageCompatibilityCliIssue>),
+}
+
+#[derive(Clone, Debug)]
+struct PackageCompatibilityCliIssue {
+    package: String,
+    current_version: String,
+    target_version: String,
+    kind: &'static str,
+    status: &'static str,
+    reason: String,
+    migration_id: Option<String>,
+    migration_hash: Option<String>,
 }
 
 struct PackageAuditIssue {
@@ -5562,6 +5646,18 @@ fn load_package_registry(store: &StoreHandle) -> Result<PackageRegistry, CliErro
     load_package_registry_with_advisories(store).map(|(registry, _advisories)| registry)
 }
 
+fn load_package_registry_with_compatibility(
+    store: &StoreHandle,
+) -> Result<(PackageRegistry, Vec<PackageCompatibilityMetadata>), CliError> {
+    if !matches!(store, StoreHandle::File { .. }) {
+        return Ok((default_memory_package_registry()?, Vec::new()));
+    }
+    let file = load_local_package_registry_file(store)?;
+    let compatibility_metadata = file.compatibility_metadata.clone();
+    let (registry, _advisories) = registry_from_file(file)?;
+    Ok((registry, compatibility_metadata))
+}
+
 fn load_local_package_registry_file_for_read(
     store: &StoreHandle,
 ) -> Result<LocalPackageRegistryFile, CliError> {
@@ -5649,7 +5745,7 @@ fn save_package_registry(store: &StoreHandle, registry: &PackageRegistry) -> Res
     }
     let dir = packages_dir(store)?;
     std::fs::create_dir_all(&dir)?;
-    let existing_advisories = load_local_package_registry_file(store)?.advisories;
+    let existing_file = load_local_package_registry_file(store)?;
     let signed_keys = registry
         .all_signed()
         .iter()
@@ -5662,7 +5758,8 @@ fn save_package_registry(store: &StoreHandle, registry: &PackageRegistry) -> Res
         .collect::<BTreeSet<_>>();
     let file = LocalPackageRegistryFile {
         signed_packages: registry.all_signed().to_vec(),
-        advisories: existing_advisories,
+        compatibility_metadata: existing_file.compatibility_metadata,
+        advisories: existing_file.advisories,
         yanked: registry.yank_records().to_vec(),
         legacy_manifests: registry
             .all()
@@ -5836,8 +5933,8 @@ fn install_package_from_registry(
     store: &StoreHandle,
     name: &str,
     version: &str,
-) -> Result<InstalledPackage, CliError> {
-    let registry = load_package_registry(store)?;
+) -> Result<PackageInstallResult, CliError> {
+    let (registry, compatibility_metadata) = load_package_registry_with_compatibility(store)?;
     let lookup = trusted_package_lookup(&registry, name, version)?;
     let manifest = &lookup.manifest;
     let hash = manifest
@@ -5853,12 +5950,23 @@ fn install_package_from_registry(
         accepted_assumptions: vec![],
     };
     let mut lockfile = load_package_lockfile(store)?;
+    let compatibility_issues =
+        package_compatibility_issues_for_install(&lockfile, manifest, &compatibility_metadata)?;
+    let blocked_issues = compatibility_issues
+        .iter()
+        .filter(|issue| issue.status == "blocked")
+        .cloned()
+        .collect::<Vec<_>>();
+    if !blocked_issues.is_empty() {
+        return Ok(PackageInstallResult::Blocked(blocked_issues));
+    }
     let stored_entry = if let Some(existing) = lockfile
         .entries
         .iter_mut()
-        .find(|existing| existing.name == entry.name && existing.version == entry.version)
+        .find(|existing| existing.name == entry.name)
     {
         existing.package_hash = entry.package_hash.clone();
+        existing.version = entry.version.clone();
         existing.trust_level = entry.trust_level;
         existing.verification_report_hash = entry.verification_report_hash.clone();
         existing.clone()
@@ -5867,12 +5975,24 @@ fn install_package_from_registry(
         entry
     };
     save_package_lockfile(store, &lockfile)?;
-    Ok(InstalledPackage {
-        entry: stored_entry,
-        signature_status: lookup.signature_status,
-        verification_report: manifest.verification_report.clone(),
-        warnings: lookup.warning.into_iter().collect(),
-    })
+    Ok(PackageInstallResult::Installed(Box::new(
+        InstalledPackage {
+            entry: stored_entry,
+            signature_status: lookup.signature_status,
+            verification_report: manifest.verification_report.clone(),
+            warnings: lookup
+                .warning
+                .into_iter()
+                .chain(
+                    compatibility_issues
+                        .iter()
+                        .filter(|issue| issue.status == "warning")
+                        .map(|issue| issue.reason.clone()),
+                )
+                .collect(),
+            compatibility_issues,
+        },
+    )))
 }
 
 fn verification_report_status(has_report: bool) -> &'static str {
@@ -5943,6 +6063,166 @@ fn verification_report_hash_mismatch_to_json(mismatch: &VerificationReportHashMi
         "lockfile_hash": &mismatch.lockfile_hash,
         "registry_hash": &mismatch.registry_hash,
     })
+}
+
+fn package_compatibility_issues_for_install(
+    lockfile: &Lockfile,
+    target_manifest: &PackageManifest,
+    metadata: &[PackageCompatibilityMetadata],
+) -> Result<Vec<PackageCompatibilityCliIssue>, CliError> {
+    let Some(current) = lockfile.entries.iter().find(|entry| {
+        entry.name == target_manifest.name && entry.version != target_manifest.version
+    }) else {
+        return Ok(Vec::new());
+    };
+    let target_metadata = find_package_compatibility_metadata(
+        metadata,
+        &target_manifest.name,
+        &target_manifest.version,
+    );
+    match CompatibilityEngine::evaluate_local_upgrade(
+        &target_manifest.name,
+        &current.version,
+        &target_manifest.version,
+        target_metadata,
+    ) {
+        Ok(issues) => Ok(issues
+            .into_iter()
+            .map(local_compatibility_issue_to_cli)
+            .collect()),
+        Err(e) => Ok(vec![compatibility_error_to_cli_issue(
+            &target_manifest.name,
+            &current.version,
+            &target_manifest.version,
+            e,
+        )]),
+    }
+}
+
+fn package_compatibility_issues_for_verify(
+    lockfile: &Lockfile,
+    metadata: &[PackageCompatibilityMetadata],
+) -> Result<Vec<PackageCompatibilityCliIssue>, CliError> {
+    let mut issues = Vec::new();
+    for entry in &lockfile.entries {
+        let Some(entry_metadata) =
+            find_package_compatibility_metadata(metadata, &entry.name, &entry.version)
+        else {
+            continue;
+        };
+        match CompatibilityEngine::evaluate_local_metadata(entry_metadata) {
+            Ok(()) => {
+                if let Some(migration) = entry_metadata.migrations.first() {
+                    issues.push(PackageCompatibilityCliIssue {
+                        package: entry.name.clone(),
+                        current_version: entry.version.clone(),
+                        target_version: entry.version.clone(),
+                        kind: "migration",
+                        status: "warning",
+                        reason: "installed package version carries local migration metadata"
+                            .to_string(),
+                        migration_id: None,
+                        migration_hash: Some(migration.blake3_hex().map_err(|e| {
+                            CliError::Domain(format!("migration metadata hash failed: {e}"))
+                        })?),
+                    });
+                }
+            }
+            Err(e) => issues.push(compatibility_error_to_cli_issue(
+                &entry.name,
+                &entry.version,
+                &entry.version,
+                e,
+            )),
+        }
+    }
+    Ok(issues)
+}
+
+fn find_package_compatibility_metadata<'a>(
+    metadata: &'a [PackageCompatibilityMetadata],
+    package: &str,
+    version: &str,
+) -> Option<&'a PackageCompatibilityMetadata> {
+    metadata
+        .iter()
+        .find(|metadata| metadata.package == package && metadata.version == version)
+}
+
+fn local_compatibility_issue_to_cli(
+    issue: LocalCompatibilityIssue,
+) -> PackageCompatibilityCliIssue {
+    let status = if issue.migration_hash.is_some() {
+        "warning"
+    } else {
+        "blocked"
+    };
+    PackageCompatibilityCliIssue {
+        package: issue.package,
+        current_version: issue.current_version,
+        target_version: issue.target_version,
+        kind: match issue.kind {
+            LocalCompatibilityIssueKind::Compatibility => "compatibility",
+            LocalCompatibilityIssueKind::Migration => "migration",
+        },
+        status,
+        reason: issue.reason,
+        migration_id: None,
+        migration_hash: issue.migration_hash,
+    }
+}
+
+fn compatibility_error_to_cli_issue(
+    package: &str,
+    current_version: &str,
+    target_version: &str,
+    error: CompatibilityError,
+) -> PackageCompatibilityCliIssue {
+    PackageCompatibilityCliIssue {
+        package: package.to_string(),
+        current_version: current_version.to_string(),
+        target_version: target_version.to_string(),
+        kind: compatibility_error_kind(&error),
+        status: "blocked",
+        reason: format!("local compatibility metadata invalid: {error}").to_ascii_lowercase(),
+        migration_id: None,
+        migration_hash: None,
+    }
+}
+
+fn compatibility_error_kind(error: &CompatibilityError) -> &'static str {
+    match error {
+        CompatibilityError::MajorBumpWithoutMigration
+        | CompatibilityError::MigrationPackageMismatch
+        | CompatibilityError::MigrationTargetMismatch => "migration",
+        CompatibilityError::PatchWithMigration
+        | CompatibilityError::InvalidVersion(_)
+        | CompatibilityError::MetadataTargetMismatch
+        | CompatibilityError::MigrationHashFailed(_) => "compatibility",
+    }
+}
+
+fn package_compatibility_issue_to_json(issue: &PackageCompatibilityCliIssue) -> Value {
+    json!({
+        "package": &issue.package,
+        "current_version": &issue.current_version,
+        "target_version": &issue.target_version,
+        "kind": issue.kind,
+        "status": issue.status,
+        "reason": &issue.reason,
+        "migration_id": &issue.migration_id,
+        "migration_hash": &issue.migration_hash,
+    })
+}
+
+fn emit_package_compatibility_blocked(mode: OutputMode, issues: &[PackageCompatibilityCliIssue]) {
+    if mode == OutputMode::Json {
+        print_error_response(json!({
+            "error": "package_compatibility_blocked",
+            "message": format!("package compatibility blocked: {} blocked issue(s)", issues.len()),
+            "compatibility_issues": issues.iter().map(package_compatibility_issue_to_json).collect::<Vec<_>>(),
+        }));
+    }
 }
 
 fn lockfile_entry_to_json(entry: &LockfileEntry) -> Value {
