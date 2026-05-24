@@ -461,6 +461,8 @@ mod tests {
             verification_report: None,
             graph_schema: None,
             core_ir_schema: None,
+            // 4G fields
+            reproducible_evidence: None,
         })
     }
 
@@ -708,6 +710,8 @@ mod tests {
             verification_report: None,
             graph_schema: Some(1),
             core_ir_schema: None,
+            // 4G fields
+            reproducible_evidence: None,
         };
         let mut reg = PackageRegistry::new();
         reg.register(PackageManifest::from_def(def.clone()));
@@ -757,6 +761,8 @@ mod tests {
             verification_report: None,
             graph_schema: None,
             core_ir_schema: None,
+            // 4G fields
+            reproducible_evidence: None,
         };
         let mut reg = PackageRegistry::new();
         reg.register(PackageManifest::from_def(def.clone()));
@@ -806,6 +812,8 @@ mod tests {
             verification_report: None,
             graph_schema: None,
             core_ir_schema: None,
+            // 4G fields
+            reproducible_evidence: None,
         };
         let mut reg = PackageRegistry::new();
         reg.register(PackageManifest::from_def(def));
@@ -849,6 +857,8 @@ mod tests {
             verification_report: None,
             graph_schema: None,
             core_ir_schema: None,
+            // 4G fields
+            reproducible_evidence: None,
         };
         let mut reg = PackageRegistry::new();
         reg.register(PackageManifest::from_def(def));

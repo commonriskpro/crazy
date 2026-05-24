@@ -494,6 +494,8 @@ mod tests {
             verification_report: None,
             graph_schema: None,
             core_ir_schema: None,
+            // 4G fields
+            reproducible_evidence: None,
         })
     }
 

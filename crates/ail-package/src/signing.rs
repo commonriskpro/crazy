@@ -312,6 +312,8 @@ mod tests {
             verification_report: None,
             graph_schema: None,
             core_ir_schema: None,
+            // 4G fields
+            reproducible_evidence: None,
         })
     }
 
@@ -465,6 +467,8 @@ mod tests {
                 verification_report: None,
                 graph_schema: None,
                 core_ir_schema: None,
+                // 4G fields
+                reproducible_evidence: None,
             };
             def.version = "2.0.0".to_string();
             crate::manifest::PackageManifest::from_def(def)

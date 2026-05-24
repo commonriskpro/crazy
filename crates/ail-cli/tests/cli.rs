@@ -13,7 +13,8 @@
 use ail_package::{
     AdvisorySeverity, CompatibilityClass, Lockfile, LockfileEntry, MigrationRecord, MigrationStep,
     PackageCompatibilityMetadata, PackageDef, PackageKeypair, PackageManifest,
-    PackageVerificationReport, SecurityAdvisory, SignedPackage, TrustLevel, YankRecord,
+    PackageVerificationReport, ReproducibleBuildEvidence, SecurityAdvisory, SignedPackage,
+    TrustLevel, YankRecord,
 };
 use ail_storage::SnapshotEnvelope;
 use ail_storage::codec::{CborCodec, ContentCodec};
@@ -176,7 +177,14 @@ fn test_package_manifest(name: &str, version: &str, trust_level: TrustLevel) -> 
         verification_report: None,
         graph_schema: Some(1),
         core_ir_schema: Some(1),
+        // 4G fields
+        reproducible_evidence: None,
     })
+}
+
+fn test_reproducible_evidence(name: &str, version: &str) -> ReproducibleBuildEvidence {
+    let source_digest = format!("{:b<64}", name.len() + version.len());
+    ReproducibleBuildEvidence::new(source_digest, "ail-toolchain-0.1.0", "c".repeat(64))
 }
 
 fn test_verification_report(package: &str, version: &str) -> PackageVerificationReport {
@@ -198,6 +206,12 @@ fn test_package_manifest_with_report(name: &str, version: &str) -> PackageManife
         hash: "a".repeat(64),
     }];
     manifest.verification_report = Some(test_verification_report(name, version));
+    manifest
+}
+
+fn test_package_manifest_with_full_evidence(name: &str, version: &str) -> PackageManifest {
+    let mut manifest = test_package_manifest_with_report(name, version);
+    manifest.reproducible_evidence = Some(test_reproducible_evidence(name, version));
     manifest
 }
 
@@ -4787,4 +4801,322 @@ fn create_sample_change(project_dir: &std::path::Path) -> String {
         .or_else(|| v["data"]["canonical_change"]["change_id"].as_str())
         .expect("change output must include a change_id")
         .to_string()
+}
+
+// ── Wave 4G: Reproducible Build Evidence ──────────────────────────────────
+
+/// SC-4G-1: package install surfaces reproducible_evidence_status = "present"
+///           when a package includes full evidence.
+///   GIVEN a registry with a signed Verified package with full evidence
+///   WHEN `ail package install <pkg>` runs
+///   THEN JSON output includes reproducible_evidence_status = "present"
+#[test]
+fn package_install_surfaces_reproducible_evidence_present() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let manifest = test_package_manifest_with_full_evidence("repro.pkg", "1.0.0");
+    let file = TestPackageRegistryFile {
+        signed_packages: vec![signed_test_package(manifest.clone())],
+        legacy_manifests: vec![],
+        advisories: vec![],
+        yanked: vec![],
+    };
+    write_package_registry_file(dir.path(), &file);
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "install", "repro.pkg@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(
+        v["data"]["reproducible_evidence_status"], "present",
+        "install of package with full evidence must report status=present; got: {v}"
+    );
+}
+
+/// SC-4G-2: package install surfaces reproducible_evidence_status = "none"
+///           when a package has no evidence.
+///   GIVEN a registry with a signed Verified package without evidence
+///   WHEN `ail package install <pkg>` runs
+///   THEN JSON output includes reproducible_evidence_status = "none"
+#[test]
+fn package_install_surfaces_reproducible_evidence_none() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let manifest = test_package_manifest_with_report("norep.pkg", "1.0.0");
+    let file = TestPackageRegistryFile {
+        signed_packages: vec![signed_test_package(manifest.clone())],
+        legacy_manifests: vec![],
+        advisories: vec![],
+        yanked: vec![],
+    };
+    write_package_registry_file(dir.path(), &file);
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "install", "norep.pkg@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(
+        v["data"]["reproducible_evidence_status"], "none",
+        "install of package without evidence must report status=none; got: {v}"
+    );
+}
+
+/// SC-4G-3: package publish surfaces reproducible_evidence_status in JSON.
+///   GIVEN a fresh project (no package manifest → package init creates one)
+///   WHEN `ail package publish --json` runs
+///   THEN JSON output includes reproducible_evidence_status (either "present" or "none")
+///   and the value is a stable lowercase string (no Debug leak).
+#[test]
+fn package_publish_surfaces_reproducible_evidence_status() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let output = ail()
+        .args(["package", "publish", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    let status = v["data"]["reproducible_evidence_status"]
+        .as_str()
+        .expect("reproducible_evidence_status must be a string");
+    assert!(
+        status == "present" || status == "none",
+        "reproducible_evidence_status must be 'present' or 'none'; got: {status}"
+    );
+    // Must not be a Rust Debug representation.
+    assert!(
+        !status.contains("Some") && !status.contains("None"),
+        "reproducible_evidence_status must not leak Rust Debug; got: {status}"
+    );
+}
+
+/// SC-4G-5: package verify human output warns when verified packages are missing
+///   reproducible_evidence.
+///   GIVEN a Verified package without reproducible_evidence in the local registry
+///   WHEN `ail package verify` runs in human mode (no --json)
+///   THEN stdout contains an explicit WARNING about missing reproducible_evidence
+///   AND the packages summary line reflects the evidence warning
+#[test]
+fn package_verify_human_warns_on_missing_reproducible_evidence() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    // A Verified package with no reproducible_evidence — will trigger warning.
+    let manifest = test_package_manifest("evidence.missing", "1.0.0", TrustLevel::Verified);
+    let signed = signed_test_package(manifest.clone());
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![signed],
+            legacy_manifests: vec![],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+    // lockfile: no verification_report_hash (manifest has no report), so no mismatch.
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "verify"]) // human mode — no --json
+        .current_dir(dir.path())
+        .assert()
+        .success() // still exits 0 (evidence warning is advisory, not a blocker)
+        .get_output()
+        .clone();
+
+    let stdout = std::str::from_utf8(&output.stdout).expect("stdout must be UTF-8");
+
+    // Human output must contain an explicit WARNING mentioning the gap.
+    assert!(
+        stdout.contains("WARNING") && stdout.contains("reproducible_evidence"),
+        "human output must warn about missing reproducible evidence; got:\n{stdout}"
+    );
+    // The warning must name the affected package.
+    assert!(
+        stdout.contains("evidence.missing"),
+        "human output WARNING must name the affected package; got:\n{stdout}"
+    );
+    // The packages summary line must reflect the warning state.
+    assert!(
+        stdout.contains("reproducible evidence warning"),
+        "packages summary must indicate the reproducible evidence warning; got:\n{stdout}"
+    );
+}
+
+/// SC-4G-6: package verify human output does NOT warn when a Verified package
+///   has full reproducible_evidence.
+///   GIVEN a Verified package WITH reproducible_evidence (no report — avoids
+///   lockfile hash-mismatch in the simplified fixture)
+///   WHEN `ail package verify` runs in human mode
+///   THEN stdout does not contain "WARNING" and summary says "all verified"
+#[test]
+fn package_verify_human_no_warning_when_evidence_present() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    // Verified + evidence, but no verification_report so the lockfile doesn't
+    // need a report hash (avoids a report-hash mismatch in this fixture).
+    let mut manifest = test_package_manifest("evidence.present", "1.0.0", TrustLevel::Verified);
+    manifest.reproducible_evidence = Some(test_reproducible_evidence("evidence.present", "1.0.0"));
+    let signed = signed_test_package(manifest.clone());
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![signed],
+            legacy_manifests: vec![],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "verify"]) // human mode
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = std::str::from_utf8(&output.stdout).expect("stdout must be UTF-8");
+
+    assert!(
+        !stdout.contains("WARNING"),
+        "human output must NOT warn when evidence is present; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("all verified"),
+        "packages summary must say 'all verified' when evidence is present; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("reproducible evidence warning"),
+        "packages summary must not say 'reproducible evidence warning' when evidence is present; got:\n{stdout}"
+    );
+}
+
+/// SC-4G-7: package verify JSON includes verified_packages_missing_evidence list
+///   when Verified packages lack reproducible_evidence.
+///   GIVEN a Verified package without reproducible_evidence
+///   WHEN `ail package verify --json` runs
+///   THEN verified_packages_missing_evidence contains the package identifier
+///   AND reproducible_evidence_integrity is "warning"
+///   AND verified is true (backward-compat: evidence is advisory-only)
+#[test]
+fn package_verify_json_includes_missing_evidence_list() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let manifest = test_package_manifest("evidence.missing.json", "2.0.0", TrustLevel::Verified);
+    let signed = signed_test_package(manifest.clone());
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![signed],
+            legacy_manifests: vec![],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "verify", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(
+        v["data"]["reproducible_evidence_integrity"], "warning",
+        "JSON reproducible_evidence_integrity must be 'warning' when evidence is missing"
+    );
+    let missing = v["data"]["verified_packages_missing_evidence"]
+        .as_array()
+        .expect("verified_packages_missing_evidence must be an array");
+    assert!(
+        missing
+            .iter()
+            .any(|pkg| pkg.as_str() == Some("evidence.missing.json@2.0.0")),
+        "verified_packages_missing_evidence must list the affected package; got: {missing:?}"
+    );
+    // verified remains true — evidence is advisory-only in package verify.
+    assert_eq!(
+        v["data"]["verified"], true,
+        "verified must remain true; evidence integrity is advisory-only in package verify"
+    );
+}
+
+/// SC-4G-4: package verify surfaces reproducible_evidence_integrity field.
+///   GIVEN a project with a published package
+///   WHEN `ail package verify --json` runs
+///   THEN JSON output includes reproducible_evidence_integrity (stable lowercase)
+#[test]
+fn package_verify_surfaces_reproducible_evidence_integrity() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    ail()
+        .args(["package", "publish"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let manifest = {
+        let bytes = fs::read(
+            dir.path()
+                .join(".ail")
+                .join("packages")
+                .join("registry.cbor"),
+        )
+        .expect("registry must exist after publish");
+        let file: TestPackageRegistryFile =
+            ciborium::from_reader(bytes.as_slice()).expect("registry must decode");
+        file.signed_packages
+            .into_iter()
+            .next()
+            .expect("at least one signed package")
+            .manifest
+    };
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "verify", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    let integrity = v["data"]["reproducible_evidence_integrity"]
+        .as_str()
+        .expect("reproducible_evidence_integrity must be a string");
+    assert!(
+        integrity == "ok" || integrity == "warning",
+        "reproducible_evidence_integrity must be 'ok' or 'warning'; got: {integrity}"
+    );
+    // Must not be a Rust Debug representation.
+    assert!(
+        !integrity.contains("Some") && !integrity.contains("None"),
+        "reproducible_evidence_integrity must not leak Rust Debug; got: {integrity}"
+    );
 }

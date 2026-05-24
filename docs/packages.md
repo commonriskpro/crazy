@@ -414,6 +414,22 @@ missing the hash while the registry still has a report is reported as
 `verification_report_integrity: "mismatch"`. This is local hash pinning only; it
 does not validate remote proofs, transparency logs, or external attestations.
 
+#### Reproducible build evidence and verify vs runtime preflight asymmetry
+
+`TrustLevel::Verified` packages should carry a `reproducible_evidence` record
+(source digest, toolchain ID, recipe hash, and a derived `build_inputs_hash`).
+`ail package verify` checks for this evidence and reports
+`reproducible_evidence_integrity: "warning"` when it is absent, but exits 0 and
+keeps `verified: true` in JSON — evidence is advisory-only at the CLI verify
+layer.
+
+**Runtime preflight behaves differently**: it hard-fails on `Verified` packages
+that lack evidence. Human output from `ail package verify` makes this asymmetry
+explicit: when evidence is missing the packages summary line reads
+`packages: all verified (reproducible evidence warning)` and a `WARNING` line
+names each affected package. This is the signal to add `reproducible_evidence`
+to the manifest before deploying.
+
 Compatibility and migration metadata follows the same local-only discipline.
 `ail package verify` reports `compatibility_integrity: "ok"`, `"warning"`, or
 `"blocked"` and includes stable `compatibility_issues` objects with `package`,

@@ -23,7 +23,7 @@ use blake3::Hasher;
 use ciborium::ser::into_writer;
 use serde::{Deserialize, Serialize};
 
-use crate::manifest::PackageManifest;
+use crate::manifest::{PackageManifest, ReproducibleBuildEvidence};
 use crate::trust::TrustLevel;
 
 // ── PackageVerificationReport ─────────────────────────────────────────────
@@ -92,6 +92,34 @@ pub enum PackageVerificationEvidenceError {
         manifest_hashes: Vec<String>,
         report_hashes: Vec<String>,
     },
+    // ── 4G errors ─────────────────────────────────────────────────────────
+    /// A verified package is missing required reproducible-build evidence.
+    ///
+    /// `TrustLevel::Verified` packages must carry a
+    /// [`crate::manifest::ReproducibleBuildEvidence`] record so reviewers
+    /// can reason about build determinism locally.
+    MissingReproducibleEvidence,
+    /// A reproducible-build evidence field has an invalid format.
+    ///
+    /// All hash fields must be exactly 64 lower-case ASCII hex characters;
+    /// `toolchain_id` must be non-empty.
+    ReproducibleEvidenceInvalidFormat {
+        /// Name of the field that failed format validation.
+        field: &'static str,
+        /// Short reason for the failure (e.g., `"expected 64-char hex string"`).
+        reason: &'static str,
+    },
+    /// `build_inputs_hash` does not match the value derived from
+    /// `source_digest` and `toolchain_id`.
+    ///
+    /// The canonical formula is
+    /// `BLAKE3(source_digest_utf8_bytes || toolchain_id_utf8_bytes)`.
+    ReproducibleEvidenceBuildInputsMismatch {
+        /// Expected `build_inputs_hash` (derived from evidence fields).
+        expected: String,
+        /// Actual `build_inputs_hash` stored in the evidence record.
+        actual: String,
+    },
 }
 
 impl std::fmt::Display for PackageVerificationEvidenceError {
@@ -117,6 +145,28 @@ impl std::fmt::Display for PackageVerificationEvidenceError {
             } => write!(
                 f,
                 "verification_report artifact hashes do not match manifest artifact_hashes: manifest={manifest_hashes:?}, report={report_hashes:?}"
+            ),
+            // 4G errors
+            PackageVerificationEvidenceError::MissingReproducibleEvidence => write!(
+                f,
+                "verified package is missing required reproducible_evidence \
+                 (local metadata only; no rebuild or remote attestation is performed)"
+            ),
+            PackageVerificationEvidenceError::ReproducibleEvidenceInvalidFormat {
+                field,
+                reason,
+            } => write!(
+                f,
+                "reproducible_evidence field `{field}` has invalid format: {reason}"
+            ),
+            PackageVerificationEvidenceError::ReproducibleEvidenceBuildInputsMismatch {
+                expected,
+                actual,
+            } => write!(
+                f,
+                "reproducible_evidence build_inputs_hash mismatch: \
+                 expected `{expected}` (derived from source_digest + toolchain_id), \
+                 got `{actual}`"
             ),
         }
     }
@@ -177,6 +227,81 @@ pub fn validate_verified_package_evidence(
         });
     }
 
+    // ── 4G: reproducible-build evidence ───────────────────────────────────
+    //
+    // Conservative policy: TrustLevel::Verified packages MUST carry a
+    // ReproducibleBuildEvidence record.  All hash fields must be 64-char
+    // lower-case hex; toolchain_id must be non-empty.  build_inputs_hash must
+    // equal the value derived from source_digest and toolchain_id.
+    //
+    // This is LOCAL metadata only — no rebuild is executed, no remote
+    // attestation is consulted.
+    let evidence = manifest
+        .reproducible_evidence
+        .as_ref()
+        .ok_or(PackageVerificationEvidenceError::MissingReproducibleEvidence)?;
+
+    validate_reproducible_evidence_fields(evidence)?;
+
+    let derived_inputs_hash = ReproducibleBuildEvidence::compute_build_inputs_hash(
+        &evidence.source_digest,
+        &evidence.toolchain_id,
+    );
+    if evidence.build_inputs_hash != derived_inputs_hash {
+        return Err(
+            PackageVerificationEvidenceError::ReproducibleEvidenceBuildInputsMismatch {
+                expected: derived_inputs_hash,
+                actual: evidence.build_inputs_hash.clone(),
+            },
+        );
+    }
+
+    Ok(())
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────
+
+/// Return `true` if `s` is a valid BLAKE3 hex digest (64 lower-case hex chars).
+fn is_blake3_hex(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Validate the field formats of a [`ReproducibleBuildEvidence`] record.
+fn validate_reproducible_evidence_fields(
+    evidence: &ReproducibleBuildEvidence,
+) -> Result<(), PackageVerificationEvidenceError> {
+    if !is_blake3_hex(&evidence.build_inputs_hash) {
+        return Err(
+            PackageVerificationEvidenceError::ReproducibleEvidenceInvalidFormat {
+                field: "build_inputs_hash",
+                reason: "expected 64-char lower-case hex string",
+            },
+        );
+    }
+    if evidence.toolchain_id.is_empty() {
+        return Err(
+            PackageVerificationEvidenceError::ReproducibleEvidenceInvalidFormat {
+                field: "toolchain_id",
+                reason: "must be non-empty",
+            },
+        );
+    }
+    if !is_blake3_hex(&evidence.source_digest) {
+        return Err(
+            PackageVerificationEvidenceError::ReproducibleEvidenceInvalidFormat {
+                field: "source_digest",
+                reason: "expected 64-char lower-case hex string",
+            },
+        );
+    }
+    if !is_blake3_hex(&evidence.recipe_hash) {
+        return Err(
+            PackageVerificationEvidenceError::ReproducibleEvidenceInvalidFormat {
+                field: "recipe_hash",
+                reason: "expected 64-char lower-case hex string",
+            },
+        );
+    }
     Ok(())
 }
 
@@ -299,10 +424,21 @@ mod tests {
         assert!(r.exports_verified.contains(&"charge".to_string()));
     }
 
+    /// Standard artifact hash used in test fixtures.
+    fn test_hash() -> String {
+        "a".repeat(64)
+    }
+
+    /// Standard source digest and toolchain for evidence fixtures.
+    fn sample_evidence() -> ReproducibleBuildEvidence {
+        ReproducibleBuildEvidence::new("b".repeat(64), "rustc-1.77.0-stable", "c".repeat(64))
+    }
+
     fn package_with_evidence(
         trust_level: TrustLevel,
         artifact_hashes: Vec<ArtifactHashEntry>,
         verification_report: Option<PackageVerificationReport>,
+        reproducible_evidence: Option<ReproducibleBuildEvidence>,
     ) -> PackageManifest {
         PackageManifest::from_def(PackageDef {
             name: "payments.stripe".to_string(),
@@ -324,12 +460,20 @@ mod tests {
             verification_report,
             graph_schema: None,
             core_ir_schema: None,
+            // 4G fields
+            reproducible_evidence,
         })
     }
 
+    // ── verified_package_evidence_accepts_complete_evidence ───────────────
+    // Spec scenario: "Verified package with complete reproducible evidence passes"
+    //   GIVEN a Verified manifest with matching report, artifacts, and evidence
+    //   WHEN validate_verified_package_evidence is called
+    //   THEN it returns Ok(())
     #[test]
-    fn verified_package_evidence_accepts_matching_report_and_artifacts() {
-        let hash = "a".repeat(64);
+    fn verified_package_evidence_accepts_complete_evidence() {
+        let hash = test_hash();
+        let evidence = sample_evidence();
         let manifest = package_with_evidence(
             TrustLevel::Verified,
             vec![ArtifactHashEntry {
@@ -345,20 +489,23 @@ mod tests {
                 unsafe_surface: vec![],
                 artifact_hashes: vec![hash],
             }),
+            Some(evidence),
         );
 
         assert_eq!(validate_verified_package_evidence(&manifest), Ok(()));
     }
 
+    // ── verified_package_evidence_rejects_missing_report ─────────────────
     #[test]
     fn verified_package_evidence_rejects_missing_report() {
         let manifest = package_with_evidence(
             TrustLevel::Verified,
             vec![ArtifactHashEntry {
                 role: "wasm-binary".to_string(),
-                hash: "a".repeat(64),
+                hash: test_hash(),
             }],
             None,
+            Some(sample_evidence()),
         );
 
         assert_eq!(
@@ -367,9 +514,11 @@ mod tests {
         );
     }
 
+    // ── verified_package_evidence_rejects_name_version_and_hash_mismatch ─
     #[test]
     fn verified_package_evidence_rejects_name_version_and_hash_mismatch() {
-        let hash = "a".repeat(64);
+        let hash = test_hash();
+        let evidence = sample_evidence();
         let mut manifest = package_with_evidence(
             TrustLevel::Verified,
             vec![ArtifactHashEntry {
@@ -385,6 +534,7 @@ mod tests {
                 unsafe_surface: vec![],
                 artifact_hashes: vec![hash.clone()],
             }),
+            Some(evidence),
         );
 
         assert!(matches!(
@@ -411,6 +561,7 @@ mod tests {
         ));
     }
 
+    // ── verified_package_evidence_rejects_empty_manifest_artifacts ────────
     #[test]
     fn verified_package_evidence_rejects_empty_manifest_artifacts() {
         let manifest = package_with_evidence(
@@ -425,6 +576,7 @@ mod tests {
                 unsafe_surface: vec![],
                 artifact_hashes: vec![],
             }),
+            Some(sample_evidence()),
         );
 
         assert_eq!(
@@ -433,10 +585,158 @@ mod tests {
         );
     }
 
+    // ── verified_package_evidence_ignores_lower_trust_tiers ───────────────
+    // Spec scenario: "Legacy non-Verified behavior preserved"
+    //   GIVEN a manifest with TrustLevel::Assumed and no evidence
+    //   WHEN validate_verified_package_evidence is called
+    //   THEN it returns Ok(()) (lower tiers are not checked)
     #[test]
     fn verified_package_evidence_ignores_lower_trust_tiers() {
-        let manifest = package_with_evidence(TrustLevel::Assumed, vec![], None);
-
+        let manifest = package_with_evidence(TrustLevel::Assumed, vec![], None, None);
         assert_eq!(validate_verified_package_evidence(&manifest), Ok(()));
+    }
+
+    // ── 4G: verified_package_rejects_missing_reproducible_evidence ────────
+    // Spec scenario: "Missing reproducible evidence fails for Verified packages"
+    //   GIVEN a Verified manifest with matching report and artifacts but no evidence
+    //   WHEN validate_verified_package_evidence is called
+    //   THEN it returns Err(MissingReproducibleEvidence)
+    #[test]
+    fn verified_package_rejects_missing_reproducible_evidence() {
+        let hash = test_hash();
+        let manifest = package_with_evidence(
+            TrustLevel::Verified,
+            vec![ArtifactHashEntry {
+                role: "wasm-binary".to_string(),
+                hash: hash.clone(),
+            }],
+            Some(PackageVerificationReport {
+                package: "payments.stripe".to_string(),
+                version: "1.2.0".to_string(),
+                exports_verified: vec![],
+                effects_declared: vec![],
+                assumptions: vec![],
+                unsafe_surface: vec![],
+                artifact_hashes: vec![hash],
+            }),
+            None, // no reproducible evidence
+        );
+
+        assert_eq!(
+            validate_verified_package_evidence(&manifest),
+            Err(PackageVerificationEvidenceError::MissingReproducibleEvidence)
+        );
+    }
+
+    // ── 4G: verified_package_rejects_invalid_evidence_hash_format ─────────
+    // Spec scenario: "Mismatched/invalid evidence fails"
+    //   GIVEN a Verified manifest with evidence containing an invalid hash field
+    //   WHEN validate_verified_package_evidence is called
+    //   THEN it returns Err(ReproducibleEvidenceInvalidFormat)
+    #[test]
+    fn verified_package_rejects_invalid_evidence_hash_format() {
+        let hash = test_hash();
+        // Too-short source_digest
+        let bad_evidence = ReproducibleBuildEvidence {
+            build_inputs_hash: "x".repeat(64),
+            toolchain_id: "rustc-1.77.0".to_string(),
+            source_digest: "tooshort".to_string(), // invalid: not 64 chars
+            recipe_hash: "c".repeat(64),
+        };
+        let manifest = package_with_evidence(
+            TrustLevel::Verified,
+            vec![ArtifactHashEntry {
+                role: "wasm-binary".to_string(),
+                hash: hash.clone(),
+            }],
+            Some(PackageVerificationReport {
+                package: "payments.stripe".to_string(),
+                version: "1.2.0".to_string(),
+                exports_verified: vec![],
+                effects_declared: vec![],
+                assumptions: vec![],
+                unsafe_surface: vec![],
+                artifact_hashes: vec![hash],
+            }),
+            Some(bad_evidence),
+        );
+
+        assert!(matches!(
+            validate_verified_package_evidence(&manifest),
+            Err(PackageVerificationEvidenceError::ReproducibleEvidenceInvalidFormat { .. })
+        ));
+    }
+
+    // ── 4G: verified_package_rejects_build_inputs_hash_mismatch ──────────
+    // Spec scenario: "Mismatched build_inputs_hash fails"
+    //   GIVEN a Verified manifest with evidence where build_inputs_hash is wrong
+    //   WHEN validate_verified_package_evidence is called
+    //   THEN it returns Err(ReproducibleEvidenceBuildInputsMismatch)
+    #[test]
+    fn verified_package_rejects_build_inputs_hash_mismatch() {
+        let hash = test_hash();
+        // Manually set a wrong build_inputs_hash
+        let bad_evidence = ReproducibleBuildEvidence {
+            build_inputs_hash: "e".repeat(64), // wrong: not derived from source+toolchain
+            toolchain_id: "rustc-1.77.0".to_string(),
+            source_digest: "b".repeat(64),
+            recipe_hash: "c".repeat(64),
+        };
+        let manifest = package_with_evidence(
+            TrustLevel::Verified,
+            vec![ArtifactHashEntry {
+                role: "wasm-binary".to_string(),
+                hash: hash.clone(),
+            }],
+            Some(PackageVerificationReport {
+                package: "payments.stripe".to_string(),
+                version: "1.2.0".to_string(),
+                exports_verified: vec![],
+                effects_declared: vec![],
+                assumptions: vec![],
+                unsafe_surface: vec![],
+                artifact_hashes: vec![hash],
+            }),
+            Some(bad_evidence),
+        );
+
+        assert!(matches!(
+            validate_verified_package_evidence(&manifest),
+            Err(PackageVerificationEvidenceError::ReproducibleEvidenceBuildInputsMismatch { .. })
+        ));
+    }
+
+    // ── 4G: evidence_blake3_hex_is_deterministic ──────────────────────────
+    // Spec scenario: "Evidence hash deterministic"
+    //   GIVEN two identical ReproducibleBuildEvidence values
+    //   WHEN blake3_hex() is called on each
+    //   THEN both return the same 64-char hex string
+    #[test]
+    fn evidence_blake3_hex_is_deterministic() {
+        let e1 = sample_evidence();
+        let e2 = sample_evidence();
+        let h1 = e1.blake3_hex().expect("hash must succeed");
+        let h2 = e2.blake3_hex().expect("hash must succeed");
+        assert_eq!(h1.len(), 64, "evidence hash must be 64 chars");
+        assert_eq!(h1, h2, "identical evidence must hash to same value");
+    }
+
+    // ── 4G: lower_trust_tiers_pass_without_evidence ───────────────────────
+    // Spec scenario: "Legacy non-Verified behavior preserved"
+    //   All non-Verified trust tiers pass even without evidence.
+    #[test]
+    fn lower_trust_tiers_pass_without_evidence() {
+        for level in [
+            TrustLevel::Unverified,
+            TrustLevel::Unsafe,
+            TrustLevel::Assumed,
+        ] {
+            let manifest = package_with_evidence(level, vec![], None, None);
+            assert_eq!(
+                validate_verified_package_evidence(&manifest),
+                Ok(()),
+                "trust level {level} must pass without evidence"
+            );
+        }
     }
 }
