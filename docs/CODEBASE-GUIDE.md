@@ -10,6 +10,25 @@ Use this as the entry point for the AIL docs. The canonical material lives in `d
 4. Use [Maintainer playbook](codebase/maintainer-playbook.md) before changing a subsystem.
 5. Use [Implementation blueprint](implementation-blueprint.md) to separate completed validation milestones from remaining product work.
 6. Use [Wave operating model](wave-operating-model.md) when planning or executing a multi-wave implementation run.
+7. Use [Contract discipline](codebase/contract-discipline.md) before adding behavior that touches JSON output, status strings, or policy gates.
+
+## Change map
+
+Do not start by reading everything. Use this table to find the files that matter for your task.
+
+| Task / domain | Read first (docs) | Read first (code) |
+|---|---|---|
+| Package install | [Packages](packages.md) | `ail-package/src/{manifest.rs, import.rs, resolver.rs, lockfile.rs}` |
+| Package verify / audit | [Packages](packages.md) | `ail-package/src/{verification.rs, trust.rs, advisory.rs, policy.rs}` |
+| Verify policy / diagnostics | [Verification](verification.md) | `ail-verify/src/{policy.rs, report.rs, diagnostic.rs, pipeline.rs}` |
+| Compiler WASM lowering | [Compiler](compiler.md) | `ail-compiler/src/{lower.rs, anf.rs, wasm.rs, artifact_manifest.rs}` |
+| Compiler native / object | [Compiler](compiler.md) | `ail-compiler/src/{native.rs, hash.rs, artifact_manifest.rs}` |
+| Context redaction / freshness | [Context Server](context-server.md) | `ail-context/src/{builder.rs, server.rs, summary.rs}` |
+| Remote bundle integrity | [Remote](remote.md) | `ail-remote/src/{bundle.rs, identity.rs, signing.rs}` |
+| Release preflight | [Release policy](release-policy.md) | `scripts/{release-preflight.sh, tag-release.sh}` |
+| Storage CAS / snapshots | [Storage](storage.md) | `ail-storage/src/{object.rs, graph.rs, migration.rs}` |
+| CLI output / exit codes | [Tooling](tooling.md) | `ail-cli/src/{output.rs, cli.rs}` |
+| ChangeSet / ACL | [AI Change Language](change-language.md) | `ail-change/src/{parser.rs, canonical.rs, apply.rs, op_schema.rs}` |
 
 ## Status legend
 
