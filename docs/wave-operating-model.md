@@ -3,7 +3,7 @@
 This document captures the agreed implementation operating model for AIL hardening waves.
 Use it as a checklist when planning and executing work in a worktree-per-wave workflow.
 
-Related: [Maintainer playbook](codebase/maintainer-playbook.md), [Implementation blueprint](implementation-blueprint.md), [Codebase guide](CODEBASE-GUIDE.md).
+Related: [Maintainer playbook](codebase/maintainer-playbook.md), [Implementation blueprint](implementation-blueprint.md), [Codebase guide](CODEBASE-GUIDE.md), [Contract discipline](codebase/contract-discipline.md).
 
 ---
 

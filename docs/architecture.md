@@ -183,10 +183,10 @@ These deviations preserve the design direction while keeping implementation risk
 | `ail-core` | Semantic Graph IR, type system primitives, node/edge/effect/contract types | (no workspace deps) |
 | `ail-change` | AI Change Language parser, canonicalizer, apply engine, ACL format | `ail-core` |
 | `ail-compiler` | Core IR → ANF lowering, WASM emit, native emit, source maps | `ail-core`, `ail-change`, `ail-verify` |
-| `ail-verify` | Type checker, effect checker, proof obligations, verification reports | `ail-core`, `ail-change` |
+| `ail-verify` | Type checker, effect checker, proof obligations, verification reports | `ail-core`, `ail-change`, `ail-package` |
 | `ail-storage` | Object store (memory, file, Postgres), snapshot envelopes, graph store, CBOR codec | `ail-core` |
 | `ail-context` | Context Server, semantic query engine, hash-bound context slices, derived index cache | `ail-core`, `ail-storage`, `ail-change` |
-| `ail-runtime` | WASM host (Wasmtime), capability manifest, runtime profiles, resource limits, audit log | `ail-compiler` |
+| `ail-runtime` | WASM host (Wasmtime), capability manifest, runtime profiles, resource limits, audit log | `ail-package` |
 | `ail-stdlib` | Standard library registry, capability definitions, built-in module metadata | `ail-core` |
 | `ail-package` | Package manifest, lockfile, trust levels, capability policy enforcer, registry client | `ail-core`, `ail-storage` |
 | `ail-remote` | Agent identity (Ed25519), ObjectBundle, SignedContextSlice, RemoteChangeSet; optional AES-256-GCM/Argon2id/X25519 primitives under `feature = "crypto"` | `ail-storage`, `ail-change`, `ail-context` |
