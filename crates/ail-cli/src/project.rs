@@ -12,6 +12,7 @@
 //   snapshots/    ← SnapshotEnvelopes (CBOR)
 //   reports/      ← VerificationReports (CBOR)
 //   wasm/         ← compiled WASM artifacts
+//   native/       ← compiled native object artifacts
 // ```
 
 use std::path::PathBuf;
@@ -31,6 +32,8 @@ pub enum ArtifactKind {
     Report,
     /// Compiled WASM artifact.
     Wasm,
+    /// Compiled native object artifact (ELF / Mach-O / COFF).
+    Native,
 }
 
 // ── ProjectContext ────────────────────────────────────────────────────────
@@ -75,6 +78,7 @@ impl ProjectContext {
             ArtifactKind::Snapshot => "snapshots",
             ArtifactKind::Report => "reports",
             ArtifactKind::Wasm => "wasm",
+            ArtifactKind::Native => "native",
         };
         self.ail_dir.join(subdir).join(id)
     }
@@ -139,6 +143,10 @@ mod tests {
         assert_eq!(
             ctx.artifact_name(ArtifactKind::Wasm, id),
             PathBuf::from("/proj/.ail/wasm/testid")
+        );
+        assert_eq!(
+            ctx.artifact_name(ArtifactKind::Native, id),
+            PathBuf::from("/proj/.ail/native/testid")
         );
     }
 

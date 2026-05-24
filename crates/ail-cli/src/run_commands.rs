@@ -31,7 +31,7 @@ use crate::builtin_targets::runtime_anf_for_target;
 use crate::cli::{bytes_to_hex, load_current_graph_for_cli};
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
-use crate::store::{StoreHandle, WasmArtifactBytes};
+use crate::store::{NativeArtifactBytes, StoreHandle, WasmArtifactBytes};
 
 // ── Private helpers ───────────────────────────────────────────────────────
 
@@ -135,6 +135,10 @@ pub(crate) async fn cmd_compile(
         let object_format = detect_native_object_format();
         let capabilities_count = artifact.capabilities_manifest.entries.len();
 
+        let capabilities_manifest_json_bytes = serde_json::to_vec(&artifact.capabilities_manifest)
+            .map_err(|e| {
+                CliError::Domain(format!("compile native (capabilities manifest bytes): {e}"))
+            })?;
         let capabilities_manifest =
             serde_json::to_value(&artifact.capabilities_manifest).map_err(|e| {
                 CliError::Domain(format!("compile native (capabilities manifest): {e}"))
@@ -143,6 +147,27 @@ pub(crate) async fn cmd_compile(
             .map_err(|e| CliError::Domain(format!("compile native (source map sidecar): {e}")))?;
         let artifact_manifest: Value = serde_json::from_slice(&artifact.artifact_manifest_json)
             .map_err(|e| CliError::Domain(format!("compile native (artifact sidecar): {e}")))?;
+
+        // ── Persist native artifact to .ail/native/ (file-backed stores only) ──
+        let persisted_paths = store.save_native_artifact(
+            &native_hash,
+            profile,
+            target,
+            NativeArtifactBytes {
+                object: &artifact.native_bytes,
+                source_map_json: &artifact.source_map_json,
+                artifact_manifest_json: &artifact.artifact_manifest_json,
+                capabilities_manifest_json: &capabilities_manifest_json_bytes,
+            },
+        )?;
+        let persisted = persisted_paths.as_ref().map(|p| {
+            json!({
+                "object_path": p.object_path.to_string_lossy(),
+                "source_map_path": p.source_map_path.to_string_lossy(),
+                "manifest_path": p.manifest_path.to_string_lossy(),
+                "capabilities_path": p.capabilities_path.to_string_lossy(),
+            })
+        });
 
         let compiler_report = json!({
             "profile": profile,
@@ -168,6 +193,7 @@ pub(crate) async fn cmd_compile(
                 "semantic_source_map": semantic_source_map,
                 "artifact_manifest": artifact_manifest,
                 "compiler_report": compiler_report,
+                "persisted_paths": persisted,
             }),
         );
         return Ok(());

@@ -1303,6 +1303,7 @@ async fn cmd_init(mode: OutputMode, store: &StoreHandle, branch: &str) -> Result
         ArtifactKind::Snapshot,
         ArtifactKind::Report,
         ArtifactKind::Wasm,
+        ArtifactKind::Native,
     ] {
         let subdir = ctx
             .artifact_name(kind, ".init")
@@ -1710,9 +1711,11 @@ async fn cmd_inspect(
             );
         }
         "artifact" => {
-            // Try to load a previously persisted artifact first.
-            // Falls back to on-demand compilation when nothing is persisted
-            // or when using a non-file-backed store.
+            // Try to load a previously persisted artifact.
+            // Preference order:
+            //   1. persisted WASM artifact (load_wasm_artifact)
+            //   2. persisted native artifact (load_native_artifact)
+            //   3. on-demand WASM compilation (fallback)
             if let Some(persisted) = store.load_wasm_artifact(id)? {
                 let wasm_hash = persisted.hash.as_str();
                 let profile = persisted.profile.as_str();
@@ -1744,6 +1747,45 @@ async fn cmd_inspect(
                         "artifact_manifest": artifact_manifest_val,
                         "persisted_paths": {
                             "wasm_path": persisted.paths.wasm_path.to_string_lossy(),
+                            "source_map_path": persisted.paths.source_map_path.to_string_lossy(),
+                            "manifest_path": persisted.paths.manifest_path.to_string_lossy(),
+                            "capabilities_path": persisted.paths.capabilities_path.to_string_lossy(),
+                        },
+                    }),
+                );
+            } else if let Some(persisted) = store.load_native_artifact(id)? {
+                // Persisted native artifact — returned when no WASM artifact is indexed
+                // for the requested name but a native artifact is available.
+                let native_hash = persisted.hash.as_str();
+                let profile = persisted.profile.as_str();
+                let capabilities_manifest_val: Value =
+                    serde_json::from_slice(&persisted.capabilities_manifest_json)
+                        .unwrap_or(Value::Null);
+                let artifact_manifest_val: Value =
+                    serde_json::from_slice(&persisted.artifact_manifest_json)
+                        .unwrap_or(Value::Null);
+                let semantic_source_map_val: Value =
+                    serde_json::from_slice(&persisted.source_map_json).unwrap_or(Value::Null);
+                let human_msg = format!(
+                    "type: artifact\nname: {id}\nsource: persisted_native_artifact\nprofile: {profile}\nhash: {native_hash}",
+                );
+                print_response(
+                    mode,
+                    &human_msg,
+                    json!({
+                        "type": "artifact",
+                        "name": id,
+                        "source": "persisted_native_artifact",
+                        "hash": native_hash,
+                        "profile": profile,
+                        "target": persisted.target,
+                        "native_bytes": persisted.object_bytes.len(),
+                        "capabilities_manifest": capabilities_manifest_val,
+                        "capabilities_manifest_source": "persisted_artifact",
+                        "semantic_source_map": semantic_source_map_val,
+                        "artifact_manifest": artifact_manifest_val,
+                        "persisted_paths": {
+                            "object_path": persisted.paths.object_path.to_string_lossy(),
                             "source_map_path": persisted.paths.source_map_path.to_string_lossy(),
                             "manifest_path": persisted.paths.manifest_path.to_string_lossy(),
                             "capabilities_path": persisted.paths.capabilities_path.to_string_lossy(),
