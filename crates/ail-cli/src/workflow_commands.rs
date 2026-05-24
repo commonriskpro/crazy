@@ -539,6 +539,49 @@ pub(crate) async fn cmd_apply(
                 .to_string(),
         ));
     }
+
+    // Verification gate: require an accepted VerificationReport before apply.
+    //
+    // Enforced only for file-backed stores, which persist a report sidecar at
+    // `.ail/reports/<change_id>` during `ail verify`.  Memory and Postgres
+    // backends cannot resolve reports by change-id; the gate is skipped for
+    // those backends (documented limitation — no sidecar index available).
+    //
+    // A report is "accepted" when its summary is not Failed or Unsafe.
+    // Unverified entries from changeset meta-stages (01–05) are expected and
+    // do NOT constitute rejection.
+    // Load the report once; reuse the hash for the SnapshotEnvelope below.
+    let (verification_report_status, gated_report_hash): (&'static str, Option<[u8; 32]>) =
+        if store.supports_report_lookup_by_change_id() {
+            match store
+                .load_verification_report_by_change_id(change_id)
+                .await?
+            {
+                None => {
+                    return Err(CliError::Domain(format!(
+                        "apply blocked: no verification report found for change-id {change_id}; \
+                             run `ail verify {change_id}` first"
+                    )));
+                }
+                Some((report, hash)) => {
+                    use ail_verify::report::VerificationState;
+                    match report.summary() {
+                        VerificationState::Failed | VerificationState::Unsafe => {
+                            return Err(CliError::Domain(format!(
+                                "apply blocked: verification report for {change_id} has summary \
+                                     {:?}; repair failing checks before apply",
+                                report.summary()
+                            )));
+                        }
+                        _ => ("accepted", Some(*hash.as_bytes())),
+                    }
+                }
+            }
+        } else {
+            // Non-file backend: sidecar index unavailable; gate cannot be enforced.
+            ("not_persisted", None)
+        };
+
     let policy_status = if approval_required {
         "operator_confirmed"
     } else {
@@ -558,7 +601,7 @@ pub(crate) async fn cmd_apply(
             "contracts_changed": 0,
             "capabilities_changed": 0,
         },
-        "verification_report_status": "accepted",
+        "verification_report_status": verification_report_status,
         "policy_status": {
             "profile": profile,
             "status": policy_status,
@@ -600,15 +643,10 @@ pub(crate) async fn cmd_apply(
             let graph_root = store.save_graph(&graph).await?;
             let parent_id = current_snapshot.map(|s| s.id);
 
-            // Try to attach a previously persisted verification report hash.
-            // Non-fatal: if no report was persisted (Memory store, first apply
-            // without a prior verify, or I/O failure) the hash stays None.
-            let verification_report_hash = store
-                .load_verification_report_by_change_id(change_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|(_, hash)| *hash.as_bytes());
+            // Reuse the report hash captured during the verification gate above.
+            // For file-backed stores the gate already loaded and validated the
+            // report; for non-file backends gated_report_hash is None.
+            let verification_report_hash = gated_report_hash;
 
             let new_envelope = SnapshotEnvelope {
                 id: ObjectId::from_bytes(&format!("snapshot-after-{change_id}").into_bytes()),

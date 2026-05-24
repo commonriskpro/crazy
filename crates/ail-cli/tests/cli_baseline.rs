@@ -269,6 +269,12 @@ fn apply_success_prints_snapshot_id() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
     let change_id = create_sample_change(dir.path());
+    // Verification gate: run verify before apply.
+    ail()
+        .args(["verify", &change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
     let output = ail()
         .args(["apply", &change_id])
         .current_dir(dir.path())
@@ -437,6 +443,13 @@ fn verify_json_marks_stale_base_as_rebase_required() {
     ail().arg("init").current_dir(dir.path()).assert().success();
     let change_id = create_sample_change(dir.path());
 
+    // Verification gate: run verify before apply.
+    ail()
+        .args(["verify", &change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
     ail()
         .args(["apply", &change_id])
         .current_dir(dir.path())
@@ -471,6 +484,13 @@ fn apply_json_rebase_required_includes_workflow_state() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
     let change_id = create_sample_change(dir.path());
+
+    // Verification gate: run verify before the first apply.
+    ail()
+        .args(["verify", &change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
 
     ail()
         .args(["apply", &change_id])
@@ -513,6 +533,12 @@ fn json_flag_apply_is_parseable() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
     let change_id = create_sample_change(dir.path());
+    // Verification gate: run verify before apply.
+    ail()
+        .args(["verify", &change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
     let output = ail()
         .args(["apply", &change_id, "--json"])
         .current_dir(dir.path())

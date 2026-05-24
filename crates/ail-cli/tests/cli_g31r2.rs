@@ -309,6 +309,12 @@ fn apply_prod_json_with_yes_marks_operator_confirmation_not_persisted_approval()
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
     let change_id = create_sample_change(dir.path());
+    // Verification gate: run verify before apply.
+    ail()
+        .args(["verify", &change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
     let output = ail()
         .args(["apply", &change_id, "--policy", "prod", "--yes", "--json"])
         .current_dir(dir.path())
@@ -357,6 +363,12 @@ fn apply_json_has_pre_apply_gate() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
     let change_id = create_sample_change(dir.path());
+    // Verification gate: run verify before apply.
+    ail()
+        .args(["verify", &change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
     let output = ail()
         .args(["apply", &change_id, "--json"])
         .current_dir(dir.path())

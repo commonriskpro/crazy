@@ -160,6 +160,17 @@ impl StoreHandle {
         matches!(self, StoreHandle::File { .. } | StoreHandle::Postgres(_))
     }
 
+    /// Return true when the store can resolve a `VerificationReport` by
+    /// change-id via the sidecar index.
+    ///
+    /// Only the file-backed store writes a `.ail/reports/<change_id>` sidecar
+    /// during `ail verify`, so only that backend can enforce the verification
+    /// gate in `ail apply`.  Memory and Postgres always return `Ok(None)` from
+    /// `load_verification_report_by_change_id`, making enforcement impossible.
+    pub fn supports_report_lookup_by_change_id(&self) -> bool {
+        matches!(self, StoreHandle::File { .. })
+    }
+
     /// Return the file-backed context index cache path when available.
     pub fn context_index_path(&self) -> Option<PathBuf> {
         match self {

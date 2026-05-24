@@ -3,6 +3,7 @@
 pub mod package_helpers;
 use assert_cmd::Command;
 use serde_json::Value;
+use std::path::Path;
 use std::process::Output;
 
 pub fn ail() -> Command {
@@ -81,4 +82,56 @@ pub fn create_sample_change(project_dir: &std::path::Path) -> String {
         .or_else(|| v["data"]["canonical_change"]["change_id"].as_str())
         .expect("change output must include a change_id")
         .to_string()
+}
+
+/// Write a hand-crafted `VerificationReport` sidecar into the file-backed project
+/// store at `project_dir`.
+///
+/// The report contains a single entry with the given `state`.  The CBOR-encoded
+/// object is written to `.ail/store/objects/<blake3-hex>` and the sidecar index
+/// pointer is written to `.ail/reports/<change_id>`.
+///
+/// Used by verification-gate tests (VG-2, VG-3) that need a persisted `Failed`
+/// or `Unsafe` report without going through a real verification pipeline.
+pub fn write_blocked_report_sidecar(
+    project_dir: &Path,
+    change_id: &str,
+    state: ail_verify::report::VerificationState,
+) {
+    use ail_verify::report::{VerificationEntry, VerificationReport};
+
+    let blocking = matches!(
+        state,
+        ail_verify::report::VerificationState::Failed
+            | ail_verify::report::VerificationState::Unsafe
+    );
+    let report = VerificationReport {
+        entries: vec![VerificationEntry {
+            claim: "gate-test synthetic entry".to_string(),
+            state,
+            scope: "test".to_string(),
+            evidence: None,
+            blocking,
+            repair_options: vec![],
+        }],
+        ..Default::default()
+    };
+
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&report, &mut bytes).expect("CBOR encoding must succeed");
+
+    let hash = blake3::hash(&bytes);
+    let hex = hash.to_hex();
+    let hex_str = hex.as_str();
+
+    // Write content-addressed object to .ail/store/objects/<hex>.
+    let objects_dir = project_dir.join(".ail").join("store").join("objects");
+    std::fs::create_dir_all(&objects_dir).expect("objects dir must be creatable");
+    std::fs::write(objects_dir.join(hex_str), &bytes).expect("object write must succeed");
+
+    // Write sidecar pointer to .ail/reports/<change_id>.
+    let reports_dir = project_dir.join(".ail").join("reports");
+    std::fs::create_dir_all(&reports_dir).expect("reports dir must be creatable");
+    std::fs::write(reports_dir.join(change_id), format!("{hex_str}\n"))
+        .expect("sidecar write must succeed");
 }
