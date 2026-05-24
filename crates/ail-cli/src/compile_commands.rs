@@ -5,13 +5,21 @@
 // Routes through `emit_native_with_profile` when `--target native` is
 // specified, and through `emit_wasm_with_profile` otherwise.
 //
-// Private helpers:
-//   accepted_compile_report     — stub VerificationReport used as pipeline input
+// Helpers:
+//   verify_graph_for_compile    — real pre-lowering gate: runs Checker::check
+//                                 and rejects reports with Failed/Unsafe entries
+//   check_report_accepted_for_compile — gate predicate, exposed for focused tests
+//   accepted_compile_report     — proven-empty report forwarded to the lowering
+//                                 pipeline (required by lower_to_core_ir's own
+//                                 Proven/RuntimeChecked gate); also used by
+//                                 run_commands for its pipeline path
 //   detect_native_object_format — platform-specific object file format name
 
 use ail_compiler::{
     emit_native_with_profile, emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir,
 };
+use ail_core::semantic_graph::SemanticGraph;
+use ail_verify::checker::Checker;
 use ail_verify::report::VerificationReport;
 use serde_json::{Value, json};
 
@@ -21,19 +29,72 @@ use crate::output::{OutputMode, print_response};
 use crate::store::StoreHandle;
 use crate::store_artifacts::{NativeArtifactBytes, WasmArtifactBytes};
 
-// ── Private helpers ───────────────────────────────────────────────────────
+// ── Verification gate ─────────────────────────────────────────────────────
 
-/// Stub `VerificationReport` accepted as pipeline input for compile and run.
+/// Run the real verification gate before lowering a graph to Core IR.
 ///
-/// The type checker flags newly-materialised nodes as Unverified — a full
-/// verify pass would reject the graph at this stage.  Callers that need to
-/// drive the compiler pipeline directly (compile, run) use this instead.
+/// Executes `Checker::check` on `graph` and rejects the result if any
+/// entry has `blocking == true` (i.e., `VerificationState::Failed` or
+/// `VerificationState::Unsafe`).  Graphs whose entries are all `Proven`,
+/// `RuntimeChecked`, `Assumed`, or `Unverified` pass the gate.
+///
+/// This replaces the previous implicit bypass that jumped straight to the
+/// lowering pipeline without any actual verification pass.
+///
+/// # Errors
+///
+/// Returns `CliError::Domain` listing every blocking entry when the graph
+/// fails the verification gate.  Returns `Ok(())` when the graph passes.
+pub(crate) fn verify_graph_for_compile(graph: &SemanticGraph) -> Result<(), CliError> {
+    let report = Checker::check(graph);
+    check_report_accepted_for_compile(&report)
+}
+
+/// Gate predicate: return `Ok(())` when the report has no blocking entries.
+///
+/// Blocking entries have `VerificationState::Failed` or
+/// `VerificationState::Unsafe` (i.e., `entry.blocking == true`).
+///
+/// Exposed as `pub(crate)` so focused tests can exercise the gate logic
+/// directly with manually-constructed `VerificationReport` values.
+pub(crate) fn check_report_accepted_for_compile(
+    report: &VerificationReport,
+) -> Result<(), CliError> {
+    let blocking: Vec<_> = report.entries.iter().filter(|e| e.blocking).collect();
+    if blocking.is_empty() {
+        return Ok(());
+    }
+    let details = blocking
+        .iter()
+        .map(|e| format!("[{}] {} ({:?})", e.scope, e.claim, e.state))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(CliError::Domain(format!(
+        "compile blocked by {} verification failure{}: {}",
+        blocking.len(),
+        if blocking.len() == 1 { "" } else { "s" },
+        details
+    )))
+}
+
+// ── Lowering-pipeline helpers ─────────────────────────────────────────────
+
+/// Empty `VerificationReport` that satisfies the lowering pipeline's own
+/// `Proven`/`RuntimeChecked` acceptance gate (`lower_to_core_ir`).
+///
+/// The compile gate (`verify_graph_for_compile`) runs first and rejects
+/// graphs with `Failed`/`Unsafe` entries.  After the gate passes, this
+/// proven-empty report is forwarded to the lowering pipeline.
+///
+/// Also used by `run_commands` for its pipeline path.
 pub(crate) fn accepted_compile_report() -> VerificationReport {
     VerificationReport {
         entries: vec![],
         ..Default::default()
     }
 }
+
+// ── Private helpers ───────────────────────────────────────────────────────
 
 /// Detect the native object format name for the current compilation target.
 ///
@@ -70,6 +131,15 @@ pub(crate) async fn cmd_compile(
     store: &StoreHandle,
 ) -> Result<(), CliError> {
     let graph = load_current_graph_for_cli(store).await?;
+
+    // ── Verification gate ─────────────────────────────────────────────────
+    // Run the real checker and reject graphs with Failed/Unsafe entries
+    // before entering the lowering pipeline.
+    verify_graph_for_compile(&graph)?;
+
+    // Forward a proven-empty report to the lowering pipeline (lower_to_core_ir
+    // requires Proven or RuntimeChecked summary; the graph's own entries are
+    // checked above, not by the lowering-pipeline gate).
     let report = accepted_compile_report();
 
     let core = lower_to_core_ir(&graph, &report)

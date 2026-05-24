@@ -194,6 +194,127 @@ async fn cmd_compile_native_with_file_store_persists_artifact() {
     }
 }
 
+// ── Feature P: real compile verification gate ─────────────────────────────
+
+// Scenario: the compile gate accepts a report with no blocking entries.
+//   GIVEN a VerificationReport whose entries are all Proven or Unverified
+//   WHEN check_report_accepted_for_compile is called
+//   THEN it returns Ok (no blocking entries)
+#[test]
+fn compile_gate_accepts_unverified_report() {
+    use crate::compile_commands::check_report_accepted_for_compile;
+    use ail_verify::report::{VerificationEntry, VerificationReport, VerificationState};
+
+    let report = VerificationReport {
+        entries: vec![
+            VerificationEntry {
+                claim: "type".into(),
+                state: VerificationState::Unverified,
+                scope: "fn.answer".into(),
+                evidence: None,
+                blocking: false,
+                repair_options: vec![],
+            },
+            VerificationEntry {
+                claim: "type".into(),
+                state: VerificationState::Proven,
+                scope: "fn.checkout".into(),
+                evidence: None,
+                blocking: false,
+                repair_options: vec![],
+            },
+        ],
+        ..Default::default()
+    };
+    let result = check_report_accepted_for_compile(&report);
+    assert!(
+        result.is_ok(),
+        "compile gate must accept a report with only Unverified/Proven entries; got: {result:?}"
+    );
+}
+
+// Scenario: the compile gate rejects a report with a Failed entry.
+//   GIVEN a VerificationReport with a Failed (blocking) entry
+//   WHEN check_report_accepted_for_compile is called
+//   THEN it returns Err with a message listing the blocking entry
+#[test]
+fn compile_gate_rejects_failed_entry() {
+    use crate::compile_commands::check_report_accepted_for_compile;
+    use ail_verify::report::{VerificationEntry, VerificationReport, VerificationState};
+
+    let report = VerificationReport {
+        entries: vec![VerificationEntry {
+            claim: "null-policy".into(),
+            state: VerificationState::Failed,
+            scope: "fn.bad".into(),
+            evidence: Some("E_NULL_IN_CORE_IR".into()),
+            blocking: true,
+            repair_options: vec![],
+        }],
+        ..Default::default()
+    };
+    let result = check_report_accepted_for_compile(&report);
+    assert!(
+        result.is_err(),
+        "compile gate must reject a report with a Failed entry"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("compile blocked"),
+        "error message must mention 'compile blocked'; got: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("fn.bad"),
+        "error message must include the blocking scope; got: {err_msg}"
+    );
+}
+
+// Scenario: the compile gate rejects a report with an Unsafe entry.
+//   GIVEN a VerificationReport with an Unsafe (blocking) entry
+//   WHEN check_report_accepted_for_compile is called
+//   THEN it returns Err
+#[test]
+fn compile_gate_rejects_unsafe_entry() {
+    use crate::compile_commands::check_report_accepted_for_compile;
+    use ail_verify::report::{VerificationEntry, VerificationReport, VerificationState};
+
+    let report = VerificationReport {
+        entries: vec![VerificationEntry {
+            claim: "ffi-boundary".into(),
+            state: VerificationState::Unsafe,
+            scope: "fn.dangerous".into(),
+            evidence: None,
+            blocking: true,
+            repair_options: vec![],
+        }],
+        ..Default::default()
+    };
+    let result = check_report_accepted_for_compile(&report);
+    assert!(
+        result.is_err(),
+        "compile gate must reject a report with an Unsafe entry"
+    );
+}
+
+// Scenario: the verify_graph_for_compile function accepts the current CLI graph.
+//   GIVEN the built-in CLI graph (fn.answer + fn.checkout)
+//   WHEN verify_graph_for_compile is called
+//   THEN it returns Ok — the current graph has no Failed/Unsafe entries
+#[test]
+fn verify_graph_for_compile_accepts_current_graph() {
+    use crate::compile_commands::verify_graph_for_compile;
+
+    let graph = current_graph_for_cli().expect("current graph must build");
+    let result = verify_graph_for_compile(&graph);
+    assert!(
+        result.is_ok(),
+        "compile gate must accept the current CLI graph (Checker only produces Proven/Unverified \
+         for this graph, never Failed/Unsafe); got: {result:?}"
+    );
+}
+
+// ── File-store artifact persistence tests ────────────────────────────────
+
 // Scenario: cmd_compile --target native JSON output contains persisted_paths.
 //   GIVEN a file store
 //   WHEN cmd_compile --target native is called in Json mode
