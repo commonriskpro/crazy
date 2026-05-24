@@ -53,10 +53,11 @@ use cranelift_codegen::{
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use serde::{Deserialize, Serialize};
 
 use crate::anf::{AnfIr, SourceMap, SourceMapEntry};
 use crate::artifact_manifest::ArtifactManifest;
+// Shared capability manifest types — defined in `capabilities.rs`.
+pub use crate::capabilities::{CapabilitiesManifest, CapabilityEntry};
 use crate::core_ir::StageHashes;
 use crate::error::CompileError;
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
@@ -65,31 +66,6 @@ pub(crate) use crate::native_codegen::infer_cranelift_return_type;
 use crate::native_codegen::{LowerResult, NativeCodegenCtx, lower_anf_expr_cranelift};
 // Shared data-layout type — see `native_types.rs`.
 pub use crate::native_types::NativeDataLayout;
-
-// ── CapabilityEntry ───────────────────────────────────────────────────────
-
-/// One entry in the capability manifest — one per `AnfBinding`.
-///
-/// Mirrors the WASM backend's capability manifest schema.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CapabilityEntry {
-    /// Binding name, copied from `AnfBinding.name`.
-    pub name: String,
-    /// Provenance back to the originating `SemanticGraph` node.
-    pub source_ref: NodeRef,
-}
-
-// ── CapabilitiesManifest ──────────────────────────────────────────────────
-
-/// Side-car capability manifest for native artifacts.
-///
-/// Generated from `AnfIr.bindings` — one `CapabilityEntry` per binding.
-/// Follows the same schema as the WASM backend's capability manifest.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CapabilitiesManifest {
-    /// One entry per `AnfBinding` in source traversal order.
-    pub entries: Vec<CapabilityEntry>,
-}
 
 // ── NativeArtifact ────────────────────────────────────────────────────────
 
@@ -403,16 +379,7 @@ pub fn emit_native_with_profile(
     let source_map_hash = hash_with_parent(&[], &source_map_bytes);
 
     // Generate capability manifest from bindings.
-    let capabilities_manifest = CapabilitiesManifest {
-        entries: anf
-            .bindings
-            .iter()
-            .map(|b| CapabilityEntry {
-                name: b.name.clone(),
-                source_ref: b.source_ref,
-            })
-            .collect(),
-    };
+    let capabilities_manifest = CapabilitiesManifest::from_bindings(&anf.bindings);
 
     // Seal: native_hash = blake3(anf_ir_hash || native_bytes).
     let native_hash = hash_with_parent(&anf_ir_hash, &native_bytes);

@@ -2046,6 +2046,52 @@ fn compile_json_has_manifests_and_report() {
     );
 }
 
+/// Feature-H: compile --target wasm --json capabilities_manifest.entries is non-empty.
+///
+/// The default graph contains `fn.answer` so the compiled WASM artifact must
+/// carry at least one entry in capabilities_manifest.entries.
+#[test]
+fn compile_wasm_json_capabilities_manifest_entries_is_non_empty() {
+    let output = ail()
+        .args(["compile", "--target", "wasm", "--profile", "dev", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    let entries = v["data"]["capabilities_manifest"]["entries"]
+        .as_array()
+        .expect("capabilities_manifest.entries must be an array");
+    assert!(
+        !entries.is_empty(),
+        "WASM compile capabilities_manifest.entries must be non-empty for default graph; got: {v}"
+    );
+}
+
+/// Feature-H: inspect artifact --json capabilities_manifest.entries is non-empty.
+///
+/// The default graph contains `fn.answer` so the on-demand compiled WASM artifact
+/// must carry at least one entry in capabilities_manifest.entries.
+#[test]
+fn inspect_artifact_capabilities_manifest_entries_is_non_empty() {
+    let output = ail()
+        .args(["--json", "inspect", "artifact", "program.wasm"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    let entries = v["data"]["capabilities_manifest"]["entries"]
+        .as_array()
+        .expect("capabilities_manifest.entries must be an array");
+    assert!(
+        !entries.is_empty(),
+        "inspect artifact capabilities_manifest.entries must be non-empty for default graph; got: {v}"
+    );
+}
+
 /// SC-CMP3: compile with --target native succeeds.
 #[test]
 fn compile_with_native_target_exits_zero() {
@@ -2404,8 +2450,8 @@ fn inspect_artifact_returns_artifact_metadata() {
         "semantic_source_map must be object; got: {v}"
     );
     assert_eq!(
-        v["data"]["capabilities_manifest_source"], "not_available_for_wasm",
-        "WASM inspect should explicitly label capability manifest availability; got: {v}"
+        v["data"]["capabilities_manifest_source"], "computed_from_wasm_bindings",
+        "WASM inspect should label capability manifest source as computed; got: {v}"
     );
 }
 
