@@ -25,6 +25,8 @@ mod remote_config;
 mod run_commands;
 mod store;
 mod store_artifacts;
+mod store_doctor;
+mod store_file;
 mod workflow_commands;
 
 use error::exit_code;
