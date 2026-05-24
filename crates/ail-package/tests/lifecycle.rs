@@ -302,9 +302,10 @@ fn lifecycle_tampered_package_rejected_at_publish_and_not_found_on_verify() {
 
 // ── Lifecycle scenario 5: yank takes priority over advisory ───────────────
 //
-// Spec scenario: "Yank takes priority over advisory in verify"
-//   The `InMemoryRegistryClient::verify` implementation checks yank first,
-//   then advisory.  This test asserts that ordering.
+// Spec contract: "A yank is a permanent, hard removal signal.  When both a
+//   yank record and an active advisory exist for the same package version,
+//   the verify outcome MUST be Yanked — not Advisory.  Yank subsumes any
+//   advisory because the version is categorically withdrawn from use."
 //   GIVEN a published package with both an active advisory AND a yank record
 //   WHEN verify is called
 //   THEN the outcome is Yanked (not Advisory)
