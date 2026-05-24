@@ -1,0 +1,261 @@
+// ── ail-cli::package_output ──────────────────────────────────────────────
+//
+// Human and JSON output helpers for the `ail package` command surface.
+//
+// All stable JSON field names and human-readable status strings live here
+// so that the JSON contract surface is easy to audit in one place.
+
+use ail_package::{AdvisorySeverity, LockfileEntry, PackageManifest, SecurityAdvisory, YankRecord};
+use serde_json::{Value, json};
+
+use crate::error::CliError;
+use crate::output::{OutputMode, print_error_response};
+
+// ── Output types ─────────────────────────────────────────────────────────
+
+/// Result of a local trusted-package lookup.
+pub(crate) struct LocalPackageLookup {
+    pub(crate) manifest: PackageManifest,
+    pub(crate) signature_status: &'static str,
+    pub(crate) warning: Option<String>,
+}
+
+/// Data collected after successfully installing a package.
+pub(crate) struct InstalledPackage {
+    pub(crate) entry: ail_package::LockfileEntry,
+    pub(crate) signature_status: &'static str,
+    pub(crate) verification_report: Option<ail_package::PackageVerificationReport>,
+    /// Locally-recorded reproducible-build evidence from the package manifest.
+    pub(crate) reproducible_evidence: Option<ail_package::ReproducibleBuildEvidence>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) compatibility_issues: Vec<PackageCompatibilityCliIssue>,
+}
+
+/// Result of an install attempt: either success or a compatibility block.
+pub(crate) enum PackageInstallResult {
+    Installed(Box<InstalledPackage>),
+    Blocked(Vec<PackageCompatibilityCliIssue>),
+}
+
+/// A compatibility issue surfaced to the CLI layer.
+#[derive(Clone, Debug)]
+pub(crate) struct PackageCompatibilityCliIssue {
+    pub(crate) package: String,
+    pub(crate) current_version: String,
+    pub(crate) target_version: String,
+    pub(crate) kind: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) reason: String,
+    pub(crate) migration_id: Option<String>,
+    pub(crate) migration_hash: Option<String>,
+}
+
+/// An audit issue for a single lockfile entry.
+pub(crate) struct PackageAuditIssue {
+    pub(crate) package: String,
+    pub(crate) version: String,
+    pub(crate) kind: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) advisory_id: Option<String>,
+    pub(crate) advisory_title: Option<String>,
+    pub(crate) severity: Option<String>,
+    pub(crate) affected_range: Option<String>,
+    pub(crate) reason: Option<String>,
+}
+
+/// Cached hash data for a registry package, used during verify.
+pub(crate) struct RegistryPackageIntegrity {
+    pub(crate) verification_report_hash: Option<String>,
+}
+
+/// A mismatch between lockfile and registry verification-report hashes.
+pub(crate) struct VerificationReportHashMismatch {
+    pub(crate) package: String,
+    pub(crate) version: String,
+    pub(crate) reason: &'static str,
+    pub(crate) lockfile_hash: Option<String>,
+    pub(crate) registry_hash: Option<String>,
+}
+
+impl PackageAuditIssue {
+    pub(crate) fn advisory(package: &str, version: &str, advisory: &SecurityAdvisory) -> Self {
+        let blocked = advisory.severity >= AdvisorySeverity::High;
+        Self {
+            package: package.to_string(),
+            version: version.to_string(),
+            kind: "advisory",
+            status: if blocked { "blocked" } else { "warning" },
+            advisory_id: Some(advisory.id.clone()),
+            advisory_title: Some(advisory.reason.clone()),
+            severity: Some(advisory.severity.to_string()),
+            affected_range: Some(advisory.affected_constraint.clone()),
+            reason: Some(advisory.reason.clone()),
+        }
+    }
+
+    pub(crate) fn yanked(package: &str, version: &str, yank: &YankRecord) -> Self {
+        Self {
+            package: package.to_string(),
+            version: version.to_string(),
+            kind: "yanked",
+            status: "blocked",
+            advisory_id: None,
+            advisory_title: None,
+            severity: None,
+            affected_range: None,
+            reason: Some(yank.reason.clone()),
+        }
+    }
+
+    pub(crate) fn to_json(&self) -> Value {
+        json!({
+            "package": &self.package,
+            "version": &self.version,
+            "kind": self.kind,
+            "status": self.status,
+            "advisory_id": &self.advisory_id,
+            "advisory_title": &self.advisory_title,
+            "title": &self.advisory_title,
+            "severity": &self.severity,
+            "affected_range": &self.affected_range,
+            "reason": &self.reason,
+        })
+    }
+
+    pub(crate) fn to_human_line(&self) -> String {
+        match self.kind {
+            "advisory" => format!(
+                "- advisory {} {}@{} {} {}: {}",
+                self.status,
+                self.package,
+                self.version,
+                self.advisory_id.as_deref().unwrap_or("unknown"),
+                self.severity.as_deref().unwrap_or("unknown"),
+                self.reason.as_deref().unwrap_or("no reason provided")
+            ),
+            "yanked" => format!(
+                "- yanked {} {}@{}: {}",
+                self.status,
+                self.package,
+                self.version,
+                self.reason.as_deref().unwrap_or("no reason provided")
+            ),
+            _ => format!("- {} {}@{}", self.kind, self.package, self.version),
+        }
+    }
+}
+
+// ── Stable status strings ─────────────────────────────────────────────────
+
+/// Stable CLI status string for a verification report attachment.
+///
+/// Used in both human and JSON output; do not change these string values.
+pub(crate) fn verification_report_status(has_report: bool) -> &'static str {
+    if has_report { "attached" } else { "none" }
+}
+
+/// Stable CLI status string for reproducible-build evidence.
+///
+/// Returns a stable lowercase string suitable for JSON and human output.
+/// This is LOCAL evidence metadata only — no rebuild is performed.
+pub(crate) fn reproducible_evidence_status(has_evidence: bool) -> &'static str {
+    if has_evidence { "present" } else { "none" }
+}
+
+// ── Human output helpers ──────────────────────────────────────────────────
+
+/// Format a non-empty warnings slice for human output (leading newline).
+pub(crate) fn format_warnings_for_human(warnings: &[String]) -> String {
+    if warnings.is_empty() {
+        String::new()
+    } else {
+        format!("\nwarnings:\n{}", warnings.join("\n"))
+    }
+}
+
+// ── JSON output helpers ───────────────────────────────────────────────────
+
+pub(crate) fn advisory_to_json(advisory: &SecurityAdvisory) -> Value {
+    json!({
+        "id": &advisory.id,
+        "package": &advisory.package,
+        "affected_constraint": &advisory.affected_constraint,
+        "severity": advisory.severity.to_string(),
+        "reason": &advisory.reason,
+        "scope": "local",
+    })
+}
+
+pub(crate) fn yank_to_json(yank: &YankRecord) -> Value {
+    json!({
+        "package": &yank.name,
+        "name": &yank.name,
+        "version": &yank.version,
+        "reason": &yank.reason,
+        "kind": "yanked",
+        "status": "blocked",
+        "scope": "local",
+    })
+}
+
+pub(crate) fn lockfile_entry_to_json(entry: &LockfileEntry) -> Value {
+    json!({
+        "name": &entry.name,
+        "version": &entry.version,
+        "package_hash": &entry.package_hash,
+        "trust_level": entry.trust_level.to_string(),
+        "verification_report_hash": &entry.verification_report_hash,
+        "accepted_assumptions": &entry.accepted_assumptions,
+    })
+}
+
+pub(crate) fn package_manifest_to_json(manifest: &PackageManifest) -> Result<Value, CliError> {
+    let mut value = serde_json::to_value(manifest)
+        .map_err(|e| CliError::Domain(format!("package manifest json failed: {e}")))?;
+    if let Value::Object(object) = &mut value {
+        object.insert(
+            "trust_level".to_string(),
+            Value::String(manifest.trust_level.to_string()),
+        );
+    }
+    Ok(value)
+}
+
+pub(crate) fn package_compatibility_issue_to_json(issue: &PackageCompatibilityCliIssue) -> Value {
+    json!({
+        "package": &issue.package,
+        "current_version": &issue.current_version,
+        "target_version": &issue.target_version,
+        "kind": issue.kind,
+        "status": issue.status,
+        "reason": &issue.reason,
+        "migration_id": &issue.migration_id,
+        "migration_hash": &issue.migration_hash,
+    })
+}
+
+pub(crate) fn verification_report_hash_mismatch_to_json(
+    mismatch: &VerificationReportHashMismatch,
+) -> Value {
+    json!({
+        "package": &mismatch.package,
+        "version": &mismatch.version,
+        "reason": mismatch.reason,
+        "lockfile_hash": &mismatch.lockfile_hash,
+        "registry_hash": &mismatch.registry_hash,
+    })
+}
+
+/// Emit a JSON error response for a blocked compatibility check.
+pub(crate) fn emit_package_compatibility_blocked(
+    mode: OutputMode,
+    issues: &[PackageCompatibilityCliIssue],
+) {
+    if mode == OutputMode::Json {
+        print_error_response(json!({
+            "error": "package_compatibility_blocked",
+            "message": format!("package compatibility blocked: {} blocked issue(s)", issues.len()),
+            "compatibility_issues": issues.iter().map(package_compatibility_issue_to_json).collect::<Vec<_>>(),
+        }));
+    }
+}
