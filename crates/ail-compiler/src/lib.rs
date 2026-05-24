@@ -42,6 +42,8 @@ pub mod optimize;
 pub mod wasm;
 mod wasm_abi;
 mod wasm_artifact;
+mod wasm_emit;
+mod wasm_sections;
 
 #[cfg(test)]
 mod spike_v03;
