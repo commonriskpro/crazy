@@ -8,6 +8,8 @@ pub mod model;
 pub mod op_schema;
 /// Line-oriented parser for the AI Change Language (ACL) DSL.
 pub mod parser;
+/// Public data transfer objects produced by the ACL parser.
+pub mod parser_types;
 
 #[cfg(feature = "storage-bridge")]
 pub mod storage_bridge;
