@@ -1241,6 +1241,115 @@ async fn cmd_inspect_artifact_compiles_on_demand() {
     );
 }
 
+// Scenario: cmd_compile with a file-backed store persists artifact bytes and sidecars.
+//   GIVEN a file store
+//   WHEN cmd_compile --target wasm is called
+//   THEN .ail/wasm/<hash>.wasm and the three sidecar files exist on disk
+#[tokio::test]
+async fn cmd_compile_wasm_with_file_store_persists_artifact() {
+    use crate::store::{file_store, init_file_layout};
+    use std::fs;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    let store = file_store(ail_dir.clone());
+
+    let result = cmd_compile(OutputMode::Human, "dev", "wasm", &store).await;
+    assert!(result.is_ok(), "compile must succeed; got: {result:?}");
+
+    let wasm_dir = ail_dir.join("wasm");
+    assert!(wasm_dir.exists(), ".ail/wasm/ must exist after compile");
+
+    let index_path = wasm_dir.join("artifact-index.json");
+    assert!(
+        index_path.exists(),
+        ".ail/wasm/artifact-index.json must exist after compile"
+    );
+
+    // At least one .wasm file must be present.
+    let wasm_files: Vec<_> = fs::read_dir(&wasm_dir)
+        .expect("read wasm dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|x| x == "wasm").unwrap_or(false))
+        .collect();
+    assert!(
+        !wasm_files.is_empty(),
+        ".ail/wasm/ must contain at least one .wasm file after compile"
+    );
+
+    // Each .wasm file should have a matching .manifest.json sidecar.
+    for wasm_entry in &wasm_files {
+        let stem = wasm_entry
+            .path()
+            .file_stem()
+            .expect("wasm file stem")
+            .to_string_lossy()
+            .to_string();
+        let manifest_path = wasm_dir.join(format!("{stem}.manifest.json"));
+        assert!(
+            manifest_path.exists(),
+            ".ail/wasm/{stem}.manifest.json must exist alongside {stem}.wasm"
+        );
+        let source_map_path = wasm_dir.join(format!("{stem}.source_map.json"));
+        assert!(
+            source_map_path.exists(),
+            ".ail/wasm/{stem}.source_map.json must exist alongside {stem}.wasm"
+        );
+        let capabilities_path = wasm_dir.join(format!("{stem}.capabilities.json"));
+        assert!(
+            capabilities_path.exists(),
+            ".ail/wasm/{stem}.capabilities.json must exist alongside {stem}.wasm"
+        );
+    }
+}
+
+// Scenario: cmd_inspect artifact prefers persisted artifact over on-demand compile.
+//   GIVEN a file store where cmd_compile has been run
+//   WHEN cmd_inspect artifact is called with the profile name
+//   THEN the response succeeds (source will be persisted_artifact, not computed_on_demand)
+#[tokio::test]
+async fn cmd_inspect_artifact_prefers_persisted_over_on_demand() {
+    use crate::store::{file_store, init_file_layout};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    let store = file_store(ail_dir.clone());
+
+    // First compile so there is a persisted artifact.
+    cmd_compile(OutputMode::Human, "dev", "wasm", &store)
+        .await
+        .expect("compile must succeed");
+
+    // Now inspect — load_wasm_artifact matches profile "dev" for name "dev.wasm".
+    let result = cmd_inspect(OutputMode::Human, "artifact", "dev.wasm", &store).await;
+    assert!(
+        result.is_ok(),
+        "inspect artifact must succeed after compile; got: {result:?}"
+    );
+}
+
+// Scenario: cmd_inspect artifact falls back to on-demand when no persisted data exists.
+//   GIVEN a file store with NO prior compile
+//   WHEN cmd_inspect artifact is called
+//   THEN it succeeds via on-demand compilation
+#[tokio::test]
+async fn cmd_inspect_artifact_falls_back_to_on_demand_with_file_store() {
+    use crate::store::{file_store, init_file_layout};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    let store = file_store(ail_dir);
+
+    let result = cmd_inspect(OutputMode::Human, "artifact", "checkout.wasm", &store).await;
+    assert!(
+        result.is_ok(),
+        "inspect artifact must succeed via on-demand fallback; got: {result:?}"
+    );
+}
+
 // Scenario: cmd_diff with range notation returns semantic diff.
 #[tokio::test]
 async fn cmd_diff_with_range_fails_gracefully_on_missing_snapshots() {

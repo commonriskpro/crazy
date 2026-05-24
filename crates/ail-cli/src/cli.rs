@@ -1710,49 +1710,91 @@ async fn cmd_inspect(
             );
         }
         "artifact" => {
-            // Compile the current graph on demand and return real artifact metadata.
-            // The id is used as the artifact label. Source is explicitly
-            // "computed_on_demand" — no persisted artifact is claimed.
-            let graph = load_current_graph_for_cli(store).await?;
-            let empty_report = VerificationReport {
-                entries: vec![],
-                ..Default::default()
-            };
-            let core = lower_to_core_ir(&graph, &empty_report)
-                .map_err(|e| CliError::Domain(format!("inspect artifact (core-ir): {e}")))?;
-            let anf = lower_to_anf_with_graph(&core, &graph)
-                .map_err(|e| CliError::Domain(format!("inspect artifact (anf): {e}")))?;
-            let artifact = emit_wasm_with_profile(&anf, "dev")
-                .map_err(|e| CliError::Domain(format!("inspect artifact (emit): {e}")))?;
-            let wasm_hash = artifact.hash_chain.wasm_hash.map(|h| bytes_to_hex(&h));
-            let profile = artifact.artifact_manifest.profile.clone();
-            let compiler_version = artifact.artifact_manifest.compiler_version.clone();
-            let capabilities_manifest_val =
-                serde_json::to_value(&artifact.capabilities_manifest).unwrap_or(Value::Null);
-            let artifact_manifest_val: Value =
-                serde_json::from_slice(&artifact.artifact_manifest_json).unwrap_or(Value::Null);
-            let semantic_source_map_val: Value =
-                serde_json::from_slice(&artifact.source_map_json).unwrap_or(Value::Null);
-            let human_msg = format!(
-                "type: artifact\nname: {id}\nsource: computed_on_demand\nprofile: {profile}\nhash: {}\ncompiler: {compiler_version}",
-                wasm_hash.as_deref().unwrap_or("(none)")
-            );
-            print_response(
-                mode,
-                &human_msg,
-                json!({
-                    "type": "artifact",
-                    "name": id,
-                    "source": "computed_on_demand",
-                    "hash": wasm_hash,
-                    "profile": profile,
-                    "compiler_version": compiler_version,
-                    "capabilities_manifest": capabilities_manifest_val,
-                    "capabilities_manifest_source": "computed_from_wasm_bindings",
-                    "semantic_source_map": semantic_source_map_val,
-                    "artifact_manifest": artifact_manifest_val,
-                }),
-            );
+            // Try to load a previously persisted artifact first.
+            // Falls back to on-demand compilation when nothing is persisted
+            // or when using a non-file-backed store.
+            if let Some(persisted) = store.load_wasm_artifact(id)? {
+                let wasm_hash = persisted.hash.as_str();
+                let profile = persisted.profile.as_str();
+                let capabilities_manifest_val: Value =
+                    serde_json::from_slice(&persisted.capabilities_manifest_json)
+                        .unwrap_or(Value::Null);
+                let artifact_manifest_val: Value =
+                    serde_json::from_slice(&persisted.artifact_manifest_json)
+                        .unwrap_or(Value::Null);
+                let semantic_source_map_val: Value =
+                    serde_json::from_slice(&persisted.source_map_json).unwrap_or(Value::Null);
+                let human_msg = format!(
+                    "type: artifact\nname: {id}\nsource: persisted_artifact\nprofile: {profile}\nhash: {wasm_hash}",
+                );
+                print_response(
+                    mode,
+                    &human_msg,
+                    json!({
+                        "type": "artifact",
+                        "name": id,
+                        "source": "persisted_artifact",
+                        "hash": wasm_hash,
+                        "profile": profile,
+                        "target": persisted.target,
+                        "wasm_bytes": persisted.wasm_bytes.len(),
+                        "capabilities_manifest": capabilities_manifest_val,
+                        "capabilities_manifest_source": "persisted_artifact",
+                        "semantic_source_map": semantic_source_map_val,
+                        "artifact_manifest": artifact_manifest_val,
+                        "persisted_paths": {
+                            "wasm_path": persisted.paths.wasm_path.to_string_lossy(),
+                            "source_map_path": persisted.paths.source_map_path.to_string_lossy(),
+                            "manifest_path": persisted.paths.manifest_path.to_string_lossy(),
+                            "capabilities_path": persisted.paths.capabilities_path.to_string_lossy(),
+                        },
+                    }),
+                );
+            } else {
+                // Compile the current graph on demand and return real artifact metadata.
+                // The id is used as the artifact label. Source is explicitly
+                // "computed_on_demand" — no persisted artifact is available.
+                let graph = load_current_graph_for_cli(store).await?;
+                let empty_report = VerificationReport {
+                    entries: vec![],
+                    ..Default::default()
+                };
+                let core = lower_to_core_ir(&graph, &empty_report)
+                    .map_err(|e| CliError::Domain(format!("inspect artifact (core-ir): {e}")))?;
+                let anf = lower_to_anf_with_graph(&core, &graph)
+                    .map_err(|e| CliError::Domain(format!("inspect artifact (anf): {e}")))?;
+                let artifact = emit_wasm_with_profile(&anf, "dev")
+                    .map_err(|e| CliError::Domain(format!("inspect artifact (emit): {e}")))?;
+                let wasm_hash = artifact.hash_chain.wasm_hash.map(|h| bytes_to_hex(&h));
+                let profile = artifact.artifact_manifest.profile.clone();
+                let compiler_version = artifact.artifact_manifest.compiler_version.clone();
+                let capabilities_manifest_val =
+                    serde_json::to_value(&artifact.capabilities_manifest).unwrap_or(Value::Null);
+                let artifact_manifest_val: Value =
+                    serde_json::from_slice(&artifact.artifact_manifest_json).unwrap_or(Value::Null);
+                let semantic_source_map_val: Value =
+                    serde_json::from_slice(&artifact.source_map_json).unwrap_or(Value::Null);
+                let human_msg = format!(
+                    "type: artifact\nname: {id}\nsource: computed_on_demand\nprofile: {profile}\nhash: {}\ncompiler: {compiler_version}",
+                    wasm_hash.as_deref().unwrap_or("(none)")
+                );
+                print_response(
+                    mode,
+                    &human_msg,
+                    json!({
+                        "type": "artifact",
+                        "name": id,
+                        "source": "computed_on_demand",
+                        "hash": wasm_hash,
+                        "profile": profile,
+                        "compiler_version": compiler_version,
+                        "capabilities_manifest": capabilities_manifest_val,
+                        "capabilities_manifest_source": "computed_from_wasm_bindings",
+                        "semantic_source_map": semantic_source_map_val,
+                        "artifact_manifest": artifact_manifest_val,
+                    }),
+                );
+            }
         }
         "capability" => {
             // Query the package registry for real capability/trust/assumption data.
