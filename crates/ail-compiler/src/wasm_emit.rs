@@ -864,6 +864,15 @@ fn emit_anf_expr<'a>(
         | AnfExpr::CellSet { .. }
         | AnfExpr::ResourceAcquire { .. }
         | AnfExpr::ResourceRelease { .. } => {
+            // Emission gap — ResourceAcquire note: `derive_wasm_type` maps
+            // `ResourceAcquire` to `WasmTypeDescriptor::Handle`, but this emit
+            // arm produces `Unreachable` with no return slot.  The discrepancy
+            // is intentional: resource acquisition is handled entirely out-of-band
+            // by the host runtime, which intercepts the export before the WASM
+            // function body executes and never lets execution reach this stub.
+            // Until the concurrency/resource ABI is stabilised and given a real
+            // codegen path, the placeholder `Unreachable` emission is the correct
+            // sentinel for the host-interception model.
             insns.push(Instruction::Unreachable);
             None
         }

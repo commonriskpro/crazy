@@ -110,7 +110,7 @@ pub enum WasmTypeDescriptor {
 /// Derive the `WasmTypeDescriptor` for an `AnfExpr` by recursively inspecting
 /// the expression tree.  Used to populate `WasmArtifact::export_types`.
 ///
-/// # Coverage of `Option`, `Result`, and `Handle`
+/// # Coverage of `Option`, `Result`, `Bytes`, and `Handle`
 ///
 /// `Handle` is determinable when the top-level expression is
 /// `ResourceAcquire` — that node is defined as yielding a resource handle.
@@ -122,6 +122,11 @@ pub enum WasmTypeDescriptor {
 /// names without type-checker annotations in the ANF nodes.  Until such
 /// annotations are propagated, callers that require Option/Result descriptors
 /// must construct them from an external type-descriptor table.
+///
+/// `Bytes` is also NOT derivable: no ANF node in the current core type surface
+/// produces a byte-buffer value, so no expression shape maps to
+/// `WasmTypeDescriptor::Bytes`.  Bytes descriptors must come from an external
+/// type-descriptor table until the ANF/core type surface can produce them.
 pub fn derive_wasm_type(expr: &AnfExpr) -> WasmTypeDescriptor {
     match expr {
         AnfExpr::RecordNew { fields } => WasmTypeDescriptor::Record {
