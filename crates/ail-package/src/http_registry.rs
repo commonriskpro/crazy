@@ -35,6 +35,23 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::time::Duration;
+
+// ── Safety limits ─────────────────────────────────────────────────────────
+
+/// Maximum header block size accepted from a client (bytes).
+const MAX_HEADER_SIZE: usize = 16_384;
+
+/// Maximum request body size accepted from a client, and maximum response body
+/// size the client will allocate.  Prevents a crafted `Content-Length` value
+/// from triggering unbounded heap allocation; legitimate test payloads are
+/// always well under this limit.
+const MAX_BODY_SIZE: usize = 1_048_576; // 1 MiB
+
+/// Read/write timeout applied to every accepted TCP connection (server-side)
+/// and to every outgoing client connection.  Prevents a slow or stalled peer
+/// from blocking the server's single accept thread indefinitely.
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 use crate::remote_registry::{
     FetchRequest, FetchResponse, InMemoryRegistryClient, PublishRequest, PublishResponse,
@@ -65,7 +82,7 @@ fn read_request(stream: &mut TcpStream) -> Option<RawRequest> {
         if header_buf.ends_with(b"\r\n\r\n") {
             break;
         }
-        if header_buf.len() > 16_384 {
+        if header_buf.len() > MAX_HEADER_SIZE {
             return None; // guard against oversized headers
         }
     }
@@ -86,6 +103,12 @@ fn read_request(stream: &mut TcpStream) -> Option<RawRequest> {
         if let Some(value) = lower.strip_prefix("content-length:") {
             content_length = value.trim().parse().unwrap_or(0);
         }
+    }
+
+    // Reject excessively large bodies before allocating — prevents a crafted
+    // Content-Length from becoming an OOM gadget.
+    if content_length > MAX_BODY_SIZE {
+        return None;
     }
 
     // Read the request body.
@@ -167,7 +190,11 @@ impl HttpRegistryServer {
             let client = InMemoryRegistryClient::new();
             for stream in listener.incoming() {
                 match stream {
-                    Ok(mut conn) => handle_connection(&mut conn, &client),
+                    Ok(mut conn) => {
+                        let _ = conn.set_read_timeout(Some(IO_TIMEOUT));
+                        let _ = conn.set_write_timeout(Some(IO_TIMEOUT));
+                        handle_connection(&mut conn, &client);
+                    }
                     Err(_) => break,
                 }
             }
@@ -320,6 +347,8 @@ impl HttpRegistryClient {
     fn post_json(&self, path: &str, body: &[u8]) -> Result<Vec<u8>, HttpClientError> {
         let mut stream = TcpStream::connect(&self.addr)
             .map_err(|e| HttpClientError::Transport(e.to_string()))?;
+        let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+        let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
 
         // Write request.
         let header = format!(
@@ -375,6 +404,11 @@ impl HttpRegistryClient {
             if let Some(value) = lower.strip_prefix("content-length:") {
                 content_length = value.trim().parse().unwrap_or(0);
             }
+        }
+
+        // Reject excessively large response bodies before allocating.
+        if content_length > MAX_BODY_SIZE {
+            return Err(HttpClientError::Protocol("response body too large".into()));
         }
 
         // Read response body.
@@ -438,6 +472,7 @@ mod tests {
     use crate::signing::PackageKeypair;
     use crate::trust::TrustLevel;
     use rand::rngs::OsRng;
+    use std::time::Duration;
 
     // ── Fixtures ──────────────────────────────────────────────────────────
 
@@ -794,6 +829,107 @@ mod tests {
         assert!(
             s2 > s1,
             "sequence must be monotonically increasing: {s1} < {s2}"
+        );
+    }
+
+    // ── header_too_large_returns_bad_request ─────────────────────────────
+    // Spec: a request whose header block exceeds MAX_HEADER_SIZE bytes is
+    // rejected with 400 without reading the body.
+    #[test]
+    fn header_too_large_returns_bad_request() {
+        let addr = start_server();
+        let mut stream = TcpStream::connect(&addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set read timeout");
+
+        // Padding header long enough to push the block past MAX_HEADER_SIZE.
+        let padding = "A".repeat(20_000);
+        let req = format!("POST /api/v1/publish HTTP/1.1\r\nX-Pad: {padding}\r\n\r\n");
+        let _ = stream.write_all(req.as_bytes());
+
+        // Capture the server's response headers.
+        let mut resp_buf: Vec<u8> = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            if stream.read_exact(&mut byte).is_err() {
+                break;
+            }
+            resp_buf.push(byte[0]);
+            if resp_buf.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let resp = String::from_utf8_lossy(&resp_buf);
+        assert!(
+            resp.starts_with("HTTP/1.1 400"),
+            "oversized header block must yield 400, got: {resp}"
+        );
+    }
+
+    // ── missing_content_length_returns_bad_request ───────────────────────
+    // Spec: a POST with no Content-Length header defaults to a zero-length
+    // body; JSON parsing of an empty body returns 400.
+    #[test]
+    fn missing_content_length_returns_bad_request() {
+        let addr = start_server();
+        let mut stream = TcpStream::connect(&addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set read timeout");
+
+        // No Content-Length — body defaults to empty.
+        let req = "POST /api/v1/publish HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        stream.write_all(req.as_bytes()).expect("write request");
+
+        let mut resp_buf: Vec<u8> = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            if stream.read_exact(&mut byte).is_err() {
+                break;
+            }
+            resp_buf.push(byte[0]);
+            if resp_buf.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let resp = String::from_utf8_lossy(&resp_buf);
+        assert!(
+            resp.starts_with("HTTP/1.1 400"),
+            "missing Content-Length (empty body) must yield 400, got: {resp}"
+        );
+    }
+
+    // ── oversized_body_rejected ───────────────────────────────────────────
+    // Spec: Content-Length exceeding MAX_BODY_SIZE is rejected with 400
+    // before any body bytes are read or allocated.
+    #[test]
+    fn oversized_body_rejected() {
+        let addr = start_server();
+        let mut stream = TcpStream::connect(&addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set read timeout");
+
+        // Claim 2 MiB (double MAX_BODY_SIZE) without sending any body bytes.
+        let req = "POST /api/v1/publish HTTP/1.1\r\nContent-Length: 2097152\r\n\r\n";
+        stream.write_all(req.as_bytes()).expect("write request");
+
+        let mut resp_buf: Vec<u8> = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            if stream.read_exact(&mut byte).is_err() {
+                break;
+            }
+            resp_buf.push(byte[0]);
+            if resp_buf.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let resp = String::from_utf8_lossy(&resp_buf);
+        assert!(
+            resp.starts_with("HTTP/1.1 400"),
+            "oversized Content-Length must yield 400, got: {resp}"
         );
     }
 }
