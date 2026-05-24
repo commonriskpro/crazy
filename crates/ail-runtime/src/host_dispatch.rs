@@ -9,6 +9,7 @@
 //   - WASM host imports: `dispatch_host_call`, `dispatch_host_call_write`
 //   - Helpers: `unix_timestamp_micros`, `CapabilityAuditContext`
 
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -21,7 +22,7 @@ use crate::codec::{StructuredValue, ValueDecoder, ValueLayout};
 use crate::error::{PreflightFailure, RuntimeError, RuntimeResult};
 use crate::handler::Handler;
 use crate::manifest::blake3_hex_of;
-use crate::profile::{CapabilityId, CapabilityRevocationRegistry, RuntimeProfile};
+use crate::profile::{CapabilityId, CapabilityRevocationRegistry, RateLimit, RuntimeProfile};
 
 // ── TraceContext ──────────────────────────────────────────────────────────
 
@@ -151,6 +152,24 @@ pub(crate) struct HostState {
     pub(crate) capability_calls_used: u64,
     /// Runtime revocations enforced after grants and before handler dispatch.
     pub(crate) revocations: CapabilityRevocationRegistry,
+    /// Injectable clock for rate limit window tracking (nanoseconds since Unix epoch).
+    pub(crate) clock_fn: ClockFn,
+    /// Fixed-window call counters for `rate_limits` enforcement.
+    ///
+    /// Key: `None` for a global limit, `Some(cap_name)` for a per-capability limit.
+    /// Value: `(window_start_nanos, call_count_in_window)`.
+    pub(crate) rate_limit_windows: HashMap<Option<String>, (u64, u64)>,
+    /// Number of currently in-flight concurrent capability calls from this store.
+    ///
+    /// Incremented when a capability call enters dispatch (after all grant/limit
+    /// checks pass), decremented when it exits.  Enforces `concurrency_limit`.
+    pub(crate) concurrent_calls: u64,
+    /// Current host-call recursion depth from this store.
+    ///
+    /// Incremented on entry to any capability dispatch, decremented on exit.
+    /// Enforces `recursion_stack_limit` for re-entrant call chains (e.g. a
+    /// handler that calls back into the WASM runtime).
+    pub(crate) call_depth: u64,
 }
 
 // ── RuntimeInstance ───────────────────────────────────────────────────────
@@ -415,6 +434,7 @@ pub(crate) fn instantiate_inner(
     wasm: &[u8],
     profile: &RuntimeProfile,
     module_name: &str,
+    clock_fn: ClockFn,
 ) -> RuntimeResult<RuntimeInstance> {
     Module::validate(engine, wasm).map_err(|e| {
         RuntimeError::PreflightFailed(PreflightFailure::WasmValidationError(e.to_string()))
@@ -445,6 +465,10 @@ pub(crate) fn instantiate_inner(
             trace_context: None,
             capability_calls_used: 0,
             revocations: revocations.clone(),
+            clock_fn,
+            rate_limit_windows: HashMap::new(),
+            concurrent_calls: 0,
+            call_depth: 0,
         },
     );
 
@@ -524,6 +548,97 @@ pub(crate) fn unix_timestamp_micros() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_micros() as u64
+}
+
+// ── Clock abstraction for rate limit windows ──────────────────────────────
+
+/// A function that returns the current time as nanoseconds since Unix epoch.
+///
+/// `Arc<dyn Fn()>` instead of a trait keeps the API simple and avoids
+/// object-safety constraints.  The default implementation calls
+/// `SystemTime::now()`; tests inject a controllable counter instead.
+pub(crate) type ClockFn = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// Return the default wall-clock `ClockFn` (nanoseconds since Unix epoch).
+pub(crate) fn default_clock_fn() -> ClockFn {
+    Arc::new(|| {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64
+    })
+}
+
+/// Check rate limits for `cap` and update the sliding-window counters.
+///
+/// Uses a **fixed window** strategy: each `RateLimit` entry maintains an
+/// independent `(window_start_nanos, call_count)` pair.  When the clock
+/// advances ≥ 1 second past `window_start`, the window resets.
+///
+/// Returns `true` if the call is allowed, `false` if any applicable limit
+/// would be exceeded.  Uses a two-pass approach: check ALL limits before
+/// mutating ANY window so that a denial leaves the state unchanged.
+///
+/// `rate_limits` — the ordered list of limits from the active profile.
+/// `clock_fn`    — injectable clock (nanoseconds since Unix epoch).
+/// `windows`     — per-limit window state stored in `HostState`.
+/// `cap`         — the capability being invoked (used for per-cap matching).
+pub(crate) fn check_rate_limits(
+    rate_limits: &[RateLimit],
+    clock_fn: &ClockFn,
+    windows: &mut HashMap<Option<String>, (u64, u64)>,
+    cap: &CapabilityId,
+) -> bool {
+    if rate_limits.is_empty() {
+        return true;
+    }
+
+    const WINDOW_NANOS: u64 = 1_000_000_000; // 1 second
+    let now = clock_fn();
+
+    // Pass 1: check all applicable limits without mutating state.
+    for rl in rate_limits {
+        let applies = rl.capability.is_none() || rl.capability.as_deref() == Some(cap.as_str());
+        if !applies {
+            continue;
+        }
+        let key = &rl.capability;
+        let (window_start, count) = windows.get(key).copied().unwrap_or((now, 0));
+        let effective_count = if now.saturating_sub(window_start) >= WINDOW_NANOS {
+            0 // window expired; effective count resets to 0
+        } else {
+            count
+        };
+        if effective_count >= rl.max_calls_per_second {
+            return false;
+        }
+    }
+
+    // Pass 2: update all applicable windows (only reached if all checks pass).
+    // Track which keys have already been incremented so that duplicate RateLimit
+    // entries sharing the same key (e.g. two global `capability: None` entries)
+    // do not double-count a single call.
+    let mut updated_keys: HashSet<Option<String>> = HashSet::new();
+    for rl in rate_limits {
+        let applies = rl.capability.is_none() || rl.capability.as_deref() == Some(cap.as_str());
+        if !applies {
+            continue;
+        }
+        let key = rl.capability.clone();
+        if !updated_keys.insert(key.clone()) {
+            // This key was already incremented by an earlier duplicate entry.
+            continue;
+        }
+        let window = windows.entry(key).or_insert((now, 0));
+        if now.saturating_sub(window.0) >= WINDOW_NANOS {
+            *window = (now, 1); // start a fresh window
+        } else {
+            window.1 += 1;
+        }
+    }
+
+    true
 }
 
 #[derive(Clone)]
@@ -655,6 +770,37 @@ pub(crate) fn dispatch_host_call_write(
             audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
             return None;
         }
+        // Rate limit enforcement.
+        let clock_fn = state.clock_fn.clone();
+        let rate_limits_vec = state
+            .profile
+            .limits()
+            .rate_limits
+            .clone()
+            .unwrap_or_default();
+        if !check_rate_limits(
+            &rate_limits_vec,
+            &clock_fn,
+            &mut state.rate_limit_windows,
+            &cap,
+        ) {
+            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+            return None;
+        }
+        // Concurrency limit enforcement.
+        if let Some(max_concurrent) = state.profile.limits().concurrency_limit
+            && state.concurrent_calls >= max_concurrent
+        {
+            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+            return None;
+        }
+        // Recursion stack (call depth) limit enforcement.
+        if let Some(max_depth) = state.profile.limits().recursion_stack_limit
+            && state.call_depth >= max_depth
+        {
+            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+            return None;
+        }
     }
 
     // Find the matching handler.
@@ -675,7 +821,14 @@ pub(crate) fn dispatch_host_call_write(
     // behavior (matches main verbatim) — contrast with `dispatch_host_call`,
     // which increments before handler lookup.  The regression tests in
     // dispatch_parity_tests.rs cover both.
-    caller.data_mut().capability_calls_used += 1;
+    {
+        let state = caller.data_mut();
+        state.capability_calls_used += 1;
+        // Concurrency and depth counters track in-flight calls; decremented at
+        // every return point below.
+        state.concurrent_calls += 1;
+        state.call_depth += 1;
+    }
     let handler_name = handler.name().to_string();
 
     // Dispatch.
@@ -683,6 +836,11 @@ pub(crate) fn dispatch_host_call_write(
     let response = match result {
         Ok(response) => response,
         Err(_) => {
+            {
+                let state = caller.data_mut();
+                state.concurrent_calls -= 1;
+                state.call_depth -= 1;
+            }
             audit.push(&audit_log, cap, operation, handler_name, false, None);
             return None;
         }
@@ -691,12 +849,22 @@ pub(crate) fn dispatch_host_call_write(
     if let Some(max_output_bytes) = caller.data().profile.limits().output_size_limit
         && response.len() as u64 > max_output_bytes
     {
+        {
+            let state = caller.data_mut();
+            state.concurrent_calls -= 1;
+            state.call_depth -= 1;
+        }
         audit.push(&audit_log, cap, operation, handler_name, false, None);
         return None;
     }
 
     // Bounds-check: response must fit in the out buffer.
     if response.len() > out_max as usize {
+        {
+            let state = caller.data_mut();
+            state.concurrent_calls -= 1;
+            state.call_depth -= 1;
+        }
         audit.push(&audit_log, cap, operation, handler_name, false, None);
         return None;
     }
@@ -708,16 +876,34 @@ pub(crate) fn dispatch_host_call_write(
     {
         Some(memory) => memory,
         None => {
+            {
+                let state = caller.data_mut();
+                state.concurrent_calls -= 1;
+                state.call_depth -= 1;
+            }
             audit.push(&audit_log, cap, operation, handler_name, false, None);
             return None;
         }
     };
-    if memory.write(caller, out_ptr as usize, &response).is_err() {
+    if memory
+        .write(&mut *caller, out_ptr as usize, &response)
+        .is_err()
+    {
+        {
+            let state = caller.data_mut();
+            state.concurrent_calls -= 1;
+            state.call_depth -= 1;
+        }
         audit.push(&audit_log, cap, operation, handler_name, false, None);
         return None;
     }
 
     let output_hash = Some(blake3_hex_of(response.as_slice()));
+    {
+        let state = caller.data_mut();
+        state.concurrent_calls -= 1;
+        state.call_depth -= 1;
+    }
     audit.push(&audit_log, cap, operation, handler_name, true, output_hash);
 
     Some(response.len() as i32)
@@ -843,12 +1029,98 @@ pub(crate) fn dispatch_host_call(
             );
             return Some(-1);
         }
+        // Rate limit enforcement.
+        let clock_fn = state.clock_fn.clone();
+        let rate_limits_vec = state
+            .profile
+            .limits()
+            .rate_limits
+            .clone()
+            .unwrap_or_default();
+        if !check_rate_limits(
+            &rate_limits_vec,
+            &clock_fn,
+            &mut state.rate_limit_windows,
+            &cap,
+        ) {
+            state.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
+                    capability: cap,
+                    operation,
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us: start.elapsed().as_micros() as u64,
+                    timestamp,
+                    profile: profile_name,
+                    module: Some(module_name),
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
+                    trace_context: child_trace,
+                },
+            );
+            return Some(-1);
+        }
+        // Concurrency limit enforcement.
+        if let Some(max_concurrent) = state.profile.limits().concurrency_limit
+            && state.concurrent_calls >= max_concurrent
+        {
+            state.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
+                    capability: cap,
+                    operation,
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us: start.elapsed().as_micros() as u64,
+                    timestamp,
+                    profile: profile_name,
+                    module: Some(module_name),
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
+                    trace_context: child_trace,
+                },
+            );
+            return Some(-1);
+        }
+        // Recursion stack (call depth) limit enforcement.
+        if let Some(max_depth) = state.profile.limits().recursion_stack_limit
+            && state.call_depth >= max_depth
+        {
+            state.audit_log.lock().expect("audit_log lock").push(
+                AuditEvent::CapabilityCallExecuted {
+                    capability: cap,
+                    operation,
+                    handler_name: "none".to_string(),
+                    succeeded: false,
+                    duration_us: start.elapsed().as_micros() as u64,
+                    timestamp,
+                    profile: profile_name,
+                    module: Some(module_name),
+                    function: None,
+                    input_hash,
+                    output_hash: None,
+                    trace_id,
+                    verification_report_hash: vr_hash,
+                    trace_context: child_trace,
+                },
+            );
+            return Some(-1);
+        }
         // Increment BEFORE handler lookup: a granted-but-unbound call still
         // consumes a capability call slot.  This is intentional pre-existing
         // behavior (matches main verbatim) — contrast with
         // `dispatch_host_call_write`, which increments only after a handler is
         // found.  The regression tests in dispatch_parity_tests.rs cover both.
         state.capability_calls_used += 1;
+        // Concurrency and depth counters track in-flight calls; decremented at
+        // every return point below.
+        state.concurrent_calls += 1;
+        state.call_depth += 1;
         state
             .handlers
             .iter()
@@ -857,8 +1129,10 @@ pub(crate) fn dispatch_host_call(
     };
 
     let Some(handler) = handler else {
-        caller
-            .data_mut()
+        let state = caller.data_mut();
+        state.concurrent_calls -= 1;
+        state.call_depth -= 1;
+        state
             .audit_log
             .lock()
             .expect("audit_log lock")
@@ -902,27 +1176,31 @@ pub(crate) fn dispatch_host_call(
         .as_ref()
         .ok()
         .map(|bytes| blake3_hex_of(bytes.as_slice()));
-    caller
-        .data_mut()
-        .audit_log
-        .lock()
-        .expect("audit_log lock")
-        .push(AuditEvent::CapabilityCallExecuted {
-            capability: cap,
-            operation,
-            handler_name,
-            succeeded,
-            duration_us: start.elapsed().as_micros() as u64,
-            timestamp,
-            profile: profile_name,
-            module: Some(module_name),
-            function: None,
-            input_hash,
-            output_hash,
-            trace_id,
-            verification_report_hash: vr_hash,
-            trace_context: child_trace,
-        });
+    {
+        let state = caller.data_mut();
+        state.concurrent_calls -= 1;
+        state.call_depth -= 1;
+        state
+            .audit_log
+            .lock()
+            .expect("audit_log lock")
+            .push(AuditEvent::CapabilityCallExecuted {
+                capability: cap,
+                operation,
+                handler_name,
+                succeeded,
+                duration_us: start.elapsed().as_micros() as u64,
+                timestamp,
+                profile: profile_name,
+                module: Some(module_name),
+                function: None,
+                input_hash,
+                output_hash,
+                trace_id,
+                verification_report_hash: vr_hash,
+                trace_context: child_trace,
+            });
+    }
 
     match result {
         Ok(bytes) if bytes.len() >= 8 => {
