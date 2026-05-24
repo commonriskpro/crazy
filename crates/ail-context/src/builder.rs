@@ -266,5 +266,5 @@ impl ResponseBuilder {
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[path = "builder_tests.rs"]
+#[path = "builder_tests/mod.rs"]
 mod tests;
