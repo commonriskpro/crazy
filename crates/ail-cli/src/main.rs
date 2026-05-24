@@ -1,6 +1,8 @@
+mod builtin_targets;
 mod changeset_input;
 mod cli;
 mod error;
+mod eval_commands;
 mod output;
 mod package_commands;
 mod package_output;
