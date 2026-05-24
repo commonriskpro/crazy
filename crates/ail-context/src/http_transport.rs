@@ -42,6 +42,41 @@ use futures::executor::block_on;
 use crate::server::{ContextRpcRequest, ContextRpcResponse, ContextServer};
 use crate::source::ContextSource;
 
+// ── Reentrancy guard for the synchronous serve path ───────────────────────
+//
+// `serve_one` drives each `handle_rpc` future with
+// `futures::executor::block_on`, which creates a lightweight single-threaded
+// executor for each request.  Nesting two `block_on` calls on the SAME OS
+// thread is architecturally unintended and signals that `serve_one` is being
+// called re-entrantly (e.g. from inside a ContextSource implementation that
+// somehow calls back into the transport).
+//
+// The guard is a thread-local boolean.  `BlockOnGuard` sets it to `true` on
+// construction and resets it to `false` in its `Drop` impl.  Using RAII
+// ensures the flag is always cleared — even when `block_on` panics and the
+// stack unwinds — so subsequent calls on the same thread do not see a stale
+// `true` and hit the debug assertion spuriously.
+thread_local! {
+    static BLOCK_ON_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// RAII guard that sets `BLOCK_ON_ACTIVE` to `true` on construction and
+/// resets it to `false` on drop — even when the guarded code panics.
+struct BlockOnGuard;
+
+impl BlockOnGuard {
+    fn new() -> Self {
+        BLOCK_ON_ACTIVE.with(|g| g.set(true));
+        Self
+    }
+}
+
+impl Drop for BlockOnGuard {
+    fn drop(&mut self) {
+        BLOCK_ON_ACTIVE.with(|g| g.set(false));
+    }
+}
+
 // ── Limits and timeouts ───────────────────────────────────────────────────
 
 /// Maximum total bytes consumed while reading the HTTP request line and headers.
@@ -171,11 +206,11 @@ where
             .map_err(HttpTransportError::Read)?;
         stream
             .set_write_timeout(Some(self.write_timeout))
-            .map_err(HttpTransportError::Read)?;
+            .map_err(HttpTransportError::Write)?;
 
         // Clone the file descriptor so BufReader can own the read side while
         // we retain an independent write handle for the response.
-        let mut writer = stream.try_clone().map_err(HttpTransportError::Read)?;
+        let mut writer = stream.try_clone().map_err(HttpTransportError::Write)?;
         let mut reader = BufReader::new(stream);
 
         let (method, content_length) = self.read_headers(&mut reader)?;
@@ -207,6 +242,12 @@ where
             .read_exact(&mut body)
             .map_err(HttpTransportError::Read)?;
 
+        debug_assert!(
+            !BLOCK_ON_ACTIVE.with(|g| g.get()),
+            "HttpTransport::serve_one is not re-entrant on the same OS thread; \
+             if you are inside an async executor use a spawn_blocking wrapper instead"
+        );
+        let _guard = BlockOnGuard::new();
         let rpc_response = match serde_json::from_slice::<ContextRpcRequest>(&body) {
             Ok(request) => block_on(self.server.handle_rpc(request)),
             Err(e) => ContextRpcResponse::parse_error(e.to_string()),
