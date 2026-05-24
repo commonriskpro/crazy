@@ -12,6 +12,22 @@
 // This matches the decision-log principle: "stdio/MCP-like before HTTP;
 // distributed auth can follow after the protocol proves useful."
 //
+// # Sync vs async dispatch
+//
+// Two serve entry-points are provided:
+//
+// - `StdioTransport::serve`       — synchronous; uses `futures::executor::block_on`
+//                                   to drive each `handle_rpc` future.  Call this
+//                                   from a plain main thread or `spawn_blocking`.
+//
+// - `StdioTransport::serve_async` — async; awaits `handle_rpc` directly.  Call this
+//                                   when you already own a Tokio (or other) runtime
+//                                   to avoid blocking an executor thread.
+//
+// In both cases the reader and writer remain synchronous (`BufRead` + `Write`).
+// For fully non-blocking stdio, use `tokio::io::AsyncBufReadExt` and a separate
+// async transport variant — that is out of scope for this module.
+//
 // # Protocol
 //
 // - Each request is a single JSON object on one line (no pretty-printing).
@@ -31,6 +47,27 @@ use futures::executor::block_on;
 
 use crate::server::{ContextRpcRequest, ContextRpcResponse, ContextServer};
 use crate::source::ContextSource;
+
+// ── Reentrancy guard for the synchronous serve path ───────────────────────
+//
+// `serve` drives every `handle_rpc` future with `futures::executor::block_on`,
+// which creates a lightweight single-threaded executor for each request.
+// Nesting two `block_on` calls on the SAME OS thread is safe with the
+// `futures` executor but is architecturally unintended: it signals that
+// `serve` is being called re-entrantly (e.g. from inside a ContextSource
+// implementation that somehow calls back into the transport).
+//
+// The guard is a thread-local boolean that is set for the lifetime of each
+// `block_on` call and cleared before returning.  A debug assertion fires
+// when reentrancy is detected, pointing callers toward `serve_async`.
+//
+// NOTE: this guard does NOT detect "called from inside a Tokio async task"
+// because `ail-context` deliberately avoids a Tokio dependency.  If you
+// integrate the transport inside a Tokio binary, call `serve_async` instead
+// of `serve` to avoid blocking an executor thread.
+thread_local! {
+    static BLOCK_ON_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 // ── TransportError ────────────────────────────────────────────────────────
 
@@ -113,6 +150,21 @@ where
     ///
     /// Parse errors in individual request lines are returned to the client as
     /// JSON-RPC error responses (`-32700`) rather than stopping the loop.
+    ///
+    /// # Synchronous-only contract
+    ///
+    /// **This method MUST be called from a synchronous context** — a plain
+    /// `main` thread, a `std::thread::spawn` thread, or a
+    /// `tokio::task::spawn_blocking` closure.  It drives each `handle_rpc`
+    /// future with `futures::executor::block_on`, which occupies the calling
+    /// OS thread for the duration of every request.
+    ///
+    /// Calling `serve` directly inside a Tokio (or other cooperative-scheduler)
+    /// async task will **block the executor thread**, starving other tasks on
+    /// that thread and potentially causing deadlocks if the async runtime uses a
+    /// single-threaded scheduler.
+    ///
+    /// When you already own an async runtime, use [`Self::serve_async`] instead.
     pub fn serve<R: BufRead, W: Write>(
         &self,
         reader: R,
@@ -130,10 +182,79 @@ where
         Ok(())
     }
 
+    /// Async variant of [`serve`][Self::serve].
+    ///
+    /// Identical contract to `serve` — reads `reader` until EOF, writes one
+    /// response line per request — but dispatches each request with `.await`
+    /// instead of `futures::executor::block_on`.
+    ///
+    /// Call this when you already own an async runtime (Tokio, async-std, etc.)
+    /// to avoid blocking an executor thread for the duration of `handle_rpc`.
+    ///
+    /// # Reader / writer are still synchronous
+    ///
+    /// `reader` and `writer` remain `BufRead` + `Write` (synchronous).  The
+    /// line-reading loop itself blocks the thread at each `reader.lines()` call.
+    /// For a fully non-blocking stdio loop, replace the reader with
+    /// `tokio::io::AsyncBufReadExt` and implement a separate async transport —
+    /// that is outside the scope of this module.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let transport = StdioTransport::new(server);
+    ///     transport
+    ///         .serve_async(BufReader::new(stdin()), &mut stdout())
+    ///         .await
+    ///         .unwrap();
+    /// }
+    /// ```
+    pub async fn serve_async<R: BufRead, W: Write>(
+        &self,
+        reader: R,
+        writer: &mut W,
+    ) -> Result<(), TransportError> {
+        for line_result in reader.lines() {
+            let line = line_result.map_err(TransportError::Read)?;
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let response = self.handle_line_async(trimmed).await;
+            self.write_response(writer, &response)?;
+        }
+        Ok(())
+    }
+
     /// Parse one trimmed non-empty line and dispatch it through the server.
+    ///
+    /// Uses `futures::executor::block_on` to drive the async future.  A
+    /// debug-mode guard asserts that this method is not called re-entrantly
+    /// from the same OS thread (i.e. from inside a `ContextSource`
+    /// implementation that calls back into `serve`).  For callers that already
+    /// own an async runtime, use [`handle_line_async`][Self::handle_line_async]
+    /// via [`serve_async`][Self::serve_async] instead.
     fn handle_line(&self, line: &str) -> ContextRpcResponse {
-        match serde_json::from_str::<ContextRpcRequest>(line) {
+        debug_assert!(
+            !BLOCK_ON_ACTIVE.with(|g| g.get()),
+            "StdioTransport::serve is not re-entrant on the same OS thread; \
+             if you are inside an async executor use serve_async instead"
+        );
+        BLOCK_ON_ACTIVE.with(|g| g.set(true));
+        let response = match serde_json::from_str::<ContextRpcRequest>(line) {
             Ok(request) => block_on(self.server.handle_rpc(request)),
+            Err(e) => ContextRpcResponse::parse_error(e.to_string()),
+        };
+        BLOCK_ON_ACTIVE.with(|g| g.set(false));
+        response
+    }
+
+    /// Async version of `handle_line`; awaits `handle_rpc` directly.
+    async fn handle_line_async(&self, line: &str) -> ContextRpcResponse {
+        match serde_json::from_str::<ContextRpcRequest>(line) {
+            Ok(request) => self.server.handle_rpc(request).await,
             Err(e) => ContextRpcResponse::parse_error(e.to_string()),
         }
     }
@@ -167,6 +288,7 @@ mod tests {
     use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
     use ail_storage::graph::SnapshotEnvelope;
     use ail_storage::object::ObjectId;
+    use futures::executor::block_on;
 
     use super::*;
     use crate::dto::{ContextQuery, SnapshotSelector};
@@ -528,5 +650,108 @@ mod tests {
         );
         assert_eq!(responses[1].id, "t-8");
         assert!(responses[1].error.is_none());
+    }
+
+    // ── serve_async: helpers ──────────────────────────────────────────────
+
+    /// Drive `serve_async` from a sync test using `block_on`.
+    fn serve_str_async(transport: &StdioTransport<InMemoryContextSource>, input: &str) -> String {
+        let reader = Cursor::new(input.as_bytes());
+        let mut output = Vec::new();
+        block_on(transport.serve_async(reader, &mut output))
+            .expect("serve_async must not return Err for well-behaved I/O");
+        String::from_utf8(output).expect("output must be valid UTF-8")
+    }
+
+    // ── serve_async_single_valid_query_returns_result ─────────────────────
+    // Spec: serve_async produces the same successful result as serve.
+    //
+    // RED: serve_async did not exist.
+    // GREEN: serve_async awaits handle_rpc and frames the response.
+    #[test]
+    fn serve_async_single_valid_query_returns_result() {
+        let t = make_transport();
+        let request = valid_query_request("ta-1");
+        let input = serde_json::to_string(&request).unwrap() + "\n";
+
+        let output = serve_str_async(&t, &input);
+        let responses = parse_responses(&output);
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].id, "ta-1");
+        assert!(
+            responses[0].error.is_none(),
+            "unexpected RPC error: {:?}",
+            responses[0].error
+        );
+        assert!(
+            matches!(responses[0].result, Some(ContextResponse::Result(_))),
+            "expected Result variant, got: {:?}",
+            responses[0].result
+        );
+    }
+
+    // ── serve_async_empty_input_produces_no_responses ─────────────────────
+    // Spec: serve_async on an empty reader returns Ok(()) with no output.
+    //
+    // RED: serve_async did not exist.
+    // GREEN: serve_async loop exits cleanly at EOF.
+    #[test]
+    fn serve_async_empty_input_produces_no_responses() {
+        let t = make_transport();
+        let output = serve_str_async(&t, "");
+        let responses = parse_responses(&output);
+        assert_eq!(responses.len(), 0, "empty input must produce no responses");
+    }
+
+    // ── serve_async_malformed_json_returns_parse_error ────────────────────
+    // Spec: serve_async emits a -32700 error for unparseable lines, then
+    //       continues processing subsequent well-formed requests.
+    //
+    // RED: serve_async did not exist.
+    // GREEN: handle_line_async routes parse failures to parse_error.
+    #[test]
+    fn serve_async_malformed_json_then_valid_both_produce_responses() {
+        let t = make_transport();
+        let request = valid_query_request("ta-3");
+        let input = format!(
+            "{{bad json}}\n{}\n",
+            serde_json::to_string(&request).unwrap()
+        );
+
+        let output = serve_str_async(&t, &input);
+        let responses = parse_responses(&output);
+
+        assert_eq!(responses.len(), 2, "parse error and valid request must both respond");
+        assert_eq!(
+            responses[0].error.as_ref().unwrap().code,
+            JSONRPC_PARSE_ERROR
+        );
+        assert_eq!(responses[1].id, "ta-3");
+        assert!(responses[1].error.is_none());
+    }
+
+    // ── serve_async_multiple_requests_in_order ────────────────────────────
+    // Spec: serve_async produces N responses in the same order as N requests.
+    //
+    // RED: serve_async did not exist.
+    // GREEN: serve_async loops over all lines in order.
+    #[test]
+    fn serve_async_multiple_requests_in_order() {
+        let t = make_transport();
+        let r1 = valid_query_request("ta-4a");
+        let r2 = valid_query_request("ta-4b");
+        let input = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&r1).unwrap(),
+            serde_json::to_string(&r2).unwrap(),
+        );
+
+        let output = serve_str_async(&t, &input);
+        let responses = parse_responses(&output);
+
+        assert_eq!(responses.len(), 2, "two requests must yield two responses");
+        assert_eq!(responses[0].id, "ta-4a");
+        assert_eq!(responses[1].id, "ta-4b");
     }
 }
