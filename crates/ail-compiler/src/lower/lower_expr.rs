@@ -393,10 +393,18 @@ pub fn lower_core_expr_to_anf(
         }
 
         // Lambda: params are already names; lower body recursively.
+        // After lowering the body, collect its free variables relative to
+        // `params` — these become the explicit closure captures.
         CoreExpr::Lambda { params, body } => {
             let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
+            // Compute captures: free vars in the lowered body minus the params.
+            let mut bound: Vec<&str> = params.iter().map(String::as_str).collect();
+            let mut free: Vec<&str> = Vec::new();
+            crate::wasm_abi::collect_free_vars(&anf_body, &mut bound, &mut free);
+            let captures: Vec<String> = free.into_iter().map(str::to_owned).collect();
             AnfExpr::Lambda {
                 params: params.clone(),
+                captures,
                 body: Box::new(anf_body),
             }
         }

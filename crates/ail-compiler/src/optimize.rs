@@ -132,13 +132,18 @@ fn optimize_expr(expr: AnfExpr, env: &mut BTreeMap<String, LiteralValue>) -> Anf
                 })
                 .collect(),
         },
-        AnfExpr::Lambda { params, body } => {
+        AnfExpr::Lambda {
+            params,
+            captures,
+            body,
+        } => {
             let mut nested_env = env.clone();
             for param in &params {
                 nested_env.remove(param);
             }
             AnfExpr::Lambda {
                 params,
+                captures,
                 body: Box::new(optimize_expr(*body, &mut nested_env)),
             }
         }
@@ -390,8 +395,13 @@ fn elim_dead_expr(expr: AnfExpr) -> AnfExpr {
         AnfExpr::Break { value } => AnfExpr::Break {
             value: Box::new(elim_dead_expr(*value)),
         },
-        AnfExpr::Lambda { params, body } => AnfExpr::Lambda {
+        AnfExpr::Lambda {
             params,
+            captures,
+            body,
+        } => AnfExpr::Lambda {
+            params,
+            captures,
             body: Box::new(elim_dead_expr(*body)),
         },
         AnfExpr::TaskGroup { body } => AnfExpr::TaskGroup {
@@ -454,7 +464,7 @@ pub fn inline_small_pure(bindings: Vec<AnfBinding>) -> Vec<AnfBinding> {
     let small_fns: BTreeMap<String, (Vec<String>, AnfExpr)> = bindings
         .iter()
         .filter_map(|b| {
-            if let AnfExpr::Lambda { params, body } = &b.expr
+            if let AnfExpr::Lambda { params, body, .. } = &b.expr
                 && is_pure(body)
                 && anf_node_count(body) <= 3
             {
@@ -528,8 +538,13 @@ fn inline_calls_in_expr(
                 })
                 .collect(),
         },
-        AnfExpr::Lambda { params, body } => AnfExpr::Lambda {
+        AnfExpr::Lambda {
             params,
+            captures,
+            body,
+        } => AnfExpr::Lambda {
+            params,
+            captures,
             body: Box::new(inline_calls_in_expr(*body, small_fns)),
         },
         AnfExpr::RecordNew { fields } => AnfExpr::RecordNew {
@@ -659,13 +674,23 @@ fn substitute_vars(expr: AnfExpr, subst: &BTreeMap<String, String>) -> AnfExpr {
                 .map(|e| substitute_vars(e, subst))
                 .collect(),
         ),
-        AnfExpr::Lambda { params, body } => {
+        AnfExpr::Lambda {
+            params,
+            captures,
+            body,
+        } => {
             let mut inner = subst.clone();
             for p in &params {
                 inner.remove(p);
             }
+            // Apply substitution to captures — they reference outer-scope names.
+            let new_captures = captures
+                .into_iter()
+                .map(|c| inner.get(&c).cloned().unwrap_or(c))
+                .collect();
             AnfExpr::Lambda {
                 params,
+                captures: new_captures,
                 body: Box::new(substitute_vars(*body, &inner)),
             }
         }
@@ -803,8 +828,10 @@ fn uses_var(expr: &AnfExpr, name: &str) -> bool {
         AnfExpr::Match { scrutinee, arms } => {
             scrutinee == name || arms.iter().any(|arm| uses_var(&arm.body, name))
         }
-        AnfExpr::Lambda { params, body } => {
-            !params.iter().any(|param| param == name) && uses_var(body, name)
+        AnfExpr::Lambda { params, captures, body } => {
+            // Check captures first (fast path), then fall back to body scan.
+            captures.iter().any(|c| c == name)
+                || (!params.iter().any(|param| param == name) && uses_var(body, name))
         }
         AnfExpr::RecordNew { fields } => fields.iter().any(|(_, expr)| uses_var(expr, name)),
         AnfExpr::FieldUpdate { record, value, .. } => record == name || uses_var(value, name),
@@ -965,6 +992,7 @@ mod tests {
             name: "fn.double".to_string(),
             expr: AnfExpr::Lambda {
                 params: vec!["x".to_string()],
+                captures: vec![],
                 body: Box::new(AnfExpr::Call {
                     func: "mul".to_string(),
                     args: vec!["x".to_string(), "two".to_string()],
@@ -1033,6 +1061,7 @@ mod tests {
             name: "fn.big".to_string(),
             expr: AnfExpr::Lambda {
                 params: vec!["x".to_string(), "y".to_string(), "z".to_string()],
+                captures: vec![],
                 body: Box::new(large_body),
             },
         };

@@ -720,8 +720,14 @@ mod tests {
             "Lambda body Var must not produce extra bindings"
         );
         match result {
-            crate::anf::AnfExpr::Lambda { params, body } => {
+            crate::anf::AnfExpr::Lambda {
+                params,
+                body,
+                captures,
+            } => {
                 assert_eq!(params, vec!["x", "y"]);
+                // Body is Var("x") which is bound by params — so no captures.
+                assert!(captures.is_empty(), "no free vars in identity lambda");
                 assert_eq!(*body, crate::anf::AnfExpr::Var("x".to_string()));
             }
             other => panic!("expected AnfExpr::Lambda, got {other:?}"),

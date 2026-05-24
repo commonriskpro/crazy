@@ -320,11 +320,34 @@ pub(crate) fn collect_free_vars<'a>(
                 collect_free_vars(&arm.body, bound, out);
             }
         }
-        AnfExpr::Lambda { params, body } => {
-            let original_len = bound.len();
-            bound.extend(params.iter().map(String::as_str));
-            collect_free_vars(body, bound, out);
-            bound.truncate(original_len);
+        // Lambda: the `captures` field explicitly names the free variables this
+        // lambda needs from the enclosing scope.  Propagate each capture to
+        // `out` if it is not already bound — this is more efficient than
+        // re-scanning the body and produces the same set as long as captures
+        // were populated correctly by the lowering pass.
+        //
+        // For lambdas whose captures field is empty (e.g. pre-PR1 test fixtures
+        // constructed by hand), fall back to body-scan so existing tests pass.
+        AnfExpr::Lambda {
+            params,
+            body,
+            captures,
+        } => {
+            if captures.is_empty() {
+                // Fallback: re-scan the body for free vars (handles hand-built
+                // test fixtures that do not populate captures).
+                let original_len = bound.len();
+                bound.extend(params.iter().map(String::as_str));
+                collect_free_vars(body, bound, out);
+                bound.truncate(original_len);
+            } else {
+                // Fast path: use the explicit capture list.
+                for cap in captures {
+                    if !bound.iter().rev().any(|b| *b == cap) && !out.iter().any(|e| *e == cap) {
+                        out.push(cap);
+                    }
+                }
+            }
         }
         AnfExpr::RecordNew { fields } => {
             for (_, expr) in fields {
