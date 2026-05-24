@@ -862,7 +862,7 @@ fn emit_anf_expr<'a>(
         } => {
             let cap_count = captures.len();
             // Allocate: fn_idx (8 B) + cap_count (8 B) + N × 8 B.
-            let byte_size = ((2 + cap_count) * 8).max(8) as i32;
+            let byte_size = ((2 + cap_count) * 8) as i32;
             emit_alloc(byte_size, insns);
             let ptr_local = ctx.bind("__closure_env", ValType::I32);
             insns.push(Instruction::LocalSet(ptr_local));

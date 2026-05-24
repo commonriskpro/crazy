@@ -1731,10 +1731,10 @@ fn emit_wasm_nested_lambda_with_captures_allocates_memory() {
     );
 }
 
-// TRIANGULATE: two Lambda bindings with different captures produce different
-// WASM hashes (closure env content changes the binary).
+// TRIANGULATE: two Lambda bindings with different capture counts produce different
+// WASM hashes (cap_count field in closure env header changes the binary).
 #[test]
-fn lambda_bindings_with_different_captures_produce_different_hashes() {
+fn lambda_bindings_with_different_capture_counts_produce_different_hashes() {
     use ail_core::semantic_graph::NodeRef;
 
     let make_lambda = |captures: Vec<String>| {
