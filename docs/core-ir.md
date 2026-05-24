@@ -249,11 +249,11 @@ Semantic Graph
 Semantic Core IR      intención, tipos, effects, contratos, recursos
   ↓
 ANF IR                compiler IR principal; orden explícito de efectos
-  ↓
-SSA                   lowering mecánico para backend/optimizador
-  ↓
+  ↓ backend (Cranelift / wasm-encoder)
 WASM/native           artefacto ejecutable
 ```
+
+Note: SSA is managed internally by Cranelift during backend compilation. It is not a compiler-produced artifact or a named stage in the implemented pipeline.
 
 ### 1. Identidad y metadata
 
@@ -1131,13 +1131,11 @@ Semantic Graph
 Semantic Core IR      ML-like + effects/capabilities, para razonar/verificar
   ↓
 ANF IR                compiler IR principal, para lowering/verificación de efectos
-  ↓
-SSA                   artifact mecánico para backend/optimizador
-  ↓
+  ↓ backend (Cranelift / wasm-encoder) — SSA es interno a Cranelift
 Executable target     WASM primero; native después
 ```
 
-Decisión: ANF es el Compiler IR principal; SSA existe como lowering mecánico para backends como LLVM/Cranelift/WASM.
+Decisión: ANF es el Compiler IR principal. SSA es un detalle interno de Cranelift; no existe como artefacto de compilador ni como etapa nombrada en el pipeline implementado.
 
 Razón:
 
@@ -1168,3 +1166,19 @@ Current executable support is narrower than the full IR:
 - `wasm.rs` emits real bodies for simple values, control flow, and effect calls; collection iteration (`foreach`, `fold`), tasks, channels, and resources still emit stubs/traps.
 - Executable `Match` supports integer literal, boolean literal, wildcard, tag-only constructor (`None`), and single-binding constructor (`Ok(val)`, `Some(x)`, `Err(e)`) patterns. The WASM backend loads the i32 tag at offset 0 and, for payload-binding patterns, loads the i64 payload at offset 8. Multi-binding patterns (e.g. `Ok(a, b)`) are not yet supported and emit `Unreachable`.
 - Full memory/value layout for handles, text, bytes, and nested structured payloads is still tracked as ABI validation work; records, variants, lists, `Option`, and `Result` are currently executable for scalar-slot payloads.
+
+**Executable gaps — primitives that parse or are defined in `CoreExpr`/`CoreType` but do not yet produce real WASM emit (emit `Unreachable` or trap stubs):**
+
+| Primitive | Status |
+|-----------|--------|
+| `ForEach` | Parses; WASM emit is a stub (trap) |
+| `Fold` | Parses; WASM emit is a stub (trap) |
+| `MapNew` | Defined in IR; no WASM emit path |
+| `SetNew` | Defined in IR; no WASM emit path |
+| `IndexGet` | Defined in IR; no WASM emit path |
+| `CellNew`, `CellGet`, `CellSet` | Parse; no WASM emit path |
+| `ResourceAcquire`, `ResourceRelease` | Emit `Unreachable` in WASM |
+| `TaskSpawn`, `TaskAwait`, `TaskCancel`, `TaskGroup` | Emit `Unreachable` in WASM |
+| `ChannelNew`, `ChannelSend`, `ChannelReceive`, `Select`, `Timeout` | Emit `Unreachable` in WASM |
+| `Dispatch` (dynamic dispatch) | Emits `Unreachable` in WASM |
+| `Bytes` type | No executable emit or derive path; see [ABI value contract](abi-value-contract.md) |

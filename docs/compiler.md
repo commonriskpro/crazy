@@ -54,14 +54,16 @@ Semantic Core IR
   ↓ normalize/check metadata
 ANF IR
   ↓ optimize/lower
-SSA IR
-  ↓ backend
+ANF IR (optimized)
+  ↓ backend (Cranelift / wasm-encoder)
 WASM / native
   + capabilities manifest
   + semantic source maps
   + artifact metadata
   + verification-linked hashes
 ```
+
+Note: There is no compiler-produced SSA IR stage. SSA is managed internally by Cranelift during backend compilation and is not a named artifact in the pipeline.
 
 ### Inputs
 
@@ -266,32 +268,34 @@ cannot drop audit/debug/provenance metadata required by profile
 cannot change resource release order unsafely
 ```
 
-### Stage 7: ANF → SSA
+### Stage 7: Backend lowering / emission
 
-SSA is a backend artifact.
+The optimized ANF IR is passed directly to the backend. There is no compiler-produced SSA IR; SSA is managed internally by Cranelift during backend compilation.
 
 ```txt
-ANF IR
-  ↓ mechanical lowering
-SSA IR
+ANF IR (optimized)
+  ↓ backend (Cranelift / wasm-encoder)
+WASM / native object file
 ```
 
-SSA responsibilities:
+Backend responsibilities:
 
 ```txt
-control/dataflow
-backend optimization
+instruction selection
 register/value allocation
-lowering to WASM/native
+lowering to WASM / native
+source map and provenance annotation
+capability call boundary preservation
 ```
 
 Rules:
 
 ```txt
-SSA must preserve semantic source maps.
-SSA must preserve capability call boundaries.
-SSA must preserve runtime checks.
-SSA must preserve artifact hash provenance.
+Backend must preserve semantic source maps.
+Backend must preserve capability call boundaries.
+Backend must preserve runtime checks.
+Backend must preserve artifact hash provenance.
+SSA is Cranelift-internal; it is not a named compiler stage or a produced artifact.
 ```
 
 ### Stage 8: Backend
@@ -508,20 +512,22 @@ E_SOURCE_MAP_LOST_METADATA
 
 ### Hash/provenance chain
 
-Every stage produces hash-linked artifacts:
+Every stage produces hash-linked artifacts (`StageHashes`):
 
 ```txt
-graph_snapshot_hash
-canonical_change_hash
-verification_report_hash
-core_ir_hash
-anf_ir_hash
-ssa_ir_hash
-wasm_hash
-capabilities_manifest_hash
-source_map_hash
-artifact_manifest_hash
+graph_snapshot_hash        pipeline input — SemanticGraph
+verification_report_hash   pipeline input — VerificationReport
+core_ir_hash               set by lower_to_core_ir
+anf_ir_hash                set by lower_to_anf (optional until ANF stage)
+wasm_hash                  set by emit_wasm (WASM backend)
+native_hash                set by emit_native (native backend)
+source_map_hash            set by backend after populating offsets
+artifact_manifest_hash     set by artifact manifest emission
 ```
+
+`capabilities_manifest_hash` is a field of `ArtifactManifest`, not `StageHashes`.
+`canonical_change_hash` is a ChangeSet-level concept (stored in approval records), not a compiler stage hash.
+There is no `ssa_ir_hash` — no SSA IR artifact is produced by the compiler.
 
 Rule:
 
@@ -602,7 +608,7 @@ Meaning: after optimization/codegen, validate output preserves ANF/Core semantic
 3. Artifacts are profile-bound.
 4. Draft/dev/test artifacts cannot be promoted to prod by relabeling.
 5. ANF is the main compiler IR.
-6. SSA is backend artifact.
+6. SSA is Cranelift-internal; there is no compiler-produced SSA artifact.
 7. Every lowering preserves provenance/source maps.
 8. Runtime checks and capability calls cannot disappear.
 9. Optimizations cannot reorder observable effects unsafely.
@@ -616,7 +622,7 @@ Meaning: after optimization/codegen, validate output preserves ANF/Core semantic
 | Toolchain language | Rust |
 | Parser | Hand-written ACL parser and hand-written expression parser for the current subset; previous `chumsky`/`lalrpop` placeholder is reversed. |
 | ANF serialization | Exact format decided during implementation; must be deterministic and schema-versioned |
-| SSA / backend | Cranelift for WASM v1. LLVM/native added later if needed. Custom SSA not required. |
+| SSA / backend | Cranelift for WASM v1. LLVM/native added later if needed. SSA is managed internally by Cranelift — no compiler-produced SSA artifact exists. |
 | WASM ABI layout | Implemented subset: records (i64 fields at 8-byte offsets), variants/Option/Result (i32 tag at offset 0, i64 payload at offset 8), lists (i64 count at offset 0, i64 elements). Descriptors in `WasmArtifact::export_types`. Structured EffectCall results via `host_call_write`. Rich ABI/value-layout parity remains validation work. |
 | Memory management | Reference counting for normal heap values plus ownership/affine/linear rules for resource handles. No general GC in v1; cycles are rejected initially and revisited only if real programs justify tracing support. See [Decision log](decision-log.md#parallel-implementation-unblock-decisions). |
 | Translation validation | Required for `prod`/`critical`; scope per profile. Cranelift source-map and capability-boundary preservation is a validation spike — see [Risks](risks.md) V-03 |
