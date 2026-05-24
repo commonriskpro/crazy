@@ -600,17 +600,83 @@ Permite:
 
 ```txt
 proven
-runtime_checked (el gate actual acepta el estado clasificado)
-assumed solo con strong approval
+runtime_checked  (acepta el estado; emite POLICY_RUNTIME_CHECK_ADVISORY)
+assumed          solo con strong approval
 ```
 
 Bloquea:
 
 ```txt
 unverified
-unsafe
+unsafe           (siempre — sin excepción, incluso con strong approval)
 failed
 weak assumptions
+solver diagnostics (timeout, resource_limited, unsupported)
+```
+
+**Diferencias respecto a `prod`:**
+
+| Comportamiento              | `prod`                          | `critical`                        |
+|-----------------------------|---------------------------------|-----------------------------------|
+| Unsafe + Strong approval    | pasa (security exception)       | bloquea siempre                   |
+| RuntimeChecked              | pasa limpio (Passed)            | pasa con advisory warning         |
+| Solver diagnostics          | informacional (no afecta gate)  | bloquea con POLICY_SOLVER_DIAGNOSTIC_BLOCKED |
+| Assumed + Strong approval   | pasa                            | pasa (mismo que prod)             |
+| Assumed + Weak approval     | POLICY_WEAK_ASSUMPTION (bloquea)| POLICY_WEAK_ASSUMPTION (bloquea)  |
+
+**Solver diagnostic blocking (crítico):**
+
+Si `report.solver_diagnostics` contiene cualquier entrada (`timeout`, `resource_limited`,
+`unsupported`), el profile gate de `critical` emite una violación
+`POLICY_SOLVER_DIAGNOSTIC_BLOCKED` por cada diagnóstico y bloquea el changeset.
+
+Esto significa que si el solver no pudo confirmar un proof obligation (por timeout,
+agotamiento de recursos, o predicado no soportado), el resultado no puede ser aprobado
+manualmente en el profile `critical` — la falla es uncondicional.
+
+**RuntimeChecked advisory:**
+
+`RuntimeChecked` es aceptado por el gate crítico (no bloquea), pero emite
+`POLICY_RUNTIME_CHECK_ADVISORY` como `PassedWithWarnings`. Una aserción runtime no es
+equivalente a una prueba formal. Callers que requieran cobertura formal completa deben
+tratar este warning como accionable (upgrade a `proven`).
+
+**Perfiles desconocidos:**
+
+Perfiles no reconocidos se tratan como `critical` (fallback conservador). Ver
+*Strict-by-default* en la sección del policy engine.
+
+**Gaps de implementación — verificación formal pendiente:**
+
+<!-- Implementation note: the critical profile gate enforces classification strictness
+(blocking on unresolved states and solver diagnostics) but does NOT itself run formal
+proofs. The following remain validation work rather than completed proof:
+  - Formal completeness: entries classified as Assumed or RuntimeChecked in critical
+    are accepted by policy with Strong approval but are not mechanically verified by
+    an SMT solver or proof assistant. The obligation ledger records the degradation;
+    the gate enforces approval strictness.
+  - Solver integration: the solver_diagnostics plumbing surfaces that a solver attempt
+    failed, but no real SMT invocation is wired in the current implementation. The
+    diagnostic blocking ensures these failures cannot silently pass in critical.
+  - Critical-profile proofs: critical invariants should eventually be `proven` via
+    refinement types or formal contract checking. The runtime_checked advisory and
+    solver-diagnostic block are stop-gaps, not substitutes.
+-->
+
+Los siguientes items están fuera del scope actual (implementación parcial):
+
+```txt
+- Cobertura formal completa de critical: entries con Assumed/RuntimeChecked
+  son aceptados por policy con Strong approval, pero NO verificados por SMT/proof assistant.
+  El ledger registra la degradación; el gate enforza la aprobación — no la prueba.
+
+- Integración SMT real: solver_diagnostics refleja fallas de intento del solver,
+  pero no hay invocación SMT real en la implementación actual.
+  El blocking de solver diagnostics evita que estas fallas pasen silenciosamente.
+
+- Invariantes críticos deberían ser `proven` vía refinement types o contract checking
+  formal. El advisory de runtime_checked y el block de solver diagnostics son medidas
+  provisorias, no sustitutos de prueba formal.
 ```
 
 Ejemplo:
@@ -1778,7 +1844,7 @@ El profile/policy decide si el cambio pasa.
 23. Emit verification report
 ```
 
-Implementation note: the codebase currently implements this as composable checker modules rather than one monolithic 23-step driver. Implemented areas include type, effect, contract, resource, concurrency, boundary, package, policy, proof, solver, report, and codegen checks under `crates/ail-verify/src/`. Graph canonicalization, full ANF/resource ordering validation, package/dependency policy depth, and critical-profile formal completeness remain validation work rather than completed proof.
+Implementation note: the codebase currently implements this as composable checker modules rather than one monolithic 23-step driver. Implemented areas include type, effect, contract, resource, concurrency, boundary, package, policy, proof, solver, report, and codegen checks under `crates/ail-verify/src/`. Wave 6D hardened the critical-profile gate with: (a) solver-diagnostic blocking (`POLICY_SOLVER_DIAGNOSTIC_BLOCKED` for Timeout/ResourceLimited/Unsupported diagnostics in `report.solver_diagnostics`), and (b) `POLICY_RUNTIME_CHECK_ADVISORY` warnings for `RuntimeChecked` entries in critical/unknown profiles. Graph canonicalization, full ANF/resource ordering validation, package/dependency policy depth, and critical-profile formal completeness (SMT-backed proof rather than state-classification strictness) remain validation work rather than completed proof.
 
 #### Layer responsibilities
 
