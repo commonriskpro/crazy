@@ -131,7 +131,14 @@ impl NativeDataLayout {
             }
             // ola5 Gap 2/3 — new variants
             AnfExpr::ForEach { body, .. } => self.scan_expr(body),
-            AnfExpr::Lambda { body, .. } => self.scan_expr(body),
+            AnfExpr::Lambda { body, captures, .. } => {
+                self.scan_expr(body);
+                // A lambda that closes over variables needs a heap-allocated
+                // closure env struct to carry the captured values.
+                if !captures.is_empty() {
+                    self.needs_heap_alloc = true;
+                }
+            }
             AnfExpr::TaskGroup { body } => {
                 self.scan_expr(body);
                 self.needs_runtime_call = true;

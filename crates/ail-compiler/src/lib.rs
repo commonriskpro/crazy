@@ -12,9 +12,12 @@
 //!   stubs in the WASM path.
 //! - Emits platform-native object files via Cranelift (Phase 17); Phase 8
 //!   expression lowering covers arithmetic, control-flow, loops, match, text
-//!   literals, records/variants/lists/tuples, EffectCall, and Lambda (params
-//!   bound, body lowered, address returned; closure capture deferred to
-//!   Phase 9+). Concurrency and resource ops dispatch via imported
+//!   literals, records/variants/lists/tuples, EffectCall, and Lambda.
+//!   Lambda with no captures returns a bare function pointer (I64).
+//!   Lambda with captures heap-allocates a closure env struct carrying the
+//!   function pointer and captured values by value — captures are not
+//!   silently dropped.  Closure invocation / call-site ABI is deferred to
+//!   Phase 9+.  Concurrency and resource ops dispatch via imported
 //!   `ail_runtime_call`; the runtime implementation is deferred to Phase 9+.
 //!
 //! # What this crate does NOT do
@@ -22,8 +25,8 @@
 //! - Optimisation passes in `optimize.rs` (`optimize_bindings`,
 //!   `eliminate_dead_pure`, `inline_small_pure`, `cse_bindings`) are not
 //!   applied automatically — callers opt in explicitly.
-//! - No closure capture in Lambda; no concurrency runtime implementation
-//!   (both deferred to Phase 9+).
+//! - No closure invocation through the closure ABI; no concurrency runtime
+//!   implementation (both deferred to Phase 9+).
 
 pub mod anf;
 pub mod artifact_manifest;

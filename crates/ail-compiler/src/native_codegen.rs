@@ -1418,12 +1418,21 @@ pub(crate) fn lower_anf_expr_cranelift(
         }
 
         // ── Lambda ────────────────────────────────────────────────────────
-        // Define a nested function for the lambda body, return its address.
-        // Params are bound as I64 arguments; captures carry the closure
-        // environment metadata (populated by the ANF lowering pass) but are
-        // not yet emitted into the native ABI — full environment passing is
-        // deferred to a later PR.
-        AnfExpr::Lambda { params, body, .. } => {
+        // Define a nested function for the lambda body and return a closure value.
+        //
+        // If `captures` is empty: return the bare function pointer as I64.
+        // If `captures` is non-empty: heap-allocate a closure env struct:
+        //   Layout: [fn_ptr: i64, cap_count: i64, cap0: i64, ..., capN-1: i64]
+        //   Captured values are read from the outer ctx at lambda-creation time.
+        //   The emitted closure value carries the env pointer — captures are NOT
+        //   silently dropped.  Actual closure invocation is deferred to Phase 9+.
+        // If captures are present but heap alloc is unavailable: emit an explicit
+        //   trap (TrapCode::user(3)) — not a silent no-op.
+        AnfExpr::Lambda {
+            params,
+            captures,
+            body,
+        } => {
             let lambda_name = format!("__ail_lambda_{}", ctx.next_lambda);
             ctx.next_lambda += 1;
 
@@ -1488,10 +1497,53 @@ pub(crate) fn lower_anf_expr_cranelift(
                 }
             }
 
-            // Return the function's address as I64.
+            // Obtain the function address in the outer builder.
             let func_ref = module.declare_func_in_func(lambda_id, builder.func);
-            let ptr = builder.ins().func_addr(types::I64, func_ref);
-            LowerResult::Value(ptr)
+            let fn_ptr = builder.ins().func_addr(types::I64, func_ref);
+
+            if captures.is_empty() {
+                // No closure environment needed — return the bare function pointer.
+                LowerResult::Value(fn_ptr)
+            } else {
+                // Closure env: [fn_ptr: i64, cap_count: i64, cap0: i64, ..., capN-1: i64]
+                let cap_count = captures.len();
+                let byte_size = (2 + cap_count) as i64 * 8;
+
+                match ctx.malloc_id {
+                    None => {
+                        // Heap alloc unavailable — cannot build env, emit explicit trap.
+                        // TrapCode::user(3) = "closure env requires heap allocation".
+                        builder.ins().trap(TrapCode::user(3).unwrap());
+                        LowerResult::Terminated
+                    }
+                    Some(malloc_id) => {
+                        let size_val = builder.ins().iconst(types::I64, byte_size);
+                        let malloc_ref = module.declare_func_in_func(malloc_id, builder.func);
+                        let call = builder.ins().call(malloc_ref, &[size_val]);
+                        let env_ptr = builder.inst_results(call)[0];
+                        // Store function pointer at offset 0.
+                        builder.ins().store(MemFlags::trusted(), fn_ptr, env_ptr, 0);
+                        // Store capture count at offset 8.
+                        let count_val = builder.ins().iconst(types::I64, cap_count as i64);
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), count_val, env_ptr, 8);
+                        // Store each captured value at offset 16, 24, ...
+                        // Values are read from the outer context at lambda-creation time.
+                        for (i, cap_name) in captures.iter().enumerate() {
+                            let cap_val = ctx
+                                .lookup(cap_name.as_str())
+                                .map(|(v, _)| v)
+                                .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                            let offset = (16 + i * 8) as i32;
+                            builder
+                                .ins()
+                                .store(MemFlags::trusted(), cap_val, env_ptr, offset);
+                        }
+                        LowerResult::Value(env_ptr)
+                    }
+                }
+            }
         }
 
         // ── TaskSpawn / TaskAwait / TaskCancel / TaskGroup ────────────────
