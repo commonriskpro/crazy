@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+
+pub mod package_helpers;
 use assert_cmd::Command;
 use serde_json::Value;
 use std::process::Output;
