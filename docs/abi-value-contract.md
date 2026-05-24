@@ -13,13 +13,10 @@ caller-provided `ValueLayout`. The descriptor metadata is carried in
 | Source value | WASM return | Runtime value |
 | --- | --- | --- |
 | `Int` / `Bool` | `i64` | `StructuredValue::Scalar(i64)`; bool uses `0` or `1` |
-| `Text` | `i64` | `StructuredValue::Scalar(i64)` containing packed `(len << 32) | ptr` |
+| `Text` | `i64` | `StructuredValue::Text { ptr, len }` decoded from packed `(len << 32) \| ptr` via `ValueLayout::Text` |
 | `Float` | `f64` | `StructuredValue::Float(f64)` from `invoke_typed` |
 | `Unit` | `i32` value `0` | `StructuredValue::Scalar(0)` when decoded as `Scalar`; raw no-result exports become `Unit` |
 | `Handle` | numeric id | `StructuredValue::Handle(HandleId)` |
-
-Text currently has no dedicated `ValueLayout::Text`; callers must treat packed
-text values as scalar ABI values.
 
 ## Structured memory layouts
 
@@ -55,6 +52,20 @@ Runtime decoding is fail-closed for impossible structured layouts:
 | Unsupported result value type from WASM | `RuntimeError::EncodingError` from `invoke`. |
 | Unsupported descriptor/layout not represented by `ValueLayout` | Not part of the implemented ABI contract. |
 
+## ABI versioning
+
+`ail-compiler` exposes `ABI_VERSION: u32 = 1` and an `AbiDescriptor` struct that
+wraps `export_types` with the current version.  `WasmArtifact::abi_descriptor`
+is populated by `emit_wasm` and may be serialised (JSON/CBOR) and passed across a
+process boundary.  The runtime caller checks `AbiDescriptor::is_compatible()`
+before invoking typed exports.  When the typed-value layout contract changes in a
+backward-incompatible way, `ABI_VERSION` must be incremented.
+
+The `HandleRegistry` tracks handles by reference count, not by a simple active/
+inactive flag.  `create()` starts at count 1; `clone_handle()` increments the
+count (for Shared-mode handles); `release()` decrements the count and returns
+`true` only when the count reaches zero (full release).
+
 ## Compiler side
 
 `ail-compiler::wasm::WasmArtifact::export_types` records one
@@ -68,6 +79,7 @@ The current descriptor contract recognized by the compiler/runtime boundary is:
 | `Scalar(I64)` | `ValueLayout::Scalar` | raw `i64` return |
 | `Scalar(I32)` | `ValueLayout::Scalar` | raw `i32` return widened by the typed runtime entry point |
 | `Scalar(F64)` | `ValueLayout::Scalar` | raw `f64`; `invoke_typed` returns `StructuredValue::Float` directly |
+| `Text` | `ValueLayout::Text` | packed `(len << 32) \| ptr` i64; runtime unpacks to `StructuredValue::Text { ptr, len }` without a memory read |
 | `Record { fields }` | `ValueLayout::Record { fields }` | pointer to sequential `i64` field slots in linear memory |
 | `Variant { tags }` | `ValueLayout::Variant { tags }` | pointer to `i32` tag at offset `0`, optional `i64` payload at offset `8` |
 | `Tuple(elems)` | `ValueLayout::Tuple(elems)` | pointer to sequential `i64` element slots in linear memory |
@@ -95,9 +107,6 @@ own a `WasmArtifact` are responsible for translating `export_types` into
 
 ## Current limitations
 
-- `Text` is currently represented by the compiler as `Scalar(I64)` containing a
-  packed `(ptr, len)` value. The runtime has `StructuredValue::Text`, but there
-  is no `ValueLayout::Text` in the implemented descriptor contract yet.
 - `Bytes` exists in the target/core type design, but there is no ANF literal or
   `WasmTypeDescriptor::Bytes` in the implemented ABI contract.
 - `Unit` is currently represented by the compiler as `Scalar(I32)`. The runtime
@@ -107,3 +116,6 @@ own a `WasmArtifact` are responsible for translating `export_types` into
 - Records and generic variants currently decode scalar payload slots. Tuples,
   lists, options, and results can carry nested `ValueLayout` metadata, but broad
   RC/GC/object-model semantics are out of scope for this subset.
+- `derive_wasm_type` derives `Option`, `Result`, and `Handle` descriptors only
+  in specific ANF shapes. Broad compiler emission coverage for these across all
+  expression forms is a future executable-surface milestone.
