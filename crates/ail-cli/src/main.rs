@@ -4,6 +4,7 @@ mod builtin_targets;
 mod changeset_input;
 mod cli;
 mod cli_helpers;
+mod compile_commands;
 mod context_commands;
 mod diagnostic_commands;
 mod error;

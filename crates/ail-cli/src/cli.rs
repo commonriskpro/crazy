@@ -57,6 +57,7 @@ pub(crate) use crate::project_commands::{cmd_change, cmd_init, cmd_status};
 
 use crate::approval_commands::{cmd_approve, cmd_reject};
 use crate::branch_commands::{cmd_diff, cmd_merge, cmd_rebase, cmd_refactor, cmd_rollback};
+use crate::compile_commands::cmd_compile;
 use crate::context_commands::cmd_context;
 use crate::diagnostic_commands::{cmd_doctor, cmd_gc};
 use crate::error::CliError;
@@ -67,7 +68,7 @@ use crate::output::OutputMode;
 use crate::package_commands::cmd_package;
 use crate::policy_commands::cmd_policy;
 use crate::remote_commands::cmd_remote;
-use crate::run_commands::{cmd_compile, cmd_run};
+use crate::run_commands::cmd_run;
 use crate::store::build_store;
 use crate::workflow_commands::{cmd_apply, cmd_verify};
 
@@ -605,7 +606,8 @@ pub async fn run() -> Result<(), CliError> {
 // cmd_verify → crate::workflow_commands::cmd_verify
 // cmd_apply  → crate::workflow_commands::cmd_apply
 
-// cmd_compile, cmd_run → crate::run_commands
+// cmd_compile → crate::compile_commands
+// cmd_run     → crate::run_commands
 
 // current_graph_for_cli, load_current_graph_for_cli,
 // load_current_graph_with_snapshot_id_for_cli, snapshot_id_from_parent_chain
