@@ -618,7 +618,7 @@ Meaning: after optimization/codegen, validate output preserves ANF/Core semantic
 | ANF serialization | Exact format decided during implementation; must be deterministic and schema-versioned |
 | SSA / backend | Cranelift for WASM v1. LLVM/native added later if needed. Custom SSA not required. |
 | WASM ABI layout | Implemented subset: records (i64 fields at 8-byte offsets), variants/Option/Result (i32 tag at offset 0, i64 payload at offset 8), lists (i64 count at offset 0, i64 elements). Descriptors in `WasmArtifact::export_types`. Structured EffectCall results via `host_call_write`. Rich ABI/value-layout parity remains validation work. |
-| Memory management | RC vs GC deferred to implementation spike — see [Risks](risks.md) V-08 |
+| Memory management | Reference counting for normal heap values plus ownership/affine/linear rules for resource handles. No general GC in v1; cycles are rejected initially and revisited only if real programs justify tracing support. See [Decision log](decision-log.md#parallel-implementation-unblock-decisions). |
 | Translation validation | Required for `prod`/`critical`; scope per profile. Cranelift source-map and capability-boundary preservation is a validation spike — see [Risks](risks.md) V-03 |
 | Native backend | Cranelift implemented subset. `emit_native` produces ELF/Mach-O/COFF with provenance + capability manifest. Phase 8 lowering covers arithmetic, control-flow, loops, match, text literals, records/variants/lists/tuples, EffectCall, and Lambda (no closure capture). Remaining `ail_runtime_call` dispatch stubs: concurrency, dynamic dispatch, resource lifecycle (Phase 9+). |
 

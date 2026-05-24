@@ -574,8 +574,8 @@ These confirm the system delivers on its thesis. They are not scope cuts — the
 ```txt
 1. Exact ANF representation and serialization.
 2. Custom SSA vs Cranelift/LLVM IR.
-3. WASM ABI layout for records, variants, Result/Option, handles.
-4. Memory management strategy for WASM.
+3. WASM ABI implementation for the chosen typed layout: records, variants, Result/Option, handles.
+4. Validation of the chosen WASM memory model: RC plus ownership/affine/linear resource handles; no general GC in v1.
 5. Translation validation requirements for prod/critical.
 ```
 

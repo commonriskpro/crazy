@@ -28,8 +28,8 @@ Related: [Decision log](decision-log.md), [Risks](risks.md).
 | Parser | **Hand-written parsers** for the current ACL and expression subsets. Earlier `chumsky`/`lalrpop` direction was reversed because the implemented grammar is deliberately small and line-oriented. Code: `crates/ail-change/src/parser.rs`, `crates/ail-compiler/src/expr_parser.rs`. |
 | ANF representation | ANF makes effect order structural; exact serialization format decided during implementation. |
 | SSA and backend | **Cranelift** for WASM v1. LLVM/native added later if needed. Custom SSA not required. |
-| WASM ABI layout | Current implementation uses an `ail/host_call` ABI with pointer/length fields and an `i64` result for effect dispatch; full record/variant/`Result`/`Option`/handle layout remains validation work. Code: `crates/ail-compiler/src/wasm.rs`, `crates/ail-runtime/src/host.rs`. |
-| Memory management | RC vs GC is a tracked validation item — see [Risks](risks.md). Decision deferred to implementation spike. |
+| WASM ABI layout | Current implementation uses an `ail/host_call` ABI with pointer/length fields and an `i64` result for effect dispatch. The next implementation target is an explicit, versioned typed-value layout for scalars, text, lists, records, variants, `Result`, `Option`, and opaque resource handles. Deterministic CBOR remains valid for manifests/storage/debug and compatibility paths, not the primary rich runtime ABI. Code: `crates/ail-compiler/src/wasm.rs`, `crates/ail-runtime/src/host.rs`. |
+| Memory management | Use reference counting for normal heap values plus ownership/affine/linear rules for resource handles. Do not introduce a general GC in v1. Reject cycles initially and revisit only if real programs justify tracing support. |
 | Translation validation | Required for `prod`/`critical`; scope defined per profile in `docs/verification.md`. |
 
 ### Runtime
@@ -63,7 +63,7 @@ Related: [Decision log](decision-log.md), [Risks](risks.md).
 |-------|----------|
 | Query syntax | Line-oriented DSL primary; RPC JSON for machine consumers. Both documented in `docs/context-server.md`. |
 | Summary generation | **Deterministic / template-based** from structured facts. Structured data is authoritative; natural-language summaries are non-authoritative helpers. |
-| Context slice signing | Signing is desirable for distributed agents; key management is a tracked validation item. |
+| Context slice signing | Signing is desirable for distributed agents; key management is a tracked validation item. The first transport target is stdio/MCP-like to validate AI tooling integration before HTTP/distributed auth. |
 | Context budgets | Default budgets defined per model tier in `docs/context-server.md`. |
 | Audit context exposure | Safe exposure policy documented in `docs/context-server.md`. |
 | Transport shape | Current implementation is an in-process `ail-context` API, not a network transport server. The protocol shape remains server-compatible. Code: `crates/ail-context/src/lib.rs`. |
@@ -72,7 +72,7 @@ Related: [Decision log](decision-log.md), [Risks](risks.md).
 
 | Topic | Decision |
 |-------|----------|
-| Registry protocol and signing | **Sigstore-style / keyless signing** where possible. Signed artifacts and registry metadata required. |
+| Registry protocol and signing | Start with a deployable HTTP registry and Ed25519 verification. **Sigstore-style / keyless signing** remains the target where possible after the basic registry workflow is validated. Signed artifacts and registry metadata are required. |
 | Reproducible builds | Required for `verified` trust level. |
 | Federated trust | Supported via trust metadata; cross-org federation details finalized during implementation. |
 | Proof verification | Local proof checking available; trusted remote verification allowed at lower trust levels. |
@@ -123,7 +123,7 @@ See [Risks](risks.md) for the full risk register with mitigation and validation 
 | Handler isolation latency | Capability isolation overhead makes runtime unusable at scale |
 | Distributed graph collaboration protocol | Multi-agent coordination breaks under concurrent ChangeSets |
 | Context-slice signing key management | Distributed agent trust cannot be established or maintained |
-| WASM memory management: RC vs GC | Memory strategy choice affects performance, correctness, and WASM ABI complexity |
+| WASM memory model implementation | RC plus ownership/affine/linear resource handles must be validated against performance, closure capture, rich typed ABI, and replay/audit behavior. |
 | Expression parser scope | Current parser only accepts the executable subset (`int`, `bool`, vars, calls, `if`, arithmetic/comparison helpers). Full grammar support is future implementation work. |
 | Native backend execution parity | Cranelift native backend lowers an implemented subset with provenance/manifests, while concurrency, dynamic dispatch, resource lifecycle, and full WASM parity remain validation work. |
 | In-WASM host dispatch completeness | Effect calls execute through `ail/host_call`, but host-side dispatch still has intentionally simple payload/value handling. Rich typed boundary layout remains a validation item. |

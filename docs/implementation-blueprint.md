@@ -63,6 +63,21 @@ The product only becomes AI-native when graph, ChangeSet, verifier, compiler, ru
 | Ecosystem path | Clarify package registry, official packages, signing, advisories, and compatibility. | Registry workflow tests, signed package fixtures, release/compatibility docs. |
 | Performance validation | Prove graph, storage, context, compiler, and runtime behavior at realistic sizes. | Benchmarks, regression thresholds, large-graph fixtures, documented bottlenecks; see [Performance validation](performance.md). |
 
+## Parallel implementation wave
+
+The next wave is split by reviewable, mostly non-conflicting work units. Each branch should keep tests with the behavior it implements and stay near the 400-line review budget when possible.
+
+| Branch | Goal | Primary files/crates | Conflict risk | Verification |
+|--------|------|----------------------|---------------|--------------|
+| `feat/storage-perf` | Add storage/CAS/Postgres scale benchmarks and larger fixtures. | `crates/ail-storage`, optionally `crates/ail-testkit` | Very low | `cargo test -p ail-storage`; `cargo bench -p ail-storage` |
+| `feat/expr-parser-expand` | Expand executable expression parsing toward records, variants, `Option`/`Result`, and pattern matching stubs or explicit rejections. | `crates/ail-compiler/src/expr_parser.rs`, Core IR/lowering tests | Low | `cargo test -p ail-compiler` |
+| `feat/context-transport` | Add the first stdio/MCP-like Context Server transport over the existing in-process API. | `crates/ail-context` | Low | `cargo test -p ail-context` |
+| `feat/package-registry-network` | Add a simple HTTP registry client/server path with Ed25519 verification fixtures. | `crates/ail-package` | Low | `cargo test -p ail-package` |
+| `feat/translation-validation` | Make prod/critical profile validation materially stricter with provenance/shape and initial control-flow/effect obligations. | `crates/ail-verify` | Low-medium | `cargo test -p ail-verify` |
+| `feat/wasm-abi-typed` | Implement the versioned typed-value WASM ABI and host decoding around RC/resource-handle semantics. | `crates/ail-compiler`, `crates/ail-runtime` | Medium-high | `cargo test -p ail-compiler`; `cargo test -p ail-runtime` |
+
+Do not run `feat/closure-capture` in parallel with `feat/expr-parser-expand` or `feat/wasm-abi-typed`. Closure capture depends on the parser expansion, typed ABI, and memory model evidence and should be split into chained PRs after those land.
+
 ## Validation rules
 
 - A milestone needs executable evidence: tests, fixtures, benchmark output, verification reports, or runnable CLI behavior.

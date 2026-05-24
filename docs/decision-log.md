@@ -104,6 +104,21 @@
 | Remote service boundary | Add transport-agnostic exchange DTOs before adding a durable remote sync server. | This gives context/remote/coordinator a service-shaped contract while avoiding premature network, auth, and persistence choices. Remote bundle exchange stays on deterministic CBOR because bundle maps are keyed by `ObjectId`, not JSON strings. See `crates/ail-context/src/server.rs`, `crates/ail-remote/src/exchange.rs`, and `crates/ail-coordinator/src/coordinator.rs`. |
 | Native backend | Implement Cranelift native object emission with provenance/manifests and native lowering for the current Phase 8 expression subset. | This advances beyond the original trap-stub spike without claiming native execution parity with WASM; concurrency, dynamic dispatch, and resource lifecycle still trap or remain future work. See `crates/ail-compiler/src/native.rs`. |
 
+## Parallel implementation unblock decisions
+
+These decisions unblock the next parallel worktree wave. They favor AIL's core philosophy: explicit Semantic Graph-visible behavior, deterministic replay, verification before lowering, and no hidden runtime magic.
+
+| Area | Decision | Rationale |
+|------|----------|-----------|
+| Memory model v1 | Use reference counting for normal heap values plus ownership/affine/linear rules for resource handles. Do not introduce a general GC in v1. | RC gives deterministic release behavior that is easier to audit, replay, and verify. Resource handles remain governed by explicit graph-visible modes instead of being collected implicitly. |
+| Cyclic values | Reject cycles in the initial verifier/runtime model. Revisit cycle support only after real programs justify it. | This keeps RC sound without introducing a tracing collector before the language needs one. |
+| WASM ABI v1 | Define an explicit, versioned typed-value layout for scalars, text, lists, records, variants, `Option`, `Result`, and opaque resource handles. Deterministic CBOR remains valid for manifests, storage, debug, and compatibility paths, but not as the primary rich runtime ABI. | A typed layout makes compiler/runtime boundaries reviewable and testable. It avoids a self-describing payload becoming hidden semantics at the executable boundary. |
+| Closure capture | Represent closure environments as explicit typed records. Start with by-value capture; allow resource-handle capture only when verifier rules prove the mode safe. | Explicit environments preserve auditability and make capture semantics visible to the verifier and lowering pipeline. |
+| Translation validation rollout | Implement translation validation incrementally by profile: dev gets provenance/shape checks, prod adds control-flow/effect obligations, critical rejects insufficient evidence. | This avoids pretending full proof exists while making stronger profiles materially stricter. |
+| Context transport | Implement the first network/tooling transport as stdio/MCP-like before HTTP. | AI tooling integration is the fastest validation path for the Context Server; distributed auth can follow after the protocol proves useful. |
+| Package registry | Implement a simple HTTP registry with Ed25519 verification first. Keep Sigstore-style/keyless signing and federation as later hardening. | A deployable registry path validates the ecosystem workflow before adding federation and keyless complexity. |
+| Repair loop | Add structured, machine-readable repair options to verification reports and CLI JSON output before implementing autonomous repair. | This makes LLM repair possible without hiding authority or bypassing verification. |
+
 ## Reversed decisions
 
 | Previous decision | Current decision | Why |
