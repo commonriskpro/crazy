@@ -13,7 +13,8 @@
 //    contract_ref, effect_ref, runtime_check_ref) from SemanticGraph nodes.
 
 use ail_compiler::{
-    emit_native, emit_wasm,
+    AnfIr, CompileError, SourceMap, emit_native, emit_native_with_profile, emit_wasm,
+    emit_wasm_with_profile,
     lower::{lower_to_anf, lower_to_anf_with_graph, lower_to_core_ir},
 };
 use ail_core::semantic_graph::{
@@ -44,6 +45,28 @@ fn anf_for_n(n: usize) -> ail_compiler::AnfIr {
     let graph = graph_with_n_nodes(n);
     let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
     lower_to_anf(&core).expect("lower_to_anf")
+}
+
+fn graph_with_n_provenance_nodes(n: usize) -> SemanticGraph {
+    SemanticGraph {
+        nodes: (0..n)
+            .map(|i| {
+                let mut node =
+                    GraphNode::new(NodeRef(i as u32), NodeKind::Function, format!("fn_{i}"));
+                node.provenance = Some(Provenance {
+                    change_id: format!("change.fn_{i}"),
+                });
+                node
+            })
+            .collect(),
+        edges: vec![],
+    }
+}
+
+fn proven_anf_for_n(n: usize) -> AnfIr {
+    let graph = graph_with_n_provenance_nodes(n);
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph")
 }
 
 // ── Task 4: WASM backend populates wasm_offset ────────────────────────────
@@ -269,6 +292,22 @@ fn graph_with_module_and_function() -> SemanticGraph {
     }
 }
 
+fn graph_with_boundary_provenance() -> SemanticGraph {
+    let mut boundary = GraphNode::new(NodeRef(10), NodeKind::Boundary, "public_api");
+    boundary.provenance = Some(Provenance {
+        change_id: "change.public_boundary".to_string(),
+    });
+    boundary.contract_clauses = Some(ContractClauses {
+        requires: vec!["authenticated".to_string()],
+        ensures: vec!["audited".to_string()],
+    });
+
+    SemanticGraph {
+        nodes: vec![boundary],
+        edges: vec![],
+    }
+}
+
 // RED → GREEN: lower_to_anf_with_graph threads change_set from
 // GraphNode.provenance.change_id into each SourceMapEntry.
 #[test]
@@ -486,4 +525,165 @@ fn emit_native_sidecar_preserves_enriched_source_map_provenance() {
     let sidecar: ail_compiler::SourceMap = serde_json::from_slice(&artifact.source_map_json)
         .expect("source_map_json must decode to SourceMap");
     assert_eq!(sidecar, artifact.source_map);
+}
+
+#[test]
+fn emit_wasm_preserves_boundary_audit_provenance() {
+    let graph = graph_with_boundary_provenance();
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+    let artifact = emit_wasm_with_profile(&anf, "prod").expect("emit_wasm_with_profile");
+
+    let entry = artifact
+        .source_map
+        .entries
+        .first()
+        .expect("source map entry must exist");
+    assert_eq!(entry.node_id, NodeRef(10));
+    assert_eq!(entry.change_set.as_deref(), Some("change.public_boundary"));
+    assert_eq!(
+        entry.block_ref.as_ref().map(|r| r.0.as_str()),
+        Some("block.public_api")
+    );
+    assert_eq!(
+        entry.contract_ref.as_ref().map(|r| r.0.as_str()),
+        Some("contract.public_api")
+    );
+    assert!(entry.wasm_offset.is_some(), "WASM offset must be retained");
+}
+
+#[test]
+fn emit_native_preserves_boundary_provenance_and_capability_source_ref() {
+    let graph = graph_with_boundary_provenance();
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+    let artifact = emit_native_with_profile(&anf, "critical").expect("emit_native_with_profile");
+
+    let entry = artifact
+        .source_map
+        .entries
+        .first()
+        .expect("source map entry must exist");
+    assert_eq!(entry.change_set.as_deref(), Some("change.public_boundary"));
+    assert_eq!(
+        entry.block_ref.as_ref().map(|r| r.0.as_str()),
+        Some("block.public_api")
+    );
+    assert!(
+        entry.native_offset.is_some(),
+        "native offset must be retained"
+    );
+
+    let capability = artifact
+        .capabilities_manifest
+        .entries
+        .first()
+        .expect("capability manifest entry must exist");
+    assert_eq!(capability.source_ref, NodeRef(10));
+}
+
+#[test]
+fn emit_wasm_prod_rejects_missing_change_set_provenance() {
+    let anf = anf_for_n(1);
+    let result = emit_wasm_with_profile(&anf, "prod");
+
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::MissingProvenanceMetadata {
+                field: "change_set",
+                ..
+            })
+        ),
+        "prod WASM emit must reject missing change_set provenance, got {result:?}"
+    );
+}
+
+#[test]
+fn emit_native_critical_rejects_missing_change_set_provenance() {
+    let anf = anf_for_n(1);
+    let result = emit_native_with_profile(&anf, "critical");
+
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::MissingProvenanceMetadata {
+                field: "change_set",
+                ..
+            })
+        ),
+        "critical native emit must reject missing change_set provenance, got {result:?}"
+    );
+}
+
+#[test]
+fn emit_wasm_prod_rejects_empty_source_map_with_bindings() {
+    let mut anf = proven_anf_for_n(1);
+    anf.source_map = SourceMap { entries: vec![] };
+    let result = emit_wasm_with_profile(&anf, "prod");
+
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::MissingProvenanceMetadata {
+                field: "source_map_coverage",
+                ..
+            })
+        ),
+        "prod WASM emit must reject empty source map with bindings, got {result:?}"
+    );
+}
+
+#[test]
+fn emit_native_critical_rejects_short_source_map_with_bindings() {
+    let mut anf = proven_anf_for_n(2);
+    anf.source_map.entries.pop();
+    let result = emit_native_with_profile(&anf, "critical");
+
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::MissingProvenanceMetadata {
+                field: "source_map_coverage",
+                ..
+            })
+        ),
+        "critical native emit must reject short source map with bindings, got {result:?}"
+    );
+}
+
+#[test]
+fn emit_wasm_production_rejects_mismatched_source_map_binding_name() {
+    let mut anf = proven_anf_for_n(1);
+    anf.source_map.entries[0].binding_name = "fn_wrong".to_string();
+    let result = emit_wasm_with_profile(&anf, "production");
+
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::MissingProvenanceMetadata {
+                field: "binding_name",
+                ..
+            })
+        ),
+        "production WASM emit must reject mismatched binding_name, got {result:?}"
+    );
+}
+
+#[test]
+fn emit_native_prod_rejects_mismatched_source_map_node_id() {
+    let mut anf = proven_anf_for_n(1);
+    anf.source_map.entries[0].node_id = NodeRef(99);
+    let result = emit_native_with_profile(&anf, "prod");
+
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::MissingProvenanceMetadata {
+                field: "node_id",
+                ..
+            })
+        ),
+        "prod native emit must reject mismatched node_id, got {result:?}"
+    );
 }

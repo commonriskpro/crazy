@@ -67,7 +67,7 @@ use ail_context::{
 };
 use ail_coordinator::Coordinator;
 use ail_core::semantic_graph::{GraphEdge, GraphNode, NodeKind};
-use ail_core::semantic_graph::{NodeRef, SemanticGraph};
+use ail_core::semantic_graph::{NodeRef, Provenance, SemanticGraph};
 use ail_package::{
     AdvisoryChecker, AdvisorySeverity, ArtifactHashEntry, CapabilityPolicy,
     CapabilityPolicyEnforcer, CapabilityPolicyVerdict, CompatibilityEngine, CompatibilityError,
@@ -1975,12 +1975,21 @@ fn current_graph_for_cli() -> Result<SemanticGraph, CliError> {
     let bridge = SimpleSnapshotBridge(SnapshotId(0));
     match ail_change::apply::apply(canonical, &mut graph, &bridge) {
         ail_change::model::ChangeSetOutcome::Applied => {
+            for node in &mut graph.nodes {
+                node.provenance = Some(Provenance {
+                    change_id: "change.e2e".to_string(),
+                });
+            }
             if !graph.nodes.iter().any(|node| node.name == "fn.checkout") {
-                graph.nodes.push(GraphNode::new(
+                let mut checkout = GraphNode::new(
                     NodeRef(graph.nodes.len() as u32),
                     NodeKind::Function,
                     "fn.checkout",
-                ));
+                );
+                checkout.provenance = Some(Provenance {
+                    change_id: "change.e2e".to_string(),
+                });
+                graph.nodes.push(checkout);
             }
             Ok(graph)
         }

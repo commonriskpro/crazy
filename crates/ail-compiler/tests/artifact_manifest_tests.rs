@@ -12,6 +12,7 @@
 
 use ail_compiler::{
     ArtifactManifest, emit_native, emit_wasm,
+    hash::{hash_with_parent, stable_cbor_bytes},
     lower::{lower_to_anf, lower_to_core_ir},
 };
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
@@ -336,5 +337,44 @@ fn artifact_manifest_built_from_native_artifact() {
     assert!(
         manifest.wasm_hash.is_none(),
         "wasm_hash must be None for native-only pipeline"
+    );
+}
+
+#[test]
+fn wasm_source_map_hash_matches_serialized_source_map() {
+    let artifact = emit_wasm(&anf_for_n(2)).expect("emit_wasm");
+    let source_map_bytes = stable_cbor_bytes(&artifact.source_map).expect("source map CBOR");
+    let expected = hash_with_parent(&[], &source_map_bytes);
+
+    assert_eq!(
+        artifact.hash_chain.source_map_hash,
+        Some(expected),
+        "source_map_hash must be reproducible from emitted source_map CBOR"
+    );
+}
+
+#[test]
+fn native_source_map_hash_matches_serialized_source_map() {
+    let artifact = emit_native(&anf_for_n(2)).expect("emit_native");
+    let source_map_bytes = stable_cbor_bytes(&artifact.source_map).expect("source map CBOR");
+    let expected = hash_with_parent(&[], &source_map_bytes);
+
+    assert_eq!(
+        artifact.hash_chain.source_map_hash,
+        Some(expected),
+        "native source_map_hash must be reproducible from emitted source_map CBOR"
+    );
+}
+
+#[test]
+fn artifact_manifest_hash_matches_serialized_manifest() {
+    let artifact = emit_wasm(&anf_for_n(2)).expect("emit_wasm");
+    let manifest_bytes = stable_cbor_bytes(&artifact.artifact_manifest).expect("manifest CBOR");
+    let expected = hash_with_parent(&[], &manifest_bytes);
+
+    assert_eq!(
+        artifact.hash_chain.artifact_manifest_hash,
+        Some(expected),
+        "artifact_manifest_hash must be reproducible from emitted manifest CBOR"
     );
 }

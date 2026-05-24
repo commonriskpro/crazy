@@ -21,6 +21,15 @@ pub enum CompileError {
     /// A `NodeRef` present in the graph could not be resolved during lowering.
     MissingNode(NodeRef),
 
+    /// A production-like backend profile required audit provenance that was
+    /// missing from the source map.
+    MissingProvenanceMetadata {
+        profile: String,
+        binding_name: String,
+        node_id: NodeRef,
+        field: &'static str,
+    },
+
     /// CBOR serialization failed while computing a stage hash.
     EncodingError(String),
 
@@ -39,6 +48,16 @@ impl std::fmt::Display for CompileError {
             }
             CompileError::InvalidGraph(msg) => write!(f, "invalid graph: {msg}"),
             CompileError::MissingNode(r) => write!(f, "missing node: NodeRef({})", r.0),
+            CompileError::MissingProvenanceMetadata {
+                profile,
+                binding_name,
+                node_id,
+                field,
+            } => write!(
+                f,
+                "missing provenance metadata for profile {profile}: binding {binding_name} NodeRef({}) lacks {field}",
+                node_id.0
+            ),
             CompileError::EncodingError(msg) => write!(f, "encoding error: {msg}"),
             CompileError::NativeEncodingError(msg) => {
                 write!(f, "native encoding error: {msg}")
@@ -100,6 +119,26 @@ mod tests {
         assert!(
             matches!(e, CompileError::MissingNode(NodeRef(42))),
             "MissingNode must carry NodeRef(42)"
+        );
+    }
+
+    #[test]
+    fn missing_provenance_metadata_display_mentions_profile_and_field() {
+        let e = CompileError::MissingProvenanceMetadata {
+            profile: "prod".to_string(),
+            binding_name: "checkout".to_string(),
+            node_id: NodeRef(7),
+            field: "change_set",
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("prod"), "display must include profile: {msg}");
+        assert!(
+            msg.contains("change_set"),
+            "display must include missing field: {msg}"
+        );
+        assert!(
+            msg.contains("NodeRef(7)"),
+            "display must include node ref: {msg}"
         );
     }
 

@@ -29,6 +29,7 @@ use ail_core::semantic_graph::{
 use serde::{Deserialize, Serialize};
 
 use crate::core_ir::{LiteralValue, StageHashes};
+use crate::error::CompileError;
 
 // ── Schema version ────────────────────────────────────────────────────────
 
@@ -477,6 +478,69 @@ impl SourceMap {
             })
             .collect();
         SourceMap { entries }
+    }
+
+    /// Validate audit provenance required by production-like compiler profiles.
+    ///
+    /// The current implemented policy is intentionally small: `prod`,
+    /// `production`, and `critical` artifacts must retain the originating
+    /// `change_set` for every emitted binding. Other semantic references are
+    /// optional because not every graph node has a contract, effect, or runtime
+    /// check. The source map must also cover every binding exactly once in
+    /// binding order so malformed external ANF cannot hide missing provenance.
+    pub fn validate_required_provenance(
+        &self,
+        profile: &str,
+        bindings: &[AnfBinding],
+    ) -> Result<(), CompileError> {
+        if !matches!(profile, "prod" | "production" | "critical") {
+            return Ok(());
+        }
+
+        if self.entries.len() != bindings.len() {
+            let binding = bindings.get(self.entries.len()).or_else(|| bindings.last());
+            return Err(CompileError::MissingProvenanceMetadata {
+                profile: profile.to_string(),
+                binding_name: binding
+                    .map(|binding| binding.name.clone())
+                    .unwrap_or_else(|| "<extra-source-map-entry>".to_string()),
+                node_id: binding
+                    .map(|binding| binding.source_ref)
+                    .unwrap_or(NodeRef(0)),
+                field: "source_map_coverage",
+            });
+        }
+
+        for (entry, binding) in self.entries.iter().zip(bindings.iter()) {
+            if entry.binding_name != binding.name {
+                return Err(CompileError::MissingProvenanceMetadata {
+                    profile: profile.to_string(),
+                    binding_name: binding.name.clone(),
+                    node_id: binding.source_ref,
+                    field: "binding_name",
+                });
+            }
+
+            if entry.node_id != binding.source_ref {
+                return Err(CompileError::MissingProvenanceMetadata {
+                    profile: profile.to_string(),
+                    binding_name: binding.name.clone(),
+                    node_id: binding.source_ref,
+                    field: "node_id",
+                });
+            }
+
+            if entry.change_set.as_deref().is_none_or(str::is_empty) {
+                return Err(CompileError::MissingProvenanceMetadata {
+                    profile: profile.to_string(),
+                    binding_name: entry.binding_name.clone(),
+                    node_id: entry.node_id,
+                    field: "change_set",
+                });
+            }
+        }
+
+        Ok(())
     }
 }
 
