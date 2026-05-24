@@ -247,6 +247,21 @@ Rules:
 4. apply refuses stale base unless rebase is requested.
 ```
 
+> **Implementation note — verification gate limitations (current):**
+> Rule 1 is partially enforced.  The file-backed store enforces a change-id gate:
+> `ail apply` reads the sidecar at `.ail/reports/<change_id>` written by a prior
+> `ail verify` run and blocks if the report summary is `Failed` or `Unsafe`, or if
+> no report exists.  Two limitations apply:
+>
+> - **Profile matching is not enforced.** Reports are stored by change-id only, not
+>   by profile.  A report produced with `--profile dev` satisfies the gate for
+>   `--profile prod` and vice versa.  Per-profile enforcement is future work.
+>
+> - **Memory and Postgres backends do not enforce the gate.** These backends have no
+>   sidecar index; `load_verification_report_by_change_id` always returns
+>   `not_persisted` and the gate is skipped.  Enforcement requires a backend report
+>   index, which is not yet implemented.
+
 In `apply --json`, stale-base failures still exit non-zero and keep the human error on stderr, but stdout includes a machine-readable envelope:
 
 ```txt

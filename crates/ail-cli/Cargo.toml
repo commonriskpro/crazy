@@ -38,8 +38,11 @@ serde_json   = { workspace = true }
 tokio        = { workspace = true }
 
 [dev-dependencies]
+ail-verify = { workspace = true }
 assert_cmd = { workspace = true }
 assert_fs  = { workspace = true }
+blake3     = { workspace = true }
+ciborium   = { workspace = true }
 predicates = { workspace = true }
 serde_json = { workspace = true }
 tempfile   = { workspace = true }

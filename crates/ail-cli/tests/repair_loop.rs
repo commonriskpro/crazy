@@ -13,7 +13,7 @@
 
 mod common;
 
-use common::{ail, create_sample_change, parse_json_output};
+use common::{ail, create_sample_change, parse_json_output, write_blocked_report_sidecar};
 
 // ── RL-1: verify happy path surfaces empty repair_options ─────────────────
 
@@ -278,5 +278,81 @@ fn apply_blocked_without_prior_verify() {
     assert!(
         stderr.contains("no verification report"),
         "error must mention missing verification report; got stderr: {stderr}"
+    );
+}
+
+// ── VG-2: apply blocked when persisted report summary is Failed ───────────
+
+/// Verification gate VG-2: apply is blocked when the persisted report is Failed.
+///
+///   GIVEN an initialised project with a persisted changeset
+///    AND  a hand-crafted sidecar report whose summary is `Failed`
+///   WHEN  `ail apply <change-id>` is run
+///   THEN  the command fails with exit code 1
+///    AND  stderr mentions "Failed"
+///
+/// This test proves the gate distinguishes a `Failed` report from an accepted one,
+/// preventing silent bypass when a prior verify run produced blocking failures.
+#[test]
+fn apply_blocked_when_report_is_failed() {
+    use ail_verify::report::VerificationState;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let change_id = create_sample_change(dir.path());
+
+    // Plant a sidecar with summary Failed — bypasses the real verify pipeline.
+    write_blocked_report_sidecar(dir.path(), &change_id, VerificationState::Failed);
+
+    let output = ail()
+        .args(["apply", &change_id])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let stderr = std::str::from_utf8(&output.stderr).expect("stderr must be UTF-8");
+    assert!(
+        stderr.contains("Failed"),
+        "error must mention Failed report summary; got stderr: {stderr}"
+    );
+}
+
+// ── VG-3: apply blocked when persisted report summary is Unsafe ───────────
+
+/// Verification gate VG-3: apply is blocked when the persisted report is Unsafe.
+///
+///   GIVEN an initialised project with a persisted changeset
+///    AND  a hand-crafted sidecar report whose summary is `Unsafe`
+///   WHEN  `ail apply <change-id>` is run
+///   THEN  the command fails with exit code 1
+///    AND  stderr mentions "Unsafe"
+///
+/// This test proves the gate blocks `Unsafe` reports the same way as `Failed`,
+/// ensuring neither blocking state allows apply to proceed.
+#[test]
+fn apply_blocked_when_report_is_unsafe() {
+    use ail_verify::report::VerificationState;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let change_id = create_sample_change(dir.path());
+
+    // Plant a sidecar with summary Unsafe — bypasses the real verify pipeline.
+    write_blocked_report_sidecar(dir.path(), &change_id, VerificationState::Unsafe);
+
+    let output = ail()
+        .args(["apply", &change_id])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let stderr = std::str::from_utf8(&output.stderr).expect("stderr must be UTF-8");
+    assert!(
+        stderr.contains("Unsafe"),
+        "error must mention Unsafe report summary; got stderr: {stderr}"
     );
 }
