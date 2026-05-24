@@ -10,6 +10,7 @@
 //   - `ciborium`      (CBOR serialization)
 //   - `ed25519-dalek` (signing)
 //   - `serde`         (derive macros)
+//   - `serde_json`    (JSON serialization for HTTP registry transport)
 //
 // It MUST NOT depend on `ail-verify`, `ail-runtime`, or `ail-compiler`.
 // The dependency graph is:
@@ -25,6 +26,7 @@ pub mod coherence;
 pub mod export;
 pub mod generated_artifact;
 pub mod handler;
+pub mod http_registry;
 pub mod import;
 pub mod lockfile;
 pub mod manifest;
@@ -51,6 +53,7 @@ pub use coherence::{CoherenceChecker, CoherenceError, InterfaceImpl};
 pub use export::{ExportDeclaration, ExportStability, ExportVisibility};
 pub use generated_artifact::GeneratedArtifact;
 pub use handler::HandlerExport;
+pub use http_registry::{HttpClientError, HttpRegistryClient, HttpRegistryServer};
 pub use import::ImportDeclaration;
 pub use lockfile::{Lockfile, LockfileEntry};
 pub use manifest::{
