@@ -202,6 +202,10 @@ enum Commands {
         /// Runtime profile name (e.g. `dev`, `test`).
         #[arg(long, default_value = "dev")]
         profile: String,
+        /// Execution target (e.g. `wasm`). `native` returns an explicit error:
+        /// native linked execution is not yet supported.
+        #[arg(long, default_value = "wasm")]
+        target: String,
         /// Module target to run (e.g. `module.checkout`).
         module: Option<String>,
         /// Positional i64 arguments passed to the exported function.
@@ -532,6 +536,7 @@ pub async fn run() -> Result<(), CliError> {
         Commands::Compile { profile, target } => cmd_compile(mode, &profile, &target, &store).await,
         Commands::Run {
             profile,
+            target,
             module,
             args,
             replay,
@@ -539,6 +544,7 @@ pub async fn run() -> Result<(), CliError> {
             cmd_run(
                 mode,
                 &profile,
+                &target,
                 module.as_deref(),
                 &args,
                 replay.as_deref(),
