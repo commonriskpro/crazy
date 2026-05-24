@@ -14,7 +14,7 @@
 use ail_compiler::{emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir};
 use ail_runtime::{
     AuditEvent, CapabilityId, CapabilityManifest, ResourceLimits, RuntimeArg, RuntimeHost,
-    RuntimeProfile, blake3_hex_of,
+    RuntimeProfile, RuntimeReportStatus, blake3_hex_of,
 };
 use serde_json::{Value, json};
 
@@ -32,9 +32,22 @@ use crate::store::StoreHandle;
 fn parse_runtime_args(args: &[String]) -> Result<Vec<RuntimeArg>, CliError> {
     args.iter()
         .map(|arg| {
-            arg.parse::<i64>().map(RuntimeArg::I64).map_err(|_| {
-                CliError::ParseError(format!("run argument '{arg}' is not an integer"))
-            })
+            if let Some(rest) = arg.strip_prefix("i32:") {
+                rest.parse::<i32>().map(RuntimeArg::I32).map_err(|_| {
+                    CliError::ParseError(format!("run argument '{arg}' has invalid i32 value"))
+                })
+            } else if let Some(rest) = arg.strip_prefix("f64:") {
+                rest.parse::<f64>().map(RuntimeArg::F64).map_err(|_| {
+                    CliError::ParseError(format!("run argument '{arg}' has invalid f64 value"))
+                })
+            } else {
+                arg.parse::<i64>().map(RuntimeArg::I64).map_err(|_| {
+                    CliError::ParseError(format!(
+                        "run argument '{arg}' is not an integer \
+                        (use i32:<n> or f64:<n> for typed args)"
+                    ))
+                })
+            }
         })
         .collect()
 }
@@ -148,13 +161,11 @@ pub(crate) async fn cmd_run(
 
     match result {
         Ok(mut instance) => {
-            let audit_log = host.audit_log();
-            let audit_len = audit_log.len();
-
-            // Derive runtime check results from actual preflight outcomes.
+            // Read a pre-invoke snapshot to confirm preflight passed.
             // `validate_and_instantiate` returning Ok guarantees all stages passed;
             // we read back the audit log to confirm and extract the recorded hash.
-            let preflight_passed = audit_log
+            let preflight_log = host.audit_log();
+            let preflight_passed = preflight_log
                 .events()
                 .iter()
                 .any(|e| matches!(e, AuditEvent::PreflightPassed { .. }));
@@ -178,11 +189,6 @@ pub(crate) async fn cmd_run(
                 "handler_bindings": "ok",
                 "limits": "ok",
             });
-            let capability_call_summary: Vec<Value> = vec![];
-            let audit_log_ref = json!({
-                "event_count": audit_len,
-                "profile": profile,
-            });
             let replay_info = replay.map(|r| json!({ "trace_id": r, "replayed": true }));
 
             // Derive the WASM export name from the module target.
@@ -193,13 +199,39 @@ pub(crate) async fn cmd_run(
             // Try to invoke the export; if it doesn't exist, fall back to preflight-only.
             let invoke_result = instance.invoke(export_name, &runtime_args);
 
+            // Post-invoke: aggregate capability call statistics from the full audit
+            // log (includes any CapabilityCallExecuted events produced during invoke).
+            let report = host.emit_report(RuntimeReportStatus::Completed, "run");
+            let capability_call_summary: Vec<Value> = report
+                .capability_summaries()
+                .iter()
+                .map(|s| {
+                    json!({
+                        "capability": s.capability.as_str(),
+                        "total_calls": s.total_calls,
+                        "succeeded": s.succeeded,
+                        "failed": s.failed,
+                    })
+                })
+                .collect();
+            let total_capability_calls: u32 = report
+                .capability_summaries()
+                .iter()
+                .map(|s| s.total_calls)
+                .sum();
+            let audit_len = host.audit_log().len();
+            let audit_log_ref = json!({
+                "event_count": audit_len,
+                "profile": profile,
+            });
+
             let result_display = match &invoke_result {
                 Ok(val) => format!("result: {val}"),
                 Err(e) => format!("invoke error: {e}"),
             };
 
             let human_msg = format!(
-                "PreflightPassed\n{result_display}\nprofile: {profile}\nmodule: {module_name}\naudit_events: {audit_len}\ncapability_calls: 0\nruntime_checks: all ok"
+                "PreflightPassed\n{result_display}\nprofile: {profile}\nmodule: {module_name}\naudit_events: {audit_len}\ncapability_calls: {total_capability_calls}\nruntime_checks: all ok"
             );
             print_response(
                 mode,
@@ -232,9 +264,9 @@ pub(crate) async fn cmd_run(
 #[cfg(test)]
 mod tests {
     use ail_core::semantic_graph::{CapabilityReqs, GraphNode, NodeKind, NodeRef, SemanticGraph};
-    use ail_runtime::CapabilityId;
+    use ail_runtime::{CapabilityId, RuntimeArg};
 
-    use super::derive_runtime_capability_ids;
+    use super::{derive_runtime_capability_ids, parse_runtime_args};
 
     fn node_with_caps(id: u32, caps: Vec<&str>) -> GraphNode {
         let mut n = GraphNode::new(NodeRef(id), NodeKind::Function, format!("fn_{id}"));
@@ -337,6 +369,118 @@ mod tests {
             names,
             vec!["a:first", "m:middle", "z:last"],
             "capability IDs must be sorted lexicographically; got: {names:?}"
+        );
+    }
+
+    // ── parse_runtime_args ────────────────────────────────────────────────
+
+    fn strs(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    // Scenario: bare integer → I64 (backward compatibility).
+    #[test]
+    fn parse_bare_integer_is_i64() {
+        let result = parse_runtime_args(&strs(&["42"])).unwrap();
+        assert_eq!(result, vec![RuntimeArg::I64(42)]);
+    }
+
+    // Scenario: negative bare integer → I64.
+    #[test]
+    fn parse_negative_integer_is_i64() {
+        let result = parse_runtime_args(&strs(&["-7"])).unwrap();
+        assert_eq!(result, vec![RuntimeArg::I64(-7)]);
+    }
+
+    // Scenario: i32: prefix → RuntimeArg::I32.
+    #[test]
+    fn parse_i32_prefix_returns_i32() {
+        let result = parse_runtime_args(&strs(&["i32:42"])).unwrap();
+        assert_eq!(result, vec![RuntimeArg::I32(42)]);
+    }
+
+    // Scenario: i32: prefix with max value → RuntimeArg::I32.
+    #[test]
+    fn parse_i32_prefix_max_value() {
+        let result = parse_runtime_args(&strs(&["i32:2147483647"])).unwrap();
+        assert_eq!(result, vec![RuntimeArg::I32(i32::MAX)]);
+    }
+
+    // Scenario: f64: prefix → RuntimeArg::F64.
+    #[test]
+    fn parse_f64_prefix_returns_f64() {
+        let result = parse_runtime_args(&strs(&["f64:1.5"])).unwrap();
+        match &result[0] {
+            RuntimeArg::F64(v) => assert!((v - 1.5_f64).abs() < 1e-10, "expected 1.5, got {v}"),
+            other => panic!("expected F64, got {other:?}"),
+        }
+    }
+
+    // Scenario: f64: prefix with integer-valued float → RuntimeArg::F64.
+    #[test]
+    fn parse_f64_prefix_integer_value() {
+        let result = parse_runtime_args(&strs(&["f64:0.0"])).unwrap();
+        assert_eq!(result, vec![RuntimeArg::F64(0.0)]);
+    }
+
+    // Scenario: mixed types in one call → correct variants in order.
+    #[test]
+    fn parse_mixed_types_preserves_order() {
+        let result = parse_runtime_args(&strs(&["i32:5", "f64:2.0", "10"])).unwrap();
+        assert_eq!(
+            result,
+            vec![
+                RuntimeArg::I32(5),
+                RuntimeArg::F64(2.0),
+                RuntimeArg::I64(10)
+            ]
+        );
+    }
+
+    // Scenario: empty slice → empty vec.
+    #[test]
+    fn parse_empty_args_returns_empty() {
+        let result = parse_runtime_args(&[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    // Scenario: non-numeric bare string → ParseError.
+    #[test]
+    fn parse_invalid_bare_string_returns_error() {
+        let result = parse_runtime_args(&strs(&["hello"]));
+        assert!(
+            result.is_err(),
+            "non-numeric bare arg must return ParseError"
+        );
+    }
+
+    // Scenario: i32: prefix with non-numeric value → ParseError.
+    #[test]
+    fn parse_i32_prefix_invalid_value_returns_error() {
+        let result = parse_runtime_args(&strs(&["i32:abc"]));
+        assert!(
+            result.is_err(),
+            "i32: with non-numeric value must return ParseError"
+        );
+    }
+
+    // Scenario: f64: prefix with non-numeric value → ParseError.
+    #[test]
+    fn parse_f64_prefix_invalid_value_returns_error() {
+        let result = parse_runtime_args(&strs(&["f64:abc"]));
+        assert!(
+            result.is_err(),
+            "f64: with non-numeric value must return ParseError"
+        );
+    }
+
+    // Scenario: i32: with value exceeding i32::MAX → ParseError (overflow rejected).
+    #[test]
+    fn parse_i32_overflow_returns_error() {
+        let result = parse_runtime_args(&strs(&["i32:99999999999"]));
+        assert!(
+            result.is_err(),
+            "i32: with value > i32::MAX must return ParseError"
         );
     }
 }
