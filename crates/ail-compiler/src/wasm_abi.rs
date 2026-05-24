@@ -326,16 +326,18 @@ pub(crate) fn collect_free_vars<'a>(
         // re-scanning the body and produces the same set as long as captures
         // were populated correctly by the lowering pass.
         //
-        // For lambdas whose captures field is empty (e.g. pre-PR1 test fixtures
-        // constructed by hand), fall back to body-scan so existing tests pass.
+        // An empty captures list has two meanings: the lambda genuinely closes
+        // over nothing, or it is a hand-built fixture that did not populate the
+        // field.  Both cases are handled by the body-scan fallback below.
         AnfExpr::Lambda {
             params,
             body,
             captures,
         } => {
             if captures.is_empty() {
-                // Fallback: re-scan the body for free vars (handles hand-built
-                // test fixtures that do not populate captures).
+                // Fallback: re-scan the body for free vars — handles lambdas
+                // that capture nothing, including hand-built fixtures that omit
+                // the captures field.
                 let original_len = bound.len();
                 bound.extend(params.iter().map(String::as_str));
                 collect_free_vars(body, bound, out);
