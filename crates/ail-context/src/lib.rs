@@ -13,6 +13,7 @@
 /// - [`redaction`] — Redaction filtering and access-shaping.
 /// - [`freshness`] — Freshness detection and repair-option construction.
 /// - [`summary`]   — Deterministic summary renderer.
+/// - [`transport`] — Newline-delimited JSON-RPC stdio transport over [`server::ContextServer`].
 pub(crate) mod assembly;
 pub mod builder;
 pub mod dto;
@@ -23,6 +24,7 @@ pub(crate) mod selection;
 pub mod server;
 pub mod source;
 pub mod summary;
+pub mod transport;
 
 pub use builder::ResponseBuilder;
 pub use dto::{
@@ -37,9 +39,10 @@ pub use error::{
 };
 pub use server::{
     AuthSession, CONTEXT_RPC_AUTH_METHOD, CONTEXT_RPC_QUERY_METHOD, CONTEXT_RPC_SUBSCRIBE_METHOD,
-    ContextRequest, ContextResponse as ServerContextResponse, ContextRpcError, ContextRpcRequest,
-    ContextRpcResponse, ContextServer, ContextServerConfig, DerivedIndexCache, DerivedIndexes,
-    FieldRedactionRule, TrustLevel,
+    JSONRPC_PARSE_ERROR, ContextRequest, ContextResponse as ServerContextResponse, ContextRpcError,
+    ContextRpcRequest, ContextRpcResponse, ContextServer, ContextServerConfig, DerivedIndexCache,
+    DerivedIndexes, FieldRedactionRule, TrustLevel,
 };
+pub use transport::{StdioTransport, TransportError};
 pub use source::{ContextSource, InMemoryContextSource, StoreContextSource};
 pub use summary::render_summary;

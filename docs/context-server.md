@@ -1,6 +1,6 @@
 # Context Server protocol
 
-<!-- Status: Implemented subset. `ail-context` provides an in-process server-shaped API; network transport, auth, and distributed freshness remain target design. -->
+<!-- Status: Implemented subset. `ail-context` provides an in-process server-shaped API with a stdio/MCP-like newline-delimited JSON-RPC transport; HTTP transport, distributed auth, and distributed freshness remain target design. -->
 
 > Target design. Current implementation scope is called out in the status note and Implementation Notes. Related: [Storage](storage.md), [Verification](verification.md), [AI Change Language](change-language.md), [Tooling](tooling.md).
 
@@ -630,7 +630,7 @@ The first implementation is an in-process semantic context API rather than a tra
 | Topic | Implementation status |
 |-------|-----------------------|
 | Query syntax | Structured Rust DTOs in `ail-context`; CLI/transport syntax remains future work. |
-| Transport adapter | `ContextRpcRequest` / `ContextRpcResponse` plus `ContextServer::handle_rpc` provide a deterministic JSON-RPC 2.0 dispatch boundary without adding a network server. |
+| Transport adapter | `StdioTransport` in `crates/ail-context/src/transport.rs` provides newline-delimited JSON-RPC framing over `ContextServer::handle_rpc`. `ContextRpcRequest` / `ContextRpcResponse` remain the shared envelope; HTTP and MCP adapters can reuse them without changing the server. |
 | Summaries | Deterministic renderer in `crates/ail-context/src/summary.rs`. Structured data remains authoritative. |
 | Signing | Distributed signing is handled in remote/bundle primitives, not context responses yet. |
 | Budgets | Response DTOs include limits and budget-related errors; model-tier defaults remain policy work. |

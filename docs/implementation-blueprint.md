@@ -44,7 +44,7 @@ The product only becomes AI-native when graph, ChangeSet, verifier, compiler, ru
 | Verification | Implemented subset | `crates/ail-verify/src/lib.rs`, pipeline/checker tests | Prod/critical profile rigor, solver limits, translation validation, policy UX. |
 | Compiler | Implemented subset | `crates/ail-compiler/src/lib.rs`, lowering/WASM/native tests | Full executable surface, backend parity, large-project performance evidence. |
 | Runtime | Implemented subset | `crates/ail-runtime/src/lib.rs`, runtime tests | Rich typed WASM ABI, memory/resource model, hardened isolation, operational limits. |
-| Context Server | Implemented subset | `crates/ail-context/src/lib.rs` | Network transport, auth, distributed freshness, redaction operations. |
+| Context Server | Implemented subset | `crates/ail-context/src/lib.rs`, `transport.rs` | HTTP transport, distributed auth, distributed freshness, redaction operations. |
 | Stdlib | Implemented subset | `crates/ail-stdlib/src/lib.rs`, module tests | Compatibility policy, official packages/adapters, verified contracts. |
 | Packages | Implemented subset | `crates/ail-package/src/lib.rs`, package tests | Registry operations, federation, reproducible-build proof workflows. |
 | Coordination / remote | Implemented subset | `crates/ail-coordinator/src/lib.rs`, `crates/ail-remote/src/lib.rs` | Durable remote sync service, multi-hop collaboration, key management. |
