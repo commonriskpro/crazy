@@ -21,8 +21,9 @@
 //
 // # G25 extensions (verification-pipeline)
 //
-// `VerificationReport` gained three additive optional fields:
+// `VerificationReport` gained additive optional fields:
 // - `proof_obligations` — first-class obligation ledger entries
+// - `solver_diagnostics` — structured timeout/resource/unsupported solver outcomes
 // - `degradation_events` — every state downgrade with reason and repair options
 // - `artifact_hashes`   — artifact hash entries for codegen consistency
 //
@@ -228,6 +229,176 @@ pub struct DegradationEvent {
     pub repair_options: Vec<String>,
 }
 
+// ── SolverDiagnostic ─────────────────────────────────────────────────────
+
+/// Stable solver diagnostic status exposed in verification reports.
+///
+/// These names are part of the serialized report contract.  Keep the serde
+/// representation snake_case so report JSON does not expose Rust enum variant
+/// names such as `ResourceLimited`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SolverDiagnosticStatus {
+    /// Solver attempt exceeded its configured or external time budget.
+    Timeout,
+    /// Solver attempt exhausted a configured or external resource budget.
+    ResourceLimited,
+    /// Solver cannot handle the obligation's predicate language or shape.
+    Unsupported,
+}
+
+impl SolverDiagnosticStatus {
+    /// Stable status string used by docs and repair tooling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SolverDiagnosticStatus::Timeout => "timeout",
+            SolverDiagnosticStatus::ResourceLimited => "resource_limited",
+            SolverDiagnosticStatus::Unsupported => "unsupported",
+        }
+    }
+}
+
+/// Structured diagnostic derived from proof-obligation solver attempts.
+///
+/// The current ledger stores solver details as stable attempt outcomes plus
+/// optional free-form evidence.  Classification is intentionally conservative:
+/// it recognizes explicit solver-attempt statuses and stable solver-scoped
+/// prefixes (`solver_timeout:`, `solver_resource_limited:`,
+/// `solver_unsupported:`).  Other prose remains unclassified.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SolverDiagnostic {
+    /// Stable proof obligation id this diagnostic describes.
+    pub obligation_id: String,
+    /// Verification stage that generated the obligation.
+    pub source_stage: String,
+    /// Stable machine-readable status.
+    pub status: SolverDiagnosticStatus,
+    /// Human-readable solver reason or evidence.
+    pub reason: String,
+    /// Ordered list of actionable repair suggestions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repair_options: Vec<String>,
+}
+
+impl SolverDiagnostic {
+    /// Build a report diagnostic from one proof-obligation ledger entry.
+    pub fn from_ledger_entry(entry: &ObligationLedgerEntry) -> Option<Self> {
+        let status = solver_diagnostic_status_from_ledger(entry)?;
+        let reason = solver_diagnostic_reason(entry, status)
+            .unwrap_or_else(|| format!("solver outcome classified as {}", status.as_str()));
+        let mut repair_options = solver_diagnostic_repair_options(status);
+        for option in &entry.repair_options {
+            if !repair_options.contains(option) {
+                repair_options.push(option.clone());
+            }
+        }
+
+        Some(Self {
+            obligation_id: entry.id.clone(),
+            source_stage: entry.source_stage.clone(),
+            status,
+            reason,
+            repair_options,
+        })
+    }
+}
+
+/// Classify stable solver-scoped reason prefixes into report statuses.
+pub fn solver_diagnostic_status_from_reason(reason: &str) -> Option<SolverDiagnosticStatus> {
+    let normalized = reason.trim().to_ascii_lowercase();
+    if normalized.starts_with("solver_timeout:") {
+        return Some(SolverDiagnosticStatus::Timeout);
+    }
+    if normalized.starts_with("solver_resource_limited:") {
+        return Some(SolverDiagnosticStatus::ResourceLimited);
+    }
+    if normalized.starts_with("solver_unsupported:") {
+        return Some(SolverDiagnosticStatus::Unsupported);
+    }
+    None
+}
+
+fn solver_diagnostic_status_from_attempt_outcome(outcome: &str) -> Option<SolverDiagnosticStatus> {
+    let normalized = outcome.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "timeout" => Some(SolverDiagnosticStatus::Timeout),
+        "resource_limited" => Some(SolverDiagnosticStatus::ResourceLimited),
+        "unsupported" => Some(SolverDiagnosticStatus::Unsupported),
+        _ => solver_diagnostic_status_from_reason(outcome),
+    }
+}
+
+fn solver_diagnostic_status_from_ledger(
+    entry: &ObligationLedgerEntry,
+) -> Option<SolverDiagnosticStatus> {
+    for attempt in entry
+        .attempts
+        .iter()
+        .filter(|attempt| attempt.stage == "solver")
+    {
+        if let Some(status) = solver_diagnostic_status_from_attempt_outcome(&attempt.outcome) {
+            return Some(status);
+        }
+        if let Some(status) = attempt
+            .evidence
+            .as_deref()
+            .and_then(solver_diagnostic_status_from_reason)
+        {
+            return Some(status);
+        }
+    }
+
+    None
+}
+
+fn solver_diagnostic_reason(
+    entry: &ObligationLedgerEntry,
+    status: SolverDiagnosticStatus,
+) -> Option<String> {
+    for attempt in entry
+        .attempts
+        .iter()
+        .filter(|attempt| attempt.stage == "solver")
+    {
+        if solver_diagnostic_status_from_attempt_outcome(&attempt.outcome) == Some(status) {
+            return attempt
+                .evidence
+                .clone()
+                .or_else(|| Some(attempt.outcome.clone()));
+        }
+        if attempt
+            .evidence
+            .as_deref()
+            .and_then(solver_diagnostic_status_from_reason)
+            == Some(status)
+        {
+            return attempt.evidence.clone();
+        }
+    }
+
+    None
+}
+
+fn solver_diagnostic_repair_options(status: SolverDiagnosticStatus) -> Vec<String> {
+    match status {
+        SolverDiagnosticStatus::Timeout => vec![
+            "simplify the predicate or split it into smaller obligations".into(),
+            "provide a narrower precondition or invariant for the solver".into(),
+            "add a runtime check when static proof is not practical".into(),
+        ],
+        SolverDiagnosticStatus::ResourceLimited => vec![
+            "reduce solver search space with stronger local facts".into(),
+            "split the proof obligation into lower-cost predicates".into(),
+            "add a runtime check or explicit assumption with policy approval".into(),
+        ],
+        SolverDiagnosticStatus::Unsupported => vec![
+            "rewrite the predicate into the supported solver fragment".into(),
+            "add a runtime check for the unsupported condition".into(),
+            "record an explicit assumption when the boundary is policy-approved".into(),
+        ],
+    }
+}
+
 // ── VerificationReport ────────────────────────────────────────────────────
 
 /// Ordered collection of verification entries and structured diagnostics for
@@ -245,12 +416,13 @@ pub struct DegradationEvent {
 ///
 /// # G25 extensions
 ///
-/// Three additive fields were added for the verification-pipeline change:
+/// Additive fields were added for the verification-pipeline change:
 /// - `proof_obligations` — first-class obligation ledger entries from the proof pipeline.
 /// - `degradation_events` — every recorded state downgrade.
 /// - `artifact_hashes` — artifact hash entries for codegen consistency checking.
+/// - `solver_diagnostics` — structured timeout/resource/unsupported solver outcomes.
 ///
-/// All three use `serde(default)` so pre-G25 reports still deserialize cleanly.
+/// These use `serde(default)` so pre-extension reports still deserialize cleanly.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationReport {
     /// Verification entries in graph traversal order.
@@ -282,6 +454,12 @@ pub struct VerificationReport {
     /// produced before the obligation ledger was introduced.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proof_obligations: Vec<ObligationLedgerEntry>,
+    /// Structured diagnostics derived from proof-obligation solver attempts.
+    ///
+    /// Empty for reports produced before solver diagnostic tracking or when no
+    /// solver attempt classifies as timeout, resource-limited, or unsupported.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub solver_diagnostics: Vec<SolverDiagnostic>,
     /// Recorded degradation events: every state downgrade with reason and repair options.
     ///
     /// Empty for reports produced before degradation tracking was introduced.

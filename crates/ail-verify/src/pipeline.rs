@@ -56,7 +56,9 @@ use crate::policy::{
     PublicApiChange, StructuralDiff,
 };
 use crate::proof::{ClauseRole, ProofObligation, ProofObligationPipeline};
-use crate::report::{DegradationEvent, VerificationEntry, VerificationReport, VerificationState};
+use crate::report::{
+    DegradationEvent, SolverDiagnostic, VerificationEntry, VerificationReport, VerificationState,
+};
 use crate::resource_checker::ResourceChecker;
 use crate::solver::{Solver, SolverOutcome};
 use crate::type_checker::TypeChecker;
@@ -339,7 +341,7 @@ impl VerificationPipeline {
                 .count(),
         };
 
-        // ── Infer degradation events from Assumed entries ─────────────────
+        // ── Infer report extensions from proof-obligation ledger ──────────
         let degradation_events: Vec<DegradationEvent> = proof_obligations
             .iter()
             .filter_map(|entry| match &entry.state {
@@ -355,6 +357,11 @@ impl VerificationPipeline {
             })
             .collect();
 
+        let solver_diagnostics: Vec<SolverDiagnostic> = proof_obligations
+            .iter()
+            .filter_map(SolverDiagnostic::from_ledger_entry)
+            .collect();
+
         // ── Snapshot IDs from graph structure ─────────────────────────────
         // Derive a stable snapshot identifier from node names + IDs so the
         // report is self-describing without adding new PipelineContext fields.
@@ -368,6 +375,7 @@ impl VerificationPipeline {
             schema_version: "verification/1.0".into(),
             summary_counts,
             proof_obligations,
+            solver_diagnostics,
             degradation_events,
             artifact_hashes: vec![],
             base_snapshot,

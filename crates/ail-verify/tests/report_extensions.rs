@@ -2,7 +2,7 @@
 //
 // Strict TDD — RED phase.
 // Tests for new additive fields on VerificationReport:
-//   proof_obligations, degradation_events, artifact_hashes
+//   proof_obligations, solver_diagnostics, degradation_events, artifact_hashes
 //
 // Spec: verification-pipeline/spec §1 (proof obligation pipeline with
 // degradation tracking), §5 (codegen consistency).
@@ -12,14 +12,18 @@ use ail_verify::report::{ArtifactHash, DegradationEvent, VerificationReport, Ver
 
 // ── Scenario: new fields default to empty ─────────────────────────────────
 // GIVEN a VerificationReport constructed via Default
-// WHEN the three new fields are inspected
-// THEN all three are empty slices
+// WHEN the additive fields are inspected
+// THEN all additive slices are empty
 #[test]
 fn new_report_fields_default_to_empty() {
     let report = VerificationReport::default();
     assert!(
         report.proof_obligations.is_empty(),
         "proof_obligations must default to empty"
+    );
+    assert!(
+        report.solver_diagnostics.is_empty(),
+        "solver_diagnostics must default to empty"
     );
     assert!(
         report.degradation_events.is_empty(),
@@ -130,6 +134,10 @@ fn old_report_without_new_fields_deserializes_cleanly() {
     assert!(
         report.degradation_events.is_empty(),
         "degradation_events must default to empty for old reports"
+    );
+    assert!(
+        report.solver_diagnostics.is_empty(),
+        "solver_diagnostics must default to empty for old reports"
     );
     assert!(
         report.artifact_hashes.is_empty(),
