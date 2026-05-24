@@ -47,6 +47,9 @@ pub mod report;
 pub mod resource_checker;
 pub mod solver;
 pub mod type_checker;
+pub(crate) mod type_diagnostics;
+pub(crate) mod type_obligations;
+pub(crate) mod type_refinements;
 
 #[cfg(feature = "z3-solver")]
 pub mod z3_solver;
