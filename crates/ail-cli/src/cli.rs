@@ -639,7 +639,62 @@ pub async fn run() -> Result<(), CliError> {
 // re-exported above via `pub(crate) use crate::cli_helpers::*`.
 
 // ── UNIT TESTS ────────────────────────────────────────────────────────────
+// Tests are split into domain-scoped files under src/tests/.
+// Each file starts with `use super::*;` which gives it the same visibility
+// as the old monolithic cli_tests.rs (child module of cli.rs).
 
 #[cfg(test)]
-#[path = "cli_tests.rs"]
-mod tests;
+#[path = "tests/identity.rs"]
+mod tests_identity;
+
+#[cfg(test)]
+#[path = "tests/run.rs"]
+mod tests_run;
+
+#[cfg(test)]
+#[path = "tests/compile.rs"]
+mod tests_compile;
+
+#[cfg(test)]
+#[path = "tests/verify.rs"]
+mod tests_verify;
+
+#[cfg(test)]
+#[path = "tests/graph_query.rs"]
+mod tests_graph_query;
+
+#[cfg(test)]
+#[path = "tests/apply.rs"]
+mod tests_apply;
+
+#[cfg(test)]
+#[path = "tests/branch_ops.rs"]
+mod tests_branch_ops;
+
+#[cfg(test)]
+#[path = "tests/refactor.rs"]
+mod tests_refactor;
+
+#[cfg(test)]
+#[path = "tests/approval_policy.rs"]
+mod tests_approval_policy;
+
+#[cfg(test)]
+#[path = "tests/package.rs"]
+mod tests_package;
+
+#[cfg(test)]
+#[path = "tests/inspect.rs"]
+mod tests_inspect;
+
+#[cfg(test)]
+#[path = "tests/pipeline.rs"]
+mod tests_pipeline;
+
+#[cfg(test)]
+#[path = "tests/report_persistence.rs"]
+mod tests_report_persistence;
+
+#[cfg(test)]
+#[path = "tests/doctor.rs"]
+mod tests_doctor;
