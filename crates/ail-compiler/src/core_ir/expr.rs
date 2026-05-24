@@ -12,10 +12,14 @@ use super::primitives::{LiteralValue, LoopTermination};
 /// One arm of a `CoreExpr::Match` expression.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchArm {
-    /// Pattern string (e.g. `"Ok(x)"`, `"None"`, `"_"`). Backend execution
-    /// currently supports integer literals, boolean literals, and wildcard;
-    /// constructor payload strings are syntax-only until payload bindings are
-    /// represented in Core/ANF.
+    /// Pattern string (e.g. `"Ok(x)"`, `"None"`, `"_"`). Supported patterns:
+    /// - integer/boolean literals on scalar scrutinees.
+    /// - `"_"` wildcard — unconditionally matches.
+    /// - tag-only constructor (e.g. `"None"`) on variant-pointer (I32) scrutinees.
+    /// - single-binding constructor (e.g. `"Ok(val)"`, `"Some(x)"`) on variant-pointer
+    ///   scrutinees — binds the payload at memory offset 8.
+    ///
+    /// Multi-binding patterns (e.g. `"Ok(a, b)"`) are not yet supported.
     pub pattern: String,
     /// Body expression evaluated when the pattern matches.
     pub body: CoreExpr,
@@ -90,6 +94,14 @@ pub enum CoreExpr {
     Lt(Box<CoreExpr>, Box<CoreExpr>),
     /// Signed integer greater-than comparison.
     Gt(Box<CoreExpr>, Box<CoreExpr>),
+    /// Integer not-equal comparison.
+    Ne(Box<CoreExpr>, Box<CoreExpr>),
+    /// Signed integer less-than-or-equal comparison.
+    Le(Box<CoreExpr>, Box<CoreExpr>),
+    /// Signed integer greater-than-or-equal comparison.
+    Ge(Box<CoreExpr>, Box<CoreExpr>),
+    /// Boolean negation: `!x` — produces `false` when `x` is truthy, `true` otherwise.
+    Not(Box<CoreExpr>),
     /// An anonymous pure or effectful function.
     Lambda {
         params: Vec<String>,

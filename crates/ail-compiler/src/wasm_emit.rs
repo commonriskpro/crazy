@@ -293,6 +293,39 @@ fn parse_bool_pattern(pattern: &str) -> Option<bool> {
     }
 }
 
+/// Parse a variant constructor pattern string into `(tag, Option<binding>)`.
+///
+/// Recognises:
+/// - `"None"` → `("None", None)` — tag-only, no payload binding
+/// - `"Ok(x)"` → `("Ok", Some("x"))` — tag with single binding
+/// - `"Some(_)"` → `("Some", Some("_"))` — tag with wildcard binding (no binding emitted)
+///
+/// Returns `None` for patterns that are not constructor-shaped (integers, booleans,
+/// `_` wildcard, or unsupported nested/multi-binding patterns).
+fn parse_constructor_pattern(pattern: &str) -> Option<(&str, Option<&str>)> {
+    let trimmed = pattern.trim();
+    // Must start with an ASCII uppercase letter to be a constructor tag.
+    let first_char = trimmed.chars().next()?;
+    if !first_char.is_ascii_uppercase() {
+        return None;
+    }
+    if let Some(open) = trimmed.find('(') {
+        let tag = trimmed[..open].trim();
+        let after = trimmed[open + 1..].trim();
+        // Require exactly one closing paren at the end.
+        let after = after.strip_suffix(')')?;
+        let binding = after.trim();
+        // Reject multi-binding or nested patterns — not supported yet.
+        if binding.contains('(') || binding.contains(',') {
+            return None;
+        }
+        Some((tag, Some(binding)))
+    } else {
+        // Tag-only pattern (no payload).
+        Some((trimmed, None))
+    }
+}
+
 fn emit_match_arms<'a>(
     scrutinee: &str,
     scrutinee_ty: ValType,
@@ -309,6 +342,56 @@ fn emit_match_arms<'a>(
 
     if first.pattern.trim() == "_" {
         return emit_branch_expr(&first.body, result_ty, ctx, functions, insns);
+    }
+
+    // ── Variant constructor patterns (I32 scrutinee = pointer) ───────────
+    // Must be checked before the bool/int fallback so that tag-only patterns
+    // like `"None"` are not misidentified as unhandled patterns.
+    if scrutinee_ty == ValType::I32
+        && let Some((tag, binding)) = parse_constructor_pattern(&first.pattern)
+    {
+        // Emit: load tag field (i32 at offset 0) and compare.
+        emit_local_get(ctx, scrutinee, insns);
+        insns.push(Instruction::I32Load(wasm_encoder::MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        }));
+        let tag_id = ctx.assign_tag(tag) as i32;
+        insns.push(Instruction::I32Const(tag_id));
+        insns.push(Instruction::I32Eq);
+
+        insns.push(Instruction::If(block_type(result_ty)));
+        ctx.labels.push(LabelKind::Other);
+
+        // Bind payload (i64 at offset 8) if the pattern names it (and is not wildcard).
+        if let Some(bind_name) = binding
+            && bind_name != "_"
+        {
+            let payload_local = ctx.bind(bind_name, ValType::I64);
+            emit_local_get(ctx, scrutinee, insns);
+            insns.push(Instruction::I64Load(wasm_encoder::MemArg {
+                offset: 8,
+                align: 3,
+                memory_index: 0,
+            }));
+            insns.push(Instruction::LocalSet(payload_local));
+        }
+
+        emit_branch_expr(&first.body, result_ty, ctx, functions, insns);
+        insns.push(Instruction::Else);
+        emit_match_arms(
+            scrutinee,
+            scrutinee_ty,
+            rest,
+            result_ty,
+            ctx,
+            functions,
+            insns,
+        );
+        ctx.labels.pop();
+        insns.push(Instruction::End);
+        return result_ty;
     }
 
     let can_match = match scrutinee_ty {
@@ -334,9 +417,8 @@ fn emit_match_arms<'a>(
     };
 
     if can_match.is_none() {
-        // Constructor/variant payload patterns are parsed as strings but are
-        // not lowered into payload bindings yet. Trap instead of pretending the
-        // arm can be checked or safely skipped.
+        // Pattern is not integer, boolean, wildcard, or a recognised constructor.
+        // Trap with unreachable rather than silently skipping or mismatching.
         insns.push(Instruction::Unreachable);
         return result_ty;
     }

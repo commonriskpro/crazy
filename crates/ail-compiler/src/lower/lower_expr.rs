@@ -100,6 +100,15 @@ pub(super) fn lower_core_binary_to_anf(
     lower_core_call_to_anf(func, &[left.clone(), right.clone()], fresh, source_ref)
 }
 
+pub(super) fn lower_core_unary_to_anf(
+    func: &str,
+    operand: &CoreExpr,
+    fresh: &mut u32,
+    source_ref: NodeRef,
+) -> AnfExpr {
+    lower_core_call_to_anf(func, std::slice::from_ref(operand), fresh, source_ref)
+}
+
 pub(super) fn lower_core_expr_to_anf_local(
     expr: &CoreExpr,
     fresh: &mut u32,
@@ -161,6 +170,10 @@ pub(super) fn lower_core_expr_to_anf_local(
         CoreExpr::Eq(left, right) => lower_core_binary_to_anf("eq", left, right, fresh, source_ref),
         CoreExpr::Lt(left, right) => lower_core_binary_to_anf("lt", left, right, fresh, source_ref),
         CoreExpr::Gt(left, right) => lower_core_binary_to_anf("gt", left, right, fresh, source_ref),
+        CoreExpr::Ne(left, right) => lower_core_binary_to_anf("ne", left, right, fresh, source_ref),
+        CoreExpr::Le(left, right) => lower_core_binary_to_anf("le", left, right, fresh, source_ref),
+        CoreExpr::Ge(left, right) => lower_core_binary_to_anf("ge", left, right, fresh, source_ref),
+        CoreExpr::Not(operand) => lower_core_unary_to_anf("not", operand, fresh, source_ref),
         CoreExpr::And { left, right } => {
             let (left_name, left_binding) = atomize_local(left, fresh, source_ref);
             let and_expr = AnfExpr::ShortCircuitAnd {
@@ -346,6 +359,10 @@ pub fn lower_core_expr_to_anf(
         CoreExpr::Eq(left, right) => lower_core_binary_to_anf("eq", left, right, fresh, source_ref),
         CoreExpr::Lt(left, right) => lower_core_binary_to_anf("lt", left, right, fresh, source_ref),
         CoreExpr::Gt(left, right) => lower_core_binary_to_anf("gt", left, right, fresh, source_ref),
+        CoreExpr::Ne(left, right) => lower_core_binary_to_anf("ne", left, right, fresh, source_ref),
+        CoreExpr::Le(left, right) => lower_core_binary_to_anf("le", left, right, fresh, source_ref),
+        CoreExpr::Ge(left, right) => lower_core_binary_to_anf("ge", left, right, fresh, source_ref),
+        CoreExpr::Not(operand) => lower_core_unary_to_anf("not", operand, fresh, source_ref),
 
         // FieldGet: record expression must be atomic.
         CoreExpr::FieldGet { record, field } => {
