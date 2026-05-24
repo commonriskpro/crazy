@@ -175,6 +175,53 @@ fn emit_report_with_capability_calls_summarizes_them() {
     );
 }
 
+// Scenario: capability summaries from emit_report are sorted lexicographically.
+//
+// Denied (not-granted) capability calls still produce CapabilityCallExecuted
+// audit events, so a bare RuntimeHost (no profile) is sufficient to exercise
+// the extraction + sorting path without a full WASM execution.
+#[test]
+fn emit_report_capability_summaries_are_sorted_and_accurate() {
+    let mut host = RuntimeHost::new();
+
+    // Call in reverse-alphabetical order to prove sort is applied, not insertion order.
+    let _ = host.call_capability(&CapabilityId::new("z:last"), "op", b"");
+    let _ = host.call_capability(&CapabilityId::new("m:middle"), "op", b"");
+    let _ = host.call_capability(&CapabilityId::new("a:first"), "op", b"");
+    // Second call to m:middle — total_calls for that entry must be 2.
+    let _ = host.call_capability(&CapabilityId::new("m:middle"), "op", b"");
+
+    let report = host.emit_report(RuntimeReportStatus::Completed, "sort-test");
+    let summaries = report.capability_summaries();
+
+    // Three distinct capabilities must be present.
+    assert_eq!(
+        summaries.len(),
+        3,
+        "must have 3 distinct capability summaries; got: {summaries:?}"
+    );
+
+    // Sorted lexicographically regardless of call order.
+    let names: Vec<&str> = summaries.iter().map(|s| s.capability.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["a:first", "m:middle", "z:last"],
+        "capability summaries must be sorted lexicographically; got: {names:?}"
+    );
+
+    // Content correctness: m:middle called twice, both denied → failed=2.
+    let m = summaries
+        .iter()
+        .find(|s| s.capability.as_str() == "m:middle")
+        .expect("m:middle summary must exist");
+    assert_eq!(
+        m.total_calls, 2,
+        "m:middle total_calls must be 2; got: {m:?}"
+    );
+    assert_eq!(m.succeeded, 0, "denied calls have succeeded=0; got: {m:?}");
+    assert_eq!(m.failed, 2, "denied calls have failed=2; got: {m:?}");
+}
+
 #[test]
 fn report_id_is_set_from_parameter() {
     let wasm = minimal_wasm();
