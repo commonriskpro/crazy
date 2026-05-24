@@ -1712,10 +1712,12 @@ async fn cmd_inspect(
         }
         "artifact" => {
             // Try to load a previously persisted artifact.
-            // Preference order:
-            //   1. persisted WASM artifact (load_wasm_artifact)
+            // Preference order (extension-aware):
+            //   1. persisted WASM artifact (load_wasm_artifact) — suppresses fallback for .o names
             //   2. persisted native artifact (load_native_artifact)
             //   3. on-demand WASM compilation (fallback)
+            // load_wasm_artifact will not claim .o-suffixed names via its fallback-to-latest,
+            // so .o names skip straight to the native branch.
             if let Some(persisted) = store.load_wasm_artifact(id)? {
                 let wasm_hash = persisted.hash.as_str();
                 let profile = persisted.profile.as_str();

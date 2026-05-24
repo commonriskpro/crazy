@@ -619,12 +619,21 @@ impl StoreHandle {
             entries.iter().find(|e| e.hash == name)
         } else {
             // Profile-name match (strip optional .wasm suffix), then fall back to latest.
+            // Suppress the fallback when the name carries a foreign extension (e.g. ".o"):
+            // those names belong to other artifact types and must not resolve via WASM fallback.
             let profile_guess = name.strip_suffix(".wasm").unwrap_or(name);
+            let has_foreign_ext = name.contains('.') && !name.ends_with(".wasm");
             entries
                 .iter()
                 .filter(|e| e.profile == profile_guess)
                 .max_by_key(|e| e.stored_at)
-                .or_else(|| entries.iter().max_by_key(|e| e.stored_at))
+                .or_else(|| {
+                    if has_foreign_ext {
+                        None
+                    } else {
+                        entries.iter().max_by_key(|e| e.stored_at)
+                    }
+                })
         };
 
         let Some(entry) = entry else {

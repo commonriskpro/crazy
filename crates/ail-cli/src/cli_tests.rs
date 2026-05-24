@@ -1458,6 +1458,65 @@ async fn cmd_inspect_artifact_prefers_persisted_native_over_on_demand() {
     );
 }
 
+// Scenario: inspect artifact dev.o resolves native when both WASM and native artifacts coexist.
+//   GIVEN a file store where both cmd_compile --target wasm and --target native have been run
+//   WHEN cmd_inspect artifact is called with "dev.o"
+//   THEN load_wasm_artifact("dev.o") returns None (suppressed foreign-ext fallback)
+//   AND  load_native_artifact("dev.o") returns Some (native artifact is selected)
+//   AND  cmd_inspect returns Ok (no cross-type contamination)
+//
+// Regression guard for the Feature-O post-merge bug:
+//   Before the fix, load_wasm_artifact("dev.o") fell back to the latest WASM entry,
+//   causing cmd_inspect to return WASM data for a .o-named request.
+#[tokio::test]
+async fn cmd_inspect_artifact_dot_o_resolves_native_when_both_artifacts_coexist() {
+    use crate::store::{file_store, init_file_layout};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    let store = file_store(ail_dir.clone());
+
+    // Persist both a WASM and a native artifact so both index entries exist.
+    cmd_compile(OutputMode::Human, "dev", "wasm", &store)
+        .await
+        .expect("wasm compile must succeed");
+    cmd_compile(OutputMode::Human, "dev", "native", &store)
+        .await
+        .expect("native compile must succeed");
+
+    // Regression check: load_wasm_artifact must NOT claim "dev.o" via fallback-to-latest.
+    // Before the fix this returned Some(wasm) because the .wasm profile-match was empty
+    // and the function fell back to the latest WASM entry unconditionally.
+    let wasm_for_dot_o = store
+        .load_wasm_artifact("dev.o")
+        .expect("load_wasm_artifact must not error");
+    assert!(
+        wasm_for_dot_o.is_none(),
+        "load_wasm_artifact must return None for a .o-suffixed name (foreign extension); \
+         got Some(_) — WASM fallback incorrectly claimed a .o name"
+    );
+
+    // Positive check: load_native_artifact must resolve "dev.o" to the persisted artifact.
+    let native_for_dot_o = store
+        .load_native_artifact("dev.o")
+        .expect("load_native_artifact must not error")
+        .expect("load_native_artifact must return Some for 'dev.o' after native compile");
+    assert_eq!(
+        native_for_dot_o.target, "native",
+        "persisted native artifact target must be 'native'; got: {:?}",
+        native_for_dot_o.target
+    );
+
+    // End-to-end check: cmd_inspect must succeed (native branch is taken, not WASM).
+    let result = cmd_inspect(OutputMode::Human, "artifact", "dev.o", &store).await;
+    assert!(
+        result.is_ok(),
+        "inspect artifact dev.o must succeed when both WASM and native artifacts coexist; \
+         got: {result:?}"
+    );
+}
+
 // Scenario: cmd_compile --target native JSON output contains persisted_paths.
 //   GIVEN a file store
 //   WHEN cmd_compile --target native is called in Json mode
