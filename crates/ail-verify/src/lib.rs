@@ -47,6 +47,7 @@ pub mod report;
 pub mod resource_checker;
 pub mod solver;
 pub mod translation_validator;
+pub(crate) mod tv_obligations;
 pub mod type_checker;
 pub(crate) mod type_diagnostics;
 pub(crate) mod type_obligations;
