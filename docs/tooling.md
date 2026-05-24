@@ -638,6 +638,21 @@ local compatibility/migration metadata is invalid or migration-bearing. Blocked
 compatibility issues return a non-zero exit after printing the JSON payload;
 warnings return zero.
 
+Machine output also includes `reproducible_evidence_integrity` (`"ok"` or
+`"warning"`) and a `verified_packages_missing_evidence` list. When a
+`TrustLevel::Verified` package in the local registry lacks
+`reproducible_evidence`, `reproducible_evidence_integrity` is set to `"warning"`
+and the package identifier is added to `verified_packages_missing_evidence`.
+
+**Important**: `package verify` treats missing reproducible evidence as an
+advisory warning, not a blocker — the command exits 0 and the JSON `verified`
+field remains `true`. However, **runtime preflight hard-fails** on `Verified`
+packages that lack evidence. Human output makes this asymmetry visible with a
+prominent `WARNING` line naming the affected packages and a summary header of
+`packages: all verified (reproducible evidence warning)`. Operators who see this
+warning should add `reproducible_evidence` to their package manifests before
+deploying to a runtime environment.
+
 #### package search
 
 Searches the local package registry for packages matching a query string.

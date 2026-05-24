@@ -55,7 +55,7 @@ pub use import::ImportDeclaration;
 pub use lockfile::{Lockfile, LockfileEntry};
 pub use manifest::{
     ArtifactHashEntry, PackageDef, PackageError, PackageManifest, PackageValidationError,
-    Provenance,
+    Provenance, ReproducibleBuildEvidence,
 };
 pub use namespace::{
     ImportAlias, NamespaceKind, NamespaceOwnershipCheck, OwnershipError, PackageNamespace,

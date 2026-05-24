@@ -68,6 +68,8 @@ fn make_package(name: &str, trust: TrustLevel) -> PackageManifest {
         verification_report: None,
         graph_schema: None,
         core_ir_schema: None,
+        // 4G fields
+        reproducible_evidence: None,
     })
 }
 
@@ -87,6 +89,12 @@ fn make_verified_package(name: &str) -> PackageManifest {
         unsafe_surface: vec![],
         artifact_hashes: vec![artifact_hash],
     });
+    // 4G: Verified packages require reproducible-build evidence.
+    package.reproducible_evidence = Some(ail_package::ReproducibleBuildEvidence::new(
+        "c".repeat(64),
+        "ail-toolchain-test-0.1.0",
+        "d".repeat(64),
+    ));
     package
 }
 
@@ -322,6 +330,8 @@ fn unsafe_package_blocked_without_approval() {
         verification_report: None,
         graph_schema: None,
         core_ir_schema: None,
+        // 4G fields
+        reproducible_evidence: None,
     };
     let pkg = PackageManifest::from_def(def);
 

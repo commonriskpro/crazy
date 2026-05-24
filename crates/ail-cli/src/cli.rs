@@ -73,8 +73,9 @@ use ail_package::{
     CapabilityPolicyEnforcer, CapabilityPolicyVerdict, CompatibilityEngine, CompatibilityError,
     LocalCompatibilityIssue, LocalCompatibilityIssueKind, Lockfile, LockfileEntry,
     PackageCompatibilityMetadata, PackageDef, PackageKeypair, PackageManifest, PackageRegistry,
-    PackageVerificationReport, PublishRequest, RegistryClient, SearchRequest, SecurityAdvisory,
-    SignedPackage, TrustLevel, VerifyOutcome, VerifyRequest, YankRecord,
+    PackageVerificationReport, PublishRequest, RegistryClient, ReproducibleBuildEvidence,
+    SearchRequest, SecurityAdvisory, SignedPackage, TrustLevel, VerifyOutcome, VerifyRequest,
+    YankRecord,
 };
 use ail_remote::{
     AgentKeypair, FileBundleStore, ObjectBundle, RemoteChangeSet, RemoteExchangeRequest,
@@ -4134,8 +4135,10 @@ async fn cmd_package(
             let entry = &installed.entry;
             let verification_report_status =
                 verification_report_status(installed.verification_report.is_some());
+            let repro_evidence_status =
+                reproducible_evidence_status(installed.reproducible_evidence.is_some());
             let human_msg = format!(
-                "added: {package}\nname: {}\nversion: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\ncapabilities: []\nassumptions: []\nunsafe_surface: []\nadvisories: []\nnote: package install does not grant capabilities{}",
+                "added: {package}\nname: {}\nversion: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\ncapabilities: []\nassumptions: []\nunsafe_surface: []\nadvisories: []\nnote: package install does not grant capabilities{}",
                 entry.name,
                 entry.version,
                 entry.trust_level,
@@ -4154,6 +4157,7 @@ async fn cmd_package(
                     "verification_report": installed.verification_report,
                     "verification_report_hash": entry.verification_report_hash,
                     "verification_report_status": verification_report_status,
+                    "reproducible_evidence_status": repro_evidence_status,
                     "capabilities": [],
                     "assumptions": [],
                     "unsafe_surface": [],
@@ -4179,8 +4183,10 @@ async fn cmd_package(
             let entry = &installed.entry;
             let verification_report_status =
                 verification_report_status(installed.verification_report.is_some());
+            let repro_evidence_status =
+                reproducible_evidence_status(installed.reproducible_evidence.is_some());
             let human_msg = format!(
-                "installed: {}@{}\ntrust: {:?}\npackage_hash: {}\nsignature: {}\nverification_report: {verification_report_status}\nnote: package install does not grant capabilities{}",
+                "installed: {}@{}\ntrust: {:?}\npackage_hash: {}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nnote: package install does not grant capabilities{}",
                 entry.name,
                 entry.version,
                 entry.trust_level,
@@ -4201,6 +4207,7 @@ async fn cmd_package(
                     "verification_report": installed.verification_report,
                     "verification_report_hash": entry.verification_report_hash,
                     "verification_report_status": verification_report_status,
+                    "reproducible_evidence_status": repro_evidence_status,
                     "capabilities_granted": false,
                     "warnings": installed.warnings,
                     "compatibility_issues": installed.compatibility_issues.iter().map(package_compatibility_issue_to_json).collect::<Vec<_>>(),
@@ -4253,9 +4260,18 @@ async fn cmd_package(
             let mut actual_by_package = BTreeMap::new();
             let mut signature_failures = Vec::new();
             let mut warnings = Vec::new();
+            // 4G: track Verified packages missing reproducible evidence (local check only).
+            let mut verified_packages_missing_evidence: Vec<String> = Vec::new();
             for manifest in registry.all() {
                 if !seen.insert((manifest.name.clone(), manifest.version.clone())) {
                     continue;
+                }
+                // 4G: Surface reproducible evidence status for Verified packages.
+                if manifest.trust_level == TrustLevel::Verified
+                    && manifest.reproducible_evidence.is_none()
+                {
+                    verified_packages_missing_evidence
+                        .push(format!("{}@{}", manifest.name, manifest.version));
                 }
                 match trusted_package_lookup(&registry, &manifest.name, &manifest.version) {
                     Ok(lookup) => {
@@ -4307,18 +4323,33 @@ async fn cmd_package(
                 "ok"
             };
             let compatibility_ok = !compatibility_blocked;
+            // 4G: reproducible evidence integrity — warn-only (advisory, not a blocker).
+            let repro_evidence_integrity = if verified_packages_missing_evidence.is_empty() {
+                "ok"
+            } else {
+                "warning"
+            };
             let verified = hash_ok && signature_ok && report_hash_ok && compatibility_ok;
-            let human_msg = format!(
-                "packages: {}\nhash_integrity: {}\nsignature_integrity: {}\nverification_report_integrity: {}\ncompatibility_integrity: {}\nlock_file: {}\npackages_checked: {}\nwarnings: {}",
-                if verified {
-                    "all verified"
+            // 4G: human summary differentiates "all verified" from "verified but
+            // reproducible evidence is missing", because runtime preflight hard-fails
+            // on Verified packages that lack evidence even when all other integrity
+            // checks pass.
+            let packages_summary = if verified {
+                if repro_evidence_integrity == "warning" {
+                    "all verified (reproducible evidence warning)"
                 } else {
-                    "verification failed"
-                },
+                    "all verified"
+                }
+            } else {
+                "verification failed"
+            };
+            let mut human_msg = format!(
+                "packages: {packages_summary}\nhash_integrity: {}\nsignature_integrity: {}\nverification_report_integrity: {}\ncompatibility_integrity: {}\nreproducible_evidence_integrity: {}\nlock_file: {}\npackages_checked: {}\nwarnings: {}",
                 if hash_ok { "ok" } else { "mismatch" },
                 if signature_ok { "ok" } else { "failed" },
                 if report_hash_ok { "ok" } else { "mismatch" },
                 compatibility_integrity,
+                repro_evidence_integrity,
                 if verified {
                     "consistent"
                 } else {
@@ -4327,12 +4358,24 @@ async fn cmd_package(
                 lockfile.len(),
                 warnings.len()
             );
+            // 4G: surface missing reproducible evidence prominently in human output.
+            // The JSON field `verified_packages_missing_evidence` is already present;
+            // the human-readable path must not silently pass these through as "ok".
+            if !verified_packages_missing_evidence.is_empty() {
+                human_msg.push_str(&format!(
+                    "\nWARNING: {} verified package(s) missing reproducible_evidence — runtime preflight will reject: {}",
+                    verified_packages_missing_evidence.len(),
+                    verified_packages_missing_evidence.join(", ")
+                ));
+            }
             let response_data = json!({
                 "verified": verified,
                 "hash_integrity": if hash_ok { "ok" } else { "mismatch" },
                 "signature_integrity": if signature_ok { "ok" } else { "failed" },
                 "verification_report_integrity": if report_hash_ok { "ok" } else { "mismatch" },
                 "compatibility_integrity": compatibility_integrity,
+                "reproducible_evidence_integrity": repro_evidence_integrity,
+                "verified_packages_missing_evidence": verified_packages_missing_evidence,
                 "lock_file": if verified { "consistent" } else { "inconsistent" },
                 "mismatches": mismatches,
                 "verification_report_mismatches": report_mismatches
@@ -4421,8 +4464,10 @@ async fn cmd_package(
             save_package_registry(store, &registry)?;
             let verification_report_status =
                 verification_report_status(manifest.verification_report.is_some());
+            let repro_evidence_status =
+                reproducible_evidence_status(manifest.reproducible_evidence.is_some());
             let human_msg = format!(
-                "published\nname: {}\nversion: {}\npackage_hash: {hash}\ntrust: {:?}\nsignature: signed\ncapabilities_manifest: attached\nverification_report: {verification_report_status}",
+                "published\nname: {}\nversion: {}\npackage_hash: {hash}\ntrust: {:?}\nsignature: signed\ncapabilities_manifest: attached\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}",
                 manifest.name, manifest.version, manifest.trust_level
             );
             print_response(
@@ -4440,6 +4485,7 @@ async fn cmd_package(
                     "capabilities_manifest": manifest.required_capabilities,
                     "verification_report": manifest.verification_report,
                     "verification_report_status": verification_report_status,
+                    "reproducible_evidence_status": repro_evidence_status,
                 }),
             );
         }
@@ -4996,6 +5042,8 @@ struct InstalledPackage {
     entry: LockfileEntry,
     signature_status: &'static str,
     verification_report: Option<PackageVerificationReport>,
+    /// Locally-recorded reproducible-build evidence from the package manifest.
+    reproducible_evidence: Option<ReproducibleBuildEvidence>,
     warnings: Vec<String>,
     compatibility_issues: Vec<PackageCompatibilityCliIssue>,
 }
@@ -5570,6 +5618,8 @@ async fn package_manifest_for_current_graph(
         verification_report: None,
         graph_schema: Some(1),
         core_ir_schema: Some(1),
+        // 4G fields
+        reproducible_evidence: None,
     });
     manifest
         .validate()
@@ -5620,6 +5670,8 @@ fn default_memory_package_registry() -> Result<PackageRegistry, CliError> {
             verification_report: None,
             graph_schema: Some(1),
             core_ir_schema: Some(1),
+            // 4G fields
+            reproducible_evidence: None,
         });
         let signed = keypair
             .sign_manifest(manifest)
@@ -5989,6 +6041,7 @@ fn install_package_from_registry(
             entry: stored_entry,
             signature_status: lookup.signature_status,
             verification_report: manifest.verification_report.clone(),
+            reproducible_evidence: manifest.reproducible_evidence.clone(),
             warnings: lookup
                 .warning
                 .into_iter()
@@ -6006,6 +6059,14 @@ fn install_package_from_registry(
 
 fn verification_report_status(has_report: bool) -> &'static str {
     if has_report { "attached" } else { "none" }
+}
+
+/// Surface reproducible-build evidence status for CLI output.
+///
+/// Returns a stable lowercase string suitable for JSON and human output.
+/// This is LOCAL evidence metadata only — no rebuild is performed.
+fn reproducible_evidence_status(has_evidence: bool) -> &'static str {
+    if has_evidence { "present" } else { "none" }
 }
 
 fn verification_report_hash_for_manifest(

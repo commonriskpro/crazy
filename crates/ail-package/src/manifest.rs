@@ -28,6 +28,98 @@ use crate::surface::UnsafeSurfaceEntry;
 use crate::trust::TrustLevel;
 use crate::verification::PackageVerificationReport;
 
+// ── ReproducibleBuildEvidence ─────────────────────────────────────────────
+
+/// Locally-recorded reproducible-build evidence for a package.
+///
+/// This is metadata recorded at publish time to enable local trust verification.
+/// It does **not** prove the build is reproducible — no rebuild is executed and
+/// no remote attestation is consulted.  It records the inputs and recipe hash
+/// so that reviewers can reason about build determinism locally.
+///
+/// # Note on scope
+///
+/// This is LOCAL evidence metadata only.  It cannot guarantee remote
+/// reproducibility, transparency-log attestation, or Sigstore signatures.
+///
+/// # Hash format
+///
+/// All `*_hash` / `*_digest` fields must be 64 lower-case hex characters
+/// (a BLAKE3 hex digest).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReproducibleBuildEvidence {
+    /// BLAKE3 hex digest of the combined build inputs.
+    ///
+    /// Canonical formula: `BLAKE3(source_digest_utf8_bytes || toolchain_id_utf8_bytes)`.
+    /// Use [`ReproducibleBuildEvidence::compute_build_inputs_hash`] to derive this value.
+    /// 64 lower-case hex characters.
+    pub build_inputs_hash: String,
+    /// Identifier of the toolchain used to build this package.
+    ///
+    /// Examples: `"rustc-1.77.0-stable-x86_64-unknown-linux-gnu"`,
+    /// `"ail-toolchain-0.3.0"`.
+    pub toolchain_id: String,
+    /// BLAKE3 hex digest of the source archive used as build input.
+    ///
+    /// 64 lower-case hex characters.
+    pub source_digest: String,
+    /// BLAKE3 hex digest of the deterministic build recipe.
+    ///
+    /// Covers build flags, lock-file content, and build-script identity.
+    /// 64 lower-case hex characters.
+    pub recipe_hash: String,
+}
+
+impl ReproducibleBuildEvidence {
+    /// Construct a new `ReproducibleBuildEvidence`, deriving `build_inputs_hash`
+    /// from `source_digest` and `toolchain_id`.
+    ///
+    /// The caller is responsible for supplying a valid BLAKE3 hex string for
+    /// `source_digest` and `recipe_hash` (64 lower-case hex characters).
+    pub fn new(
+        source_digest: impl Into<String>,
+        toolchain_id: impl Into<String>,
+        recipe_hash: impl Into<String>,
+    ) -> Self {
+        let source_digest = source_digest.into();
+        let toolchain_id = toolchain_id.into();
+        let recipe_hash = recipe_hash.into();
+        let build_inputs_hash = Self::compute_build_inputs_hash(&source_digest, &toolchain_id);
+        Self {
+            build_inputs_hash,
+            toolchain_id,
+            source_digest,
+            recipe_hash,
+        }
+    }
+
+    /// Derive the `build_inputs_hash` from `source_digest` and `toolchain_id`.
+    ///
+    /// Formula: `BLAKE3(source_digest_utf8_bytes || toolchain_id_utf8_bytes)`.
+    /// Both inputs are treated as raw UTF-8 bytes (the hex string, not decoded).
+    pub fn compute_build_inputs_hash(source_digest: &str, toolchain_id: &str) -> String {
+        let mut hasher = Hasher::new();
+        hasher.update(source_digest.as_bytes());
+        hasher.update(toolchain_id.as_bytes());
+        hasher.finalize().to_hex().to_string()
+    }
+
+    /// Compute the BLAKE3 content hash of this evidence record as a hex-encoded string.
+    ///
+    /// The hash covers the canonical CBOR serialization of the full record.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if CBOR serialization fails.
+    pub fn blake3_hex(&self) -> Result<String, String> {
+        let mut buf = Vec::new();
+        into_writer(self, &mut buf).map_err(|e| format!("CBOR serialization failed: {e}"))?;
+        let mut hasher = Hasher::new();
+        hasher.update(&buf);
+        Ok(hasher.finalize().to_hex().to_string())
+    }
+}
+
 // ── Provenance ────────────────────────────────────────────────────────────
 
 /// Structured provenance information linking a package to its upstream source
@@ -147,6 +239,15 @@ pub struct PackageDef {
     /// Core IR schema version this package was compiled against.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub core_ir_schema: Option<u32>,
+
+    // ── 4G fields ────────────────────────────────────────────────────────
+    /// Locally-recorded reproducible-build evidence.
+    ///
+    /// Required for `TrustLevel::Verified` by
+    /// [`crate::verification::validate_verified_package_evidence`].
+    /// Optional for all other trust tiers.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reproducible_evidence: Option<ReproducibleBuildEvidence>,
 }
 
 // ── PackageValidationError ────────────────────────────────────────────────
@@ -279,6 +380,15 @@ pub struct PackageManifest {
     /// Core IR schema version this package was compiled against.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub core_ir_schema: Option<u32>,
+
+    // ── 4G fields ────────────────────────────────────────────────────────
+    /// Locally-recorded reproducible-build evidence.
+    ///
+    /// Required for `TrustLevel::Verified` by
+    /// [`crate::verification::validate_verified_package_evidence`].
+    /// Optional for all other trust tiers.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reproducible_evidence: Option<ReproducibleBuildEvidence>,
 }
 
 impl PackageManifest {
@@ -308,6 +418,8 @@ impl PackageManifest {
             verification_report: def.verification_report,
             graph_schema: def.graph_schema,
             core_ir_schema: def.core_ir_schema,
+            // 4G fields
+            reproducible_evidence: def.reproducible_evidence,
         }
     }
 
@@ -392,6 +504,8 @@ mod tests {
             verification_report: None,
             graph_schema: None,
             core_ir_schema: None,
+            // 4G fields
+            reproducible_evidence: None,
         }
     }
 
@@ -545,6 +659,8 @@ mod tests {
             }),
             graph_schema: Some(3),
             core_ir_schema: Some(2),
+            // 4G fields
+            reproducible_evidence: None,
         };
 
         let manifest = PackageManifest::from_def(def);
@@ -716,5 +832,84 @@ mod tests {
         assert!(m.verification_report.is_none());
         assert!(m.graph_schema.is_none());
         assert!(m.core_ir_schema.is_none());
+        assert!(m.reproducible_evidence.is_none());
+    }
+
+    // ── 4G: reproducible_evidence_cbor_round_trip ─────────────────────────
+    // Spec scenario: "ReproducibleBuildEvidence round-trips through CBOR"
+    //   GIVEN a ReproducibleBuildEvidence constructed with new()
+    //   WHEN serialized to CBOR and deserialized
+    //   THEN all fields are equal to the original
+    #[test]
+    fn reproducible_evidence_cbor_round_trip() {
+        let source_digest = "b".repeat(64);
+        let evidence =
+            ReproducibleBuildEvidence::new(source_digest.clone(), "rustc-1.77.0", "c".repeat(64));
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&evidence, &mut buf).expect("CBOR encode must succeed");
+        let decoded: ReproducibleBuildEvidence =
+            ciborium::de::from_reader(buf.as_slice()).expect("CBOR decode must succeed");
+        assert_eq!(decoded, evidence);
+    }
+
+    // ── 4G: reproducible_evidence_blake3_hex_is_deterministic ─────────────
+    // Spec scenario: "Evidence hash is deterministic"
+    //   GIVEN two identical ReproducibleBuildEvidence values
+    //   WHEN blake3_hex() is called on each
+    //   THEN both return the same hex string
+    #[test]
+    fn reproducible_evidence_blake3_hex_is_deterministic() {
+        let e1 = ReproducibleBuildEvidence::new("a".repeat(64), "toolchain-1", "d".repeat(64));
+        let e2 = ReproducibleBuildEvidence::new("a".repeat(64), "toolchain-1", "d".repeat(64));
+        let h1 = e1.blake3_hex().expect("hash must succeed");
+        let h2 = e2.blake3_hex().expect("hash must succeed");
+        assert_eq!(h1.len(), 64, "evidence hash must be 64 chars");
+        assert_eq!(h1, h2, "identical evidence must hash to same value");
+    }
+
+    // ── 4G: compute_build_inputs_hash_is_deterministic ────────────────────
+    // TRIANGULATE: compute_build_inputs_hash is stable.
+    #[test]
+    fn compute_build_inputs_hash_is_deterministic() {
+        let h1 = ReproducibleBuildEvidence::compute_build_inputs_hash("src", "tc");
+        let h2 = ReproducibleBuildEvidence::compute_build_inputs_hash("src", "tc");
+        assert_eq!(h1.len(), 64);
+        assert_eq!(h1, h2);
+    }
+
+    // ── 4G: compute_build_inputs_hash_differs_for_different_inputs ─────────
+    // TRIANGULATE: different inputs produce different build_inputs_hash.
+    #[test]
+    fn compute_build_inputs_hash_differs_for_different_inputs() {
+        let h1 = ReproducibleBuildEvidence::compute_build_inputs_hash("src-a", "tc-1");
+        let h2 = ReproducibleBuildEvidence::compute_build_inputs_hash("src-b", "tc-1");
+        assert_ne!(
+            h1, h2,
+            "different source_digest must produce different hash"
+        );
+    }
+
+    // ── 4G: reproducible_evidence_changes_manifest_hash ───────────────────
+    // Spec scenario: "ReproducibleBuildEvidence is included in manifest content hash"
+    //   GIVEN two manifests differing only in reproducible_evidence
+    //   WHEN blake3_hex() is called
+    //   THEN the hashes differ
+    #[test]
+    fn reproducible_evidence_changes_manifest_hash() {
+        let mut def1 = minimal_def(TrustLevel::Verified);
+        def1.reproducible_evidence = Some(ReproducibleBuildEvidence::new(
+            "a".repeat(64),
+            "tc-1",
+            "b".repeat(64),
+        ));
+        let mut def2 = minimal_def(TrustLevel::Verified);
+        def2.reproducible_evidence = None;
+        let m1 = PackageManifest::from_def(def1);
+        let m2 = PackageManifest::from_def(def2);
+        assert_ne!(
+            m1.blake3_hex().unwrap(),
+            m2.blake3_hex().unwrap(),
+            "reproducible_evidence presence must change manifest hash"
+        );
     }
 }
