@@ -150,6 +150,13 @@ fn repair_loop_reverify_repair_option_has_current_snapshot_id() {
     ail().arg("init").current_dir(dir.path()).assert().success();
     let change_id = create_sample_change(dir.path());
 
+    // Verify first — required by the verification gate before apply.
+    ail()
+        .args(["verify", &change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
     // Apply: persist the snapshot to the file store.
     ail()
         .args(["apply", &change_id])
@@ -199,6 +206,13 @@ fn repair_loop_reverify_repair_option_is_actionable() {
     ail().arg("init").current_dir(dir.path()).assert().success();
     let change_id = create_sample_change(dir.path());
 
+    // Verify first — required by the verification gate before apply.
+    ail()
+        .args(["verify", &change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
     ail()
         .args(["apply", &change_id])
         .current_dir(dir.path())
@@ -231,5 +245,38 @@ fn repair_loop_reverify_repair_option_is_actionable() {
     assert!(
         !desc.is_empty(),
         "description must be non-empty for AI agent guidance"
+    );
+}
+
+// ── VG-1: apply blocked when no verification report exists ────────────────
+
+/// Verification gate VG-1: apply is blocked when no prior `ail verify` was run.
+///
+///   GIVEN an initialised project with a persisted changeset
+///   WHEN  `ail apply <change-id>` is run WITHOUT a prior `ail verify`
+///   THEN  the command fails with exit code 1
+///    AND  stderr mentions "no verification report"
+///
+/// This test proves that the gate rejects apply without a verification report,
+/// enforcing the documented requirement that apply requires an accepted report.
+#[test]
+fn apply_blocked_without_prior_verify() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let change_id = create_sample_change(dir.path());
+
+    // Apply WITHOUT verify — must fail.
+    let output = ail()
+        .args(["apply", &change_id])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let stderr = std::str::from_utf8(&output.stderr).expect("stderr must be UTF-8");
+    assert!(
+        stderr.contains("no verification report"),
+        "error must mention missing verification report; got stderr: {stderr}"
     );
 }
