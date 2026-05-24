@@ -4,21 +4,33 @@
 //
 // # Contents
 //
-// - `extract_body_effects`    — scan body_expr for emit/run/bind_effect calls
-// - `effect_is_declared`      — prefix/exact match against declared effect_row
-// - `check_effect_obligations`— TV-3: body effects must be declared (prod+)
-// - `check_evidence_sufficiency`— TV-4: declared effects need evidence (critical+)
-// - `is_prod_or_stricter`     — profile gate for TV-3
-// - `is_critical_like`        — profile gate for TV-4
-// - `make_entry`              — shared `VerificationEntry` constructor
+// Constants (pub, re-exported via translation_validator for the public API):
+// - `E_TV_EFFECT_UNDECLARED`    — TV-3 error code
+// - `E_TV_INSUFFICIENT_EVIDENCE`— TV-4 error code
 //
-// All functions are `pub(crate)`; nothing here is part of the public API.
+// Functions (pub(crate)):
+// - `extract_body_effects`      — scan body_expr for emit/run/bind_effect calls
+// - `check_effect_obligations`  — TV-3: body effects must be declared (prod+)
+// - `check_evidence_sufficiency`— TV-4: declared effects need evidence (critical+)
+// - `is_prod_or_stricter`       — profile gate for TV-3
+// - `is_critical_like`          — profile gate for TV-4
+// - `make_entry`                — shared `VerificationEntry` constructor
+//
+// `effect_is_declared` is private — used only within this module.
 
 use ail_core::semantic_graph::{NodeKind, SemanticGraph};
 
 use crate::report::{VerificationEntry, VerificationState};
 
-use crate::translation_validator::{E_TV_EFFECT_UNDECLARED, E_TV_INSUFFICIENT_EVIDENCE};
+// ── Stable error codes (TV-3 / TV-4) ─────────────────────────────────────
+
+/// TV-3: A `body_expr` pattern references an effect identifier that does not
+/// appear in the node's declared `effect_row`.
+pub const E_TV_EFFECT_UNDECLARED: &str = "E_TV_EFFECT_UNDECLARED";
+
+/// TV-4 (critical): A Function node declares effects but has no `body_expr`
+/// and no `runtime_checks` — there is no evidence path through lowering.
+pub const E_TV_INSUFFICIENT_EVIDENCE: &str = "E_TV_INSUFFICIENT_EVIDENCE";
 
 // ── TV-3: Effect obligations ──────────────────────────────────────────────
 
@@ -78,7 +90,7 @@ pub(crate) fn extract_body_effects(body: &str) -> Vec<String> {
 ///
 /// A declared effect `"name:Provider"` covers identifier `"name"` (prefix
 /// match before `:`) or the full string `"name:Provider"` (exact match).
-pub(crate) fn effect_is_declared(id: &str, declared_effects: &[String]) -> bool {
+fn effect_is_declared(id: &str, declared_effects: &[String]) -> bool {
     declared_effects.iter().any(|decl| {
         // Exact match (e.g., body uses full "db:Postgres" syntax)
         decl == id

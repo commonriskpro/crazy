@@ -59,21 +59,9 @@ pub const E_TV_SHAPE_NO_RETURN_TYPE: &str = "E_TV_SHAPE_NO_RETURN_TYPE";
 /// through lowering.
 pub const E_TV_EFFECT_MALFORMED: &str = "E_TV_EFFECT_MALFORMED";
 
-/// TV-3: A `body_expr` pattern references an effect identifier that does not
-/// appear in the node's declared `effect_row`.
-///
-/// Equivalent to `E_EFFECT_UNDECLARED` in the effect checker, but detected
-/// at the body-text level rather than the graph-edge level.  Applicable in
-/// prod and stricter profiles.
-pub const E_TV_EFFECT_UNDECLARED: &str = "E_TV_EFFECT_UNDECLARED";
-
-/// TV-4 (critical): A Function node declares effects but has no `body_expr`
-/// and no `runtime_checks` — there is no evidence path through lowering.
-///
-/// In critical profiles, effect declarations without any implementation or
-/// runtime materialization are rejected because translation correctness cannot
-/// be argued.
-pub const E_TV_INSUFFICIENT_EVIDENCE: &str = "E_TV_INSUFFICIENT_EVIDENCE";
+// TV-3 and TV-4 error codes live in tv_obligations (their implementation
+// module) and are re-exported here to preserve the public API surface.
+pub use crate::tv_obligations::{E_TV_EFFECT_UNDECLARED, E_TV_INSUFFICIENT_EVIDENCE};
 
 // ── TranslationValidator ──────────────────────────────────────────────────
 
