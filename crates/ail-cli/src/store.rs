@@ -37,9 +37,8 @@ use crate::error::CliError;
 pub use crate::store_doctor::{doctor, gc};
 #[cfg(test)]
 pub use crate::store_file::init_file_layout;
-pub use crate::store_file::{
-    FileObjectStore, atomic_write, init_file_layout_with_branch, is_object_file_name,
-};
+pub use crate::store_file::{FileObjectStore, init_file_layout_with_branch};
+pub(crate) use crate::store_file::{atomic_write, is_object_file_name};
 
 use crate::store_file::{
     branch_ref_path, current_branch, hex_to_object_id, read_branch_ref, update_snapshot_index,

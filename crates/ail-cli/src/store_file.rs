@@ -8,10 +8,10 @@
 //   `init_file_layout_with_branch` — initialise a fresh `.ail/` tree.
 //   `init_file_layout`            — convenience wrapper (test only).
 //
-// `pub(crate)` helpers consumed by `store.rs` and `store_doctor.rs`:
-//   atomic_write, write_object_ref, write_head, current_branch,
+// `pub(crate)` helpers consumed by `store.rs`, `store_artifacts.rs`, and `store_doctor.rs`:
+//   atomic_write, is_object_file_name, write_object_ref, write_head, current_branch,
 //   branch_ref_path, read_branch_ref, update_snapshot_index,
-//   reachable_objects, is_object_file_name, validate_branch_name,
+//   reachable_objects, validate_branch_name,
 //   hex_to_object_id, verify_object_bytes.
 
 use std::path::{Path, PathBuf};
@@ -175,7 +175,7 @@ fn atomic_write_text(path: &Path, content: &str) -> StorageResult<()> {
     atomic_write(path, content.as_bytes())
 }
 
-pub fn atomic_write(path: &Path, bytes: &[u8]) -> StorageResult<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> StorageResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -293,7 +293,7 @@ pub(crate) fn verify_object_bytes(file_name: &str, bytes: &[u8]) -> StorageResul
     Ok(())
 }
 
-pub fn is_object_file_name(name: &str) -> bool {
+pub(crate) fn is_object_file_name(name: &str) -> bool {
     name.len() == 64 && name.chars().all(|c| c.is_ascii_hexdigit())
 }
 
