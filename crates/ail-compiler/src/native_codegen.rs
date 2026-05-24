@@ -1419,8 +1419,11 @@ pub(crate) fn lower_anf_expr_cranelift(
 
         // ── Lambda ────────────────────────────────────────────────────────
         // Define a nested function for the lambda body, return its address.
-        // Params are bound as I64 arguments; captures are not supported yet.
-        AnfExpr::Lambda { params, body } => {
+        // Params are bound as I64 arguments; captures carry the closure
+        // environment metadata (populated by the ANF lowering pass) but are
+        // not yet emitted into the native ABI — full environment passing is
+        // deferred to a later PR.
+        AnfExpr::Lambda { params, body, .. } => {
             let lambda_name = format!("__ail_lambda_{}", ctx.next_lambda);
             ctx.next_lambda += 1;
 

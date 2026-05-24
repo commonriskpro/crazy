@@ -149,8 +149,18 @@ pub enum AnfExpr {
     ///
     /// `params` are parameter names.  `body` is the ANF body expression,
     /// which may itself be a `Let`-chain.
+    ///
+    /// `captures` holds the names of variables from the enclosing scope that
+    /// the lambda's body references — i.e., the explicit closure environment.
+    /// Populated by the ANF lowering pass via `collect_free_vars` with `params`
+    /// as the bound set.  Empty for lambdas that close over nothing.
+    ///
+    /// By-value captures only for now; resource-handle capture is deferred.
     Lambda {
         params: Vec<String>,
+        /// Free variables of `body` relative to `params`, collected during
+        /// ANF lowering.  These names must be in scope at the call site.
+        captures: Vec<String>,
         body: Box<AnfExpr>,
     },
 
@@ -635,6 +645,7 @@ mod tests {
         };
         let _lambda = AnfExpr::Lambda {
             params: vec!["x".to_string()],
+            captures: vec![],
             body: Box::new(AnfExpr::Var("x".to_string())),
         };
         let _record = AnfExpr::RecordNew {
@@ -838,10 +849,17 @@ mod tests {
     fn anf_lambda_fields_are_correct() {
         let expr = AnfExpr::Lambda {
             params: vec!["x".to_string(), "y".to_string()],
+            captures: vec![],
             body: Box::new(AnfExpr::Var("x".to_string())),
         };
-        if let AnfExpr::Lambda { params, body } = &expr {
+        if let AnfExpr::Lambda {
+            params,
+            body,
+            captures,
+        } = &expr
+        {
             assert_eq!(params, &["x", "y"]);
+            assert!(captures.is_empty());
             assert_eq!(**body, AnfExpr::Var("x".to_string()));
         } else {
             panic!("expected Lambda variant");
@@ -853,6 +871,7 @@ mod tests {
     fn anf_lambda_cbor_round_trip() {
         let expr = AnfExpr::Lambda {
             params: vec!["a".to_string()],
+            captures: vec![],
             body: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
         };
         let bytes = stable_cbor_bytes(&expr).expect("encode");
