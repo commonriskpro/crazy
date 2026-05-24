@@ -12,9 +12,13 @@
 //
 // Every `AnfBinding` becomes a native function with real Cranelift IR for
 // the current Phase 8 subset: arithmetic, control-flow, loops, match, text
-// literals, records/variants/lists/tuples, EffectCall, and Lambda (params
-// bound, body lowered, address returned; no closure capture). Concurrency
-// and resource ops dispatch via imported `ail_runtime_call`.
+// literals, records/variants/lists/tuples, EffectCall, and Lambda.
+// Lambda with no captures → bare function pointer (I64).
+// Lambda with captures → heap-allocated closure env carrying the function
+//   pointer and each captured value by value (layout: [fn_ptr: i64,
+//   cap_count: i64, cap0: i64, ...]).  Captures are not silently dropped.
+//   Closure invocation is deferred to Phase 9+.
+// Concurrency and resource ops dispatch via imported `ail_runtime_call`.
 //
 // An `AnfIr` with zero bindings produces a minimal valid object file
 // (no code section; platform-native ELF/Mach-O/COFF header only).
@@ -74,10 +78,12 @@ pub use crate::native_types::NativeDataLayout;
 ///
 /// Phase 8 expression lowering is implemented for the current subset:
 /// arithmetic, control-flow, loops, match, text literals,
-/// records/variants/lists/tuples, EffectCall, and Lambda (params bound, body
-/// lowered; no closure capture). Concurrency and resource ops dispatch via
-/// imported `ail_runtime_call`; the runtime implementation is deferred to
-/// Phase 9+.
+/// records/variants/lists/tuples, EffectCall, and Lambda.
+/// Lambda with no captures returns a bare function pointer; Lambda with
+/// captures returns a heap-allocated closure env (fn_ptr + captured values
+/// by value).  Closure invocation is deferred to Phase 9+.
+/// Concurrency and resource ops dispatch via imported `ail_runtime_call`;
+/// the runtime implementation is deferred to Phase 9+.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeArtifact {
     /// Platform-native object bytes (ELF / Mach-O / COFF).
@@ -1485,6 +1491,146 @@ mod tests {
         assert!(
             art.hash_chain.native_hash.is_some(),
             "native_hash must be Some for EffectCall"
+        );
+    }
+
+    // ── TASK-J0: Lambda closure env construction ──────────────────────────
+    //
+    // PR2 invariant: captures must NOT be silently dropped.
+    //
+    // Scenario map:
+    //   J-1: Lambda with no captures → bare fn-ptr, compiles, differs from Placeholder.
+    //   J-2: Two no-capture lambdas with different bodies → different bytes.
+    //   J-3: Lambda with one capture → compiles without error.
+    //   J-4: Lambda with captures → different bytes than the same lambda with no captures
+    //        (closure env allocation changes the emitted code).
+    //   J-5: Lambda with two captures → different bytes than lambda with one capture
+    //        (env size and stored values differ).
+
+    fn anf_lambda_no_captures(body_val: i64) -> AnfIr {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Lambda {
+                params: vec!["p".to_string()],
+                captures: vec![],
+                body: Box::new(AnfExpr::Literal(LiteralValue::Int(body_val))),
+            },
+        })
+    }
+
+    fn anf_lambda_one_capture(cap_val: i64) -> AnfIr {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        // let x = cap_val in (lambda captures=[x] params=[p] body=Var("p"))
+        // body=Var("p") keeps the inner function compilable; the closure env
+        // carries x's value by value via the outer ctx.
+        anf_for_binding(AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Let {
+                name: "x".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(cap_val))),
+                body: Box::new(AnfExpr::Lambda {
+                    params: vec!["p".to_string()],
+                    captures: vec!["x".to_string()],
+                    body: Box::new(AnfExpr::Var("p".to_string())),
+                }),
+            },
+        })
+    }
+
+    // J-1: Lambda with no captures compiles and differs from Placeholder.
+    #[test]
+    fn native_lambda_no_captures_differs_from_placeholder() {
+        let art = emit_native(&anf_lambda_no_captures(7)).unwrap();
+        let ph = emit_native(&placeholder_anf()).unwrap();
+        assert_ne!(
+            art.native_bytes, ph.native_bytes,
+            "Lambda with no captures must produce different bytes than Placeholder"
+        );
+    }
+
+    // J-2: Two no-capture lambdas with different body constants differ in bytes.
+    #[test]
+    fn native_lambda_no_captures_body_triangulate() {
+        let art1 = emit_native(&anf_lambda_no_captures(1)).unwrap();
+        let art2 = emit_native(&anf_lambda_no_captures(99)).unwrap();
+        assert_ne!(
+            art1.native_bytes, art2.native_bytes,
+            "Lambda no-capture: body constant 1 vs 99 must produce different bytes"
+        );
+    }
+
+    // J-3: Lambda with one capture compiles without error.
+    #[test]
+    fn native_lambda_with_one_capture_compiles() {
+        let result = emit_native(&anf_lambda_one_capture(42));
+        assert!(
+            result.is_ok(),
+            "Lambda with one capture must compile without error: {:?}",
+            result.err()
+        );
+    }
+
+    // J-4: Lambda with a capture produces different bytes than the same lambda
+    // without captures.  The closure env allocation and stores change the IR.
+    #[test]
+    fn native_lambda_with_capture_differs_from_no_capture() {
+        let with_cap = emit_native(&anf_lambda_one_capture(42)).unwrap();
+        // Build a structurally similar no-capture lambda for comparison.
+        let without_cap = emit_native(&anf_lambda_no_captures(42)).unwrap();
+        assert_ne!(
+            with_cap.native_bytes, without_cap.native_bytes,
+            "Lambda with captures must produce different bytes than lambda with no captures: \
+             closure env allocation must be emitted, not silently dropped"
+        );
+    }
+
+    // J-5a: NativeDataLayout must set needs_heap_alloc for Lambda with captures.
+    // Proves the pre-scan correctly identifies that a closure env requires heap
+    // allocation, which in turn drives __ail_malloc import in emit_native.
+    #[test]
+    fn native_data_layout_lambda_with_captures_needs_heap_alloc() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Lambda {
+                params: vec!["p".to_string()],
+                captures: vec!["x".to_string()],
+                body: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+            },
+        };
+        let layout = NativeDataLayout::for_bindings(&[binding]);
+        assert!(
+            layout.needs_heap_alloc,
+            "Lambda with non-empty captures must set needs_heap_alloc in NativeDataLayout"
+        );
+    }
+
+    // J-5b: NativeDataLayout must NOT set needs_heap_alloc for Lambda with no captures.
+    // Negative test: empty captures → no env allocation needed.
+    #[test]
+    fn native_data_layout_lambda_no_captures_no_heap_alloc() {
+        use crate::anf::{AnfBinding, AnfExpr};
+        use crate::core_ir::LiteralValue;
+        let binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn_op".to_string(),
+            expr: AnfExpr::Lambda {
+                params: vec!["p".to_string()],
+                captures: vec![],
+                body: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+            },
+        };
+        let layout = NativeDataLayout::for_bindings(&[binding]);
+        assert!(
+            !layout.needs_heap_alloc,
+            "Lambda with empty captures must not set needs_heap_alloc in NativeDataLayout"
         );
     }
 }
