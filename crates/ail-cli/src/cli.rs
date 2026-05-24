@@ -65,25 +65,15 @@ use ail_context::{
     DerivedIndexCache, FieldRedactionRule, InMemoryContextSource, QueryBudget, QueryScope,
     SnapshotSelector, TrustLevel as ContextTrustLevel,
 };
-use ail_coordinator::Coordinator;
 use ail_core::semantic_graph::{GraphEdge, GraphNode, NodeKind};
 use ail_core::semantic_graph::{NodeRef, Provenance, SemanticGraph};
 use ail_package::{CapabilityPolicy, CapabilityPolicyEnforcer, CapabilityPolicyVerdict};
-use ail_remote::{
-    AgentKeypair, FileBundleStore, ObjectBundle, RemoteChangeSet, RemoteExchangeRequest,
-    RemoteExchangeResponse, RemoteSignerPolicy, RemoteSubmissionOutcome, SignerTrustTier,
-    TrustedRemoteSigner,
-};
 use ail_runtime::{
     CapabilityManifest, ResourceLimits, RuntimeArg, RuntimeHost, RuntimeProfile, RuntimeValue,
     blake3_hex_of,
 };
 use ail_storage::codec::{CborCodec, ContentCodec};
-use ail_storage::{
-    SnapshotEnvelope, error::StorageError, graph::ChangeSetLogEntry, object::ObjectId,
-};
-use ail_verify::checker::Checker;
-use ail_verify::policy::{PolicyDecision, PolicyEngine, PolicyInput, PolicyRule};
+use ail_storage::{SnapshotEnvelope, graph::ChangeSetLogEntry, object::ObjectId};
 use ail_verify::report::VerificationReport;
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
@@ -91,20 +81,14 @@ use serde_json::{Value, json};
 
 use crate::changeset_input::{ChangeInput, load_parsed_changeset};
 use crate::error::CliError;
-use crate::output::{OutputMode, print_error_response, print_response};
+use crate::output::{OutputMode, print_response};
 use crate::package_commands::cmd_package;
 use crate::package_registry_io::load_package_lockfile;
+use crate::remote_commands::cmd_remote;
 use crate::store::{
     StoreHandle, build_store, doctor, file_store, gc, init_file_layout_with_branch,
 };
-
-const REMOTE_SUBMIT_TRANSPORT: &str = "in_process";
-const REMOTE_SUBMIT_KEY_SOURCE: &str = "ephemeral_in_process";
-const REMOTE_SUBMIT_NOTE: &str = "local in-process exchange only; no network transport is used; remote config is validated but not applied to the ephemeral signer policy";
-const REMOTE_BUNDLE_TRANSPORT: &str = "local_file_bundle_store+in_process";
-const REMOTE_BUNDLE_SCOPE_SINGLE_ROOT: &str = "single_root_object";
-const REMOTE_BUNDLE_SCOPE_SNAPSHOT_DEPENDENCIES: &str = "root_with_snapshot_envelope_dependencies";
-const REMOTE_BUNDLE_NOTE: &str = "local file bundle store only; snapshot envelope roots include available directly referenced stored objects; raw graph traversal remains opaque; no network transport is used and remote config is not consulted";
+use crate::workflow_commands::{cmd_apply, cmd_verify};
 
 // ── Cli ───────────────────────────────────────────────────────────────────
 
@@ -466,7 +450,7 @@ pub(crate) enum AdvisoryCmd {
 
 /// Sub-commands for `ail remote`.
 #[derive(Subcommand)]
-enum RemoteCmd {
+pub(crate) enum RemoteCmd {
     /// Sign and submit a stored ChangeSet through the local in-process coordinator.
     Submit {
         /// Canonical change-id of a locally stored ChangeSet.
@@ -1324,447 +1308,8 @@ async fn cmd_change(
     Ok(())
 }
 
-/// `ail verify <change-id> [--profile <name>]`
-///
-/// Outputs: verification_report, diagnostics, proof_obligations, policy_report,
-/// approval_requirements.
-/// Rules: verify never applies changes; verify can update derived indexes/reports.
-async fn cmd_verify(
-    mode: OutputMode,
-    change_id: &str,
-    profile: &str,
-    store: &StoreHandle,
-) -> Result<(), CliError> {
-    if !is_valid_change_id(change_id) {
-        return Err(CliError::NotFound(format!(
-            "change-id not found: {change_id}"
-        )));
-    }
-
-    // Try to load the stored CanonicalChangeSet and apply it using the same
-    // live snapshot guard as `ail apply`, so stale-base state is visible here.
-    // Falls back to an empty graph when the changeset is not found in the store,
-    // but keep that state explicit in JSON so tools do not treat it as applyable.
-    let mut graph = SemanticGraph {
-        nodes: vec![],
-        edges: vec![],
-    };
-    let maybe_canonical = store.load_changeset_by_id(change_id).await?;
-    let missing_changeset = maybe_canonical.is_none();
-    let mut rebase_required = false;
-    let mut current_snapshot_id_for_rebase = None;
-    if let Some(canonical) = maybe_canonical {
-        let (current_graph, current_snapshot_id) =
-            load_current_graph_with_snapshot_id_for_cli(store).await?;
-        graph = current_graph;
-        let bridge = SimpleSnapshotBridge(current_snapshot_id);
-        match ail_change::apply::apply(canonical, &mut graph, &bridge) {
-            ChangeSetOutcome::Applied => {}
-            // On blocked apply outcomes: fall back to the empty graph for verification.
-            ChangeSetOutcome::RebaseRequired {
-                current_snapshot_id,
-            } => {
-                rebase_required = true;
-                current_snapshot_id_for_rebase = Some(current_snapshot_id.0);
-                graph = SemanticGraph {
-                    nodes: vec![],
-                    edges: vec![],
-                };
-            }
-            ChangeSetOutcome::Failed { .. } | ChangeSetOutcome::ConflictIrresolvable { .. } => {
-                graph = SemanticGraph {
-                    nodes: vec![],
-                    edges: vec![],
-                };
-            }
-        }
-    }
-    let report = Checker::check(&graph);
-    let policy_rules = [PolicyRule::ProfileGate(profile.to_string())];
-    let policy_input = PolicyInput {
-        report: &report,
-        rules: &policy_rules,
-        approvals: &[],
-        structural_diff: None,
-        capability_grants: &[],
-        public_api_changes: &[],
-        package_trust_metadata: &[],
-    };
-    let (policy_decision, policy_audit) = PolicyEngine::evaluate_with_audit(&policy_input);
-    let mut approval_required_scopes = match &policy_decision {
-        PolicyDecision::ApprovalRequired(scopes) => scopes.clone(),
-        _ => Vec::new(),
-    };
-    if profile == "prod" && !approval_required_scopes.iter().any(|s| s == "profile:prod") {
-        approval_required_scopes.push("profile:prod".to_string());
-    }
-    let approval_required = !approval_required_scopes.is_empty();
-    let policy_failed = matches!(policy_decision, PolicyDecision::Failed(_));
-    let policy_blocks_apply = policy_failed || approval_required;
-    let policy_status = match &policy_decision {
-        PolicyDecision::Failed(_) => "blocked",
-        PolicyDecision::ApprovalRequired(_) => "approval_required",
-        PolicyDecision::PassedWithWarnings(_) if approval_required => "approval_required",
-        PolicyDecision::Passed if approval_required => "approval_required",
-        PolicyDecision::PassedWithWarnings(_) => "warning",
-        PolicyDecision::Passed => "passed",
-    };
-    let policy_ok = !policy_blocks_apply;
-    let summary = format!("{:?}", report.summary());
-    let entry_count = report.entries.len();
-
-    let entries_json: Vec<Value> = report
-        .entries
-        .iter()
-        .map(|e| {
-            json!({
-                "claim": e.claim,
-                "state": format!("{:?}", e.state),
-                "scope": e.scope,
-            })
-        })
-        .collect();
-
-    // Diagnostics: surface Failed and Unsafe entries as actionable diagnostics.
-    // Each diagnostic carries a suggested repair action based on the state.
-    let diagnostics: Vec<Value> = report
-        .entries
-        .iter()
-        .filter(|e| {
-            matches!(
-                e.state,
-                ail_verify::report::VerificationState::Failed
-                    | ail_verify::report::VerificationState::Unsafe
-            )
-        })
-        .map(|e| {
-            let repair = match e.state {
-                ail_verify::report::VerificationState::Failed => {
-                    "Fix the failing invariant or update the contract clause."
-                }
-                ail_verify::report::VerificationState::Unsafe => {
-                    "Add a runtime check or capability restriction to make this safe."
-                }
-                _ => "Review and address this verification issue.",
-            };
-            json!({
-                "claim": e.claim,
-                "state": format!("{:?}", e.state),
-                "scope": e.scope,
-                "repair": repair,
-            })
-        })
-        .collect();
-    let diag_count = diagnostics.len();
-    // Proof obligations: derived from verification entries.
-    let proof_obligations: Vec<Value> = report
-        .entries
-        .iter()
-        .map(|e| json!({ "claim": e.claim, "state": format!("{:?}", e.state) }))
-        .collect();
-    let policy_violations = match &policy_decision {
-        PolicyDecision::Failed(violations) => json!(violations),
-        _ => json!([]),
-    };
-    let policy_warnings = match &policy_decision {
-        PolicyDecision::PassedWithWarnings(warnings) => json!(warnings),
-        _ => json!([]),
-    };
-
-    // Policy report: profile-gated and machine-readable for automation.
-    let policy_report = json!({
-        "profile": profile,
-        "status": policy_status,
-        "policy_ok": policy_ok,
-        "blocks_apply": policy_blocks_apply,
-        "violations": policy_violations,
-        "warnings": policy_warnings,
-        "approval_required_scopes": approval_required_scopes,
-        "decision": policy_decision,
-        "audit": policy_audit,
-    });
-    let approval_requirements = if approval_required {
-        json!({
-            "required": true,
-            "satisfied": false,
-            "scopes": policy_report["approval_required_scopes"],
-            "reason": if profile == "prod" {
-                "prod profile requires explicit approval before apply"
-            } else {
-                "verification policy requires explicit approval"
-            },
-        })
-    } else {
-        json!({ "required": false, "satisfied": true, "scopes": [] })
-    };
-
-    let mut repair_options = Vec::new();
-    if missing_changeset {
-        repair_options.push(json!({
-            "code": "missing_changeset",
-            "next_action": "create_or_fetch_changeset",
-            "description": "Persist the ChangeSet into this .ail project before verify/apply.",
-        }));
-    }
-    if let Some(current_snapshot_id) = current_snapshot_id_for_rebase {
-        repair_options.push(rebase_required_repair_option(current_snapshot_id));
-    }
-    if approval_required {
-        repair_options.push(json!({
-            "code": "approval_required",
-            "next_action": "obtain_approval",
-            "description": "Record approval or rerun apply with explicit operator confirmation when policy allows it.",
-            "scopes": policy_report["approval_required_scopes"],
-        }));
-    }
-    if policy_failed {
-        repair_options.push(json!({
-            "code": "policy_blocked",
-            "next_action": "repair_policy_violations",
-            "description": "Address blocking policy violations before apply.",
-            "violations": policy_report["violations"],
-        }));
-    }
-    if diag_count > 0 {
-        repair_options.push(json!({
-            "code": "verification_diagnostics",
-            "next_action": "repair_diagnostics",
-            "description": "Address verification diagnostics before apply.",
-            "diagnostic_count": diag_count,
-        }));
-    }
-
-    let applyable =
-        !missing_changeset && !rebase_required && !policy_blocks_apply && diag_count == 0;
-    let next_action = if missing_changeset {
-        "create_or_fetch_changeset"
-    } else if rebase_required {
-        "rebase"
-    } else if policy_failed || diag_count > 0 {
-        "repair"
-    } else if approval_required {
-        "obtain_approval"
-    } else {
-        "apply"
-    };
-    let workflow_state = json!({
-        "applyable": applyable,
-        "approval_required": approval_required,
-        "rebase_required": rebase_required,
-        "current_snapshot_id": current_snapshot_id_for_rebase,
-        "missing_changeset": missing_changeset,
-        "next_action": next_action,
-        "repair_options": repair_options,
-    });
-
-    let human_msg = format!(
-        "change-id: {change_id}\nprofile: {profile}\nentries: {entry_count}\nsummary: {summary}\ndiagnostics: {diag_count}\npolicy: {policy_status}"
-    );
-    print_response(
-        mode,
-        &human_msg,
-        json!({
-            "change_id": change_id,
-            "profile": profile,
-            "verification_report": {
-                "entries": entries_json,
-                "summary": summary,
-            },
-            "diagnostics": diagnostics,
-            "proof_obligations": proof_obligations,
-            "policy_report": policy_report,
-            "approval_requirements": approval_requirements,
-            "workflow_state": workflow_state,
-        }),
-    );
-    Ok(())
-}
-
-/// `ail apply <change-id> [--yes] [--policy=<profile>]`
-///
-/// Before apply, shows:
-/// - canonical_change hash
-/// - structural_diff
-/// - verification_report status
-/// - policy status
-/// - approval status
-/// - target snapshot
-///
-/// Rules:
-/// 1. apply requires accepted verification report for selected profile.
-/// 2. apply creates new snapshot.
-/// 3. apply is atomic.
-/// 4. apply refuses stale base unless rebase is requested.
-async fn cmd_apply(
-    mode: OutputMode,
-    change_id: &str,
-    yes: bool,
-    policy_profile: Option<&str>,
-    store: &StoreHandle,
-) -> Result<(), CliError> {
-    if !is_valid_change_id(change_id) {
-        return Err(CliError::NotFound(format!(
-            "change-id not found: {change_id}"
-        )));
-    }
-
-    use ail_change::apply::apply as apply_changeset;
-
-    let snapshots = store.list_snapshots().await?;
-    let current_snapshot = store
-        .head_snapshot()
-        .await?
-        .or_else(|| latest_snapshot(&snapshots).cloned());
-    let base_snap_hex = current_snapshot
-        .as_ref()
-        .map(|s| s.id.to_hex())
-        .unwrap_or_else(|| "(genesis)".to_string());
-
-    // Pre-apply gate: enforce policy approval for prod profile.
-    // Per tooling.md: prod apply requires explicit approval; --yes signals it.
-    let profile = policy_profile.unwrap_or("dev");
-    let approval_required = profile == "prod";
-    let approval_approved = !approval_required || yes;
-    if approval_required && !approval_approved {
-        return Err(CliError::Domain(
-            "apply blocked: prod profile requires approval; rerun with --yes to confirm"
-                .to_string(),
-        ));
-    }
-    let policy_status = if approval_required {
-        "operator_confirmed"
-    } else {
-        "passed"
-    };
-    let pre_apply_gate = json!({
-        "canonical_change_hash": change_id,
-        "structural_diff": {
-            "creates": 0,
-            "modifies": 0,
-            "deletes": 0,
-            "connects": 0,
-            "disconnects": 0,
-            "exposes": 0,
-            "hides": 0,
-            "effects_changed": 0,
-            "contracts_changed": 0,
-            "capabilities_changed": 0,
-        },
-        "verification_report_status": "accepted",
-        "policy_status": {
-            "profile": profile,
-            "status": policy_status,
-            "ok": true,
-            "blocks_apply": false,
-            "approval_source": if approval_required { "operator_confirmation" } else { "not_required" },
-        },
-        "approval_status": {
-            "required": approval_required,
-            "operator_confirmed": approval_approved,
-            "persisted_approval": false,
-            "satisfied_for_this_apply": approval_approved,
-        },
-        "workflow_state": {
-            "applyable": approval_approved,
-            "approval_required": approval_required,
-            "rebase_required": false,
-            "missing_changeset": false,
-            "next_action": "apply",
-            "repair_options": [],
-        },
-        "target_snapshot": base_snap_hex,
-    });
-
-    let (mut graph, current_snapshot_id) =
-        load_current_graph_with_snapshot_id_for_cli(store).await?;
-    let bridge = SimpleSnapshotBridge(current_snapshot_id);
-
-    let canonical = store
-        .load_changeset_by_id(change_id)
-        .await?
-        .ok_or_else(|| CliError::NotFound(format!("change-id not found: {change_id}")))?;
-
-    let outcome = apply_changeset(canonical, &mut graph, &bridge);
-
-    match outcome {
-        ail_change::model::ChangeSetOutcome::Applied => {
-            let change_oid = hex_to_object_id(change_id)?;
-            let graph_root = store.save_graph(&graph).await?;
-            let parent_id = current_snapshot.map(|s| s.id);
-            let new_envelope = SnapshotEnvelope {
-                id: ObjectId::from_bytes(&format!("snapshot-after-{change_id}").into_bytes()),
-                graph_root_hash: graph_root,
-                parent_id,
-                applied_change_id: Some(change_oid),
-                created_at: unix_ms_now(),
-                verification_report_hash: None,
-                ..Default::default()
-            };
-            let new_id = store.save_snapshot(&new_envelope).await?;
-            let new_id_hex = new_id.to_hex();
-
-            let human_msg = format!(
-                "pre-apply gate: ok\ncanonical_change_hash: {change_id}\npolicy: ok\napproval: ok\napplied; new snapshot id: {new_id_hex}"
-            );
-            print_response(
-                mode,
-                &human_msg,
-                json!({
-                    "pre_apply_gate": pre_apply_gate,
-                    "change_id": change_id,
-                    "new_snapshot_id": new_id_hex,
-                    "workflow_state": {
-                        "applyable": true,
-                        "approval_required": approval_required,
-                        "rebase_required": false,
-                        "missing_changeset": false,
-                        "next_action": "complete",
-                        "repair_options": [],
-                    },
-                    "atomic": true,
-                }),
-            );
-            Ok(())
-        }
-        ail_change::model::ChangeSetOutcome::RebaseRequired {
-            current_snapshot_id,
-        } => {
-            if mode == OutputMode::Json {
-                let workflow_state = json!({
-                    "applyable": false,
-                    "approval_required": approval_required,
-                    "rebase_required": true,
-                    "current_snapshot_id": current_snapshot_id.0,
-                    "missing_changeset": false,
-                    "next_action": "rebase",
-                    "repair_options": [rebase_required_repair_option(current_snapshot_id.0)],
-                });
-                let mut blocked_gate = pre_apply_gate.clone();
-                blocked_gate["workflow_state"] = workflow_state.clone();
-                print_error_response(json!({
-                    "error": "rebase_required",
-                    "message": format!(
-                        "rebase required: current snapshot is {}",
-                        current_snapshot_id.0
-                    ),
-                    "pre_apply_gate": blocked_gate,
-                    "change_id": change_id,
-                    "workflow_state": workflow_state,
-                    "atomic": true,
-                }));
-            }
-            Err(CliError::RebaseRequired {
-                current_snapshot_id: current_snapshot_id.0,
-            })
-        }
-        ail_change::model::ChangeSetOutcome::Failed { reason } => {
-            Err(CliError::Domain(format!("apply failed: {reason}")))
-        }
-        ail_change::model::ChangeSetOutcome::ConflictIrresolvable { reason } => Err(
-            CliError::Domain(format!("Conflict: {}", conflict_reason_message(&reason))),
-        ),
-    }
-}
+// cmd_verify → crate::workflow_commands::cmd_verify
+// cmd_apply  → crate::workflow_commands::cmd_apply
 
 /// `ail compile --target <target> --profile <name>`
 ///
@@ -2021,7 +1566,7 @@ pub(crate) async fn load_current_graph_for_cli(
     }
 }
 
-async fn load_current_graph_with_snapshot_id_for_cli(
+pub(crate) async fn load_current_graph_with_snapshot_id_for_cli(
     store: &StoreHandle,
 ) -> Result<(SemanticGraph, SnapshotId), CliError> {
     let snapshots = store.list_snapshots().await?;
@@ -2126,319 +1671,7 @@ fn cmd_eval(mode: OutputMode, expression: &str) -> Result<(), CliError> {
     Ok(())
 }
 
-/// `ail remote submit <change-id> --signer <key-ref>` — submit a signed
-/// ChangeSet through the transport-agnostic in-process remote exchange API.
-async fn cmd_remote(mode: OutputMode, cmd: RemoteCmd, store: &StoreHandle) -> Result<(), CliError> {
-    match cmd {
-        RemoteCmd::Submit { change_id, signer } => {
-            cmd_remote_submit(mode, &change_id, &signer, store).await
-        }
-        RemoteCmd::Push { root } => cmd_remote_push(mode, &root, store).await,
-        RemoteCmd::Pull { root } => cmd_remote_pull(mode, &root, store).await,
-    }
-}
-
-async fn cmd_remote_push(
-    mode: OutputMode,
-    root_hex: &str,
-    store: &StoreHandle,
-) -> Result<(), CliError> {
-    let root = hex_to_object_id(root_hex)?;
-    let (bundle_store, bundle_store_path) = remote_file_bundle_store(store)?;
-    let bundle = build_remote_bundle(store, root).await?;
-    bundle
-        .verify_integrity()
-        .map_err(|e| CliError::Domain(format!("remote bundle invalid: {e}")))?;
-
-    let coordinator = Coordinator::new(
-        SnapshotId(0),
-        SemanticGraph {
-            nodes: vec![],
-            edges: vec![],
-        },
-    );
-    let response = coordinator
-        .handle_remote_exchange(RemoteExchangeRequest::PushBundle(bundle.clone()))
-        .await;
-    let RemoteExchangeResponse::BundleAccepted { object_count, .. } = response else {
-        return Err(CliError::Domain(remote_exchange_error_message(response)));
-    };
-    bundle_store
-        .try_put_bundle(&bundle)
-        .map_err(|e| CliError::Domain(format!("remote bundle store failed: {e}")))?;
-
-    let bundle_store_path = bundle_store_path.display().to_string();
-    let bundle_scope = remote_bundle_scope(&bundle);
-    print_response(
-        mode,
-        &format!(
-            "remote push: {root}\ntransport: {REMOTE_BUNDLE_TRANSPORT}\nbundle store: {bundle_store_path}\nbundle scope: {bundle_scope}\nobject count: {object_count}\nnote: {REMOTE_BUNDLE_NOTE}"
-        ),
-        json!({
-            "request": "PushBundle",
-            "root": root.to_hex(),
-            "transport": REMOTE_BUNDLE_TRANSPORT,
-            "bundle_store_path": bundle_store_path,
-            "bundle_scope": bundle_scope,
-            "object_count": object_count,
-            "note": REMOTE_BUNDLE_NOTE,
-        }),
-    );
-    Ok(())
-}
-
-async fn cmd_remote_pull(
-    mode: OutputMode,
-    root_hex: &str,
-    store: &StoreHandle,
-) -> Result<(), CliError> {
-    let root = hex_to_object_id(root_hex)?;
-    let (bundle_store, bundle_store_path) = remote_file_bundle_store(store)?;
-    let bundle = bundle_store
-        .try_get_bundle(&root)
-        .map_err(|e| CliError::Domain(format!("remote bundle store failed: {e}")))?
-        .ok_or_else(|| CliError::NotFound(format!("remote bundle not found: {root}")))?;
-
-    let coordinator = Coordinator::new(
-        SnapshotId(0),
-        SemanticGraph {
-            nodes: vec![],
-            edges: vec![],
-        },
-    );
-    let accepted = coordinator
-        .handle_remote_exchange(RemoteExchangeRequest::PushBundle(bundle))
-        .await;
-    if !matches!(accepted, RemoteExchangeResponse::BundleAccepted { .. }) {
-        return Err(CliError::Domain(remote_exchange_error_message(accepted)));
-    }
-    let response = coordinator
-        .handle_remote_exchange(RemoteExchangeRequest::PullBundle { root })
-        .await;
-    let RemoteExchangeResponse::Bundle(bundle) = response else {
-        return Err(CliError::Domain(remote_exchange_error_message(response)));
-    };
-
-    let object_count = bundle.objects.len();
-    let bundle_scope = remote_bundle_scope(&bundle);
-    for (object_id, bytes) in bundle.objects {
-        store.save_raw_object(&object_id, bytes).await?;
-    }
-
-    let bundle_store_path = bundle_store_path.display().to_string();
-    print_response(
-        mode,
-        &format!(
-            "remote pull: {root}\ntransport: {REMOTE_BUNDLE_TRANSPORT}\nbundle store: {bundle_store_path}\nbundle scope: {bundle_scope}\nobject count: {object_count}\nnote: {REMOTE_BUNDLE_NOTE}"
-        ),
-        json!({
-            "request": "PullBundle",
-            "root": root.to_hex(),
-            "transport": REMOTE_BUNDLE_TRANSPORT,
-            "bundle_store_path": bundle_store_path,
-            "bundle_scope": bundle_scope,
-            "object_count": object_count,
-            "note": REMOTE_BUNDLE_NOTE,
-        }),
-    );
-    Ok(())
-}
-
-fn remote_file_bundle_store(store: &StoreHandle) -> Result<(FileBundleStore, PathBuf), CliError> {
-    let StoreHandle::File { ail_dir, .. } = store else {
-        return Err(CliError::Domain(
-            "remote push/pull currently require an initialized file-backed .ail project; no network transport or remote config is used".to_string(),
-        ));
-    };
-    let path = ail_dir.join("remote").join("bundles");
-    let bundle_store = FileBundleStore::new(path.clone())
-        .map_err(|e| CliError::Domain(format!("remote bundle store failed: {e}")))?;
-    Ok((bundle_store, path))
-}
-
-fn remote_bundle_scope(bundle: &ObjectBundle) -> &'static str {
-    if bundle.includes_snapshot_envelope_dependencies() {
-        REMOTE_BUNDLE_SCOPE_SNAPSHOT_DEPENDENCIES
-    } else {
-        REMOTE_BUNDLE_SCOPE_SINGLE_ROOT
-    }
-}
-
-async fn build_remote_bundle(
-    store: &StoreHandle,
-    root: ObjectId,
-) -> Result<ObjectBundle, CliError> {
-    let StoreHandle::File { objects, .. } = store else {
-        return Err(CliError::Domain(
-            "remote push currently requires an initialized file-backed .ail project".to_string(),
-        ));
-    };
-    match ObjectBundle::from_store_with_snapshot_dependencies(root, objects).await {
-        Ok(bundle) => Ok(bundle),
-        Err(StorageError::NotFound) => {
-            Err(CliError::NotFound(format!("object root not found: {root}")))
-        }
-        Err(err) => Err(CliError::Storage(err)),
-    }
-}
-
-async fn cmd_remote_submit(
-    mode: OutputMode,
-    change_id: &str,
-    signer_ref: &str,
-    store: &StoreHandle,
-) -> Result<(), CliError> {
-    if !is_valid_change_id(change_id) {
-        return Err(CliError::NotFound(format!(
-            "change-id not found: {change_id}"
-        )));
-    }
-    if signer_ref.trim().is_empty() {
-        return Err(CliError::ParseError(
-            "--signer must be a non-empty key reference".to_string(),
-        ));
-    }
-
-    let canonical = store
-        .load_changeset_by_id(change_id)
-        .await?
-        .ok_or_else(|| CliError::NotFound(format!("change-id not found: {change_id}")))?;
-
-    let project = crate::project::ProjectContext::from_cwd()?;
-    let remote_config_path = crate::remote_config::remote_config_path(&project.ail_dir);
-    let remote_config_source = if remote_config_path.exists() {
-        "project_file"
-    } else {
-        "missing_default_deny_all"
-    };
-    let loaded_remote_policy = crate::remote_config::load_remote_signer_policy(&project.ail_dir)
-        .map_err(|e| CliError::Domain(e.to_string()))?;
-    let configured_allowed_signers = loaded_remote_policy.allowed_signers.len();
-
-    let keypair = AgentKeypair::generate();
-    let identity = keypair.identity();
-    let policy =
-        RemoteSignerPolicy::from_allowed_signers(vec![TrustedRemoteSigner::from_identity(
-            &identity,
-            SignerTrustTier::Trusted,
-            Some(signer_ref.to_string()),
-        )]);
-    let (graph, current_snapshot_id) = load_current_graph_with_snapshot_id_for_cli(store).await?;
-    let coordinator = Coordinator::with_remote_signer_policy(current_snapshot_id, graph, policy);
-    let mut remote_changeset = RemoteChangeSet::sign(canonical, &keypair)
-        .map_err(|e| CliError::Domain(format!("remote signing failed: {e}")))?;
-    remote_changeset.agent.label = Some(signer_ref.to_string());
-
-    let response = coordinator
-        .handle_remote_exchange(RemoteExchangeRequest::SubmitChangeSet(Box::new(
-            remote_changeset,
-        )))
-        .await;
-    let RemoteExchangeResponse::Submission(outcome) = response else {
-        return Err(CliError::Domain(remote_exchange_error_message(response)));
-    };
-
-    let human_msg = remote_submit_human(
-        change_id,
-        signer_ref,
-        &identity.public_key,
-        remote_config_source,
-        configured_allowed_signers,
-        &outcome,
-    );
-    print_response(
-        mode,
-        &human_msg,
-        json!({
-            "change_id": change_id,
-            "request": "SubmitChangeSet",
-            "transport": REMOTE_SUBMIT_TRANSPORT,
-            "key_source": REMOTE_SUBMIT_KEY_SOURCE,
-            "signer": {
-                "key_ref": signer_ref,
-                "public_key": bytes_to_hex(&identity.public_key),
-            },
-            "remote_config": {
-                "path": remote_config_path.display().to_string(),
-                "source": remote_config_source,
-                "allowed_signers": configured_allowed_signers,
-                "applied_to_submit_policy": false,
-            },
-            "outcome": remote_submission_outcome_json(&outcome),
-            "note": REMOTE_SUBMIT_NOTE,
-        }),
-    );
-    Ok(())
-}
-
-fn remote_exchange_error_message(response: RemoteExchangeResponse) -> String {
-    match response {
-        RemoteExchangeResponse::Error { code, message } => {
-            format!("remote exchange failed ({code}): {message}")
-        }
-        other => format!("unexpected remote exchange response: {other:?}"),
-    }
-}
-
-fn remote_submit_human(
-    change_id: &str,
-    signer_ref: &str,
-    public_key: &[u8; 32],
-    remote_config_source: &str,
-    configured_allowed_signers: usize,
-    outcome: &RemoteSubmissionOutcome,
-) -> String {
-    format!(
-        "remote submit: {change_id}\nsigner: {signer_ref}\npublic key: {}\ntransport: {REMOTE_SUBMIT_TRANSPORT}\nkey source: {REMOTE_SUBMIT_KEY_SOURCE}\nremote config: {remote_config_source} ({configured_allowed_signers} allowed signers, not applied to ephemeral submit policy)\noutcome: {}\nnote: {REMOTE_SUBMIT_NOTE}",
-        bytes_to_hex(public_key),
-        remote_submission_outcome_label(outcome),
-    )
-}
-
-fn remote_submission_outcome_label(outcome: &RemoteSubmissionOutcome) -> &'static str {
-    match outcome {
-        RemoteSubmissionOutcome::Applied { .. } => "applied",
-        RemoteSubmissionOutcome::RebaseApplied { .. } => "rebase_applied",
-        RemoteSubmissionOutcome::ConflictIrresolvable { .. } => "conflict_irresolvable",
-        RemoteSubmissionOutcome::StaleBase { .. } => "stale_base",
-        RemoteSubmissionOutcome::Failed { .. } => "failed",
-    }
-}
-
-fn remote_submission_outcome_json(outcome: &RemoteSubmissionOutcome) -> Value {
-    match outcome {
-        RemoteSubmissionOutcome::Applied {
-            applied_snapshot_id,
-        } => json!({
-            "status": "Applied",
-            "applied_snapshot_id": applied_snapshot_id.0,
-        }),
-        RemoteSubmissionOutcome::RebaseApplied {
-            rebased_onto,
-            applied_snapshot_id,
-        } => json!({
-            "status": "RebaseApplied",
-            "rebased_onto": rebased_onto.0,
-            "applied_snapshot_id": applied_snapshot_id.0,
-        }),
-        RemoteSubmissionOutcome::ConflictIrresolvable { reason } => json!({
-            "status": "ConflictIrresolvable",
-            "reason": format!("{reason:?}"),
-        }),
-        RemoteSubmissionOutcome::StaleBase {
-            current_snapshot_id,
-        } => json!({
-            "status": "StaleBase",
-            "current_snapshot_id": current_snapshot_id.0,
-        }),
-        RemoteSubmissionOutcome::Failed { reason } => json!({
-            "status": "Failed",
-            "reason": reason,
-        }),
-    }
-}
-
-fn latest_snapshot(snapshots: &[SnapshotEnvelope]) -> Option<&SnapshotEnvelope> {
+pub(crate) fn latest_snapshot(snapshots: &[SnapshotEnvelope]) -> Option<&SnapshotEnvelope> {
     snapshots.iter().max_by_key(|snapshot| snapshot.created_at)
 }
 
@@ -2642,7 +1875,7 @@ fn changeset_outcome_message(outcome: &ChangeSetOutcome) -> &'static str {
     }
 }
 
-fn conflict_reason_message(reason: &ConflictReason) -> &'static str {
+pub(crate) fn conflict_reason_message(reason: &ConflictReason) -> &'static str {
     match reason {
         ConflictReason::SameNodeModifiedIncompatibly => "same node was modified incompatibly",
         ConflictReason::NodeDeletedWhileModified => {
@@ -2654,15 +1887,6 @@ fn conflict_reason_message(reason: &ConflictReason) -> &'static str {
             "semantic node content conflict (return type, body, or effects differ)"
         }
     }
-}
-
-fn rebase_required_repair_option(current_snapshot_id: u64) -> Value {
-    json!({
-        "code": "rebase_required",
-        "next_action": "rebase",
-        "description": "Rebase the ChangeSet onto the current snapshot before apply.",
-        "current_snapshot_id": current_snapshot_id,
-    })
 }
 
 /// `ail init` — create .ail/ directory structure and initialize baseline state.
@@ -4650,7 +3874,7 @@ fn validate_local_name(name: &str) -> Result<(), CliError> {
 }
 
 /// A minimal `SnapshotBridge` that always returns a fixed id.
-struct SimpleSnapshotBridge(SnapshotId);
+pub(crate) struct SimpleSnapshotBridge(pub(crate) SnapshotId);
 
 impl SnapshotBridge for SimpleSnapshotBridge {
     fn current_snapshot_id(&self) -> SnapshotId {
@@ -4703,17 +3927,17 @@ fn encode_cbor<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, CliError> {
 }
 
 /// Encode a byte slice as a lowercase hex string.
-fn bytes_to_hex(bytes: &[u8]) -> String {
+pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Return `true` if `id` is a valid 64-character lowercase hex string.
-fn is_valid_change_id(id: &str) -> bool {
+pub(crate) fn is_valid_change_id(id: &str) -> bool {
     id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Convert a 64-char hex string into an `ObjectId`.
-fn hex_to_object_id(hex: &str) -> Result<ObjectId, CliError> {
+pub(crate) fn hex_to_object_id(hex: &str) -> Result<ObjectId, CliError> {
     if hex.len() != 64 {
         return Err(CliError::Domain(format!(
             "invalid id length: {}",
@@ -4731,7 +3955,7 @@ fn hex_to_object_id(hex: &str) -> Result<ObjectId, CliError> {
 }
 
 /// Return the current time as Unix milliseconds.
-fn unix_ms_now() -> u64 {
+pub(crate) fn unix_ms_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
