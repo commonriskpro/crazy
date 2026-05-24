@@ -70,6 +70,7 @@ use crate::report::{
 };
 use crate::resource_checker::ResourceChecker;
 use crate::solver::Solver;
+use crate::translation_validator::TranslationValidator;
 use crate::type_checker::TypeChecker;
 
 use anf_stages::{check_anf_ordering, check_approval_records, lower_anf, validate_manifest};
@@ -228,6 +229,26 @@ impl VerificationPipeline {
 
         // ── Stage 6: Lower affected graph to Core IR ──────────────────────
         all_entries.push(lower_core_ir(ctx.graph));
+
+        // ── Stage 6b: Translation validation ─────────────────────────────
+        //
+        // Verifies that the semantic graph survives Core IR lowering with its
+        // shape, effect provenance, and (for prod+) control-flow/effect
+        // obligations intact.  Profile-tiered checks:
+        //   - all profiles: shape (TV-1) and effect provenance (TV-2)
+        //   - prod/staging/critical: control-flow/effect obligations (TV-3)
+        //   - critical/unknown:      evidence sufficiency (TV-4)
+        all_entries.push(stage_entry(
+            "translation-validation",
+            VerificationState::Proven,
+            "translation_validation",
+            Some(format!(
+                "profile '{}': translation validation executed",
+                ctx.profile
+            )),
+        ));
+        let tv_entries = TranslationValidator::check(ctx.graph, ctx.profile);
+        all_entries.extend(tv_entries);
 
         // ── Stage 7: Type check ───────────────────────────────────────────
         all_entries.push(stage_entry(
