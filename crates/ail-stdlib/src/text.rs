@@ -14,6 +14,7 @@
 // ranges. For full spec compliance, callers targeting complex scripts should
 // use a dedicated Unicode normalization crate at the application level.
 
+use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
 
 // ── NormalizeForm ─────────────────────────────────────────────────────────
@@ -57,19 +58,13 @@ pub fn text_join(parts: &[&str], separator: &str) -> String {
 
 /// Normalize `s` according to the given Unicode normalization form.
 ///
-/// Currently only `Nfc` and `Nfd` are supported. This implementation uses
-/// Rust's built-in Unicode tables for common codepoint pairs. For full
-/// spec compliance the caller should use a dedicated normalization library;
-/// this function covers the AIL stdlib API contract.
-///
-/// For ASCII-only strings this is a no-op clone.
-pub fn text_normalize(s: &str, _form: NormalizeForm) -> String {
-    // For the AIL stdlib API contract we expose the normalization surface.
-    // The underlying transform: collect chars — for NFC/NFD of already-composed
-    // Latin + common Unicode input, the string is unchanged in most cases.
-    // A proper implementation would use unicode-normalization crate; here we
-    // satisfy the API contract and round-trip validity.
-    s.to_string()
+/// Supports `Nfc` (Canonical Decomposition + Canonical Composition) and
+/// `Nfd` (Canonical Decomposition) via the `unicode-normalization` crate.
+pub fn text_normalize(s: &str, form: NormalizeForm) -> String {
+    match form {
+        NormalizeForm::Nfc => s.nfc().collect(),
+        NormalizeForm::Nfd => s.nfd().collect(),
+    }
 }
 
 // ── text_length_graphemes ─────────────────────────────────────────────────

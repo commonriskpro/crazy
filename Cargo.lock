@@ -256,6 +256,7 @@ dependencies = [
  "blake3",
  "ciborium",
  "serde",
+ "unicode-normalization",
  "unicode-segmentation",
 ]
 

@@ -9,7 +9,8 @@ ail-core             = { workspace = true }
 blake3               = { workspace = true }
 ciborium             = { workspace = true }
 serde                = { workspace = true }
-unicode-segmentation = { workspace = true }
+unicode-segmentation  = { workspace = true }
+unicode-normalization = { workspace = true }
 
 [lints]
 workspace = true

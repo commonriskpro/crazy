@@ -68,13 +68,25 @@ pub fn env_read(key: &str) -> Result<String, EnvError> {
 
 /// Write an environment variable (requires `env.write` capability).
 ///
-/// In AIL, this is a sensitive, capability-gated operation. The actual
-/// `set_var` call is provided by the runtime host; this function is a
-/// stub that returns `Ok(())` to satisfy the API contract without calling
-/// the OS directly from the stdlib layer.
-pub fn env_write(_key: &str, _value: &str) -> Result<(), EnvError> {
-    // Stub: in production AIL code, the runtime host injects the actual
-    // implementation via the `env.write` capability binding.
+/// Sets `key` to `value` in the current process environment via
+/// [`std::env::set_var`].  Returns `Err(EnvError::InvalidValue)` if `key`
+/// is empty, contains `'='`, or contains a NUL byte, which would produce
+/// an OS-level error or silently corrupt the environment.
+///
+/// # Safety
+///
+/// This function is safe to call but mutates process-global state.  In AIL
+/// production code the capability system gates access; callers must hold the
+/// `env.write` capability before invoking this function.
+#[allow(unsafe_code)]
+pub fn env_write(key: &str, value: &str) -> Result<(), EnvError> {
+    if key.is_empty() || key.contains('=') || key.contains('\0') || value.contains('\0') {
+        return Err(EnvError::InvalidValue(key.to_string()));
+    }
+    // SAFETY: key and value have been validated above — no NUL bytes,
+    // no '=' in key, key is non-empty.  The AIL capability system ensures
+    // `env.write` is held before this function is reachable.
+    unsafe { std::env::set_var(key, value) };
     Ok(())
 }
 

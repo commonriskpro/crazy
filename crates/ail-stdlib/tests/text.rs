@@ -4,7 +4,8 @@
 // Spec: G26 stdlib-impl, Requirements R4.1–R4.6.
 
 use ail_stdlib::text::{
-    text_from_bytes, text_join, text_length_graphemes, text_split, text_to_bytes, text_trim,
+    NormalizeForm, text_from_bytes, text_join, text_length_graphemes, text_normalize, text_split,
+    text_to_bytes, text_trim,
 };
 
 // ── R4.1: text_trim ──────────────────────────────────────────────────────
@@ -131,4 +132,64 @@ fn text_from_bytes_invalid_utf8() {
 #[test]
 fn text_from_bytes_empty() {
     assert_eq!(text_from_bytes(&[]), Ok(String::new()));
+}
+
+// ── R4.7: text_normalize ─────────────────────────────────────────────────
+
+// S4.7a: NFC of already-composed ASCII is identity
+#[test]
+fn text_normalize_nfc_ascii_identity() {
+    assert_eq!(text_normalize("hello", NormalizeForm::Nfc), "hello");
+}
+
+// S4.7b: NFD decomposes a precomposed character (é U+00E9 → e + combining acute)
+#[test]
+fn text_normalize_nfd_decomposes_precomposed() {
+    // U+00E9 LATIN SMALL LETTER E WITH ACUTE (precomposed, 2 bytes in UTF-8)
+    let precomposed = "\u{00E9}";
+    let nfd = text_normalize(precomposed, NormalizeForm::Nfd);
+    // NFD must produce 2 codepoints: U+0065 + U+0301
+    let codepoints: Vec<char> = nfd.chars().collect();
+    assert_eq!(
+        codepoints.len(),
+        2,
+        "NFD must decompose U+00E9 into e + combining accent"
+    );
+    assert_eq!(codepoints[0], 'e');
+    assert_eq!(codepoints[1], '\u{0301}');
+}
+
+// S4.7c: NFC recomposes a decomposed sequence (e + combining acute → é)
+#[test]
+fn text_normalize_nfc_recomposes_decomposed() {
+    // e followed by U+0301 COMBINING ACUTE ACCENT (decomposed form)
+    let decomposed = "e\u{0301}";
+    let nfc = text_normalize(decomposed, NormalizeForm::Nfc);
+    // NFC must produce 1 codepoint: U+00E9
+    let codepoints: Vec<char> = nfc.chars().collect();
+    assert_eq!(
+        codepoints.len(),
+        1,
+        "NFC must recompose e + combining accent into U+00E9"
+    );
+    assert_eq!(codepoints[0], '\u{00E9}');
+}
+
+// S4.7d: NFC and NFD produce strings that are semantically equivalent
+// (render the same) but byte-different for non-ASCII
+#[test]
+fn text_normalize_nfc_nfd_differ_for_nonascii() {
+    let precomposed = "\u{00E9}"; // already NFC
+    assert_ne!(
+        text_normalize(precomposed, NormalizeForm::Nfc),
+        text_normalize(precomposed, NormalizeForm::Nfd),
+        "NFC and NFD must produce different byte sequences for U+00E9"
+    );
+}
+
+// S4.7e: empty string normalizes to empty string
+#[test]
+fn text_normalize_empty_string() {
+    assert_eq!(text_normalize("", NormalizeForm::Nfc), "");
+    assert_eq!(text_normalize("", NormalizeForm::Nfd), "");
 }
