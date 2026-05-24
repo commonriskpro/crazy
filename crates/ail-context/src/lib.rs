@@ -13,12 +13,14 @@
 /// - [`redaction`] — Redaction filtering and access-shaping.
 /// - [`freshness`] — Freshness detection and repair-option construction.
 /// - [`summary`]   — Deterministic summary renderer.
-/// - [`transport`] — Newline-delimited JSON-RPC stdio transport over [`server::ContextServer`].
+/// - [`transport`]      — Newline-delimited JSON-RPC stdio transport over [`server::ContextServer`].
+/// - [`http_transport`] — Minimal HTTP/1.1 JSON-RPC transport over a TCP listener.
 pub(crate) mod assembly;
 pub mod builder;
 pub mod dto;
 pub mod error;
 pub(crate) mod freshness;
+pub mod http_transport;
 pub(crate) mod redaction;
 pub(crate) mod selection;
 pub mod server;
@@ -36,6 +38,10 @@ pub use error::{
     ContextError, ContextResult, E_ACCESS_DENIED, E_BUDGET_EXCEEDED, E_CODEC, E_CONTEXT_STALE,
     E_INDEX_STALE, E_INVALID_BUDGET, E_NODE_NOT_FOUND, E_QUERY_AMBIGUOUS, E_REDACTION_REQUIRED,
     E_SNAPSHOT_NOT_FOUND,
+};
+pub use http_transport::{
+    HTTP_MAX_BODY_BYTES, HTTP_MAX_HEADER_BYTES, HTTP_READ_TIMEOUT, HTTP_WRITE_TIMEOUT,
+    HttpTransport, HttpTransportError,
 };
 pub use server::{
     AuthSession, CONTEXT_RPC_AUTH_METHOD, CONTEXT_RPC_QUERY_METHOD, CONTEXT_RPC_SUBSCRIBE_METHOD,
