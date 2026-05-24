@@ -6,17 +6,24 @@
 //! # What this crate does
 //! - Lowers a verified `SemanticGraph` through three IR stages (Core → ANF → WASM/native).
 //! - Maintains a BLAKE3 hash chain across every stage for reproducibility.
-//! - Emits structurally valid WASM via `wasm-encoder`; function bodies are
-//!   `unreachable` stubs until Phase 8 adds expression lowering.
-//! - Emits platform-native object files via Cranelift (Phase 17); function
-//!   bodies are `trap` stubs until Phase 8+ adds expression lowering.
+//! - Emits structurally valid WASM via `wasm-encoder`; function bodies emit
+//!   real IR for arithmetic, control-flow, EffectCall, and compound types
+//!   (records/variants/lists/tuples). Lambda and concurrency expressions are
+//!   stubs in the WASM path.
+//! - Emits platform-native object files via Cranelift (Phase 17); Phase 8
+//!   expression lowering covers arithmetic, control-flow, loops, match, text
+//!   literals, records/variants/lists/tuples, EffectCall, and Lambda (params
+//!   bound, body lowered, address returned; closure capture deferred to
+//!   Phase 9+). Concurrency and resource ops dispatch via imported
+//!   `ail_runtime_call`; the runtime implementation is deferred to Phase 9+.
 //!
 //! # What this crate does NOT do
 //! - No parsing, no source mutation, no runtime/Wasmtime dependency.
 //! - Optimisation passes in `optimize.rs` (`optimize_bindings`,
 //!   `eliminate_dead_pure`, `inline_small_pure`, `cse_bindings`) are not
 //!   applied automatically — callers opt in explicitly.
-//! - No expression / body codegen (deferred to Phase 8).
+//! - No closure capture in Lambda; no concurrency runtime implementation
+//!   (both deferred to Phase 9+).
 
 pub mod anf;
 pub mod artifact_manifest;
