@@ -20,22 +20,36 @@
 // All collections are `Vec` / `BTreeMap` — never `HashMap`.
 // `stable_cbor_bytes` + BLAKE3 gives byte-identical output across runs.
 
+mod lower_expr;
+mod lower_items;
+
+// ── Public / crate-visible re-exports ────────────────────────────────────
+//
+// These re-exports preserve the original `crate::lower::*` public surface so
+// that callers in `lib.rs`, `incremental.rs`, and integration tests are
+// unaffected by the internal split.
+
+pub use lower_expr::lower_core_expr_to_anf;
+pub(crate) use lower_items::map_node_kind;
+pub use lower_items::nominal_to_core_type;
+
+// ── Private imports used only within this module ──────────────────────────
+
 use std::collections::BTreeMap;
 
-use ail_core::semantic_graph::{
-    BlockRef, ContractRef, EffectRef, GraphValidationError, NodeKind, NodeRef, ProofObligationRef,
-    RuntimeCheckRef, SemanticGraph,
-};
+use ail_core::semantic_graph::{GraphValidationError, NodeKind, NodeRef, SemanticGraph};
 use ail_verify::report::{VerificationReport, VerificationState};
 
-use crate::anf::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, SourceMap, SourceMapEntry};
-use crate::core_ir::{
-    CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, ResourceMode, StageHashes,
-};
+use crate::anf::{ANF_SCHEMA_VERSION, AnfBinding, AnfIr, SourceMap};
+use crate::core_ir::{CoreIr, CoreNode, StageHashes};
 use crate::error::CompileError;
-use crate::expr_parser::parse_expr;
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
 use crate::optimize::optimize_bindings;
+
+use lower_items::{
+    NodeProvenance, build_enriched_source_map, expr_from_graph_node, extract_provenance_lookup,
+    map_core_node_to_anf,
+};
 
 // ── is_report_accepted ────────────────────────────────────────────────────
 
@@ -49,1028 +63,6 @@ pub fn is_report_accepted(report: &VerificationReport) -> bool {
         report.summary(),
         VerificationState::Proven | VerificationState::RuntimeChecked
     )
-}
-
-// ── map_node_kind ─────────────────────────────────────────────────────────
-
-/// Map a `NodeKind` (source graph) to its `CoreNodeKind` counterpart.
-///
-/// In Phase 7 the two enums are structurally identical; the mapping is kept
-/// explicit so the compiler IR can diverge from the source model in future
-/// phases without a breaking change here.
-pub(crate) fn map_node_kind(kind: NodeKind) -> CoreNodeKind {
-    match kind {
-        NodeKind::Module => CoreNodeKind::Module,
-        NodeKind::Function => CoreNodeKind::Function,
-        NodeKind::Type => CoreNodeKind::Type,
-        NodeKind::Effect => CoreNodeKind::Effect,
-        NodeKind::Capability => CoreNodeKind::Capability,
-        NodeKind::Contract => CoreNodeKind::Contract,
-        NodeKind::Invariant => CoreNodeKind::Invariant,
-        NodeKind::Test => CoreNodeKind::Test,
-        NodeKind::Boundary => CoreNodeKind::Boundary,
-        NodeKind::Package => CoreNodeKind::Package,
-        NodeKind::Interface => CoreNodeKind::Interface,
-        NodeKind::Impl => CoreNodeKind::Impl,
-        NodeKind::EffectAlias => CoreNodeKind::EffectAlias,
-        NodeKind::Import => CoreNodeKind::Import,
-        NodeKind::Export => CoreNodeKind::Export,
-        NodeKind::VersionConstraint => CoreNodeKind::VersionConstraint,
-        NodeKind::CapabilityExport => CoreNodeKind::CapabilityExport,
-        NodeKind::ContractExport => CoreNodeKind::ContractExport,
-    }
-}
-
-// ── atomize ───────────────────────────────────────────────────────────────
-
-/// Ensure `expr` is atomic (a variable name).
-///
-/// If `expr` is already `CoreExpr::Var(n)`, returns `n` without emitting any
-/// binding.  Otherwise lowers `expr` to an `AnfExpr`, pushes a synthetic
-/// `AnfBinding` with a fresh name, and returns that fresh name.
-///
-/// The pushed binding carries the same `source_ref` as the enclosing node
-/// (provenance is preserved for synthetic temporaries).
-fn atomize(
-    expr: &CoreExpr,
-    fresh: &mut u32,
-    source_ref: ail_core::semantic_graph::NodeRef,
-    out: &mut Vec<AnfBinding>,
-) -> String {
-    if let CoreExpr::Var(name) = expr {
-        return name.clone();
-    }
-    let anf_expr = lower_core_expr_to_anf(expr, fresh, source_ref, out);
-    let name = format!("anf_{}", *fresh);
-    *fresh += 1;
-    out.push(AnfBinding {
-        source_ref,
-        name: name.clone(),
-        expr: anf_expr,
-    });
-    name
-}
-
-fn atomize_local(
-    expr: &CoreExpr,
-    fresh: &mut u32,
-    source_ref: ail_core::semantic_graph::NodeRef,
-) -> (String, Option<(String, AnfExpr)>) {
-    if let CoreExpr::Var(name) = expr {
-        return (name.clone(), None);
-    }
-    let value = lower_core_expr_to_anf_local(expr, fresh, source_ref);
-    let name = format!("anf_{}", *fresh);
-    *fresh += 1;
-    (name.clone(), Some((name, value)))
-}
-
-fn wrap_local_bindings(mut bindings: Vec<(String, AnfExpr)>, body: AnfExpr) -> AnfExpr {
-    bindings.reverse();
-    bindings
-        .into_iter()
-        .fold(body, |body, (name, value)| AnfExpr::Let {
-            name,
-            value: Box::new(value),
-            body: Box::new(body),
-        })
-}
-
-fn lower_core_call_to_anf(
-    func: &str,
-    args: &[CoreExpr],
-    fresh: &mut u32,
-    source_ref: ail_core::semantic_graph::NodeRef,
-) -> AnfExpr {
-    let mut bindings = Vec::new();
-    let mut arg_names = Vec::with_capacity(args.len());
-    for arg in args {
-        let (name, binding) = atomize_local(arg, fresh, source_ref);
-        if let Some(binding) = binding {
-            bindings.push(binding);
-        }
-        arg_names.push(name);
-    }
-    wrap_local_bindings(
-        bindings,
-        AnfExpr::Call {
-            func: func.to_string(),
-            args: arg_names,
-        },
-    )
-}
-
-fn lower_core_binary_to_anf(
-    func: &str,
-    left: &CoreExpr,
-    right: &CoreExpr,
-    fresh: &mut u32,
-    source_ref: ail_core::semantic_graph::NodeRef,
-) -> AnfExpr {
-    lower_core_call_to_anf(func, &[left.clone(), right.clone()], fresh, source_ref)
-}
-
-fn lower_core_expr_to_anf_local(
-    expr: &CoreExpr,
-    fresh: &mut u32,
-    source_ref: ail_core::semantic_graph::NodeRef,
-) -> AnfExpr {
-    match expr {
-        CoreExpr::Let { name, value, body } => AnfExpr::Let {
-            name: name.clone(),
-            value: Box::new(lower_core_expr_to_anf_local(value, fresh, source_ref)),
-            body: Box::new(lower_core_expr_to_anf_local(body, fresh, source_ref)),
-        },
-        CoreExpr::If { cond, then_, else_ } => {
-            let (cond_name, cond_binding) = atomize_local(cond, fresh, source_ref);
-            let if_expr = AnfExpr::If {
-                cond: cond_name,
-                then_branch: Box::new(lower_core_expr_to_anf_local(then_, fresh, source_ref)),
-                else_branch: Box::new(lower_core_expr_to_anf_local(else_, fresh, source_ref)),
-            };
-            if let Some(binding) = cond_binding {
-                wrap_local_bindings(vec![binding], if_expr)
-            } else {
-                if_expr
-            }
-        }
-        CoreExpr::Match { scrutinee, arms } => {
-            let (scrutinee_name, scrutinee_binding) = atomize_local(scrutinee, fresh, source_ref);
-            let match_expr = AnfExpr::Match {
-                scrutinee: scrutinee_name,
-                arms: arms
-                    .iter()
-                    .map(|arm| crate::anf::AnfMatchArm {
-                        pattern: arm.pattern.clone(),
-                        body: lower_core_expr_to_anf_local(&arm.body, fresh, source_ref),
-                    })
-                    .collect(),
-            };
-            if let Some(binding) = scrutinee_binding {
-                wrap_local_bindings(vec![binding], match_expr)
-            } else {
-                match_expr
-            }
-        }
-        CoreExpr::Call { func, args } => lower_core_call_to_anf(func, args, fresh, source_ref),
-        CoreExpr::Add(left, right) => {
-            lower_core_binary_to_anf("add", left, right, fresh, source_ref)
-        }
-        CoreExpr::Sub(left, right) => {
-            lower_core_binary_to_anf("sub", left, right, fresh, source_ref)
-        }
-        CoreExpr::Mul(left, right) => {
-            lower_core_binary_to_anf("mul", left, right, fresh, source_ref)
-        }
-        CoreExpr::Div(left, right) => {
-            lower_core_binary_to_anf("div", left, right, fresh, source_ref)
-        }
-        CoreExpr::Mod(left, right) => {
-            lower_core_binary_to_anf("mod", left, right, fresh, source_ref)
-        }
-        CoreExpr::Eq(left, right) => lower_core_binary_to_anf("eq", left, right, fresh, source_ref),
-        CoreExpr::Lt(left, right) => lower_core_binary_to_anf("lt", left, right, fresh, source_ref),
-        CoreExpr::Gt(left, right) => lower_core_binary_to_anf("gt", left, right, fresh, source_ref),
-        CoreExpr::And { left, right } => {
-            let (left_name, left_binding) = atomize_local(left, fresh, source_ref);
-            let and_expr = AnfExpr::ShortCircuitAnd {
-                left: left_name,
-                right: Box::new(lower_core_expr_to_anf_local(right, fresh, source_ref)),
-            };
-            if let Some(binding) = left_binding {
-                wrap_local_bindings(vec![binding], and_expr)
-            } else {
-                and_expr
-            }
-        }
-        CoreExpr::Or { left, right } => {
-            let (left_name, left_binding) = atomize_local(left, fresh, source_ref);
-            let or_expr = AnfExpr::ShortCircuitOr {
-                left: left_name,
-                right: Box::new(lower_core_expr_to_anf_local(right, fresh, source_ref)),
-            };
-            if let Some(binding) = left_binding {
-                wrap_local_bindings(vec![binding], or_expr)
-            } else {
-                or_expr
-            }
-        }
-        CoreExpr::FieldGet { record, field } => {
-            let (record_name, record_binding) = atomize_local(record, fresh, source_ref);
-            let field_expr = AnfExpr::FieldGet {
-                record: record_name,
-                field: field.clone(),
-            };
-            if let Some(binding) = record_binding {
-                wrap_local_bindings(vec![binding], field_expr)
-            } else {
-                field_expr
-            }
-        }
-        CoreExpr::FieldUpdate {
-            record,
-            field,
-            value,
-        } => {
-            let (record_name, record_binding) = atomize_local(record, fresh, source_ref);
-            let (value_name, value_binding) = atomize_local(value, fresh, source_ref);
-            let update_expr = AnfExpr::FieldUpdate {
-                record: record_name,
-                field: field.clone(),
-                value: Box::new(AnfExpr::Var(value_name)),
-            };
-            let bindings = [record_binding, value_binding]
-                .into_iter()
-                .flatten()
-                .collect();
-            wrap_local_bindings(bindings, update_expr)
-        }
-        CoreExpr::RecordNew { fields } => {
-            let mut bindings = Vec::new();
-            let mut anf_fields = Vec::with_capacity(fields.len());
-            for (field, value) in fields {
-                let (name, binding) = atomize_local(value, fresh, source_ref);
-                if let Some(binding) = binding {
-                    bindings.push(binding);
-                }
-                anf_fields.push((field.clone(), AnfExpr::Var(name)));
-            }
-            wrap_local_bindings(bindings, AnfExpr::RecordNew { fields: anf_fields })
-        }
-        CoreExpr::TupleNew(elems) => {
-            let mut bindings = Vec::new();
-            let mut anf_elems = Vec::with_capacity(elems.len());
-            for elem in elems {
-                let (name, binding) = atomize_local(elem, fresh, source_ref);
-                if let Some(binding) = binding {
-                    bindings.push(binding);
-                }
-                anf_elems.push(AnfExpr::Var(name));
-            }
-            wrap_local_bindings(bindings, AnfExpr::TupleNew(anf_elems))
-        }
-        CoreExpr::VariantNew { tag, payload } => {
-            let mut bindings = Vec::new();
-            let anf_payload = if let Some(payload) = payload {
-                let (name, binding) = atomize_local(payload, fresh, source_ref);
-                if let Some(binding) = binding {
-                    bindings.push(binding);
-                }
-                Some(Box::new(AnfExpr::Var(name)))
-            } else {
-                None
-            };
-            wrap_local_bindings(
-                bindings,
-                AnfExpr::VariantNew {
-                    tag: tag.clone(),
-                    payload: anf_payload,
-                },
-            )
-        }
-        CoreExpr::ListNew(elems) => {
-            let mut bindings = Vec::new();
-            let mut anf_elems = Vec::with_capacity(elems.len());
-            for elem in elems {
-                let (name, binding) = atomize_local(elem, fresh, source_ref);
-                if let Some(binding) = binding {
-                    bindings.push(binding);
-                }
-                anf_elems.push(AnfExpr::Var(name));
-            }
-            wrap_local_bindings(bindings, AnfExpr::ListNew(anf_elems))
-        }
-        _ => lower_core_expr_to_anf(expr, fresh, source_ref, &mut Vec::new()),
-    }
-}
-
-// ── lower_core_expr_to_anf ────────────────────────────────────────────────
-
-/// Recursively lower a `CoreExpr` to an `AnfExpr`.
-///
-/// Non-atomic sub-expressions (nested calls, non-trivial conditions, etc.)
-/// are atomized: a synthetic `AnfBinding` is pushed to `out` and the
-/// sub-expression is replaced by a `Var` reference to that binding.
-///
-/// All synthetic bindings carry `source_ref` for end-to-end provenance.
-pub fn lower_core_expr_to_anf(
-    expr: &CoreExpr,
-    fresh: &mut u32,
-    source_ref: ail_core::semantic_graph::NodeRef,
-    out: &mut Vec<AnfBinding>,
-) -> AnfExpr {
-    match expr {
-        // Atomic values — no sub-expressions to flatten.
-        CoreExpr::Literal(v) => AnfExpr::Literal(v.clone()),
-        CoreExpr::Var(n) => AnfExpr::Var(n.clone()),
-
-        // Let: lower value and body recursively; no atomization needed.
-        CoreExpr::Let { name, value, body } => {
-            let anf_value = lower_core_expr_to_anf(value, fresh, source_ref, out);
-            let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
-            AnfExpr::Let {
-                name: name.clone(),
-                value: Box::new(anf_value),
-                body: Box::new(anf_body),
-            }
-        }
-
-        // If: condition must be atomic (atomize if needed).
-        CoreExpr::If { cond, then_, else_ } => {
-            let cond_name = atomize(cond, fresh, source_ref, out);
-            let anf_then = lower_core_expr_to_anf(then_, fresh, source_ref, out);
-            let anf_else = lower_core_expr_to_anf(else_, fresh, source_ref, out);
-            AnfExpr::If {
-                cond: cond_name,
-                then_branch: Box::new(anf_then),
-                else_branch: Box::new(anf_else),
-            }
-        }
-
-        // Call: all args must be atomic (atomize each non-Var arg).
-        CoreExpr::Call { func, args } => {
-            let atomic_args: Vec<String> = args
-                .iter()
-                .map(|a| atomize(a, fresh, source_ref, out))
-                .collect();
-            AnfExpr::Call {
-                func: func.clone(),
-                args: atomic_args,
-            }
-        }
-        CoreExpr::Add(left, right) => {
-            lower_core_binary_to_anf("add", left, right, fresh, source_ref)
-        }
-        CoreExpr::Sub(left, right) => {
-            lower_core_binary_to_anf("sub", left, right, fresh, source_ref)
-        }
-        CoreExpr::Mul(left, right) => {
-            lower_core_binary_to_anf("mul", left, right, fresh, source_ref)
-        }
-        CoreExpr::Div(left, right) => {
-            lower_core_binary_to_anf("div", left, right, fresh, source_ref)
-        }
-        CoreExpr::Mod(left, right) => {
-            lower_core_binary_to_anf("mod", left, right, fresh, source_ref)
-        }
-        CoreExpr::Eq(left, right) => lower_core_binary_to_anf("eq", left, right, fresh, source_ref),
-        CoreExpr::Lt(left, right) => lower_core_binary_to_anf("lt", left, right, fresh, source_ref),
-        CoreExpr::Gt(left, right) => lower_core_binary_to_anf("gt", left, right, fresh, source_ref),
-
-        // FieldGet: record expression must be atomic.
-        CoreExpr::FieldGet { record, field } => {
-            let record_name = atomize(record, fresh, source_ref, out);
-            AnfExpr::FieldGet {
-                record: record_name,
-                field: field.clone(),
-            }
-        }
-
-        // ── G20: Expression body lowering ────────────────────────────────
-
-        // Match: scrutinee must be atomic (atomize if non-Var).
-        // Each arm body is lowered recursively.
-        CoreExpr::Match { scrutinee, arms } => {
-            let scrutinee_name = atomize(scrutinee, fresh, source_ref, out);
-            let anf_arms = arms
-                .iter()
-                .map(|arm| crate::anf::AnfMatchArm {
-                    pattern: arm.pattern.clone(),
-                    body: lower_core_expr_to_anf(&arm.body, fresh, source_ref, out),
-                })
-                .collect();
-            AnfExpr::Match {
-                scrutinee: scrutinee_name,
-                arms: anf_arms,
-            }
-        }
-
-        // Lambda: params are already names; lower body recursively.
-        CoreExpr::Lambda { params, body } => {
-            let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
-            AnfExpr::Lambda {
-                params: params.clone(),
-                body: Box::new(anf_body),
-            }
-        }
-
-        // RecordNew: full ANF normalization — each field value is let-bound
-        // so field construction arguments are always atomic.
-        CoreExpr::RecordNew { fields } => {
-            let anf_fields: Vec<(String, AnfExpr)> = fields
-                .iter()
-                .map(|(name, val)| {
-                    let atom = atomize(val, fresh, source_ref, out);
-                    (name.clone(), AnfExpr::Var(atom))
-                })
-                .collect();
-            AnfExpr::RecordNew { fields: anf_fields }
-        }
-
-        // FieldUpdate: record expression must be atomic; value is also atomized
-        // for full ANF normalization.
-        CoreExpr::FieldUpdate {
-            record,
-            field,
-            value,
-        } => {
-            let record_name = atomize(record, fresh, source_ref, out);
-            let value_name = atomize(value, fresh, source_ref, out);
-            AnfExpr::FieldUpdate {
-                record: record_name,
-                field: field.clone(),
-                value: Box::new(AnfExpr::Var(value_name)),
-            }
-        }
-
-        // TupleNew: full ANF normalization — each element is let-bound.
-        CoreExpr::TupleNew(elems) => {
-            let anf_elems: Vec<AnfExpr> = elems
-                .iter()
-                .map(|e| {
-                    let name = atomize(e, fresh, source_ref, out);
-                    AnfExpr::Var(name)
-                })
-                .collect();
-            AnfExpr::TupleNew(anf_elems)
-        }
-
-        // VariantNew: payload is atomized for full ANF normalization.
-        CoreExpr::VariantNew { tag, payload } => {
-            let anf_payload = payload.as_ref().map(|p| {
-                let name = atomize(p, fresh, source_ref, out);
-                Box::new(AnfExpr::Var(name))
-            });
-            AnfExpr::VariantNew {
-                tag: tag.clone(),
-                payload: anf_payload,
-            }
-        }
-
-        // ListNew: lower each element recursively; let-bind non-atomic elements
-        // to enforce full ANF normalization.
-        CoreExpr::ListNew(elems) => {
-            let anf_elems: Vec<AnfExpr> = elems
-                .iter()
-                .map(|e| {
-                    let name = atomize(e, fresh, source_ref, out);
-                    AnfExpr::Var(name)
-                })
-                .collect();
-            AnfExpr::ListNew(anf_elems)
-        }
-
-        // Loop: body is lowered recursively; exits through Break.
-        // The termination field is not used during ANF lowering.
-        CoreExpr::Loop { body, .. } => {
-            let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
-            AnfExpr::Loop {
-                body: Box::new(anf_body),
-            }
-        }
-
-        // Break: value is lowered recursively so it can be emitted before br.
-        CoreExpr::Break { value } => {
-            let anf_value = lower_core_expr_to_anf(value, fresh, source_ref, out);
-            AnfExpr::Break {
-                value: Box::new(anf_value),
-            }
-        }
-
-        CoreExpr::Continue => AnfExpr::Continue,
-
-        // WhileLoop: condition must be atomic; body is lowered recursively.
-        // The termination field is not used during ANF lowering.
-        CoreExpr::WhileLoop { cond, body, .. } => {
-            let cond_name = atomize(cond, fresh, source_ref, out);
-            let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
-            AnfExpr::WhileLoop {
-                cond: cond_name,
-                body: Box::new(anf_body),
-            }
-        }
-
-        // ── G20 R2: new semantic variants ────────────────────────────────
-
-        // And: short-circuit — lower left; result is Var(left_name); right
-        // is wrapped in the ANF ShortCircuitAnd so it is only evaluated when
-        // the condition demands it.
-        CoreExpr::And { left, right } => {
-            let left_name = atomize(left, fresh, source_ref, out);
-            let anf_right = lower_core_expr_to_anf(right, fresh, source_ref, out);
-            AnfExpr::ShortCircuitAnd {
-                left: left_name,
-                right: Box::new(anf_right),
-            }
-        }
-
-        // Or: symmetric short-circuit — left is atomized; right is wrapped.
-        CoreExpr::Or { left, right } => {
-            let left_name = atomize(left, fresh, source_ref, out);
-            let anf_right = lower_core_expr_to_anf(right, fresh, source_ref, out);
-            AnfExpr::ShortCircuitOr {
-                left: left_name,
-                right: Box::new(anf_right),
-            }
-        }
-
-        // EffectCall: atomize all args; effect ordering is structural.
-        CoreExpr::EffectCall {
-            capability,
-            func,
-            args,
-        } => {
-            let atomic_args: Vec<String> = args
-                .iter()
-                .map(|a| atomize(a, fresh, source_ref, out))
-                .collect();
-            AnfExpr::EffectCall {
-                capability: capability.clone(),
-                func: func.clone(),
-                args: atomic_args,
-            }
-        }
-
-        // Dispatch: dynamic handler dispatch — atomize all args.
-        CoreExpr::Dispatch {
-            handler,
-            method,
-            args,
-        } => {
-            let atomic_args: Vec<String> = args
-                .iter()
-                .map(|a| atomize(a, fresh, source_ref, out))
-                .collect();
-            AnfExpr::Dispatch {
-                handler: handler.clone(),
-                method: method.clone(),
-                args: atomic_args,
-            }
-        }
-
-        // TaskSpawn: atomize all args; explicit ordering via ANF let-chain.
-        CoreExpr::TaskSpawn { func, args } => {
-            let atomic_args: Vec<String> = args
-                .iter()
-                .map(|a| atomize(a, fresh, source_ref, out))
-                .collect();
-            AnfExpr::TaskSpawn {
-                func: func.clone(),
-                args: atomic_args,
-            }
-        }
-
-        // ChannelSend: both channel and value must be atomic.
-        CoreExpr::ChannelSend { channel, value } => {
-            let channel_name = atomize(channel, fresh, source_ref, out);
-            let value_name = atomize(value, fresh, source_ref, out);
-            AnfExpr::ChannelSend {
-                channel: channel_name,
-                value: value_name,
-            }
-        }
-
-        // ChannelReceive: channel must be atomic.
-        CoreExpr::ChannelReceive { channel } => {
-            let channel_name = atomize(channel, fresh, source_ref, out);
-            AnfExpr::ChannelReceive {
-                channel: channel_name,
-            }
-        }
-
-        // RuntimeCheck: condition must be atomic; check_ref and msg are preserved.
-        CoreExpr::RuntimeCheck {
-            check_ref,
-            cond,
-            msg,
-        } => {
-            let cond_name = atomize(cond, fresh, source_ref, out);
-            AnfExpr::RuntimeCheck {
-                check_ref: check_ref.clone(),
-                cond: cond_name,
-                msg: msg.clone(),
-            }
-        }
-
-        // ResourceAcquire: atomize all args; acquisition ordering is structural.
-        CoreExpr::ResourceAcquire { resource, args } => {
-            let atomic_args: Vec<String> = args
-                .iter()
-                .map(|a| atomize(a, fresh, source_ref, out))
-                .collect();
-            AnfExpr::ResourceAcquire {
-                resource: resource.clone(),
-                args: atomic_args,
-            }
-        }
-
-        // ResourceRelease: handle must be atomic.
-        CoreExpr::ResourceRelease { handle } => {
-            let handle_name = atomize(handle, fresh, source_ref, out);
-            AnfExpr::ResourceRelease {
-                handle: handle_name,
-            }
-        }
-
-        // ── G23: new concurrency and cell primitives ─────────────────────
-
-        // TaskAwait: task handle must be atomic.
-        CoreExpr::TaskAwait { task } => {
-            let task_name = atomize(task, fresh, source_ref, out);
-            AnfExpr::TaskAwait { task: task_name }
-        }
-
-        // TaskCancel: task handle must be atomic.
-        CoreExpr::TaskCancel { task } => {
-            let task_name = atomize(task, fresh, source_ref, out);
-            AnfExpr::TaskCancel { task: task_name }
-        }
-
-        // TaskGroup: body is lowered recursively (may contain TaskSpawn calls).
-        CoreExpr::TaskGroup { body } => {
-            let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
-            AnfExpr::TaskGroup {
-                body: Box::new(anf_body),
-            }
-        }
-
-        // ChannelNew: capacity is a primitive scalar — no sub-expression to lower.
-        CoreExpr::ChannelNew { capacity } => AnfExpr::ChannelNew {
-            capacity: *capacity,
-        },
-
-        // Select: each branch channel must be atomic; body is lowered recursively.
-        CoreExpr::Select { branches } => {
-            let anf_branches = branches
-                .iter()
-                .map(|clause| {
-                    let channel_name = atomize(&clause.channel, fresh, source_ref, out);
-                    let anf_body = lower_core_expr_to_anf(&clause.body, fresh, source_ref, out);
-                    crate::anf::AnfSelectClause {
-                        channel: channel_name,
-                        binding: clause.binding.clone(),
-                        body: anf_body,
-                    }
-                })
-                .collect();
-            AnfExpr::Select {
-                branches: anf_branches,
-            }
-        }
-
-        // Timeout: duration must be atomic; body is lowered recursively.
-        CoreExpr::Timeout { duration, body } => {
-            let duration_name = atomize(duration, fresh, source_ref, out);
-            let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
-            AnfExpr::Timeout {
-                duration: duration_name,
-                body: Box::new(anf_body),
-            }
-        }
-
-        // CellNew: init is atomized (must be atomic in ANF).
-        CoreExpr::CellNew { init } => {
-            let init_name = atomize(init, fresh, source_ref, out);
-            AnfExpr::CellNew { init: init_name }
-        }
-
-        // CellGet: cell must be atomic.
-        CoreExpr::CellGet { cell } => {
-            let cell_name = atomize(cell, fresh, source_ref, out);
-            AnfExpr::CellGet { cell: cell_name }
-        }
-
-        // CellSet: both cell and value must be atomic.
-        CoreExpr::CellSet { cell, value } => {
-            let cell_name = atomize(cell, fresh, source_ref, out);
-            let value_name = atomize(value, fresh, source_ref, out);
-            AnfExpr::CellSet {
-                cell: cell_name,
-                value: value_name,
-            }
-        }
-
-        // CoreExpr::Placeholder → AnfExpr::Placeholder (no expression body).
-        CoreExpr::Placeholder => AnfExpr::Placeholder,
-
-        // ── ola5-compiler-core: Gap 2 — real ANF lowering ────────────────
-
-        // Return: atomize the value, wrap in AnfExpr::Return.
-        CoreExpr::Return { value } => {
-            let val_name = atomize(value, fresh, source_ref, out);
-            AnfExpr::Return(Box::new(AnfExpr::Var(val_name)))
-        }
-
-        // Assume: no runtime effect — produces unit.  Predicate and reason
-        // are preserved for static analysis / documentation purposes.
-        CoreExpr::Assume { predicate, reason } => AnfExpr::Assume {
-            predicate: predicate.clone(),
-            reason: reason.clone(),
-        },
-
-        // Abort: always traps — diagnostic message preserved.
-        CoreExpr::Abort { message } => AnfExpr::Abort {
-            message: message.clone(),
-        },
-
-        // BoundaryCall: atomize all args; encode boundary + func as a
-        // namespaced call so backends can route to the trust boundary.
-        CoreExpr::BoundaryCall {
-            boundary,
-            func,
-            args,
-        } => {
-            let atomic_args: Vec<String> = args
-                .iter()
-                .map(|a| atomize(a, fresh, source_ref, out))
-                .collect();
-            AnfExpr::Call {
-                func: format!("{boundary}::{func}"),
-                args: atomic_args,
-            }
-        }
-
-        // DynCall: atomize all args; encode interface + method as a
-        // namespaced call for dynamic dispatch through Dyn<Interface>.
-        CoreExpr::DynCall {
-            interface,
-            method,
-            args,
-        } => {
-            let atomic_args: Vec<String> = args
-                .iter()
-                .map(|a| atomize(a, fresh, source_ref, out))
-                .collect();
-            AnfExpr::Call {
-                func: format!("dyn::{interface}::{method}"),
-                args: atomic_args,
-            }
-        }
-
-        // ── doc-alignment: new CoreExpr variant lowering ─────────────────────
-
-        // CapabilityUse: lower as an EffectCall-like call.
-        CoreExpr::CapabilityUse { capability, args } => {
-            let atomic_args: Vec<String> = args
-                .iter()
-                .map(|a| atomize(a, fresh, source_ref, out))
-                .collect();
-            AnfExpr::EffectCall {
-                capability: capability.clone(),
-                func: capability.clone(),
-                args: atomic_args,
-            }
-        }
-
-        // ResourceUse: atomize handle, lower body.
-        CoreExpr::ResourceUse { handle, body } => {
-            let _h = atomize(handle, fresh, source_ref, out);
-            lower_core_expr_to_anf(body, fresh, source_ref, out)
-        }
-
-        // ResourceUsing: acquire, bind, use, release — lowered as let + body.
-        CoreExpr::ResourceUsing {
-            resource,
-            binding,
-            body,
-        } => {
-            let res_name = atomize(resource, fresh, source_ref, out);
-            // Emit acquire binding.
-            out.push(AnfBinding {
-                source_ref,
-                name: binding.clone(),
-                expr: AnfExpr::ResourceAcquire {
-                    resource: res_name,
-                    args: vec![],
-                },
-            });
-            let result = lower_core_expr_to_anf(body, fresh, source_ref, out);
-            // Emit implicit release after body.
-            let release_tmp = format!("anf_{}", *fresh);
-            *fresh += 1;
-            out.push(AnfBinding {
-                source_ref,
-                name: release_tmp,
-                expr: AnfExpr::ResourceRelease {
-                    handle: binding.clone(),
-                },
-            });
-            result
-        }
-
-        // ResourceTransfer: atomize both operands.
-        CoreExpr::ResourceTransfer { handle, target } => {
-            let h = atomize(handle, fresh, source_ref, out);
-            let t = atomize(target, fresh, source_ref, out);
-            AnfExpr::Call {
-                func: "__resource_transfer".to_string(),
-                args: vec![h, t],
-            }
-        }
-
-        // ForeignFunctionCall: lower as a boundary-style call.
-        CoreExpr::ForeignFunctionCall { func, args } => {
-            let atomic_args: Vec<String> = args
-                .iter()
-                .map(|a| atomize(a, fresh, source_ref, out))
-                .collect();
-            AnfExpr::Call {
-                func: format!("__foreign::{func}"),
-                args: atomic_args,
-            }
-        }
-
-        // PatchFieldConstruct: lower as a variant construction.
-        CoreExpr::PatchFieldConstruct { state, value } => {
-            let payload = value.as_ref().map(|v| {
-                let name = atomize(v, fresh, source_ref, out);
-                Box::new(AnfExpr::Var(name))
-            });
-            AnfExpr::VariantNew {
-                tag: state.clone(),
-                payload,
-            }
-        }
-
-        // PatchFieldMatch: lower as a standard match.
-        CoreExpr::PatchFieldMatch { scrutinee, arms } => {
-            let scrutinee_name = atomize(scrutinee, fresh, source_ref, out);
-            let anf_arms: Vec<crate::anf::AnfMatchArm> = arms
-                .iter()
-                .map(|arm| crate::anf::AnfMatchArm {
-                    pattern: arm.pattern.clone(),
-                    body: lower_core_expr_to_anf(&arm.body, fresh, source_ref, out),
-                })
-                .collect();
-            AnfExpr::Match {
-                scrutinee: scrutinee_name,
-                arms: anf_arms,
-            }
-        }
-
-        // IndexGet: atomize both collection and index.
-        CoreExpr::IndexGet { collection, index } => {
-            let col_name = atomize(collection, fresh, source_ref, out);
-            let idx_name = atomize(index, fresh, source_ref, out);
-            AnfExpr::IndexGet {
-                collection: col_name,
-                index: idx_name,
-            }
-        }
-
-        // MapNew: atomize all keys and values; preserve declaration order.
-        CoreExpr::MapNew { entries } => {
-            let atomic_entries: Vec<(String, String)> = entries
-                .iter()
-                .map(|(k, v)| {
-                    let k_name = atomize(k, fresh, source_ref, out);
-                    let v_name = atomize(v, fresh, source_ref, out);
-                    (k_name, v_name)
-                })
-                .collect();
-            AnfExpr::MapNew {
-                entries: atomic_entries,
-            }
-        }
-
-        // SetNew: atomize all elements; preserve declaration order.
-        CoreExpr::SetNew { elements } => {
-            let atomic_elems: Vec<String> = elements
-                .iter()
-                .map(|e| atomize(e, fresh, source_ref, out))
-                .collect();
-            AnfExpr::SetNew {
-                elements: atomic_elems,
-            }
-        }
-
-        // ForEach: atomize the collection; body is lowered recursively.
-        CoreExpr::ForEach {
-            binding,
-            collection,
-            body,
-        } => {
-            let col_name = atomize(collection, fresh, source_ref, out);
-            let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
-            AnfExpr::ForEach {
-                binding: binding.clone(),
-                collection: col_name,
-                body: Box::new(anf_body),
-            }
-        }
-
-        // Fold: atomize init, list, and func; all three become atomic names.
-        CoreExpr::Fold { init, list, func } => {
-            let init_name = atomize(init, fresh, source_ref, out);
-            let list_name = atomize(list, fresh, source_ref, out);
-            let func_name = atomize(func, fresh, source_ref, out);
-            AnfExpr::Fold {
-                init: init_name,
-                list: list_name,
-                func: func_name,
-            }
-        } // CoreExpr::Placeholder → AnfExpr::Placeholder (no expression body).
-          // (kept last for clarity — already handled above)
-    }
-}
-
-// ── map_core_node_to_anf ──────────────────────────────────────────────────
-
-/// Lower one `CoreNode` into one or more `AnfBinding`s.
-///
-/// If the node has a `CoreExpr` body, inline temporaries are kept inside the
-/// node binding as local `let` expressions so executable function parameters do
-/// not accidentally become global synthetic bindings.
-///
-/// Nodes without `expr` (modules, types, capabilities, etc.) get a default
-/// `AnfExpr::Literal(LiteralValue::Unit)`.
-///
-/// Provenance (`source_ref`) is preserved verbatim on every emitted binding.
-fn map_core_node_to_anf(node: &CoreNode, fresh: &mut u32, out: &mut Vec<AnfBinding>) {
-    let anf_expr = match &node.expr {
-        Some(core_expr) => lower_core_expr_to_anf_local(core_expr, fresh, node.source_ref),
-        None => AnfExpr::Literal(LiteralValue::Unit),
-    };
-    out.push(AnfBinding {
-        source_ref: node.source_ref,
-        name: node.name.clone(),
-        expr: anf_expr,
-    });
-}
-
-// ── nominal_to_core_type ─────────────────────────────────────────────────
-
-/// Map a `TypeFacts.nominal` string to a `CoreType` variant.
-///
-/// Recognised nominals correspond to the 20 type primitives listed in
-/// `docs/core-ir.md §3`.  Any unrecognised nominal falls back to
-/// `CoreType::Generic(None)`.
-pub fn nominal_to_core_type(nominal: &str) -> CoreType {
-    match nominal {
-        "Unit" => CoreType::Unit,
-        "Never" => CoreType::Never,
-        "Bool" => CoreType::Bool,
-        "Int" => CoreType::Int,
-        "UInt" => CoreType::UInt,
-        "Float" => CoreType::Float,
-        "Text" => CoreType::Text,
-        "Bytes" => CoreType::Bytes,
-        "Record" => CoreType::Record,
-        "Variant" => CoreType::Variant,
-        "Tuple" => CoreType::Tuple,
-        // Parameterized variants: inner type defaults to Generic when only the
-        // nominal name is available (full resolution requires type-param phase).
-        "List" => CoreType::List(Box::new(CoreType::Generic(None))),
-        "Map" => CoreType::Map(
-            Box::new(CoreType::Generic(None)),
-            Box::new(CoreType::Generic(None)),
-        ),
-        "Set" => CoreType::Set(Box::new(CoreType::Generic(None))),
-        "Option" => CoreType::Option(Box::new(CoreType::Generic(None))),
-        "Result" => CoreType::Result(
-            Box::new(CoreType::Generic(None)),
-            Box::new(CoreType::Generic(None)),
-        ),
-        "Function" => CoreType::Function {
-            params: vec![],
-            ret: Box::new(CoreType::Generic(None)),
-            effects: vec![],
-        },
-        "Handle" => CoreType::Handle {
-            resource: Box::new(CoreType::Generic(None)),
-            mode: ResourceMode::Copy,
-        },
-        "Refinement" => CoreType::Refinement {
-            base: Box::new(CoreType::Generic(None)),
-            predicate: String::new(),
-        },
-        "Generic" => CoreType::Generic(None),
-        _ => CoreType::Generic(None),
-    }
-}
-
-fn literal_expr_from_runtime_checks(
-    checks: Option<&Vec<ail_core::semantic_graph::RuntimeCheckMeta>>,
-) -> Option<CoreExpr> {
-    let predicate = checks?.first()?.predicate.strip_prefix("literal:i64=")?;
-    let value = predicate.parse::<i64>().ok()?;
-    Some(CoreExpr::Literal(LiteralValue::Int(value)))
-}
-
-fn expr_from_graph_node(
-    node: &ail_core::semantic_graph::GraphNode,
-) -> Result<Option<CoreExpr>, CompileError> {
-    if let Some(body) = &node.body_expr {
-        if body.trim_start().starts_with('@') {
-            return Ok(None);
-        }
-        return parse_expr(body)
-            .map(Some)
-            .map_err(|err| CompileError::InvalidGraph(format!("{} body: {err}", node.name)));
-    }
-    Ok(literal_expr_from_runtime_checks(
-        node.runtime_checks.as_ref(),
-    ))
 }
 
 // ── lower_to_core_ir ──────────────────────────────────────────────────────
@@ -1169,106 +161,6 @@ pub fn lower_to_core_ir(
             artifact_manifest_hash: None,
         },
     })
-}
-
-// ── Semantic provenance extraction ───────────────────────────────────────
-
-/// Node-level provenance data extracted from a `GraphNode` for source-map
-/// enrichment.  All fields are `Option` because graph nodes are not required
-/// to carry this metadata.
-struct NodeProvenance {
-    /// From `GraphNode.provenance.change_id` — the `ChangeSet` that last
-    /// created or modified this node.
-    change_set: Option<String>,
-    /// Derived block identity: `Some(format!("block.{name}"))` for
-    /// `Module` / `Boundary` nodes; `None` for all other kinds.
-    block_ref: Option<String>,
-    /// Derived contract ref: `Some(format!("contract.{name}"))` when the
-    /// node has `contract_clauses`; `None` otherwise.
-    contract_ref: Option<String>,
-    /// First declared effect from `GraphNode.effect_row.effects`, if any.
-    effect_ref: Option<String>,
-    /// Content hash of the first `RuntimeCheckMeta` in
-    /// `GraphNode.runtime_checks`, if any.
-    runtime_check_ref: Option<String>,
-}
-
-/// Build a `NodeRef → NodeProvenance` lookup from a `SemanticGraph`.
-///
-/// Used by `lower_to_anf_with_graph` to enrich `SourceMapEntry` fields
-/// without changing the `lower_to_anf` public API.
-fn extract_provenance_lookup(graph: &SemanticGraph) -> BTreeMap<NodeRef, NodeProvenance> {
-    graph
-        .nodes
-        .iter()
-        .map(|gn| {
-            let prov = NodeProvenance {
-                change_set: gn.provenance.as_ref().map(|p| p.change_id.clone()),
-                block_ref: match gn.kind {
-                    NodeKind::Module | NodeKind::Boundary => Some(format!("block.{}", gn.name)),
-                    _ => None,
-                },
-                contract_ref: gn
-                    .contract_clauses
-                    .as_ref()
-                    .map(|_| format!("contract.{}", gn.name)),
-                effect_ref: gn
-                    .effect_row
-                    .as_ref()
-                    .and_then(|er| er.effects.first().cloned()),
-                runtime_check_ref: gn
-                    .runtime_checks
-                    .as_ref()
-                    .and_then(|rcs| rcs.first())
-                    .map(|rc| rc.hash.clone()),
-            };
-            (gn.id, prov)
-        })
-        .collect()
-}
-
-/// Build an enriched `SourceMap` from ANF bindings and a provenance lookup.
-///
-/// Each `SourceMapEntry` is populated with the provenance fields available
-/// in the lookup for the binding's `source_ref`.  Fields for which no
-/// upstream data exists remain `None`.
-///
-/// `proof_obligation_ref` is always `None` — the upstream pipeline does not
-/// yet produce proof obligation metadata.  The field is plumbed correctly so
-/// that when upstream starts producing it, it flows through automatically.
-fn build_enriched_source_map(
-    bindings: &[AnfBinding],
-    lookup: &BTreeMap<NodeRef, NodeProvenance>,
-) -> SourceMap {
-    let entries = bindings
-        .iter()
-        .map(|b| {
-            let prov = lookup.get(&b.source_ref);
-            SourceMapEntry {
-                binding_name: b.name.clone(),
-                node_id: b.source_ref,
-                block_ref: prov
-                    .and_then(|p| p.block_ref.as_ref())
-                    .map(|s| BlockRef(s.clone())),
-                change_set: prov.and_then(|p| p.change_set.clone()),
-                contract_ref: prov
-                    .and_then(|p| p.contract_ref.as_ref())
-                    .map(|s| ContractRef(s.clone())),
-                effect_ref: prov
-                    .and_then(|p| p.effect_ref.as_ref())
-                    .map(|s| EffectRef(s.clone())),
-                // No upstream proof-obligation data yet — field plumbed for
-                // future use.
-                proof_obligation_ref: None::<ProofObligationRef>,
-                runtime_check_ref: prov
-                    .and_then(|p| p.runtime_check_ref.as_ref())
-                    .map(|s| RuntimeCheckRef(s.clone())),
-                wasm_offset: None,
-                native_offset: None,
-            }
-        })
-        .collect();
-    SourceMap { entries }
 }
 
 // ── lower_to_anf_impl ────────────────────────────────────────────────────
@@ -1460,6 +352,7 @@ mod tests {
     // All 10 source kinds map to their CoreNodeKind counterpart.
     #[test]
     fn all_node_kinds_map_correctly() {
+        use crate::core_ir::CoreNodeKind;
         let cases = [
             (NodeKind::Module, CoreNodeKind::Module),
             (NodeKind::Function, CoreNodeKind::Function),
@@ -1486,6 +379,7 @@ mod tests {
     // Provenance and name are preserved verbatim.
     #[test]
     fn map_core_node_to_anf_preserves_source_ref_and_name() {
+        use crate::core_ir::{CoreNode, CoreNodeKind};
         let node = CoreNode {
             source_ref: NodeRef(7),
             kind: CoreNodeKind::Function,
@@ -1548,6 +442,7 @@ mod tests {
     // S6 (partial): all 20 known nominals map to their CoreType variant.
     #[test]
     fn all_known_nominals_map_to_correct_core_type() {
+        use crate::core_ir::{CoreType, ResourceMode};
         let cases: &[(&str, CoreType)] = &[
             ("Unit", CoreType::Unit),
             ("Never", CoreType::Never),
@@ -1616,6 +511,7 @@ mod tests {
     // S7: unknown nominal falls back to CoreType::Generic(None).
     #[test]
     fn unknown_nominal_maps_to_generic() {
+        use crate::core_ir::CoreType;
         assert_eq!(nominal_to_core_type("Exotic"), CoreType::Generic(None));
         assert_eq!(nominal_to_core_type(""), CoreType::Generic(None));
         assert_eq!(nominal_to_core_type("int"), CoreType::Generic(None)); // case-sensitive
@@ -1627,6 +523,7 @@ mod tests {
     // type_facts.nominal = "Int".
     #[test]
     fn lower_to_core_ir_populates_core_type_from_type_facts() {
+        use crate::core_ir::CoreType;
         use ail_core::semantic_graph::TypeFacts;
 
         let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "amount");
@@ -1649,6 +546,7 @@ mod tests {
 
     #[test]
     fn lower_to_core_ir_maps_literal_function_value_to_expr() {
+        use crate::core_ir::{CoreExpr, LiteralValue};
         use ail_core::semantic_graph::RuntimeCheckMeta;
 
         let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.answer");
@@ -1672,6 +570,8 @@ mod tests {
 
     #[test]
     fn lower_to_core_ir_parses_function_body_expr() {
+        use crate::core_ir::CoreExpr;
+
         let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn.add");
         node.body_expr = Some("add(x, y)".to_string());
         let graph = SemanticGraph {
@@ -1705,6 +605,7 @@ mod tests {
     // S7 (lowering): lower_to_core_ir uses Generic for unknown nominals.
     #[test]
     fn lower_to_core_ir_uses_generic_for_unknown_nominal() {
+        use crate::core_ir::CoreType;
         use ail_core::semantic_graph::TypeFacts;
 
         let mut node = GraphNode::new(NodeRef(0), NodeKind::Type, "exotic");
@@ -1740,9 +641,11 @@ mod tests {
     // ── G20: Expression body lowering tests ──────────────────────────────
 
     // Helper: lower a single CoreExpr to AnfExpr (no prior bindings).
-    fn lower_single(expr: &CoreExpr) -> (AnfExpr, Vec<AnfBinding>) {
+    fn lower_single(
+        expr: &crate::core_ir::CoreExpr,
+    ) -> (crate::anf::AnfExpr, Vec<crate::anf::AnfBinding>) {
         let mut fresh = 0u32;
-        let mut out: Vec<AnfBinding> = Vec::new();
+        let mut out: Vec<crate::anf::AnfBinding> = Vec::new();
         let result = lower_core_expr_to_anf(expr, &mut fresh, NodeRef(0), &mut out);
         (result, out)
     }
@@ -1750,7 +653,7 @@ mod tests {
     // S1: Match — scrutinee Var is preserved as atomic name.
     #[test]
     fn lower_match_var_scrutinee_is_preserved() {
-        use crate::core_ir::MatchArm;
+        use crate::core_ir::{CoreExpr, MatchArm};
         let expr = CoreExpr::Match {
             scrutinee: Box::new(CoreExpr::Var("payment".to_string())),
             arms: vec![MatchArm {
@@ -1777,7 +680,7 @@ mod tests {
     // S1b: Match — non-Var scrutinee is atomized (produces synthetic binding).
     #[test]
     fn lower_match_complex_scrutinee_is_atomized() {
-        use crate::core_ir::MatchArm;
+        use crate::core_ir::{CoreExpr, LiteralValue, MatchArm};
         let expr = CoreExpr::Match {
             scrutinee: Box::new(CoreExpr::Literal(LiteralValue::Int(42))),
             arms: vec![MatchArm {
@@ -1806,6 +709,7 @@ mod tests {
     // S2: Lambda — params and body lowered correctly.
     #[test]
     fn lower_lambda_params_and_body() {
+        use crate::core_ir::CoreExpr;
         let expr = CoreExpr::Lambda {
             params: vec!["x".to_string(), "y".to_string()],
             body: Box::new(CoreExpr::Var("x".to_string())),
@@ -1832,6 +736,7 @@ mod tests {
     // binding (anf_0) and the field value will be Var("anf_0").
     #[test]
     fn lower_record_new_field_values() {
+        use crate::core_ir::{CoreExpr, LiteralValue};
         let expr = CoreExpr::RecordNew {
             fields: vec![
                 (
@@ -1871,6 +776,7 @@ mod tests {
     //     value is also atomized (full ANF normalization).
     #[test]
     fn lower_field_update_var_record_is_preserved() {
+        use crate::core_ir::{CoreExpr, LiteralValue};
         let expr = CoreExpr::FieldUpdate {
             record: Box::new(CoreExpr::Var("order".to_string())),
             field: "status".to_string(),
@@ -1902,6 +808,7 @@ mod tests {
     // S5: TupleNew — elements are lowered recursively.
     #[test]
     fn lower_tuple_new_elements() {
+        use crate::core_ir::CoreExpr;
         let expr = CoreExpr::TupleNew(vec![
             CoreExpr::Var("a".to_string()),
             CoreExpr::Var("b".to_string()),
@@ -1920,6 +827,7 @@ mod tests {
     // S6: VariantNew with payload.
     #[test]
     fn lower_variant_new_with_payload() {
+        use crate::core_ir::CoreExpr;
         let expr = CoreExpr::VariantNew {
             tag: "Ok".to_string(),
             payload: Some(Box::new(CoreExpr::Var("x".to_string()))),
@@ -1941,6 +849,7 @@ mod tests {
     // S6b: VariantNew without payload.
     #[test]
     fn lower_variant_new_no_payload() {
+        use crate::core_ir::CoreExpr;
         let expr = CoreExpr::VariantNew {
             tag: "None".to_string(),
             payload: None,
@@ -1962,6 +871,7 @@ mod tests {
     // Var("x")   → passes through atomize as "x" → Var("x")
     #[test]
     fn lower_list_new_elements() {
+        use crate::core_ir::{CoreExpr, LiteralValue};
         let expr = CoreExpr::ListNew(vec![
             CoreExpr::Literal(LiteralValue::Int(1)),
             CoreExpr::Var("x".to_string()),
@@ -1987,7 +897,7 @@ mod tests {
     // S8: No Placeholder produced for real CoreExpr variants.
     #[test]
     fn real_core_exprs_do_not_produce_placeholder() {
-        use crate::core_ir::MatchArm;
+        use crate::core_ir::{CoreExpr, LiteralValue, MatchArm};
         let real_exprs = vec![
             CoreExpr::Match {
                 scrutinee: Box::new(CoreExpr::Var("x".to_string())),
@@ -2026,6 +936,7 @@ mod tests {
     // S9: CoreExpr::Placeholder still produces AnfExpr::Placeholder.
     #[test]
     fn placeholder_still_maps_to_placeholder() {
+        use crate::core_ir::CoreExpr;
         let (result, _out) = lower_single(&CoreExpr::Placeholder);
         assert_eq!(result, crate::anf::AnfExpr::Placeholder);
     }
@@ -2035,6 +946,7 @@ mod tests {
     // TaskAwait: Var task → no synthetic bindings, atomic name preserved.
     #[test]
     fn lower_task_await_var_is_preserved() {
+        use crate::core_ir::CoreExpr;
         let expr = CoreExpr::TaskAwait {
             task: Box::new(CoreExpr::Var("task_0".to_string())),
         };
@@ -2054,6 +966,7 @@ mod tests {
     // TRIANGULATE: TaskAwait with non-Var task atomizes it.
     #[test]
     fn lower_task_await_complex_task_is_atomized() {
+        use crate::core_ir::CoreExpr;
         let expr = CoreExpr::TaskAwait {
             task: Box::new(CoreExpr::Call {
                 func: "fn.spawn_work".to_string(),
@@ -2076,6 +989,7 @@ mod tests {
     // TaskCancel: Var task → no synthetic bindings.
     #[test]
     fn lower_task_cancel_var_is_preserved() {
+        use crate::core_ir::CoreExpr;
         let expr = CoreExpr::TaskCancel {
             task: Box::new(CoreExpr::Var("t".to_string())),
         };
@@ -2092,6 +1006,7 @@ mod tests {
     // TaskGroup: body is lowered recursively.
     #[test]
     fn lower_task_group_body_is_lowered() {
+        use crate::core_ir::CoreExpr;
         let expr = CoreExpr::TaskGroup {
             body: Box::new(CoreExpr::Var("spawner".to_string())),
         };
@@ -2111,6 +1026,7 @@ mod tests {
     // ChannelNew unbounded: no sub-expressions to lower.
     #[test]
     fn lower_channel_new_unbounded() {
+        use crate::core_ir::CoreExpr;
         let expr = CoreExpr::ChannelNew { capacity: None };
         let (result, out) = lower_single(&expr);
         assert!(
@@ -2128,6 +1044,7 @@ mod tests {
     // TRIANGULATE: ChannelNew bounded preserves capacity.
     #[test]
     fn lower_channel_new_bounded_preserves_capacity() {
+        use crate::core_ir::CoreExpr;
         let expr = CoreExpr::ChannelNew { capacity: Some(64) };
         let (result, out) = lower_single(&expr);
         assert!(out.is_empty());
@@ -2142,7 +1059,7 @@ mod tests {
     // Select: Var channel → no synthetic bindings; clause fields preserved.
     #[test]
     fn lower_select_var_channel_is_preserved() {
-        use crate::core_ir::SelectClause;
+        use crate::core_ir::{CoreExpr, SelectClause};
         let expr = CoreExpr::Select {
             branches: vec![SelectClause {
                 channel: Box::new(CoreExpr::Var("inbox".to_string())),
@@ -2172,7 +1089,7 @@ mod tests {
     // TRIANGULATE: Select with non-Var channel atomizes it.
     #[test]
     fn lower_select_complex_channel_is_atomized() {
-        use crate::core_ir::SelectClause;
+        use crate::core_ir::{CoreExpr, LiteralValue, SelectClause};
         let expr = CoreExpr::Select {
             branches: vec![SelectClause {
                 channel: Box::new(CoreExpr::Call {
@@ -2199,6 +1116,7 @@ mod tests {
     // Timeout: Var duration → no synthetic bindings; body lowered recursively.
     #[test]
     fn lower_timeout_var_duration_is_preserved() {
+        use crate::core_ir::{CoreExpr, LiteralValue};
         let expr = CoreExpr::Timeout {
             duration: Box::new(CoreExpr::Var("ms".to_string())),
             body: Box::new(CoreExpr::Literal(LiteralValue::Unit)),
@@ -2220,6 +1138,7 @@ mod tests {
     // TRIANGULATE: Timeout with non-Var duration atomizes it.
     #[test]
     fn lower_timeout_complex_duration_is_atomized() {
+        use crate::core_ir::{CoreExpr, LiteralValue};
         let expr = CoreExpr::Timeout {
             duration: Box::new(CoreExpr::Literal(LiteralValue::Int(5000))),
             body: Box::new(CoreExpr::Literal(LiteralValue::Unit)),
@@ -2243,6 +1162,7 @@ mod tests {
     // CellNew: Var init → no synthetic bindings.
     #[test]
     fn lower_cell_new_var_init_is_preserved() {
+        use crate::core_ir::CoreExpr;
         let expr = CoreExpr::CellNew {
             init: Box::new(CoreExpr::Var("zero".to_string())),
         };
@@ -2262,6 +1182,7 @@ mod tests {
     // TRIANGULATE: CellNew with Literal init atomizes it.
     #[test]
     fn lower_cell_new_literal_init_is_atomized() {
+        use crate::core_ir::{CoreExpr, LiteralValue};
         let expr = CoreExpr::CellNew {
             init: Box::new(CoreExpr::Literal(LiteralValue::Int(0))),
         };
@@ -2281,6 +1202,7 @@ mod tests {
     // CellGet: Var cell → no synthetic bindings.
     #[test]
     fn lower_cell_get_var_cell_is_preserved() {
+        use crate::core_ir::CoreExpr;
         let expr = CoreExpr::CellGet {
             cell: Box::new(CoreExpr::Var("counter".to_string())),
         };
@@ -2297,6 +1219,7 @@ mod tests {
     // CellSet: both Var cell and Var value → no synthetic bindings.
     #[test]
     fn lower_cell_set_var_operands_are_preserved() {
+        use crate::core_ir::CoreExpr;
         let expr = CoreExpr::CellSet {
             cell: Box::new(CoreExpr::Var("c".to_string())),
             value: Box::new(CoreExpr::Var("v".to_string())),
@@ -2318,6 +1241,7 @@ mod tests {
     // TRIANGULATE: CellSet with non-Var cell and non-Var value atomizes both.
     #[test]
     fn lower_cell_set_literal_operands_are_atomized() {
+        use crate::core_ir::{CoreExpr, LiteralValue};
         let expr = CoreExpr::CellSet {
             cell: Box::new(CoreExpr::Call {
                 func: "fn.get_cell".to_string(),
