@@ -138,7 +138,7 @@ fn collect_in_expr(expr: &AnfExpr, out: &mut Vec<(Vec<String>, AnfExpr)>) {
             // standalone function, not visited inline.
         }
         AnfExpr::Lambda { .. } => {
-            // Non-hoistable Lambda — do not recurse into its body.
+            // Non-hoistable or closure-hoistable Lambda — do not recurse.
         }
         AnfExpr::Let { value, body, .. } => {
             collect_in_expr(value, out);
@@ -182,24 +182,170 @@ fn collect_in_expr(expr: &AnfExpr, out: &mut Vec<(Vec<String>, AnfExpr)>) {
     }
 }
 
+// ── collect_closure_hoistable_lambdas ─────────────────────────────────────
+
+/// Collect all nested Lambda sub-expressions that qualify for closure hoisting
+/// (Wave 16A PR3).
+///
+/// A Lambda is closure-hoistable when it has exactly 2 parameters and at least
+/// one capture.  Its body is emitted as a 3-param WASM function
+/// `(env_ptr: i64, acc: i64, elem: i64) → i64` that loads captures from the
+/// env pointer before executing the Lambda body.  The Lambda node itself writes
+/// the real table index into the closure env's `fn_idx` slot, enabling Fold to
+/// dispatch via `call_indirect` with the closure-reducer type.
+///
+/// The collection order matches the DFS traversal order in `emit_anf_expr`,
+/// ensuring that the sequential `next_closure_hoisted_table_idx` counter
+/// advanced during emission is consistent with the body indices assigned here.
+pub(crate) fn collect_closure_hoistable_lambdas(
+    bindings: &[AnfBinding],
+) -> Vec<(Vec<String>, Vec<String>, AnfExpr)> {
+    let mut out = Vec::new();
+    for binding in bindings {
+        let body_to_scan = match &binding.expr {
+            AnfExpr::Lambda { body, .. } => body.as_ref(),
+            other => other,
+        };
+        collect_closure_in_expr(body_to_scan, &mut out);
+    }
+    out
+}
+
+/// DFS helper for `collect_closure_hoistable_lambdas`.
+///
+/// Follows the same traversal order as `collect_in_expr` and `emit_anf_expr`.
+/// Does NOT recurse into any Lambda body — those become separate functions.
+fn collect_closure_in_expr(expr: &AnfExpr, out: &mut Vec<(Vec<String>, Vec<String>, AnfExpr)>) {
+    match expr {
+        AnfExpr::Lambda {
+            params,
+            captures,
+            body,
+        } if params.len() == 2 && !captures.is_empty() => {
+            out.push((params.clone(), captures.clone(), *body.clone()));
+            // Do NOT recurse: body becomes a separate standalone function.
+        }
+        AnfExpr::Lambda { .. } => {
+            // Hoistable (capture-free) or non-2-param Lambda — skip body.
+        }
+        AnfExpr::Let { value, body, .. } => {
+            collect_closure_in_expr(value, out);
+            collect_closure_in_expr(body, out);
+        }
+        AnfExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_closure_in_expr(then_branch, out);
+            collect_closure_in_expr(else_branch, out);
+        }
+        AnfExpr::Return(inner) => collect_closure_in_expr(inner, out),
+        AnfExpr::Seq(exprs) => exprs.iter().for_each(|e| collect_closure_in_expr(e, out)),
+        AnfExpr::Match { arms, .. } => {
+            arms.iter()
+                .for_each(|a| collect_closure_in_expr(&a.body, out));
+        }
+        AnfExpr::Loop { body } => collect_closure_in_expr(body, out),
+        AnfExpr::Break { value } => collect_closure_in_expr(value, out),
+        AnfExpr::WhileLoop { body, .. } => collect_closure_in_expr(body, out),
+        AnfExpr::ForEach { body, .. } => collect_closure_in_expr(body, out),
+        AnfExpr::RecordNew { fields } => {
+            fields
+                .iter()
+                .for_each(|(_, v)| collect_closure_in_expr(v, out));
+        }
+        AnfExpr::FieldUpdate { value, .. } => collect_closure_in_expr(value, out),
+        AnfExpr::TupleNew(elems) | AnfExpr::ListNew(elems) => {
+            elems.iter().for_each(|e| collect_closure_in_expr(e, out));
+        }
+        AnfExpr::VariantNew {
+            payload: Some(p), ..
+        } => {
+            collect_closure_in_expr(p, out);
+        }
+        AnfExpr::VariantNew { payload: None, .. } => {}
+        AnfExpr::ShortCircuitAnd { right, .. } | AnfExpr::ShortCircuitOr { right, .. } => {
+            collect_closure_in_expr(right, out);
+        }
+        _ => {}
+    }
+}
+
+// ── expr_contains_2param_lambda ───────────────────────────────────────────
+
+/// Returns `true` when `expr` contains — directly or through recursive
+/// sub-expressions — any `Lambda` node with exactly 2 parameters.
+///
+/// Used by the nested-hoistable-Lambda gate in `emit_wasm_with_profile`:
+/// both `collect_hoistable_lambdas` and `collect_closure_hoistable_lambdas`
+/// do NOT recurse into Lambda bodies.  A 2-param Lambda nested inside a
+/// hoisted or closure-hoisted Lambda body would consume a table index that
+/// was never allocated, silently writing an out-of-range index into linear
+/// memory (not caught by `wasmparser::validate`).
+///
+/// The gate rejects such programs at compile time with
+/// `CompileError::UnsupportedWasmConstruct` until recursive
+/// collection/indexing is implemented.
+fn expr_contains_2param_lambda(expr: &AnfExpr) -> bool {
+    match expr {
+        AnfExpr::Lambda { params, body, .. } => {
+            // If this Lambda itself has 2 params it IS a hoistable/closure-hoistable
+            // nested Lambda — the problem case.  Otherwise recurse into its body.
+            params.len() == 2 || expr_contains_2param_lambda(body)
+        }
+        AnfExpr::Let { value, body, .. } => {
+            expr_contains_2param_lambda(value) || expr_contains_2param_lambda(body)
+        }
+        AnfExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => expr_contains_2param_lambda(then_branch) || expr_contains_2param_lambda(else_branch),
+        AnfExpr::Return(inner) => expr_contains_2param_lambda(inner),
+        AnfExpr::Seq(exprs) => exprs.iter().any(expr_contains_2param_lambda),
+        AnfExpr::Match { arms, .. } => arms.iter().any(|a| expr_contains_2param_lambda(&a.body)),
+        AnfExpr::Loop { body } => expr_contains_2param_lambda(body),
+        AnfExpr::Break { value } => expr_contains_2param_lambda(value),
+        AnfExpr::WhileLoop { body, .. } | AnfExpr::ForEach { body, .. } => {
+            expr_contains_2param_lambda(body)
+        }
+        AnfExpr::RecordNew { fields } => fields.iter().any(|(_, v)| expr_contains_2param_lambda(v)),
+        AnfExpr::FieldUpdate { value, .. } => expr_contains_2param_lambda(value),
+        AnfExpr::TupleNew(elems) | AnfExpr::ListNew(elems) => {
+            elems.iter().any(expr_contains_2param_lambda)
+        }
+        AnfExpr::VariantNew {
+            payload: Some(p), ..
+        } => expr_contains_2param_lambda(p),
+        AnfExpr::VariantNew { payload: None, .. } => false,
+        AnfExpr::ShortCircuitAnd { right, .. } | AnfExpr::ShortCircuitOr { right, .. } => {
+            expr_contains_2param_lambda(right)
+        }
+        // Atomic or non-recursive variants — no nested Lambdas.
+        _ => false,
+    }
+}
+
 // ── has_fold_with_captured_reducer ───────────────────────────────────────
 
 /// Returns `true` when any `Fold` in `bindings` has a `func` that is
-/// let-bound to a `Lambda` with non-empty captures.
+/// let-bound to a `Lambda` with non-empty captures AND **not** exactly 2
+/// parameters.
 ///
-/// Such Lambdas are non-hoistable: captured values are not available inside
-/// the hoisted `(i64, i64) → i64` WASM function.  The current backend would
-/// emit a closure env pointer (I32) with `fn_idx = 0` (placeholder), causing
-/// Fold to dispatch via `Unreachable` at runtime.
+/// Wave 16A PR3 implements general closure hoisting for 2-param captured
+/// Lambdas: they are emitted as `(env_ptr: i64, acc: i64, elem: i64) → i64`
+/// WASM functions and the closure env receives a real table index.  These no
+/// longer need this diagnostic gate.
 ///
-/// This check lets the pre-flight gate return
-/// `CompileError::UnsupportedWasmConstruct("FoldWithCapturedReducer")` before
-/// any code is emitted, replacing the silent runtime trap with an actionable
-/// compile-time diagnostic.
+/// Lambdas with captures and **≠ 2 params** cannot be Fold reducers (Fold
+/// expects `(i64, i64) → i64`).  Using them as such would write `fn_idx = 0`
+/// (placeholder) into the closure env, causing a runtime type-mismatch trap.
+/// This gate preserves the compile-time diagnostic for those non-reducible
+/// shapes.
 ///
 /// Top-level Lambda bindings are not checked here — they are always emitted as
-/// proper WASM functions with captures as explicit I64 parameters, and their
-/// captures do not produce closure env pointers.
+/// proper WASM functions with captures as explicit I64 parameters.
 fn has_fold_with_captured_reducer(bindings: &[AnfBinding]) -> bool {
     for binding in bindings {
         let body_to_scan = match &binding.expr {
@@ -216,28 +362,31 @@ fn has_fold_with_captured_reducer(bindings: &[AnfBinding]) -> bool {
 
 /// DFS helper for `has_fold_with_captured_reducer`.
 ///
-/// Tracks let-bound names whose values are Lambdas with non-empty captures
-/// (`captured_names`).  Returns `true` when a `Fold` node is found whose
-/// `func` is in that set.
+/// Tracks let-bound names whose values are Lambdas with non-empty captures AND
+/// **≠ 2 params** (`captured_names`).  Returns `true` when a `Fold` node is
+/// found whose `func` is in that set.
 ///
-/// Because ANF uses SSA-style unique names, the flat `HashSet` correctly
-/// represents which names hold closure env pointers at any `Fold` site.
+/// 2-param captured Lambdas are excluded because they are now supported via
+/// closure hoisting (Wave 16A PR3) and no longer need the diagnostic.
 fn expr_has_fold_with_captured_reducer<'a>(
     expr: &'a AnfExpr,
     captured_names: &mut HashSet<&'a str>,
 ) -> bool {
     match expr {
         AnfExpr::Let { name, value, body } => {
-            if let AnfExpr::Lambda { captures, .. } = value.as_ref()
+            if let AnfExpr::Lambda {
+                captures, params, ..
+            } = value.as_ref()
                 && !captures.is_empty()
+                && params.len() != 2
             {
+                // Only flag non-2-param captured Lambdas: 2-param captured
+                // Lambdas are now supported via closure hoisting (Wave 16A PR3).
                 captured_names.insert(name.as_str());
             } else if let AnfExpr::Var(v) = value.as_ref()
                 && captured_names.contains(v.as_str())
             {
-                // Transitive alias: `let reducer = adder` where `adder` is
-                // already known to hold a captured Lambda.  Propagate the
-                // alias so a downstream Fold { func: "reducer" } is caught.
+                // Transitive alias: propagate captured-name membership.
                 captured_names.insert(name.as_str());
             }
             expr_has_fold_with_captured_reducer(value, captured_names)
@@ -451,12 +600,16 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         }
     }
 
-    // Gate: Fold reducer that is a captured Lambda (Wave 13B).
-    // Captured Lambdas cannot be hoisted into the `(i64, i64) → i64` function
-    // table because their captured values are not available as fold-reducer
-    // parameters.  The backend would emit a closure env pointer with fn_idx = 0
-    // and Fold would trap at runtime via `Unreachable`.  Return a diagnostic
-    // before any code is emitted so callers get an actionable error.
+    // Gate: Fold reducer that is a captured Lambda with ≠ 2 params (Wave 13B,
+    // updated in Wave 16A PR3).
+    //
+    // 2-param captured Lambdas are now supported via closure hoisting (PR3):
+    // they are emitted as `(env_ptr: i64, acc: i64, elem: i64) → i64` WASM
+    // functions with the real table index stored in the closure env's fn_idx.
+    //
+    // Non-2-param captured Lambdas (0, 1, 3+ params) cannot be Fold reducers
+    // and still produce a runtime trap.  The gate preserves the compile-time
+    // diagnostic for those shapes.
     if has_fold_with_captured_reducer(&anf.bindings) {
         return Err(CompileError::UnsupportedWasmConstruct(
             "FoldWithCapturedReducer".to_string(),
@@ -497,9 +650,43 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     };
     let n_hoisted = hoisted_lambdas.len() as u32;
 
-    // Total functions in the module = binding functions + hoisted lambda functions.
+    // Collect closure-hoistable Lambdas (params == 2, captures non-empty).
+    // Only meaningful when needs_fold is true; empty otherwise.
+    // (Wave 16A PR3: general closure dispatch for captured fold reducers.)
+    let closure_hoistable_lambdas: Vec<(Vec<String>, Vec<String>, AnfExpr)> = if needs_fold {
+        collect_closure_hoistable_lambdas(&anf.bindings)
+    } else {
+        vec![]
+    };
+    let n_closure_hoisted = closure_hoistable_lambdas.len() as u32;
+
+    // Gate: W1 — nested 2-param Lambdas inside hoisted Lambda bodies.
+    //
+    // `collect_hoistable_lambdas` and `collect_closure_hoistable_lambdas` do
+    // NOT recurse into Lambda bodies (those become separate WASM functions).
+    // A 2-param Lambda nested inside a hoisted or closure-hoisted Lambda body
+    // would consume a table index that was never allocated, silently writing an
+    // out-of-range index into linear memory — not caught by wasmparser::validate.
+    //
+    // Reject at compile time until recursive collection/indexing is implemented.
+    for (_, body) in &hoisted_lambdas {
+        if expr_contains_2param_lambda(body) {
+            return Err(CompileError::UnsupportedWasmConstruct(
+                "NestedHoistableLambda".to_string(),
+            ));
+        }
+    }
+    for (_, _, body) in &closure_hoistable_lambdas {
+        if expr_contains_2param_lambda(body) {
+            return Err(CompileError::UnsupportedWasmConstruct(
+                "NestedClosureHoistableLambda".to_string(),
+            ));
+        }
+    }
+
+    // Total functions in the module = bindings + hoisted + closure-hoisted.
     let n_bindings = anf.bindings.len() as u32;
-    let n_functions = n_bindings + n_hoisted;
+    let n_functions = n_bindings + n_hoisted + n_closure_hoisted;
 
     // fold_reducer_type_idx: the type-section index of (i64, i64) → i64.
     // It is appended after all host-import types and binding signatures:
@@ -509,6 +696,23 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     } else {
         None
     };
+
+    // closure_reducer_type_idx: the type-section index of (i64, i64, i64) → i64.
+    // Appended immediately after fold_reducer_type when needs_fold is true.
+    // Used by the Fold I32 dispatch path for captured Lambda reducers (PR3).
+    //   index = type_offset + signatures.len() + 1   (when needs_fold)
+    let closure_reducer_type_idx: Option<u32> = if needs_fold {
+        Some(type_offset + signatures.len() as u32 + 1)
+    } else {
+        None
+    };
+
+    // Both needs_fold → needs_closure_reducer: add closure-reducer type whenever
+    // there is a Fold, even if no captured Lambdas exist in this module.  The
+    // type is unused in that case but its presence is harmless and avoids
+    // conditional type-section layout changes that would complicate the index
+    // arithmetic.
+    let needs_closure_reducer = needs_fold;
 
     // Assemble WASM module first so we can compute byte offsets.
     // Section order follows the WASM binary format spec:
@@ -522,8 +726,9 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
             needs_host_call_write,
             needs_resource_call,
             needs_fold,
+            needs_closure_reducer,
         ));
-    } else if let Some(types) = build_type_section(&signatures, needs_fold) {
+    } else if let Some(types) = build_type_section(&signatures, needs_fold, needs_closure_reducer) {
         module.section(&types);
     }
     if let Some(imports) =
@@ -531,9 +736,14 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     {
         module.section(&imports);
     }
-    if let Some(functions) =
-        build_function_section(&signatures, type_offset, n_hoisted, fold_reducer_type_idx)
-    {
+    if let Some(functions) = build_function_section(
+        &signatures,
+        type_offset,
+        n_hoisted,
+        fold_reducer_type_idx,
+        n_closure_hoisted,
+        closure_reducer_type_idx,
+    ) {
         module.section(&functions);
     }
     // Table section (4): required for call_indirect when Fold is present.
@@ -557,14 +767,20 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     if needs_fold && let Some(elems) = build_element_section(function_offset, n_functions) {
         module.section(&elems);
     }
-    if let Some(codes) = build_code_section(
+    match build_code_section(
         &anf.bindings,
         &effect_data,
         function_offset,
         fold_reducer_type_idx,
+        closure_reducer_type_idx,
         &hoisted_lambdas,
+        &closure_hoistable_lambdas,
     ) {
-        module.section(&codes);
+        Ok(Some(codes)) => {
+            module.section(&codes);
+        }
+        Ok(None) => {}
+        Err(e) => return Err(e),
     }
     if let Some(data) = build_data_section(&effect_data) {
         module.section(&data);

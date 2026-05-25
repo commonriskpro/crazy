@@ -53,6 +53,19 @@ pub enum CompileError {
     /// - `"ChannelNew"`, `"ChannelSend"`, `"ChannelReceive"` — require channel runtime
     /// - `"Select"`, `"Timeout"` — require channel/timer runtime
     UnsupportedWasmConstruct(String),
+
+    /// A `Match` arm contains a pattern syntax the WASM backend does not yet
+    /// support.
+    ///
+    /// Affected pattern families (detected at compile time):
+    /// - Nested constructor patterns: `"Ok(Some(x))"` — payload itself is a constructor
+    /// - Multi-binding tuple patterns: `"Pair(a, b)"` — payload contains `,`
+    /// - Record-field patterns: `"{name: x}"` — pattern starts with `{`
+    ///
+    /// The string payload is the offending pattern string as it appears in
+    /// the ANF IR.  The caller must desugar the pattern into flat supported
+    /// forms before invoking the WASM backend.
+    UnsupportedPatternSyntax(String),
 }
 
 impl std::fmt::Display for CompileError {
@@ -81,6 +94,14 @@ impl std::fmt::Display for CompileError {
                 write!(
                     f,
                     "unsupported WASM construct: {name}; not yet implemented in the WASM backend"
+                )
+            }
+            CompileError::UnsupportedPatternSyntax(pattern) => {
+                write!(
+                    f,
+                    "unsupported pattern syntax: `{pattern}`; nested constructors, \
+                     multi-binding, and record-field patterns must be desugared before \
+                     WASM emission"
                 )
             }
         }
@@ -212,5 +233,45 @@ mod tests {
             msg.contains("native"),
             "display must mention 'native', got: {msg}"
         );
+    }
+
+    // Wave 16B: UnsupportedPatternSyntax variant tests.
+
+    // Scenario: UnsupportedPatternSyntax is constructible and carries the pattern.
+    #[test]
+    fn unsupported_pattern_syntax_carries_pattern_string() {
+        let e = CompileError::UnsupportedPatternSyntax("Ok(Some(x))".to_string());
+        match &e {
+            CompileError::UnsupportedPatternSyntax(pat) => {
+                assert_eq!(pat, "Ok(Some(x))");
+            }
+            other => panic!("expected UnsupportedPatternSyntax, got {other:?}"),
+        }
+    }
+
+    // Scenario: Display mentions 'pattern' and desugaring guidance.
+    #[test]
+    fn unsupported_pattern_syntax_display_mentions_pattern_and_desugar() {
+        let msg = CompileError::UnsupportedPatternSyntax("Pair(a, b)".to_string()).to_string();
+        assert!(
+            msg.contains("pattern"),
+            "display must contain 'pattern', got: {msg}"
+        );
+        assert!(
+            msg.contains("Pair(a, b)"),
+            "display must include the offending pattern, got: {msg}"
+        );
+        assert!(
+            msg.contains("desugar"),
+            "display must mention desugaring, got: {msg}"
+        );
+    }
+
+    // Scenario: UnsupportedPatternSyntax is distinct from UnsupportedWasmConstruct.
+    #[test]
+    fn unsupported_pattern_syntax_is_distinct_from_unsupported_construct() {
+        let a = CompileError::UnsupportedPatternSyntax("x".to_string());
+        let b = CompileError::UnsupportedWasmConstruct("x".to_string());
+        assert_ne!(a, b, "pattern and construct variants must be distinct");
     }
 }

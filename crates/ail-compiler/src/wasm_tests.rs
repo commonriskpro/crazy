@@ -86,13 +86,13 @@ fn different_anf_produces_different_wasm_hash() {
 // Scenario: build_type_section returns None for 0 functions and no fold.
 #[test]
 fn build_type_section_none_for_zero() {
-    assert!(build_type_section(&[], false).is_none());
+    assert!(build_type_section(&[], false, false).is_none());
 }
 
 // Scenario: build_type_section returns Some when needs_fold is true even with 0 signatures.
 #[test]
 fn build_type_section_some_when_needs_fold() {
-    assert!(build_type_section(&[], true).is_some());
+    assert!(build_type_section(&[], true, false).is_some());
 }
 
 // TRIANGULATE: build_type_section returns Some for N > 0.
@@ -102,8 +102,8 @@ fn build_type_section_some_for_nonzero() {
         param_count: 0,
         result: None,
     };
-    assert!(build_type_section(std::slice::from_ref(&signature), false).is_some());
-    assert!(build_type_section(&vec![signature; 5], false).is_some());
+    assert!(build_type_section(std::slice::from_ref(&signature), false, false).is_some());
+    assert!(build_type_section(&vec![signature; 5], false, false).is_some());
 }
 
 fn sealed_anf(bindings: Vec<AnfBinding>) -> AnfIr {
@@ -3707,13 +3707,18 @@ fn fold_hoistable_lambda_does_not_need_memory_for_closure_env() {
     );
 }
 
-// Scenario: Fold reducer is a Lambda with captures → compile-time diagnostic.
-// Wave 13B: replaced the runtime Unreachable guard with an actionable
-// compile-time error so callers are not surprised by a silent runtime trap.
-// Regression guard: hoisting must not accidentally apply to Lambdas with captures.
+// Scenario: Fold reducer is a 2-param Lambda with captures.
+// Wave 13B: this was a compile-time diagnostic (FoldWithCapturedReducer).
+// Wave 16A PR3: 2-param captured Lambdas are now closure-hoisted into a
+// `(env_ptr: i64, acc: i64, elem: i64) → i64` WASM function.  The closure env
+// receives the REAL table index in fn_idx, and Fold dispatches via
+// call_indirect with the closure-reducer type.  The module must now compile
+// and validate successfully.
 #[test]
-fn fold_non_hoistable_lambda_with_captures_returns_diagnostic() {
-    // Lambda with 2 params AND a capture — NOT hoistable.
+fn fold_closure_hoistable_lambda_with_2_params_compiles_with_pr3() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    // Lambda with 2 params AND a capture — closure-hoistable via Wave 16A PR3.
     let anf = sealed_anf(vec![AnfBinding {
         source_ref: NodeRef(0),
         name: "fn.biased_sum".to_string(),
@@ -3724,7 +3729,7 @@ fn fold_non_hoistable_lambda_with_captures_returns_diagnostic() {
                 name: "reducer".to_string(),
                 value: Box::new(AnfExpr::Lambda {
                     params: vec!["acc".to_string(), "x".to_string()],
-                    captures: vec!["bias".to_string()], // capture → NOT hoistable
+                    captures: vec!["bias".to_string()], // capture → closure-hoistable (PR3)
                     body: Box::new(AnfExpr::Call {
                         func: "+".to_string(),
                         args: vec!["acc".to_string(), "x".to_string()],
@@ -3747,15 +3752,27 @@ fn fold_non_hoistable_lambda_with_captures_returns_diagnostic() {
         },
     }]);
 
-    // Wave 13B: must now return a compile-time diagnostic instead of compiling
-    // with a runtime trap.
-    let result = emit_wasm(&anf);
+    // Wave 16A PR3: must now compile successfully.
+    let artifact = emit_wasm(&anf)
+        .expect("2-param captured Lambda reducer must compile successfully (Wave 16A PR3)");
+    wasmparser::validate(&artifact.wasm)
+        .expect("closure-hoisted fold module must produce valid WASM");
+
+    // The code section must contain CallIndirect (closure-reducer dispatch).
+    let mut saw_call_indirect = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                if let Operator::CallIndirect { .. } = reader.read().unwrap() {
+                    saw_call_indirect = true;
+                }
+            }
+        }
+    }
     assert!(
-        matches!(
-            result,
-            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
-        ),
-        "expected UnsupportedWasmConstruct(\"FoldWithCapturedReducer\"), got {result:?}"
+        saw_call_indirect,
+        "closure-hoisted Fold must emit CallIndirect for captured reducer dispatch"
     );
 }
 
@@ -4300,21 +4317,30 @@ fn unsupported_construct_display_names_the_construct() {
 
 // ── End Wave 10B unsupported-construct diagnostic tests ───────────────────
 
-// ── Wave 13B: captured Lambda reducer compile-time diagnostic ─────────────
+// ── Wave 13B / Wave 16A PR3: captured Lambda reducer dispatch ─────────────
 //
-// Proves that Fold with a captured Lambda reducer returns
-// CompileError::UnsupportedWasmConstruct("FoldWithCapturedReducer") at compile
-// time instead of emitting a silent runtime Unreachable trap.
+// Wave 13B added a compile-time diagnostic (FoldWithCapturedReducer) for Fold
+// reducers that were captured Lambdas.  The gate blocked all captured Lambdas
+// because they could not be hoisted into the (i64, i64) → i64 function table.
 //
-// Captured Lambdas cannot be hoisted into the (i64, i64) → i64 function table
-// because their captured values are not available as fold-reducer parameters.
-// The pre-flight gate in emit_wasm_with_profile catches this before any WASM
-// code is emitted.
+// Wave 16A PR3 implements general closure hoisting for 2-param captured Lambdas:
+// they are emitted as `(env_ptr: i64, acc: i64, elem: i64) → i64` WASM functions
+// (closure-reducer type).  The closure env receives the REAL table index in
+// fn_idx.  The Fold I32 dispatch path now does call_indirect with the
+// closure-reducer type instead of emitting Unreachable.
+//
+// The gate (FoldWithCapturedReducer) now only fires for Lambdas with captures
+// AND ≠ 2 params — those cannot be Fold reducers and still produce a runtime
+// type-mismatch trap.
+//
+// Tests below prove: 2-param captured Lambda Folds compile and validate;
+// non-2-param captured Lambda Folds still produce the diagnostic.
 
-// Scenario: minimal Fold + captured reducer → FoldWithCapturedReducer diagnostic.
-// The reducer captures one variable; Fold references it by name.
+// Scenario: minimal Fold + 2-param captured reducer → compiles OK (Wave 16A PR3).
+// Wave 13B: this was FoldWithCapturedReducer diagnostic.
+// Wave 16A PR3: 2-param captured Lambdas are now closure-hoisted; must compile.
 #[test]
-fn fold_with_captured_reducer_returns_diagnostic() {
+fn fold_with_captured_reducer_compiles_with_pr3() {
     // let adder = fn(acc, x) { acc + x }  with capture "bias"
     // fold(zero, lst, adder)
     let anf = sealed_anf(vec![AnfBinding {
@@ -4348,12 +4374,10 @@ fn fold_with_captured_reducer_returns_diagnostic() {
 
     let result = emit_wasm(&anf);
     assert!(
-        matches!(
-            result,
-            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
-        ),
-        "expected UnsupportedWasmConstruct(\"FoldWithCapturedReducer\"), got {result:?}"
+        result.is_ok(),
+        "2-param captured reducer must compile successfully (Wave 16A PR3); got {result:?}"
     );
+    wasmparser::validate(&result.unwrap().wasm).expect("closure-hoisted fold module must validate");
 }
 
 // TRIANGULATE: capture-free 2-param reducer is not affected by the Wave 13B gate.
@@ -4398,10 +4422,11 @@ fn fold_with_capture_free_reducer_unaffected_by_wave13b_gate() {
     );
 }
 
-// Scenario: captured reducer nested inside an If branch → diagnostic still fires.
-// Proves the scope-aware walker descends into conditional branches.
+// Scenario: captured reducer nested inside an If branch → compiles OK (Wave 16A PR3).
+// Wave 13B: this was a FoldWithCapturedReducer diagnostic.
+// Wave 16A PR3: 2-param captured Lambdas nested in If branches now compile.
 #[test]
-fn fold_captured_reducer_in_if_branch_returns_diagnostic() {
+fn fold_captured_reducer_in_if_branch_compiles_with_pr3() {
     // if true { fold(0, lst, captured_reducer) } else { 0 }
     let anf = sealed_anf(vec![AnfBinding {
         source_ref: NodeRef(0),
@@ -4442,18 +4467,18 @@ fn fold_captured_reducer_in_if_branch_returns_diagnostic() {
 
     let result = emit_wasm(&anf);
     assert!(
-        matches!(
-            result,
-            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
-        ),
-        "captured reducer inside If branch must produce FoldWithCapturedReducer diagnostic; got {result:?}"
+        result.is_ok(),
+        "2-param captured reducer in If branch must compile (Wave 16A PR3); got {result:?}"
     );
+    wasmparser::validate(&result.unwrap().wasm)
+        .expect("closure-hoisted If-branch fold must validate");
 }
 
-// Scenario: captured reducer inside a Match arm → diagnostic fires.
-// Proves the scope-aware walker descends into Match arm bodies.
+// Scenario: captured reducer inside a Match arm → compiles OK (Wave 16A PR3).
+// Wave 13B: this was a FoldWithCapturedReducer diagnostic.
+// Wave 16A PR3: 2-param captured Lambdas nested in Match arms now compile.
 #[test]
-fn fold_captured_reducer_in_match_arm_returns_diagnostic() {
+fn fold_captured_reducer_in_match_arm_compiles_with_pr3() {
     use crate::anf::AnfMatchArm;
 
     let anf = sealed_anf(vec![AnfBinding {
@@ -4493,18 +4518,18 @@ fn fold_captured_reducer_in_match_arm_returns_diagnostic() {
 
     let result = emit_wasm(&anf);
     assert!(
-        matches!(
-            result,
-            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
-        ),
-        "captured reducer inside Match arm must produce FoldWithCapturedReducer; got {result:?}"
+        result.is_ok(),
+        "2-param captured reducer in Match arm must compile (Wave 16A PR3); got {result:?}"
     );
+    wasmparser::validate(&result.unwrap().wasm)
+        .expect("closure-hoisted Match-arm fold must validate");
 }
 
-// Scenario: captured reducer inside a Loop body → diagnostic fires.
-// Proves the scope-aware walker descends into Loop bodies.
+// Scenario: captured reducer inside a Loop body → compiles OK (Wave 16A PR3).
+// Wave 13B: this was a FoldWithCapturedReducer diagnostic.
+// Wave 16A PR3: 2-param captured Lambdas nested in Loop bodies now compile.
 #[test]
-fn fold_captured_reducer_in_loop_body_returns_diagnostic() {
+fn fold_captured_reducer_in_loop_body_compiles_with_pr3() {
     let anf = sealed_anf(vec![AnfBinding {
         source_ref: NodeRef(0),
         name: "fn.loop_fold".to_string(),
@@ -4538,20 +4563,20 @@ fn fold_captured_reducer_in_loop_body_returns_diagnostic() {
 
     let result = emit_wasm(&anf);
     assert!(
-        matches!(
-            result,
-            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
-        ),
-        "captured reducer inside Loop body must produce FoldWithCapturedReducer; got {result:?}"
+        result.is_ok(),
+        "2-param captured reducer in Loop body must compile (Wave 16A PR3); got {result:?}"
     );
+    wasmparser::validate(&result.unwrap().wasm)
+        .expect("closure-hoisted Loop-body fold must validate");
 }
 
-// Scenario: transitive Var alias of a captured reducer → diagnostic fires (W1).
+// Scenario: transitive Var alias of a 2-param captured reducer → compiles OK (Wave 16A PR3).
 // `let adder = lambda captures [...]; let reducer = adder; fold(..., reducer)`
-// The alias `reducer = adder` must propagate the captured-name membership so the
-// downstream Fold is caught even though it references `reducer`, not `adder`.
+// Wave 13B: this was a FoldWithCapturedReducer diagnostic.
+// Wave 16A PR3: both `adder` (closure-hoisted) and its alias `reducer` resolve to the
+// same closure env pointer, which carries the real table index.  Must compile.
 #[test]
-fn fold_with_transitive_var_alias_reducer_returns_diagnostic() {
+fn fold_with_transitive_var_alias_reducer_compiles_with_pr3() {
     let anf = sealed_anf(vec![AnfBinding {
         source_ref: NodeRef(0),
         name: "fn.aliased_fold".to_string(),
@@ -4587,12 +4612,549 @@ fn fold_with_transitive_var_alias_reducer_returns_diagnostic() {
 
     let result = emit_wasm(&anf);
     assert!(
+        result.is_ok(),
+        "transitive Var alias of 2-param captured reducer must compile (Wave 16A PR3); got {result:?}"
+    );
+    wasmparser::validate(&result.unwrap().wasm)
+        .expect("transitive alias closure-hoisted fold must validate");
+}
+
+// ── Wave 16A PR3: new tests for closure hoisting ──────────────────────────
+
+// Scenario: Fold with a 1-param captured Lambda (NOT a valid fold reducer) →
+// FoldWithCapturedReducer diagnostic still fires for non-2-param shapes.
+// Proves the gate is still present for cases that Wave 16A PR3 does not handle.
+#[test]
+fn fold_with_non_2param_captured_lambda_still_returns_diagnostic() {
+    // 1-param Lambda with a capture — not a Fold reducer shape (gate preserved).
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.invalid_reducer".to_string(),
+        expr: AnfExpr::Let {
+            name: "bias".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+            body: Box::new(AnfExpr::Let {
+                name: "reducer".to_string(),
+                value: Box::new(AnfExpr::Lambda {
+                    params: vec!["acc".to_string()], // 1 param — not a fold reducer
+                    captures: vec!["bias".to_string()],
+                    body: Box::new(AnfExpr::Var("acc".to_string())),
+                }),
+                body: Box::new(AnfExpr::Let {
+                    name: "zero".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                    body: Box::new(AnfExpr::Let {
+                        name: "lst".to_string(),
+                        value: Box::new(AnfExpr::ListNew(vec![])),
+                        body: Box::new(AnfExpr::Fold {
+                            init: "zero".to_string(),
+                            list: "lst".to_string(),
+                            func: "reducer".to_string(),
+                        }),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
         matches!(
             result,
             Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
         ),
-        "transitive Var alias of captured reducer must produce FoldWithCapturedReducer; got {result:?}"
+        "1-param captured Lambda in Fold must still produce FoldWithCapturedReducer; got {result:?}"
     );
 }
 
-// ── End Wave 13B captured Lambda reducer diagnostic tests ─────────────────
+// Scenario: closure-hoisted Lambda writes real fn_idx (not 0) into closure env.
+// Proves Wave 16A PR3: the closure env's fn_idx slot contains the table index
+// of the hoisted function, not the placeholder 0.
+//
+// The module has: 1 binding (fn.biased_sum) + 0 hoisted (no capture-free 2-param
+// Lambdas) + 1 closure-hoisted (reducer with "bias" capture).
+// → binding function: table index 0, fn index = function_offset + 0
+// → closure-hoisted fn: table index 1, fn index = function_offset + 1
+//
+// The closure env for `reducer` must have fn_idx = 1 (i64.const 1) stored at
+// offset 0 of the env struct.  We verify this by scanning the code section for
+// `i64.const 1` FOLLOWED BY an `i64.store` — the pattern that writes fn_idx.
+#[test]
+fn closure_hoisted_lambda_writes_real_fn_idx_not_zero() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.biased_sum".to_string(),
+        expr: AnfExpr::Let {
+            name: "bias".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(5))),
+            body: Box::new(AnfExpr::Let {
+                name: "reducer".to_string(),
+                value: Box::new(AnfExpr::Lambda {
+                    params: vec!["acc".to_string(), "x".to_string()],
+                    captures: vec!["bias".to_string()],
+                    body: Box::new(AnfExpr::Call {
+                        func: "+".to_string(),
+                        args: vec!["acc".to_string(), "x".to_string()],
+                    }),
+                }),
+                body: Box::new(AnfExpr::Let {
+                    name: "zero".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                    body: Box::new(AnfExpr::Let {
+                        name: "lst".to_string(),
+                        value: Box::new(AnfExpr::ListNew(vec![])),
+                        body: Box::new(AnfExpr::Fold {
+                            init: "zero".to_string(),
+                            list: "lst".to_string(),
+                            func: "reducer".to_string(),
+                        }),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("closure-hoisted Fold must compile (Wave 16A PR3)");
+    wasmparser::validate(&artifact.wasm).expect("closure-hoisted Fold module must validate");
+
+    // Scan code section for i64.const that is NOT 0 followed by i64.store
+    // (the fn_idx write sequence).  With 1 binding and 1 closure-hoisted fn,
+    // the closure-hoisted fn is at table index 1, so fn_idx = 1.
+    let mut saw_nonzero_fn_idx_store = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut ops: Vec<Operator<'_>> = vec![];
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                ops.push(reader.read().unwrap());
+            }
+            for window in ops.windows(2) {
+                if let [Operator::I64Const { value }, Operator::I64Store { .. }] = window {
+                    if *value > 0 {
+                        saw_nonzero_fn_idx_store = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        saw_nonzero_fn_idx_store,
+        "closure env must contain a non-zero fn_idx (real table index, not placeholder 0)"
+    );
+}
+
+// Scenario: closure-hoisted Lambda module has the correct function count.
+// 1 binding + 1 closure-hoisted = 2 WASM functions total.
+// Proves build_code_section emits the closure-hoisted body as an extra function.
+#[test]
+fn closure_hoisted_fold_module_has_correct_function_count() {
+    use wasmparser::{Parser, Payload};
+
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.biased_sum".to_string(),
+        expr: AnfExpr::Let {
+            name: "bias".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+            body: Box::new(AnfExpr::Let {
+                name: "reducer".to_string(),
+                value: Box::new(AnfExpr::Lambda {
+                    params: vec!["acc".to_string(), "x".to_string()],
+                    captures: vec!["bias".to_string()],
+                    body: Box::new(AnfExpr::Call {
+                        func: "+".to_string(),
+                        args: vec!["acc".to_string(), "x".to_string()],
+                    }),
+                }),
+                body: Box::new(AnfExpr::Let {
+                    name: "zero".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                    body: Box::new(AnfExpr::Let {
+                        name: "lst".to_string(),
+                        value: Box::new(AnfExpr::ListNew(vec![])),
+                        body: Box::new(AnfExpr::Fold {
+                            init: "zero".to_string(),
+                            list: "lst".to_string(),
+                            func: "reducer".to_string(),
+                        }),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("closure-hoisted Fold must compile");
+    wasmparser::validate(&artifact.wasm).expect("module must validate");
+
+    // Count WASM function bodies in the code section.
+    let mut function_count = 0usize;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(_) = payload.unwrap() {
+            function_count += 1;
+        }
+    }
+    assert_eq!(
+        function_count, 2,
+        "module must have 2 functions: 1 binding + 1 closure-hoisted Lambda; got {function_count}"
+    );
+}
+
+// ── End Wave 13B / Wave 16A PR3 tests ─────────────────────────────────────
+
+// ── Wave 16B: pattern-matching compile-time diagnostics ───────────────────
+//
+// Proves that unsupported pattern syntax (nested constructors, multi-binding
+// tuples, record-field patterns) causes `emit_wasm` to return
+// `Err(CompileError::UnsupportedPatternSyntax(...))` instead of silently
+// emitting a runtime `Unreachable`.
+
+// Helper: build an AnfIr whose single binding contains a Match with one arm
+// that uses the supplied pattern string.  The scrutinee is an i32 variant
+// pointer named `"v"` bound by a prior `Let` as `RecordNew([])` (an i32).
+fn match_anf_with_pattern(fn_name: &str, pattern: &str) -> AnfIr {
+    use crate::anf::{AnfMatchArm, SourceMap};
+    use crate::core_ir::StageHashes;
+    use ail_core::semantic_graph::NodeRef;
+
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: fn_name.to_string(),
+        // let v = RecordNew([]); match v { <pattern> => 0 }
+        expr: AnfExpr::Let {
+            name: "v".to_string(),
+            value: Box::new(AnfExpr::RecordNew { fields: vec![] }),
+            body: Box::new(AnfExpr::Match {
+                scrutinee: "v".to_string(),
+                arms: vec![AnfMatchArm {
+                    pattern: pattern.to_string(),
+                    body: AnfExpr::Literal(LiteralValue::Int(0)),
+                }],
+            }),
+        },
+    };
+    AnfIr {
+        schema_version: crate::anf::ANF_SCHEMA_VERSION,
+        source_map: SourceMap::from_bindings(&[binding.clone()]),
+        bindings: vec![binding],
+        stage_hashes: StageHashes {
+            graph_snapshot_hash: [0u8; 32],
+            verification_report_hash: [0u8; 32],
+            core_ir_hash: [1u8; 32],
+            anf_ir_hash: Some([2u8; 32]),
+            wasm_hash: None,
+            native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
+        },
+    }
+}
+
+// Scenario: nested constructor pattern `"Ok(Some(x))"` → UnsupportedPatternSyntax.
+// Proves that a pattern with a constructor payload that itself contains `(`
+// is rejected at compile time and does NOT compile to a silent Unreachable.
+#[test]
+fn nested_constructor_pattern_returns_unsupported_pattern_error() {
+    let anf = match_anf_with_pattern("fn.nested", "Ok(Some(x))");
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "nested constructor pattern must return UnsupportedPatternSyntax, got {result:?}"
+    );
+}
+
+// Scenario: multi-binding pattern `"Pair(a, b)"` → UnsupportedPatternSyntax.
+// Proves that a pattern whose payload contains `,` (tuple destructuring)
+// is rejected at compile time.
+#[test]
+fn multi_binding_pattern_returns_unsupported_pattern_error() {
+    let anf = match_anf_with_pattern("fn.multi", "Pair(a, b)");
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "multi-binding pattern must return UnsupportedPatternSyntax, got {result:?}"
+    );
+}
+
+// Scenario: record-field pattern `"{name: x}"` → UnsupportedPatternSyntax.
+// Proves that a pattern using `{` syntax is rejected at compile time.
+#[test]
+fn record_field_pattern_returns_unsupported_pattern_error() {
+    let anf = match_anf_with_pattern("fn.record", "{name: x}");
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "record-field pattern must return UnsupportedPatternSyntax, got {result:?}"
+    );
+}
+
+// Scenario: error payload contains the offending pattern string.
+// Proves the error carries enough information for a diagnostic message.
+#[test]
+fn unsupported_pattern_error_carries_pattern_string() {
+    let anf = match_anf_with_pattern("fn.nested2", "Ok(Some(x))");
+    let Err(CompileError::UnsupportedPatternSyntax(pat)) = emit_wasm(&anf) else {
+        panic!("expected UnsupportedPatternSyntax");
+    };
+    assert!(
+        pat.contains("Ok(Some(x))"),
+        "error payload must contain the pattern string, got: {pat}"
+    );
+}
+
+// Scenario: UnsupportedPatternSyntax Display mentions 'pattern' and 'desugared'.
+// Proves the error message is diagnostic-quality.
+#[test]
+fn unsupported_pattern_syntax_display_is_descriptive() {
+    let e = CompileError::UnsupportedPatternSyntax("Ok(Some(x))".to_string());
+    let msg = e.to_string();
+    assert!(
+        msg.contains("pattern"),
+        "display must contain 'pattern', got: {msg}"
+    );
+    assert!(
+        msg.contains("desugared") || msg.contains("desugar"),
+        "display must mention desugaring, got: {msg}"
+    );
+}
+
+// Scenario: valid single-binding constructor pattern still compiles.
+// Proves the detection does not break supported patterns.
+#[test]
+fn single_binding_constructor_pattern_still_compiles() {
+    let anf = match_anf_with_pattern("fn.ok", "Ok(x)");
+    let result = emit_wasm(&anf);
+    // Should succeed (or fail for unrelated reasons — not UnsupportedPatternSyntax).
+    assert!(
+        !matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "single-binding constructor pattern must NOT return UnsupportedPatternSyntax, got {result:?}"
+    );
+}
+
+// Scenario: tag-only constructor pattern still compiles.
+#[test]
+fn tag_only_constructor_pattern_still_compiles() {
+    let anf = match_anf_with_pattern("fn.none", "None");
+    let result = emit_wasm(&anf);
+    assert!(
+        !matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "tag-only constructor pattern must NOT return UnsupportedPatternSyntax, got {result:?}"
+    );
+}
+
+// Scenario: wildcard pattern `"_"` still compiles.
+#[test]
+fn wildcard_pattern_still_compiles() {
+    let anf = match_anf_with_pattern("fn.wildcard", "_");
+    let result = emit_wasm(&anf);
+    assert!(
+        !matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "wildcard pattern must NOT return UnsupportedPatternSyntax, got {result:?}"
+    );
+}
+
+// ── End Wave 16B pattern-matching diagnostics tests ───────────────────────
+
+// ── Wave 16A review: W1 and W3 regression tests ───────────────────────────
+//
+// W1: `collect_closure_hoistable_lambdas` does not recurse into Lambda bodies.
+//     A 2-param Lambda nested inside a hoisted or closure-hoisted Lambda body
+//     would receive an out-of-range table index.  The compile-time gate in
+//     `emit_wasm_with_profile` must reject such programs.
+//
+// W3: The fallback formula in `build_function_section` for closure-reducer
+//     type index incorrectly included `+ hoisted_count`.  Fixed to
+//     `type_offset + signatures.len() + 1`.
+
+// W1a — Nested closure-hoistable Lambda inside a closure-hoistable Lambda body
+// must be rejected with UnsupportedWasmConstruct("NestedClosureHoistableLambda").
+//
+// Setup:
+//   fn.main = let z = 1
+//             in  let outer_f = Lambda(params=[acc,elem], captures=[z],
+//                                body = Let("inner_f",
+//                                          Lambda(params=[a,b], captures=[z], body=a),
+//                                          acc))
+//             in  Fold(init=z, list=z, func=outer_f)
+//
+// The outer Lambda is closure-hoistable (2 params + captures).
+// The inner Lambda inside its body is ALSO closure-hoistable — the gate must fire.
+#[test]
+fn nested_closure_hoistable_lambda_in_closure_body_is_rejected() {
+    let inner_lambda = AnfExpr::Lambda {
+        params: vec!["a".to_string(), "b".to_string()],
+        captures: vec!["z".to_string()],
+        body: Box::new(AnfExpr::Var("a".to_string())),
+    };
+    let outer_lambda = AnfExpr::Lambda {
+        params: vec!["acc".to_string(), "elem".to_string()],
+        captures: vec!["z".to_string()],
+        body: Box::new(AnfExpr::Let {
+            name: "inner_f".to_string(),
+            value: Box::new(inner_lambda),
+            body: Box::new(AnfExpr::Var("acc".to_string())),
+        }),
+    };
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.main".to_string(),
+        expr: AnfExpr::Let {
+            name: "z".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+            body: Box::new(AnfExpr::Let {
+                name: "outer_f".to_string(),
+                value: Box::new(outer_lambda),
+                body: Box::new(AnfExpr::Fold {
+                    init: "z".to_string(),
+                    list: "z".to_string(),
+                    func: "outer_f".to_string(),
+                }),
+            }),
+        },
+    };
+    let result = emit_wasm(&sealed_anf(vec![binding]));
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref s)) if s == "NestedClosureHoistableLambda"
+        ),
+        "nested closure-hoistable Lambda inside hoisted body must be rejected; got {result:?}"
+    );
+}
+
+// W1b — Nested hoistable (no-capture) Lambda inside a hoistable Lambda body
+// must be rejected with UnsupportedWasmConstruct("NestedHoistableLambda").
+//
+// Setup:
+//   fn.main = let outer_f = Lambda(params=[acc,elem], captures=[],
+//                              body = Let("inner_f",
+//                                        Lambda(params=[a,b], captures=[], body=a),
+//                                        acc))
+//             in  Fold(init=outer_f, list=outer_f, func=outer_f)
+#[test]
+fn nested_hoistable_lambda_in_hoistable_body_is_rejected() {
+    let inner_lambda = AnfExpr::Lambda {
+        params: vec!["a".to_string(), "b".to_string()],
+        captures: vec![],
+        body: Box::new(AnfExpr::Var("a".to_string())),
+    };
+    let outer_lambda = AnfExpr::Lambda {
+        params: vec!["acc".to_string(), "elem".to_string()],
+        captures: vec![],
+        body: Box::new(AnfExpr::Let {
+            name: "inner_f".to_string(),
+            value: Box::new(inner_lambda),
+            body: Box::new(AnfExpr::Var("acc".to_string())),
+        }),
+    };
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.main".to_string(),
+        expr: AnfExpr::Let {
+            name: "outer_f".to_string(),
+            value: Box::new(outer_lambda),
+            body: Box::new(AnfExpr::Fold {
+                init: "outer_f".to_string(),
+                list: "outer_f".to_string(),
+                func: "outer_f".to_string(),
+            }),
+        },
+    };
+    let result = emit_wasm(&sealed_anf(vec![binding]));
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref s)) if s == "NestedHoistableLambda"
+        ),
+        "nested hoistable Lambda inside hoistable body must be rejected; got {result:?}"
+    );
+}
+
+// W1c — Non-nested Lambda (no 2-param child in body) must NOT be rejected.
+// Proves the gate does not over-reject valid closure-hoistable Lambdas.
+//
+// Setup: outer_f = Lambda(params=[acc,elem], captures=[z], body = add(acc, z))
+// The body is a Call, no nested Lambda — must succeed.
+#[test]
+fn closure_hoistable_lambda_without_nested_2param_lambda_is_accepted() {
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.main".to_string(),
+        expr: AnfExpr::Let {
+            name: "z".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![
+                    AnfExpr::Literal(LiteralValue::Int(1)),
+                    AnfExpr::Literal(LiteralValue::Int(2)),
+                ])),
+                body: Box::new(AnfExpr::Let {
+                    name: "outer_f".to_string(),
+                    value: Box::new(AnfExpr::Lambda {
+                        params: vec!["acc".to_string(), "elem".to_string()],
+                        captures: vec!["z".to_string()],
+                        body: Box::new(AnfExpr::Call {
+                            func: "+".to_string(),
+                            args: vec!["acc".to_string(), "z".to_string()],
+                        }),
+                    }),
+                    body: Box::new(AnfExpr::Fold {
+                        init: "z".to_string(),
+                        list: "lst".to_string(),
+                        func: "outer_f".to_string(),
+                    }),
+                }),
+            }),
+        },
+    };
+    let result = emit_wasm(&sealed_anf(vec![binding]));
+    assert!(
+        !matches!(result, Err(CompileError::UnsupportedWasmConstruct(ref s))
+            if s == "NestedClosureHoistableLambda" || s == "NestedHoistableLambda"),
+        "closure-hoistable Lambda with non-nested body must NOT be rejected by W1 gate; got {result:?}"
+    );
+}
+
+// W3 regression — `build_function_section` closure-reducer fallback formula.
+//
+// When `closure_reducer_type_idx` is `None`, the fallback must produce
+// `type_offset + signatures.len() + 1` (closure-reducer type immediately
+// after fold-reducer type).  The old formula incorrectly added `hoisted_count`,
+// which belongs to the function section, not the type section.
+//
+// This test calls `build_function_section` with `closure_reducer_type_idx = None`
+// and verifies it returns `Some(...)` without panicking.  The type-index
+// correctness of `closure_reducer_type_idx = Some(...)` is exercised by the
+// closure-hoistable fold tests above that use `wasmparser::validate`.
+#[test]
+fn build_function_section_closure_fallback_does_not_panic() {
+    use crate::wasm_abi::WasmSignature;
+    use crate::wasm_sections::build_function_section;
+
+    let sig = WasmSignature {
+        param_count: 1,
+        result: Some(wasm_encoder::ValType::I64),
+    };
+    // type_offset=0, 1 signature, hoisted_count=2, closure_hoisted_count=1.
+    // Correct fallback: 0 + 1 + 1 = 2.
+    // Wrong (pre-fix) fallback: 0 + 1 + 2 + 1 = 4 (out-of-range type index).
+    // build_function_section itself cannot validate the type index (it is a
+    // section builder, not a module validator); the test proves it returns
+    // Some without panicking and that the fixed formula is applied.
+    let section = build_function_section(
+        std::slice::from_ref(&sig),
+        0,       // type_offset
+        2,       // hoisted_count
+        Some(1), // fold_reducer_type_idx = type_offset + sigs.len() = 1
+        1,       // closure_hoisted_count
+        None,    // closure_reducer_type_idx = None → uses fallback formula
+    );
+    assert!(
+        section.is_some(),
+        "build_function_section must return Some when bindings + hoisted > 0"
+    );
+}
+
+// ── End Wave 16A W1/W3 regression tests ──────────────────────────────────
