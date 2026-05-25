@@ -466,6 +466,18 @@ active branches or tags survive GC even when `RetentionPolicy` alone would
 not protect them. Use `collect_branch_holds` / `collect_tag_holds` to derive
 holds from `BranchRegistry` / `TagRegistry` before each GC run.
 
+**Ancestry protection**: `collect_branch_holds` protects only the HEAD
+snapshot of each branch. Intermediate ancestors are NOT automatically held;
+they survive only if the retention policy independently protects them (e.g.
+`max_age_days`). Use `collect_branch_holds_with_ancestry` to hold the full
+parent chain of every live branch.
+
+**Compaction interaction**: `compact_snapshots` replaces original snapshot IDs
+with a new covering-snapshot ID. Holds built before compaction become stale
+and no longer protect the covering snapshot. Always refresh holds (by calling
+`collect_branch_holds` / `collect_tag_holds` after updating branch/tag
+pointers) before the next `gc_unreferenced` run.
+
 ### Final rules
 
 ```txt

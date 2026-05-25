@@ -32,13 +32,13 @@
 //   compact_originals_are_removed
 
 use ail_storage::{
-    BranchRegistry, BranchStore, GraphStore, ObjectBackedGraphStore, SnapshotEnvelope,
-    TagRegistry, TagStore,
+    BranchRegistry, BranchStore, GraphStore, ObjectBackedGraphStore, SnapshotEnvelope, TagRegistry,
+    TagStore,
     backends::memory::MemoryObjectStore,
     object::ObjectId,
     retention::{
-        GcReport, RetentionPolicy, SnapshotHolds, collect_branch_holds, collect_tag_holds,
-        compact_snapshots, gc_unreferenced,
+        GcReport, RetentionPolicy, SnapshotHolds, collect_branch_holds,
+        collect_branch_holds_with_ancestry, collect_tag_holds, compact_snapshots, gc_unreferenced,
     },
 };
 use futures::executor::block_on;
@@ -859,4 +859,210 @@ fn gc_end_to_end_branch_and_tag_holds_protect_snapshots() {
 
     let rel = block_on(graph_store.load_snapshot(&oid("release-snap"))).expect("load");
     assert!(rel.is_some(), "tag-locked snapshot must survive");
+}
+
+// ── Interaction: compact_snapshots + stale holds ──────────────────────────
+
+// Scenario: compact_snapshots replaces snapshot IDs — holds must be refreshed.
+//
+// `compact_snapshots` deletes original snapshots and stores a new covering
+// snapshot with a DIFFERENT id.  Any `SnapshotHolds` built before compaction
+// reference the old (now-deleted) ids.  If those stale holds are passed to
+// `gc_unreferenced` after compaction, the covering snapshot is NOT in the
+// hold set and will be removed if the retention policy also does not protect
+// it.
+//
+// Required operational pattern:
+//   1. Run `compact_snapshots`.
+//   2. Update branch/tag pointers to the covering snapshot id.
+//   3. Refresh holds via `collect_branch_holds` / `collect_tag_holds`.
+//   4. Only then run `gc_unreferenced`.
+//
+// GIVEN a snapshot held by a branch (old id)
+// AND   the snapshot is compacted into a covering snapshot (new id)
+// WHEN  gc_unreferenced runs with the OLD hold (pre-compaction id)
+// THEN  the covering snapshot is unprotected and is removed
+// AND   when the hold is refreshed to the covering id, the covering survives
+#[test]
+fn compact_invalidates_stale_branch_holds() {
+    let store = make_store();
+    let snap = snapshot("old-head", 1000, Some("p"), None);
+    save_all(&store, &[snap]);
+
+    // Compact snap into a covering snapshot — original deleted, new id assigned.
+    let compact_report = block_on(compact_snapshots(&store, 0, 0)).expect("compact");
+    let covering_id = compact_report.covering_snapshot_id;
+
+    // The covering id must differ from the original id.
+    assert_ne!(
+        covering_id,
+        oid("old-head"),
+        "covering id must differ from pre-compaction id"
+    );
+
+    // Stale hold: still references the pre-compaction id (which no longer exists).
+    let stale_holds = SnapshotHolds {
+        branch_heads: vec![oid("old-head")],
+        ..Default::default()
+    };
+    let policy = RetentionPolicy {
+        max_age_days: None,
+        keep_releases: false,
+        keep_tagged: false,
+    };
+
+    // GC with stale holds: covering snapshot is not in the hold set → removed.
+    let gc_report =
+        block_on(gc_unreferenced(&store, &policy, &stale_holds, 0)).expect("gc must succeed");
+    assert_eq!(
+        gc_report.snapshots_removed, 1,
+        "stale hold does not protect the covering snapshot"
+    );
+
+    // Remediation: refresh holds to reference the covering snapshot id.
+    // In production: update the branch pointer to covering_id first, then
+    // call collect_branch_holds to rebuild holds automatically.
+    let store2 = make_store();
+    let snap2 = snapshot("head2", 2000, Some("p"), None);
+    save_all(&store2, &[snap2]);
+    let compact2 = block_on(compact_snapshots(&store2, 0, 0)).expect("compact2");
+
+    let fresh_holds = SnapshotHolds {
+        branch_heads: vec![compact2.covering_snapshot_id],
+        ..Default::default()
+    };
+    let gc2 = block_on(gc_unreferenced(&store2, &policy, &fresh_holds, 0)).expect("gc2");
+    assert_eq!(
+        gc2.snapshots_retained, 1,
+        "refreshed hold protects the covering snapshot"
+    );
+    assert_eq!(gc2.snapshots_removed, 0);
+}
+
+// ── collect_branch_holds_with_ancestry ────────────────────────────────────
+
+// Scenario: collect_branch_holds_with_ancestry returns HEAD and full chain.
+//   GIVEN a chain: genesis → middle → head (three snapshots)
+//   AND   a branch points to head
+//   WHEN  collect_branch_holds_with_ancestry is called
+//   THEN  all three snapshot IDs are returned
+#[test]
+fn collect_ancestry_holds_returns_full_chain() {
+    let graph_store = make_store();
+    let branch_reg = BranchRegistry::new();
+
+    let genesis = snapshot("anc-genesis", 100, None, None);
+    let middle = snapshot("anc-middle", 200, Some("anc-genesis"), None);
+    let head = snapshot("anc-head", 300, Some("anc-middle"), None);
+    save_all(&graph_store, &[genesis, middle, head]);
+
+    block_on(branch_reg.create_branch("main", oid("anc-head"), 300)).expect("create branch");
+
+    let ids = block_on(collect_branch_holds_with_ancestry(
+        &branch_reg,
+        &graph_store,
+    ))
+    .expect("collect must succeed");
+
+    assert_eq!(ids.len(), 3, "must return head + middle + genesis");
+    assert!(ids.contains(&oid("anc-head")), "head must be held");
+    assert!(
+        ids.contains(&oid("anc-middle")),
+        "middle ancestor must be held"
+    );
+    assert!(ids.contains(&oid("anc-genesis")), "genesis must be held");
+}
+
+// Scenario: ancestry holds protect entire branch chain from GC.
+//   GIVEN a 3-snapshot chain with no policy protection on its own
+//   WHEN  gc_unreferenced runs with ancestry holds
+//   THEN  all three snapshots survive
+#[test]
+fn gc_with_ancestry_holds_protects_full_branch_chain() {
+    let graph_store = make_store();
+    let branch_reg = BranchRegistry::new();
+
+    let genesis = snapshot("chain-genesis", 100, None, None);
+    let middle = snapshot("chain-middle", 200, Some("chain-genesis"), None);
+    let head = snapshot("chain-head", 300, Some("chain-middle"), None);
+    save_all(&graph_store, &[genesis, middle, head]);
+
+    block_on(branch_reg.create_branch("main", oid("chain-head"), 300)).expect("create branch");
+
+    let ancestry_ids = block_on(collect_branch_holds_with_ancestry(
+        &branch_reg,
+        &graph_store,
+    ))
+    .expect("collect ancestry");
+
+    let holds = SnapshotHolds {
+        branch_heads: ancestry_ids,
+        ..Default::default()
+    };
+    let policy = RetentionPolicy {
+        max_age_days: None,
+        keep_releases: false,
+        keep_tagged: false,
+    };
+
+    let report = block_on(gc_unreferenced(&graph_store, &policy, &holds, u64::MAX))
+        .expect("gc must succeed");
+
+    assert_eq!(report.snapshots_examined, 3);
+    assert_eq!(
+        report.snapshots_retained, 3,
+        "all three must survive via ancestry holds"
+    );
+    assert_eq!(report.snapshots_removed, 0);
+}
+
+// Scenario: collect_branch_holds_with_ancestry on empty registry returns empty.
+#[test]
+fn collect_ancestry_holds_empty_registry_returns_empty() {
+    let graph_store = make_store();
+    let branch_reg = BranchRegistry::new();
+    let ids = block_on(collect_branch_holds_with_ancestry(
+        &branch_reg,
+        &graph_store,
+    ))
+    .expect("collect must succeed");
+    assert!(ids.is_empty(), "empty registry must yield empty holds");
+}
+
+// Scenario: two branches sharing a common ancestor — shared chain is deduplicated.
+//   GIVEN genesis → A (branch1 head) and genesis → B (branch2 head)
+//   WHEN  collect_branch_holds_with_ancestry is called
+//   THEN  result contains exactly 3 unique ids: A, B, genesis
+#[test]
+fn collect_ancestry_holds_deduplicates_shared_ancestors() {
+    let graph_store = make_store();
+    let branch_reg = BranchRegistry::new();
+
+    let genesis = snapshot("shared-genesis", 100, None, None);
+    let b1_head = snapshot("b1-head", 200, Some("shared-genesis"), None);
+    let b2_head = snapshot("b2-head", 300, Some("shared-genesis"), None);
+    save_all(&graph_store, &[genesis, b1_head, b2_head]);
+
+    block_on(async {
+        branch_reg
+            .create_branch("b1", oid("b1-head"), 200)
+            .await
+            .expect("create b1");
+        branch_reg
+            .create_branch("b2", oid("b2-head"), 300)
+            .await
+            .expect("create b2");
+    });
+
+    let ids = block_on(collect_branch_holds_with_ancestry(
+        &branch_reg,
+        &graph_store,
+    ))
+    .expect("collect must succeed");
+
+    // 3 unique ids: genesis + b1-head + b2-head (genesis not duplicated).
+    assert_eq!(ids.len(), 3, "shared ancestor must not be duplicated");
+    assert!(ids.contains(&oid("shared-genesis")));
+    assert!(ids.contains(&oid("b1-head")));
+    assert!(ids.contains(&oid("b2-head")));
 }

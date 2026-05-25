@@ -131,6 +131,14 @@ pub struct SnapshotHolds {
 
 impl SnapshotHolds {
     /// Return `true` if `id` is protected by any hold category.
+    ///
+    /// # Performance
+    ///
+    /// Each call scans up to three `Vec`s linearly — `O(n)` per call where `n`
+    /// is the total number of held IDs.  Do **not** call this in a loop over
+    /// many snapshot IDs; instead call [`as_set`](SnapshotHolds::as_set) once
+    /// and use the returned `BTreeSet` for `O(log n)` per-snapshot lookup.
+    /// [`gc_unreferenced`] already follows this pattern internally.
     pub fn is_held(&self, id: &ObjectId) -> bool {
         self.branch_heads.contains(id)
             || self.tag_locks.contains(id)
@@ -158,6 +166,18 @@ impl SnapshotHolds {
 /// `SnapshotHolds::branch_heads` with the result to prevent GC from
 /// deleting snapshots that are reachable from any live branch.
 ///
+/// # HEAD-only constraint
+///
+/// This function returns **only** the HEAD snapshot of each branch — the
+/// snapshot the branch pointer currently references.  Intermediate snapshots
+/// in the branch's parent chain are **not** added to the hold set.  If the
+/// retention policy does not independently protect those ancestors (e.g. via
+/// `max_age_days` or `keep_tagged`), they may be GC'd while the branch is
+/// live, breaking history traversal.
+///
+/// Use [`collect_branch_holds_with_ancestry`] when full parent-chain
+/// protection is required.
+///
 /// # Errors
 ///
 /// Propagates any [`StorageError`] from `branch_store.list_branches()`.
@@ -167,6 +187,80 @@ where
 {
     let branches = branch_store.list_branches().await?;
     Ok(branches.into_iter().map(|b| b.target_snapshot_id).collect())
+}
+
+// ── collect_branch_holds_with_ancestry ───────────────────────────────────
+
+/// Collect snapshot IDs for all active branch heads **and their full ancestor
+/// chains**.
+///
+/// For each branch returned by `branch_store.list_branches()`, this function
+/// traverses the `parent_id` chain in `graph_store` until a genesis snapshot
+/// (`parent_id == None`) or an already-visited node is reached.  All visited
+/// snapshot IDs — heads and every ancestor — are returned as a deduplicated,
+/// sorted `Vec<ObjectId>`.
+///
+/// # When to prefer this over [`collect_branch_holds`]
+///
+/// [`collect_branch_holds`] protects only the HEAD snapshot of each branch.
+/// If intermediate ancestors are not independently retained by policy (e.g.
+/// `max_age_days` or `keep_tagged`), GC can delete them while the branch is
+/// live, breaking history traversal.  Use this function when the full parent
+/// chain of every active branch must survive GC.
+///
+/// # Cost
+///
+/// Makes one `list_snapshots` call to build an in-memory parent-link index,
+/// then performs `O(depth)` map lookups per branch.  Total cost is
+/// `O(total_snapshots)` — the same order as [`gc_unreferenced`] itself, which
+/// also calls `list_snapshots`.
+///
+/// # Errors
+///
+/// Propagates any [`StorageError`] from `branch_store.list_branches()` or
+/// `graph_store.list_snapshots()`.
+pub async fn collect_branch_holds_with_ancestry<B, G>(
+    branch_store: &B,
+    graph_store: &G,
+) -> StorageResult<Vec<ObjectId>>
+where
+    B: BranchStore + Send + Sync,
+    G: GraphStore + Send + Sync,
+{
+    let branches = branch_store.list_branches().await?;
+    if branches.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Build id → parent_id map from all snapshots.
+    // Using HashMap for internal computation is fine — only serializable
+    // types must avoid HashMap per the project's determinism contract.
+    let all_snapshots = graph_store.list_snapshots().await?;
+    let parent_map: std::collections::HashMap<ObjectId, Option<ObjectId>> = all_snapshots
+        .into_iter()
+        .map(|s| (s.id, s.parent_id))
+        .collect();
+
+    // Walk from each branch head up through the parent chain.
+    // BTreeSet gives deterministic iteration order and O(log n) deduplication.
+    let mut held: BTreeSet<ObjectId> = BTreeSet::new();
+    for branch in branches {
+        let mut current = Some(branch.target_snapshot_id);
+        while let Some(id) = current {
+            if !held.insert(id) {
+                // Already visited — convergent chains share a common ancestor;
+                // no need to re-walk the shared suffix.
+                break;
+            }
+            // Flatten Option<&Option<ObjectId>> → Option<ObjectId>:
+            //   - Not in map (snapshot compacted or not yet saved): stop.
+            //   - parent_id == None (genesis): stop.
+            //   - parent_id == Some(pid): advance to pid.
+            current = parent_map.get(&id).copied().flatten();
+        }
+    }
+
+    Ok(held.into_iter().collect())
 }
 
 // ── collect_tag_holds ─────────────────────────────────────────────────────
@@ -277,8 +371,7 @@ pub struct ObjectGcReport {
 ///
 /// # Parameters
 /// - `store`     — a `MutableObjectStore` (list + delete).
-/// - `reachable` — the set of `ObjectId`s that must be kept (e.g. the
-///   `graph_root_hash` values of all retained snapshots).  Objects NOT in
+/// - `reachable` — the set of `ObjectId`s that must be kept.  Objects NOT in
 ///   this set are considered unreachable and will be deleted.
 ///
 /// # Returns
@@ -291,6 +384,21 @@ pub struct ObjectGcReport {
 /// and then collecting their `graph_root_hash` fields).  This separation keeps
 /// `run_gc` independent of the snapshot/graph layer and fully testable with a
 /// plain `MemoryObjectStore`.
+///
+/// # Warning: include snapshot envelope CAS IDs
+///
+/// When `store` is the same `ObjectStore` that backs an
+/// `ObjectBackedGraphStore`, the `reachable` set must include **both**:
+/// - The `graph_root_hash` of each retained snapshot (graph content objects).
+/// - The CAS `ObjectId` of each retained snapshot *envelope* — the CBOR
+///   bytes written to the `ObjectStore` by `GraphStore::save_snapshot`.
+///
+/// Omitting the envelope CAS IDs causes `run_gc` to treat the serialized
+/// snapshot envelopes as unreachable and delete them, corrupting the store
+/// even though the logical snapshot index still references those objects.
+/// To obtain an envelope CAS ID, re-encode the `SnapshotEnvelope` with the
+/// same codec used by the graph store (`CborCodec`) and hash the result with
+/// `ObjectId::from_bytes`.
 pub async fn run_gc<S>(store: &S, reachable: &BTreeSet<ObjectId>) -> StorageResult<ObjectGcReport>
 where
     S: MutableObjectStore + Send + Sync,
