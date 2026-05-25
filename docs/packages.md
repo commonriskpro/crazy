@@ -593,7 +593,10 @@ record, and client-side `SignedPackage::verify()` after fetch.  It confirms:
 - The Ed25519 signature remains valid after the HTTP round-trip, proving the
   BLAKE3 signing payload is not altered in transit.
 - The HTTP registry publish response carries a `log_id` and `sequence` that can
-  serve as a transparency anchor for the publish event.
+  serve as a transparency anchor for the publish event.  The sequence counter is
+  strictly monotonic: it increments on every accepted publish regardless of
+  whether the same name/version was previously published, so re-publishing a
+  package never repeats or decreases the sequence value.
 
 **Remaining gaps** (not covered by the current test suite):
 

@@ -20,7 +20,7 @@
 // This module does NOT import a network runtime.  Callers wire the transport.
 
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
 use crate::advisory::{AdvisorySeverity, SecurityAdvisory};
@@ -187,11 +187,24 @@ pub trait RegistryClient {
 /// A fully in-memory `RegistryClient` implementation for testing.
 ///
 /// Uses `PackageRegistry` and in-memory advisory/yank state.
+///
+/// ## Sequence monotonicity
+///
+/// Each accepted publish increments a dedicated counter regardless of whether
+/// the same name/version was previously published.  Re-publishing the same
+/// package/version replaces the stored entry but the sequence number still
+/// advances, preserving the transparency-log invariant that sequence numbers
+/// are strictly increasing across the lifetime of a registry instance.
 pub struct InMemoryRegistryClient {
     registry: crate::registry::PackageRegistry,
     signed_packages: RefCell<Vec<SignedPackage>>,
     advisories: Vec<SecurityAdvisory>,
     yank_records: Vec<crate::yank::YankRecord>,
+    /// Monotonically increasing counter for transparency-log sequence numbers.
+    ///
+    /// Incremented on every accepted publish.  Never derived from collection
+    /// length so it remains monotonic even when `retain` shrinks the store.
+    next_sequence: Cell<u64>,
 }
 
 impl InMemoryRegistryClient {
@@ -202,6 +215,7 @@ impl InMemoryRegistryClient {
             signed_packages: RefCell::new(Vec::new()),
             advisories: Vec::new(),
             yank_records: Vec::new(),
+            next_sequence: Cell::new(0),
         }
     }
 
@@ -281,7 +295,11 @@ impl RegistryClient for InMemoryRegistryClient {
             signed.manifest.name != request.signed_package.manifest.name
                 || signed.manifest.version != request.signed_package.manifest.version
         });
-        let sequence = signed_packages.len() as u64;
+        // Use the dedicated monotonic counter — never derived from collection
+        // length so re-publishing the same name/version still advances the
+        // sequence rather than repeating the previous value.
+        let sequence = self.next_sequence.get();
+        self.next_sequence.set(sequence + 1);
         signed_packages.push(request.signed_package);
         Ok(PublishResponse {
             accepted: true,
@@ -858,5 +876,84 @@ mod tests {
         ciborium::ser::into_writer(&resp, &mut buf).expect("encode");
         let decoded: FetchResponse = ciborium::de::from_reader(buf.as_slice()).expect("decode");
         assert_eq!(decoded, resp);
+    }
+
+    // ── sequence_monotonic_on_same_name_version_republish ─────────────────
+    // Regression: re-publishing the same name/version must still advance the
+    // sequence — it must not repeat the previous value or go backward.
+    //
+    //   GIVEN an in-memory registry
+    //   WHEN pkg v1.0.0 is published twice (duplicate name/version)
+    //   THEN the second publish response has a strictly higher sequence
+    #[test]
+    fn sequence_monotonic_on_same_name_version_republish() {
+        let kp = gen_keypair();
+        let client = InMemoryRegistryClient::new();
+
+        let r1 = client
+            .publish(PublishRequest {
+                signed_package: kp
+                    .sign_manifest(make_manifest("mono.pkg", "1.0.0"))
+                    .expect("sign"),
+            })
+            .expect("first publish");
+        // Re-publish identical name/version.
+        let r2 = client
+            .publish(PublishRequest {
+                signed_package: kp
+                    .sign_manifest(make_manifest("mono.pkg", "1.0.0"))
+                    .expect("sign again"),
+            })
+            .expect("second publish");
+
+        assert!(r1.accepted);
+        assert!(r2.accepted);
+
+        let s1 = r1.sequence.expect("sequence on first publish");
+        let s2 = r2.sequence.expect("sequence on second publish");
+        assert!(
+            s2 > s1,
+            "re-publishing same name/version must still advance sequence: s1={s1} s2={s2}"
+        );
+    }
+
+    // ── sequence_monotonic_across_unrelated_publishes ─────────────────────
+    // Verify that unrelated publishes (different names) also produce a strictly
+    // increasing sequence chain.
+    //
+    //   GIVEN three publishes of different packages in order a, b, c
+    //   THEN sequence(a) < sequence(b) < sequence(c)
+    #[test]
+    fn sequence_monotonic_across_unrelated_publishes() {
+        let kp = gen_keypair();
+        let client = InMemoryRegistryClient::new();
+
+        let ra = client
+            .publish(PublishRequest {
+                signed_package: kp
+                    .sign_manifest(make_manifest("pkg.alpha", "1.0.0"))
+                    .expect("sign a"),
+            })
+            .expect("publish a");
+        let rb = client
+            .publish(PublishRequest {
+                signed_package: kp
+                    .sign_manifest(make_manifest("pkg.beta", "1.0.0"))
+                    .expect("sign b"),
+            })
+            .expect("publish b");
+        let rc = client
+            .publish(PublishRequest {
+                signed_package: kp
+                    .sign_manifest(make_manifest("pkg.gamma", "1.0.0"))
+                    .expect("sign c"),
+            })
+            .expect("publish c");
+
+        let sa = ra.sequence.expect("sequence a");
+        let sb = rb.sequence.expect("sequence b");
+        let sc = rc.sequence.expect("sequence c");
+        assert!(sa < sb, "sequence(a) < sequence(b): {sa} < {sb}");
+        assert!(sb < sc, "sequence(b) < sequence(c): {sb} < {sc}");
     }
 }
