@@ -61,6 +61,14 @@ struct WasmCodegenCtx<'a> {
     /// that precede the defined functions in the function index space.
     /// Used to compute table indices: `table_idx = func_idx - function_offset`.
     function_offset: u32,
+    /// Absolute table index to assign to the next hoistable nested Lambda
+    /// encountered during expression emission.
+    ///
+    /// A "hoistable" Lambda is one with exactly 2 params and no captures
+    /// (fold-reducer shape).  Its body is emitted as a separate WASM function;
+    /// the Lambda node itself emits `i64.const <table_idx>` so the Fold can
+    /// dispatch it via the I64 path (`i32.wrap_i64` + `call_indirect`).
+    next_hoisted_table_idx: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +84,7 @@ impl<'a> WasmCodegenCtx<'a> {
         effect_data: &'a EffectDataLayout,
         fold_reducer_type_idx: Option<u32>,
         function_offset: u32,
+        first_hoisted_table_idx: u32,
     ) -> Self {
         let param_count = params.len() as u32;
         WasmCodegenCtx {
@@ -93,6 +102,7 @@ impl<'a> WasmCodegenCtx<'a> {
             next_variant_tag: 0,
             fold_reducer_type_idx,
             function_offset,
+            next_hoisted_table_idx: first_hoisted_table_idx,
         }
     }
 
@@ -876,62 +886,90 @@ fn emit_anf_expr<'a>(
 
         // ── Lambda (nested sub-expression) ───────────────────────────────
         // When a Lambda appears as a sub-expression (not the top-level body
-        // of a binding — that case is handled in build_code_section), emit a
-        // closure env struct in linear memory.
+        // of a binding — that case is handled in build_code_section), emit
+        // one of two shapes depending on whether the Lambda is hoistable.
         //
-        // Layout (matches native backend PR2):
+        // ## Hoistable Lambda (params.len() == 2, captures.is_empty())
+        //
+        // A Lambda with exactly 2 parameters and no captures matches the
+        // fold-reducer shape `(i64, i64) → i64`.  Its body is hoisted into a
+        // separate WASM function by `build_code_section`; this arm emits only
+        // the table index as an `i64.const` so Fold can dispatch it via the
+        // existing I64 path (`i32.wrap_i64` + `call_indirect`).
+        //
+        // The table index assigned here must be consistent with the index
+        // assigned by `build_code_section` when it emits the hoisted body.
+        // Both sides use `ctx.next_hoisted_table_idx`, incremented in
+        // first-encounter DFS order.
+        //
+        // ## Non-hoistable Lambda (with captures or != 2 params)
+        //
+        // Emit a closure env struct in linear memory.
+        //
+        // Layout:
         //   [fn_idx: i64, cap_count: i64, cap0: i64, ..., capN-1: i64]
         //
-        // fn_idx: WASM function table index — emitted as 0 (placeholder).
-        //   Full function hoisting and call_indirect require a future
-        //   element-section pass; this slice proves captured values are
-        //   stored in the env.
+        // fn_idx: placeholder 0 — Lambda hoisting for the general case
+        //   (with captures or arbitrary param count) is deferred.
         // cap_count: number of captured variables (as i64).
         // cap_i: value of the i-th captured variable, zero-extended to i64.
         //
-        // Limitation: the Lambda body is not hoisted here — invocation
-        // through the closure env is deferred to the next closure slice.
+        // The Fold I32 path traps at runtime when fn_idx is 0 (placeholder),
+        // preventing silent dispatch to the wrong function.
         AnfExpr::Lambda {
-            params: _,
+            params,
             captures,
             body: _,
         } => {
-            let cap_count = captures.len();
-            // Allocate: fn_idx (8 B) + cap_count (8 B) + N × 8 B.
-            let byte_size = ((2 + cap_count) * 8) as i32;
-            emit_alloc(byte_size, insns);
-            let ptr_local = ctx.bind("__closure_env", ValType::I32);
-            insns.push(Instruction::LocalSet(ptr_local));
+            if params.len() == 2 && captures.is_empty() && ctx.fold_reducer_type_idx.is_some() {
+                // Hoistable fold reducer: emit table index directly as I64.
+                // Only reached when a function table exists (fold_reducer_type_idx.is_some()),
+                // guaranteeing the table and hoisted body are present.
+                // `build_code_section` emits the body as an extra function at
+                // the same index, in the same DFS encounter order.
+                let table_idx = ctx.next_hoisted_table_idx;
+                ctx.next_hoisted_table_idx += 1;
+                insns.push(Instruction::I64Const(i64::from(table_idx)));
+                Some(ValType::I64)
+            } else {
+                // Non-hoistable Lambda: emit closure env in linear memory.
+                let cap_count = captures.len();
+                // Allocate: fn_idx (8 B) + cap_count (8 B) + N × 8 B.
+                let byte_size = ((2 + cap_count) * 8) as i32;
+                emit_alloc(byte_size, insns);
+                let ptr_local = ctx.bind("__closure_env", ValType::I32);
+                insns.push(Instruction::LocalSet(ptr_local));
 
-            // fn_idx at offset 0 (placeholder = 0 until element-section pass).
-            insns.push(Instruction::LocalGet(ptr_local));
-            insns.push(Instruction::I64Const(0));
-            store_i64_at(0, insns);
-
-            // cap_count at offset 8.
-            insns.push(Instruction::LocalGet(ptr_local));
-            insns.push(Instruction::I64Const(cap_count as i64));
-            store_i64_at(8, insns);
-
-            // Each captured value at offset 16, 24, …
-            for (i, cap_name) in captures.iter().enumerate() {
-                let offset = (16 + i * 8) as u64;
+                // fn_idx at offset 0 (placeholder = 0; general hoisting deferred).
                 insns.push(Instruction::LocalGet(ptr_local));
-                if let Some((idx, ty)) = ctx.lookup(cap_name) {
-                    insns.push(Instruction::LocalGet(idx));
-                    // Zero-extend I32 captures to I64 for uniform storage.
-                    if ty == ValType::I32 {
-                        insns.push(Instruction::I64ExtendI32U);
-                    }
-                } else {
-                    // Capture not in scope — emit 0 as a defensive fallback.
-                    insns.push(Instruction::I64Const(0));
-                }
-                store_i64_at(offset, insns);
-            }
+                insns.push(Instruction::I64Const(0));
+                store_i64_at(0, insns);
 
-            insns.push(Instruction::LocalGet(ptr_local));
-            Some(ValType::I32)
+                // cap_count at offset 8.
+                insns.push(Instruction::LocalGet(ptr_local));
+                insns.push(Instruction::I64Const(cap_count as i64));
+                store_i64_at(8, insns);
+
+                // Each captured value at offset 16, 24, …
+                for (i, cap_name) in captures.iter().enumerate() {
+                    let offset = (16 + i * 8) as u64;
+                    insns.push(Instruction::LocalGet(ptr_local));
+                    if let Some((idx, ty)) = ctx.lookup(cap_name) {
+                        insns.push(Instruction::LocalGet(idx));
+                        // Zero-extend I32 captures to I64 for uniform storage.
+                        if ty == ValType::I32 {
+                            insns.push(Instruction::I64ExtendI32U);
+                        }
+                    } else {
+                        // Capture not in scope — emit 0 as a defensive fallback.
+                        insns.push(Instruction::I64Const(0));
+                    }
+                    store_i64_at(offset, insns);
+                }
+
+                insns.push(Instruction::LocalGet(ptr_local));
+                Some(ValType::I32)
+            }
         }
 
         // ── CellNew — allocate an 8-byte mutable cell initialised to `init` ─
@@ -1297,11 +1335,10 @@ fn emit_anf_expr<'a>(
         //     offset 0 of the env pointer, wraps to i32.
         //   • A local I64 variable — wraps directly to i32.
         //
-        // Limitation: nested Lambda bodies are not hoisted into separate
-        // functions, so `fn_idx = 0` stored in a closure env will call the
-        // FIRST compiled function.  Fold + nested Lambda requires lambda
-        // hoisting (deferred to a future wave).  Fold + top-level named
-        // function works correctly.
+        // Note: capture-free 2-param Lambdas are hoisted (Wave 12A) and
+        // dispatch via the I64 path above.  Lambdas with captures still emit a
+        // closure env (I32 pointer) whose fn_idx is a placeholder; the I32
+        // path below traps at runtime.  General closure hoisting is deferred.
         AnfExpr::Fold { init, list, func } => {
             let Some(fold_type_idx) = ctx.fold_reducer_type_idx else {
                 // Pre-flight gate should have inserted the type; trap defensively.
@@ -1448,18 +1485,41 @@ fn emit_anf_expr<'a>(
 /// `fold_reducer_type_idx` is the type-section index of the `(i64, i64) → i64`
 /// fold-reducer signature, or `None` if the module contains no Fold.
 ///
-/// Returns `None` when `bindings` is empty.
+/// `hoisted_lambdas` contains the `(params, body)` pairs for nested Lambda
+/// bodies that were hoisted out of binding expressions (Wave 12A).  Each entry
+/// produces one additional WASM function immediately after the binding
+/// functions.  Their type is `(i64, i64) → i64` (fold-reducer shape) and
+/// they do not appear in the export section.
+///
+/// The counter `next_hoisted_table_idx` starts at `n_bindings` and
+/// increments once per hoistable Lambda
+/// encountered during DFS traversal.  The same DFS order is used in
+/// `collect_hoistable_lambdas` (called from `emit_wasm_with_profile`) and
+/// in `emit_anf_expr` when it encounters `AnfExpr::Lambda` nodes, so the
+/// table index stored by Lambda emission and the body index emitted here
+/// are always consistent.
+///
+/// Returns `None` when `bindings` is empty AND `hoisted_lambdas` is empty.
 pub(crate) fn build_code_section(
     bindings: &[AnfBinding],
     effect_data: &EffectDataLayout,
     function_offset: u32,
     fold_reducer_type_idx: Option<u32>,
+    hoisted_lambdas: &[(Vec<String>, AnfExpr)],
 ) -> Option<CodeSection> {
-    if bindings.is_empty() {
+    if bindings.is_empty() && hoisted_lambdas.is_empty() {
         return None;
     }
     let mut codes = CodeSection::new();
     let functions = function_index(bindings, function_offset);
+
+    // First hoisted table index: element table index i maps to function index
+    // `function_offset + i`, so table index for the first hoisted Lambda is
+    // simply `bindings.len()` (not `function_offset + bindings.len()`).
+    let first_hoisted_table_idx = bindings.len() as u32;
+    // Running counter shared (by sequential extraction) across all binding ctx.
+    let mut next_hoisted_table_idx = first_hoisted_table_idx;
+
     for binding in bindings {
         // For a top-level Lambda binding, emit the Lambda body directly so
         // that both captures (WASM function params via binding_params) and
@@ -1467,7 +1527,7 @@ pub(crate) fn build_code_section(
         // expression as before.
         //
         // This avoids hitting the nested-Lambda arm in emit_anf_expr (which
-        // emits a closure env pointer instead of the body).
+        // emits a closure env pointer or I64 table index instead of the body).
         let (body_to_emit, lambda_own_params): (&AnfExpr, &[String]) = match &binding.expr {
             AnfExpr::Lambda { params, body, .. } => (body.as_ref(), params.as_slice()),
             other => (other, &[]),
@@ -1481,10 +1541,15 @@ pub(crate) fn build_code_section(
             effect_data,
             fold_reducer_type_idx,
             function_offset,
+            next_hoisted_table_idx,
         );
         let mut insns: Vec<Instruction<'_>> = Vec::new();
 
         let emitted_ty = emit_anf_expr(body_to_emit, &mut ctx, &functions, &mut insns);
+
+        // Advance the shared counter: the binding may have encountered N
+        // hoistable Lambdas, each consuming one slot.
+        next_hoisted_table_idx = ctx.next_hoisted_table_idx;
 
         if binding_result(binding).is_none() && emitted_ty.is_some() {
             insns.push(Instruction::Drop);
@@ -1504,5 +1569,55 @@ pub(crate) fn build_code_section(
         }
         codes.function(&f);
     }
+
+    // Emit hoisted Lambda bodies as additional WASM functions.
+    //
+    // Each hoisted Lambda has the fold-reducer shape `(i64, i64) → i64`:
+    //   - params.len() == 2, captures.is_empty()
+    //   - WASM params are the Lambda's own param names, both I64.
+    //   - The body is emitted directly (no closure env wrapper).
+    for (params, body) in hoisted_lambdas {
+        let param_strs: Vec<&str> = params.iter().map(String::as_str).collect();
+        // Hoisted Lambda ctx: uses the same functions map so the body can
+        // call top-level functions by name.  Its own next_hoisted_table_idx
+        // doesn't matter since hoisted Lambda bodies never nest further hoistable
+        // Lambdas in Wave 12A (capture-free shape).
+        let mut ctx = WasmCodegenCtx::new(
+            param_strs,
+            effect_data,
+            fold_reducer_type_idx,
+            function_offset,
+            next_hoisted_table_idx,
+        );
+        let mut insns: Vec<Instruction<'_>> = Vec::new();
+
+        let emitted_ty = emit_anf_expr(body, &mut ctx, &functions, &mut insns);
+
+        // Hoisted Lambda must return I64 (fold reducer: (i64, i64) → i64).
+        // If the body produced I32 or nothing, extend/fill to I64.
+        match emitted_ty {
+            Some(ValType::I64) => {}
+            Some(ValType::I32) => insns.push(Instruction::I64ExtendI32U),
+            Some(_) => {
+                insns.push(Instruction::Drop);
+                insns.push(Instruction::I64Const(0));
+            }
+            None => insns.push(Instruction::I64Const(0)),
+        }
+        insns.push(Instruction::End);
+
+        let locals = ctx
+            .local_types
+            .into_iter()
+            .map(|ty| (1, ty))
+            .collect::<Vec<_>>();
+
+        let mut f = Function::new(locals);
+        for insn in &insns {
+            f.instruction(insn);
+        }
+        codes.function(&f);
+    }
+
     Some(codes)
 }
