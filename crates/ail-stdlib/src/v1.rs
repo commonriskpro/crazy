@@ -552,9 +552,9 @@ pub fn v1_registry() -> StdlibRegistry {
 ///
 /// - `std.numeric`: `checked_add`, `wrapping_add`, `saturating_add`,
 ///   `checked_sub`, `checked_mul`
-/// - `std.option`: `map`, `and_then`, `unwrap_or`, `transpose`,
+/// - `std.core.option`: `map`, `and_then`, `unwrap_or`, `transpose`,
 ///   `collect_results`
-/// - `std.result`: `map`, `and_then`, `unwrap_or`, `transpose`
+/// - `std.core.result`: `map`, `and_then`, `unwrap_or`, `transpose`
 /// - `std.text`: `trim`, `split`, `join`, `length_graphemes`,
 ///   `to_bytes`, `from_bytes`
 /// - `std.iter`: `map`, `filter`, `fold`, `traverse`
@@ -655,11 +655,15 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
     });
 
-    // ── std.option functions ──────────────────────────────────────────────
+    // ── std.core.option functions ─────────────────────────────────────────
+    //
+    // IDs use the std.core.* namespace to match exec handler registration in
+    // exec/registry.rs.  The dedup loop (below) skips entries already present,
+    // so these pre-loop entries are what carry the contract_clauses.
 
     reg.entries.push(StdlibEntry {
-        id: StdlibId("std.option.map".to_string()),
-        module_path: "std::option".to_string(),
+        id: StdlibId("std.core.option.map".to_string()),
+        module_path: "std::core".to_string(),
         name: "map".to_string(),
         kind: NodeKind::Function,
         stability: StabilityTier::Stable,
@@ -669,12 +673,18 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Option<T>".to_string()],
+            ensures: vec![
+                "None returns None without calling f".to_string(),
+                "Some(v) returns Some(f(v))".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
-        id: StdlibId("std.option.and_then".to_string()),
-        module_path: "std::option".to_string(),
+        id: StdlibId("std.core.option.and_then".to_string()),
+        module_path: "std::core".to_string(),
         name: "and_then".to_string(),
         kind: NodeKind::Function,
         stability: StabilityTier::Stable,
@@ -684,12 +694,18 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Option<T>".to_string()],
+            ensures: vec![
+                "None short-circuits without calling f".to_string(),
+                "Some(v) returns f(v)".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
-        id: StdlibId("std.option.unwrap_or".to_string()),
-        module_path: "std::option".to_string(),
+        id: StdlibId("std.core.option.unwrap_or".to_string()),
+        module_path: "std::core".to_string(),
         name: "unwrap_or".to_string(),
         kind: NodeKind::Function,
         stability: StabilityTier::Stable,
@@ -699,12 +715,18 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Option<T>".to_string()],
+            ensures: vec![
+                "None returns the default value".to_string(),
+                "Some(v) returns v".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
-        id: StdlibId("std.option.transpose".to_string()),
-        module_path: "std::option".to_string(),
+        id: StdlibId("std.core.option.transpose".to_string()),
+        module_path: "std::core".to_string(),
         name: "transpose".to_string(),
         kind: NodeKind::Function,
         stability: StabilityTier::Stable,
@@ -714,29 +736,42 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Option<Result<T, E>>".to_string()],
+            ensures: vec![
+                "Some(Ok(v)) -> Ok(Some(v))".to_string(),
+                "Some(Err(e)) -> Err(e)".to_string(),
+                "None -> Ok(None)".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
-        id: StdlibId("std.option.collect_results".to_string()),
-        module_path: "std::option".to_string(),
+        id: StdlibId("std.core.option.collect_results".to_string()),
+        module_path: "std::core".to_string(),
         name: "collect_results".to_string(),
         kind: NodeKind::Function,
         stability: StabilityTier::Stable,
         type_facts: Some(TypeFacts {
             nominal: "Result".to_string(),
-            generics: vec!["Vec".to_string(), "T".to_string(), "E".to_string()],
+            generics: vec!["List".to_string(), "T".to_string(), "E".to_string()],
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is List<Result<T, E>>".to_string()],
+            ensures: vec![
+                "Ok(List<T>) when all items are Ok".to_string(),
+                "Err(e) on the first Err encountered".to_string(),
+            ],
+        }),
     });
 
-    // ── std.result functions ──────────────────────────────────────────────
+    // ── std.core.result functions ─────────────────────────────────────────
 
     reg.entries.push(StdlibEntry {
-        id: StdlibId("std.result.map".to_string()),
-        module_path: "std::result".to_string(),
+        id: StdlibId("std.core.result.map".to_string()),
+        module_path: "std::core".to_string(),
         name: "map".to_string(),
         kind: NodeKind::Function,
         stability: StabilityTier::Stable,
@@ -746,12 +781,18 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Result<T, E>".to_string()],
+            ensures: vec![
+                "Err(e) passes through unchanged without calling f".to_string(),
+                "Ok(v) returns Ok(f(v))".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
-        id: StdlibId("std.result.and_then".to_string()),
-        module_path: "std::result".to_string(),
+        id: StdlibId("std.core.result.and_then".to_string()),
+        module_path: "std::core".to_string(),
         name: "and_then".to_string(),
         kind: NodeKind::Function,
         stability: StabilityTier::Stable,
@@ -761,12 +802,18 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Result<T, E>".to_string()],
+            ensures: vec![
+                "Err(e) short-circuits without calling f".to_string(),
+                "Ok(v) returns f(v)".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
-        id: StdlibId("std.result.unwrap_or".to_string()),
-        module_path: "std::result".to_string(),
+        id: StdlibId("std.core.result.unwrap_or".to_string()),
+        module_path: "std::core".to_string(),
         name: "unwrap_or".to_string(),
         kind: NodeKind::Function,
         stability: StabilityTier::Stable,
@@ -776,12 +823,18 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Result<T, E>".to_string()],
+            ensures: vec![
+                "Err returns the default value".to_string(),
+                "Ok(v) returns v".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
-        id: StdlibId("std.result.transpose".to_string()),
-        module_path: "std::result".to_string(),
+        id: StdlibId("std.core.result.transpose".to_string()),
+        module_path: "std::core".to_string(),
         name: "transpose".to_string(),
         kind: NodeKind::Function,
         stability: StabilityTier::Stable,
@@ -791,7 +844,14 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Result<Option<T>, E>".to_string()],
+            ensures: vec![
+                "Ok(Some(v)) -> Some(Ok(v))".to_string(),
+                "Ok(None) -> None".to_string(),
+                "Err(e) -> Some(Err(e))".to_string(),
+            ],
+        }),
     });
 
     // ── std.text functions ────────────────────────────────────────────────
@@ -975,6 +1035,53 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         capability_reqs: None,
         contract_clauses: None,
+    });
+
+    // ── std.numeric narrowing functions ───────────────────────────────────
+    //
+    // Pre-loop entries so contract_clauses survive the dedup loop, which
+    // always injects with contract_clauses: None for new entries.
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.narrow_to_i32".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "narrow_to_i32".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["Int32".to_string(), "ArithError".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Int (i64)".to_string()],
+            ensures: vec![
+                "Ok(v) when value fits in i32 range".to_string(),
+                "Err on overflow or underflow".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.narrow_to_u32".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "narrow_to_u32".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["UInt32".to_string(), "ArithError".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Int (i64)".to_string()],
+            ensures: vec![
+                "Ok(v) when value fits in u32 range (0..=4294967295)".to_string(),
+                "Err on negative values or overflow".to_string(),
+            ],
+        }),
     });
 
     for function in stdlib_function_entries() {

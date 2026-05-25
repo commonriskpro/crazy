@@ -131,3 +131,82 @@ fn checked_add_type_error_returns_err() {
     );
     assert_eq!(result, Err(StdlibExecError::Type { expected: "Int" }));
 }
+
+// ── STDLIB-EXEC-NUM-8: narrow_to_i32 value fits → Ok ─────────────────────
+
+#[test]
+fn narrow_to_i32_in_range_returns_ok() {
+    let result = call_pure_stdlib(
+        "std.numeric.narrow_to_i32",
+        &[StdlibValue::Int(i32::MAX as i64)],
+    );
+    assert_eq!(
+        result,
+        Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Int(
+            i32::MAX as i64
+        )))))
+    );
+}
+
+// STDLIB-EXEC-NUM-9: narrow_to_i32 overflow → Err
+
+#[test]
+fn narrow_to_i32_overflow_returns_err() {
+    let result = call_pure_stdlib("std.numeric.narrow_to_i32", &[StdlibValue::Int(i64::MAX)]);
+    assert!(
+        matches!(result, Ok(StdlibValue::Result(Err(_)))),
+        "narrow_to_i32(i64::MAX) must return Err variant, got: {result:?}"
+    );
+}
+
+// Triangulate: negative value out of i32 range → Err
+
+#[test]
+fn narrow_to_i32_underflow_returns_err() {
+    let result = call_pure_stdlib("std.numeric.narrow_to_i32", &[StdlibValue::Int(i64::MIN)]);
+    assert!(
+        matches!(result, Ok(StdlibValue::Result(Err(_)))),
+        "narrow_to_i32(i64::MIN) must return Err variant, got: {result:?}"
+    );
+}
+
+// ── STDLIB-EXEC-NUM-10: narrow_to_u32 value fits → Ok ────────────────────
+
+#[test]
+fn narrow_to_u32_in_range_returns_ok() {
+    let result = call_pure_stdlib(
+        "std.numeric.narrow_to_u32",
+        &[StdlibValue::Int(u32::MAX as i64)],
+    );
+    assert_eq!(
+        result,
+        Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Int(
+            u32::MAX as i64
+        )))))
+    );
+}
+
+// STDLIB-EXEC-NUM-11: narrow_to_u32 negative → Err (no implicit coercion)
+
+#[test]
+fn narrow_to_u32_negative_returns_err() {
+    let result = call_pure_stdlib("std.numeric.narrow_to_u32", &[StdlibValue::Int(-1)]);
+    assert!(
+        matches!(result, Ok(StdlibValue::Result(Err(_)))),
+        "narrow_to_u32(-1) must return Err variant, got: {result:?}"
+    );
+}
+
+// STDLIB-EXEC-NUM-12: narrow_to_u32 arity error
+
+#[test]
+fn narrow_to_u32_arity_error() {
+    let result = call_pure_stdlib("std.numeric.narrow_to_u32", &[]);
+    assert_eq!(
+        result,
+        Err(StdlibExecError::Arity {
+            expected: 1,
+            actual: 0
+        })
+    );
+}
