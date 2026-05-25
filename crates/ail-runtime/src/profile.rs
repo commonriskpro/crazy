@@ -254,6 +254,92 @@ pub struct ProfilePolicy {
     pub config: Option<String>,
 }
 
+// ── AssumptionStatus ─────────────────────────────────────────────────────
+
+/// Lifecycle status of a profile-level assumption.
+///
+/// Used by preflight stage 7 to enforce that all assumptions declared by a
+/// [`RuntimeProfile`] are active and not expired before allowing startup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AssumptionStatus {
+    /// The assumption is currently active and valid.
+    Active,
+    /// The assumption exists but is not currently active.
+    ///
+    /// Preflight stage 7 rejects profiles that depend on an inactive assumption.
+    Inactive,
+    /// The assumption has been explicitly marked as expired.
+    ///
+    /// Preflight stage 7 rejects profiles that depend on an expired assumption.
+    Expired,
+}
+
+// ── ProfileAssumption ─────────────────────────────────────────────────────
+
+/// A named assumption that must be active/not-expired for a profile to start.
+///
+/// Profiles that declare assumptions have them checked during preflight
+/// stage 7.  If any assumption is [`AssumptionStatus::Expired`],
+/// [`AssumptionStatus::Inactive`], or has an `expires_at` timestamp in the
+/// past, preflight fails with
+/// [`PreflightFailure::AssumptionExpired`](crate::error::PreflightFailure::AssumptionExpired).
+///
+/// Profiles with an empty assumption list (the default) skip stage 7 entirely,
+/// preserving backward compatibility.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileAssumption {
+    /// Machine-readable identifier for this assumption (e.g. `"payment-api-v2"`).
+    pub id: String,
+    /// Current lifecycle status.
+    pub status: AssumptionStatus,
+    /// Optional wall-clock expiry time.
+    ///
+    /// If `Some(t)` and `t < SystemTime::now()`, the assumption is treated as
+    /// expired regardless of `status`.
+    pub expires_at: Option<std::time::SystemTime>,
+}
+
+impl ProfileAssumption {
+    /// Create an active assumption with no expiry deadline.
+    pub fn active(id: impl Into<String>) -> Self {
+        ProfileAssumption {
+            id: id.into(),
+            status: AssumptionStatus::Active,
+            expires_at: None,
+        }
+    }
+
+    /// Create an assumption that expires at the given wall-clock time.
+    ///
+    /// The status is set to [`AssumptionStatus::Active`]; if `expires_at` is
+    /// in the past, preflight stage 7 will still reject the profile.
+    pub fn active_until(id: impl Into<String>, expires_at: std::time::SystemTime) -> Self {
+        ProfileAssumption {
+            id: id.into(),
+            status: AssumptionStatus::Active,
+            expires_at: Some(expires_at),
+        }
+    }
+
+    /// Create an already-expired assumption.
+    pub fn expired(id: impl Into<String>) -> Self {
+        ProfileAssumption {
+            id: id.into(),
+            status: AssumptionStatus::Expired,
+            expires_at: None,
+        }
+    }
+
+    /// Create an inactive assumption.
+    pub fn inactive(id: impl Into<String>) -> Self {
+        ProfileAssumption {
+            id: id.into(),
+            status: AssumptionStatus::Inactive,
+            expires_at: None,
+        }
+    }
+}
+
 // ── SecretEntry ──────────────────────────────────────────────────────────
 
 /// A mapping from a logical secret identifier to a vault location.
@@ -370,6 +456,12 @@ pub struct RuntimeProfile {
     /// When set, the runtime uses recorded responses instead of live dispatch
     /// and can verify output hashes against the recording.
     replay_config: Option<ReplayConfig>,
+
+    /// Assumptions that must be active/not-expired for this profile to start.
+    ///
+    /// Checked during preflight stage 7.  An empty list (the default) disables
+    /// the stage entirely so existing profiles are unaffected.
+    assumptions: Vec<ProfileAssumption>,
 }
 
 impl RuntimeProfile {
@@ -400,6 +492,7 @@ impl RuntimeProfile {
             secrets_mapping: Vec::new(),
             audit_config: None,
             replay_config: None,
+            assumptions: Vec::new(),
         }
     }
 
@@ -465,6 +558,15 @@ impl RuntimeProfile {
         self
     }
 
+    /// Declare assumptions that preflight stage 7 must verify are active.
+    ///
+    /// Replaces any previously set assumptions list.  Profiles with an empty
+    /// list (the default) skip stage 7 entirely — backward compatible.
+    pub fn with_assumptions(mut self, assumptions: Vec<ProfileAssumption>) -> Self {
+        self.assumptions = assumptions;
+        self
+    }
+
     /// Profile name (human-readable label).
     pub fn name(&self) -> &str {
         &self.name
@@ -522,6 +624,13 @@ impl RuntimeProfile {
     /// Replay configuration, if set.
     pub fn replay_config(&self) -> Option<&ReplayConfig> {
         self.replay_config.as_ref()
+    }
+
+    /// Assumptions declared for this profile.
+    ///
+    /// An empty slice means stage 7 preflight is disabled (default).
+    pub fn assumptions(&self) -> &[ProfileAssumption] {
+        &self.assumptions
     }
 
     /// Return `true` if `module` is granted `capability`.

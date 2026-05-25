@@ -595,7 +595,7 @@ Before running, host validates:
 7. assumptions used by profile are active/not expired
 ```
 
-Implementation note: step 7 is target design. Current `host_preflight` (`crates/ail-runtime/src/host_preflight.rs`) does not inspect assumption expiry. Expired assumptions are tracked in storage but are not enforced as a preflight gate.
+Implementation note: step 7 is implemented as an opt-in preflight gate. `ProfileAssumption` records (`id`, `status`, optional `expires_at`) are declared directly on `RuntimeProfile` via `RuntimeProfile::with_assumptions(Vec<ProfileAssumption>)`. Preflight stage 7 rejects startup with `PreflightFailure::AssumptionExpired` when any assumption has `AssumptionStatus::Expired`, `AssumptionStatus::Inactive`, or an `expires_at` timestamp in the past. Profiles with an empty assumption list (the default) skip stage 7 entirely — existing profiles and call sites are unaffected.
 
 If not:
 
@@ -670,7 +670,7 @@ The current implemented runtime subset resolves the original open questions for 
 | WASI exposure | Hidden behind the host runtime. The workspace owns direct `wasmtime` usage in `ail-runtime`; programs interact through host calls and exported functions. |
 | Handler execution | In-process Rust `Handler` trait implementations. Verified-module handlers remain future work. |
 | Handler trust enforcement | `Handler::trust_level()` default method returns `TrustLevel::Assumed` (backward compatible). `RuntimeProfile::with_min_handler_trust(level)` enables a minimum-trust preflight gate (stage 6): fails with `HandlerTrustViolation` when a bound handler's declared level does not satisfy the minimum. Gate is opt-in; profiles without `min_handler_trust` skip it entirely. |
-| Startup assumption expiry (step 7) | `host_preflight` does not enforce assumption expiry. Step 7 in §Startup validation is target design. |
+| Startup assumption expiry (step 7) | Implemented as opt-in stage 7 in `host_preflight`. `ProfileAssumption` (`id`, `status`, `expires_at`) is declared on `RuntimeProfile` via `with_assumptions`. Preflight fails with `AssumptionExpired` for Expired/Inactive status or past `expires_at`. Empty list → gate disabled (backward compatible). |
 | Secret vault | Only `SecretEntry`/`secrets_mapping` data model exists in `profile.rs`. No vault client, `secret.read` dispatch, or secret injection is implemented. §Security model secret rules are target design. |
 | In-flight revocation policy | `InFlightPolicy` enum variants are stored but not enforced. `revoke_capability` denies new calls only (`CapabilityDenied`). `allow_complete`/`cancel`/`timeout_then_cancel` semantics are target design. |
 | Tracing | OpenTelemetry dependencies exist; runtime audit/reporting is implemented. Full distributed tracing across capability calls remains future hardening. |
