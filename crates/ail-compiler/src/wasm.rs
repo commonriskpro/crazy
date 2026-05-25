@@ -232,6 +232,13 @@ fn expr_has_fold_with_captured_reducer<'a>(
                 && !captures.is_empty()
             {
                 captured_names.insert(name.as_str());
+            } else if let AnfExpr::Var(v) = value.as_ref()
+                && captured_names.contains(v.as_str())
+            {
+                // Transitive alias: `let reducer = adder` where `adder` is
+                // already known to hold a captured Lambda.  Propagate the
+                // alias so a downstream Fold { func: "reducer" } is caught.
+                captured_names.insert(name.as_str());
             }
             expr_has_fold_with_captured_reducer(value, captured_names)
                 || expr_has_fold_with_captured_reducer(body, captured_names)

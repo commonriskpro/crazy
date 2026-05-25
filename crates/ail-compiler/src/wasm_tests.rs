@@ -4450,4 +4450,149 @@ fn fold_captured_reducer_in_if_branch_returns_diagnostic() {
     );
 }
 
+// Scenario: captured reducer inside a Match arm → diagnostic fires.
+// Proves the scope-aware walker descends into Match arm bodies.
+#[test]
+fn fold_captured_reducer_in_match_arm_returns_diagnostic() {
+    use crate::anf::AnfMatchArm;
+
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.match_fold".to_string(),
+        expr: AnfExpr::Let {
+            name: "zero".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Let {
+                    name: "reducer".to_string(),
+                    value: Box::new(AnfExpr::Lambda {
+                        params: vec!["acc".to_string(), "x".to_string()],
+                        captures: vec!["zero".to_string()],
+                        body: Box::new(AnfExpr::Call {
+                            func: "+".to_string(),
+                            args: vec!["acc".to_string(), "x".to_string()],
+                        }),
+                    }),
+                    body: Box::new(AnfExpr::Match {
+                        scrutinee: "zero".to_string(),
+                        arms: vec![AnfMatchArm {
+                            pattern: "_".to_string(),
+                            body: AnfExpr::Fold {
+                                init: "zero".to_string(),
+                                list: "lst".to_string(),
+                                func: "reducer".to_string(),
+                            },
+                        }],
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
+        ),
+        "captured reducer inside Match arm must produce FoldWithCapturedReducer; got {result:?}"
+    );
+}
+
+// Scenario: captured reducer inside a Loop body → diagnostic fires.
+// Proves the scope-aware walker descends into Loop bodies.
+#[test]
+fn fold_captured_reducer_in_loop_body_returns_diagnostic() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.loop_fold".to_string(),
+        expr: AnfExpr::Let {
+            name: "zero".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Let {
+                    name: "reducer".to_string(),
+                    value: Box::new(AnfExpr::Lambda {
+                        params: vec!["acc".to_string(), "x".to_string()],
+                        captures: vec!["zero".to_string()],
+                        body: Box::new(AnfExpr::Call {
+                            func: "+".to_string(),
+                            args: vec!["acc".to_string(), "x".to_string()],
+                        }),
+                    }),
+                    body: Box::new(AnfExpr::Loop {
+                        body: Box::new(AnfExpr::Fold {
+                            init: "zero".to_string(),
+                            list: "lst".to_string(),
+                            func: "reducer".to_string(),
+                        }),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
+        ),
+        "captured reducer inside Loop body must produce FoldWithCapturedReducer; got {result:?}"
+    );
+}
+
+// Scenario: transitive Var alias of a captured reducer → diagnostic fires (W1).
+// `let adder = lambda captures [...]; let reducer = adder; fold(..., reducer)`
+// The alias `reducer = adder` must propagate the captured-name membership so the
+// downstream Fold is caught even though it references `reducer`, not `adder`.
+#[test]
+fn fold_with_transitive_var_alias_reducer_returns_diagnostic() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.aliased_fold".to_string(),
+        expr: AnfExpr::Let {
+            name: "zero".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Let {
+                    name: "adder".to_string(),
+                    value: Box::new(AnfExpr::Lambda {
+                        params: vec!["acc".to_string(), "x".to_string()],
+                        captures: vec!["bias".to_string()],
+                        body: Box::new(AnfExpr::Call {
+                            func: "+".to_string(),
+                            args: vec!["acc".to_string(), "x".to_string()],
+                        }),
+                    }),
+                    body: Box::new(AnfExpr::Let {
+                        name: "reducer".to_string(),
+                        value: Box::new(AnfExpr::Var("adder".to_string())),
+                        body: Box::new(AnfExpr::Fold {
+                            init: "zero".to_string(),
+                            list: "lst".to_string(),
+                            func: "reducer".to_string(),
+                        }),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
+        ),
+        "transitive Var alias of captured reducer must produce FoldWithCapturedReducer; got {result:?}"
+    );
+}
+
 // ── End Wave 13B captured Lambda reducer diagnostic tests ─────────────────
