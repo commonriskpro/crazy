@@ -57,8 +57,9 @@ pub use migration::{
 };
 pub use retention::{
     CompactionReport, EnumerableObjectStore, GcReport, MutableGraphStore, MutableObjectStore,
-    RetentionPolicy, SnapshotHolds, collect_branch_holds, collect_branch_holds_with_ancestry,
-    collect_tag_holds, compact_snapshots, gc_unreferenced,
+    ObjectGcReport, RetentionPolicy, SnapshotHolds, collect_branch_holds,
+    collect_branch_holds_with_ancestry, collect_reachable_object_ids_for_snapshots,
+    collect_tag_holds, compact_snapshots, gc_unreferenced, run_gc,
 };
 pub use tag::{ReleaseMetadata, Tag, TagRegistry, TagStore};
 pub use tombstone::{ObjectBackedTombstoneStore, Tombstone, TombstoneStore};

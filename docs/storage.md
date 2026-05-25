@@ -478,6 +478,37 @@ and no longer protect the covering snapshot. Always refresh holds (by calling
 `collect_branch_holds` / `collect_tag_holds` after updating branch/tag
 pointers) before the next `gc_unreferenced` run.
 
+**Snapshot envelope CAS reachability** (critical when `ObjectStore` is shared):
+`ObjectBackedGraphStore::save_snapshot` encodes each `SnapshotEnvelope` as
+CBOR and stores the bytes as a `RawObject` in the backing `ObjectStore`.  The
+content-addressed id of those bytes (`cas_id`) is recorded in the internal
+`snapshot_index` and is **distinct** from `envelope.graph_root_hash`.
+
+If `run_gc` is called on the same `ObjectStore` with a reachable set that
+contains only `graph_root_hash` values, the stored envelope bytes are treated
+as unreachable and deleted — corrupting the store with no error at GC time
+(`list_snapshots` subsequently returns `StorageError::NotFound`).
+
+Use `collect_reachable_object_ids_for_snapshots` to build the correct reachable
+set before calling `run_gc`.  This helper encodes each retained envelope with
+`CborCodec` (the same codec as `save_snapshot`) to recompute the CAS id, and
+returns a `BTreeSet` containing both the envelope CAS ids and the
+`graph_root_hash` values:
+
+```rust
+// Phase 1: remove unreachable snapshot index entries.
+gc_unreferenced(&graph_store, &policy, &holds, now_ms).await?;
+// Phase 2: enumerate retained snapshots.
+let retained = graph_store.list_snapshots().await?;
+// Phase 3: build CAS reachable set (envelope bytes + graph roots).
+let reachable = collect_reachable_object_ids_for_snapshots(&retained)?;
+// Phase 4: delete unreachable raw CAS objects.
+run_gc(&object_store, &reachable).await?;
+```
+
+Always call `list_snapshots` immediately before `collect_reachable_object_ids_for_snapshots`
+to ensure the envelope structs match what is currently indexed.
+
 ### Final rules
 
 ```txt
