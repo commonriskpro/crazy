@@ -30,10 +30,7 @@ fn list_push_into_empty_returns_singleton() {
 #[test]
 fn list_push_onto_non_empty_appends_at_end() {
     let list = StdlibValue::List(vec![StdlibValue::Int(1), StdlibValue::Int(2)]);
-    let result = call_pure_stdlib(
-        "std.collections.list.push",
-        &[list, StdlibValue::Int(3)],
-    );
+    let result = call_pure_stdlib("std.collections.list.push", &[list, StdlibValue::Int(3)]);
     assert_eq!(
         result,
         Ok(StdlibValue::List(vec![
@@ -87,10 +84,7 @@ fn list_get_negative_index_returns_none() {
 
 #[test]
 fn list_length_empty_list_is_zero() {
-    let result = call_pure_stdlib(
-        "std.collections.list.length",
-        &[StdlibValue::List(vec![])],
-    );
+    let result = call_pure_stdlib("std.collections.list.length", &[StdlibValue::List(vec![])]);
     assert_eq!(result, Ok(StdlibValue::Int(0)));
 }
 
@@ -188,10 +182,7 @@ fn map_get_missing_key_returns_none() {
 #[test]
 fn set_insert_new_element_adds_to_list() {
     let set = StdlibValue::List(vec![StdlibValue::Int(1), StdlibValue::Int(2)]);
-    let result = call_pure_stdlib(
-        "std.collections.set.insert",
-        &[set, StdlibValue::Int(3)],
-    );
+    let result = call_pure_stdlib("std.collections.set.insert", &[set, StdlibValue::Int(3)]);
     assert_eq!(
         result,
         Ok(StdlibValue::List(vec![
@@ -206,10 +197,7 @@ fn set_insert_new_element_adds_to_list() {
 #[test]
 fn set_insert_duplicate_element_is_idempotent() {
     let set = StdlibValue::List(vec![StdlibValue::Int(1), StdlibValue::Int(2)]);
-    let result = call_pure_stdlib(
-        "std.collections.set.insert",
-        &[set, StdlibValue::Int(1)],
-    );
+    let result = call_pure_stdlib("std.collections.set.insert", &[set, StdlibValue::Int(1)]);
     // Element 1 was already present — set must not grow
     assert_eq!(
         result,
@@ -243,10 +231,7 @@ fn set_contains_present_element_returns_true() {
         StdlibValue::Int(20),
         StdlibValue::Int(30),
     ]);
-    let result = call_pure_stdlib(
-        "std.collections.set.contains",
-        &[set, StdlibValue::Int(20)],
-    );
+    let result = call_pure_stdlib("std.collections.set.contains", &[set, StdlibValue::Int(20)]);
     assert_eq!(result, Ok(StdlibValue::Bool(true)));
 }
 
@@ -254,10 +239,7 @@ fn set_contains_present_element_returns_true() {
 #[test]
 fn set_contains_absent_element_returns_false() {
     let set = StdlibValue::List(vec![StdlibValue::Int(10), StdlibValue::Int(20)]);
-    let result = call_pure_stdlib(
-        "std.collections.set.contains",
-        &[set, StdlibValue::Int(99)],
-    );
+    let result = call_pure_stdlib("std.collections.set.contains", &[set, StdlibValue::Int(99)]);
     assert_eq!(result, Ok(StdlibValue::Bool(false)));
 }
 
@@ -265,10 +247,7 @@ fn set_contains_absent_element_returns_false() {
 #[test]
 fn set_contains_empty_set_returns_false() {
     let set = StdlibValue::List(vec![]);
-    let result = call_pure_stdlib(
-        "std.collections.set.contains",
-        &[set, StdlibValue::Int(1)],
-    );
+    let result = call_pure_stdlib("std.collections.set.contains", &[set, StdlibValue::Int(1)]);
     assert_eq!(result, Ok(StdlibValue::Bool(false)));
 }
 
@@ -289,10 +268,7 @@ fn list_push_non_list_returns_type_error() {
 fn map_get_non_map_returns_type_error() {
     let result = call_pure_stdlib(
         "std.collections.map.get",
-        &[
-            StdlibValue::Int(0),
-            StdlibValue::Text("k".to_string()),
-        ],
+        &[StdlibValue::Int(0), StdlibValue::Text("k".to_string())],
     );
     assert_eq!(result, Err(StdlibExecError::Type { expected: "Map" }));
 }
