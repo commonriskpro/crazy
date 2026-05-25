@@ -2233,3 +2233,218 @@ fn effect_data_layout_cell_get_set_index_get_need_memory() {
 }
 
 // ── End Wave 7C collection/cell tests ────────────────────────────────────
+
+// ── Wave 8C: ForEach iteration primitive ─────────────────────────────────
+//
+// Proves that ForEach produces a real WASM loop (block + loop + I64GeU
+// exit condition + I64Load element load) instead of unconditional Unreachable,
+// and that the emitted module validates.
+
+// Scenario: ForEach over a list emits a loop structure and validates.
+// Expects: Block + Loop instructions present; module validates.
+#[test]
+fn foreach_emits_loop_structure_and_validates() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    // let list = [10, 20, 30]; foreach item in list: noop (use item as body)
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.loop_test".to_string(),
+        expr: AnfExpr::Let {
+            name: "elem0".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+            body: Box::new(AnfExpr::Let {
+                name: "elem1".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(20))),
+                body: Box::new(AnfExpr::Let {
+                    name: "lst".to_string(),
+                    value: Box::new(AnfExpr::ListNew(vec![
+                        AnfExpr::Var("elem0".to_string()),
+                        AnfExpr::Var("elem1".to_string()),
+                    ])),
+                    body: Box::new(AnfExpr::ForEach {
+                        binding: "item".to_string(),
+                        collection: "lst".to_string(),
+                        // Body: reference the binding (side-effect: just reads it)
+                        body: Box::new(AnfExpr::Var("item".to_string())),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for ForEach");
+    wasmparser::validate(&artifact.wasm).expect("ForEach module must validate");
+
+    let mut saw_block = false;
+    let mut saw_loop = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                match reader.read().unwrap() {
+                    Operator::Block { .. } => saw_block = true,
+                    Operator::Loop { .. } => saw_loop = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    assert!(
+        saw_block,
+        "ForEach must emit a Block instruction (break target)"
+    );
+    assert!(
+        saw_loop,
+        "ForEach must emit a Loop instruction (continue target)"
+    );
+}
+
+// Scenario: ForEach emits I64Load to read list elements.
+// Expects: I64Load present in code section; module validates.
+#[test]
+fn foreach_emits_i64_load_for_element() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.read_elems".to_string(),
+        expr: AnfExpr::Let {
+            name: "e".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(7))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![AnfExpr::Var("e".to_string())])),
+                body: Box::new(AnfExpr::ForEach {
+                    binding: "x".to_string(),
+                    collection: "lst".to_string(),
+                    body: Box::new(AnfExpr::Var("x".to_string())),
+                }),
+            }),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("module must validate");
+
+    let mut saw_load = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                if let Operator::I64Load { .. } = reader.read().unwrap() {
+                    saw_load = true;
+                }
+            }
+        }
+    }
+
+    assert!(saw_load, "ForEach must emit I64Load to read list elements");
+}
+
+// Scenario: ForEach exit condition uses I64GeU.
+// Expects: I64GeU present (i >= count break test); module validates.
+#[test]
+fn foreach_emits_i64_geu_exit_condition() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.exit_cond".to_string(),
+        expr: AnfExpr::Let {
+            name: "v".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![AnfExpr::Var("v".to_string())])),
+                body: Box::new(AnfExpr::ForEach {
+                    binding: "item".to_string(),
+                    collection: "lst".to_string(),
+                    body: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+                }),
+            }),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("module must validate");
+
+    let mut saw_geu = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                if let Operator::I64GeU = reader.read().unwrap() {
+                    saw_geu = true;
+                }
+            }
+        }
+    }
+
+    assert!(
+        saw_geu,
+        "ForEach must emit I64GeU for the loop exit condition (i >= count)"
+    );
+}
+
+// Scenario: ForEach sets needs_memory in EffectDataLayout.
+// Expects: needs_memory = true (ForEach reads list elements via I64Load).
+#[test]
+fn foreach_sets_needs_memory_in_effect_data_layout() {
+    let bindings = vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.fe".to_string(),
+        expr: AnfExpr::ForEach {
+            binding: "item".to_string(),
+            collection: "lst".to_string(),
+            body: Box::new(AnfExpr::Var("item".to_string())),
+        },
+    }];
+    let layout = EffectDataLayout::for_bindings(&bindings);
+    assert!(
+        layout.needs_memory,
+        "ForEach reads list elements via I64Load — must set needs_memory"
+    );
+}
+
+// TRIANGULATE: ForEach over an empty list still produces valid WASM.
+#[test]
+fn foreach_over_empty_list_validates() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.empty_loop".to_string(),
+        expr: AnfExpr::Let {
+            name: "lst".to_string(),
+            value: Box::new(AnfExpr::ListNew(vec![])),
+            body: Box::new(AnfExpr::ForEach {
+                binding: "item".to_string(),
+                collection: "lst".to_string(),
+                body: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+            }),
+        },
+    }]);
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for empty-list ForEach");
+    wasmparser::validate(&artifact.wasm).expect("ForEach over empty list must produce valid WASM");
+}
+
+// Scenario: ForEach returns no value (infer_expr_type → None).
+#[test]
+fn foreach_infer_expr_type_is_none() {
+    use crate::wasm_abi::infer_expr_type;
+    use wasm_encoder::ValType;
+
+    let expr = AnfExpr::ForEach {
+        binding: "x".to_string(),
+        collection: "lst".to_string(),
+        body: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+    };
+    let mut locals: Vec<(String, ValType)> = vec![];
+    assert_eq!(
+        infer_expr_type(&expr, &mut locals),
+        None,
+        "ForEach is side-effect only — infer_expr_type must return None"
+    );
+}
+
+// ── End Wave 8C iteration tests ───────────────────────────────────────────
