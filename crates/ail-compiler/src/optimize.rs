@@ -836,10 +836,10 @@ fn uses_var(expr: &AnfExpr, name: &str) -> bool {
         AnfExpr::Return(inner)
         | AnfExpr::Loop { body: inner }
         | AnfExpr::Break { value: inner }
-        | AnfExpr::ShortCircuitAnd { right: inner, .. }
-        | AnfExpr::ShortCircuitOr { right: inner, .. }
         | AnfExpr::TaskGroup { body: inner }
         | AnfExpr::Timeout { body: inner, .. } => uses_var(inner, name),
+        AnfExpr::ShortCircuitAnd { left, right } => left == name || uses_var(right, name),
+        AnfExpr::ShortCircuitOr { left, right } => left == name || uses_var(right, name),
         AnfExpr::Seq(exprs) | AnfExpr::TupleNew(exprs) | AnfExpr::ListNew(exprs) => {
             exprs.iter().any(|expr| uses_var(expr, name))
         }

@@ -299,6 +299,24 @@ impl Parser<'_> {
                     right: Box::new(right),
                 })
             }
+            // `abort("message")` — explicit trap with a diagnostic message.
+            //
+            // The message argument must be a string literal (`"..."`) or a
+            // bare identifier used as the message text.  Any other expression
+            // shape is a parse error.
+            "abort" => {
+                let [arg] = expect_arity::<1>(func, args)?;
+                let message = match arg {
+                    CoreExpr::Literal(LiteralValue::Text(s)) => s,
+                    CoreExpr::Var(name) => name,
+                    _ => {
+                        return Err(ParseError::new(
+                            "abort expects a string literal or identifier as the message",
+                        ));
+                    }
+                };
+                Ok(CoreExpr::Abort { message })
+            }
             // ── Control flow ─────────────────────────────────────────────
             //
             // `loop(body)` — infinite loop; exits via `break(value)`.
