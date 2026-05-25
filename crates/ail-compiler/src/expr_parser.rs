@@ -435,6 +435,31 @@ impl Parser<'_> {
                     value: Box::new(value),
                 })
             }
+            // ── Map and Set constructors ──────────────────────────────────
+            //
+            // `map(k1, v1, k2, v2, ...)` — construct a map from key/value pairs.
+            //
+            // Must have an even number of arguments (including zero).
+            // Error on odd arity: keys without matching values are rejected.
+            "map" => {
+                if !args.len().is_multiple_of(2) {
+                    return Err(ParseError::new(format!(
+                        "map expects an even number of args (key/value pairs), got {}",
+                        args.len()
+                    )));
+                }
+                let mut entries = Vec::with_capacity(args.len() / 2);
+                let mut iter = args.into_iter();
+                while let Some(k) = iter.next() {
+                    let v = iter.next().expect("even count checked above");
+                    entries.push((k, v));
+                }
+                Ok(CoreExpr::MapNew { entries })
+            }
+            // `set(e1, e2, ...)` — construct a set from element expressions.
+            //
+            // Any arity is accepted, including zero (empty set).
+            "set" => Ok(CoreExpr::SetNew { elements: args }),
             _ => Ok(CoreExpr::Call { func, args }),
         }
     }

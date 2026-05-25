@@ -283,6 +283,43 @@ pub(super) fn lower_core_expr_to_anf_local(
             }
             wrap_local_bindings(bindings, AnfExpr::ListNew(anf_elems))
         }
+        // MapNew: atomize each key and value into local let-bindings.
+        //
+        // Uses atomize_local (not atomize) so that synthetic temporaries are
+        // scoped as inline AnfExpr::Let nodes rather than top-level bindings
+        // that would be invisible at WASM emission time.
+        CoreExpr::MapNew { entries } => {
+            let mut bindings = Vec::new();
+            let mut anf_entries = Vec::with_capacity(entries.len());
+            for (k, v) in entries {
+                let (k_name, k_binding) = atomize_local(k, fresh, source_ref);
+                let (v_name, v_binding) = atomize_local(v, fresh, source_ref);
+                if let Some(binding) = k_binding {
+                    bindings.push(binding);
+                }
+                if let Some(binding) = v_binding {
+                    bindings.push(binding);
+                }
+                anf_entries.push((k_name, v_name));
+            }
+            wrap_local_bindings(bindings, AnfExpr::MapNew { entries: anf_entries })
+        }
+        // SetNew: atomize each element into a local let-binding.
+        //
+        // Same rationale as MapNew above — atomize_local keeps temporaries
+        // as inline AnfExpr::Let nodes visible to the WASM emitter.
+        CoreExpr::SetNew { elements } => {
+            let mut bindings = Vec::new();
+            let mut anf_elements = Vec::with_capacity(elements.len());
+            for elem in elements {
+                let (name, binding) = atomize_local(elem, fresh, source_ref);
+                if let Some(binding) = binding {
+                    bindings.push(binding);
+                }
+                anf_elements.push(name);
+            }
+            wrap_local_bindings(bindings, AnfExpr::SetNew { elements: anf_elements })
+        }
         _ => lower_core_expr_to_anf(expr, fresh, source_ref, &mut Vec::new()),
     }
 }

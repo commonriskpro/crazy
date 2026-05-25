@@ -549,6 +549,135 @@ fn parses_cell_operations() {
     );
 }
 
+// ── Map and Set constructor forms ────────────────────────────────────
+
+#[test]
+fn parses_map_empty() {
+    assert_eq!(
+        parse_expr("map()").unwrap(),
+        CoreExpr::MapNew { entries: vec![] }
+    );
+}
+
+#[test]
+fn parses_map_single_pair() {
+    assert_eq!(
+        parse_expr("map(1, 10)").unwrap(),
+        CoreExpr::MapNew {
+            entries: vec![(
+                CoreExpr::Literal(LiteralValue::Int(1)),
+                CoreExpr::Literal(LiteralValue::Int(10)),
+            )],
+        }
+    );
+}
+
+#[test]
+fn parses_map_two_pairs() {
+    assert_eq!(
+        parse_expr("map(1, 10, 2, 20)").unwrap(),
+        CoreExpr::MapNew {
+            entries: vec![
+                (
+                    CoreExpr::Literal(LiteralValue::Int(1)),
+                    CoreExpr::Literal(LiteralValue::Int(10)),
+                ),
+                (
+                    CoreExpr::Literal(LiteralValue::Int(2)),
+                    CoreExpr::Literal(LiteralValue::Int(20)),
+                ),
+            ],
+        }
+    );
+}
+
+#[test]
+fn parses_map_with_expression_values() {
+    // map(x, add(x, 1)) — key is a Var, value is an Add expression
+    assert_eq!(
+        parse_expr("map(x, add(x, 1))").unwrap(),
+        CoreExpr::MapNew {
+            entries: vec![(
+                CoreExpr::Var("x".to_string()),
+                CoreExpr::Add(
+                    Box::new(CoreExpr::Var("x".to_string())),
+                    Box::new(CoreExpr::Literal(LiteralValue::Int(1))),
+                ),
+            )],
+        }
+    );
+}
+
+#[test]
+fn rejects_map_with_odd_arity() {
+    let err = parse_expr("map(k1)").unwrap_err();
+    assert_eq!(
+        err.message,
+        "map expects an even number of args (key/value pairs), got 1"
+    );
+}
+
+#[test]
+fn rejects_map_with_odd_arity_three() {
+    let err = parse_expr("map(k1, v1, k2)").unwrap_err();
+    assert_eq!(
+        err.message,
+        "map expects an even number of args (key/value pairs), got 3"
+    );
+}
+
+#[test]
+fn parses_set_empty() {
+    assert_eq!(
+        parse_expr("set()").unwrap(),
+        CoreExpr::SetNew { elements: vec![] }
+    );
+}
+
+#[test]
+fn parses_set_single_element() {
+    assert_eq!(
+        parse_expr("set(42)").unwrap(),
+        CoreExpr::SetNew {
+            elements: vec![CoreExpr::Literal(LiteralValue::Int(42))],
+        }
+    );
+}
+
+#[test]
+fn parses_set_multiple_elements() {
+    assert_eq!(
+        parse_expr("set(1, 2, 3)").unwrap(),
+        CoreExpr::SetNew {
+            elements: vec![
+                CoreExpr::Literal(LiteralValue::Int(1)),
+                CoreExpr::Literal(LiteralValue::Int(2)),
+                CoreExpr::Literal(LiteralValue::Int(3)),
+            ],
+        }
+    );
+}
+
+#[test]
+fn parses_set_with_expression_elements() {
+    // set(add(x, 1), mul(y, 2)) — elements are arbitrary expressions
+    assert_eq!(
+        parse_expr("set(add(x, 1), mul(y, 2))").unwrap(),
+        CoreExpr::SetNew {
+            elements: vec![
+                CoreExpr::Add(
+                    Box::new(CoreExpr::Var("x".to_string())),
+                    Box::new(CoreExpr::Literal(LiteralValue::Int(1))),
+                ),
+                CoreExpr::Mul(
+                    Box::new(CoreExpr::Var("y".to_string())),
+                    Box::new(CoreExpr::Literal(LiteralValue::Int(2))),
+                ),
+            ],
+        }
+    );
+}
+
 // ── Nested expressions with new operators ────────────────────────────
 
 #[test]
