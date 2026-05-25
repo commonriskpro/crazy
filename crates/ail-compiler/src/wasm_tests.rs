@@ -2573,6 +2573,29 @@ fn foreach_infer_expr_type_is_none() {
     );
 }
 
+// ── Wave 18D: WhileLoop infer_expr_type returns Some(I32) ────────────────
+//
+// Scenario: WhileLoop must push a unit value (I32 0) onto the WASM stack so
+// it can appear as the value in a `Let` binding or inside a `Seq` without
+// causing a stack-underflow validation error.  infer_expr_type must return
+// Some(I32) — analogous to the ForEach fix from Wave 18B.
+#[test]
+fn while_loop_infer_expr_type_is_i32() {
+    use crate::wasm_abi::infer_expr_type;
+    use wasm_encoder::ValType;
+
+    let expr = AnfExpr::WhileLoop {
+        cond: "flag".to_string(),
+        body: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+    };
+    let mut locals: Vec<(String, ValType)> = vec![];
+    assert_eq!(
+        infer_expr_type(&expr, &mut locals),
+        Some(ValType::I32),
+        "WhileLoop emits a unit I32 0 onto the WASM stack — infer_expr_type must return Some(I32)"
+    );
+}
+
 // ── Wave 9B: ResourceAcquire / ResourceRelease WASM emission ─────────────
 
 /// Build a minimal `AnfIr` with a single binding whose body is the given expr.

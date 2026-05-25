@@ -200,6 +200,48 @@ fn while_loop_emits_valid_wasm_loop_with_exit_branch() {
     );
 }
 
+// ── Wave 18D: WhileLoop as Let value emits valid WASM ────────────────────
+//
+// Scenario: WhileLoop used as the `value` of an outer `Let` binding must
+// push a unit (I32 0) so the enclosing LocalSet has something to consume.
+// Without the unit push the emitted WASM would fail wasmparser::validate.
+//
+// Structure under test:
+//   let flag = false in
+//   let _w   = while(flag, 0) in   ← WhileLoop as Let value
+//   42
+//
+// Approval criteria:
+//  1. emit_wasm + wasmparser::validate both succeed (no stack underflow).
+//  2. The instruction stream contains an I32Const{value: 0} after the loop
+//     End, proving the unit was emitted.
+#[test]
+fn while_loop_emits_unit_when_used_as_let_value() {
+    let ops = emit_valid_wasm(
+        AnfExpr::Let {
+            name: "flag".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Bool(false))),
+            body: Box::new(AnfExpr::Let {
+                name: "_w".to_string(),
+                value: Box::new(AnfExpr::WhileLoop {
+                    cond: "flag".to_string(),
+                    body: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                }),
+                body: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
+            }),
+        },
+        "fn.while_loop_let",
+    );
+    assert!(
+        ops.iter().any(|op| op.starts_with("Loop")),
+        "expected loop block"
+    );
+    assert!(
+        ops.iter().any(|op| op == "I32Const { value: 0 }"),
+        "WhileLoop must push unit I32 0 for the enclosing LocalSet, got {ops:?}"
+    );
+}
+
 // ── Task 3.1: wasmparser validates emitted modules ────────────────────────
 
 // Scenario: zero-binding graph → minimal valid WASM module.

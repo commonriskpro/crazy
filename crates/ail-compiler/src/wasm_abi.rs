@@ -267,7 +267,11 @@ pub(crate) fn infer_expr_type(
         AnfExpr::ShortCircuitAnd { .. } | AnfExpr::ShortCircuitOr { .. } => Some(ValType::I64),
         AnfExpr::Loop { body } => infer_expr_type(body, locals),
         AnfExpr::Break { value } => infer_expr_type(value, locals),
-        AnfExpr::Continue | AnfExpr::WhileLoop { .. } => None,
+        AnfExpr::Continue => None,
+        // WhileLoop pushes a unit (I32 0) after the loop ends so it can appear
+        // as the value in a Let binding without causing a stack-underflow error.
+        // Mirrors the ForEach fix from Wave 18B.
+        AnfExpr::WhileLoop { .. } => Some(ValType::I32),
         AnfExpr::RecordNew { .. }
         | AnfExpr::TupleNew(_)
         | AnfExpr::VariantNew { .. }
