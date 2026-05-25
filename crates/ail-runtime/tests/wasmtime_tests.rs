@@ -2730,7 +2730,10 @@ fn map_new_layout_count_key_value() {
     let count = instance
         .read_memory_i64(ptr, 0)
         .expect("count at offset 0 must be readable");
-    assert_eq!(count, 1, "count at offset 0 must be 1 for a single-entry map");
+    assert_eq!(
+        count, 1,
+        "count at offset 0 must be 1 for a single-entry map"
+    );
 
     let key = instance
         .read_memory_i64(ptr, 8)
@@ -2852,7 +2855,10 @@ fn set_new_layout_count_element() {
     let count = instance
         .read_memory_i64(ptr, 0)
         .expect("count at offset 0 must be readable");
-    assert_eq!(count, 1, "count at offset 0 must be 1 for a single-element set");
+    assert_eq!(
+        count, 1,
+        "count at offset 0 must be 1 for a single-element set"
+    );
 
     let elem = instance
         .read_memory_i64(ptr, 8)

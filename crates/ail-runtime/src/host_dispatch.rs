@@ -294,8 +294,8 @@ impl RuntimeInstance {
     /// Returns `None` if:
     /// - Either `ptr` or `byte_offset` is negative.
     /// - `ptr + byte_offset` overflows a `u32` (WASM memory is 32-bit addressed).
-    /// - The result exceeds `i32::MAX` (would become negative when passed to the
-    ///   memory accessor).
+    /// - `ptr + byte_offset` exceeds `i32::MAX` (would become negative when passed
+    ///   to the memory accessor).
     /// - The module has no exported `"memory"`.
     /// - The 8-byte read range `[ptr + byte_offset, ptr + byte_offset + 8)` is
     ///   out of bounds for the current linear-memory size.
