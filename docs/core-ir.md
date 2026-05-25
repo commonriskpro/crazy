@@ -1163,7 +1163,7 @@ Current executable support is narrower than the full IR:
   - **Lambdas**: `lambda(params..., body)` — all but last arg are param names.
   - **Iteration**: `foreach(binding, collection, body)`, `fold(init, list, func)` — parse correctly; WASM emit is a stub.
   - **Cells**: `cell_new(init)`, `cell_get(cell)`, `cell_set(cell, value)`.
-- `wasm.rs` emits real bodies for simple values, control flow, and effect calls; collection iteration (`foreach`, `fold`), tasks, channels, and resources still emit stubs/traps.
+- `wasm.rs` emits real bodies for simple values, control flow, effect calls, cells (`CellNew`/`CellGet`/`CellSet`), collection constructors (`MapNew`, `SetNew`), and indexed access (`IndexGet`); collection iteration (`ForEach`, `Fold`), tasks, channels, and resources still emit stubs/traps.
 - Executable `Match` supports integer literal, boolean literal, wildcard, tag-only constructor (`None`), and single-binding constructor (`Ok(val)`, `Some(x)`, `Err(e)`) patterns. The WASM backend loads the i32 tag at offset 0 and, for payload-binding patterns, loads the i64 payload at offset 8. Multi-binding patterns (e.g. `Ok(a, b)`) are not yet supported and emit `Unreachable`.
 - Full memory/value layout for handles, text, bytes, and nested structured payloads is still tracked as ABI validation work; records, variants, lists, `Option`, and `Result` are currently executable for scalar-slot payloads.
 
@@ -1171,12 +1171,14 @@ Current executable support is narrower than the full IR:
 
 | Primitive | Status |
 |-----------|--------|
-| `ForEach` | Parses; WASM emit is a stub (trap) |
-| `Fold` | Parses; WASM emit is a stub (trap) |
-| `MapNew` | Defined in IR; no WASM emit path |
-| `SetNew` | Defined in IR; no WASM emit path |
-| `IndexGet` | Defined in IR; no WASM emit path |
-| `CellNew`, `CellGet`, `CellSet` | Parse; no WASM emit path |
+| `MapNew` | **Implemented** — linear-memory layout `[count:i64, k:i64, v:i64, ...]`; validates |
+| `SetNew` | **Implemented** — linear-memory layout `[count:i64, elem:i64, ...]`; validates |
+| `IndexGet` | **Implemented** — dynamic address `ptr + 8 + index*8`; validates |
+| `CellNew` | **Implemented** — alloc 8 bytes, store init value; returns I32 ptr; validates |
+| `CellGet` | **Implemented** — I64Load at offset 0 from cell ptr; validates |
+| `CellSet` | **Implemented** — I64Store at offset 0 from cell ptr; validates |
+| `ForEach` | Parses; WASM emit is a stub (trap) — requires loop + call_indirect |
+| `Fold` | Parses; WASM emit is a stub (trap) — requires loop + call_indirect |
 | `ResourceAcquire`, `ResourceRelease` | Emit `Unreachable` in WASM |
 | `TaskSpawn`, `TaskAwait`, `TaskCancel`, `TaskGroup` | Emit `Unreachable` in WASM |
 | `ChannelNew`, `ChannelSend`, `ChannelReceive`, `Select`, `Timeout` | Emit `Unreachable` in WASM |
