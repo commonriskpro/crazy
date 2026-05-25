@@ -15,8 +15,8 @@ use ail_change::{
     parser::parse_changeset,
 };
 use ail_compiler::{
-    ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, LiteralValue, SourceMap, StageHashes,
-    emit_wasm, lower_to_anf, lower_to_core_ir,
+    ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, AnfMatchArm, LiteralValue, SourceMap,
+    StageHashes, emit_wasm, lower_to_anf, lower_to_core_ir,
 };
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_runtime::{
@@ -885,5 +885,182 @@ fn closure_fold_multiple_captures_both_loaded_from_env() {
         value,
         RuntimeValue::I64(23),
         "two-capture fold over [1,2] with bias1=3 bias2=7 must return 23"
+    );
+}
+
+// ── Wave 17D: VariantNew + Match runtime execution conformance ────────────
+//
+// Spec scenarios covered (RUNTIME-VARIANT-MATCH-1..4):
+//
+//  RUNTIME-VARIANT-MATCH-1: single-binding constructor "Ok(x)" extracts the
+//    variant payload from linear memory (offset 8) and binds it; the arm body
+//    references and uses the bound variable.
+//
+//  RUNTIME-VARIANT-MATCH-2: tag-only constructor "None" matches by discriminant
+//    only — no payload read is attempted (correct for payload-less variants).
+//
+//  RUNTIME-VARIANT-MATCH-3: wildcard "_" fires when the scrutinee's tag does not
+//    match any earlier arm; the wrong-tag arm is fully skipped.
+//
+//  RUNTIME-VARIANT-MATCH-4: arm ordering is respected — the "None" arm is
+//    evaluated first, fails the tag check, and the subsequent "Some(x)" arm
+//    correctly extracts the payload.
+//
+// Design note — arm body shape:
+//   Arms that bind a payload variable `x` use `Call { "+", ["x", "x"] }` as
+//   the body rather than the bare `Var("x")`.  Both forms now work: the Wave 17D
+//   `infer_expr_type` fix temporarily adds the payload binding to `locals` before
+//   inferring each arm's body type, so `Var("x")` resolves to `Some(I64)` rather
+//   than `None`.  `x + x` is a deliberate proof-of-value choice — the result 42
+//   (= 21 + 21) proves both that the correct payload (21) was extracted from
+//   linear memory and that the binding is live in the arm body.
+
+/// Build the ANF expression:
+///   `let v = VariantNew(tag, payload?) in match v { arms... }`
+///
+/// `payload` is encoded as `Some(i64 literal)` when present.
+fn make_variant_match_expr(
+    tag: &str,
+    payload: Option<i64>,
+    arms: Vec<AnfMatchArm>,
+) -> AnfExpr {
+    AnfExpr::Let {
+        name: "v".to_string(),
+        value: Box::new(AnfExpr::VariantNew {
+            tag: tag.to_string(),
+            payload: payload
+                .map(|p| Box::new(AnfExpr::Literal(LiteralValue::Int(p)))),
+        }),
+        body: Box::new(AnfExpr::Match {
+            scrutinee: "v".to_string(),
+            arms,
+        }),
+    }
+}
+
+// RUNTIME-VARIANT-MATCH-1
+//
+// VariantNew("Ok", payload=21) → discriminant=0, payload stored at offset 8.
+// Match arm "Ok(x)" fires: discriminant 0 == 0 ✓; payload 21 loaded into x.
+// Arm body x+x = 42.  Wildcard fallback ("_" → 0) must NOT be reached.
+#[test]
+fn variant_match_single_binding_extracts_payload_and_uses_it() {
+    let expr = make_variant_match_expr(
+        "Ok",
+        Some(21),
+        vec![
+            AnfMatchArm {
+                pattern: "Ok(x)".to_string(),
+                body: AnfExpr::Call {
+                    func: "+".to_string(),
+                    args: vec!["x".to_string(), "x".to_string()],
+                },
+            },
+            AnfMatchArm {
+                pattern: "_".to_string(),
+                body: AnfExpr::Literal(LiteralValue::Int(0)),
+            },
+        ],
+    );
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.main"),
+        RuntimeValue::I64(42),
+        "Ok(x) arm must load payload 21 and compute x+x=42"
+    );
+}
+
+// RUNTIME-VARIANT-MATCH-2
+//
+// VariantNew("None") → discriminant=0, no payload written.
+// Match arm "None" fires: discriminant 0 == 0 ✓; no payload load attempted.
+// Arm body returns literal 99.
+#[test]
+fn variant_match_tag_only_pattern_matches_none_variant() {
+    let expr = make_variant_match_expr(
+        "None",
+        None,
+        vec![
+            AnfMatchArm {
+                pattern: "None".to_string(),
+                body: AnfExpr::Literal(LiteralValue::Int(99)),
+            },
+            AnfMatchArm {
+                pattern: "_".to_string(),
+                body: AnfExpr::Literal(LiteralValue::Int(0)),
+            },
+        ],
+    );
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.main"),
+        RuntimeValue::I64(99),
+        "None tag-only pattern must match discriminant 0 and return 99"
+    );
+}
+
+// RUNTIME-VARIANT-MATCH-3
+//
+// VariantNew("Err", payload=1) → discriminant=1.
+// Match arm "Ok(x)" checks discriminant==0 → fails (1≠0); wildcard fires → 999.
+// Proves the wrong-tag arm is skipped entirely.
+#[test]
+fn variant_match_wildcard_fires_on_wrong_tag() {
+    let expr = make_variant_match_expr(
+        "Err",
+        Some(1),
+        vec![
+            AnfMatchArm {
+                pattern: "Ok(x)".to_string(),
+                body: AnfExpr::Call {
+                    func: "+".to_string(),
+                    args: vec!["x".to_string(), "x".to_string()],
+                },
+            },
+            AnfMatchArm {
+                pattern: "_".to_string(),
+                body: AnfExpr::Literal(LiteralValue::Int(999)),
+            },
+        ],
+    );
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.main"),
+        RuntimeValue::I64(999),
+        "Err variant (discriminant=1) must skip Ok(x) arm and hit wildcard returning 999"
+    );
+}
+
+// RUNTIME-VARIANT-MATCH-4
+//
+// VariantNew("Some", payload=21) → discriminant=1.
+// Arms: "None" (discriminant=0) → 1 [skipped], "Some(x)" (discriminant=1) → x+x [matches!],
+//       "_" → 999 [never reached].
+// Proves ordering: the first arm is evaluated and rejected before the
+// correct arm fires and extracts the payload.
+#[test]
+fn variant_match_ordering_skips_wrong_arms_and_matches_correct_one() {
+    let expr = make_variant_match_expr(
+        "Some",
+        Some(21),
+        vec![
+            AnfMatchArm {
+                pattern: "None".to_string(),
+                body: AnfExpr::Literal(LiteralValue::Int(1)),
+            },
+            AnfMatchArm {
+                pattern: "Some(x)".to_string(),
+                body: AnfExpr::Call {
+                    func: "+".to_string(),
+                    args: vec!["x".to_string(), "x".to_string()],
+                },
+            },
+            AnfMatchArm {
+                pattern: "_".to_string(),
+                body: AnfExpr::Literal(LiteralValue::Int(999)),
+            },
+        ],
+    );
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.main"),
+        RuntimeValue::I64(42),
+        "Some(x) arm must match after skipping None; x+x with payload=21 must return 42"
     );
 }
