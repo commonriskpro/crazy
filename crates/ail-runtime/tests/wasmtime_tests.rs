@@ -740,9 +740,7 @@ fn invoke_closure_fold(bias: i64, init: i64, elements: Vec<i64>) -> RuntimeValue
     };
 
     let anf = sealed_anf(vec![binding]);
-    let wasm = emit_wasm(&anf)
-        .expect("closure-fold ANF must compile")
-        .wasm;
+    let wasm = emit_wasm(&anf).expect("closure-fold ANF must compile").wasm;
     let manifest = CapabilityManifest {
         module: "closure-fold-test".to_string(),
         requires: vec![],
@@ -919,17 +917,12 @@ fn closure_fold_multiple_captures_both_loaded_from_env() {
 ///   `let v = VariantNew(tag, payload?) in match v { arms... }`
 ///
 /// `payload` is encoded as `Some(i64 literal)` when present.
-fn make_variant_match_expr(
-    tag: &str,
-    payload: Option<i64>,
-    arms: Vec<AnfMatchArm>,
-) -> AnfExpr {
+fn make_variant_match_expr(tag: &str, payload: Option<i64>, arms: Vec<AnfMatchArm>) -> AnfExpr {
     AnfExpr::Let {
         name: "v".to_string(),
         value: Box::new(AnfExpr::VariantNew {
             tag: tag.to_string(),
-            payload: payload
-                .map(|p| Box::new(AnfExpr::Literal(LiteralValue::Int(p)))),
+            payload: payload.map(|p| Box::new(AnfExpr::Literal(LiteralValue::Int(p)))),
         }),
         body: Box::new(AnfExpr::Match {
             scrutinee: "v".to_string(),
