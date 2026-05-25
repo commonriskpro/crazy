@@ -698,7 +698,10 @@ fn emit_anf_expr<'a>(
             for (i, e) in exprs.iter().enumerate() {
                 last_ty = emit_anf_expr(e, ctx, functions, insns);
                 // Drop intermediate results (all but the last).
-                if i + 1 < exprs.len() {
+                // Only emit Drop when the element actually produced a value —
+                // expressions that return None (e.g. Loop with no result, Break,
+                // Continue) leave nothing on the stack and must not be dropped.
+                if i + 1 < exprs.len() && last_ty.is_some() {
                     insns.push(Instruction::Drop);
                 }
             }

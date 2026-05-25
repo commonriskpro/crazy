@@ -2763,6 +2763,116 @@ end
     );
 }
 
+// ── Wave 21A: computed WhileLoop condition re-evaluation ──────────────────
+//
+// Spec scenarios covered (RUNTIME-ACL-WHILE-5, RUNTIME-ACL-WHILE-6):
+//
+//  RUNTIME-ACL-WHILE-5 (Wave 21A): while(lt(cell_get(c), 3), body) where the
+//    condition is a computed expression re-evaluated on every iteration.
+//    The body increments the cell each iteration; the loop must run exactly 3
+//    times (cell 0→1→2→3) and terminate when the condition becomes false.
+//    cell_get(c) must return I64(3).
+//
+//    Before the fix, `atomize_local` hoisted the condition outside the loop:
+//    `anf_cond = lt(cell_get(c), 3)` was evaluated once (= true) and reused
+//    every iteration — the loop would never terminate.
+//    After the fix, the desugaring places the condition inside the Loop body
+//    as a Let binding re-evaluated on each iteration.
+//
+//  RUNTIME-ACL-WHILE-6 (Wave 21A): while(lt(cell_get(c), 1), body) with the
+//    initial cell value already satisfying the exit condition (cell = 1 and
+//    1 < 1 = false).  The body must never run; cell_get(c) must return I64(1).
+//    Proves the desugared Loop evaluates the condition before the first
+//    iteration and exits immediately when it is false.
+
+// RUNTIME-ACL-WHILE-5
+//
+// ACL body:
+//   let(init, 0,
+//     let(c, cell_new(init),
+//       let(one, 1,
+//         let(three, 3,
+//           let(_w, while(lt(cell_get(c), three),
+//             let(cur, cell_get(c),
+//               let(next, add(cur, one),
+//                 cell_set(c, next)
+//               )
+//             )
+//           ),
+//           cell_get(c)
+//         )
+//       )
+//     )
+//   )
+//
+// Pipeline:
+// 1. init=0, c=CellNew(0), one=1, three=3.
+// 2. WhileLoop desugared to Loop { Let { cond = lt(cell_get(c), three),
+//    If { cond_tmp → then: (body; Continue), else: Break(unit) } } };
+//    Literal(unit) unit sentinel after loop.
+// 3. Iteration 1: cond = lt(0,3)=true → body: cur=0, next=1, CellSet(c,1); Continue.
+//    Iteration 2: cond = lt(1,3)=true → body: cur=1, next=2, CellSet(c,2); Continue.
+//    Iteration 3: cond = lt(2,3)=true → body: cur=2, next=3, CellSet(c,3); Continue.
+//    Iteration 4: cond = lt(3,3)=false → Break(unit) exits loop.
+// 4. cell_get(c) → I64(3).
+//
+// Without the Wave 21A fix: cond = lt(0,3) evaluated once = true; loop never
+// exits; the test would hang indefinitely.
+#[test]
+fn acl_while_computed_condition_reruns_each_iteration_reaches_3() {
+    let acl = "\
+change acl_while_5 base=0
+author tester
+description while(lt(cell_get(c),3)): condition re-evaluated each iteration, loop runs 3 times, cell reaches 3
+op create_function id=fn.main return=Int body=let(init, 0, let(c, cell_new(init), let(one, 1, let(three, 3, let(_w, while(lt(cell_get(c), three), let(cur, cell_get(c), let(next, add(cur, one), cell_set(c, next)))), cell_get(c))))))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(3),
+        "while(lt(cell_get(c),3)) must re-evaluate condition each iteration: loop runs 3 times, cell must reach I64(3)"
+    );
+}
+
+// RUNTIME-ACL-WHILE-6
+//
+// ACL body:
+//   let(one, 1,
+//     let(c, cell_new(one),
+//       let(_w, while(lt(cell_get(c), one),
+//         let(zero, 0,
+//           cell_set(c, zero)   ← body never runs: initial cell = 1 ≥ 1
+//         )
+//       ),
+//       cell_get(c)
+//     )
+//   )
+//
+// Pipeline:
+// 1. one=1, c=CellNew(1) — cell initialised to 1.
+// 2. Condition: lt(cell_get(c), one) = lt(1, 1) = false → Break(unit) fires immediately.
+//    Body (cell_set) never runs.
+// 3. cell_get(c) → I64(1).
+//
+// Proves the desugared Loop evaluates the condition before the first
+// iteration and exits immediately when false — matching the semantics
+// of a standard while loop.
+#[test]
+fn acl_while_computed_condition_false_at_start_body_never_runs() {
+    let acl = "\
+change acl_while_6 base=0
+author tester
+description while(lt(cell_get(c),1)) with c=1: condition false at start, body never runs, cell stays 1
+op create_function id=fn.main return=Int body=let(one, 1, let(c, cell_new(one), let(_w, while(lt(cell_get(c), one), let(zero, 0, cell_set(c, zero))), cell_get(c))))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(1),
+        "while(lt(cell_get(c),1)) with c=1: condition false at start, body must not run, cell_get must return I64(1)"
+    );
+}
+
 // ── Wave 20B: MapNew/SetNew memory-layout proof via read_memory_i64 ────────
 //
 // These tests upgrade the structural proofs from Wave 19B (RUNTIME-MAP-1,
