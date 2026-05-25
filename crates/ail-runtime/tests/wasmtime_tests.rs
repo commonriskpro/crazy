@@ -795,6 +795,74 @@ fn closure_fold_multi_element_accumulates_with_bias() {
     );
 }
 
+// Scenario: two-binding module — top-level function as fold reducer.
+//
+// fn.add_impl: body = Call{"add", ["a", "b"]} — free vars a, b → params (i64,i64).
+//              WASM type = (i64, i64) → i64.
+//
+// fn.sum: Fold { init:"zero", list:"lst", func:"add_impl" }.
+//         Emitter path: functions.get("add_impl") → table index 0.
+//         call_indirect(fold_reducer_type, table[0]) dispatches to add_impl.
+//
+// Expected: fold(0, [1,2,3], add_impl) = ((0+1)+2)+3 = 6.
+//
+// This test isolates the top-level-function dispatch path in the Fold emitter
+// (vs. the hoisted-lambda path used in invoke_closure_fold).
+#[test]
+fn fold_top_level_function_reducer_yields_6() {
+    // fn.add_impl: body has free vars a, b → WASM params; returns a+b.
+    let add_impl = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.add_impl".to_string(),
+        expr: AnfExpr::Call {
+            func: "add".to_string(),
+            args: vec!["a".to_string(), "b".to_string()],
+        },
+    };
+
+    // fn.sum: fold(0, [1,2,3], add_impl)
+    let sum = AnfBinding {
+        source_ref: NodeRef(1),
+        name: "fn.sum".to_string(),
+        expr: AnfExpr::Let {
+            name: "zero".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![
+                    AnfExpr::Literal(LiteralValue::Int(1)),
+                    AnfExpr::Literal(LiteralValue::Int(2)),
+                    AnfExpr::Literal(LiteralValue::Int(3)),
+                ])),
+                body: Box::new(AnfExpr::Fold {
+                    init: "zero".to_string(),
+                    list: "lst".to_string(),
+                    func: "add_impl".to_string(),
+                }),
+            }),
+        },
+    };
+
+    let anf = sealed_anf(vec![add_impl, sum]);
+    let wasm = emit_wasm(&anf)
+        .expect("two-binding top-level-function fold must compile")
+        .wasm;
+    let manifest = CapabilityManifest {
+        module: "fold-top-level-test".to_string(),
+        requires: vec![],
+    };
+    let profile = matching_profile(&wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("fold-top-level WASM must instantiate");
+    assert_eq!(
+        instance.invoke("sum", &[]).expect("invoke must succeed"),
+        RuntimeValue::I64(6),
+        "fold(0, [1,2,3], add_impl) with top-level reducer must return I64(6)"
+    );
+}
+
 // Scenario: multiple captures — Lambda closes over two independent values.
 //
 // reducer(acc, x) = let s = acc + x in let t = s + bias1 in t + bias2
@@ -3816,6 +3884,178 @@ fn record_new_empty_returns_non_null_pointer() {
     );
 }
 
+// ── Wave 22C: ACL source-level E2E tests for iteration ───────────────────
+//
+// Spec scenarios covered (RUNTIME-ACL-FOREACH-1, RUNTIME-ACL-WHILE-7,
+// RUNTIME-ACL-FOLD-1):
+//
+//  RUNTIME-ACL-FOREACH-1 (Wave 22C): ACL body `foreach(x, list(1,2,3), body)`
+//    where `body` accumulates `x` into a mutable cell.
+//    Pipeline: foreach → CoreExpr::ForEach → AnfExpr::ForEach → WASM inline
+//    loop.  After 3 iterations (x=1,2,3) the cell must reach I64(6).
+//    Proves the full ACL source → runtime path for ForEach accumulation.
+//
+//  RUNTIME-ACL-WHILE-7 (Wave 22C): ACL body `while(lt(cell_get(c), 3), body)`
+//    where the condition uses integer literals 3 and 1 DIRECTLY (no named
+//    variables `three`/`one`).  The cell must reach I64(3).
+//    Proves Wave 21A desugaring handles inline integer literals atomised fresh
+//    inside the Loop body on every iteration — re-evaluating `cell_get(c)`
+//    each time.  Complementary to RUNTIME-ACL-WHILE-5 (which uses named vars).
+//
+//  RUNTIME-ACL-FOLD-1 (Wave 22C): Two-function ACL module:
+//    `fn.add_ints` body `add(a, b)` → free-variable params a,b → WASM type
+//    `(i64, i64) → i64`, matching the fold-reducer type.
+//    `fn.main` body `fold(0, list(1, 2, 3), add_ints)` → fold dispatches via
+//    `call_indirect` at table[0] (top-level-function path in the emitter).
+//    Expected result: I64(6).  Proves named function reference as fold reducer
+//    at ACL source level.
+
+// RUNTIME-ACL-FOREACH-1
+//
+// ACL body:
+//   let(init, 0,
+//     let(c, cell_new(init),
+//       let(lst, list(1, 2, 3),
+//         let(_fe,
+//           foreach(x, lst,
+//             let(cur, cell_get(c),
+//               let(next, add(cur, x),
+//                 cell_set(c, next)
+//               )
+//             )
+//           ),
+//           cell_get(c)
+//         )
+//       )
+//     )
+//   )
+//
+// Pipeline:
+// 1. init=0, c=CellNew(0), lst=ListNew([1,2,3]).
+// 2. ForEach emits an inline WASM loop over lst:
+//    Iteration x=1: cur=cell_get(c)=0, next=add(0,1)=1, CellSet(c,1).
+//    Iteration x=2: cur=cell_get(c)=1, next=add(1,2)=3, CellSet(c,3).
+//    Iteration x=3: cur=cell_get(c)=3, next=add(3,3)=6, CellSet(c,6).
+//    ForEach produces unit (I32 0) so it can appear as the value of let(_fe).
+// 3. cell_get(c) → I64(6).
+//
+// Proves: foreach ACL form → ForEach ANF → WASM loop → cell accumulation.
+#[test]
+fn acl_foreach_cell_accumulator_over_list_123_yields_6() {
+    let acl = "\
+change acl_foreach_1 base=0
+author tester
+description foreach(x, list(1,2,3), cell-accumulate x): cell must reach 6
+op create_function id=fn.main return=Int body=let(init, 0, let(c, cell_new(init), let(lst, list(1, 2, 3), let(_fe, foreach(x, lst, let(cur, cell_get(c), let(next, add(cur, x), cell_set(c, next)))), cell_get(c)))))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(6),
+        "foreach(x, list(1,2,3), cell-accumulate): cell must reach I64(6)"
+    );
+}
+
+// RUNTIME-ACL-WHILE-7
+//
+// ACL body:
+//   let(init, 0,
+//     let(c, cell_new(init),
+//       let(_w,
+//         while(lt(cell_get(c), 3),
+//           let(cur, cell_get(c),
+//             let(next, add(cur, 1),
+//               cell_set(c, next)
+//             )
+//           )
+//         ),
+//         cell_get(c)
+//       )
+//     )
+//   )
+//
+// Pipeline:
+// 1. init=0, c=CellNew(0).
+// 2. WhileLoop desugared (Wave 21A) to Loop { Let { cond_expr } }.
+//    Integer literals 3 and 1 are atomised as fresh locals INSIDE the Loop
+//    body on each iteration — proving the desugar path handles inline literals.
+//    Iteration 1: cond=lt(cell_get(c)=0, 3)=true → cur=0, next=1, cell=1; Continue.
+//    Iteration 2: cond=lt(cell_get(c)=1, 3)=true → cur=1, next=2, cell=2; Continue.
+//    Iteration 3: cond=lt(cell_get(c)=2, 3)=true → cur=2, next=3, cell=3; Continue.
+//    Iteration 4: cond=lt(cell_get(c)=3, 3)=false → Break(unit) exits loop.
+// 3. cell_get(c) → I64(3).
+//
+// Distinguishes from RUNTIME-ACL-WHILE-5: uses `3` and `1` directly in the
+// condition/body (no `let(three, 3, ...)` wrapper), exercising the literal
+// atomisation path inside the desugared Loop body.
+#[test]
+fn acl_while_computed_lt_inline_literals_increments_to_3() {
+    let acl = "\
+change acl_while_7 base=0
+author tester
+description while(lt(cell_get(c),3)) inline literals: condition re-evaluated each iteration, cell reaches 3
+op create_function id=fn.main return=Int body=let(init, 0, let(c, cell_new(init), let(_w, while(lt(cell_get(c), 3), let(cur, cell_get(c), let(next, add(cur, 1), cell_set(c, next)))), cell_get(c))))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(3),
+        "while(lt(cell_get(c),3)) with inline literals: condition re-evaluated each iteration; cell must reach I64(3)"
+    );
+}
+
+// RUNTIME-ACL-FOLD-1
+//
+// Two-function ACL module:
+//
+//   fn.add_ints: body = add(a, b)
+//     Free variables a, b → WASM params (i64, i64); result i64.
+//     Type matches fold-reducer signature `(i64, i64) → i64`.
+//     Placed at table[0] in the WASM function table.
+//
+//   fn.main: body = fold(0, list(1, 2, 3), add_ints)
+//     Parsed as CoreExpr::Fold { init:Lit(0), list:ListNew([1,2,3]),
+//                                func:Var("add_ints") }.
+//     Lowered to AnfExpr::Fold { init:"_t0", list:"_t1", func:"add_ints" }.
+//     Emitter path: functions.get("add_ints") → func_idx;
+//       table_idx = func_idx − function_offset = 0;
+//       call_indirect(fold_reducer_type, table[0]) dispatches to add_ints.
+//
+// Fold execution:
+//   acc = 0
+//   acc = add_ints(0, 1) = 1
+//   acc = add_ints(1, 2) = 3
+//   acc = add_ints(3, 3) = 6
+//   Returns I64(6).
+//
+// Type-check note: add_ints binding signature (type index 0) and the
+// fold-reducer type (appended at end) are both (i64, i64) → i64.  Wasmtime 28
+// canonicalises structurally identical types so call_indirect passes the type
+// check.  If a future engine does not canonicalise, fix by deduplicating the
+// type section (emit one shared entry for (i64,i64)→i64 reused by both the
+// binding and the fold-reducer slot).
+//
+// Bug fixed (Wave 22C): optimize.rs `uses_var` previously returned `false`
+// for `AnfExpr::Fold { .. }`, so the dead-let pass eliminated the let-bindings
+// for `init` and `list` before WASM emit.  The fix makes `uses_var` check all
+// three atom fields (init, list, func) so the optimizer retains those bindings.
+#[test]
+fn acl_fold_named_function_reducer_over_list_123_yields_6() {
+    let acl = "\
+change acl_fold_1 base=0
+author tester
+description fold(0, list(1,2,3), add_ints): named function reducer must return 6
+op create_function id=fn.add_ints return=Int body=add(a, b)
+op create_function id=fn.main return=Int body=fold(0, list(1, 2, 3), add_ints)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(6),
+        "fold(0, list(1,2,3), add_ints): named top-level function reducer must return I64(6)"
+    );
+}
+
 // ── Wave 22B: ACL `index(collection, index)` form ─────────────────────────
 //
 // Spec scenarios covered (RUNTIME-ACL-INDEX-1, RUNTIME-ACL-INDEX-2):
@@ -3888,3 +4128,4 @@ end
         "let(lst, list(5,10), index(lst,1)) must return I64(10) via IndexGet at offset 16"
     );
 }
+

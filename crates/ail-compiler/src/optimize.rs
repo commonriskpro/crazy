@@ -882,8 +882,13 @@ fn uses_var(expr: &AnfExpr, name: &str) -> bool {
         // ola5 Gap 2 — new primitives
         | AnfExpr::Assume { .. }
         | AnfExpr::Abort { .. }
-        | AnfExpr::Fold { .. }
         | AnfExpr::Placeholder => false,
+        // Fold references its init, list, and func atoms by name — all three
+        // must be checked so the dead-let pass does not eliminate the
+        // let-bindings that supply them.
+        AnfExpr::Fold { init, list, func } => {
+            init == name || list == name || func == name
+        }
         AnfExpr::IndexGet { collection, index } => collection == name || index == name,
         AnfExpr::MapNew { entries } => entries.iter().any(|(k, v)| k == name || v == name),
         AnfExpr::SetNew { elements } => elements.iter().any(|e| e == name),
