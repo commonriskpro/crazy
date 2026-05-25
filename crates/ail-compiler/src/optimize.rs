@@ -882,8 +882,13 @@ fn uses_var(expr: &AnfExpr, name: &str) -> bool {
         // ola5 Gap 2 — new primitives
         | AnfExpr::Assume { .. }
         | AnfExpr::Abort { .. }
-        | AnfExpr::Fold { .. }
         | AnfExpr::Placeholder => false,
+        // Fold references its init, list, and func atoms by name — all three
+        // must be checked so the dead-let pass does not eliminate the
+        // let-bindings that supply them.
+        AnfExpr::Fold { init, list, func } => {
+            init == name || list == name || func == name
+        }
         AnfExpr::IndexGet { collection, index } => collection == name || index == name,
         AnfExpr::MapNew { entries } => entries.iter().any(|(k, v)| k == name || v == name),
         AnfExpr::SetNew { elements } => elements.iter().any(|e| e == name),
@@ -1279,5 +1284,86 @@ mod tests {
         let optimized = optimize_bindings(vec![binding(expr.clone())]);
 
         assert_eq!(optimized[0].expr, expr);
+    }
+
+    // OPT-FOLD-DCE-1: dead-let elimination must NOT remove let bindings whose
+    // names appear only in AnfExpr::Fold atom fields (init, list, func).
+    //
+    // All three let values are pure Literals, so the DCE predicate
+    // `is_pure(value) && !uses_var(body, name)` can only reach the correct
+    // answer if `uses_var` returns `true` for each name via the Fold arm.
+    // A missing or incomplete Fold arm would silently eliminate the binding.
+    #[test]
+    fn dead_let_retains_bindings_referenced_by_fold_atoms() {
+        // Build:
+        //   let acc0    = Literal(0) in
+        //   let lst     = Literal(0) in
+        //   let reducer = Literal(0) in
+        //   Fold { init: "acc0", list: "lst", func: "reducer" }
+        //
+        // None of the three names appear in any Var/Call/FieldGet — the Fold
+        // atom fields are the sole references.  DCE must retain all three lets.
+        let expr = AnfExpr::Let {
+            name: "acc0".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                body: Box::new(AnfExpr::Let {
+                    name: "reducer".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                    body: Box::new(AnfExpr::Fold {
+                        init: "acc0".to_string(),
+                        list: "lst".to_string(),
+                        func: "reducer".to_string(),
+                    }),
+                }),
+            }),
+        };
+
+        let result = optimize_bindings(vec![binding(expr)]);
+
+        let AnfExpr::Let {
+            name: ref n1,
+            body: ref b1,
+            ..
+        } = result[0].expr
+        else {
+            panic!(
+                "expected outer Let (acc0); got {:?}",
+                result[0].expr
+            );
+        };
+        assert_eq!(n1, "acc0", "outer Let must bind 'acc0'");
+
+        let AnfExpr::Let {
+            name: ref n2,
+            body: ref b2,
+            ..
+        } = **b1
+        else {
+            panic!("expected middle Let (lst); got {:?}", b1);
+        };
+        assert_eq!(n2, "lst", "middle Let must bind 'lst'");
+
+        let AnfExpr::Let {
+            name: ref n3,
+            body: ref b3,
+            ..
+        } = **b2
+        else {
+            panic!("expected inner Let (reducer); got {:?}", b2);
+        };
+        assert_eq!(n3, "reducer", "inner Let must bind 'reducer'");
+
+        assert_eq!(
+            b3.as_ref(),
+            &AnfExpr::Fold {
+                init: "acc0".to_string(),
+                list: "lst".to_string(),
+                func: "reducer".to_string(),
+            },
+            "body must be the Fold node with all three atom references intact"
+        );
     }
 }
