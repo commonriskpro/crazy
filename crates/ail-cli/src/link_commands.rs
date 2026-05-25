@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use crate::error::CliError;
-use crate::output::{OutputMode, print_response};
+use crate::output::{OutputMode, print_error_response, print_response};
 use crate::store::StoreHandle;
 
 // ── LinkerBoundary ────────────────────────────────────────────────────────
@@ -135,10 +135,19 @@ pub(crate) fn cmd_link(
 ) -> Result<(), CliError> {
     // 1. Resolve native artifact by profile.
     let artifact = store.load_native_artifact(profile)?.ok_or_else(|| {
-        CliError::Domain(format!(
+        let msg = format!(
             "no native artifact for profile '{profile}'; \
                  run `ail compile --target native --profile {profile}` first"
-        ))
+        );
+        if mode == OutputMode::Json {
+            print_error_response(json!({
+                "error": "no native artifact",
+                "profile": profile,
+                "message": msg,
+                "next_action": format!("ail compile --target native --profile {profile}"),
+            }));
+        }
+        CliError::Domain(msg)
     })?;
 
     // 2. Determine output path.
@@ -156,7 +165,18 @@ pub(crate) fn cmd_link(
     };
 
     // 3. Invoke linker through the boundary.
-    let result = linker.link(object_path, &output_path)?;
+    let result = linker
+        .link(object_path, &output_path)
+        .inspect_err(|e| {
+            if mode == OutputMode::Json {
+                print_error_response(json!({
+                    "error": "linker_failed",
+                    "profile": profile,
+                    "object_path": object_path.to_string_lossy(),
+                    "message": e.to_string(),
+                }));
+            }
+        })?;
 
     let human_msg = format!(
         "profile: {profile}\nobject: {}\noutput: {}\nlinker_command: {}\nstatus: linked",
