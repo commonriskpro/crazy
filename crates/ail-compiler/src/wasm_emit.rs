@@ -1189,13 +1189,17 @@ fn emit_anf_expr<'a>(
             None
         }
 
-        // ── Fold — stub: requires call_indirect + element section ─────────
+        // ── Fold — unreachable safety-net ────────────────────────────────
         //
         // Fold { init, list, func } dispatches through `func`, an I64
-        // function pointer.  Emitting call_indirect requires a function
-        // table and an element section, neither of which the WASM backend
-        // builds yet.  Keep as an explicit diagnostic trap until the
-        // element-section pass is implemented.
+        // function pointer, requiring call_indirect + an element section
+        // (function table) — neither of which the WASM backend builds yet.
+        //
+        // `emit_wasm_with_profile` detects Fold during a pre-flight walk and
+        // returns `CompileError::UnsupportedWasmConstruct("Fold")` before
+        // reaching this arm.  This Unreachable is therefore a defence-in-depth
+        // fallback for direct callers of `emit_anf_expr` (e.g. unit tests that
+        // bypass the top-level gate).
         AnfExpr::Fold { .. } => {
             insns.push(Instruction::Unreachable);
             None

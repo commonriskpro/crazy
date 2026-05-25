@@ -38,6 +38,18 @@ pub enum CompileError {
     /// Distinct from `EncodingError` — this variant is only produced by
     /// `emit_native`; it carries the Cranelift error message.
     NativeEncodingError(String),
+
+    /// A WASM emit was requested for an ANF construct that requires
+    /// infrastructure not yet present in the WASM backend.
+    ///
+    /// The string payload names the unsupported construct (e.g. `"Fold"`).
+    /// This is a compile-time gate — the caller should lower to a
+    /// supported form or wait for the required backend feature.
+    ///
+    /// Current unsupported construct:
+    /// - `"Fold"` — requires `call_indirect` + element section (function
+    ///   table); not yet implemented in the WASM backend.
+    UnsupportedWasmConstruct(String),
 }
 
 impl std::fmt::Display for CompileError {
@@ -61,6 +73,13 @@ impl std::fmt::Display for CompileError {
             CompileError::EncodingError(msg) => write!(f, "encoding error: {msg}"),
             CompileError::NativeEncodingError(msg) => {
                 write!(f, "native encoding error: {msg}")
+            }
+            CompileError::UnsupportedWasmConstruct(name) => {
+                write!(
+                    f,
+                    "unsupported WASM construct: {name} requires call_indirect + element section \
+                     (function table); not yet implemented in the WASM backend"
+                )
             }
         }
     }

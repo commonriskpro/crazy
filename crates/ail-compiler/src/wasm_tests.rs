@@ -2448,3 +2448,110 @@ fn foreach_infer_expr_type_is_none() {
 }
 
 // ── End Wave 8C iteration tests ───────────────────────────────────────────
+
+// ── Wave 9A: Fold diagnostic gate ─────────────────────────────────────────
+//
+// Proves that emit_wasm returns CompileError::UnsupportedWasmConstruct("Fold")
+// instead of emitting a silent unreachable trap, so callers get an actionable
+// compile-time error rather than a runtime surprise.
+//
+// Fold requires call_indirect + element section (function table), which the
+// WASM backend does not yet build.
+
+// Scenario: top-level Fold binding → UnsupportedWasmConstruct error.
+// Expects: emit_wasm returns Err(CompileError::UnsupportedWasmConstruct("Fold")).
+#[test]
+fn fold_top_level_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.reduce".to_string(),
+        expr: AnfExpr::Fold {
+            init: "acc0".to_string(),
+            list: "lst".to_string(),
+            func: "f".to_string(),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "Fold"
+        ),
+        "expected UnsupportedWasmConstruct(\"Fold\"), got {result:?}"
+    );
+}
+
+// Scenario: Fold nested inside a Let chain → error is still detected.
+// Expects: pre-flight walker finds Fold regardless of nesting depth.
+#[test]
+fn fold_nested_in_let_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.nested_fold".to_string(),
+        expr: AnfExpr::Let {
+            name: "acc0".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Fold {
+                    init: "acc0".to_string(),
+                    list: "lst".to_string(),
+                    func: "f".to_string(),
+                }),
+            }),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(result, Err(CompileError::UnsupportedWasmConstruct(_))),
+        "pre-flight gate must detect Fold nested inside a Let chain, got {result:?}"
+    );
+}
+
+// Scenario: UnsupportedWasmConstruct Display mentions "Fold" and "call_indirect".
+// Expects: actionable message for callers without pattern-matching on internals.
+#[test]
+fn fold_unsupported_error_display_mentions_fold_and_call_indirect() {
+    let msg = CompileError::UnsupportedWasmConstruct("Fold".to_string()).to_string();
+    assert!(
+        msg.contains("Fold"),
+        "error display must name the unsupported construct: {msg}"
+    );
+    assert!(
+        msg.contains("call_indirect"),
+        "error display must explain the missing infrastructure: {msg}"
+    );
+}
+
+// TRIANGULATE: UnsupportedWasmConstruct is distinct from EncodingError.
+// Expects: the two error types do not compare equal, ensuring callers can
+// distinguish a missing-feature diagnostic from a serialization failure.
+#[test]
+fn fold_unsupported_error_is_distinct_from_encoding_error() {
+    let unsupported = CompileError::UnsupportedWasmConstruct("Fold".to_string());
+    let encoding = CompileError::EncodingError("Fold".to_string());
+    assert_ne!(
+        unsupported, encoding,
+        "UnsupportedWasmConstruct must be a distinct variant from EncodingError"
+    );
+}
+
+// Scenario: a binding WITHOUT Fold still emits successfully.
+// Regression guard — the pre-flight gate must not affect non-Fold bindings.
+#[test]
+fn non_fold_binding_is_unaffected_by_fold_gate() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.simple".to_string(),
+        expr: AnfExpr::Literal(LiteralValue::Int(1)),
+    }]);
+    assert!(
+        emit_wasm(&anf).is_ok(),
+        "non-Fold bindings must not be rejected by the Fold pre-flight gate"
+    );
+}
+
+// ── End Wave 9A Fold diagnostic tests ─────────────────────────────────────

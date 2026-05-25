@@ -56,7 +56,7 @@ use std::collections::BTreeMap;
 use ail_core::semantic_graph::NodeRef;
 use wasm_encoder::Module;
 
-use crate::anf::{AnfIr, SourceMap, SourceMapEntry};
+use crate::anf::{AnfExpr, AnfIr, AnfSelectClause, SourceMap, SourceMapEntry};
 use crate::artifact_manifest::ArtifactManifest;
 use crate::capabilities::CapabilitiesManifest;
 use crate::error::CompileError;
@@ -79,6 +79,77 @@ use crate::wasm_sections::{
 #[cfg(test)]
 #[path = "wasm_tests.rs"]
 mod tests;
+
+// ── anf_contains_fold ─────────────────────────────────────────────────────
+
+/// Returns `true` if `expr` or any of its sub-expressions is `AnfExpr::Fold`.
+///
+/// Used by the WASM pre-flight gate: `Fold` dispatches through an I64
+/// function pointer and requires `call_indirect` + an element section
+/// (function table), neither of which the WASM backend currently builds.
+/// Detecting Fold before code generation lets us return a structured
+/// `CompileError::UnsupportedWasmConstruct` instead of emitting a silent
+/// `unreachable` trap.
+fn anf_contains_fold(expr: &AnfExpr) -> bool {
+    match expr {
+        AnfExpr::Fold { .. } => true,
+
+        // Recursive variants — walk all sub-expressions.
+        AnfExpr::Let { value, body, .. } => anf_contains_fold(value) || anf_contains_fold(body),
+        AnfExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => anf_contains_fold(then_branch) || anf_contains_fold(else_branch),
+        AnfExpr::Return(inner) => anf_contains_fold(inner),
+        AnfExpr::Seq(exprs) => exprs.iter().any(anf_contains_fold),
+        AnfExpr::Match { arms, .. } => arms.iter().any(|a| anf_contains_fold(&a.body)),
+        AnfExpr::Lambda { body, .. } => anf_contains_fold(body),
+        AnfExpr::RecordNew { fields } => fields.iter().any(|(_, v)| anf_contains_fold(v)),
+        AnfExpr::FieldUpdate { value, .. } => anf_contains_fold(value),
+        AnfExpr::TupleNew(elems) => elems.iter().any(anf_contains_fold),
+        AnfExpr::VariantNew { payload, .. } => payload.as_deref().is_some_and(anf_contains_fold),
+        AnfExpr::ListNew(elems) => elems.iter().any(anf_contains_fold),
+        AnfExpr::Loop { body } => anf_contains_fold(body),
+        AnfExpr::Break { value } => anf_contains_fold(value),
+        AnfExpr::WhileLoop { body, .. } => anf_contains_fold(body),
+        AnfExpr::ShortCircuitAnd { right, .. } => anf_contains_fold(right),
+        AnfExpr::ShortCircuitOr { right, .. } => anf_contains_fold(right),
+        AnfExpr::TaskGroup { body } => anf_contains_fold(body),
+        AnfExpr::Select { branches } => branches
+            .iter()
+            .any(|b: &AnfSelectClause| anf_contains_fold(&b.body)),
+        AnfExpr::Timeout { body, .. } => anf_contains_fold(body),
+        AnfExpr::ForEach { body, .. } => anf_contains_fold(body),
+
+        // Atomic variants — no sub-expressions to inspect.
+        AnfExpr::Literal(_)
+        | AnfExpr::Var(_)
+        | AnfExpr::Call { .. }
+        | AnfExpr::FieldGet { .. }
+        | AnfExpr::EffectCall { .. }
+        | AnfExpr::Dispatch { .. }
+        | AnfExpr::TaskSpawn { .. }
+        | AnfExpr::ChannelSend { .. }
+        | AnfExpr::ChannelReceive { .. }
+        | AnfExpr::RuntimeCheck { .. }
+        | AnfExpr::ResourceAcquire { .. }
+        | AnfExpr::ResourceRelease { .. }
+        | AnfExpr::TaskAwait { .. }
+        | AnfExpr::TaskCancel { .. }
+        | AnfExpr::ChannelNew { .. }
+        | AnfExpr::CellNew { .. }
+        | AnfExpr::CellGet { .. }
+        | AnfExpr::CellSet { .. }
+        | AnfExpr::Assume { .. }
+        | AnfExpr::Abort { .. }
+        | AnfExpr::IndexGet { .. }
+        | AnfExpr::MapNew { .. }
+        | AnfExpr::SetNew { .. }
+        | AnfExpr::Continue
+        | AnfExpr::Placeholder => false,
+    }
+}
 
 // ── emit_wasm ─────────────────────────────────────────────────────────────
 
@@ -108,6 +179,15 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         .stage_hashes
         .anf_ir_hash
         .ok_or_else(|| CompileError::EncodingError("anf_ir_hash not sealed".to_string()))?;
+
+    // Gate: Fold requires call_indirect + element section (function table).
+    // Detect it before code generation so callers receive a structured error
+    // instead of a silent unreachable trap at runtime.
+    for binding in &anf.bindings {
+        if anf_contains_fold(&binding.expr) {
+            return Err(CompileError::UnsupportedWasmConstruct("Fold".to_string()));
+        }
+    }
 
     let signatures = binding_signatures(&anf.bindings);
     let effect_data = EffectDataLayout::for_bindings(&anf.bindings);
