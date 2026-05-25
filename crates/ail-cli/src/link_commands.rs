@@ -391,6 +391,11 @@ pub(crate) const RUNTIME_STUB_SUBDIR: &str = "runtime";
 /// Calling this multiple times is safe: when the archive already exists it is
 /// returned as-is with no byte writes or regeneration.
 ///
+/// The archive is written via an atomic-ish rename: bytes are first written to
+/// `stub_dir/ail_runtime.a.tmp`, then moved to `stub_dir/ail_runtime.a`.
+/// `rename(2)` is atomic on POSIX; the archive is deterministic, so concurrent
+/// writers always produce identical bytes and the last rename wins correctly.
+///
 /// Canonical usage (called from `ail link --ensure-runtime-stub`):
 /// ```text
 /// let stub_dir = PathBuf::from(".ail").join(RUNTIME_STUB_SUBDIR);
@@ -403,7 +408,7 @@ pub(crate) const RUNTIME_STUB_SUBDIR: &str = "runtime";
 /// Returns `Err(CliError::Domain)` on:
 /// - I/O failure creating `stub_dir`
 /// - Cranelift compilation failure (e.g. unsupported host ISA)
-/// - I/O failure writing the archive
+/// - I/O failure writing or renaming the temp archive
 pub(crate) fn ensure_runtime_stub_at(stub_dir: &Path) -> Result<PathBuf, CliError> {
     let stub_path = stub_dir.join("ail_runtime.a");
     if stub_path.exists() {
@@ -417,9 +422,20 @@ pub(crate) fn ensure_runtime_stub_at(stub_dir: &Path) -> Result<PathBuf, CliErro
     })?;
     let archive_bytes = build_runtime_stub_archive()
         .map_err(|e| CliError::Domain(format!("failed to build runtime stub archive: {e}")))?;
-    std::fs::write(&stub_path, &archive_bytes).map_err(|e| {
+    // Atomic-ish write: write to a temp file in the same directory, then rename.
+    // Keeps the final path valid or absent — never half-written.
+    let tmp_path = stub_dir.join("ail_runtime.a.tmp");
+    std::fs::write(&tmp_path, &archive_bytes).map_err(|e| {
         CliError::Domain(format!(
-            "failed to write runtime stub archive {}: {e}",
+            "failed to write runtime stub archive to {}: {e}",
+            tmp_path.display()
+        ))
+    })?;
+    std::fs::rename(&tmp_path, &stub_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        CliError::Domain(format!(
+            "failed to rename {} -> {}: {e}",
+            tmp_path.display(),
             stub_path.display()
         ))
     })?;
