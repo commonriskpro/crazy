@@ -101,6 +101,190 @@ async fn cmd_apply_allows_prod_with_yes() {
     );
 }
 
+// ── Profile-gate enforcement (file-backed store) ──────────────────────────
+
+// Scenario PG-1: verify with "dev", apply with "prod" is blocked by the gate.
+//   GIVEN a file store with a changeset verified under "dev" profile
+//   WHEN cmd_apply is called with policy_profile = Some("prod")
+//   THEN Err(CliError::Domain) is returned mentioning profile mismatch
+#[tokio::test]
+async fn cmd_apply_blocks_when_verify_profile_mismatches_apply_profile() {
+    use crate::store::{file_store, init_file_layout};
+    use ail_change::canonical::CanonicalChangeSet;
+    use ail_storage::object::ObjectId;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    std::fs::create_dir_all(ail_dir.join("reports")).expect("create reports dir");
+
+    let store = file_store(ail_dir);
+
+    // Save a changeset.
+    let canonical = CanonicalChangeSet::default();
+    let mut cbor_bytes = Vec::new();
+    ciborium::into_writer(&canonical, &mut cbor_bytes).expect("CBOR encode");
+    let change_id = ObjectId::from_bytes(&cbor_bytes).to_hex();
+    store
+        .save_changeset_payload(&change_id, &cbor_bytes)
+        .await
+        .expect("save changeset");
+
+    // Verify with "dev" profile — writes sidecar with profile="dev".
+    cmd_verify(OutputMode::Human, &change_id, "dev", "simple", &store)
+        .await
+        .expect("verify must succeed");
+
+    // Apply with "prod" policy — must block: profile mismatch.
+    let result = cmd_apply(
+        OutputMode::Human,
+        &change_id,
+        true, // --yes to bypass the prod approval gate
+        Some("prod"),
+        &store,
+    )
+    .await;
+
+    match &result {
+        Err(CliError::Domain(msg)) => {
+            assert!(
+                msg.contains("dev") && msg.contains("prod"),
+                "error must mention both profiles; got: {msg}"
+            );
+            assert!(
+                msg.contains("profile"),
+                "error must mention 'profile'; got: {msg}"
+            );
+        }
+        other => panic!("expected profile-mismatch Domain error; got: {other:?}"),
+    }
+}
+
+// Scenario PG-2: verify with "prod", apply with "prod" succeeds (same profile).
+//   GIVEN a file store with a changeset verified under "prod" profile
+//   WHEN cmd_apply is called with policy_profile = Some("prod") and --yes
+//   THEN the apply succeeds
+#[tokio::test]
+async fn cmd_apply_succeeds_when_verify_and_apply_use_same_profile() {
+    use crate::store::{file_store, init_file_layout};
+    use ail_change::canonical::CanonicalChangeSet;
+    use ail_storage::object::ObjectId;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    std::fs::create_dir_all(ail_dir.join("reports")).expect("create reports dir");
+
+    let store = file_store(ail_dir);
+
+    let canonical = CanonicalChangeSet::default();
+    let mut cbor_bytes = Vec::new();
+    ciborium::into_writer(&canonical, &mut cbor_bytes).expect("CBOR encode");
+    let change_id = ObjectId::from_bytes(&cbor_bytes).to_hex();
+    store
+        .save_changeset_payload(&change_id, &cbor_bytes)
+        .await
+        .expect("save changeset");
+
+    // Verify with "prod" profile.
+    cmd_verify(OutputMode::Human, &change_id, "prod", "simple", &store)
+        .await
+        .expect("verify must succeed");
+
+    // Apply with "prod" policy and --yes — must succeed.
+    let result = cmd_apply(OutputMode::Human, &change_id, true, Some("prod"), &store).await;
+    assert!(
+        result.is_ok(),
+        "apply must succeed when verify and apply share the same 'prod' profile; got: {result:?}"
+    );
+}
+
+// Scenario PG-3: verify with "dev", apply with no policy (defaults to "dev") succeeds.
+//   GIVEN a file store with a changeset verified under "dev" profile
+//   WHEN cmd_apply is called with policy_profile = None (defaults to "dev")
+//   THEN the apply succeeds (profiles match)
+#[tokio::test]
+async fn cmd_apply_succeeds_when_dev_verify_and_default_apply_profile() {
+    use crate::store::{file_store, init_file_layout};
+    use ail_change::canonical::CanonicalChangeSet;
+    use ail_storage::object::ObjectId;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    std::fs::create_dir_all(ail_dir.join("reports")).expect("create reports dir");
+
+    let store = file_store(ail_dir);
+
+    let canonical = CanonicalChangeSet::default();
+    let mut cbor_bytes = Vec::new();
+    ciborium::into_writer(&canonical, &mut cbor_bytes).expect("CBOR encode");
+    let change_id = ObjectId::from_bytes(&cbor_bytes).to_hex();
+    store
+        .save_changeset_payload(&change_id, &cbor_bytes)
+        .await
+        .expect("save changeset");
+
+    // Verify with "dev" profile.
+    cmd_verify(OutputMode::Human, &change_id, "dev", "simple", &store)
+        .await
+        .expect("verify must succeed");
+
+    // Apply with no policy (default = "dev") — must succeed.
+    let result = cmd_apply(OutputMode::Human, &change_id, false, None, &store).await;
+    assert!(
+        result.is_ok(),
+        "apply must succeed when verify used 'dev' and apply uses default 'dev'; got: {result:?}"
+    );
+}
+
+// Scenario PG-4: legacy sidecar (no profile field) is treated as "dev" and
+//   satisfies apply when --policy is also "dev".
+//   GIVEN a file store with a legacy sidecar (just hash, no profile token)
+//   WHEN cmd_apply is called with policy_profile = None (defaults to "dev")
+//   THEN the apply succeeds (legacy → "dev" matches "dev")
+#[tokio::test]
+async fn cmd_apply_accepts_legacy_sidecar_for_dev_apply() {
+    use crate::store::{file_store, init_file_layout};
+    use ail_change::canonical::CanonicalChangeSet;
+    use ail_storage::object::ObjectId;
+    use ail_verify::report::VerificationReport;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    let reports_dir = ail_dir.join("reports");
+    std::fs::create_dir_all(&reports_dir).expect("create reports dir");
+
+    let store = file_store(ail_dir.clone());
+
+    let canonical = CanonicalChangeSet::default();
+    let mut cbor_bytes = Vec::new();
+    ciborium::into_writer(&canonical, &mut cbor_bytes).expect("CBOR encode");
+    let change_id = ObjectId::from_bytes(&cbor_bytes).to_hex();
+    store
+        .save_changeset_payload(&change_id, &cbor_bytes)
+        .await
+        .expect("save changeset");
+
+    // Save a report object directly and write a legacy sidecar (hash only, no profile).
+    let report = VerificationReport::default();
+    let hash = store
+        .save_verification_report(&change_id, "dev", &report)
+        .await
+        .expect("save report");
+    // Overwrite sidecar with legacy format: just the hash, no profile token.
+    let sidecar = reports_dir.join(&change_id);
+    std::fs::write(&sidecar, format!("{}\n", hash.to_hex())).expect("write legacy sidecar");
+
+    // Apply with default "dev" policy — must succeed (legacy profile treated as "dev").
+    let result = cmd_apply(OutputMode::Human, &change_id, false, None, &store).await;
+    assert!(
+        result.is_ok(),
+        "apply must accept legacy sidecar (no profile) when apply profile is 'dev'; got: {result:?}"
+    );
+}
+
 // Scenario: preflight fails on module hash mismatch.
 #[test]
 fn preflight_fails_on_module_hash_mismatch() {

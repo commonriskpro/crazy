@@ -204,8 +204,10 @@ pub(crate) async fn cmd_verify(
     // Non-fatal: if the store is memory-only or Postgres, this is a no-op
     // (or stores in memory without a sidecar).  Failures are silenced so
     // that verify never fails purely due to report persistence I/O.
+    // The profile is persisted in the sidecar so `ail apply` can enforce
+    // that the same profile was used during verification.
     let report_hash_hex = store
-        .save_verification_report(change_id, &pipeline_report)
+        .save_verification_report(change_id, profile, &pipeline_report)
         .await
         .ok()
         .map(|h| h.to_hex());
@@ -547,6 +549,14 @@ pub(crate) async fn cmd_apply(
     // backends cannot resolve reports by change-id; the gate is skipped for
     // those backends (documented limitation — no sidecar index available).
     //
+    // The gate enforces two conditions:
+    //   1. A report must exist (was `ail verify` run for this change?).
+    //   2. The profile recorded at verify time must match the `--policy` profile
+    //      requested for apply.  A "dev" report does NOT satisfy a "prod" apply.
+    //
+    // Legacy sidecars (written before profile tracking) record no profile and are
+    // treated as "dev" — they satisfy `apply` only when `--policy` is also "dev".
+    //
     // A report is "accepted" when its summary is not Failed or Unsafe.
     // Unverified entries from changeset meta-stages (01–05) are expected and
     // do NOT constitute rejection.
@@ -560,10 +570,19 @@ pub(crate) async fn cmd_apply(
                 None => {
                     return Err(CliError::Domain(format!(
                         "apply blocked: no verification report found for change-id {change_id}; \
-                             run `ail verify {change_id}` first"
+                             run `ail verify {change_id} --profile {profile}` first"
                     )));
                 }
-                Some((report, hash)) => {
+                Some((report, hash, verified_profile)) => {
+                    // Profile matching: the report must have been produced with the same
+                    // profile as the one requested for apply.
+                    if verified_profile != profile {
+                        return Err(CliError::Domain(format!(
+                            "apply blocked: verification report for {change_id} was produced \
+                             with profile '{verified_profile}' but apply requires profile \
+                             '{profile}'; run `ail verify {change_id} --profile {profile}` first"
+                        )));
+                    }
                     use ail_verify::report::VerificationState;
                     match report.summary() {
                         VerificationState::Failed | VerificationState::Unsafe => {

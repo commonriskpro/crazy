@@ -171,7 +171,7 @@ pub(crate) async fn cmd_inspect(
                 let hash_oid = hex_to_object_id(id)?;
                 if let Some(r) = store.load_verification_report_by_hash(&hash_oid).await? {
                     (r, "persisted_by_hash", id.to_string())
-                } else if let Some((r, hash)) =
+                } else if let Some((r, hash, _profile)) =
                     store.load_verification_report_by_change_id(id).await?
                 {
                     (r, "persisted_by_change_id", hash.to_hex())
@@ -182,7 +182,9 @@ pub(crate) async fn cmd_inspect(
                 }
             } else {
                 // id is not a valid 64-char hex; try it as a change-id sidecar lookup.
-                if let Some((r, hash)) = store.load_verification_report_by_change_id(id).await? {
+                if let Some((r, hash, _profile)) =
+                    store.load_verification_report_by_change_id(id).await?
+                {
                     (r, "persisted_by_change_id", hash.to_hex())
                 } else {
                     let graph = load_current_graph_for_cli(store).await?;
