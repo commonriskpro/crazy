@@ -119,17 +119,30 @@ pub(crate) fn build_type_section_with_host_call(
 
 /// Build a function section referencing type index 0 for every function.
 ///
-/// Returns `None` when `signatures` is empty.
+/// `hoisted_count` extra entries are appended after the binding signatures,
+/// each referencing `fold_reducer_type_idx`.  These correspond to nested
+/// Lambda bodies that were hoisted into the function table (Wave 12A).
+///
+/// Returns `None` when `signatures` is empty AND `hoisted_count == 0`.
 pub(crate) fn build_function_section(
     signatures: &[WasmSignature],
     type_offset: u32,
+    hoisted_count: u32,
+    fold_reducer_type_idx: Option<u32>,
 ) -> Option<FunctionSection> {
-    if signatures.is_empty() {
+    if signatures.is_empty() && hoisted_count == 0 {
         return None;
     }
     let mut functions = FunctionSection::new();
     for (type_idx, _) in signatures.iter().enumerate() {
         functions.function(type_offset + type_idx as u32);
+    }
+    // Hoisted Lambda bodies all have the fold-reducer type (i64, i64) → i64.
+    if hoisted_count > 0 {
+        let fold_type = fold_reducer_type_idx.unwrap_or(type_offset + signatures.len() as u32);
+        for _ in 0..hoisted_count {
+            functions.function(fold_type);
+        }
     }
     Some(functions)
 }

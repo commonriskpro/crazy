@@ -62,7 +62,7 @@ use std::collections::BTreeMap;
 use ail_core::semantic_graph::NodeRef;
 use wasm_encoder::Module;
 
-use crate::anf::{AnfExpr, AnfIr, SourceMap, SourceMapEntry};
+use crate::anf::{AnfBinding, AnfExpr, AnfIr, SourceMap, SourceMapEntry};
 use crate::artifact_manifest::ArtifactManifest;
 use crate::capabilities::CapabilitiesManifest;
 use crate::error::CompileError;
@@ -85,6 +85,98 @@ use crate::wasm_sections::{
 #[cfg(test)]
 #[path = "wasm_tests.rs"]
 mod tests;
+
+// ── collect_hoistable_lambdas ─────────────────────────────────────────────
+
+/// Collect all nested Lambda sub-expressions that qualify for hoisting.
+///
+/// A Lambda is hoistable when it has exactly 2 parameters and no captures
+/// (fold-reducer shape `(i64, i64) → i64`).  These are the only Lambdas
+/// whose bodies can be safely emitted as standalone WASM functions and
+/// referenced by `call_indirect` in a Fold loop.
+///
+/// The order of collection matches the DFS traversal order in
+/// `emit_anf_expr`, so the sequential index assigned here and the
+/// `next_hoisted_table_idx` counter advanced during emission are always
+/// consistent.
+///
+/// Top-level Lambda bindings are not collected — `build_code_section` emits
+/// their bodies directly as regular binding functions.  Only Lambdas that
+/// appear *inside* a binding's expression are collected.
+pub(crate) fn collect_hoistable_lambdas(bindings: &[AnfBinding]) -> Vec<(Vec<String>, AnfExpr)> {
+    let mut out = Vec::new();
+    for binding in bindings {
+        // Mirror the body-selection logic in `build_code_section`.
+        let body_to_scan = match &binding.expr {
+            AnfExpr::Lambda { body, .. } => body.as_ref(),
+            other => other,
+        };
+        collect_in_expr(body_to_scan, &mut out);
+    }
+    out
+}
+
+/// DFS helper for `collect_hoistable_lambdas`.
+///
+/// Traverses `expr` in the same order as `emit_anf_expr` and appends
+/// hoistable Lambdas to `out`.  The traversal does NOT recurse into
+/// Lambda bodies — those bodies become separate functions and are not
+/// visited inline during binding emission.
+fn collect_in_expr(expr: &AnfExpr, out: &mut Vec<(Vec<String>, AnfExpr)>) {
+    match expr {
+        AnfExpr::Lambda {
+            params,
+            captures,
+            body,
+        } if params.len() == 2 && captures.is_empty() => {
+            out.push((params.clone(), *body.clone()));
+            // Do NOT recurse into body: it will be emitted as a separate
+            // standalone function, not visited inline.
+        }
+        AnfExpr::Lambda { .. } => {
+            // Non-hoistable Lambda — do not recurse into its body.
+        }
+        AnfExpr::Let { value, body, .. } => {
+            collect_in_expr(value, out);
+            collect_in_expr(body, out);
+        }
+        AnfExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_in_expr(then_branch, out);
+            collect_in_expr(else_branch, out);
+        }
+        AnfExpr::Return(inner) => collect_in_expr(inner, out),
+        AnfExpr::Seq(exprs) => exprs.iter().for_each(|e| collect_in_expr(e, out)),
+        AnfExpr::Match { arms, .. } => {
+            arms.iter().for_each(|a| collect_in_expr(&a.body, out));
+        }
+        AnfExpr::Loop { body } => collect_in_expr(body, out),
+        AnfExpr::Break { value } => collect_in_expr(value, out),
+        AnfExpr::WhileLoop { body, .. } => collect_in_expr(body, out),
+        AnfExpr::ForEach { body, .. } => collect_in_expr(body, out),
+        AnfExpr::RecordNew { fields } => {
+            fields.iter().for_each(|(_, v)| collect_in_expr(v, out));
+        }
+        AnfExpr::FieldUpdate { value, .. } => collect_in_expr(value, out),
+        AnfExpr::TupleNew(elems) | AnfExpr::ListNew(elems) => {
+            elems.iter().for_each(|e| collect_in_expr(e, out));
+        }
+        AnfExpr::VariantNew {
+            payload: Some(p), ..
+        } => {
+            collect_in_expr(p, out);
+        }
+        AnfExpr::VariantNew { payload: None, .. } => {}
+        AnfExpr::ShortCircuitAnd { right, .. } | AnfExpr::ShortCircuitOr { right, .. } => {
+            collect_in_expr(right, out);
+        }
+        // Atomic or non-recursive variants — no nested Lambdas.
+        _ => {}
+    }
+}
 
 // ── anf_has_fold ──────────────────────────────────────────────────────────
 
@@ -276,7 +368,19 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     // Detect whether any binding contains a Fold expression.
     // When true: add a function table, element section, and fold-reducer type.
     let needs_fold = anf.bindings.iter().any(|b| anf_has_fold(&b.expr));
-    let n_functions = anf.bindings.len() as u32;
+
+    // Collect nested Lambdas that qualify for hoisting (params == 2, no captures).
+    // Only meaningful when needs_fold is true; empty otherwise.
+    let hoisted_lambdas: Vec<(Vec<String>, AnfExpr)> = if needs_fold {
+        collect_hoistable_lambdas(&anf.bindings)
+    } else {
+        vec![]
+    };
+    let n_hoisted = hoisted_lambdas.len() as u32;
+
+    // Total functions in the module = binding functions + hoisted lambda functions.
+    let n_bindings = anf.bindings.len() as u32;
+    let n_functions = n_bindings + n_hoisted;
 
     // fold_reducer_type_idx: the type-section index of (i64, i64) → i64.
     // It is appended after all host-import types and binding signatures:
@@ -308,7 +412,9 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     {
         module.section(&imports);
     }
-    if let Some(functions) = build_function_section(&signatures, type_offset) {
+    if let Some(functions) =
+        build_function_section(&signatures, type_offset, n_hoisted, fold_reducer_type_idx)
+    {
         module.section(&functions);
     }
     // Table section (4): required for call_indirect when Fold is present.
@@ -337,6 +443,7 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         &effect_data,
         function_offset,
         fold_reducer_type_idx,
+        &hoisted_lambdas,
     ) {
         module.section(&codes);
     }
