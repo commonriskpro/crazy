@@ -48,6 +48,10 @@
 // - Concurrency primitives (Task*/Channel*/Select/Timeout/Dispatch) are
 //   rejected at compile time via `emit_wasm_with_profile`; they are NOT
 //   silently trapped at runtime.
+// - `Fold` with a captured Lambda reducer (`FoldWithCapturedReducer`) is
+//   rejected at compile time (Wave 13B).  The captured values are not
+//   representable as `(i64, i64) → i64` WASM function parameters, so the
+//   backend cannot hoist the Lambda into the function table.
 //
 // # Module layout
 //
@@ -57,7 +61,7 @@
 //
 // Tests live in `wasm_tests.rs`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use ail_core::semantic_graph::NodeRef;
 use wasm_encoder::Module;
@@ -175,6 +179,102 @@ fn collect_in_expr(expr: &AnfExpr, out: &mut Vec<(Vec<String>, AnfExpr)>) {
         }
         // Atomic or non-recursive variants — no nested Lambdas.
         _ => {}
+    }
+}
+
+// ── has_fold_with_captured_reducer ───────────────────────────────────────
+
+/// Returns `true` when any `Fold` in `bindings` has a `func` that is
+/// let-bound to a `Lambda` with non-empty captures.
+///
+/// Such Lambdas are non-hoistable: captured values are not available inside
+/// the hoisted `(i64, i64) → i64` WASM function.  The current backend would
+/// emit a closure env pointer (I32) with `fn_idx = 0` (placeholder), causing
+/// Fold to dispatch via `Unreachable` at runtime.
+///
+/// This check lets the pre-flight gate return
+/// `CompileError::UnsupportedWasmConstruct("FoldWithCapturedReducer")` before
+/// any code is emitted, replacing the silent runtime trap with an actionable
+/// compile-time diagnostic.
+///
+/// Top-level Lambda bindings are not checked here — they are always emitted as
+/// proper WASM functions with captures as explicit I64 parameters, and their
+/// captures do not produce closure env pointers.
+fn has_fold_with_captured_reducer(bindings: &[AnfBinding]) -> bool {
+    for binding in bindings {
+        let body_to_scan = match &binding.expr {
+            AnfExpr::Lambda { body, .. } => body.as_ref(),
+            other => other,
+        };
+        let mut captured_names: HashSet<&str> = HashSet::new();
+        if expr_has_fold_with_captured_reducer(body_to_scan, &mut captured_names) {
+            return true;
+        }
+    }
+    false
+}
+
+/// DFS helper for `has_fold_with_captured_reducer`.
+///
+/// Tracks let-bound names whose values are Lambdas with non-empty captures
+/// (`captured_names`).  Returns `true` when a `Fold` node is found whose
+/// `func` is in that set.
+///
+/// Because ANF uses SSA-style unique names, the flat `HashSet` correctly
+/// represents which names hold closure env pointers at any `Fold` site.
+fn expr_has_fold_with_captured_reducer<'a>(
+    expr: &'a AnfExpr,
+    captured_names: &mut HashSet<&'a str>,
+) -> bool {
+    match expr {
+        AnfExpr::Let { name, value, body } => {
+            if let AnfExpr::Lambda { captures, .. } = value.as_ref()
+                && !captures.is_empty()
+            {
+                captured_names.insert(name.as_str());
+            }
+            expr_has_fold_with_captured_reducer(value, captured_names)
+                || expr_has_fold_with_captured_reducer(body, captured_names)
+        }
+        AnfExpr::Fold { func, .. } => captured_names.contains(func.as_str()),
+        AnfExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            expr_has_fold_with_captured_reducer(then_branch, captured_names)
+                || expr_has_fold_with_captured_reducer(else_branch, captured_names)
+        }
+        AnfExpr::Return(inner) => expr_has_fold_with_captured_reducer(inner, captured_names),
+        AnfExpr::Seq(exprs) => exprs
+            .iter()
+            .any(|e| expr_has_fold_with_captured_reducer(e, captured_names)),
+        AnfExpr::Match { arms, .. } => arms
+            .iter()
+            .any(|a| expr_has_fold_with_captured_reducer(&a.body, captured_names)),
+        AnfExpr::Lambda { body, .. } => expr_has_fold_with_captured_reducer(body, captured_names),
+        AnfExpr::Loop { body }
+        | AnfExpr::WhileLoop { body, .. }
+        | AnfExpr::ForEach { body, .. } => {
+            expr_has_fold_with_captured_reducer(body, captured_names)
+        }
+        AnfExpr::Break { value } => expr_has_fold_with_captured_reducer(value, captured_names),
+        AnfExpr::RecordNew { fields } => fields
+            .iter()
+            .any(|(_, v)| expr_has_fold_with_captured_reducer(v, captured_names)),
+        AnfExpr::FieldUpdate { value, .. } => {
+            expr_has_fold_with_captured_reducer(value, captured_names)
+        }
+        AnfExpr::TupleNew(elems) | AnfExpr::ListNew(elems) => elems
+            .iter()
+            .any(|e| expr_has_fold_with_captured_reducer(e, captured_names)),
+        AnfExpr::VariantNew { payload, .. } => payload
+            .as_deref()
+            .is_some_and(|p| expr_has_fold_with_captured_reducer(p, captured_names)),
+        AnfExpr::ShortCircuitAnd { right, .. } | AnfExpr::ShortCircuitOr { right, .. } => {
+            expr_has_fold_with_captured_reducer(right, captured_names)
+        }
+        _ => false,
     }
 }
 
@@ -342,6 +442,18 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         if let Some(name) = first_unsupported_wasm_construct(&binding.expr) {
             return Err(CompileError::UnsupportedWasmConstruct(name.to_string()));
         }
+    }
+
+    // Gate: Fold reducer that is a captured Lambda (Wave 13B).
+    // Captured Lambdas cannot be hoisted into the `(i64, i64) → i64` function
+    // table because their captured values are not available as fold-reducer
+    // parameters.  The backend would emit a closure env pointer with fn_idx = 0
+    // and Fold would trap at runtime via `Unreachable`.  Return a diagnostic
+    // before any code is emitted so callers get an actionable error.
+    if has_fold_with_captured_reducer(&anf.bindings) {
+        return Err(CompileError::UnsupportedWasmConstruct(
+            "FoldWithCapturedReducer".to_string(),
+        ));
     }
 
     let signatures = binding_signatures(&anf.bindings);
