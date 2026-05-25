@@ -25,6 +25,7 @@ use wasm_encoder::ValType;
 
 use crate::anf::{AnfBinding, AnfExpr};
 use crate::core_ir::LiteralValue;
+use crate::pattern_string::arm_payload_binding;
 
 // ── ABI versioning ────────────────────────────────────────────────────────
 
@@ -523,41 +524,6 @@ pub(crate) fn export_name(binding_name: &str) -> String {
         .collect()
 }
 
-// ── Match arm payload binding helper ──────────────────────────────────────
-
-/// Extract the payload binding name from a single-binding constructor pattern.
-///
-/// Examples:
-/// - `"Ok(x)"` → `Some("x")`
-/// - `"Some(value)"` → `Some("value")`
-/// - `"None"` → `None` (tag-only)
-/// - `"Some(_)"` → `None` (wildcard binding — not a real variable)
-/// - `"_"` → `None`
-/// - `"Ok(Some(x))"` → `None` (nested — unsupported, handled elsewhere)
-/// - `"Pair(a, b)"` → `None` (multi-binding — unsupported, handled elsewhere)
-///
-/// Used by `collect_free_vars` and `infer_expr_type` so that arm payload
-/// variables are treated as locally bound rather than free.
-fn arm_payload_binding(pattern: &str) -> Option<&str> {
-    let trimmed = pattern.trim();
-    // Must start with an uppercase letter to be a constructor pattern.
-    if !trimmed.starts_with(|ch: char| ch.is_ascii_uppercase()) {
-        return None;
-    }
-    let open = trimmed.find('(')?;
-    let inner = trimmed[open + 1..].trim();
-    let inner = inner.strip_suffix(')').unwrap_or(inner).trim();
-    // Reject unsupported shapes (nested constructors, multi-binding).
-    if inner.contains('(') || inner.contains(',') {
-        return None;
-    }
-    // Wildcard binding is not a real variable.
-    if inner == "_" {
-        return None;
-    }
-    Some(inner)
-}
-
 // ── Record/variant layout helpers ─────────────────────────────────────────
 
 pub(crate) fn well_known_variant_tag(tag: &str) -> Option<u32> {
@@ -860,71 +826,7 @@ impl EffectDataLayout {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::arm_payload_binding;
-
-    // ── arm_payload_binding ────────────────────────────────────────────────
-
-    #[test]
-    fn arm_payload_binding_single_var() {
-        assert_eq!(arm_payload_binding("Ok(x)"), Some("x"));
-        assert_eq!(arm_payload_binding("Some(value)"), Some("value"));
-        assert_eq!(arm_payload_binding("Err(e)"), Some("e"));
-    }
-
-    #[test]
-    fn arm_payload_binding_tag_only_returns_none() {
-        // No parens → no binding variable.
-        assert_eq!(arm_payload_binding("None"), None);
-        assert_eq!(arm_payload_binding("True"), None);
-    }
-
-    #[test]
-    fn arm_payload_binding_bare_wildcard_returns_none() {
-        // "_" does not start with an uppercase letter.
-        assert_eq!(arm_payload_binding("_"), None);
-    }
-
-    #[test]
-    fn arm_payload_binding_inner_wildcard_returns_none() {
-        // "Ok(_)" — the inner binding is "_", which is not a real variable.
-        assert_eq!(arm_payload_binding("Ok(_)"), None);
-    }
-
-    #[test]
-    fn arm_payload_binding_trims_inner_whitespace() {
-        assert_eq!(arm_payload_binding("Ok( x )"), Some("x"));
-        assert_eq!(arm_payload_binding("  Ok(x)  "), Some("x"));
-    }
-
-    #[test]
-    fn arm_payload_binding_nested_constructor_returns_none() {
-        // Inner contains '(' → unsupported nested form.
-        assert_eq!(arm_payload_binding("Ok(Some(x))"), None);
-    }
-
-    #[test]
-    fn arm_payload_binding_multi_binding_returns_none() {
-        // Inner contains ',' → unsupported multi-binding form.
-        assert_eq!(arm_payload_binding("Pair(a, b)"), None);
-    }
-
-    #[test]
-    fn arm_payload_binding_lowercase_start_returns_none() {
-        // Does not start with an uppercase letter → None.
-        assert_eq!(arm_payload_binding("ok(x)"), None);
-        assert_eq!(arm_payload_binding(""), None);
-    }
-
-    #[test]
-    fn arm_payload_binding_malformed_no_close_paren() {
-        // "Ok(" — no closing ')'.  strip_suffix(')') returns None so
-        // unwrap_or("") leaves inner as "".  The empty string passes all
-        // rejection checks and the function returns Some("").
-        // This edge case is a known divergence from parse_constructor_pattern
-        // (which returns None for the same input); documented here as a
-        // regression guard — callers never synthesise such malformed patterns.
-        assert_eq!(arm_payload_binding("Ok("), Some(""));
-    }
-}
+// ── Tests are in pattern_string.rs (canonical location) ──────────────────
+//
+// The arm_payload_binding function is re-exported from pattern_string and
+// fully tested there. No duplicate tests are kept here.

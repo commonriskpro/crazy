@@ -51,6 +51,7 @@ mod native_lower;
 pub mod native_stub;
 mod native_types;
 pub mod optimize;
+mod pattern_string;
 pub mod wasm;
 mod wasm_abi;
 mod wasm_artifact;

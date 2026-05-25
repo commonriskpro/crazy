@@ -15,6 +15,7 @@ use wasm_encoder::{BlockType, CodeSection, Function, Instruction, ValType};
 use crate::anf::{AnfBinding, AnfExpr};
 use crate::core_ir::LiteralValue;
 use crate::error::CompileError;
+use crate::pattern_string::{is_unsupported_pattern_shape, parse_constructor_pattern};
 use crate::wasm_abi::{
     EffectDataLayout, RESULT_BUFFER_MAX, binding_params, binding_result, export_name,
     infer_expr_type, record_layout_fields, well_known_variant_tag,
@@ -369,73 +370,6 @@ fn parse_bool_pattern(pattern: &str) -> Option<bool> {
         "true" | "True" => Some(true),
         "false" | "False" => Some(false),
         _ => None,
-    }
-}
-
-/// Returns `true` when the pattern string looks like a constructor application
-/// but uses syntax the WASM backend does not yet support.
-///
-/// Detected unsupported shapes:
-/// - Nested constructors: `"Ok(Some(x))"` — payload contains `(`
-/// - Multi-binding tuples: `"Pair(a, b)"` — payload contains `,`
-/// - Record-field syntax: `"{field: val}"` — pattern starts with `{`
-///
-/// This is used to distinguish "pattern we don't understand at all" from
-/// "pattern we understand is a constructor but whose payload is too complex",
-/// enabling a `CompileError::UnsupportedPatternSyntax` instead of a silent
-/// runtime `Unreachable`.
-fn is_unsupported_pattern_shape(pattern: &str) -> bool {
-    let trimmed = pattern.trim();
-    // Record-field syntax (e.g. `{name: x}`).
-    if trimmed.starts_with('{') {
-        return true;
-    }
-    // Constructor with payload: starts uppercase, contains `(...)`.
-    if trimmed
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_uppercase())
-        && let Some(open) = trimmed.find('(')
-    {
-        // Strip the closing `)` if present; inspect the payload.
-        let payload = trimmed[open + 1..].trim();
-        let payload = payload.strip_suffix(')').unwrap_or(payload).trim();
-        // Nested constructor or multi-binding payload.
-        return payload.contains('(') || payload.contains(',');
-    }
-    false
-}
-
-/// Parse a variant constructor pattern string into `(tag, Option<binding>)`.
-///
-/// Recognises:
-/// - `"None"` → `("None", None)` — tag-only, no payload binding
-/// - `"Ok(x)"` → `("Ok", Some("x"))` — tag with single binding
-/// - `"Some(_)"` → `("Some", Some("_"))` — tag with wildcard binding (no binding emitted)
-///
-/// Returns `None` for patterns that are not constructor-shaped (integers, booleans,
-/// `_` wildcard, or unsupported nested/multi-binding patterns).
-fn parse_constructor_pattern(pattern: &str) -> Option<(&str, Option<&str>)> {
-    let trimmed = pattern.trim();
-    // Must start with an ASCII uppercase letter to be a constructor tag.
-    let first_char = trimmed.chars().next()?;
-    if !first_char.is_ascii_uppercase() {
-        return None;
-    }
-    if let Some(open) = trimmed.find('(') {
-        let tag = trimmed[..open].trim();
-        let after = trimmed[open + 1..].trim();
-        // Require exactly one closing paren at the end.
-        let after = after.strip_suffix(')')?;
-        let binding = after.trim();
-        // Reject multi-binding or nested patterns — not supported yet.
-        if binding.contains('(') || binding.contains(',') {
-            return None;
-        }
-        Some((tag, Some(binding)))
-    } else {
-        // Tag-only pattern (no payload).
-        Some((trimmed, None))
     }
 }
 

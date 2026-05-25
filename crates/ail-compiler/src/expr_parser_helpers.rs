@@ -84,6 +84,16 @@ pub(crate) fn render_match_pattern(pattern: CoreExpr) -> Result<String, ParseErr
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(format!("{func}({})", rendered_args.join(", ")))
         }
+        // `(variant "Tag" payload)` desugars to VariantNew at parse time;
+        // when it appears in a match-pattern position it must render as the
+        // canonical constructor-pattern string the WASM backend expects.
+        CoreExpr::VariantNew { tag, payload } => match payload {
+            None => Ok(tag),
+            Some(inner) => {
+                let rendered = render_match_pattern(*inner)?;
+                Ok(format!("{tag}({rendered})"))
+            }
+        },
         _ => Err(ParseError::new(
             "match pattern must be an identifier, literal, wildcard, or constructor pattern",
         )),
