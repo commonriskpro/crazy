@@ -32,10 +32,14 @@
 //   compact_originals_are_removed
 
 use ail_storage::{
-    GraphStore, ObjectBackedGraphStore, SnapshotEnvelope,
+    BranchRegistry, BranchStore, GraphStore, ObjectBackedGraphStore, SnapshotEnvelope,
+    TagRegistry, TagStore,
     backends::memory::MemoryObjectStore,
     object::ObjectId,
-    retention::{GcReport, RetentionPolicy, compact_snapshots, gc_unreferenced},
+    retention::{
+        GcReport, RetentionPolicy, SnapshotHolds, collect_branch_holds, collect_tag_holds,
+        compact_snapshots, gc_unreferenced,
+    },
 };
 use futures::executor::block_on;
 
@@ -216,7 +220,13 @@ fn gc_empty_store_produces_zero_report() {
         keep_releases: true,
         keep_tagged: true,
     };
-    let report: GcReport = block_on(gc_unreferenced(&store, &policy, 0)).expect("gc must succeed");
+    let report: GcReport = block_on(gc_unreferenced(
+        &store,
+        &policy,
+        &SnapshotHolds::default(),
+        0,
+    ))
+    .expect("gc must succeed");
     assert_eq!(report.snapshots_examined, 0);
     assert_eq!(report.snapshots_retained, 0);
     assert_eq!(report.snapshots_removed, 0);
@@ -239,7 +249,13 @@ fn gc_retains_all_when_policy_keeps_all() {
         keep_releases: true,
         keep_tagged: false,
     };
-    let report = block_on(gc_unreferenced(&store, &policy, 0)).expect("gc must succeed");
+    let report = block_on(gc_unreferenced(
+        &store,
+        &policy,
+        &SnapshotHolds::default(),
+        0,
+    ))
+    .expect("gc must succeed");
     assert_eq!(report.snapshots_examined, 2);
     assert_eq!(report.snapshots_retained, 2);
     assert_eq!(report.snapshots_removed, 0);
@@ -266,7 +282,13 @@ fn gc_removes_all_when_policy_keeps_nothing() {
         keep_releases: false,
         keep_tagged: false,
     };
-    let report = block_on(gc_unreferenced(&store, &policy, 0)).expect("gc must succeed");
+    let report = block_on(gc_unreferenced(
+        &store,
+        &policy,
+        &SnapshotHolds::default(),
+        0,
+    ))
+    .expect("gc must succeed");
     assert_eq!(report.snapshots_examined, 2);
     assert_eq!(report.snapshots_retained, 0);
     assert_eq!(report.snapshots_removed, 2);
@@ -294,7 +316,13 @@ fn gc_partial_retention_removes_only_unreferenced() {
         keep_releases: false,
         keep_tagged: true,
     };
-    let report = block_on(gc_unreferenced(&store, &policy, 0)).expect("gc must succeed");
+    let report = block_on(gc_unreferenced(
+        &store,
+        &policy,
+        &SnapshotHolds::default(),
+        0,
+    ))
+    .expect("gc must succeed");
     assert_eq!(report.snapshots_examined, 3);
     assert_eq!(report.snapshots_retained, 1);
     assert_eq!(report.snapshots_removed, 2);
@@ -323,7 +351,13 @@ fn gc_report_counts_are_consistent() {
         keep_releases: true,
         keep_tagged: true,
     };
-    let report = block_on(gc_unreferenced(&store, &policy, 0)).expect("gc must succeed");
+    let report = block_on(gc_unreferenced(
+        &store,
+        &policy,
+        &SnapshotHolds::default(),
+        0,
+    ))
+    .expect("gc must succeed");
     assert_eq!(
         report.snapshots_retained + report.snapshots_removed,
         report.snapshots_examined,
@@ -499,4 +533,330 @@ fn compact_originals_are_removed() {
     let all = block_on(store.list_snapshots()).expect("list must succeed");
     assert_eq!(all.len(), 1, "only the covering snapshot must remain");
     assert_eq!(all[0].id, report.covering_snapshot_id);
+}
+
+// ── SnapshotHolds: branch-head protection ────────────────────────────────
+
+// Scenario: GC must not delete a snapshot pointed to by an active branch head.
+//   GIVEN a snapshot that would be collected by policy alone (old, untagged, non-genesis)
+//   AND   a branch whose head points to that snapshot
+//   WHEN  gc_unreferenced is called with branch holds
+//   THEN  the snapshot survives GC
+#[test]
+fn gc_branch_head_survives_gc() {
+    let store = make_store();
+    let old_snap = snapshot("branch-head", 0, Some("parent"), None); // policy alone would remove it
+    save_all(&store, &[old_snap.clone()]);
+
+    let holds = SnapshotHolds {
+        branch_heads: vec![oid("branch-head")],
+        ..Default::default()
+    };
+    let policy = RetentionPolicy {
+        max_age_days: None,
+        keep_releases: false,
+        keep_tagged: false,
+    };
+
+    let report =
+        block_on(gc_unreferenced(&store, &policy, &holds, u64::MAX)).expect("gc must succeed");
+
+    assert_eq!(report.snapshots_examined, 1);
+    assert_eq!(
+        report.snapshots_retained, 1,
+        "branch-head snapshot must be held"
+    );
+    assert_eq!(report.snapshots_removed, 0);
+
+    // Snapshot must still be loadable.
+    let loaded = block_on(store.load_snapshot(&oid("branch-head"))).expect("load must succeed");
+    assert!(loaded.is_some(), "branch-head snapshot must survive GC");
+}
+
+// Scenario: after branch is deleted (hold cleared), next GC removes the snapshot.
+//   GIVEN a snapshot held by a branch head
+//   AND   a second GC run with an empty hold set
+//   THEN  the snapshot is collected
+#[test]
+fn gc_cleared_branch_hold_allows_collection() {
+    let store = make_store();
+    let snap = snapshot("stale-head", 0, Some("p"), None);
+    save_all(&store, &[snap]);
+
+    let policy = RetentionPolicy {
+        max_age_days: None,
+        keep_releases: false,
+        keep_tagged: false,
+    };
+
+    // First GC: snapshot held by branch — survives.
+    let held = SnapshotHolds {
+        branch_heads: vec![oid("stale-head")],
+        ..Default::default()
+    };
+    block_on(gc_unreferenced(&store, &policy, &held, 0)).expect("gc round 1");
+    let after_held = block_on(store.list_snapshots()).expect("list");
+    assert_eq!(after_held.len(), 1, "snapshot must survive while held");
+
+    // Second GC: branch deleted, hold cleared — snapshot is collected.
+    let empty_holds = SnapshotHolds::default();
+    block_on(gc_unreferenced(&store, &policy, &empty_holds, 0)).expect("gc round 2");
+    let after_cleared = block_on(store.list_snapshots()).expect("list after cleared");
+    assert!(
+        after_cleared.is_empty(),
+        "snapshot must be collected once branch hold is removed"
+    );
+}
+
+// ── SnapshotHolds: tag-lock protection ───────────────────────────────────
+
+// Scenario: GC must not delete a snapshot locked by a tag.
+//   GIVEN an unprotected snapshot (not genesis, no change, old)
+//   AND   a tag pointing to that snapshot
+//   WHEN  gc_unreferenced is called with tag holds
+//   THEN  the snapshot survives
+#[test]
+fn gc_tag_locked_snapshot_survives_gc() {
+    let store = make_store();
+    let snap = snapshot("tagged-snap", 0, Some("p"), None);
+    save_all(&store, &[snap]);
+
+    let holds = SnapshotHolds {
+        tag_locks: vec![oid("tagged-snap")],
+        ..Default::default()
+    };
+    let policy = RetentionPolicy {
+        max_age_days: None,
+        keep_releases: false,
+        keep_tagged: false,
+    };
+
+    let report =
+        block_on(gc_unreferenced(&store, &policy, &holds, u64::MAX)).expect("gc must succeed");
+
+    assert_eq!(
+        report.snapshots_retained, 1,
+        "tag-locked snapshot must survive GC"
+    );
+    assert_eq!(report.snapshots_removed, 0);
+}
+
+// ── SnapshotHolds: audit hold protection ─────────────────────────────────
+
+// Scenario: GC must not delete a snapshot under an explicit audit hold.
+//   GIVEN a snapshot not protected by age, genesis, or tagged rules
+//   AND   the snapshot is listed in audit_holds
+//   WHEN  gc_unreferenced runs
+//   THEN  the snapshot is retained
+#[test]
+fn gc_audit_hold_snapshot_survives_gc() {
+    let store = make_store();
+    let snap = snapshot("audit-hold", 0, Some("p"), None);
+    save_all(&store, &[snap]);
+
+    let holds = SnapshotHolds {
+        audit_holds: vec![oid("audit-hold")],
+        ..Default::default()
+    };
+    let policy = RetentionPolicy {
+        max_age_days: None,
+        keep_releases: false,
+        keep_tagged: false,
+    };
+
+    let report =
+        block_on(gc_unreferenced(&store, &policy, &holds, u64::MAX)).expect("gc must succeed");
+
+    assert_eq!(
+        report.snapshots_retained, 1,
+        "audit-held snapshot must survive GC"
+    );
+    assert_eq!(report.snapshots_removed, 0);
+}
+
+// Scenario: only the held snapshot survives; unheld eligible snapshots are removed.
+//   GIVEN three snapshots — one held by audit, two unprotected
+//   WHEN  gc_unreferenced runs
+//   THEN  exactly one retained (the held one), two removed
+#[test]
+fn gc_only_held_snapshot_survives_among_eligible() {
+    let store = make_store();
+    let snaps = vec![
+        snapshot("hold-me", 0, Some("p"), None), // audit hold → must survive
+        snapshot("drop-a", 0, Some("p"), None),  // no hold, no policy → removed
+        snapshot("drop-b", 0, Some("p"), None),  // no hold, no policy → removed
+    ];
+    save_all(&store, &snaps);
+
+    let holds = SnapshotHolds {
+        audit_holds: vec![oid("hold-me")],
+        ..Default::default()
+    };
+    let policy = RetentionPolicy {
+        max_age_days: None,
+        keep_releases: false,
+        keep_tagged: false,
+    };
+
+    let report =
+        block_on(gc_unreferenced(&store, &policy, &holds, u64::MAX)).expect("gc must succeed");
+
+    assert_eq!(report.snapshots_examined, 3);
+    assert_eq!(report.snapshots_retained, 1);
+    assert_eq!(report.snapshots_removed, 2);
+
+    let survivors = block_on(store.list_snapshots()).expect("list");
+    assert_eq!(survivors.len(), 1);
+    assert_eq!(
+        survivors[0].id,
+        oid("hold-me"),
+        "only the held snapshot must survive"
+    );
+}
+
+// ── collect_branch_holds ──────────────────────────────────────────────────
+
+// Scenario: collect_branch_holds returns the target_snapshot_id of each branch.
+//   GIVEN two branches with distinct target_snapshot_ids
+//   WHEN  collect_branch_holds is called
+//   THEN  the result contains exactly those two snapshot ids
+#[test]
+fn collect_branch_holds_returns_target_ids() {
+    let reg = BranchRegistry::new();
+    block_on(async {
+        reg.create_branch("main", oid("snap-main"), 100)
+            .await
+            .expect("create main");
+        reg.create_branch("dev", oid("snap-dev"), 200)
+            .await
+            .expect("create dev");
+    });
+
+    let ids = block_on(collect_branch_holds(&reg)).expect("collect must succeed");
+    assert_eq!(ids.len(), 2, "must return one id per branch");
+    assert!(
+        ids.contains(&oid("snap-main")),
+        "main branch id must be present"
+    );
+    assert!(
+        ids.contains(&oid("snap-dev")),
+        "dev branch id must be present"
+    );
+}
+
+// Scenario: collect_branch_holds on empty registry returns empty vec.
+#[test]
+fn collect_branch_holds_empty_registry_returns_empty() {
+    let reg = BranchRegistry::new();
+    let ids = block_on(collect_branch_holds(&reg)).expect("collect must succeed");
+    assert!(ids.is_empty(), "empty registry must yield empty holds");
+}
+
+// ── collect_tag_holds ─────────────────────────────────────────────────────
+
+// Scenario: collect_tag_holds returns the snapshot_id of each tag.
+//   GIVEN two tags pointing to distinct snapshots
+//   WHEN  collect_tag_holds is called
+//   THEN  the result contains exactly those two snapshot ids
+#[test]
+fn collect_tag_holds_returns_snapshot_ids() {
+    let reg = TagRegistry::new();
+    block_on(async {
+        reg.create_tag("v1.0", oid("snap-v1"), 100, None)
+            .await
+            .expect("create v1.0");
+        reg.create_tag("v2.0", oid("snap-v2"), 200, None)
+            .await
+            .expect("create v2.0");
+    });
+
+    let ids = block_on(collect_tag_holds(&reg)).expect("collect must succeed");
+    assert_eq!(ids.len(), 2, "must return one id per tag");
+    assert!(
+        ids.contains(&oid("snap-v1")),
+        "v1.0 snapshot id must be present"
+    );
+    assert!(
+        ids.contains(&oid("snap-v2")),
+        "v2.0 snapshot id must be present"
+    );
+}
+
+// Scenario: collect_tag_holds on empty registry returns empty vec.
+#[test]
+fn collect_tag_holds_empty_registry_returns_empty() {
+    let reg = TagRegistry::new();
+    let ids = block_on(collect_tag_holds(&reg)).expect("collect must succeed");
+    assert!(ids.is_empty(), "empty tag registry must yield empty holds");
+}
+
+// ── End-to-end: branch/tag holds wired with collect helpers ──────────────
+
+// Scenario: full pipeline — branch and tag holds collected then applied to GC.
+//   GIVEN a store with three snapshots
+//   AND   one snapshot pointed to by a branch head
+//   AND   one snapshot pointed to by a tag
+//   AND   one snapshot with no holds and no policy protection
+//   WHEN  holds are collected via collect_branch_holds + collect_tag_holds
+//   AND   gc_unreferenced is called
+//   THEN  the two held snapshots survive; the unprotected one is removed
+#[test]
+fn gc_end_to_end_branch_and_tag_holds_protect_snapshots() {
+    let graph_store = make_store();
+    let branch_reg = BranchRegistry::new();
+    let tag_reg = TagRegistry::new();
+
+    let snaps = vec![
+        snapshot("head-snap", 0, Some("p"), None), // held by branch
+        snapshot("release-snap", 0, Some("p"), None), // held by tag
+        snapshot("garbage", 0, Some("p"), None),   // no protection → removed
+    ];
+    save_all(&graph_store, &snaps);
+
+    block_on(async {
+        branch_reg
+            .create_branch("main", oid("head-snap"), 1)
+            .await
+            .expect("create branch");
+        tag_reg
+            .create_tag("v1.0", oid("release-snap"), 2, None)
+            .await
+            .expect("create tag");
+    });
+
+    let branch_ids = block_on(collect_branch_holds(&branch_reg)).expect("branch holds");
+    let tag_ids = block_on(collect_tag_holds(&tag_reg)).expect("tag holds");
+    let holds = SnapshotHolds {
+        branch_heads: branch_ids,
+        tag_locks: tag_ids,
+        ..Default::default()
+    };
+    let policy = RetentionPolicy {
+        max_age_days: None,
+        keep_releases: false,
+        keep_tagged: false,
+    };
+
+    let report = block_on(gc_unreferenced(&graph_store, &policy, &holds, u64::MAX))
+        .expect("gc must succeed");
+
+    assert_eq!(report.snapshots_examined, 3);
+    assert_eq!(
+        report.snapshots_retained, 2,
+        "branch head and tag lock must survive"
+    );
+    assert_eq!(
+        report.snapshots_removed, 1,
+        "only unprotected snapshot removed"
+    );
+
+    // Verify the right snapshot was removed.
+    let garbage = block_on(graph_store.load_snapshot(&oid("garbage"))).expect("load");
+    assert!(garbage.is_none(), "unprotected snapshot must be removed");
+
+    let head = block_on(graph_store.load_snapshot(&oid("head-snap"))).expect("load");
+    assert!(head.is_some(), "branch-head snapshot must survive");
+
+    let rel = block_on(graph_store.load_snapshot(&oid("release-snap"))).expect("load");
+    assert!(rel.is_some(), "tag-locked snapshot must survive");
 }
