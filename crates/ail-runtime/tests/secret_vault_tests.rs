@@ -46,6 +46,28 @@ fn matching_profile(
     .with_secrets_mapping(secrets_mapping)
 }
 
+/// Build a `RuntimeProfile` whose hashes match `wasm` and `manifest`, with
+/// custom `limits`.
+fn matching_profile_with_limits(
+    wasm: &[u8],
+    manifest: &CapabilityManifest,
+    grants: Vec<CapabilityGrant>,
+    secrets_mapping: Vec<SecretEntry>,
+    limits: ResourceLimits,
+) -> RuntimeProfile {
+    let module_hash = blake3_hex_of(wasm);
+    let manifest_hash = manifest.blake3_hex().expect("manifest hash must succeed");
+    RuntimeProfile::new(
+        "test".to_string(),
+        module_hash,
+        "a".repeat(64),
+        manifest_hash,
+        grants,
+        limits,
+    )
+    .with_secrets_mapping(secrets_mapping)
+}
+
 // ── T1 — Mapped secret resolves ───────────────────────────────────────────
 
 #[test]
@@ -391,4 +413,148 @@ fn t8_ungrant_blocks_secret_read() {
         matches!(err, HostError::CapabilityDenied(_)),
         "expected CapabilityDenied, got {err:?}"
     );
+}
+
+// ── T9 — output_size_limit denial for secret does not leak byte length ────
+//
+// When the handler response exceeds `output_size_limit`, the error message
+// MUST NOT include `response.len()` (which equals the secret byte length).
+// It may include the configured limit (already public in the profile).
+
+#[test]
+fn t9_output_size_limit_denial_does_not_leak_secret_byte_length() {
+    let wasm = minimal_wasm();
+    let cap_id = CapabilityId::new("secret.read:StripeApiKey");
+    let manifest = CapabilityManifest {
+        module: "mod".to_string(),
+        requires: vec![cap_id.clone()],
+    };
+    let grant = CapabilityGrant {
+        module: "mod".to_string(),
+        capability: cap_id.clone(),
+    };
+    let secret_bytes = b"sk_live_abc123"; // 14 bytes
+    let mapping = vec![SecretEntry {
+        secret_id: "StripeApiKey".to_string(),
+        vault_path: "prod/stripe".to_string(),
+    }];
+    // Limit set to 5 — smaller than the 14-byte secret value.
+    let profile = matching_profile_with_limits(
+        &wasm,
+        &manifest,
+        vec![grant],
+        mapping.clone(),
+        ResourceLimits {
+            output_size_limit: Some(5),
+            ..Default::default()
+        },
+    );
+
+    let mut vault = SecretVault::new();
+    vault.insert("prod/stripe", secret_bytes.to_vec());
+    let handler = SecretReadHandler::new(mapping, Arc::new(vault));
+
+    let mut host = RuntimeHost::new().with_handler(Arc::new(handler));
+    host.validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("preflight must pass");
+
+    let err = host
+        .call_capability(&cap_id, "read", b"")
+        .expect_err("oversized secret response must be denied by output_size_limit");
+
+    // Error must be LimitExceeded — not CapabilityDenied or any other variant.
+    let msg = match &err {
+        HostError::LimitExceeded(m) => m.clone(),
+        other => panic!("expected LimitExceeded, got {other:?}"),
+    };
+
+    // The exact secret byte count (14) MUST NOT appear in the error message.
+    assert!(
+        !msg.contains("14"),
+        "error message must not contain the secret byte count (14); got: {msg:?}"
+    );
+    // The raw secret value MUST NOT appear.
+    assert!(
+        !msg.contains("sk_live_abc123"),
+        "error message must not contain the raw secret value; got: {msg:?}"
+    );
+    // The configured limit (5) MAY appear — it is already public in the profile.
+    assert!(
+        msg.contains("5"),
+        "error message should include the configured limit for debuggability; got: {msg:?}"
+    );
+    // The word "actual" MUST NOT appear (would imply the real byte count follows).
+    assert!(
+        !msg.contains("actual"),
+        "error message must not use the word 'actual'; got: {msg:?}"
+    );
+}
+
+// ── T10 — output_size_limit denial audit records no secret length/value ───
+//
+// The audit event for a denied output_size_limit call must record
+// `succeeded=false` and `output_hash=None`.  Neither the raw secret bytes
+// nor their length are recorded in the audit log.
+
+#[test]
+fn t10_output_size_limit_denial_audit_contains_no_secret_data() {
+    let wasm = minimal_wasm();
+    let cap_id = CapabilityId::new("secret.read:DbPassword");
+    let manifest = CapabilityManifest {
+        module: "mod".to_string(),
+        requires: vec![cap_id.clone()],
+    };
+    let grant = CapabilityGrant {
+        module: "mod".to_string(),
+        capability: cap_id.clone(),
+    };
+    let mapping = vec![SecretEntry {
+        secret_id: "DbPassword".to_string(),
+        vault_path: "db/pass".to_string(),
+    }];
+    // Secret is 12 bytes; limit is 4 → denial guaranteed.
+    let profile = matching_profile_with_limits(
+        &wasm,
+        &manifest,
+        vec![grant],
+        mapping.clone(),
+        ResourceLimits {
+            output_size_limit: Some(4),
+            ..Default::default()
+        },
+    );
+
+    let mut vault = SecretVault::new();
+    vault.insert("db/pass", b"hunter2_xyz!".to_vec()); // 12 bytes
+    let handler = SecretReadHandler::new(mapping, Arc::new(vault));
+
+    let mut host = RuntimeHost::new().with_handler(Arc::new(handler));
+    host.validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("preflight must pass");
+
+    host.call_capability(&cap_id, "read", b"")
+        .expect_err("must be denied by output_size_limit");
+
+    let log = host.audit_log();
+    let last_event = log
+        .events()
+        .iter()
+        .rfind(|e| e.is_capability_call())
+        .expect("at least one capability call event");
+
+    match last_event {
+        AuditEvent::CapabilityCallExecuted {
+            succeeded,
+            output_hash,
+            ..
+        } => {
+            assert!(!succeeded, "audit must record failure");
+            // output_hash must be absent — no hash of the secret bytes is stored.
+            assert!(
+                output_hash.is_none(),
+                "output_hash must be None on output_size_limit denial"
+            );
+        }
+        _ => panic!("expected CapabilityCallExecuted, got {last_event:?}"),
+    }
 }

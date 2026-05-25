@@ -738,8 +738,7 @@ impl RuntimeHost {
                     && response.len() as u64 > max_output_bytes
                 {
                     Err(HostError::LimitExceeded(format!(
-                        "output_size_limit exceeded: limit={max_output_bytes}, actual={}",
-                        response.len()
+                        "output_size_limit exceeded: limit={max_output_bytes}"
                     )))
                 // Step 5: output schema/boundary validation (if registered).
                 } else if let Some(def) = self.schema_registry.get(capability.as_str())
