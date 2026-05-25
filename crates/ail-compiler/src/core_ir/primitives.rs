@@ -60,10 +60,19 @@ pub enum LiteralValue {
     Text(String),
     /// Unit literal `()`.
     Unit,
+    /// Opaque byte-sequence literal.
+    ///
+    /// Emitted to the WASM data section as a raw byte segment.  The WASM
+    /// return value is a packed `i64` with the same layout as `Text`:
+    /// `(len as i64) << 32 | (ptr as i64)`.  The runtime decodes this as
+    /// `StructuredValue::Bytes { ptr, len }` via `ValueLayout::Bytes` —
+    /// no UTF-8 assumption is made.
+    Bytes(Vec<u8>),
 }
 
 // Eq is needed for CoreNode::PartialEq.  f64 does not implement Eq by default,
 // so we provide a manual impl that compares bits (NaN == NaN for IR purposes).
+// Vec<u8> already implements Eq, so the Bytes variant requires no special handling.
 impl Eq for LiteralValue {}
 
 // ── LoopTermination ───────────────────────────────────────────────────────

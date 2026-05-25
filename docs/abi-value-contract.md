@@ -80,6 +80,7 @@ The current descriptor contract recognized by the compiler/runtime boundary is:
 | `Scalar(I32)` | `ValueLayout::Scalar` | raw `i32` return widened by the typed runtime entry point |
 | `Scalar(F64)` | `ValueLayout::Scalar` | raw `f64`; `invoke_typed` returns `StructuredValue::Float` directly |
 | `Text` | `ValueLayout::Text` | packed `(len << 32) \| ptr` i64; runtime unpacks to `StructuredValue::Text { ptr, len }` without a memory read |
+| `Bytes` | `ValueLayout::Bytes` | packed `(len << 32) \| ptr` i64; runtime unpacks to `StructuredValue::Bytes { ptr, len }` without a memory read; no UTF-8 assumption |
 | `Record { fields }` | `ValueLayout::Record { fields }` | pointer to sequential `i64` field slots in linear memory |
 | `Variant { tags }` | `ValueLayout::Variant { tags }` | pointer to `i32` tag at offset `0`, optional `i64` payload at offset `8` |
 | `Tuple(elems)` | `ValueLayout::Tuple(elems)` | pointer to sequential `i64` element slots in linear memory |
@@ -107,8 +108,12 @@ own a `WasmArtifact` are responsible for translating `export_types` into
 
 ## Current limitations
 
-- `Bytes` exists in the target/core type design, but there is no ANF literal or
-  `WasmTypeDescriptor::Bytes` in the implemented ABI contract.
+- `Bytes` literals (`LiteralValue::Bytes(Vec<u8>)`) are now executable: the
+  compiler interns the byte buffer in the WASM data section and emits a packed
+  `(len << 32) | ptr` i64 return — the same encoding used for `Text`.  The
+  runtime decodes this via `ValueLayout::Bytes` → `StructuredValue::Bytes { ptr,
+  len }`.  `derive_wasm_type` maps `Literal(Bytes(_))` to
+  `WasmTypeDescriptor::Bytes` so callers receive the correct descriptor.
 - `Unit` is currently represented by the compiler as `Scalar(I32)`. The runtime
   decoder maps `ValueLayout::Scalar` to `StructuredValue::Scalar(raw)`; only a
   raw `RuntimeValue::Unit` from `invoke` becomes `StructuredValue::Unit` in

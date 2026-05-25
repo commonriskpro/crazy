@@ -123,10 +123,10 @@ pub enum WasmTypeDescriptor {
 /// annotations are propagated, callers that require Option/Result descriptors
 /// must construct them from an external type-descriptor table.
 ///
-/// `Bytes` is also NOT derivable: no ANF node in the current core type surface
-/// produces a byte-buffer value, so no expression shape maps to
-/// `WasmTypeDescriptor::Bytes`.  Bytes descriptors must come from an external
-/// type-descriptor table until the ANF/core type surface can produce them.
+/// `Bytes` IS derivable when the top-level expression is
+/// `AnfExpr::Literal(LiteralValue::Bytes(_))`.  The packed `(len << 32) | ptr`
+/// i64 encoding mirrors the `Text` layout; the runtime decodes it via
+/// `ValueLayout::Bytes` → `StructuredValue::Bytes { ptr, len }`.
 pub fn derive_wasm_type(expr: &AnfExpr) -> WasmTypeDescriptor {
     match expr {
         AnfExpr::RecordNew { fields } => WasmTypeDescriptor::Record {
@@ -146,6 +146,8 @@ pub fn derive_wasm_type(expr: &AnfExpr) -> WasmTypeDescriptor {
         AnfExpr::Literal(LiteralValue::Float(_)) => WasmTypeDescriptor::Scalar(WasmScalarType::F64),
         AnfExpr::Literal(LiteralValue::Unit) => WasmTypeDescriptor::Scalar(WasmScalarType::I32),
         AnfExpr::Literal(LiteralValue::Text(_)) => WasmTypeDescriptor::Text,
+        // Bytes literal — packed ptr/len i64, decoded as opaque byte buffer.
+        AnfExpr::Literal(LiteralValue::Bytes(_)) => WasmTypeDescriptor::Bytes,
         // Int and Bool both inhabit the i64 WASM slot (see `literal_type`).
         AnfExpr::Literal(LiteralValue::Int(_)) | AnfExpr::Literal(LiteralValue::Bool(_)) => {
             WasmTypeDescriptor::Scalar(WasmScalarType::I64)
@@ -201,7 +203,11 @@ pub(crate) struct WasmSignature {
 
 pub(crate) fn literal_type(lit: &LiteralValue) -> ValType {
     match lit {
-        LiteralValue::Int(_) | LiteralValue::Bool(_) | LiteralValue::Text(_) => ValType::I64,
+        // Text and Bytes both use the packed ptr/len i64 encoding.
+        LiteralValue::Int(_)
+        | LiteralValue::Bool(_)
+        | LiteralValue::Text(_)
+        | LiteralValue::Bytes(_) => ValType::I64,
         LiteralValue::Unit => ValType::I32,
         LiteralValue::Float(_) => ValType::F64,
     }
@@ -570,6 +576,14 @@ pub(crate) fn is_structured_descriptor(desc: &WasmTypeDescriptor) -> bool {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EffectDataLayout {
     pub(crate) strings: BTreeMap<String, (i32, i32)>,
+    /// Raw byte-buffer entries interned from `LiteralValue::Bytes` literals.
+    ///
+    /// Each entry is `(data, ptr)`: the byte slice that was interned and the
+    /// linear-memory offset at which it was placed.  Length is `data.len()`.
+    /// Stored as a `Vec` (not a `BTreeMap`) because byte slices have no
+    /// canonical string key; linear scan is acceptable for the small numbers
+    /// of compile-time byte literals expected in practice.
+    pub(crate) bytes_entries: Vec<(Vec<u8>, i32)>,
     pub(crate) next_offset: i32,
     pub(crate) args_offset: i32,
     /// Offset of the structured result buffer in WASM linear memory.
@@ -634,6 +648,10 @@ impl EffectDataLayout {
         match expr {
             AnfExpr::Literal(LiteralValue::Text(s)) => {
                 self.intern(s);
+                self.needs_memory = true;
+            }
+            AnfExpr::Literal(LiteralValue::Bytes(data)) => {
+                self.intern_bytes(data);
                 self.needs_memory = true;
             }
             AnfExpr::EffectCall {
@@ -749,5 +767,39 @@ impl EffectDataLayout {
 
     pub(crate) fn string(&self, value: &str) -> (i32, i32) {
         self.strings[value]
+    }
+
+    /// Intern a raw byte buffer into the linear-memory data section.
+    ///
+    /// Byte-identical slices are deduplicated — the same `(ptr, len)` is
+    /// returned for equal content.  An empty slice occupies 1 byte so that
+    /// its pointer is always distinct from `ptr == 0` (which is the
+    /// bump-allocator base and reserved for the null-address convention).
+    pub(crate) fn intern_bytes(&mut self, data: &[u8]) -> (i32, i32) {
+        // Linear dedup — acceptable for compile-time byte literals.
+        if let Some((_, ptr)) = self
+            .bytes_entries
+            .iter()
+            .find(|(d, _)| d.as_slice() == data)
+        {
+            return (*ptr, data.len() as i32);
+        }
+        let ptr = self.next_offset;
+        let len = data.len() as i32;
+        self.bytes_entries.push((data.to_vec(), ptr));
+        self.next_offset += len.max(1);
+        (ptr, len)
+    }
+
+    /// Return the `(ptr, len)` previously interned for `data`.
+    ///
+    /// Panics if `data` was not interned — callers must call `intern_bytes`
+    /// during the layout-collection phase before calling `bytes` during emit.
+    pub(crate) fn bytes(&self, data: &[u8]) -> (i32, i32) {
+        self.bytes_entries
+            .iter()
+            .find(|(d, _)| d.as_slice() == data)
+            .map(|(d, ptr)| (*ptr, d.len() as i32))
+            .expect("byte literal not interned; call intern_bytes first")
     }
 }

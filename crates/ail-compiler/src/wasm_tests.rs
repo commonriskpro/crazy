@@ -1396,6 +1396,124 @@ fn closure_capture_lambda_effect_call_arg_captured() {
 
 // ── End closure-capture tests ─────────────────────────────────────────────
 
+// ── Wave 10A: Bytes literal emit, descriptor, and data-section tests ──────
+
+// Scenario: derive_wasm_type on a Bytes literal must return WasmTypeDescriptor::Bytes.
+// Proves the compiler side of the descriptor contract for Bytes.
+#[test]
+fn derive_wasm_type_bytes_literal_is_bytes_descriptor() {
+    let expr = AnfExpr::Literal(LiteralValue::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+    assert_eq!(
+        derive_wasm_type(&expr),
+        WasmTypeDescriptor::Bytes,
+        "Bytes literal must derive WasmTypeDescriptor::Bytes"
+    );
+}
+
+// Scenario: Let { body: Literal(Bytes) } also derives Bytes (Let recurses into body).
+#[test]
+fn derive_wasm_type_let_body_bytes_is_bytes_descriptor() {
+    let expr = AnfExpr::Let {
+        name: "b".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+        body: Box::new(AnfExpr::Literal(LiteralValue::Bytes(vec![1, 2, 3]))),
+    };
+    assert_eq!(derive_wasm_type(&expr), WasmTypeDescriptor::Bytes);
+}
+
+// Scenario: emit_wasm on a Bytes literal binding succeeds and export_types
+// carries WasmTypeDescriptor::Bytes for that export.
+#[test]
+fn emit_wasm_bytes_literal_export_type_is_bytes() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.digest".to_string(),
+        expr: AnfExpr::Literal(LiteralValue::Bytes(vec![0xCA, 0xFE, 0xBA, 0xBE])),
+    }]);
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for Bytes literal");
+    assert_eq!(
+        artifact.export_types.get("digest"),
+        Some(&WasmTypeDescriptor::Bytes),
+        "export_types[\"digest\"] must be WasmTypeDescriptor::Bytes; got: {:?}",
+        artifact.export_types.get("digest")
+    );
+}
+
+// Scenario: the emitted WASM for a Bytes literal must include a data section.
+// Proves intern_bytes → build_data_section places bytes in the module binary.
+#[test]
+fn emit_wasm_bytes_literal_produces_non_empty_wasm() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.payload".to_string(),
+        expr: AnfExpr::Literal(LiteralValue::Bytes(vec![0x01, 0x02, 0x03])),
+    }]);
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
+    assert!(
+        !artifact.wasm.is_empty(),
+        "Bytes literal must produce a non-empty WASM module"
+    );
+}
+
+// Scenario: two Bytes literals with equal content share the same data-section slot.
+// Proves deduplication in intern_bytes (packed i64 values must be identical).
+#[test]
+fn effect_data_layout_bytes_dedup_equal_content() {
+    use crate::wasm_abi::EffectDataLayout;
+    let data = vec![0xAB, 0xCD];
+    let mut layout = EffectDataLayout::default();
+    let (ptr1, len1) = layout.intern_bytes(&data);
+    let (ptr2, len2) = layout.intern_bytes(&data);
+    assert_eq!(
+        (ptr1, len1),
+        (ptr2, len2),
+        "duplicate Bytes literal must reuse the same data-section slot"
+    );
+    assert_eq!(len1, 2, "interned len must match data length");
+}
+
+// Scenario: two Bytes literals with distinct content occupy distinct slots.
+#[test]
+fn effect_data_layout_bytes_distinct_content_distinct_slots() {
+    use crate::wasm_abi::EffectDataLayout;
+    let mut layout = EffectDataLayout::default();
+    let (ptr_a, _) = layout.intern_bytes(&[0x01]);
+    let (ptr_b, _) = layout.intern_bytes(&[0x02]);
+    assert_ne!(
+        ptr_a, ptr_b,
+        "distinct Bytes content must occupy distinct data-section slots"
+    );
+}
+
+// Scenario: LiteralValue::Bytes carries a non-empty Vec<u8> and compares by value.
+// Proves the new enum variant is well-behaved (PartialEq, Clone).
+#[test]
+fn literal_value_bytes_equality_and_clone() {
+    let a = LiteralValue::Bytes(vec![1, 2, 3]);
+    let b = LiteralValue::Bytes(vec![1, 2, 3]);
+    let c = LiteralValue::Bytes(vec![9]);
+    assert_eq!(a, b);
+    assert_ne!(a, c);
+    assert_eq!(a.clone(), b);
+}
+
+// Scenario: empty Bytes literal (zero-length slice) encodes len=0 in the packed i64.
+// Proves intern_bytes handles the zero-length edge case safely.
+#[test]
+fn emit_wasm_empty_bytes_literal_succeeds() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.empty_bytes".to_string(),
+        expr: AnfExpr::Literal(LiteralValue::Bytes(vec![])),
+    }]);
+    assert!(
+        emit_wasm(&anf).is_ok(),
+        "empty Bytes literal must emit successfully"
+    );
+}
+
+// ── End Wave 10A Bytes tests ───────────────────────────────────────────────
+
 // ── WASM ABI surface: Bytes + ResourceAcquire→Handle expansion ───────────
 
 // WasmTypeDescriptor::Bytes exists and round-trips through serde.
