@@ -4992,3 +4992,177 @@ end
         "or(false, true) must evaluate right (true) and return I64(1)"
     );
 }
+
+// ── not / mod conformance ─────────────────────────────────────────────────
+//
+// Spec scenarios covered (RUNTIME-ACL-NOT-1, RUNTIME-ACL-NOT-2,
+//                          RUNTIME-ACL-NOT-3,
+//                          RUNTIME-ACL-MOD-1,  RUNTIME-ACL-MOD-2):
+//
+//  RUNTIME-ACL-NOT-1: ACL body `not(true)` lowers through
+//    CoreExpr::Not → lower_core_unary_to_anf("not") → ANF Call "not" with 1
+//    arg → WASM I64Eqz + I64ExtendI32U.
+//    true = I64(1) → Eqz → i32(0) → ExtendI32U → I64(0).
+//    Returns I64(0).
+//
+//  RUNTIME-ACL-NOT-2: ACL body `not(false)` follows the same path.
+//    false = I64(0) → Eqz → i32(1) → ExtendI32U → I64(1).
+//    Returns I64(1).
+//
+//  RUNTIME-ACL-NOT-3: ACL body `not(eq(1,2))`.
+//    eq(1,2) lowers to I64Eq → i32(0) → ExtendI32U → I64(0) (false).
+//    not(I64(0)) → Eqz → i32(1) → ExtendI32U → I64(1).
+//    Proves not() composes correctly with a nested comparison.
+//
+//  RUNTIME-ACL-MOD-1: ACL body `mod(10,3)` lowers through
+//    CoreExpr::Mod → lower_core_binary_to_anf("mod") → ANF Call "mod" with 2
+//    args → WASM I64RemS.
+//    10 rem_s 3 = 1 → I64(1).
+//
+//  RUNTIME-ACL-MOD-2: ACL body `mod(10,2)`.
+//    10 rem_s 2 = 0 → I64(0).
+//    Proves exact divisibility returns I64(0).
+//
+// These tests exercise the full pipeline from ACL source:
+//   parse_changeset → canonicalize → apply → lower_to_core_ir →
+//   lower_to_anf → emit_wasm → Wasmtime → RuntimeValue.
+//
+// Encoding:
+//   true → I64(1)    false → I64(0)
+
+// RUNTIME-ACL-NOT-1
+//
+// ACL body: not(true)
+//
+//   Pipeline:
+//   1. `not(true)` → CoreExpr::Not(Literal(Bool(true)))
+//   2. lower → let _t0 = Literal(Bool(true)) in Call "not" [_t0]
+//   3. WASM: LocalGet(_t0) [= I64(1)]; I64Eqz → i32(0); I64ExtendI32U → I64(0).
+//   4. Returns I64(0).
+//
+// Proves: not(true) → I64(0) (logical negation of true is false).
+#[test]
+fn acl_not_true_returns_false() {
+    let acl = "\
+change acl_not_1 base=0
+author tester
+description not(true): logical negation of true must return I64(0)
+op create_function id=fn.main return=Int body=not(true)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(0),
+        "not(true) must return I64(0)"
+    );
+}
+
+// RUNTIME-ACL-NOT-2
+//
+// ACL body: not(false)
+//
+//   Pipeline:
+//   1. `not(false)` → CoreExpr::Not(Literal(Bool(false)))
+//   2. lower → let _t0 = Literal(Bool(false)) in Call "not" [_t0]
+//   3. WASM: LocalGet(_t0) [= I64(0)]; I64Eqz → i32(1); I64ExtendI32U → I64(1).
+//   4. Returns I64(1).
+//
+// Proves: not(false) → I64(1) (logical negation of false is true).
+#[test]
+fn acl_not_false_returns_true() {
+    let acl = "\
+change acl_not_2 base=0
+author tester
+description not(false): logical negation of false must return I64(1)
+op create_function id=fn.main return=Int body=not(false)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(1),
+        "not(false) must return I64(1)"
+    );
+}
+
+// RUNTIME-ACL-NOT-3
+//
+// ACL body: not(eq(1,2))
+//
+//   Pipeline:
+//   1. `not(eq(1,2))` → CoreExpr::Not(CoreExpr::Eq(Lit(1), Lit(2)))
+//   2. lower → let _t0 = 1 in let _t1 = 2 in let _t2 = call "eq" [_t0,_t1]
+//      in call "not" [_t2]
+//   3. WASM: eq(1,2) → I64Eq → i32(0) → I64ExtendI32U → I64(0);
+//      not(I64(0)) → I64Eqz → i32(1) → I64ExtendI32U → I64(1).
+//   4. Returns I64(1).
+//
+// Proves: not() composes correctly with a nested sub-expression (1≠2 → not false → true).
+#[test]
+fn acl_not_eq_1_2_returns_true() {
+    let acl = "\
+change acl_not_3 base=0
+author tester
+description not(eq(1,2)): eq(1,2)=false so not(false) must return I64(1)
+op create_function id=fn.main return=Int body=not(eq(1,2))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(1),
+        "not(eq(1,2)) must return I64(1): eq(1,2) is false, not(false) is true"
+    );
+}
+
+// RUNTIME-ACL-MOD-1
+//
+// ACL body: mod(10,3)
+//
+//   Pipeline:
+//   1. `mod(10,3)` → CoreExpr::Mod(Lit(10), Lit(3))
+//   2. lower → let _t0 = 10 in let _t1 = 3 in Call "mod" [_t0, _t1]
+//   3. WASM: I64RemS(10, 3) = 1 → I64(1).
+//   4. Returns I64(1).
+//
+// Proves: mod(10,3) → I64(1) (10 rem 3 = 1).
+#[test]
+fn acl_mod_10_3_returns_1() {
+    let acl = "\
+change acl_mod_1 base=0
+author tester
+description mod(10,3): 10 rem 3 must return I64(1)
+op create_function id=fn.main return=Int body=mod(10,3)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(1),
+        "mod(10,3) must return I64(1)"
+    );
+}
+
+// RUNTIME-ACL-MOD-2
+//
+// ACL body: mod(10,2)
+//
+//   Pipeline:
+//   1. `mod(10,2)` → CoreExpr::Mod(Lit(10), Lit(2))
+//   2. lower → let _t0 = 10 in let _t1 = 2 in Call "mod" [_t0, _t1]
+//   3. WASM: I64RemS(10, 2) = 0 → I64(0).
+//   4. Returns I64(0).
+//
+// Proves: mod(10,2) → I64(0) (exact divisibility yields zero remainder).
+#[test]
+fn acl_mod_10_2_returns_0() {
+    let acl = "\
+change acl_mod_2 base=0
+author tester
+description mod(10,2): 10 rem 2 must return I64(0)
+op create_function id=fn.main return=Int body=mod(10,2)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(0),
+        "mod(10,2) must return I64(0): 10 is exactly divisible by 2"
+    );
+}
