@@ -96,6 +96,29 @@ fn seeded_random_declares_random_capability() {
     );
 }
 
+#[test]
+fn seeded_random_next_u64_returns_8_bytes() {
+    let r = SeededRandom::new(42);
+    let cap = CapabilityId::new("random.next_u64");
+    let bytes = r
+        .handle(&cap, "next_u64", &[])
+        .expect("next_u64 must succeed");
+    assert_eq!(bytes.len(), 8, "SeededRandom must return exactly 8 bytes");
+}
+
+#[test]
+fn seeded_random_unknown_op_returns_error() {
+    let r = SeededRandom::new(42);
+    let cap = CapabilityId::new("random.next_u64");
+    let result = r.handle(&cap, "bad_op", &[]);
+    assert!(result.is_err(), "unknown operation must return error");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("unknown SeededRandom operation") && err.contains("bad_op"),
+        "error must name the handler and the unknown operation: got {err}"
+    );
+}
+
 // ── RecordedHttp ──────────────────────────────────────────────────────────
 
 #[test]
