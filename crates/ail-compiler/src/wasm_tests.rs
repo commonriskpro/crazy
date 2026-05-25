@@ -3363,10 +3363,10 @@ fn fold_reducer_type_index_matches_call_indirect_type_index() {
         if let Payload::CodeSectionEntry(body) = payload.unwrap() {
             let mut reader = body.get_operators_reader().unwrap();
             while !reader.eof() {
-                if let Operator::CallIndirect { type_index, .. } = reader.read().unwrap() {
-                    if type_index == expected_type_idx {
-                        saw_expected = true;
-                    }
+                if let Operator::CallIndirect { type_index, .. } = reader.read().unwrap()
+                    && type_index == expected_type_idx
+                {
+                    saw_expected = true;
                 }
             }
         }

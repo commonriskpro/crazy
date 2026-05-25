@@ -165,18 +165,16 @@ pub(crate) fn cmd_link(
     };
 
     // 3. Invoke linker through the boundary.
-    let result = linker
-        .link(object_path, &output_path)
-        .inspect_err(|e| {
-            if mode == OutputMode::Json {
-                print_error_response(json!({
-                    "error": "linker_failed",
-                    "profile": profile,
-                    "object_path": object_path.to_string_lossy(),
-                    "message": e.to_string(),
-                }));
-            }
-        })?;
+    let result = linker.link(object_path, &output_path).inspect_err(|e| {
+        if mode == OutputMode::Json {
+            print_error_response(json!({
+                "error": "linker_failed",
+                "profile": profile,
+                "object_path": object_path.to_string_lossy(),
+                "message": e.to_string(),
+            }));
+        }
+    })?;
 
     let human_msg = format!(
         "profile: {profile}\nobject: {}\noutput: {}\nlinker_command: {}\nstatus: linked",
