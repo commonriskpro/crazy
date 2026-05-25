@@ -668,3 +668,222 @@ fn failed_preflight_blocks_wasmtime_invocation() {
         "failed preflight must block Wasmtime — expected HashMismatch, got {result:?}"
     );
 }
+
+// ── Wave 17A: closure Fold execution proof ────────────────────────────────
+//
+// Tests that compile, instantiate, and invoke ANF programs using a
+// 2-param captured Lambda as a Fold reducer.  The reducer captures a
+// `bias` value from the enclosing scope and uses it in the accumulation.
+//
+// Reducer shape:  fn(acc, x) -> let tmp = acc + x in tmp + bias
+// This REQUIRES the closure env preamble to load `bias` from memory; a
+// plain hoistable (no-capture) fold would produce wrong results.
+
+/// Build and invoke a closure-fold ANF program.
+///
+/// `bias` is captured by the Lambda reducer.
+/// `init` is the Fold initial accumulator.
+/// `elements` is the list to fold over.
+///
+/// Expected result: fold left with `reducer(acc, x) = acc + x + bias`.
+fn invoke_closure_fold(bias: i64, init: i64, elements: Vec<i64>) -> RuntimeValue {
+    let list_exprs = elements
+        .iter()
+        .map(|&e| AnfExpr::Literal(LiteralValue::Int(e)))
+        .collect::<Vec<_>>();
+
+    // fn.main =
+    //   let bias  = <bias>
+    //   let lst   = ListNew([...])
+    //   let f     = Lambda(params=[acc, x], captures=[bias],
+    //                 body = let tmp = acc + x in tmp + bias)
+    //   let zero  = <init>
+    //   Fold(init=zero, list=lst, func=f)
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.main".to_string(),
+        expr: AnfExpr::Let {
+            name: "bias".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(bias))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(list_exprs)),
+                body: Box::new(AnfExpr::Let {
+                    name: "f".to_string(),
+                    value: Box::new(AnfExpr::Lambda {
+                        params: vec!["acc".to_string(), "x".to_string()],
+                        captures: vec!["bias".to_string()],
+                        body: Box::new(AnfExpr::Let {
+                            name: "tmp".to_string(),
+                            value: Box::new(AnfExpr::Call {
+                                func: "+".to_string(),
+                                args: vec!["acc".to_string(), "x".to_string()],
+                            }),
+                            body: Box::new(AnfExpr::Call {
+                                func: "+".to_string(),
+                                args: vec!["tmp".to_string(), "bias".to_string()],
+                            }),
+                        }),
+                    }),
+                    body: Box::new(AnfExpr::Let {
+                        name: "zero".to_string(),
+                        value: Box::new(AnfExpr::Literal(LiteralValue::Int(init))),
+                        body: Box::new(AnfExpr::Fold {
+                            init: "zero".to_string(),
+                            list: "lst".to_string(),
+                            func: "f".to_string(),
+                        }),
+                    }),
+                }),
+            }),
+        },
+    };
+
+    let anf = sealed_anf(vec![binding]);
+    let wasm = emit_wasm(&anf)
+        .expect("closure-fold ANF must compile")
+        .wasm;
+    let manifest = CapabilityManifest {
+        module: "closure-fold-test".to_string(),
+        requires: vec![],
+    };
+    let profile = matching_profile(&wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("closure-fold WASM must instantiate");
+    instance.invoke("main", &[]).expect("main must invoke")
+}
+
+// Scenario: empty list — Fold returns the initial accumulator unchanged.
+//
+// reducer(acc, x) = acc + x + bias  (bias=10, init=7)
+// Fold(7, [], reducer) = 7
+#[test]
+fn closure_fold_empty_list_returns_init() {
+    assert_eq!(
+        invoke_closure_fold(10, 7, vec![]),
+        RuntimeValue::I64(7),
+        "empty-list fold must return init unchanged"
+    );
+}
+
+// Scenario: single element — one reducer application.
+//
+// reducer(acc, x) = acc + x + bias  (bias=10, init=0)
+// Fold(0, [5], reducer) = 0 + 5 + 10 = 15
+#[test]
+fn closure_fold_single_element_applies_reducer_once() {
+    assert_eq!(
+        invoke_closure_fold(10, 0, vec![5]),
+        RuntimeValue::I64(15),
+        "single-element fold with bias=10 must return 15"
+    );
+}
+
+// Scenario: multiple elements — reducer applied once per element.
+//
+// reducer(acc, x) = acc + x + bias  (bias=10, init=0)
+// Fold(0, [1, 2, 3], reducer):
+//   step1: reducer(0,  1) = 0  + 1  + 10 = 11
+//   step2: reducer(11, 2) = 11 + 2  + 10 = 23
+//   step3: reducer(23, 3) = 23 + 3  + 10 = 36
+#[test]
+fn closure_fold_multi_element_accumulates_with_bias() {
+    assert_eq!(
+        invoke_closure_fold(10, 0, vec![1, 2, 3]),
+        RuntimeValue::I64(36),
+        "3-element fold with bias=10 must return 36"
+    );
+}
+
+// Scenario: multiple captures — Lambda closes over two independent values.
+//
+// reducer(acc, x) = let s = acc + x in let t = s + bias1 in t + bias2
+// bias1=3, bias2=7 (sum=10), init=0, list=[1, 2]
+//   step1: reducer(0, 1)  = 0  + 1 + 3 + 7 = 11
+//   step2: reducer(11, 2) = 11 + 2 + 3 + 7 = 23
+#[test]
+fn closure_fold_multiple_captures_both_loaded_from_env() {
+    // fn.main =
+    //   let bias1 = 3
+    //   let bias2 = 7
+    //   let lst   = ListNew([1, 2])
+    //   let f     = Lambda(params=[acc,x], captures=[bias1, bias2],
+    //                 body = let s = acc+x in let t = s+bias1 in t+bias2)
+    //   let zero  = 0
+    //   Fold(init=zero, list=lst, func=f)
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.main".to_string(),
+        expr: AnfExpr::Let {
+            name: "bias1".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(3))),
+            body: Box::new(AnfExpr::Let {
+                name: "bias2".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(7))),
+                body: Box::new(AnfExpr::Let {
+                    name: "lst".to_string(),
+                    value: Box::new(AnfExpr::ListNew(vec![
+                        AnfExpr::Literal(LiteralValue::Int(1)),
+                        AnfExpr::Literal(LiteralValue::Int(2)),
+                    ])),
+                    body: Box::new(AnfExpr::Let {
+                        name: "f".to_string(),
+                        value: Box::new(AnfExpr::Lambda {
+                            params: vec!["acc".to_string(), "x".to_string()],
+                            captures: vec!["bias1".to_string(), "bias2".to_string()],
+                            body: Box::new(AnfExpr::Let {
+                                name: "s".to_string(),
+                                value: Box::new(AnfExpr::Call {
+                                    func: "+".to_string(),
+                                    args: vec!["acc".to_string(), "x".to_string()],
+                                }),
+                                body: Box::new(AnfExpr::Let {
+                                    name: "t".to_string(),
+                                    value: Box::new(AnfExpr::Call {
+                                        func: "+".to_string(),
+                                        args: vec!["s".to_string(), "bias1".to_string()],
+                                    }),
+                                    body: Box::new(AnfExpr::Call {
+                                        func: "+".to_string(),
+                                        args: vec!["t".to_string(), "bias2".to_string()],
+                                    }),
+                                }),
+                            }),
+                        }),
+                        body: Box::new(AnfExpr::Let {
+                            name: "zero".to_string(),
+                            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                            body: Box::new(AnfExpr::Fold {
+                                init: "zero".to_string(),
+                                list: "lst".to_string(),
+                                func: "f".to_string(),
+                            }),
+                        }),
+                    }),
+                }),
+            }),
+        },
+    };
+
+    let anf = sealed_anf(vec![binding]);
+    let wasm = emit_wasm(&anf)
+        .expect("two-capture closure-fold ANF must compile")
+        .wasm;
+    let manifest = CapabilityManifest {
+        module: "closure-fold-two-captures-test".to_string(),
+        requires: vec![],
+    };
+    let profile = matching_profile(&wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("two-capture closure-fold WASM must instantiate");
+    let value = instance.invoke("main", &[]).expect("main must invoke");
+    assert_eq!(
+        value,
+        RuntimeValue::I64(23),
+        "two-capture fold over [1,2] with bias1=3 bias2=7 must return 23"
+    );
+}

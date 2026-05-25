@@ -279,8 +279,10 @@ pub(crate) fn infer_expr_type(
         AnfExpr::MapNew { .. } | AnfExpr::SetNew { .. } => Some(ValType::I32),
         AnfExpr::IndexGet { .. } => Some(ValType::I64),
         // ForEach is side-effect only — no value produced.
-        // Fold is a stub (requires call_indirect); treat as no-value for now.
-        AnfExpr::ForEach { .. } | AnfExpr::Fold { .. } => None,
+        AnfExpr::ForEach { .. } => None,
+        // Fold reduces a list to an I64 accumulator via call_indirect.
+        // emit_anf_expr returns Some(ValType::I64) for Fold; this must match.
+        AnfExpr::Fold { .. } => Some(ValType::I64),
         // ResourceAcquire returns an opaque resource handle packed as i64.
         AnfExpr::ResourceAcquire { .. } => Some(ValType::I64),
         // ResourceRelease is a side-effect with no return value.
