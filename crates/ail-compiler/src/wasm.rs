@@ -434,6 +434,108 @@ fn expr_has_fold_with_captured_reducer<'a>(
     }
 }
 
+// ── has_fold_with_uncaptured_wrong_arity_reducer ──────────────────────────
+
+/// Returns `true` when any `Fold` in `bindings` has a `func` that is
+/// let-bound to a `Lambda` with **empty captures** and **≠ 2 params**.
+///
+/// Such Lambdas fall into the non-hoistable `else` branch in `emit_anf_expr`:
+/// they emit a closure env with `fn_idx = 0` (placeholder).  When a `Fold`
+/// uses the resulting I32 pointer as its reducer, the Fold I32 dispatch path
+/// reads `fn_idx = 0` and dispatches `call_indirect(closure-reducer type)`
+/// to `table[0]` — a silent wrong-function dispatch or a runtime type-mismatch
+/// trap rather than a compile-time diagnostic.
+///
+/// This gate returns `CompileError::UnsupportedWasmConstruct` before code
+/// generation, ensuring callers receive a deterministic, structured error
+/// instead of silent bad runtime behaviour.
+///
+/// Note: captures-non-empty + params ≠ 2 is handled by
+/// `has_fold_with_captured_reducer` and returns `FoldWithCapturedReducer`.
+/// This function covers the complementary case: no captures, wrong arity.
+fn has_fold_with_uncaptured_wrong_arity_reducer(bindings: &[AnfBinding]) -> bool {
+    for binding in bindings {
+        let body_to_scan = match &binding.expr {
+            AnfExpr::Lambda { body, .. } => body.as_ref(),
+            other => other,
+        };
+        let mut names: HashSet<&str> = HashSet::new();
+        if expr_has_fold_with_uncaptured_wrong_arity(body_to_scan, &mut names) {
+            return true;
+        }
+    }
+    false
+}
+
+/// DFS helper for `has_fold_with_uncaptured_wrong_arity_reducer`.
+///
+/// Tracks let-bound names whose values are Lambdas with **empty captures** and
+/// **≠ 2 params**.  Returns `true` when a `Fold` node is found whose `func`
+/// is in that set.
+fn expr_has_fold_with_uncaptured_wrong_arity<'a>(
+    expr: &'a AnfExpr,
+    names: &mut HashSet<&'a str>,
+) -> bool {
+    match expr {
+        AnfExpr::Let { name, value, body } => {
+            if let AnfExpr::Lambda {
+                captures, params, ..
+            } = value.as_ref()
+                && captures.is_empty()
+                && params.len() != 2
+            {
+                // Capture-free, wrong-arity Lambda: non-hoistable, cannot be a
+                // valid Fold reducer — would emit fn_idx=0 placeholder.
+                names.insert(name.as_str());
+            } else if let AnfExpr::Var(v) = value.as_ref()
+                && names.contains(v.as_str())
+            {
+                // Transitive alias: propagate membership.
+                names.insert(name.as_str());
+            }
+            expr_has_fold_with_uncaptured_wrong_arity(value, names)
+                || expr_has_fold_with_uncaptured_wrong_arity(body, names)
+        }
+        AnfExpr::Fold { func, .. } => names.contains(func.as_str()),
+        AnfExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            expr_has_fold_with_uncaptured_wrong_arity(then_branch, names)
+                || expr_has_fold_with_uncaptured_wrong_arity(else_branch, names)
+        }
+        AnfExpr::Return(inner) => expr_has_fold_with_uncaptured_wrong_arity(inner, names),
+        AnfExpr::Seq(exprs) => exprs
+            .iter()
+            .any(|e| expr_has_fold_with_uncaptured_wrong_arity(e, names)),
+        AnfExpr::Match { arms, .. } => arms
+            .iter()
+            .any(|a| expr_has_fold_with_uncaptured_wrong_arity(&a.body, names)),
+        AnfExpr::Lambda { body, .. } => expr_has_fold_with_uncaptured_wrong_arity(body, names),
+        AnfExpr::Loop { body }
+        | AnfExpr::WhileLoop { body, .. }
+        | AnfExpr::ForEach { body, .. } => expr_has_fold_with_uncaptured_wrong_arity(body, names),
+        AnfExpr::Break { value } => expr_has_fold_with_uncaptured_wrong_arity(value, names),
+        AnfExpr::RecordNew { fields } => fields
+            .iter()
+            .any(|(_, v)| expr_has_fold_with_uncaptured_wrong_arity(v, names)),
+        AnfExpr::FieldUpdate { value, .. } => {
+            expr_has_fold_with_uncaptured_wrong_arity(value, names)
+        }
+        AnfExpr::TupleNew(elems) | AnfExpr::ListNew(elems) => elems
+            .iter()
+            .any(|e| expr_has_fold_with_uncaptured_wrong_arity(e, names)),
+        AnfExpr::VariantNew { payload, .. } => payload
+            .as_deref()
+            .is_some_and(|p| expr_has_fold_with_uncaptured_wrong_arity(p, names)),
+        AnfExpr::ShortCircuitAnd { right, .. } | AnfExpr::ShortCircuitOr { right, .. } => {
+            expr_has_fold_with_uncaptured_wrong_arity(right, names)
+        }
+        _ => false,
+    }
+}
+
 // ── anf_has_fold ──────────────────────────────────────────────────────────
 
 /// Returns `true` if any sub-expression in `expr` is `AnfExpr::Fold`.
@@ -613,6 +715,25 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     if has_fold_with_captured_reducer(&anf.bindings) {
         return Err(CompileError::UnsupportedWasmConstruct(
             "FoldWithCapturedReducer".to_string(),
+        ));
+    }
+
+    // Gate: Fold reducer that is a capture-free Lambda with ≠ 2 params
+    // (Wave 26C audit).
+    //
+    // A capture-free Lambda with wrong arity (0, 1, 3+ params) falls into the
+    // non-hoistable `else` branch in `emit_anf_expr` and emits a closure env
+    // with `fn_idx = 0` (placeholder).  When a Fold reads this I32 pointer,
+    // the I32 dispatch path loads `fn_idx = 0` and issues
+    // `call_indirect(closure-reducer type, table 0)` — silently calling
+    // `table[0]` with the wrong function and arity rather than trapping
+    // deterministically.
+    //
+    // This gate returns a compile-time diagnostic for that shape so callers
+    // receive a structured `UnsupportedWasmConstruct` instead.
+    if has_fold_with_uncaptured_wrong_arity_reducer(&anf.bindings) {
+        return Err(CompileError::UnsupportedWasmConstruct(
+            "FoldWithNonHoistableReducer".to_string(),
         ));
     }
 
