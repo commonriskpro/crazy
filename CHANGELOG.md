@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ClockHandler` returns epoch-milliseconds** (Wave 23B): handler previously called
   `.as_secs()` (epoch-seconds); corrected to `.as_millis()` to match the `clock.now`
   contract.
+- **`ClockHandler` rejects unknown operations** (Wave 24C): any operation string other
+  than `"now"` previously returned epoch-ms silently. `handle` now matches on the
+  operation name and returns `HostError::Custom("unknown clock operation: {op}")` for
+  unrecognised ops, enforcing the operation contract.
+- **`uses_var` silent miss on `ShortCircuitAnd`/`ShortCircuitOr` left atom** (Wave 24D):
+  both arms only inspected the right sub-expression, so the dead-let pass eliminated
+  bindings whose sole use was as the left operand of a short-circuit expression. The
+  missing left-atom check is now added; `let x = true in or(x, abort("dead"))` no
+  longer mis-fires.
 - **`bytes_length` lossy cast** (Wave 19): replaced `as i64` with `i64::try_from`,
   surfacing an error instead of silently truncating byte-buffer lengths above `i64::MAX`.
 - **`CoreExpr::WhileLoop` single-evaluation bug** (Wave 21A): condition was compiled
@@ -101,3 +110,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Wave 23C** — ACL record field update E2E (RUNTIME-ACL-RECORD-UPDATE-1/2): proves
   `update(record, field, value)` mutates the target field and leaves other fields
   intact through the full pipeline.
+- **Wave 24A** — ACL record offset / 3-field conformance (RUNTIME-ACL-RECORD-UPDATE-3,
+  RUNTIME-ACL-RECORD-3FIELD-1, RUNTIME-ACL-RECORD-3FIELD-UPDATE-1): verifies 8-byte
+  stride formula at offset 0, 8, and 16; proves `FieldUpdate` is field-surgical when
+  the target has neighbours on both sides. Existing neighbour test split into two
+  single-assertion tests for precision.
+- **Wave 24B** — ACL user-defined variant tag E2E (RUNTIME-ACL-VARIANT-USER-1/2/3):
+  proves user-defined discriminant assignment (first-encounter order, starting at 0),
+  multi-tag dispatch, and wildcard fallthrough through ACL parser → Core → ANF → WASM.
+- **Wave 24C** — `ClockHandler` operation contract (RUNTIME-CLOCK-OP-CONTRACT-1/2):
+  CLOCK-OP-CONTRACT-1 asserts `clock.now` returns epoch-ms in `[1e12, 1e13)`;
+  CLOCK-OP-CONTRACT-2 asserts `clock.elapsed` returns `HostError::Custom` identifying
+  the unknown operation.
+- **Wave 24D** — ACL boolean short-circuit E2E (RUNTIME-ACL-AND-1/2, RUNTIME-ACL-OR-1/2):
+  exercises `and()`/`or()` through the full ACL → ANF → `ShortCircuitAnd`/`ShortCircuitOr`
+  → WASM pipeline. AND-2 and OR-1 use `abort("dead")` as the right operand to prove
+  non-evaluation by absence of trap. Adds `abort(msg)` form to `expr_parser`.
+- **Wave 24D (unit)** — `uses_var` coverage for `ShortCircuitAnd`/`Or`
+  (OPT-USESVAR-AND-1/2, OPT-USESVAR-OR-1/2) and `abort()` parser coverage
+  (PARSE-ABORT-1/2/3: well-formed, non-literal arg rejected, zero-arg rejected).
