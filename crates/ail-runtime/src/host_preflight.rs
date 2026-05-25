@@ -11,7 +11,7 @@
 //   2. Manifest CBOR hash check
 //   3. Capability grant check
 //   4+5. Wasmtime validate + instantiate (via `instantiate_inner`)
-//   6. Handler binding check (opt-in)
+//   6. Handler binding check + handler trust gate (both opt-in)
 
 use std::sync::{Arc, Mutex};
 
@@ -135,8 +135,10 @@ pub(crate) fn check_package_trust(
 ///   1. WASM bytes hash check
 ///   2. Manifest CBOR hash check
 ///   3. Capability grant check (module-scoped)
-///   4. Wasmtime validate + instantiate
-///   5. Handler binding check (opt-in via `profile.require_handler_binding()`)
+///   4. Wasmtime module validation (via `instantiate_inner`)
+///   5. Wasmtime instantiation (via `instantiate_inner`)
+///   6. Handler binding check (opt-in via `profile.require_handler_binding()`)
+///      and handler trust gate (opt-in via `profile.min_handler_trust()`)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn preflight_inner(
     engine: &Engine,
