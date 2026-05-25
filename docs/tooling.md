@@ -327,6 +327,7 @@ prod runtime rejects non-prod artifacts
 ```txt
 ail link --profile dev
 ail link --profile prod --output ./my-program
+ail link --profile dev --ensure-runtime-stub
 ail link --emit-runtime-stub ail_runtime.a
 ail link --profile dev --runtime-lib ail_runtime.a
 ail link --print-runtime-symbols
@@ -340,7 +341,7 @@ Inputs:
 
 ```txt
 persisted native artifact (.ail/native/<hash>.o)
-optional: runtime library archive (ail_runtime.a) via --runtime-lib
+optional: runtime library archive (ail_runtime.a) via --runtime-lib or --ensure-runtime-stub
 ```
 
 Outputs:
@@ -358,14 +359,19 @@ ail link requires a prior ail compile --target native for the profile.
 The system linker (cc on Unix, link.exe on Windows) must be installed.
 Default output path is ./<profile> in the current working directory.
 Use --output to override the executable name.
-Use --emit-runtime-stub <path> to generate the stub archive (no system ar required).
-  The generated archive contains stub implementations of the three runtime symbols.
-  Stubs return -1/0 immediately; linking succeeds but capability/concurrency calls
-  will fail at runtime. Use for smoke-testing the link step before Phase 9 runtime.
+Use --ensure-runtime-stub to auto-generate and cache .ail/runtime/ail_runtime.a
+  if it does not exist, then use it as the runtime library for this invocation.
+  Subsequent calls reuse the cached archive (idempotent, no regeneration).
+  Incompatible with --runtime-lib, --emit-runtime-stub, --print-runtime-symbols.
+Use --emit-runtime-stub <path> to generate the stub archive at an explicit path
+  (no system ar required). Stubs return -1/0 immediately; linking succeeds but
+  capability/concurrency calls will fail at runtime. Use for smoke-testing the
+  link step before Phase 9 runtime.
 Use --runtime-lib to supply the ail-runtime archive and resolve runtime stubs.
-Without --runtime-lib, a hint is emitted advising the user; the link may fail
-  with "undefined symbol" errors for host_call / __ail_malloc / ail_runtime_call
-  unless those symbols are supplied through another mechanism.
+Without --runtime-lib or --ensure-runtime-stub, a hint is emitted advising the
+  user; the link may fail with "undefined symbol" errors for host_call /
+  __ail_malloc / ail_runtime_call unless those symbols are supplied through
+  another mechanism.
 Use --print-runtime-symbols to list the three imported symbol names (diagnostic).
 ```
 
@@ -376,7 +382,14 @@ Use --print-runtime-symbols to list the three imported symbol names (diagnostic)
 > injectable; tests substitute a `FakeLinker` to verify command construction
 > and error paths without requiring a system C compiler in CI.
 >
-> The three-step flow with the stub archive:
+> One-step flow (Wave 14A — auto-locate stub archive):
+> ```txt
+> ail compile --target native --profile dev           # emits .ail/native/<hash>.o
+> ail link --profile dev --ensure-runtime-stub        # generates+caches .ail/runtime/ail_runtime.a
+>                                                     # then links → ./dev (stub runtime)
+> ```
+>
+> Two-step flow with explicit stub archive:
 > ```txt
 > ail compile --target native --profile dev           # emits .ail/native/<hash>.o
 > ail link --emit-runtime-stub ail_runtime.a          # generates stub archive
@@ -388,13 +401,15 @@ Use --print-runtime-symbols to list the three imported symbol names (diagnostic)
 > - `__ail_malloc`     — heap allocator stub (ail-runtime allocator)
 > - `ail_runtime_call` — concurrency/resource/channel dispatch (Phase 9+)
 >
-> `--emit-runtime-stub` generates a deterministic static archive in pure Rust
-> (no system `ar` or `cc`), using Cranelift to emit the three stubs in the same
-> object format as native program objects.  The stub archive is suitable for
-> smoke-testing the link flow; full runtime dispatch requires Phase 9+.
+> `--ensure-runtime-stub` and `--emit-runtime-stub` both use the same pure-Rust
+> archive generator (Cranelift-compiled stubs, no system `ar` or `cc` required).
+> The stub archive is suitable for smoke-testing the link flow; full runtime
+> dispatch requires Phase 9+.  `--ensure-runtime-stub` caches the archive at
+> `.ail/runtime/ail_runtime.a` and reuses it on subsequent calls; `--emit-runtime-stub`
+> writes to an explicit path each time.
 >
 > Pass `--runtime-lib <path/to/ail_runtime.a>` to bundle these into the linked
-> executable.  When the flag is absent, `ail link` succeeds but emits a hint
+> executable.  When neither flag is set, `ail link` succeeds but emits a hint
 > advising the user; the downstream linker will fail with "undefined symbol"
 > errors if those symbols are not otherwise provided.  The hint is advisory and
 > not a hard error — advanced users may supply the symbols via custom link scripts
@@ -997,7 +1012,7 @@ The current implemented tooling subset resolves the original tooling questions a
 | `ail gc` | Implemented for the file store. Collects unreachable objects under `.ail/store/objects/`. Not supported for memory or Postgres backends. |
 | `policy list` / `policy add` | Implemented. Rules are persisted as text entries; `policy check` parses capability deny/allow rules from the list. |
 | `package init` / `package install` / `package search` | Implemented against the local in-process registry. `install` adds to the lockfile; `search` queries by name prefix. |
-| `ail link` | Implemented. Resolves the latest persisted native artifact for the given profile from `.ail/native/artifact-index.json` and invokes the system linker (`cc` on Unix, `link.exe` on Windows) through an injectable `LinkerBoundary`. Default output is `./<profile>` in the current working directory; `--output` overrides. Tests use `FakeLinker` (no live linker required in CI). See `crates/ail-cli/src/link_commands.rs`. |
+| `ail link` | Implemented. Resolves the latest persisted native artifact for the given profile from `.ail/native/artifact-index.json` and invokes the system linker (`cc` on Unix, `link.exe` on Windows) through an injectable `LinkerBoundary`. Default output is `./<profile>` in the current working directory; `--output` overrides. `--runtime-lib <path>` (Wave 12B) appends a runtime archive to the linker command. `--emit-runtime-stub <path>` (Wave 13A) generates a deterministic stub archive in pure Rust. `--print-runtime-symbols` (Wave 13A) prints the three imported symbol names. `--ensure-runtime-stub` (Wave 14A) auto-generates and caches `.ail/runtime/ail_runtime.a` if absent, then uses it as the runtime library for the current invocation (idempotent). Tests use `FakeLinker` and `CapturingLinker` (no live linker required in CI). See `crates/ail-cli/src/link_commands.rs`. |
 | `remote submit` | Implemented as `ail remote submit <change-id> --signer <key-ref> [--json]` against the local in-process `Coordinator::handle_remote_exchange` boundary. It loads and validates `.ail/remote.json` when present, and missing config defaults to deny-all in the loader, but submit still uses ephemeral in-process signer identity until durable key loading exists. It does not claim network transport. |
 | `remote push` / `remote pull` | Implemented as `ail remote push --root <object-id> [--json]` and `ail remote pull <root> [--json]` for initialized file-backed projects. Raw roots are bundled alone and report `bundle_scope=single_root_object`. Roots that decode as `SnapshotEnvelope` include required direct CAS dependencies declared by the envelope (`graph_root_hash`, `applied_change_id`, `audit_record_ids`, and `migration_metadata_ids` as applicable) and report `bundle_scope=root_with_snapshot_envelope_dependencies`. Missing real direct CAS dependencies fail bundle construction instead of producing partial bundles. `parent_id` remains snapshot identity metadata, not a direct CAS object dependency. Bundles are persisted under `.ail/remote/bundles/<root>.cbor` and checked through the in-process bundle exchange boundary. Transport scope is `local_file_bundle_store+in_process`; it does not claim network transport, federation, remote discovery, remote config loading for push/pull, raw graph traversal, or general transitive traversal. |
 

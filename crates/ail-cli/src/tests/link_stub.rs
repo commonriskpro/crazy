@@ -239,7 +239,8 @@ fn emit_stub_result_json_size_bytes_matches_input() {
 //   THEN it returns Err(CliError::Domain)
 #[test]
 fn validate_link_mode_flags_errors_when_both_set() {
-    let result = validate_link_mode_flags(true, true);
+    // print + emit → conflict (2nd and 3rd args are ensure and has_runtime_lib)
+    let result = validate_link_mode_flags(true, true, false, false);
     assert!(
         result.is_err(),
         "validate_link_mode_flags must return Err when both standalone flags are set"
@@ -253,15 +254,15 @@ fn validate_link_mode_flags_errors_when_both_set() {
 #[test]
 fn validate_link_mode_flags_accepts_single_or_neither() {
     assert!(
-        validate_link_mode_flags(true, false).is_ok(),
+        validate_link_mode_flags(true, false, false, false).is_ok(),
         "print-only must be accepted"
     );
     assert!(
-        validate_link_mode_flags(false, true).is_ok(),
+        validate_link_mode_flags(false, true, false, false).is_ok(),
         "emit-only must be accepted"
     );
     assert!(
-        validate_link_mode_flags(false, false).is_ok(),
+        validate_link_mode_flags(false, false, false, false).is_ok(),
         "neither flag must be accepted (normal link mode)"
     );
 }
