@@ -13,7 +13,7 @@
 
 use ail_compiler::core_ir::{CoreExpr, LiteralValue, MatchArm, StageHashes};
 use ail_compiler::{
-    AnfBinding, AnfExpr, AnfIr, SourceMap, emit_wasm,
+    AnfBinding, AnfExpr, AnfIr, CompileError, SourceMap, emit_wasm,
     lower::{lower_core_expr_to_anf, lower_to_anf, lower_to_core_ir},
 };
 use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
@@ -729,9 +729,12 @@ fn constructor_match_ok_with_wildcard_fallback_works() {
 
 #[test]
 fn multi_binding_constructor_pattern_traps() {
-    // Multi-binding patterns like `"Ok(a, b)"` are not yet supported — must trap.
-    let ops = emit_valid_wasm(
-        AnfExpr::Let {
+    // Wave 16B: multi-binding patterns like `"Ok(a, b)"` are unsupported at compile time.
+    // emit_wasm must return Err(UnsupportedPatternSyntax) — NOT a runtime Unreachable.
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.multi_binding_trap".to_string(),
+        expr: AnfExpr::Let {
             name: "v".to_string(),
             value: Box::new(AnfExpr::VariantNew {
                 tag: "Ok".to_string(),
@@ -745,12 +748,37 @@ fn multi_binding_constructor_pattern_traps() {
                 }],
             }),
         },
-        "fn.multi_binding_trap",
-    );
-
+    };
+    let result = emit_wasm(&sealed_anf(binding));
     assert!(
-        ops.iter().any(|op| op == "Unreachable"),
-        "multi-binding constructor patterns must trap (unsupported), got {ops:?}"
+        matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "multi-binding constructor pattern must be rejected at compile time with UnsupportedPatternSyntax, got {result:?}"
+    );
+}
+
+#[test]
+fn nested_constructor_pattern_against_i64_scrutinee_rejected() {
+    // Wave 16B: nested constructor patterns like `"Ok(Some(x))"` are unsupported regardless of
+    // the scrutinee type — emit_wasm must return Err(UnsupportedPatternSyntax).
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.nested_constructor_i64".to_string(),
+        expr: AnfExpr::Let {
+            name: "n".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
+            body: Box::new(AnfExpr::Match {
+                scrutinee: "n".to_string(),
+                arms: vec![ail_compiler::anf::AnfMatchArm {
+                    pattern: "Ok(Some(x))".to_string(),
+                    body: AnfExpr::Literal(LiteralValue::Int(0)),
+                }],
+            }),
+        },
+    };
+    let result = emit_wasm(&sealed_anf(binding));
+    assert!(
+        matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "nested constructor pattern must be rejected at compile time with UnsupportedPatternSyntax, got {result:?}"
     );
 }
 
