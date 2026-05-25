@@ -14,6 +14,7 @@ use wasm_encoder::{BlockType, CodeSection, Function, Instruction, ValType};
 
 use crate::anf::{AnfBinding, AnfExpr};
 use crate::core_ir::LiteralValue;
+use crate::error::CompileError;
 use crate::wasm_abi::{
     EffectDataLayout, RESULT_BUFFER_MAX, binding_params, binding_result, export_name,
     infer_expr_type, record_layout_fields, well_known_variant_tag,
@@ -86,6 +87,12 @@ struct WasmCodegenCtx<'a> {
     /// Closure-hoisted table indices start at `n_bindings + n_hoisted` so
     /// they are laid out after the regular-hoisted Lambda entries.
     next_closure_hoisted_table_idx: u32,
+    /// First compile-time error recorded during emission, if any.
+    ///
+    /// Set via `set_error`; checked by `build_code_section` after each
+    /// `emit_anf_expr` call.  Only the first error is kept — subsequent
+    /// calls to `set_error` are no-ops once an error is present.
+    error: Option<CompileError>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,6 +131,7 @@ impl<'a> WasmCodegenCtx<'a> {
             function_offset,
             next_hoisted_table_idx: first_hoisted_table_idx,
             next_closure_hoisted_table_idx: first_closure_hoisted_table_idx,
+            error: None,
         }
     }
 
@@ -192,6 +200,16 @@ impl<'a> WasmCodegenCtx<'a> {
             .iter()
             .rposition(|label| *label == target)
             .map(|idx| (self.labels.len() - 1 - idx) as u32)
+    }
+
+    /// Record the first compile-time error encountered during emission.
+    ///
+    /// Subsequent calls are no-ops — only the first error is kept so that
+    /// callers see the root cause rather than a cascade of follow-on errors.
+    fn set_error(&mut self, e: CompileError) {
+        if self.error.is_none() {
+            self.error = Some(e);
+        }
     }
 }
 
@@ -354,6 +372,40 @@ fn parse_bool_pattern(pattern: &str) -> Option<bool> {
     }
 }
 
+/// Returns `true` when the pattern string looks like a constructor application
+/// but uses syntax the WASM backend does not yet support.
+///
+/// Detected unsupported shapes:
+/// - Nested constructors: `"Ok(Some(x))"` — payload contains `(`
+/// - Multi-binding tuples: `"Pair(a, b)"` — payload contains `,`
+/// - Record-field syntax: `"{field: val}"` — pattern starts with `{`
+///
+/// This is used to distinguish "pattern we don't understand at all" from
+/// "pattern we understand is a constructor but whose payload is too complex",
+/// enabling a `CompileError::UnsupportedPatternSyntax` instead of a silent
+/// runtime `Unreachable`.
+fn is_unsupported_pattern_shape(pattern: &str) -> bool {
+    let trimmed = pattern.trim();
+    // Record-field syntax (e.g. `{name: x}`).
+    if trimmed.starts_with('{') {
+        return true;
+    }
+    // Constructor with payload: starts uppercase, contains `(...)`.
+    if trimmed
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_uppercase())
+        && let Some(open) = trimmed.find('(')
+    {
+        // Strip the closing `)` if present; inspect the payload.
+        let payload = trimmed[open + 1..].trim();
+        let payload = payload.strip_suffix(')').unwrap_or(payload).trim();
+        // Nested constructor or multi-binding payload.
+        return payload.contains('(') || payload.contains(',');
+    }
+    false
+}
+
 /// Parse a variant constructor pattern string into `(tag, Option<binding>)`.
 ///
 /// Recognises:
@@ -478,8 +530,17 @@ fn emit_match_arms<'a>(
     };
 
     if can_match.is_none() {
+        // Detect compile-time unsupported pattern shapes (nested constructors,
+        // multi-binding, record-field syntax) and record a structured error
+        // before emitting Unreachable as a defence-in-depth instruction stream.
+        if is_unsupported_pattern_shape(first.pattern.trim()) {
+            ctx.set_error(CompileError::UnsupportedPatternSyntax(
+                first.pattern.trim().to_string(),
+            ));
+        }
         // Pattern is not integer, boolean, wildcard, or a recognised constructor.
-        // Trap with unreachable rather than silently skipping or mismatching.
+        // Unreachable is emitted so the instruction stream remains structurally
+        // valid for the WASM validator; the error above is the caller-visible signal.
         insns.push(Instruction::Unreachable);
         return result_ty;
     }
@@ -1650,7 +1711,8 @@ fn emit_anf_expr<'a>(
 /// so the table indices assigned by Lambda emission and the body indices emitted
 /// here are always consistent.
 ///
-/// Returns `None` when `bindings` is empty AND both hoisted lists are empty.
+/// Returns `Ok(None)` when `bindings` is empty AND both hoisted lists are empty.
+/// Returns `Err(CompileError)` if any binding contains an unsupported pattern.
 pub(crate) fn build_code_section(
     bindings: &[AnfBinding],
     effect_data: &EffectDataLayout,
@@ -1659,9 +1721,9 @@ pub(crate) fn build_code_section(
     closure_reducer_type_idx: Option<u32>,
     hoisted_lambdas: &[(Vec<String>, AnfExpr)],
     closure_hoistable_lambdas: &[(Vec<String>, Vec<String>, AnfExpr)],
-) -> Option<CodeSection> {
+) -> Result<Option<CodeSection>, CompileError> {
     if bindings.is_empty() && hoisted_lambdas.is_empty() && closure_hoistable_lambdas.is_empty() {
-        return None;
+        return Ok(None);
     }
     let mut codes = CodeSection::new();
     let functions = function_index(bindings, function_offset);
@@ -1705,6 +1767,12 @@ pub(crate) fn build_code_section(
         let mut insns: Vec<Instruction<'_>> = Vec::new();
 
         let emitted_ty = emit_anf_expr(body_to_emit, &mut ctx, &functions, &mut insns);
+
+        // Propagate any compile-time error detected during emission
+        // (e.g. unsupported pattern syntax in a Match arm).
+        if let Some(e) = ctx.error.take() {
+            return Err(e);
+        }
 
         // Advance the shared counters: the binding may have encountered N
         // hoistable or closure-hoistable Lambdas, each consuming one slot.
@@ -1752,6 +1820,11 @@ pub(crate) fn build_code_section(
         let mut insns: Vec<Instruction<'_>> = Vec::new();
 
         let emitted_ty = emit_anf_expr(body, &mut ctx, &functions, &mut insns);
+
+        // Propagate any compile-time error from the hoisted Lambda body.
+        if let Some(e) = ctx.error.take() {
+            return Err(e);
+        }
 
         // Hoisted Lambda must return I64 (fold reducer: (i64, i64) → i64).
         // If the body produced I32 or nothing, extend/fill to I64.
@@ -1829,6 +1902,11 @@ pub(crate) fn build_code_section(
         // Emit Lambda body with captures and user params in scope.
         let emitted_ty = emit_anf_expr(body, &mut ctx, &functions, &mut insns);
 
+        // Propagate any compile-time error from the closure-hoisted Lambda body.
+        if let Some(e) = ctx.error.take() {
+            return Err(e);
+        }
+
         // Closure-hoisted Lambda must return I64 (closure-reducer: (i64,i64,i64)→i64).
         match emitted_ty {
             Some(ValType::I64) => {}
@@ -1854,5 +1932,5 @@ pub(crate) fn build_code_section(
         codes.function(&f);
     }
 
-    Some(codes)
+    Ok(Some(codes))
 }

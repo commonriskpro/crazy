@@ -688,7 +688,7 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     if needs_fold && let Some(elems) = build_element_section(function_offset, n_functions) {
         module.section(&elems);
     }
-    if let Some(codes) = build_code_section(
+    match build_code_section(
         &anf.bindings,
         &effect_data,
         function_offset,
@@ -697,7 +697,11 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         &hoisted_lambdas,
         &closure_hoistable_lambdas,
     ) {
-        module.section(&codes);
+        Ok(Some(codes)) => {
+            module.section(&codes);
+        }
+        Ok(None) => {}
+        Err(e) => return Err(e),
     }
     if let Some(data) = build_data_section(&effect_data) {
         module.section(&data);

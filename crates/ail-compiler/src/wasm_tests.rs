@@ -4802,3 +4802,156 @@ fn closure_hoisted_fold_module_has_correct_function_count() {
 }
 
 // ── End Wave 13B / Wave 16A PR3 tests ─────────────────────────────────────
+
+// ── Wave 16B: pattern-matching compile-time diagnostics ───────────────────
+//
+// Proves that unsupported pattern syntax (nested constructors, multi-binding
+// tuples, record-field patterns) causes `emit_wasm` to return
+// `Err(CompileError::UnsupportedPatternSyntax(...))` instead of silently
+// emitting a runtime `Unreachable`.
+
+// Helper: build an AnfIr whose single binding contains a Match with one arm
+// that uses the supplied pattern string.  The scrutinee is an i32 variant
+// pointer named `"v"` bound by a prior `Let` as `RecordNew([])` (an i32).
+fn match_anf_with_pattern(fn_name: &str, pattern: &str) -> AnfIr {
+    use crate::anf::{AnfMatchArm, SourceMap};
+    use crate::core_ir::StageHashes;
+    use ail_core::semantic_graph::NodeRef;
+
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: fn_name.to_string(),
+        // let v = RecordNew([]); match v { <pattern> => 0 }
+        expr: AnfExpr::Let {
+            name: "v".to_string(),
+            value: Box::new(AnfExpr::RecordNew { fields: vec![] }),
+            body: Box::new(AnfExpr::Match {
+                scrutinee: "v".to_string(),
+                arms: vec![AnfMatchArm {
+                    pattern: pattern.to_string(),
+                    body: AnfExpr::Literal(LiteralValue::Int(0)),
+                }],
+            }),
+        },
+    };
+    AnfIr {
+        schema_version: crate::anf::ANF_SCHEMA_VERSION,
+        source_map: SourceMap::from_bindings(&[binding.clone()]),
+        bindings: vec![binding],
+        stage_hashes: StageHashes {
+            graph_snapshot_hash: [0u8; 32],
+            verification_report_hash: [0u8; 32],
+            core_ir_hash: [1u8; 32],
+            anf_ir_hash: Some([2u8; 32]),
+            wasm_hash: None,
+            native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
+        },
+    }
+}
+
+// Scenario: nested constructor pattern `"Ok(Some(x))"` → UnsupportedPatternSyntax.
+// Proves that a pattern with a constructor payload that itself contains `(`
+// is rejected at compile time and does NOT compile to a silent Unreachable.
+#[test]
+fn nested_constructor_pattern_returns_unsupported_pattern_error() {
+    let anf = match_anf_with_pattern("fn.nested", "Ok(Some(x))");
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "nested constructor pattern must return UnsupportedPatternSyntax, got {result:?}"
+    );
+}
+
+// Scenario: multi-binding pattern `"Pair(a, b)"` → UnsupportedPatternSyntax.
+// Proves that a pattern whose payload contains `,` (tuple destructuring)
+// is rejected at compile time.
+#[test]
+fn multi_binding_pattern_returns_unsupported_pattern_error() {
+    let anf = match_anf_with_pattern("fn.multi", "Pair(a, b)");
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "multi-binding pattern must return UnsupportedPatternSyntax, got {result:?}"
+    );
+}
+
+// Scenario: record-field pattern `"{name: x}"` → UnsupportedPatternSyntax.
+// Proves that a pattern using `{` syntax is rejected at compile time.
+#[test]
+fn record_field_pattern_returns_unsupported_pattern_error() {
+    let anf = match_anf_with_pattern("fn.record", "{name: x}");
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "record-field pattern must return UnsupportedPatternSyntax, got {result:?}"
+    );
+}
+
+// Scenario: error payload contains the offending pattern string.
+// Proves the error carries enough information for a diagnostic message.
+#[test]
+fn unsupported_pattern_error_carries_pattern_string() {
+    let anf = match_anf_with_pattern("fn.nested2", "Ok(Some(x))");
+    let Err(CompileError::UnsupportedPatternSyntax(pat)) = emit_wasm(&anf) else {
+        panic!("expected UnsupportedPatternSyntax");
+    };
+    assert!(
+        pat.contains("Ok(Some(x))"),
+        "error payload must contain the pattern string, got: {pat}"
+    );
+}
+
+// Scenario: UnsupportedPatternSyntax Display mentions 'pattern' and 'desugared'.
+// Proves the error message is diagnostic-quality.
+#[test]
+fn unsupported_pattern_syntax_display_is_descriptive() {
+    let e = CompileError::UnsupportedPatternSyntax("Ok(Some(x))".to_string());
+    let msg = e.to_string();
+    assert!(
+        msg.contains("pattern"),
+        "display must contain 'pattern', got: {msg}"
+    );
+    assert!(
+        msg.contains("desugared") || msg.contains("desugar"),
+        "display must mention desugaring, got: {msg}"
+    );
+}
+
+// Scenario: valid single-binding constructor pattern still compiles.
+// Proves the detection does not break supported patterns.
+#[test]
+fn single_binding_constructor_pattern_still_compiles() {
+    let anf = match_anf_with_pattern("fn.ok", "Ok(x)");
+    let result = emit_wasm(&anf);
+    // Should succeed (or fail for unrelated reasons — not UnsupportedPatternSyntax).
+    assert!(
+        !matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "single-binding constructor pattern must NOT return UnsupportedPatternSyntax, got {result:?}"
+    );
+}
+
+// Scenario: tag-only constructor pattern still compiles.
+#[test]
+fn tag_only_constructor_pattern_still_compiles() {
+    let anf = match_anf_with_pattern("fn.none", "None");
+    let result = emit_wasm(&anf);
+    assert!(
+        !matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "tag-only constructor pattern must NOT return UnsupportedPatternSyntax, got {result:?}"
+    );
+}
+
+// Scenario: wildcard pattern `"_"` still compiles.
+#[test]
+fn wildcard_pattern_still_compiles() {
+    let anf = match_anf_with_pattern("fn.wildcard", "_");
+    let result = emit_wasm(&anf);
+    assert!(
+        !matches!(result, Err(CompileError::UnsupportedPatternSyntax(_))),
+        "wildcard pattern must NOT return UnsupportedPatternSyntax, got {result:?}"
+    );
+}
+
+// ── End Wave 16B pattern-matching diagnostics tests ───────────────────────
