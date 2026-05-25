@@ -4368,3 +4368,159 @@ end
         "update(r,y,99) must not corrupt field x; field(r,x) must still return I64(10)"
     );
 }
+
+// ── Wave 24B: ACL source-level E2E tests for user-defined variant tags ────
+//
+// Spec scenarios covered (RUNTIME-ACL-VARIANT-USER-1..3):
+//
+//  RUNTIME-ACL-VARIANT-USER-1: ACL body
+//    `match(variant(Status, 1), Status(x), x, _, 0)` must construct a
+//    user-defined Status variant carrying payload 1, match the Status(x) arm,
+//    bind x=1, and return I64(1).  Proves the full ACL source pipeline for
+//    user-defined constructor tags with payload extraction: parse → VariantNew
+//    → lower → wasm_emit → runtime dispatch.
+//
+//    Tag-assignment note: "Status" is not a well-known tag (None/Ok/Some/Err),
+//    so assign_tag assigns it discriminant 0 on first encounter.  The
+//    constructor stores 0 at heap offset 0; the match arm checks offset 0 == 0
+//    → fires; payload (1) is loaded from offset 8 and bound to x.
+//
+//  RUNTIME-ACL-VARIANT-USER-2: Two user-defined tags Active and Inactive
+//    dispatch to distinct arms.  Two functions in the same ACL module share
+//    the same arm list `Active, 1, Inactive, 2, _, 0` but construct different
+//    variants:
+//    - fn.test_active  constructs variant(Active)  → Active arm fires  → 1
+//    - fn.test_inactive constructs variant(Inactive) → Inactive arm fires → 2
+//
+//    Tag-assignment within each function's emit context:
+//    - fn.test_active:   "Active" is first → id=0; arm "Active"→0 matches.
+//    - fn.test_inactive: "Inactive" is first → id=0; arm "Active"→1, arm
+//      "Inactive"→0 (from cache) → matches.
+//
+//    Proves that user-defined tag discriminants are assigned consistently
+//    within a function context regardless of declaration order in the arm list.
+//
+//  RUNTIME-ACL-VARIANT-USER-3: A user-defined variant whose tag does not
+//    match any named arm falls through to the wildcard.  ACL body
+//    `match(variant(Pending), Active, 1, Inactive, 2, _, 99)`:
+//    "Pending" → discriminant 0; arm "Active" → 1; arm "Inactive" → 2.
+//    Neither named arm matches discriminant 0 → wildcard fires → 99.
+//
+//    Proves the wildcard fallback is reached when no constructor arm matches
+//    the stored discriminant, mirroring RUNTIME-VARIANT-MATCH-3 at the
+//    ACL source level without using well-known tags.
+
+// RUNTIME-ACL-VARIANT-USER-1
+//
+// ACL body: match(variant(Status, 1), Status(x), x, _, 0)
+//
+//   Pipeline:
+//   1. `variant(Status, 1)` → parse_variant_call →
+//      CoreExpr::VariantNew { tag: "Status", payload: Some(Literal(1)) }
+//   2. lower_to_anf → let _t0=1 in let _t1=VariantNew{tag:"Status",payload:_t0} in
+//      Match{scrutinee:"_t1", arms:[Status(x)→Var("x"), _→Literal(0)]}
+//   3. WASM emit VariantNew: assign_tag("Status")=0 (no well-known tags present);
+//      alloc 16 bytes; store tag_id=0 at offset 0 (I32), store 1 at offset 8 (I64).
+//   4. Match arm "Status(x)": parse_constructor_pattern → ("Status", Some("x"));
+//      load I32 @ offset 0 = 0; assign_tag("Status")=0 (from cache);
+//      I32Eq(0, 0) → true → bind x = I64 @ offset 8 = 1 → return Var("x") = 1.
+//   5. Wildcard arm is dead code in this invocation.
+//   6. Returns I64(1).
+//
+// Proves: ACL `variant` constructor form → user-defined VariantNew → match
+// arm with payload binding → correct I64 return — end-to-end.
+#[test]
+fn acl_variant_user_1_status_match_extracts_payload() {
+    let acl = "\
+change acl_variant_user_1 base=0
+author tester
+description variant(Status, 1) matched by Status(x) must return I64(1)
+op create_function id=fn.main return=Int body=match(variant(Status, 1), Status(x), x, _, 0)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(1),
+        "match(variant(Status, 1), Status(x), x, _, 0) must return I64(1)"
+    );
+}
+
+// RUNTIME-ACL-VARIANT-USER-2
+//
+// Two functions in the same ACL module, both with arms [Active→1, Inactive→2, _→0]:
+//
+//   fn.test_active:   body = match(variant(Active), Active, 1, Inactive, 2, _, 0)
+//   fn.test_inactive: body = match(variant(Inactive), Active, 1, Inactive, 2, _, 0)
+//
+// fn.test_active emit context:
+//   - VariantNew "Active"   → assign_tag("Active")   = 0  (first encounter)
+//   - Match arm "Active"    → assign_tag("Active")   = 0  (cache hit) → 0==0 fires → 1
+//
+// fn.test_inactive emit context (independent):
+//   - VariantNew "Inactive"  → assign_tag("Inactive")  = 0  (first encounter)
+//   - Match arm "Active"     → assign_tag("Active")    = 1  (second tag)
+//   - Match arm "Inactive"   → assign_tag("Inactive")  = 0  (cache hit) → 0==0 fires → 2
+//
+// Proves:
+// - fn.test_active  → I64(1): Active arm fires, Inactive arm is not reached.
+// - fn.test_inactive → I64(2): Active arm fails (0≠1), Inactive arm fires.
+//
+// The two tags dispatch to distinct arms within each function's emit context,
+// confirming user-defined discriminants are internally consistent without
+// interference from well-known tags.
+#[test]
+fn acl_variant_user_2_active_inactive_dispatch_distinctly() {
+    let acl = "\
+change acl_variant_user_2 base=0
+author tester
+description Active and Inactive user tags must dispatch to distinct arms
+op create_function id=fn.test_active return=Int body=match(variant(Active), Active, 1, Inactive, 2, _, 0)
+op create_function id=fn.test_inactive return=Int body=match(variant(Inactive), Active, 1, Inactive, 2, _, 0)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "test_active"),
+        RuntimeValue::I64(1),
+        "variant(Active) must match Active arm and return I64(1)"
+    );
+    assert_eq!(
+        invoke_acl_export(acl, "test_inactive"),
+        RuntimeValue::I64(2),
+        "variant(Inactive) must skip Active arm and match Inactive arm, returning I64(2)"
+    );
+}
+
+// RUNTIME-ACL-VARIANT-USER-3
+//
+// ACL body: match(variant(Pending), Active, 1, Inactive, 2, _, 99)
+//
+//   Pipeline:
+//   1. `variant(Pending)` → VariantNew { tag: "Pending", payload: None }
+//   2. lower_to_anf → let _t0=VariantNew{tag:"Pending",payload:None} in
+//      Match{scrutinee:"_t0", arms:[Active→1, Inactive→2, _→99]}
+//   3. WASM emit VariantNew: assign_tag("Pending")=0 (first encounter);
+//      alloc 16 bytes; store tag_id=0 at offset 0 (I32); no payload written.
+//   4. Match arm "Active":   assign_tag("Active")  =1; I32Eq(0,1)=false → Else.
+//      Match arm "Inactive": assign_tag("Inactive")=2; I32Eq(0,2)=false → Else.
+//      Wildcard "_": unconditionally emits body → Literal(99).
+//   5. Returns I64(99).
+//
+// Proves: when no named constructor arm matches the stored discriminant, the
+// wildcard arm fires and the fallback value is returned — mirroring
+// RUNTIME-VARIANT-MATCH-3 at the ACL source level, using only user-defined
+// tags (no None/Ok/Some/Err mixing).
+#[test]
+fn acl_variant_user_3_mismatch_falls_to_wildcard() {
+    let acl = "\
+change acl_variant_user_3 base=0
+author tester
+description variant(Pending) with no matching arm must fall to wildcard returning 99
+op create_function id=fn.main return=Int body=match(variant(Pending), Active, 1, Inactive, 2, _, 99)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(99),
+        "variant(Pending) must skip Active and Inactive arms and fall to wildcard returning I64(99)"
+    );
+}
