@@ -449,6 +449,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Err(err);
@@ -482,6 +483,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Err(err);
@@ -514,6 +516,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Err(err);
@@ -546,6 +549,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Err(err);
@@ -585,6 +589,7 @@ impl RuntimeHost {
                         trace_id,
                         verification_report_hash: vr_hash,
                         trace_context: child_trace,
+                        denial_category: None,
                     },
                 );
                 return Err(err);
@@ -619,6 +624,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Err(err);
@@ -652,6 +658,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Err(err);
@@ -689,6 +696,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Err(err);
@@ -721,6 +729,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Err(err);
@@ -755,6 +764,19 @@ impl RuntimeHost {
             }
             Err(err) => Err(err),
         };
+
+        // Extract the generic audit category BEFORE converting the error to
+        // opaque form.  The category is written only to the audit log; callers
+        // always receive a plain `CapabilityDenied` (no category exposed).
+        let denial_category = result
+            .as_ref()
+            .err()
+            .and_then(|e| e.audit_category())
+            .map(|s| s.to_string());
+        // Convert any `CapabilityDeniedCategorized` to `CapabilityDenied` so
+        // the audit category is never returned to the caller.
+        let result = result.map_err(|e| e.into_opaque_denial());
+
         let duration_us = start.elapsed().as_micros() as u64;
         let succeeded = result.is_ok();
         let output_hash = result
@@ -766,7 +788,7 @@ impl RuntimeHost {
         self.concurrent_calls -= 1;
         self.call_depth -= 1;
 
-        // Step 5: audit.
+        // Step 6: audit (denial_category carries opaque handler failure reason).
         self.audit_log
             .lock()
             .expect("audit_log lock")
@@ -785,6 +807,7 @@ impl RuntimeHost {
                 trace_id,
                 verification_report_hash: vr_hash,
                 trace_context: child_trace,
+                denial_category,
             });
 
         result

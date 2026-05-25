@@ -102,6 +102,19 @@ pub enum AuditEvent {
         /// new `span_id`, `parent_span_id` == caller's `span_id`).
         /// `None` when no trace context was set.
         trace_context: Option<TraceContext>,
+
+        // ── Audit-only denial metadata (no secret data) ───────────────────
+        /// Generic failure category set by the handler on denial.
+        ///
+        /// `Some` only when the handler returned
+        /// [`HostError::CapabilityDeniedCategorized`](crate::abi::HostError::CapabilityDeniedCategorized).
+        /// The category is a machine-readable string (e.g. `"secret.not_found"`,
+        /// `"secret.provider_unavailable"`) that describes WHY the call was
+        /// denied without revealing any secret IDs, vault paths, or other
+        /// sensitive data.
+        ///
+        /// `None` on success or when the handler did not provide a category.
+        denial_category: Option<String>,
     },
 }
 
