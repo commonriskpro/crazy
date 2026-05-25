@@ -4,7 +4,8 @@
 // Spec: G26 stdlib-impl, Requirements R4.1–R4.6.
 
 use ail_stdlib::text::{
-    NormalizeForm, text_from_bytes, text_join, text_length_graphemes, text_normalize, text_split,
+    NormalizeForm, text_contains, text_ends_with, text_from_bytes, text_join,
+    text_length_graphemes, text_normalize, text_replace, text_split, text_starts_with,
     text_to_bytes, text_trim,
 };
 
@@ -192,4 +193,102 @@ fn text_normalize_nfc_nfd_differ_for_nonascii() {
 fn text_normalize_empty_string() {
     assert_eq!(text_normalize("", NormalizeForm::Nfc), "");
     assert_eq!(text_normalize("", NormalizeForm::Nfd), "");
+}
+
+// ── R4.8: text_starts_with ────────────────────────────────────────────────
+
+#[test]
+fn text_starts_with_matching_prefix() {
+    assert!(text_starts_with("hello world", "hello"));
+}
+
+#[test]
+fn text_starts_with_non_matching_prefix() {
+    assert!(!text_starts_with("hello world", "world"));
+}
+
+#[test]
+fn text_starts_with_empty_prefix_always_true() {
+    assert!(text_starts_with("hello", ""));
+}
+
+#[test]
+fn text_starts_with_empty_string_non_empty_prefix() {
+    assert!(!text_starts_with("", "hi"));
+}
+
+#[test]
+fn text_starts_with_full_string_is_prefix() {
+    assert!(text_starts_with("hello", "hello"));
+}
+
+// ── R4.9: text_ends_with ─────────────────────────────────────────────────
+
+#[test]
+fn text_ends_with_matching_suffix() {
+    assert!(text_ends_with("hello world", "world"));
+}
+
+#[test]
+fn text_ends_with_non_matching_suffix() {
+    assert!(!text_ends_with("hello world", "hello"));
+}
+
+#[test]
+fn text_ends_with_empty_suffix_always_true() {
+    assert!(text_ends_with("hello", ""));
+}
+
+#[test]
+fn text_ends_with_empty_string_non_empty_suffix() {
+    assert!(!text_ends_with("", "hi"));
+}
+
+// ── R4.10: text_contains ─────────────────────────────────────────────────
+
+#[test]
+fn text_contains_substring_present() {
+    assert!(text_contains("hello world", "lo wo"));
+}
+
+#[test]
+fn text_contains_substring_absent() {
+    assert!(!text_contains("hello world", "xyz"));
+}
+
+#[test]
+fn text_contains_empty_needle_always_true() {
+    assert!(text_contains("hello", ""));
+}
+
+#[test]
+fn text_contains_exact_match() {
+    assert!(text_contains("hello", "hello"));
+}
+
+// ── R4.11: text_replace ───────────────────────────────────────────────────
+
+#[test]
+fn text_replace_replaces_all_occurrences() {
+    assert_eq!(text_replace("aabbaa", "aa", "X"), "XbbX");
+}
+
+#[test]
+fn text_replace_no_match_returns_original() {
+    assert_eq!(text_replace("hello", "xyz", "Y"), "hello");
+}
+
+#[test]
+fn text_replace_empty_from_returns_unchanged() {
+    assert_eq!(text_replace("hello", "", "X"), "hello");
+}
+
+#[test]
+fn text_replace_to_empty_removes_occurrences() {
+    assert_eq!(text_replace("hello world", "o", ""), "hell wrld");
+}
+
+#[test]
+fn text_replace_single_occurrence() {
+    assert_eq!(text_replace("foo bar baz", "bar", "qux"), "foo qux baz");
 }

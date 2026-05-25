@@ -100,3 +100,36 @@ pub fn text_from_bytes(bytes: &[u8]) -> Result<String, String> {
 pub fn bytes_to_text(bytes: &[u8]) -> Result<String, String> {
     text_from_bytes(bytes)
 }
+
+// ── text_starts_with ──────────────────────────────────────────────────────
+
+/// Return `true` if `s` begins with `prefix`.
+pub fn text_starts_with(s: &str, prefix: &str) -> bool {
+    s.starts_with(prefix)
+}
+
+// ── text_ends_with ────────────────────────────────────────────────────────
+
+/// Return `true` if `s` ends with `suffix`.
+pub fn text_ends_with(s: &str, suffix: &str) -> bool {
+    s.ends_with(suffix)
+}
+
+// ── text_contains ─────────────────────────────────────────────────────────
+
+/// Return `true` if `s` contains `needle` as a substring.
+pub fn text_contains(s: &str, needle: &str) -> bool {
+    s.contains(needle)
+}
+
+// ── text_replace ──────────────────────────────────────────────────────────
+
+/// Replace every non-overlapping occurrence of `from` in `s` with `to`.
+///
+/// If `from` is empty, returns `s` unchanged.
+pub fn text_replace(s: &str, from: &str, to: &str) -> String {
+    if from.is_empty() {
+        return s.to_string();
+    }
+    s.replace(from, to)
+}

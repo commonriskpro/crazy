@@ -317,13 +317,37 @@ pub(super) fn text_join(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecE
     Ok(StdlibValue::Text(text::text_join(&strings, separator)))
 }
 
+/// `std.text.normalize` — optional second arg selects the normalization form.
+///
+/// - 1 arg `(text)`: normalizes to NFC (default).
+/// - 2 args `(text, form)`: `form` must be the string `"nfc"` or `"nfd"`.
+///   Any other value returns `StdlibExecError::Message`.
 pub(super) fn text_normalize(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
-    expect_arity(args, 1)?;
+    let form = match args.len() {
+        1 => text::NormalizeForm::Nfc,
+        2 => {
+            let StdlibValue::Text(form_str) = &args[1] else {
+                return Err(StdlibExecError::Type { expected: "Text" });
+            };
+            match form_str.to_lowercase().as_str() {
+                "nfc" => text::NormalizeForm::Nfc,
+                "nfd" => text::NormalizeForm::Nfd,
+                other => {
+                    return Err(StdlibExecError::Message(format!(
+                        "unknown normalization form: {other}; expected \"nfc\" or \"nfd\""
+                    )));
+                }
+            }
+        }
+        n => {
+            return Err(StdlibExecError::Arity {
+                expected: 1,
+                actual: n,
+            });
+        }
+    };
     match &args[0] {
-        StdlibValue::Text(value) => Ok(StdlibValue::Text(text::text_normalize(
-            value,
-            text::NormalizeForm::Nfc,
-        ))),
+        StdlibValue::Text(value) => Ok(StdlibValue::Text(text::text_normalize(value, form))),
         _ => Err(StdlibExecError::Type { expected: "Text" }),
     }
 }
@@ -384,6 +408,48 @@ pub(super) fn text_length_graphemes_exec(
         StdlibValue::Text(s) => Ok(StdlibValue::Int(text::text_length_graphemes(s) as i64)),
         _ => Err(StdlibExecError::Type { expected: "Text" }),
     }
+}
+
+pub(super) fn text_starts_with_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Text(s), StdlibValue::Text(prefix)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type {
+            expected: "Text, Text",
+        });
+    };
+    Ok(StdlibValue::Bool(text::text_starts_with(s, prefix)))
+}
+
+pub(super) fn text_ends_with_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Text(s), StdlibValue::Text(suffix)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type {
+            expected: "Text, Text",
+        });
+    };
+    Ok(StdlibValue::Bool(text::text_ends_with(s, suffix)))
+}
+
+pub(super) fn text_contains_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Text(s), StdlibValue::Text(needle)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type {
+            expected: "Text, Text",
+        });
+    };
+    Ok(StdlibValue::Bool(text::text_contains(s, needle)))
+}
+
+pub(super) fn text_replace_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let (StdlibValue::Text(s), StdlibValue::Text(from), StdlibValue::Text(to)) =
+        (&args[0], &args[1], &args[2])
+    else {
+        return Err(StdlibExecError::Type {
+            expected: "Text, Text, Text",
+        });
+    };
+    Ok(StdlibValue::Text(text::text_replace(s, from, to)))
 }
 
 // ── Crypto adapters ───────────────────────────────────────────────────────

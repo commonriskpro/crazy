@@ -195,3 +195,243 @@ fn text_regex_invalid_pattern_yields_exec_error() {
         result
     );
 }
+
+// ── STDLIB-EXEC-NORM-1: normalize one-arg default is NFC ─────────────────
+
+#[test]
+fn text_normalize_one_arg_defaults_to_nfc() {
+    // e + combining acute (NFD) should be recomposed to U+00E9 (NFC)
+    let decomposed = "e\u{0301}";
+    let result = call_pure_stdlib(
+        "std.text.normalize",
+        &[StdlibValue::Text(decomposed.to_string())],
+    );
+    assert_eq!(result, Ok(StdlibValue::Text("\u{00E9}".to_string())));
+}
+
+// ── STDLIB-EXEC-NORM-2: normalize two-arg explicit "nfc" ─────────────────
+
+#[test]
+fn text_normalize_two_arg_nfc_recomposes() {
+    let decomposed = "e\u{0301}";
+    let result = call_pure_stdlib(
+        "std.text.normalize",
+        &[
+            StdlibValue::Text(decomposed.to_string()),
+            StdlibValue::Text("nfc".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Text("\u{00E9}".to_string())));
+}
+
+// ── STDLIB-EXEC-NORM-3: normalize two-arg "nfd" decomposes ───────────────
+
+#[test]
+fn text_normalize_two_arg_nfd_decomposes() {
+    let precomposed = "\u{00E9}";
+    let result = call_pure_stdlib(
+        "std.text.normalize",
+        &[
+            StdlibValue::Text(precomposed.to_string()),
+            StdlibValue::Text("nfd".to_string()),
+        ],
+    );
+    // NFD must produce 2 codepoints: e + combining acute
+    match result {
+        Ok(StdlibValue::Text(s)) => {
+            let codepoints: Vec<char> = s.chars().collect();
+            assert_eq!(codepoints.len(), 2, "NFD must decompose to 2 codepoints");
+            assert_eq!(codepoints[0], 'e');
+            assert_eq!(codepoints[1], '\u{0301}');
+        }
+        other => panic!("expected Ok(Text), got: {other:?}"),
+    }
+}
+
+// ── STDLIB-EXEC-NORM-4: unknown form string yields Message error ──────────
+
+#[test]
+fn text_normalize_unknown_form_yields_message_error() {
+    let result = call_pure_stdlib(
+        "std.text.normalize",
+        &[
+            StdlibValue::Text("hello".to_string()),
+            StdlibValue::Text("nfkc".to_string()),
+        ],
+    );
+    assert!(
+        matches!(result, Err(StdlibExecError::Message(ref msg)) if msg.contains("unknown normalization form")),
+        "expected Message error for unknown form, got: {result:?}"
+    );
+}
+
+// ── STDLIB-EXEC-PRED-1: starts_with returns true for matching prefix ──────
+
+#[test]
+fn text_starts_with_exec_matching_prefix() {
+    let result = call_pure_stdlib(
+        "std.text.starts_with",
+        &[
+            StdlibValue::Text("hello world".to_string()),
+            StdlibValue::Text("hello".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(true)));
+}
+
+// ── STDLIB-EXEC-PRED-2: starts_with returns false for non-matching prefix ─
+
+#[test]
+fn text_starts_with_exec_non_matching_prefix() {
+    let result = call_pure_stdlib(
+        "std.text.starts_with",
+        &[
+            StdlibValue::Text("hello world".to_string()),
+            StdlibValue::Text("world".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(false)));
+}
+
+// ── STDLIB-EXEC-PRED-3: starts_with with empty prefix is always true ──────
+
+#[test]
+fn text_starts_with_exec_empty_prefix() {
+    let result = call_pure_stdlib(
+        "std.text.starts_with",
+        &[
+            StdlibValue::Text("hello".to_string()),
+            StdlibValue::Text("".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(true)));
+}
+
+// ── STDLIB-EXEC-PRED-4: ends_with returns true for matching suffix ────────
+
+#[test]
+fn text_ends_with_exec_matching_suffix() {
+    let result = call_pure_stdlib(
+        "std.text.ends_with",
+        &[
+            StdlibValue::Text("hello world".to_string()),
+            StdlibValue::Text("world".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(true)));
+}
+
+// ── STDLIB-EXEC-PRED-5: ends_with returns false for non-matching suffix ───
+
+#[test]
+fn text_ends_with_exec_non_matching_suffix() {
+    let result = call_pure_stdlib(
+        "std.text.ends_with",
+        &[
+            StdlibValue::Text("hello world".to_string()),
+            StdlibValue::Text("hello".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(false)));
+}
+
+// ── STDLIB-EXEC-PRED-6: ends_with with empty suffix is always true ────────
+
+#[test]
+fn text_ends_with_exec_empty_suffix() {
+    let result = call_pure_stdlib(
+        "std.text.ends_with",
+        &[
+            StdlibValue::Text("hello".to_string()),
+            StdlibValue::Text("".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(true)));
+}
+
+// ── STDLIB-EXEC-PRED-7: contains returns true when needle is present ──────
+
+#[test]
+fn text_contains_exec_substring_present() {
+    let result = call_pure_stdlib(
+        "std.text.contains",
+        &[
+            StdlibValue::Text("hello world".to_string()),
+            StdlibValue::Text("lo wo".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(true)));
+}
+
+// ── STDLIB-EXEC-PRED-8: contains returns false when needle is absent ──────
+
+#[test]
+fn text_contains_exec_substring_absent() {
+    let result = call_pure_stdlib(
+        "std.text.contains",
+        &[
+            StdlibValue::Text("hello world".to_string()),
+            StdlibValue::Text("xyz".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(false)));
+}
+
+// ── STDLIB-EXEC-PRED-9: contains with empty needle is always true ─────────
+
+#[test]
+fn text_contains_exec_empty_needle() {
+    let result = call_pure_stdlib(
+        "std.text.contains",
+        &[
+            StdlibValue::Text("hello".to_string()),
+            StdlibValue::Text("".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(true)));
+}
+
+// ── STDLIB-EXEC-PRED-10: replace substitutes all occurrences ─────────────
+
+#[test]
+fn text_replace_exec_replaces_all() {
+    let result = call_pure_stdlib(
+        "std.text.replace",
+        &[
+            StdlibValue::Text("aabbaa".to_string()),
+            StdlibValue::Text("aa".to_string()),
+            StdlibValue::Text("X".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Text("XbbX".to_string())));
+}
+
+// ── STDLIB-EXEC-PRED-11: replace with no match returns original ───────────
+
+#[test]
+fn text_replace_exec_no_match_returns_original() {
+    let result = call_pure_stdlib(
+        "std.text.replace",
+        &[
+            StdlibValue::Text("hello".to_string()),
+            StdlibValue::Text("xyz".to_string()),
+            StdlibValue::Text("Y".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Text("hello".to_string())));
+}
+
+// ── STDLIB-EXEC-PRED-12: replace with empty from returns original ─────────
+
+#[test]
+fn text_replace_exec_empty_from_returns_unchanged() {
+    let result = call_pure_stdlib(
+        "std.text.replace",
+        &[
+            StdlibValue::Text("hello".to_string()),
+            StdlibValue::Text("".to_string()),
+            StdlibValue::Text("X".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Text("hello".to_string())));
+}

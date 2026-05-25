@@ -556,7 +556,7 @@ pub fn v1_registry() -> StdlibRegistry {
 ///   `collect_results`
 /// - `std.core.result`: `map`, `and_then`, `unwrap_or`, `transpose`
 /// - `std.text`: `trim`, `split`, `join`, `length_graphemes`,
-///   `to_bytes`, `from_bytes`
+///   `to_bytes`, `from_bytes`, `starts_with`, `ends_with`, `contains`, `replace`
 /// - `std.iter`: `map`, `filter`, `fold`, `traverse`
 ///
 /// The returned registry is guaranteed to pass `validate()`.
@@ -1003,6 +1003,90 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         contract_clauses: Some(ContractClauses {
             requires: vec!["pattern is a valid regex".to_string()],
             ensures: vec!["returns Bool indicating whether pattern matches the input".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.starts_with".to_string()),
+        module_path: "std::text".to_string(),
+        name: "starts_with".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Bool".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["both arguments are valid UTF-8".to_string()],
+            ensures: vec![
+                "returns true if and only if the first argument begins with the prefix".to_string(),
+                "empty prefix always returns true".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.ends_with".to_string()),
+        module_path: "std::text".to_string(),
+        name: "ends_with".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Bool".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["both arguments are valid UTF-8".to_string()],
+            ensures: vec![
+                "returns true if and only if the first argument ends with the suffix".to_string(),
+                "empty suffix always returns true".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.contains".to_string()),
+        module_path: "std::text".to_string(),
+        name: "contains".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Bool".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["both arguments are valid UTF-8".to_string()],
+            ensures: vec![
+                "returns true if and only if needle appears as a substring".to_string(),
+                "empty needle always returns true".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.replace".to_string()),
+        module_path: "std::text".to_string(),
+        name: "replace".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Text".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["all arguments are valid UTF-8".to_string()],
+            ensures: vec![
+                "every non-overlapping occurrence of `from` is replaced with `to`".to_string(),
+                "empty `from` returns the input unchanged".to_string(),
+            ],
         }),
     });
 
