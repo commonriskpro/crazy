@@ -205,11 +205,29 @@ pub enum AnfExpr {
 
     /// Infinite loop expression. Exits through `Break`.
     Loop { body: Box<AnfExpr> },
-    /// Exit the nearest enclosing loop with a value.
+    /// Exit the nearest enclosing `Loop` with a value.
+    ///
+    /// **Inside a `WhileLoop`**: the break value is discarded by the enclosing
+    /// WASM block's arity 0 (`BlockType::Empty`).  `WhileLoop` always produces
+    /// `I32 0` (unit) after the loop regardless of any `Break` value in the body.
     Break { value: Box<AnfExpr> },
     /// Continue at the nearest enclosing loop header.
     Continue,
-    /// Structured while loop with an atomic condition name.
+    /// Structured while loop with an immutable condition name.
+    ///
+    /// `cond` is an ANF name — an immutable let-binding that must hold a `Bool`
+    /// (`I32`) at runtime.  The condition is re-read via `LocalGet` on every
+    /// iteration.  Because ANF names are immutable, a `cond` that is `true` at
+    /// entry never terminates on its own: the body must contain a `Break`.
+    ///
+    /// **Result**: always `I32 0` (unit).  After the loop exits — whether the
+    /// condition became false or a `Break` fired — `I32Const 0` is pushed onto
+    /// the WASM stack so that `WhileLoop` can appear as a `Let`-binding value
+    /// or in a `Seq` without a stack-underflow validation error.
+    ///
+    /// **`Break` inside `WhileLoop`**: the break value is discarded.  The
+    /// outer WASM block has arity 0 (`BlockType::Empty`), so no break value is
+    /// threaded out; the caller always sees the unit `I32 0` pushed after the loop.
     WhileLoop { cond: String, body: Box<AnfExpr> },
 
     // ── G20 R2: semantic effect / concurrency / runtime-check variants ────

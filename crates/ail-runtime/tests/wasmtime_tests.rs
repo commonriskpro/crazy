@@ -1289,3 +1289,156 @@ fn foreach_accumulates_via_cell() {
         "ForEach over [1,2,3] accumulating via cell must yield 6"
     );
 }
+
+// ── Wave 18D: WhileLoop compile and execution conformance ─────────────────
+//
+// Spec scenarios covered (RUNTIME-WHILE-1..2):
+//
+//  RUNTIME-WHILE-1: WhileLoop with an initially-false condition never
+//    executes the body.  A cell initialised to 42 must remain 42 after the
+//    loop — proves that the condition check fires before the first iteration
+//    and that the BrIf(1) exit is taken immediately.
+//
+//  RUNTIME-WHILE-2: WhileLoop with a true condition runs exactly one
+//    iteration: the body decrements a cell from 5 to 4 and then breaks out
+//    via Break.  CellGet after the loop must return 4 — proves that (a) the
+//    loop body executes, (b) CellSet and CellGet work inside the body, (c)
+//    Break branches to the enclosing block's exit, and (d) WhileLoop pushes
+//    a unit (I32 0) so it can be used as the value of a Let binding without
+//    a WASM stack-underflow error.
+
+// RUNTIME-WHILE-1
+//
+// fn.main =
+//   let init = 42 in
+//   let c    = CellNew(init) in
+//   let zero = 0 in
+//   let flag = false in
+//   let _w   = while(flag, CellSet(c, zero)) in   ← body never runs
+//   CellGet(c)
+//
+// Because flag = false (I64 0) the condition check `flag ≠ 0 → 0; eqz → 1`
+// triggers BrIf(1) and exits the loop before the body runs.
+// CellGet must return the initial value 42.
+#[test]
+fn while_loop_false_condition_body_never_runs() {
+    let expr = AnfExpr::Let {
+        name: "init".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
+        body: Box::new(AnfExpr::Let {
+            name: "c".to_string(),
+            value: Box::new(AnfExpr::CellNew {
+                init: "init".to_string(),
+            }),
+            body: Box::new(AnfExpr::Let {
+                name: "zero".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                body: Box::new(AnfExpr::Let {
+                    name: "flag".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Bool(false))),
+                    body: Box::new(AnfExpr::Let {
+                        name: "_w".to_string(),
+                        value: Box::new(AnfExpr::WhileLoop {
+                            cond: "flag".to_string(),
+                            body: Box::new(AnfExpr::CellSet {
+                                cell: "c".to_string(),
+                                value: "zero".to_string(),
+                            }),
+                        }),
+                        body: Box::new(AnfExpr::CellGet {
+                            cell: "c".to_string(),
+                        }),
+                    }),
+                }),
+            }),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.main"),
+        RuntimeValue::I64(42),
+        "WhileLoop with false condition must skip the body; CellGet must return 42"
+    );
+}
+
+// RUNTIME-WHILE-2
+//
+// fn.main =
+//   let start = 5 in
+//   let c     = CellNew(start) in
+//   let go    = true in
+//   let _w    = while(go,
+//                 let cur  = CellGet(c)           in
+//                 let one  = 1                    in
+//                 let next = sub(cur, one)         in
+//                 let _s   = CellSet(c, next)     in
+//                 break(0))                         ← exits after one iteration
+//   in
+//   CellGet(c)
+//
+// go = true → condition fires, body runs once:
+//   cur  = 5
+//   next = 5 − 1 = 4
+//   CellSet(c, 4)
+//   break → exits loop
+// CellGet(c) must return 4.
+//
+// This also proves that WhileLoop returns a unit (I32 0) so it can be used
+// as the value of the outer Let binding without a WASM validation error.
+#[test]
+fn while_loop_body_runs_once_then_breaks() {
+    let expr = AnfExpr::Let {
+        name: "start".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(5))),
+        body: Box::new(AnfExpr::Let {
+            name: "c".to_string(),
+            value: Box::new(AnfExpr::CellNew {
+                init: "start".to_string(),
+            }),
+            body: Box::new(AnfExpr::Let {
+                name: "go".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Bool(true))),
+                body: Box::new(AnfExpr::Let {
+                    name: "_w".to_string(),
+                    value: Box::new(AnfExpr::WhileLoop {
+                        cond: "go".to_string(),
+                        body: Box::new(AnfExpr::Let {
+                            name: "cur".to_string(),
+                            value: Box::new(AnfExpr::CellGet {
+                                cell: "c".to_string(),
+                            }),
+                            body: Box::new(AnfExpr::Let {
+                                name: "one".to_string(),
+                                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                                body: Box::new(AnfExpr::Let {
+                                    name: "next".to_string(),
+                                    value: Box::new(AnfExpr::Call {
+                                        func: "-".to_string(),
+                                        args: vec!["cur".to_string(), "one".to_string()],
+                                    }),
+                                    body: Box::new(AnfExpr::Let {
+                                        name: "_s".to_string(),
+                                        value: Box::new(AnfExpr::CellSet {
+                                            cell: "c".to_string(),
+                                            value: "next".to_string(),
+                                        }),
+                                        body: Box::new(AnfExpr::Break {
+                                            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                                        }),
+                                    }),
+                                }),
+                            }),
+                        }),
+                    }),
+                    body: Box::new(AnfExpr::CellGet {
+                        cell: "c".to_string(),
+                    }),
+                }),
+            }),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.main"),
+        RuntimeValue::I64(4),
+        "WhileLoop body must run once (5→4), break, then CellGet must return 4"
+    );
+}
