@@ -371,14 +371,22 @@ emit_native(anf) → NativeArtifact {
   Use --runtime-lib <path/to/ail_runtime.a> to supply runtime stubs at link time
   (Wave 12B); without it the linker may fail with "undefined symbol" errors.
 - Runtime stub archive (Wave 13A): ail link --emit-runtime-stub ail_runtime.a generates
-  a deterministic static archive containing stub implementations of host_call,
-  __ail_malloc, and ail_runtime_call (each returns -1/0 immediately). No system ar
-  or cc is required to produce it. Pass the result to --runtime-lib:
+  a deterministic static archive containing stub implementations of the three imported
+  symbols. No system ar or cc is required to produce it. Pass the result to --runtime-lib:
     ail link --emit-runtime-stub ail_runtime.a
     ail link --profile dev --runtime-lib ail_runtime.a
-  The stubs allow linking to succeed; a binary linked with stubs will fail at runtime
-  when it invokes capability calls or concurrency primitives. Full runtime
-  implementations are deferred to Phase 9.
+  Symbol behaviors (Wave 15B — safer/more diagnosable):
+    host_call(i64×6) → i64        returns -1 (no-op denial)
+    __ail_malloc(i64) → !         TRAPS — emits trap(user(1)); does not return.
+                                  Any binary that reaches a heap-allocation path
+                                  at runtime halts immediately at the call site
+                                  with a diagnosable signal (SIGTRAP / EXC_BAD_INSTRUCTION)
+                                  instead of receiving a null pointer and segfaulting later.
+    ail_runtime_call(i64×3) → i64 returns -1 (no-op denial)
+  Safe programs: pure arithmetic / control-flow programs, EffectCall programs (return -1
+  sentinel), and concurrency-primitive programs (ail_runtime_call returns -1) run safely.
+  Programs that reach heap-allocation paths trap immediately at the allocation site.
+  Full runtime implementations are deferred to Phase 9.
 - Runtime stub auto-location (Wave 14A): ail link --profile dev --ensure-runtime-stub
   combines both steps above into one: generates .ail/runtime/ail_runtime.a if absent
   (same pure-Rust generator), then links using it as --runtime-lib. Subsequent calls

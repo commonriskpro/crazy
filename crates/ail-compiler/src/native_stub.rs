@@ -6,8 +6,25 @@
 // implementations of the three symbols imported by native objects:
 //
 //   host_call(i64 × 6) → i64           — capability dispatch no-op; returns -1
-//   __ail_malloc(i64)  → i64           — allocator stub; returns 0 (null; smoke-test only)
+//   __ail_malloc(i64)  → i64           — allocator stub; TRAPS on call (see below)
 //   ail_runtime_call(i64 × 3) → i64   — runtime dispatch no-op; returns -1
+//
+// # Safety of __ail_malloc
+//
+// The previous stub returned 0 (a null pointer).  Any code that actually
+// dereferences that result produces a late, hard-to-diagnose segfault with no
+// indication of which allocation site was the source.
+//
+// The current stub emits a Cranelift `trap(user(1))` instruction instead.
+// If a linked binary calls `__ail_malloc`, execution halts immediately at the
+// call site with a diagnosable hardware trap (SIGTRAP on Linux, EXC_BAD_INSTRUCTION
+// on macOS) rather than propagating a null pointer silently.  Stack traces and
+// core dumps point directly at the allocation that triggered the failure.
+//
+// This does NOT change what programs can safely be linked against the stubs:
+// programs that never reach a heap-allocation path at runtime continue to work
+// correctly.  The improvement is purely diagnostic — fail fast instead of
+// fail mysteriously.
 //
 // # Design
 //
@@ -39,7 +56,7 @@
 
 use cranelift_codegen::{
     Context,
-    ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, types},
+    ir::{AbiParam, Function, InstBuilder, Signature, TrapCode, UserFuncName, types},
     isa::CallConv,
     settings,
 };
@@ -89,15 +106,30 @@ pub fn build_runtime_stub_object() -> Result<Vec<u8>, CompileError> {
     let mut module = ObjectModule::new(obj_builder);
 
     // host_call(i64 × 6) → i64  — returns -1 (no-op denial)
-    define_stub(&mut module, "host_call", 6, -1)?;
+    define_stub(
+        &mut module,
+        "host_call",
+        6,
+        StubBehavior::ReturnConstant(-1),
+    )?;
 
-    // __ail_malloc(i64) → i64   — returns 0 (null pointer; smoke-test stub only;
-    //                             any code that dereferences the result will trap
-    //                             or segfault — do not use in production binaries)
-    define_stub(&mut module, "__ail_malloc", 1, 0)?;
+    // __ail_malloc(i64) → i64   — TRAPS on call.
+    //
+    // Returning 0 (null) would silently corrupt any caller that dereferences
+    // the allocation result, producing a delayed segfault with no clear origin.
+    // A trap fires immediately at the allocation site, giving a diagnosable
+    // signal (SIGTRAP/EXC_BAD_INSTRUCTION) and a stack trace pointing to the
+    // exact callsite.  TrapCode::user(1) matches the convention used by the
+    // native backend for all other unimplemented-dispatch stubs.
+    define_stub(&mut module, "__ail_malloc", 1, StubBehavior::Trap)?;
 
     // ail_runtime_call(i64 × 3) → i64 — returns -1 (no-op denial)
-    define_stub(&mut module, "ail_runtime_call", 3, -1)?;
+    define_stub(
+        &mut module,
+        "ail_runtime_call",
+        3,
+        StubBehavior::ReturnConstant(-1),
+    )?;
 
     let product = module.finish();
     product
@@ -176,15 +208,35 @@ fn wrap_in_ar_archive(object_bytes: &[u8]) -> Vec<u8> {
 
 // ── Cranelift stub function builder ──────────────────────────────────────
 
+/// Behavior emitted by a generated stub function.
+///
+/// - [`StubBehavior::ReturnConstant`]: the stub immediately returns the given
+///   constant I64 and exits normally.
+/// - [`StubBehavior::Trap`]: the stub emits a Cranelift `trap(user(1))`
+///   instruction, halting execution at the call site with a diagnosable
+///   hardware trap rather than returning a potentially misleading value.
+#[derive(Debug, Clone, Copy)]
+enum StubBehavior {
+    /// Return a constant I64 value.
+    ReturnConstant(i64),
+    /// Emit `trap(user(1))` — execution halts immediately at the call site
+    /// with a diagnosable signal instead of returning a bad value silently.
+    Trap,
+}
+
 /// Define and emit a single-block stub function in `module`.
 ///
-/// The stub takes `param_count` I64 parameters (all ignored) and returns
-/// `return_val` as an I64 constant.  Exported with `Linkage::Export`.
+/// The stub takes `param_count` I64 parameters (all ignored) and terminates
+/// according to `behavior`:
+/// - [`StubBehavior::ReturnConstant`]: returns the constant as an I64.
+/// - [`StubBehavior::Trap`]: emits `trap(user(1))`, terminating immediately.
+///
+/// Exported with [`Linkage::Export`].
 fn define_stub(
     module: &mut ObjectModule,
     name: &str,
     param_count: usize,
-    return_val: i64,
+    behavior: StubBehavior,
 ) -> Result<(), CompileError> {
     let mut sig = Signature::new(CallConv::SystemV);
     for _ in 0..param_count {
@@ -207,8 +259,17 @@ fn define_stub(
     builder.switch_to_block(block);
     builder.seal_block(block);
 
-    let ret = builder.ins().iconst(types::I64, return_val);
-    builder.ins().return_(&[ret]);
+    match behavior {
+        StubBehavior::ReturnConstant(val) => {
+            let ret = builder.ins().iconst(types::I64, val);
+            builder.ins().return_(&[ret]);
+        }
+        StubBehavior::Trap => {
+            // user(1) = unimplemented dispatch; consistent with native backend
+            // convention for all unresolved host/runtime stubs.
+            builder.ins().trap(TrapCode::user(1).unwrap());
+        }
+    }
     builder.finalize();
 
     let mut ctx = Context::for_function(func);
