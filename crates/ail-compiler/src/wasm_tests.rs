@@ -3707,13 +3707,12 @@ fn fold_hoistable_lambda_does_not_need_memory_for_closure_env() {
     );
 }
 
-// Scenario: non-hoistable Lambda (with captures) still emits closure env
-// with fn_idx=0 placeholder and Fold with it still traps.
-// Regression guard: hoisting must not accidentally apply to lambdas with captures.
+// Scenario: Fold reducer is a Lambda with captures → compile-time diagnostic.
+// Wave 13B: replaced the runtime Unreachable guard with an actionable
+// compile-time error so callers are not surprised by a silent runtime trap.
+// Regression guard: hoisting must not accidentally apply to Lambdas with captures.
 #[test]
-fn fold_non_hoistable_lambda_with_captures_still_traps() {
-    use wasmparser::{Operator, Parser, Payload};
-
+fn fold_non_hoistable_lambda_with_captures_returns_diagnostic() {
     // Lambda with 2 params AND a capture — NOT hoistable.
     let anf = sealed_anf(vec![AnfBinding {
         source_ref: NodeRef(0),
@@ -3748,26 +3747,15 @@ fn fold_non_hoistable_lambda_with_captures_still_traps() {
         },
     }]);
 
-    // Must compile (trap is at runtime, not compile time).
-    let artifact =
-        emit_wasm(&anf).expect("non-hoistable Lambda Fold must still compile (runtime trap)");
-    wasmparser::validate(&artifact.wasm).expect("non-hoistable Lambda Fold module must validate");
-
-    // The code section must contain Unreachable (the I32-env guard from Fold).
-    let mut saw_unreachable = false;
-    for payload in Parser::new(0).parse_all(&artifact.wasm) {
-        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
-            let mut reader = body.get_operators_reader().unwrap();
-            while !reader.eof() {
-                if let Operator::Unreachable = reader.read().unwrap() {
-                    saw_unreachable = true;
-                }
-            }
-        }
-    }
+    // Wave 13B: must now return a compile-time diagnostic instead of compiling
+    // with a runtime trap.
+    let result = emit_wasm(&anf);
     assert!(
-        saw_unreachable,
-        "Fold with non-hoistable Lambda (with captures) must still emit Unreachable guard"
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
+        ),
+        "expected UnsupportedWasmConstruct(\"FoldWithCapturedReducer\"), got {result:?}"
     );
 }
 
@@ -4300,6 +4288,7 @@ fn unsupported_construct_display_names_the_construct() {
         "ChannelReceive",
         "Select",
         "Timeout",
+        "FoldWithCapturedReducer",
     ] {
         let msg = CompileError::UnsupportedWasmConstruct(name.to_string()).to_string();
         assert!(
@@ -4310,3 +4299,300 @@ fn unsupported_construct_display_names_the_construct() {
 }
 
 // ── End Wave 10B unsupported-construct diagnostic tests ───────────────────
+
+// ── Wave 13B: captured Lambda reducer compile-time diagnostic ─────────────
+//
+// Proves that Fold with a captured Lambda reducer returns
+// CompileError::UnsupportedWasmConstruct("FoldWithCapturedReducer") at compile
+// time instead of emitting a silent runtime Unreachable trap.
+//
+// Captured Lambdas cannot be hoisted into the (i64, i64) → i64 function table
+// because their captured values are not available as fold-reducer parameters.
+// The pre-flight gate in emit_wasm_with_profile catches this before any WASM
+// code is emitted.
+
+// Scenario: minimal Fold + captured reducer → FoldWithCapturedReducer diagnostic.
+// The reducer captures one variable; Fold references it by name.
+#[test]
+fn fold_with_captured_reducer_returns_diagnostic() {
+    // let adder = fn(acc, x) { acc + x }  with capture "bias"
+    // fold(zero, lst, adder)
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.biased_fold".to_string(),
+        expr: AnfExpr::Let {
+            name: "zero".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Let {
+                    name: "adder".to_string(),
+                    value: Box::new(AnfExpr::Lambda {
+                        params: vec!["acc".to_string(), "x".to_string()],
+                        captures: vec!["bias".to_string()],
+                        body: Box::new(AnfExpr::Call {
+                            func: "+".to_string(),
+                            args: vec!["acc".to_string(), "x".to_string()],
+                        }),
+                    }),
+                    body: Box::new(AnfExpr::Fold {
+                        init: "zero".to_string(),
+                        list: "lst".to_string(),
+                        func: "adder".to_string(),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
+        ),
+        "expected UnsupportedWasmConstruct(\"FoldWithCapturedReducer\"), got {result:?}"
+    );
+}
+
+// TRIANGULATE: capture-free 2-param reducer is not affected by the Wave 13B gate.
+// Proves that the FoldWithCapturedReducer check does not fire for hoistable Lambdas.
+#[test]
+fn fold_with_capture_free_reducer_unaffected_by_wave13b_gate() {
+    // let zero = 0; let lst = []; let add = fn(acc, x) { acc + x }  (no captures)
+    // fold(zero, lst, add)  — must compile without diagnostic
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.plain_sum".to_string(),
+        expr: AnfExpr::Let {
+            name: "zero".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Let {
+                    name: "add".to_string(),
+                    value: Box::new(AnfExpr::Lambda {
+                        params: vec!["acc".to_string(), "x".to_string()],
+                        captures: vec![],
+                        body: Box::new(AnfExpr::Call {
+                            func: "+".to_string(),
+                            args: vec!["acc".to_string(), "x".to_string()],
+                        }),
+                    }),
+                    body: Box::new(AnfExpr::Fold {
+                        init: "zero".to_string(),
+                        list: "lst".to_string(),
+                        func: "add".to_string(),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
+        result.is_ok(),
+        "Fold with capture-free 2-param Lambda must compile without FoldWithCapturedReducer diagnostic; got {result:?}"
+    );
+}
+
+// Scenario: captured reducer nested inside an If branch → diagnostic still fires.
+// Proves the scope-aware walker descends into conditional branches.
+#[test]
+fn fold_captured_reducer_in_if_branch_returns_diagnostic() {
+    // if true { fold(0, lst, captured_reducer) } else { 0 }
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.conditional_fold".to_string(),
+        expr: AnfExpr::Let {
+            name: "zero".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Let {
+                    name: "cond".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Bool(true))),
+                    body: Box::new(AnfExpr::Let {
+                        name: "reducer".to_string(),
+                        value: Box::new(AnfExpr::Lambda {
+                            params: vec!["acc".to_string(), "x".to_string()],
+                            captures: vec!["zero".to_string()],
+                            body: Box::new(AnfExpr::Call {
+                                func: "+".to_string(),
+                                args: vec!["acc".to_string(), "x".to_string()],
+                            }),
+                        }),
+                        body: Box::new(AnfExpr::If {
+                            cond: "cond".to_string(),
+                            then_branch: Box::new(AnfExpr::Fold {
+                                init: "zero".to_string(),
+                                list: "lst".to_string(),
+                                func: "reducer".to_string(),
+                            }),
+                            else_branch: Box::new(AnfExpr::Var("zero".to_string())),
+                        }),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
+        ),
+        "captured reducer inside If branch must produce FoldWithCapturedReducer diagnostic; got {result:?}"
+    );
+}
+
+// Scenario: captured reducer inside a Match arm → diagnostic fires.
+// Proves the scope-aware walker descends into Match arm bodies.
+#[test]
+fn fold_captured_reducer_in_match_arm_returns_diagnostic() {
+    use crate::anf::AnfMatchArm;
+
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.match_fold".to_string(),
+        expr: AnfExpr::Let {
+            name: "zero".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Let {
+                    name: "reducer".to_string(),
+                    value: Box::new(AnfExpr::Lambda {
+                        params: vec!["acc".to_string(), "x".to_string()],
+                        captures: vec!["zero".to_string()],
+                        body: Box::new(AnfExpr::Call {
+                            func: "+".to_string(),
+                            args: vec!["acc".to_string(), "x".to_string()],
+                        }),
+                    }),
+                    body: Box::new(AnfExpr::Match {
+                        scrutinee: "zero".to_string(),
+                        arms: vec![AnfMatchArm {
+                            pattern: "_".to_string(),
+                            body: AnfExpr::Fold {
+                                init: "zero".to_string(),
+                                list: "lst".to_string(),
+                                func: "reducer".to_string(),
+                            },
+                        }],
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
+        ),
+        "captured reducer inside Match arm must produce FoldWithCapturedReducer; got {result:?}"
+    );
+}
+
+// Scenario: captured reducer inside a Loop body → diagnostic fires.
+// Proves the scope-aware walker descends into Loop bodies.
+#[test]
+fn fold_captured_reducer_in_loop_body_returns_diagnostic() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.loop_fold".to_string(),
+        expr: AnfExpr::Let {
+            name: "zero".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Let {
+                    name: "reducer".to_string(),
+                    value: Box::new(AnfExpr::Lambda {
+                        params: vec!["acc".to_string(), "x".to_string()],
+                        captures: vec!["zero".to_string()],
+                        body: Box::new(AnfExpr::Call {
+                            func: "+".to_string(),
+                            args: vec!["acc".to_string(), "x".to_string()],
+                        }),
+                    }),
+                    body: Box::new(AnfExpr::Loop {
+                        body: Box::new(AnfExpr::Fold {
+                            init: "zero".to_string(),
+                            list: "lst".to_string(),
+                            func: "reducer".to_string(),
+                        }),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
+        ),
+        "captured reducer inside Loop body must produce FoldWithCapturedReducer; got {result:?}"
+    );
+}
+
+// Scenario: transitive Var alias of a captured reducer → diagnostic fires (W1).
+// `let adder = lambda captures [...]; let reducer = adder; fold(..., reducer)`
+// The alias `reducer = adder` must propagate the captured-name membership so the
+// downstream Fold is caught even though it references `reducer`, not `adder`.
+#[test]
+fn fold_with_transitive_var_alias_reducer_returns_diagnostic() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.aliased_fold".to_string(),
+        expr: AnfExpr::Let {
+            name: "zero".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Let {
+                    name: "adder".to_string(),
+                    value: Box::new(AnfExpr::Lambda {
+                        params: vec!["acc".to_string(), "x".to_string()],
+                        captures: vec!["bias".to_string()],
+                        body: Box::new(AnfExpr::Call {
+                            func: "+".to_string(),
+                            args: vec!["acc".to_string(), "x".to_string()],
+                        }),
+                    }),
+                    body: Box::new(AnfExpr::Let {
+                        name: "reducer".to_string(),
+                        value: Box::new(AnfExpr::Var("adder".to_string())),
+                        body: Box::new(AnfExpr::Fold {
+                            init: "zero".to_string(),
+                            list: "lst".to_string(),
+                            func: "reducer".to_string(),
+                        }),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "FoldWithCapturedReducer"
+        ),
+        "transitive Var alias of captured reducer must produce FoldWithCapturedReducer; got {result:?}"
+    );
+}
+
+// ── End Wave 13B captured Lambda reducer diagnostic tests ─────────────────
