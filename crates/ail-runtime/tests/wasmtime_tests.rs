@@ -5166,3 +5166,201 @@ end
         "mod(10,2) must return I64(0): 10 is exactly divisible by 2"
     );
 }
+
+// ── Wave 27D: sub / div / gt / ne / le / ge arithmetic and comparison ──────
+//
+// Spec scenarios covered (RUNTIME-ACL-SUB-1, RUNTIME-ACL-DIV-1,
+//                          RUNTIME-ACL-GT-1,  RUNTIME-ACL-NE-1,
+//                          RUNTIME-ACL-LE-1,  RUNTIME-ACL-GE-1):
+//
+//  RUNTIME-ACL-SUB-1: ACL body `sub(10,3)` lowers through
+//    CoreExpr::Sub → lower_core_binary_to_anf("sub") → ANF Call "sub" →
+//    WASM I64Sub.  10 − 3 = 7 → I64(7).
+//
+//  RUNTIME-ACL-DIV-1: ACL body `div(84,2)` lowers through
+//    CoreExpr::Div → lower_core_binary_to_anf("div") → ANF Call "div" →
+//    WASM I64DivS.  84 / 2 = 42 → I64(42).
+//
+//  RUNTIME-ACL-GT-1: ACL body `gt(5,3)` lowers through
+//    CoreExpr::Gt → lower_core_binary_to_anf("gt") → ANF Call "gt" →
+//    WASM I64GtS + I64ExtendI32U.  5 > 3 = true → I64(1).
+//
+//  RUNTIME-ACL-NE-1: ACL body `ne(42,7)` lowers through
+//    CoreExpr::Ne → lower_core_binary_to_anf("ne") → ANF Call "ne" →
+//    WASM I64Ne + I64ExtendI32U.  42 ≠ 7 = true → I64(1).
+//
+//  RUNTIME-ACL-LE-1: ACL body `le(42,42)` lowers through
+//    CoreExpr::Le → lower_core_binary_to_anf("le") → ANF Call "le" →
+//    WASM I64LeS + I64ExtendI32U.  42 ≤ 42 = true → I64(1).
+//
+//  RUNTIME-ACL-GE-1: ACL body `ge(42,42)` lowers through
+//    CoreExpr::Ge → lower_core_binary_to_anf("ge") → ANF Call "ge" →
+//    WASM I64GeS + I64ExtendI32U.  42 ≥ 42 = true → I64(1).
+//
+// These tests exercise the full pipeline from ACL source:
+//   parse_changeset → canonicalize → apply → lower_to_core_ir →
+//   lower_to_anf → emit_wasm → Wasmtime → RuntimeValue.
+//
+// Boolean representation convention: true → I64(1), false → I64(0).
+
+// RUNTIME-ACL-SUB-1
+//
+// ACL body: sub(10,3)
+//
+//   Pipeline:
+//   1. `sub(10,3)` → CoreExpr::Sub(Lit(10), Lit(3))
+//   2. lower → let _t0 = 10 in let _t1 = 3 in Call "sub" [_t0, _t1]
+//   3. WASM: I64Sub(10, 3) = 7 → I64(7).
+//   4. Returns I64(7).
+//
+// Proves: sub(10,3) → I64(7) (integer subtraction end-to-end).
+#[test]
+fn acl_sub_10_3_returns_7() {
+    let acl = "\
+change acl_sub_1 base=0
+author tester
+description sub(10,3): 10 - 3 must return I64(7)
+op create_function id=fn.main return=Int body=sub(10,3)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(7),
+        "sub(10,3) must return I64(7)"
+    );
+}
+
+// RUNTIME-ACL-DIV-1
+//
+// ACL body: div(84,2)
+//
+//   Pipeline:
+//   1. `div(84,2)` → CoreExpr::Div(Lit(84), Lit(2))
+//   2. lower → let _t0 = 84 in let _t1 = 2 in Call "div" [_t0, _t1]
+//   3. WASM: I64DivS(84, 2) = 42 → I64(42).
+//   4. Returns I64(42).
+//
+// Proves: div(84,2) → I64(42) (signed integer division end-to-end).
+#[test]
+fn acl_div_84_2_returns_42() {
+    let acl = "\
+change acl_div_1 base=0
+author tester
+description div(84,2): 84 / 2 must return I64(42)
+op create_function id=fn.main return=Int body=div(84,2)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(42),
+        "div(84,2) must return I64(42)"
+    );
+}
+
+// RUNTIME-ACL-GT-1
+//
+// ACL body: gt(5,3)
+//
+//   Pipeline:
+//   1. `gt(5,3)` → CoreExpr::Gt(Lit(5), Lit(3))
+//   2. lower → let _t0 = 5 in let _t1 = 3 in Call "gt" [_t0, _t1]
+//   3. WASM: I64GtS(5, 3) → i32(1) → I64ExtendI32U → I64(1).
+//   4. Returns I64(1).
+//
+// Proves: gt(5,3) → I64(1) (5 > 3 is true).
+#[test]
+fn acl_gt_5_3_returns_1() {
+    let acl = "\
+change acl_gt_1 base=0
+author tester
+description gt(5,3): 5 > 3 must return I64(1)
+op create_function id=fn.main return=Int body=gt(5,3)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(1),
+        "gt(5,3) must return I64(1)"
+    );
+}
+
+// RUNTIME-ACL-NE-1
+//
+// ACL body: ne(42,7)
+//
+//   Pipeline:
+//   1. `ne(42,7)` → CoreExpr::Ne(Lit(42), Lit(7))
+//   2. lower → let _t0 = 42 in let _t1 = 7 in Call "ne" [_t0, _t1]
+//   3. WASM: I64Ne(42, 7) → i32(1) → I64ExtendI32U → I64(1).
+//   4. Returns I64(1).
+//
+// Proves: ne(42,7) → I64(1) (42 ≠ 7 is true).
+#[test]
+fn acl_ne_42_7_returns_1() {
+    let acl = "\
+change acl_ne_1 base=0
+author tester
+description ne(42,7): 42 != 7 must return I64(1)
+op create_function id=fn.main return=Int body=ne(42,7)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(1),
+        "ne(42,7) must return I64(1)"
+    );
+}
+
+// RUNTIME-ACL-LE-1
+//
+// ACL body: le(42,42)
+//
+//   Pipeline:
+//   1. `le(42,42)` → CoreExpr::Le(Lit(42), Lit(42))
+//   2. lower → let _t0 = 42 in let _t1 = 42 in Call "le" [_t0, _t1]
+//   3. WASM: I64LeS(42, 42) → i32(1) → I64ExtendI32U → I64(1).
+//   4. Returns I64(1).
+//
+// Proves: le(42,42) → I64(1) (42 ≤ 42 is true — equal values satisfy ≤).
+#[test]
+fn acl_le_42_42_returns_1() {
+    let acl = "\
+change acl_le_1 base=0
+author tester
+description le(42,42): 42 <= 42 must return I64(1)
+op create_function id=fn.main return=Int body=le(42,42)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(1),
+        "le(42,42) must return I64(1)"
+    );
+}
+
+// RUNTIME-ACL-GE-1
+//
+// ACL body: ge(42,42)
+//
+//   Pipeline:
+//   1. `ge(42,42)` → CoreExpr::Ge(Lit(42), Lit(42))
+//   2. lower → let _t0 = 42 in let _t1 = 42 in Call "ge" [_t0, _t1]
+//   3. WASM: I64GeS(42, 42) → i32(1) → I64ExtendI32U → I64(1).
+//   4. Returns I64(1).
+//
+// Proves: ge(42,42) → I64(1) (42 ≥ 42 is true — equal values satisfy ≥).
+#[test]
+fn acl_ge_42_42_returns_1() {
+    let acl = "\
+change acl_ge_1 base=0
+author tester
+description ge(42,42): 42 >= 42 must return I64(1)
+op create_function id=fn.main return=Int body=ge(42,42)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(1),
+        "ge(42,42) must return I64(1)"
+    );
+}
