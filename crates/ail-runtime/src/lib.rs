@@ -55,6 +55,7 @@ pub mod profile;
 pub mod replay;
 pub mod report;
 pub mod schema;
+pub mod secret;
 pub mod transaction;
 
 // Private implementation modules — not part of the public API.
@@ -90,6 +91,7 @@ pub use schema::{
     CapabilityDefinition, CapabilityErrorSchema, CapabilityInputSchema, CapabilityOutputSchema,
     CapabilitySchema, SchemaField, SchemaValidationError, SchemaVariant,
 };
+pub use secret::{SecretReadHandler, SecretVault};
 pub use transaction::{
     CompensationPolicy, CompensationRequired, TransactionEntry, TransactionGroup,
     TransactionPolicy, TransactionStatus,
