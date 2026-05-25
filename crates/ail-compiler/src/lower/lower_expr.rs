@@ -328,7 +328,7 @@ pub(super) fn lower_core_expr_to_anf_local(
         //
         // AnfExpr::WhileLoop is retained for direct ANF construction
         // (backward compatibility) where the caller intentionally names a
-        // stable immutable flag or constant Bool.  In that variant the emitter
+        // stable immutable flag or an immutable binding.  In that variant the emitter
         // issues a single `local.get` each iteration and does NOT re-evaluate
         // a computed expression — see the `AnfExpr::WhileLoop` doc comment for
         // the stale-condition limitation.  Only the CoreExpr → ANF lowering

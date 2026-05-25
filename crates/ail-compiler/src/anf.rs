@@ -215,15 +215,17 @@ pub enum AnfExpr {
     Continue,
     /// Structured while loop with an immutable condition name.
     ///
-    /// `cond` is an ANF name — an immutable let-binding that must hold a `Bool`
-    /// (`I32`) at runtime.  The emitter reads it via `local.get` on every
-    /// iteration, so the same binding value is observed on every loop check.
+    /// `cond` is an ANF name — an immutable let-binding.  `emit_condition_get`
+    /// reads it via `local.get` on every iteration: `I32` locals are used
+    /// directly as a Bool; `I64` locals are treated as truthy via `i64.ne 0`.
+    /// The same immutable binding value is observed on every loop check.
     ///
     /// # Stale-condition limitation
     ///
     /// Because `cond` is an immutable local, this variant can only express a
     /// loop that terminates via a `Break` in the body, or by checking a name
-    /// that was bound to a *constant* `Bool` before the loop.  Computed
+    /// that holds an *immutable* binding whose value does not change across
+    /// iterations.  Computed
     /// conditions (e.g. the result of `lt(cell_get(c), 3)`) are **not**
     /// re-evaluated on each iteration; the local holds the value from the
     /// single binding site and does not change across iterations.
@@ -233,10 +235,11 @@ pub enum AnfExpr {
     /// expression is lowered inside the loop body and re-evaluated on every
     /// iteration.  `AnfExpr::WhileLoop` is retained for direct ANF
     /// construction (backward compatibility) where the caller intentionally
-    /// names a stable flag or constant `Bool`.
+    /// names a stable flag or an immutable binding.
     ///
     /// **Result**: always `I32 0` (unit).  After the loop exits — whether the
-    /// condition became false or a `Break` fired — `I32Const 0` is pushed onto
+    /// condition was false at the top of an iteration or a `Break` fired —
+    /// `I32Const 0` is pushed onto
     /// the WASM stack so that `WhileLoop` can appear as a `Let`-binding value
     /// or in a `Seq` without a stack-underflow validation error.
     ///
