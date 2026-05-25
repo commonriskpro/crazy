@@ -84,6 +84,73 @@ pub(super) fn option_ok_or(args: &[StdlibValue]) -> Result<StdlibValue, StdlibEx
     })
 }
 
+/// `option.transpose`: `Option<Result<T, E>>` → `Result<Option<T>, E>`
+///
+/// - `None`        → `Ok(None)`
+/// - `Some(Ok(v))` → `Ok(Some(v))`
+/// - `Some(Err(e))` → `Err(e)`
+pub(super) fn option_transpose(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::Option(option) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Option" });
+    };
+    Ok(match option.clone() {
+        None => StdlibValue::Result(Ok(Box::new(StdlibValue::Option(None)))),
+        Some(inner) => match *inner {
+            StdlibValue::Result(Ok(v)) => {
+                StdlibValue::Result(Ok(Box::new(StdlibValue::Option(Some(v)))))
+            }
+            StdlibValue::Result(Err(e)) => StdlibValue::Result(Err(e)),
+            _ => return Err(StdlibExecError::Type { expected: "Result" }),
+        },
+    })
+}
+
+/// `option.collect_results`: `List<Result<T, E>>` → `Result<List<T>, E>`
+///
+/// Short-circuits on the first `Err`, otherwise collects all `Ok` values.
+pub(super) fn option_collect_results(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let mut collected = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            StdlibValue::Result(Ok(v)) => collected.push(*v.clone()),
+            StdlibValue::Result(Err(e)) => {
+                return Ok(StdlibValue::Result(Err(e.clone())));
+            }
+            _ => return Err(StdlibExecError::Type { expected: "Result" }),
+        }
+    }
+    Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::List(
+        collected,
+    )))))
+}
+
+/// `result.transpose`: `Result<Option<T>, E>` → `Option<Result<T, E>>`
+///
+/// - `Ok(Some(v))` → `Some(Ok(v))`
+/// - `Ok(None)`    → `None`
+/// - `Err(e)`      → `Some(Err(e))`
+pub(super) fn result_transpose(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::Result(result) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Result" });
+    };
+    Ok(match result.clone() {
+        Ok(inner) => match *inner {
+            StdlibValue::Option(Some(v)) => {
+                StdlibValue::Option(Some(Box::new(StdlibValue::Result(Ok(v)))))
+            }
+            StdlibValue::Option(None) => StdlibValue::Option(None),
+            _ => return Err(StdlibExecError::Type { expected: "Option" }),
+        },
+        Err(e) => StdlibValue::Option(Some(Box::new(StdlibValue::Result(Err(e))))),
+    })
+}
+
 // ── Result combinators ────────────────────────────────────────────────────
 
 pub(super) fn result_map(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {

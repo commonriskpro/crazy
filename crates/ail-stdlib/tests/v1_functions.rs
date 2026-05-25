@@ -40,8 +40,8 @@ fn v1_functions_numeric_has_checked_add() {
 fn v1_functions_option_has_map() {
     let reg = v1_registry_with_functions();
     assert!(
-        reg.entries.iter().any(|e| e.id.0 == "std.option.map"),
-        "registry must contain std.option.map"
+        reg.entries.iter().any(|e| e.id.0 == "std.core.option.map"),
+        "registry must contain std.core.option.map"
     );
 }
 
@@ -49,8 +49,8 @@ fn v1_functions_option_has_map() {
 fn v1_functions_result_has_map() {
     let reg = v1_registry_with_functions();
     assert!(
-        reg.entries.iter().any(|e| e.id.0 == "std.result.map"),
-        "registry must contain std.result.map"
+        reg.entries.iter().any(|e| e.id.0 == "std.core.result.map"),
+        "registry must contain std.core.result.map"
     );
 }
 

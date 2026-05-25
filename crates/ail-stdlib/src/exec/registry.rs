@@ -15,11 +15,11 @@ use self::handlers::{
     json_stringify, list_concat_exec, list_filter_exec, list_fold_exec, list_get, list_length,
     list_map_exec, list_push, map_get, map_insert, numeric_checked_add, numeric_checked_mul,
     numeric_checked_sub, numeric_narrow_to_i32, numeric_narrow_to_u32, numeric_saturating_add,
-    numeric_wrapping_add, option_and_then, option_map, option_ok_or, option_unwrap_or,
-    result_and_then, result_map, result_unwrap_or, set_contains, set_insert, text_decode,
-    text_encode, text_format, text_join, text_length_graphemes_exec, text_normalize, text_regex,
-    text_split, text_trim, time_add_duration_exec, time_duration_since_exec,
-    time_instant_to_ms_exec,
+    numeric_wrapping_add, option_and_then, option_collect_results, option_map, option_ok_or,
+    option_transpose, option_unwrap_or, result_and_then, result_map, result_transpose,
+    result_unwrap_or, set_contains, set_insert, text_decode, text_encode, text_format, text_join,
+    text_length_graphemes_exec, text_normalize, text_regex, text_split, text_trim,
+    time_add_duration_exec, time_duration_since_exec, time_instant_to_ms_exec,
 };
 
 use super::capability::StdlibCapabilityDispatch;
@@ -146,6 +146,30 @@ pub fn stdlib_function_entries() -> Vec<FunctionEntry> {
             &["Result<T, E>", "T"],
             "T",
             result_unwrap_or,
+        ),
+        pure(
+            "std.core.option.transpose",
+            "std.core",
+            "transpose",
+            &["Option<Result<T, E>>"],
+            "Result<Option<T>, E>",
+            option_transpose,
+        ),
+        pure(
+            "std.core.option.collect_results",
+            "std.core",
+            "collect_results",
+            &["List<Result<T, E>>"],
+            "Result<List<T>, E>",
+            option_collect_results,
+        ),
+        pure(
+            "std.core.result.transpose",
+            "std.core",
+            "transpose",
+            &["Result<Option<T>, E>"],
+            "Option<Result<T, E>>",
+            result_transpose,
         ),
         pure(
             "std.collections.list.length",
