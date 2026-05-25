@@ -1164,7 +1164,7 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
             requires: vec![
                 "input is List<T>".to_string(),
                 "init is U (accumulator seed)".to_string(),
-                "f is a total function (U, T) -> U".to_string(),
+                "f receives one List([acc, item]) binary-encoded pair (acc: U, item: T) and returns U".to_string(),
             ],
             ensures: vec![
                 "empty input returns init unchanged".to_string(),
