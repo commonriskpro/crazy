@@ -21,7 +21,9 @@
 use ail_change::canonical::CanonicalChangeSet;
 use ail_core::semantic_graph::SemanticGraph;
 use ail_verify::report::VerificationReport;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use ail_storage::{
     GraphStore, ObjectBackedGraphStore, PostgresGraphStore, SnapshotEnvelope,
@@ -53,9 +55,16 @@ use crate::store_file::{
 /// heap allocation overhead in a short-lived CLI process.
 pub enum StoreHandle {
     /// In-memory store — no persistence across invocations.
+    ///
+    /// `report_index` is an in-process sidecar that maps a change-id hex string
+    /// to the `(ObjectId, profile)` pair written by `save_verification_report`.
+    /// This lets `load_verification_report_by_change_id` and the apply gate
+    /// function identically to the file-backed backend within a single process.
     Memory {
         graph: ObjectBackedGraphStore<MemoryObjectStore>,
         objects: MemoryObjectStore,
+        /// Maps `change_id_hex → (report_hash, verified_profile)`.
+        report_index: Arc<Mutex<HashMap<String, (ObjectId, String)>>>,
     },
     /// File-backed durable store under `.ail/`.
     File {
@@ -161,14 +170,16 @@ impl StoreHandle {
     }
 
     /// Return true when the store can resolve a `VerificationReport` by
-    /// change-id via the sidecar index.
+    /// change-id via an index.
     ///
-    /// Only the file-backed store writes a `.ail/reports/<change_id>` sidecar
-    /// during `ail verify`, so only that backend can enforce the verification
-    /// gate in `ail apply`.  Memory and Postgres always return `Ok(None)` from
-    /// `load_verification_report_by_change_id`, making enforcement impossible.
+    /// File-backed stores write a `.ail/reports/<change_id>` sidecar during
+    /// `ail verify`.  Memory stores maintain an equivalent in-process
+    /// `change_id → (hash, profile)` index in `report_index`.  Both enforce
+    /// the verification gate in `ail apply`.
+    ///
+    /// Postgres returns `false` — report index not yet implemented.
     pub fn supports_report_lookup_by_change_id(&self) -> bool {
-        matches!(self, StoreHandle::File { .. })
+        matches!(self, StoreHandle::File { .. } | StoreHandle::Memory { .. })
     }
 
     /// Return the file-backed context index cache path when available.
@@ -344,7 +355,18 @@ impl StoreHandle {
             .map_err(|e| CliError::Domain(format!("report encoding failed: {e}")))?;
 
         match self {
-            StoreHandle::Memory { objects, .. } => Ok(objects.put(RawObject(bytes)).await?),
+            StoreHandle::Memory {
+                objects,
+                report_index,
+                ..
+            } => {
+                let id = objects.put(RawObject(bytes)).await?;
+                report_index
+                    .lock()
+                    .expect("report_index lock must not be poisoned")
+                    .insert(change_id.to_string(), (id, profile.to_string()));
+                Ok(id)
+            }
             StoreHandle::File {
                 objects, ail_dir, ..
             } => {
@@ -390,7 +412,8 @@ impl StoreHandle {
     ///
     /// File-backed stores resolve the sidecar at `.ail/reports/<change_id>` to obtain
     /// the report hash and profile, then load the object.
-    /// Memory and Postgres stores always return `Ok(None)`.
+    /// Memory stores resolve via the in-process `report_index` sidecar (Wave 9D).
+    /// Postgres stores always return `Ok(None)` — no report index table yet.
     ///
     /// On success returns `Some((report, hash, profile))` where:
     /// - `hash` is the BLAKE3 hash of the CBOR-encoded report.
@@ -400,6 +423,20 @@ impl StoreHandle {
         &self,
         change_id: &str,
     ) -> Result<Option<(VerificationReport, ObjectId, String)>, CliError> {
+        // Memory backend: resolve via in-process report_index.
+        if let StoreHandle::Memory { report_index, .. } = self {
+            let entry = report_index
+                .lock()
+                .expect("report_index lock must not be poisoned")
+                .get(change_id)
+                .cloned();
+            let Some((hash, verified_profile)) = entry else {
+                return Ok(None);
+            };
+            let report = self.load_verification_report_by_hash(&hash).await?;
+            return Ok(report.map(|r| (r, hash, verified_profile)));
+        }
+
         let StoreHandle::File { ail_dir, .. } = self else {
             return Ok(None);
         };
@@ -478,6 +515,7 @@ fn memory_handle() -> StoreHandle {
     StoreHandle::Memory {
         graph: ObjectBackedGraphStore::new(objects.clone()),
         objects,
+        report_index: Arc::new(Mutex::new(HashMap::new())),
     }
 }
 
@@ -1065,16 +1103,17 @@ mod tests {
         );
     }
 
-    // TRIANGULATE: memory store load by change_id returns None (no sidecar).
-    //   GIVEN a memory StoreHandle with a saved report
-    //   WHEN load_verification_report_by_change_id is called
-    //   THEN Ok(None) is returned (memory store has no sidecar index)
+    // TRIANGULATE: memory store load by change_id resolves via in-process index.
+    //   GIVEN a memory StoreHandle with a saved report for "dev"
+    //   WHEN load_verification_report_by_change_id is called with the same change_id
+    //   THEN Some((report, hash, "dev")) is returned — index enforces the gate
     #[tokio::test]
-    async fn load_verification_report_by_change_id_memory_returns_none() {
+    async fn load_verification_report_by_change_id_memory_uses_index() {
         let store = memory_store();
         let change_id = "e".repeat(64);
         let report = minimal_report();
-        store
+
+        let hash = store
             .save_verification_report(&change_id, "dev", &report)
             .await
             .expect("save must succeed");
@@ -1082,11 +1121,89 @@ mod tests {
         let result = store
             .load_verification_report_by_change_id(&change_id)
             .await
+            .expect("must not error")
+            .expect("memory store must resolve by change_id via in-process index");
+
+        let expected = VerificationReport {
+            verified_profile: Some("dev".to_string()),
+            ..report.clone()
+        };
+        assert_eq!(
+            result.0, expected,
+            "resolved report must match enriched (profile-embedded) saved report"
+        );
+        assert_eq!(result.1, hash, "resolved hash must match the stored hash");
+        assert_eq!(
+            result.2, "dev",
+            "resolved profile must match the saved profile"
+        );
+    }
+
+    // Scenario: memory store load by change_id returns None for unknown change_id.
+    //   GIVEN a memory StoreHandle with no saved reports
+    //   WHEN load_verification_report_by_change_id is called
+    //   THEN Ok(None) is returned
+    #[tokio::test]
+    async fn load_verification_report_by_change_id_memory_unknown_returns_none() {
+        let store = memory_store();
+        let unknown = "f".repeat(64);
+
+        let result = store
+            .load_verification_report_by_change_id(&unknown)
+            .await
             .expect("must not error");
 
+        assert_eq!(result, None, "unknown change-id must return None");
+    }
+
+    // Scenario: memory store supports_report_lookup_by_change_id returns true.
+    //   GIVEN a memory StoreHandle
+    //   WHEN supports_report_lookup_by_change_id is called
+    //   THEN true is returned — gate can be enforced
+    #[test]
+    fn memory_supports_report_lookup_by_change_id() {
+        let store = memory_store();
+        assert!(
+            store.supports_report_lookup_by_change_id(),
+            "memory store must report gate support after Wave 9D"
+        );
+    }
+
+    // Scenario: memory index enforces profile matching across two saves.
+    //   GIVEN a memory StoreHandle with reports saved for two different profiles
+    //   WHEN each is loaded by its change_id
+    //   THEN each returns the correct profile — gate can enforce profile mismatch
+    #[tokio::test]
+    async fn memory_report_index_records_profile_per_change_id() {
+        let store = memory_store();
+        let change_dev = "1".repeat(64);
+        let change_prod = "2".repeat(64);
+        let report = minimal_report();
+
+        store
+            .save_verification_report(&change_dev, "dev", &report)
+            .await
+            .expect("save dev must succeed");
+        store
+            .save_verification_report(&change_prod, "prod", &report)
+            .await
+            .expect("save prod must succeed");
+
+        let dev_result = store
+            .load_verification_report_by_change_id(&change_dev)
+            .await
+            .expect("must not error")
+            .expect("dev report must resolve");
+        let prod_result = store
+            .load_verification_report_by_change_id(&change_prod)
+            .await
+            .expect("must not error")
+            .expect("prod report must resolve");
+
+        assert_eq!(dev_result.2, "dev", "dev change_id must carry dev profile");
         assert_eq!(
-            result, None,
-            "memory store must return None for change-id sidecar lookup"
+            prod_result.2, "prod",
+            "prod change_id must carry prod profile"
         );
     }
 

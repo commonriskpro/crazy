@@ -258,10 +258,16 @@ Rules:
 > before profile tracking (hash only, no profile token) are treated as `"dev"` for
 > migration compatibility.
 >
-> - **Memory and Postgres backends do not enforce the gate.** These backends have no
->   sidecar index; `load_verification_report_by_change_id` always returns
->   `not_persisted` and the gate is skipped.  Enforcement requires a backend report
->   index, which is not yet implemented.
+> - **Memory backend now enforces the gate** (Wave 9D).  An in-process
+>   `change_id → (hash, profile)` index is maintained alongside the CAS object
+>   store.  `load_verification_report_by_change_id` resolves via this index so
+>   `ail apply` blocks identically to the file-backed store within a single process.
+>
+> - **Postgres backend does not enforce the gate.**  No report index table exists
+>   yet; `load_verification_report_by_change_id` returns `not_persisted` and the
+>   gate is skipped for Postgres-backed workflows.  Tracking issue: add a
+>   `report_index` table (change_id → hash + profile) and wire it into
+>   `save_verification_report` / `load_verification_report_by_change_id`.
 
 In `apply --json`, stale-base failures still exit non-zero and keep the human error on stderr, but stdout includes a machine-readable envelope:
 

@@ -544,10 +544,9 @@ pub(crate) async fn cmd_apply(
 
     // Verification gate: require an accepted VerificationReport before apply.
     //
-    // Enforced only for file-backed stores, which persist a report sidecar at
-    // `.ail/reports/<change_id>` during `ail verify`.  Memory and Postgres
-    // backends cannot resolve reports by change-id; the gate is skipped for
-    // those backends (documented limitation — no sidecar index available).
+    // Enforced for file-backed stores (sidecar at `.ail/reports/<change_id>`)
+    // and Memory stores (in-process `report_index` — Wave 9D).  Postgres is the
+    // only backend that still skips the gate (no report index table yet).
     //
     // The gate enforces two conditions:
     //   1. A report must exist (was `ail verify` run for this change?).

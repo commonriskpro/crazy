@@ -1,16 +1,25 @@
 use super::*;
 
-// Scenario: cmd_apply refuses valid-looking ids when no ChangeSet payload exists.
+// Scenario: cmd_apply blocks on memory store when no verification report exists.
+//
+// Wave 9D: Memory backend now enforces the verification gate via an in-process
+// report index.  Applying without a prior `ail verify` call returns a Domain
+// error for the missing report rather than a NotFound for the missing changeset.
 #[tokio::test]
 async fn cmd_apply_memory_store_requires_stored_changeset() {
     use crate::store::memory_store;
     let store = memory_store();
     let id = "b".repeat(64);
     let result = cmd_apply(OutputMode::Human, &id, false, None, &store).await;
-    assert!(
-        matches!(result, Err(CliError::NotFound(_))),
-        "cmd_apply must reject missing ChangeSet payload; got: {result:?}"
-    );
+    match &result {
+        Err(CliError::Domain(msg)) => assert!(
+            msg.contains("no verification report found"),
+            "error must mention missing report; got: {msg}"
+        ),
+        other => panic!(
+            "expected Domain error for missing verification report; got: {other:?}"
+        ),
+    }
 }
 
 // Scenario: change creates a graph snapshot that compile can load.
@@ -76,13 +85,17 @@ async fn cmd_apply_blocks_prod_without_yes() {
 }
 
 // Scenario: cmd_apply allows prod profile when --yes is set.
-//   GIVEN a valid change-id and profile=prod
+//   GIVEN a valid change-id, a saved changeset payload, and a verification report for "prod"
 //   WHEN yes=true
 //   THEN cmd_apply proceeds (does not return a policy error)
+//
+// Wave 9D: Memory backend now enforces the verification gate, so the test must
+// also save a verification report under the "prod" profile before applying.
 #[tokio::test]
 async fn cmd_apply_allows_prod_with_yes() {
     use crate::store::memory_store;
     use ail_change::canonical::CanonicalChangeSet;
+    use ail_verify::report::VerificationReport;
 
     let store = memory_store();
     let canonical = CanonicalChangeSet::default();
@@ -93,6 +106,12 @@ async fn cmd_apply_allows_prod_with_yes() {
         .save_changeset_payload(&change_id, &cbor_bytes)
         .await
         .expect("save must succeed");
+
+    // Wave 9D: Memory gate is now enforced; save an accepted report for "prod".
+    store
+        .save_verification_report(&change_id, "prod", &VerificationReport::default())
+        .await
+        .expect("save_verification_report must succeed for memory store");
 
     let result = cmd_apply(OutputMode::Human, &change_id, true, Some("prod"), &store).await;
     assert!(
