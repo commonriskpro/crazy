@@ -19,9 +19,9 @@ use ail_compiler::{
 };
 use ail_core::semantic_graph::NodeRef;
 use ail_runtime::{
-    AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, Handler, HostResult,
-    InFlightPolicy, InMemoryHandler, PreflightFailure, ResourceLimits, RuntimeError, RuntimeHost,
-    RuntimeProfile, blake3_hex_of,
+    AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, ClockHandler, Handler,
+    HostResult, InFlightPolicy, InMemoryHandler, PreflightFailure, ResourceLimits, RuntimeError,
+    RuntimeHost, RuntimeProfile, blake3_hex_of,
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -697,5 +697,58 @@ fn multiple_capability_calls_accumulate_audit_events() {
             assert_eq!(cap2, &cap_b, "second call must be FileWrite");
         }
         other => panic!("unexpected events: {other:?}"),
+    }
+}
+
+// ── Wave 24C: ClockHandler operation contract ─────────────────────────────
+//
+// RUNTIME-CLOCK-OP-CONTRACT-1: clock.now succeeds
+// RUNTIME-CLOCK-OP-CONTRACT-2: clock.elapsed returns Custom error
+
+/// RUNTIME-CLOCK-OP-CONTRACT-1
+///
+/// `ClockHandler::handle` with operation `"now"` must return 8 bytes
+/// representing an epoch-millisecond i64 in the range [1e12, 1e13).
+#[test]
+fn clock_handler_now_operation_succeeds() {
+    let handler = ClockHandler::new();
+    let cap = CapabilityId::new("clock");
+    let result = handler
+        .handle(&cap, "now", &[])
+        .expect("clock.now must succeed");
+    assert_eq!(result.len(), 8, "clock.now must return exactly 8 bytes");
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(&result);
+    let now_ms = i64::from_le_bytes(buf);
+    assert!(
+        now_ms > 1_000_000_000_000,
+        "clock.now must return epoch-ms > 1e12, got {now_ms}"
+    );
+    assert!(
+        now_ms < 10_000_000_000_000,
+        "clock.now must return epoch-ms < 1e13, got {now_ms}"
+    );
+}
+
+/// RUNTIME-CLOCK-OP-CONTRACT-2
+///
+/// `ClockHandler::handle` with any operation other than `"now"` (e.g.
+/// `"elapsed"`) must return `HostError::Custom` whose message contains
+/// `"unknown clock operation: elapsed"`.
+#[test]
+fn clock_handler_unknown_operation_returns_custom_error() {
+    let handler = ClockHandler::new();
+    let cap = CapabilityId::new("clock");
+    let err = handler
+        .handle(&cap, "elapsed", &[])
+        .expect_err("clock.elapsed must return an error");
+    match &err {
+        ail_runtime::abi::HostError::Custom(msg) => {
+            assert!(
+                msg.contains("unknown clock operation: elapsed"),
+                "error message must identify the unknown operation, got: {msg}"
+            );
+        }
+        other => panic!("expected HostError::Custom, got {other:?}"),
     }
 }
