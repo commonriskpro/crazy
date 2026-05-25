@@ -82,10 +82,15 @@ fn t2_unmapped_secret_denied() {
     let err = handler
         .handle(&cap, "read", b"")
         .expect_err("unmapped secret must be denied");
-    assert!(
-        matches!(err, HostError::CapabilityDenied(_)),
-        "expected CapabilityDenied, got {err:?}"
-    );
+
+    let msg = match &err {
+        HostError::CapabilityDenied(m) => m.clone(),
+        other => panic!("expected CapabilityDenied, got {other:?}"),
+    };
+    // Opaque denial: must not reveal the secret ID or any vault detail.
+    assert_eq!(msg, "secret access denied", "denial message must be opaque");
+    assert!(!msg.contains("DbPassword"), "must not leak secret ID");
+    assert!(!msg.contains("prod/"), "must not leak vault path");
 }
 
 // ── T3 — Vault path missing ───────────────────────────────────────────────
@@ -104,9 +109,42 @@ fn t3_vault_path_missing_denied() {
     let err = handler
         .handle(&cap, "read", b"")
         .expect_err("missing vault path must be denied");
-    assert!(
-        matches!(err, HostError::CapabilityDenied(_)),
-        "expected CapabilityDenied, got {err:?}"
+
+    let msg = match &err {
+        HostError::CapabilityDenied(m) => m.clone(),
+        other => panic!("expected CapabilityDenied, got {other:?}"),
+    };
+    // Opaque denial: must not reveal the secret ID or vault path.
+    assert_eq!(msg, "secret access denied", "denial message must be opaque");
+    assert!(!msg.contains("StripeApiKey"), "must not leak secret ID");
+    assert!(!msg.contains("prod/stripe"), "must not leak vault path");
+}
+
+// ── T2/T3 cross-check — unmapped and missing-vault denials are identical ──
+
+#[test]
+fn t2t3_unmapped_and_missing_vault_denials_are_identical() {
+    // Unmapped case.
+    let h_unmapped = SecretReadHandler::new(vec![], Arc::new(SecretVault::new()));
+    let cap_unmapped = CapabilityId::new("secret.read:Ghost");
+    let err_unmapped = h_unmapped
+        .handle(&cap_unmapped, "read", b"")
+        .expect_err("must be denied");
+
+    // Mapped-but-vault-missing case.
+    let mapping = vec![SecretEntry {
+        secret_id: "StripeApiKey".to_string(),
+        vault_path: "prod/stripe".to_string(),
+    }];
+    let h_missing = SecretReadHandler::new(mapping, Arc::new(SecretVault::new()));
+    let cap_missing = CapabilityId::new("secret.read:StripeApiKey");
+    let err_missing = h_missing
+        .handle(&cap_missing, "read", b"")
+        .expect_err("must be denied");
+
+    assert_eq!(
+        err_unmapped, err_missing,
+        "both denial paths must produce identical errors — no vault-layout oracle"
     );
 }
 
@@ -169,8 +207,13 @@ fn t4_audit_event_for_secret_read_contains_only_hashes() {
                 output_hash.is_some(),
                 "output_hash must be present for success"
             );
-            // The hash of b"sk_live_abc123" must not equal the raw ASCII string.
+            // output_hash must be exactly the BLAKE3 hex digest of the secret bytes.
             let output_hash_str = output_hash.as_deref().unwrap();
+            let expected_hash = blake3_hex_of(b"sk_live_abc123");
+            assert_eq!(
+                output_hash_str, expected_hash,
+                "output_hash must equal blake3_hex_of(secret_bytes)"
+            );
             assert_ne!(
                 output_hash_str, "sk_live_abc123",
                 "output_hash must be a hash, not the raw secret value"

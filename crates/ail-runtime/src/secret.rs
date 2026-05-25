@@ -169,11 +169,14 @@ impl SecretReadHandler {
     }
 }
 
-/// Intentionally omits vault contents from debug output.
+/// Intentionally omits vault contents and capability names from debug output.
+///
+/// Exposing the `caps` list would reveal the enumeration of secret IDs
+/// declared in the profile.  Only the count is shown.
 impl fmt::Debug for SecretReadHandler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SecretReadHandler")
-            .field("caps", &self.caps)
+            .field("caps_count", &self.caps.len())
             .field("vault", &"[redacted]")
             .finish()
     }
@@ -191,10 +194,18 @@ impl Handler for SecretReadHandler {
     fn handle(
         &self,
         capability: &CapabilityId,
-        _operation: &str,
+        operation: &str,
         _payload: &[u8],
     ) -> HostResult<Vec<u8>> {
+        // Only the "read" operation is supported by this handler.
+        if operation != "read" {
+            return Err(HostError::CapabilityDenied(
+                "secret access denied".to_string(),
+            ));
+        }
+
         // Extract secret_id from "secret.read:<secret_id>".
+        // Structural format errors are kept distinct from access denials.
         let cap_str = capability.as_str();
         let secret_id = match cap_str.strip_prefix(SECRET_READ_PREFIX) {
             Some(id) if !id.is_empty() => id,
@@ -206,6 +217,8 @@ impl Handler for SecretReadHandler {
         };
 
         // Resolve secret_id → vault_path via the mapping.
+        // Both mapping-miss and vault-miss produce the same opaque denial to
+        // prevent callers from probing which step failed (vault-layout oracle).
         let vault_path = self
             .mapping
             .iter()
@@ -215,9 +228,8 @@ impl Handler for SecretReadHandler {
         let vault_path = match vault_path {
             Some(p) => p,
             None => {
-                // Unmapped secret ID: denied without revealing why.
                 return Err(HostError::CapabilityDenied(
-                    "secret not mapped in profile".to_string(),
+                    "secret access denied".to_string(),
                 ));
             }
         };
@@ -225,12 +237,9 @@ impl Handler for SecretReadHandler {
         // Resolve vault_path → secret bytes.
         match self.vault.resolve(vault_path) {
             Some(bytes) => Ok(bytes.to_vec()),
-            None => {
-                // Vault path not found: denied without revealing the path.
-                Err(HostError::CapabilityDenied(
-                    "secret not found in vault".to_string(),
-                ))
-            }
+            None => Err(HostError::CapabilityDenied(
+                "secret access denied".to_string(),
+            )),
         }
     }
 }
@@ -280,9 +289,22 @@ mod tests {
         }];
         let h = SecretReadHandler::new(mapping, Arc::new(vault));
         let debug = format!("{h:?}");
-        assert!(!debug.contains("supersecret"));
+        // Secret values and vault contents must not appear.
+        assert!(
+            !debug.contains("supersecret"),
+            "secret value must be hidden"
+        );
         // The vault inner should be hidden.
-        assert!(debug.contains("redacted"));
+        assert!(debug.contains("redacted"), "debug must mention redacted");
+        // Capability names (= secret IDs) must NOT appear; only the count.
+        assert!(
+            !debug.contains("MyKey"),
+            "secret IDs must not appear in Debug output"
+        );
+        assert!(
+            !debug.contains("secret.read:"),
+            "capability names must not appear in Debug output"
+        );
     }
 
     #[test]
@@ -306,7 +328,14 @@ mod tests {
         let h = SecretReadHandler::new(mapping, Arc::new(vault));
         let cap = CapabilityId::new("secret.read:StripeKey");
         let err = h.handle(&cap, "read", b"").expect_err("should be denied");
-        assert!(matches!(err, HostError::CapabilityDenied(_)));
+        let msg = match &err {
+            HostError::CapabilityDenied(m) => m.clone(),
+            other => panic!("expected CapabilityDenied, got {other:?}"),
+        };
+        // Opaque message — must not contain the secret ID or any layout detail.
+        assert_eq!(msg, "secret access denied");
+        assert!(!msg.contains("StripeKey"), "must not leak secret ID");
+        assert!(!msg.contains("prod/"), "must not leak vault path");
     }
 
     #[test]
@@ -319,7 +348,63 @@ mod tests {
         let h = SecretReadHandler::new(mapping, Arc::new(vault));
         let cap = CapabilityId::new("secret.read:StripeKey");
         let err = h.handle(&cap, "read", b"").expect_err("should be denied");
-        assert!(matches!(err, HostError::CapabilityDenied(_)));
+        let msg = match &err {
+            HostError::CapabilityDenied(m) => m.clone(),
+            other => panic!("expected CapabilityDenied, got {other:?}"),
+        };
+        // Opaque message — must not contain the secret ID or vault path.
+        assert_eq!(msg, "secret access denied");
+        assert!(!msg.contains("StripeKey"), "must not leak secret ID");
+        assert!(!msg.contains("prod/stripe"), "must not leak vault path");
+    }
+
+    #[test]
+    fn handler_unmapped_and_missing_vault_denial_are_identical() {
+        // Both denial paths must produce exactly the same error to prevent
+        // callers from probing vault layout by comparing error messages.
+        let cap_unmapped = CapabilityId::new("secret.read:Unknown");
+        let cap_mapped = CapabilityId::new("secret.read:StripeKey");
+
+        // Unmapped secret.
+        let h_unmapped = SecretReadHandler::new(vec![], Arc::new(SecretVault::new()));
+        let err_unmapped = h_unmapped
+            .handle(&cap_unmapped, "read", b"")
+            .expect_err("unmapped must be denied");
+
+        // Mapped but missing from vault.
+        let mapping = vec![SecretEntry {
+            secret_id: "StripeKey".to_string(),
+            vault_path: "prod/stripe".to_string(),
+        }];
+        let h_missing = SecretReadHandler::new(mapping, Arc::new(SecretVault::new()));
+        let err_missing = h_missing
+            .handle(&cap_mapped, "read", b"")
+            .expect_err("missing vault path must be denied");
+
+        assert_eq!(
+            err_unmapped, err_missing,
+            "denial errors must be identical to prevent vault-layout probing"
+        );
+    }
+
+    #[test]
+    fn handler_denies_wrong_operation() {
+        let mut vault = SecretVault::new();
+        vault.insert("prod/stripe", b"sk_live".to_vec());
+        let mapping = vec![SecretEntry {
+            secret_id: "StripeKey".to_string(),
+            vault_path: "prod/stripe".to_string(),
+        }];
+        let h = SecretReadHandler::new(mapping, Arc::new(vault));
+        let cap = CapabilityId::new("secret.read:StripeKey");
+        // "write" is not a valid operation for this handler.
+        let err = h
+            .handle(&cap, "write", b"")
+            .expect_err("wrong operation must be denied");
+        assert!(
+            matches!(err, HostError::CapabilityDenied(_)),
+            "expected CapabilityDenied for wrong operation, got {err:?}"
+        );
     }
 
     #[test]
