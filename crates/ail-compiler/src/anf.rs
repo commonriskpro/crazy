@@ -216,9 +216,24 @@ pub enum AnfExpr {
     /// Structured while loop with an immutable condition name.
     ///
     /// `cond` is an ANF name — an immutable let-binding that must hold a `Bool`
-    /// (`I32`) at runtime.  The condition is re-read via `LocalGet` on every
-    /// iteration.  Because ANF names are immutable, a `cond` that is `true` at
-    /// entry never terminates on its own: the body must contain a `Break`.
+    /// (`I32`) at runtime.  The emitter reads it via `local.get` on every
+    /// iteration, so the same binding value is observed on every loop check.
+    ///
+    /// # Stale-condition limitation
+    ///
+    /// Because `cond` is an immutable local, this variant can only express a
+    /// loop that terminates via a `Break` in the body, or by checking a name
+    /// that was bound to a *constant* `Bool` before the loop.  Computed
+    /// conditions (e.g. the result of `lt(cell_get(c), 3)`) are **not**
+    /// re-evaluated on each iteration; the local holds the value from the
+    /// single binding site and does not change across iterations.
+    ///
+    /// For computed conditions use `CoreExpr::WhileLoop`, which the lowering
+    /// pipeline desugars into `Loop + If + Break/Continue` so the condition
+    /// expression is lowered inside the loop body and re-evaluated on every
+    /// iteration.  `AnfExpr::WhileLoop` is retained for direct ANF
+    /// construction (backward compatibility) where the caller intentionally
+    /// names a stable flag or constant `Bool`.
     ///
     /// **Result**: always `I32 0` (unit).  After the loop exits — whether the
     /// condition became false or a `Break` fired — `I32Const 0` is pushed onto

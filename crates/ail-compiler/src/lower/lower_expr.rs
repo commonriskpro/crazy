@@ -326,9 +326,14 @@ pub(super) fn lower_core_expr_to_anf_local(
         // expression like `lt(cell_get(c), 3)` was evaluated exactly once and
         // subsequent iterations re-used the stale binding value.
         //
-        // AnfExpr::WhileLoop is preserved for direct ANF construction
-        // (backward compatibility).  Only the CoreExpr → ANF lowering path
-        // is changed here.
+        // AnfExpr::WhileLoop is retained for direct ANF construction
+        // (backward compatibility) where the caller intentionally names a
+        // stable immutable flag or constant Bool.  In that variant the emitter
+        // issues a single `local.get` each iteration and does NOT re-evaluate
+        // a computed expression — see the `AnfExpr::WhileLoop` doc comment for
+        // the stale-condition limitation.  Only the CoreExpr → ANF lowering
+        // path is changed here: all source-level while loops now desugar to
+        // Loop+If so computed conditions are re-evaluated inside the loop body.
         CoreExpr::WhileLoop { cond, body, .. } => {
             let cond_lowered = lower_core_expr_to_anf_local(cond, fresh, source_ref);
             let cond_tmp = format!("anf_{}", *fresh);
