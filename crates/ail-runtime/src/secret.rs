@@ -48,12 +48,12 @@
 //
 // Usage (custom provider):
 //   ```rust,ignore
-//   use ail_runtime::secret::SecretProvider;
+//   use ail_runtime::secret::{SecretProvider, SecretProviderError};
 //
 //   struct MyVaultClient { /* ... */ }
 //
 //   impl SecretProvider for MyVaultClient {
-//       fn resolve(&self, vault_path: &str) -> Option<Vec<u8>> {
+//       fn resolve(&self, vault_path: &str) -> Result<Vec<u8>, SecretProviderError> {
 //           // call external vault API
 //           todo!()
 //       }
@@ -70,6 +70,45 @@ use crate::abi::{HostError, HostResult};
 use crate::handler::Handler;
 use crate::profile::{CapabilityId, SecretEntry};
 
+// ── SecretProviderError ───────────────────────────────────────────────────
+
+/// Error returned by [`SecretProvider::resolve`] when a secret cannot be
+/// delivered.
+///
+/// Each variant represents a **generic failure category** — it MUST NOT carry
+/// vault paths, secret IDs, or any data that could help a caller probe vault
+/// layout.  The runtime maps these variants to audit log categories (e.g.
+/// `"secret.not_found"`, `"secret.provider_unavailable"`) while keeping all
+/// caller-visible messages opaque.
+///
+/// # Categories
+///
+/// | Variant | Meaning | Audit category |
+/// |---------|---------|----------------|
+/// | [`NotFound`](SecretProviderError::NotFound) | The vault path is not present in this provider | `"secret.not_found"` |
+/// | [`Unavailable`](SecretProviderError::Unavailable) | The provider itself is temporarily unavailable (e.g. network error, circuit breaker open) | `"secret.provider_unavailable"` |
+///
+/// # Security note
+///
+/// Both [`NotFound`](SecretProviderError::NotFound) and a mapping miss in
+/// [`SecretReadHandler`] map to the same `"secret.not_found"` audit category
+/// to prevent callers from distinguishing which step failed (vault-layout
+/// oracle prevention).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SecretProviderError {
+    /// The vault path is not registered or has no value in this provider.
+    ///
+    /// MUST NOT reveal which path was missing.
+    NotFound,
+    /// The provider is temporarily unavailable.
+    ///
+    /// Use this for transient failures: network timeouts, connection errors,
+    /// circuit breakers, or similar operational conditions that may resolve
+    /// without code changes.  MUST NOT reveal connection details or
+    /// error messages that expose vault topology.
+    Unavailable,
+}
+
 // ── SecretProvider ────────────────────────────────────────────────────────
 
 /// Trait for backends that resolve vault paths to secret byte values.
@@ -85,13 +124,28 @@ use crate::profile::{CapabilityId, SecretEntry};
 ///   audit events.
 /// - Implementors must be `Send + Sync` so the provider can be shared behind
 ///   an `Arc` across threads (required by Wasmtime host-function closures).
+/// - `Err(SecretProviderError::NotFound)` and `Err(SecretProviderError::Unavailable)`
+///   MUST NOT carry vault paths, secret IDs, or any data that leaks vault
+///   topology.  The variants are opaque by design.
+///
+/// # Error categories
+///
+/// Return `Err(SecretProviderError::NotFound)` when the vault path is not
+/// present.  Return `Err(SecretProviderError::Unavailable)` when the provider
+/// itself is temporarily unreachable (e.g. network timeout, circuit breaker).
+/// In both cases the runtime returns the same opaque `HostError::CapabilityDenied`
+/// to callers; the generic category is recorded only in the audit log.
 pub trait SecretProvider: Send + Sync {
     /// Resolve `vault_path` to its secret bytes.
     ///
-    /// Returns `None` if the path is unknown to this provider.
+    /// Returns `Ok(bytes)` on success.
+    /// Returns `Err(SecretProviderError::NotFound)` if the path is unknown.
+    /// Returns `Err(SecretProviderError::Unavailable)` if the provider itself
+    /// is temporarily unreachable.
+    ///
     /// The returned bytes MUST NOT be written to logs or audit fields;
     /// the audit infrastructure accepts only hashes.
-    fn resolve(&self, vault_path: &str) -> Option<Vec<u8>>;
+    fn resolve(&self, vault_path: &str) -> Result<Vec<u8>, SecretProviderError>;
 }
 
 // ── SecretVault ───────────────────────────────────────────────────────────
@@ -160,10 +214,14 @@ impl fmt::Debug for SecretVault {
 impl SecretProvider for SecretVault {
     /// Resolve a vault path to an owned copy of its secret bytes.
     ///
-    /// Returns `None` if the path is unknown.  The returned bytes inherit
-    /// all security invariants documented on [`SecretProvider::resolve`].
-    fn resolve(&self, vault_path: &str) -> Option<Vec<u8>> {
-        self.secrets.get(vault_path).cloned()
+    /// Returns `Ok(bytes)` if the path is registered, or
+    /// `Err(SecretProviderError::NotFound)` if it is not.  The returned bytes
+    /// inherit all security invariants documented on [`SecretProvider::resolve`].
+    fn resolve(&self, vault_path: &str) -> Result<Vec<u8>, SecretProviderError> {
+        self.secrets
+            .get(vault_path)
+            .cloned()
+            .ok_or(SecretProviderError::NotFound)
     }
 }
 
@@ -289,8 +347,10 @@ impl Handler for SecretReadHandler {
         };
 
         // Resolve secret_id → vault_path via the mapping.
-        // Both mapping-miss and vault-miss produce the same opaque denial to
-        // prevent callers from probing which step failed (vault-layout oracle).
+        // Both mapping-miss and vault-miss produce the same opaque external
+        // denial ("secret access denied") and the same audit category
+        // ("secret.not_found") to prevent callers from probing which step
+        // failed (vault-layout oracle prevention).
         let vault_path = self
             .mapping
             .iter()
@@ -300,18 +360,26 @@ impl Handler for SecretReadHandler {
         let vault_path = match vault_path {
             Some(p) => p,
             None => {
-                return Err(HostError::CapabilityDenied(
-                    "secret access denied".to_string(),
-                ));
+                return Err(HostError::CapabilityDeniedCategorized {
+                    message: "secret access denied".to_string(),
+                    audit_category: "secret.not_found".to_string(),
+                });
             }
         };
 
         // Resolve vault_path → secret bytes via the provider.
+        // Map SecretProviderError variants to audit categories while keeping
+        // the caller-visible message opaque in all cases.
         match self.provider.resolve(vault_path) {
-            Some(bytes) => Ok(bytes),
-            None => Err(HostError::CapabilityDenied(
-                "secret access denied".to_string(),
-            )),
+            Ok(bytes) => Ok(bytes),
+            Err(SecretProviderError::NotFound) => Err(HostError::CapabilityDeniedCategorized {
+                message: "secret access denied".to_string(),
+                audit_category: "secret.not_found".to_string(),
+            }),
+            Err(SecretProviderError::Unavailable) => Err(HostError::CapabilityDeniedCategorized {
+                message: "secret access denied".to_string(),
+                audit_category: "secret.provider_unavailable".to_string(),
+            }),
         }
     }
 }
@@ -400,14 +468,23 @@ mod tests {
         let h = SecretReadHandler::new(mapping, Arc::new(vault));
         let cap = CapabilityId::new("secret.read:StripeKey");
         let err = h.handle(&cap, "read", b"").expect_err("should be denied");
-        let msg = match &err {
-            HostError::CapabilityDenied(m) => m.clone(),
-            other => panic!("expected CapabilityDenied, got {other:?}"),
-        };
+        assert!(
+            err.is_capability_denied(),
+            "expected capability denied, got {err:?}"
+        );
+        let msg = err
+            .capability_denied_message()
+            .expect("must have a denial message");
         // Opaque message — must not contain the secret ID or any layout detail.
         assert_eq!(msg, "secret access denied");
         assert!(!msg.contains("StripeKey"), "must not leak secret ID");
         assert!(!msg.contains("prod/"), "must not leak vault path");
+        // Audit category is set to generic "not found" (no vault details).
+        assert_eq!(
+            err.audit_category(),
+            Some("secret.not_found"),
+            "audit category must be secret.not_found"
+        );
     }
 
     #[test]
@@ -420,14 +497,23 @@ mod tests {
         let h = SecretReadHandler::new(mapping, Arc::new(vault));
         let cap = CapabilityId::new("secret.read:StripeKey");
         let err = h.handle(&cap, "read", b"").expect_err("should be denied");
-        let msg = match &err {
-            HostError::CapabilityDenied(m) => m.clone(),
-            other => panic!("expected CapabilityDenied, got {other:?}"),
-        };
+        assert!(
+            err.is_capability_denied(),
+            "expected capability denied, got {err:?}"
+        );
+        let msg = err
+            .capability_denied_message()
+            .expect("must have a denial message");
         // Opaque message — must not contain the secret ID or vault path.
         assert_eq!(msg, "secret access denied");
         assert!(!msg.contains("StripeKey"), "must not leak secret ID");
         assert!(!msg.contains("prod/stripe"), "must not leak vault path");
+        // Same audit category as mapping miss — prevents vault-layout oracle.
+        assert_eq!(
+            err.audit_category(),
+            Some("secret.not_found"),
+            "audit category must be secret.not_found (same as mapping miss)"
+        );
     }
 
     #[test]
@@ -517,10 +603,10 @@ mod tests {
         // Custom provider that serves a single hard-coded secret.
         struct StaticProvider;
         impl SecretProvider for StaticProvider {
-            fn resolve(&self, vault_path: &str) -> Option<Vec<u8>> {
+            fn resolve(&self, vault_path: &str) -> Result<Vec<u8>, SecretProviderError> {
                 match vault_path {
-                    "custom/key" => Some(b"custom_secret_value".to_vec()),
-                    _ => None,
+                    "custom/key" => Ok(b"custom_secret_value".to_vec()),
+                    _ => Err(SecretProviderError::NotFound),
                 }
             }
         }
@@ -538,13 +624,13 @@ mod tests {
     }
 
     #[test]
-    fn handler_custom_provider_denial_is_opaque() {
-        // Provider that always returns None — simulates a vault that has no
+    fn handler_custom_provider_not_found_is_opaque() {
+        // Provider that returns NotFound — simulates a vault that has no
         // secrets (e.g. wrong environment, permissions not yet provisioned).
         struct EmptyProvider;
         impl SecretProvider for EmptyProvider {
-            fn resolve(&self, _vault_path: &str) -> Option<Vec<u8>> {
-                None
+            fn resolve(&self, _vault_path: &str) -> Result<Vec<u8>, SecretProviderError> {
+                Err(SecretProviderError::NotFound)
             }
         }
 
@@ -557,25 +643,68 @@ mod tests {
         let err = h
             .handle(&cap, "read", b"")
             .expect_err("empty provider must deny");
-        match &err {
-            HostError::CapabilityDenied(m) => {
-                assert_eq!(m, "secret access denied", "denial message must be opaque");
-                assert!(!m.contains("AnyKey"), "must not leak secret ID");
-                assert!(!m.contains("any/path"), "must not leak vault path");
+        assert!(
+            err.is_capability_denied(),
+            "expected capability denied, got {err:?}"
+        );
+        let msg = err
+            .capability_denied_message()
+            .expect("must have denial message");
+        assert_eq!(msg, "secret access denied", "denial message must be opaque");
+        assert!(!msg.contains("AnyKey"), "must not leak secret ID");
+        assert!(!msg.contains("any/path"), "must not leak vault path");
+        // Category identifies provider-level not-found.
+        assert_eq!(err.audit_category(), Some("secret.not_found"));
+    }
+
+    #[test]
+    fn handler_custom_provider_unavailable_is_opaque() {
+        // Provider that returns Unavailable — simulates a network failure or
+        // circuit breaker for an external vault backend.
+        struct DownProvider;
+        impl SecretProvider for DownProvider {
+            fn resolve(&self, _vault_path: &str) -> Result<Vec<u8>, SecretProviderError> {
+                Err(SecretProviderError::Unavailable)
             }
-            other => panic!("expected CapabilityDenied, got {other:?}"),
         }
+
+        let mapping = vec![SecretEntry {
+            secret_id: "DbPass".to_string(),
+            vault_path: "db/password".to_string(),
+        }];
+        let h = SecretReadHandler::new(mapping, Arc::new(DownProvider));
+        let cap = CapabilityId::new("secret.read:DbPass");
+        let err = h
+            .handle(&cap, "read", b"")
+            .expect_err("unavailable provider must deny");
+        assert!(
+            err.is_capability_denied(),
+            "expected capability denied, got {err:?}"
+        );
+        let msg = err
+            .capability_denied_message()
+            .expect("must have denial message");
+        // External message is opaque — no provider details.
+        assert_eq!(msg, "secret access denied", "denial message must be opaque");
+        assert!(!msg.contains("DbPass"), "must not leak secret ID");
+        assert!(!msg.contains("db/password"), "must not leak vault path");
+        assert!(
+            !msg.contains("unavailable"),
+            "must not reveal provider status in message"
+        );
+        // Audit category distinguishes transient provider failure from not-found.
+        assert_eq!(err.audit_category(), Some("secret.provider_unavailable"));
     }
 
     #[test]
     fn custom_provider_denial_matches_vault_denial() {
-        // Verify that a custom provider's denial and the vault's missing-path
-        // denial produce exactly the same error — no oracle leak via error
-        // message differences across provider implementations.
+        // Verify that a custom provider returning NotFound and the vault's
+        // missing-path denial produce exactly the same error — no oracle leak
+        // via error message differences across provider implementations.
         struct NullProvider;
         impl SecretProvider for NullProvider {
-            fn resolve(&self, _: &str) -> Option<Vec<u8>> {
-                None
+            fn resolve(&self, _: &str) -> Result<Vec<u8>, SecretProviderError> {
+                Err(SecretProviderError::NotFound)
             }
         }
 

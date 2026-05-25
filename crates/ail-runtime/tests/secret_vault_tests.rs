@@ -18,6 +18,9 @@ use ail_runtime::{
     ResourceLimits, RuntimeHost, RuntimeProfile, SecretEntry, SecretReadHandler, SecretVault,
     blake3_hex_of,
 };
+// SecretProviderError imported for future provider error category tests.
+#[allow(unused_imports)]
+use ail_runtime::SecretProviderError;
 
 // ── Test helpers ──────────────────────────────────────────────────────────
 
@@ -105,14 +108,24 @@ fn t2_unmapped_secret_denied() {
         .handle(&cap, "read", b"")
         .expect_err("unmapped secret must be denied");
 
-    let msg = match &err {
-        HostError::CapabilityDenied(m) => m.clone(),
-        other => panic!("expected CapabilityDenied, got {other:?}"),
-    };
+    assert!(
+        err.is_capability_denied(),
+        "expected capability denied, got {err:?}"
+    );
+    let msg = err
+        .capability_denied_message()
+        .expect("must have denial message")
+        .to_string();
     // Opaque denial: must not reveal the secret ID or any vault detail.
     assert_eq!(msg, "secret access denied", "denial message must be opaque");
     assert!(!msg.contains("DbPassword"), "must not leak secret ID");
     assert!(!msg.contains("prod/"), "must not leak vault path");
+    // Audit category is generic — does not reveal which step failed.
+    assert_eq!(
+        err.audit_category(),
+        Some("secret.not_found"),
+        "audit category must be secret.not_found"
+    );
 }
 
 // ── T3 — Vault path missing ───────────────────────────────────────────────
@@ -132,14 +145,24 @@ fn t3_vault_path_missing_denied() {
         .handle(&cap, "read", b"")
         .expect_err("missing vault path must be denied");
 
-    let msg = match &err {
-        HostError::CapabilityDenied(m) => m.clone(),
-        other => panic!("expected CapabilityDenied, got {other:?}"),
-    };
+    assert!(
+        err.is_capability_denied(),
+        "expected capability denied, got {err:?}"
+    );
+    let msg = err
+        .capability_denied_message()
+        .expect("must have denial message")
+        .to_string();
     // Opaque denial: must not reveal the secret ID or vault path.
     assert_eq!(msg, "secret access denied", "denial message must be opaque");
     assert!(!msg.contains("StripeApiKey"), "must not leak secret ID");
     assert!(!msg.contains("prod/stripe"), "must not leak vault path");
+    // Same audit category as mapping miss — prevents vault-layout oracle.
+    assert_eq!(
+        err.audit_category(),
+        Some("secret.not_found"),
+        "audit category must be secret.not_found (same as mapping miss)"
+    );
 }
 
 // ── T2/T3 cross-check — unmapped and missing-vault denials are identical ──

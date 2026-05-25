@@ -651,9 +651,21 @@ pub(crate) struct CapabilityAuditContext {
     pub(crate) trace_id: Option<String>,
     pub(crate) verification_report_hash: Option<String>,
     pub(crate) trace_context: Option<TraceContext>,
+    /// Generic failure category set by the handler on denial.
+    ///
+    /// Defaults to `None`.  Set this field on a clone of the context before
+    /// calling `push` when the handler returned a categorized denial (e.g.
+    /// `"secret.not_found"`, `"secret.provider_unavailable"`).  The category
+    /// MUST NOT contain secret IDs, vault paths, or any sensitive data.
+    pub(crate) denial_category: Option<String>,
 }
 
 impl CapabilityAuditContext {
+    /// Append a [`AuditEvent::CapabilityCallExecuted`] event to `audit_log`.
+    ///
+    /// The `denial_category` field of this context is forwarded to the event;
+    /// set it to `Some(category)` on a clone before calling `push` when the
+    /// handler returned a `CapabilityDeniedCategorized` error.
     pub(crate) fn push(
         &self,
         audit_log: &Arc<Mutex<AuditLog>>,
@@ -681,6 +693,7 @@ impl CapabilityAuditContext {
                 trace_id: self.trace_id.clone(),
                 verification_report_hash: self.verification_report_hash.clone(),
                 trace_context: self.trace_context.clone(),
+                denial_category: self.denial_category.clone(),
             });
     }
 }
@@ -736,6 +749,7 @@ pub(crate) fn dispatch_host_call_write(
             caller.data().profile.verification_report_hash().to_string(),
         ),
         trace_context: child_trace,
+        denial_category: None,
     };
 
     // Validate output buffer params after decoding call metadata so failures are auditable.
@@ -835,13 +849,21 @@ pub(crate) fn dispatch_host_call_write(
     let result = handler.handle(&cap, &operation, &args_bytes);
     let response = match result {
         Ok(response) => response,
-        Err(_) => {
+        Err(err) => {
+            // Extract the generic audit category before discarding the error.
+            // The category is opaque (no secret data) and recorded only in the
+            // audit log.  The caller only sees the -1 return code.
+            let denial_category = err.audit_category().map(|s| s.to_string());
             {
                 let state = caller.data_mut();
                 state.concurrent_calls -= 1;
                 state.call_depth -= 1;
             }
-            audit.push(&audit_log, cap, operation, handler_name, false, None);
+            // Clone the context so we can attach the category without mutating
+            // the shared `audit` context used by other push sites.
+            let mut audit_err = audit.clone();
+            audit_err.denial_category = denial_category;
+            audit_err.push(&audit_log, cap, operation, handler_name, false, None);
             return None;
         }
     };
@@ -955,6 +977,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Some(-1);
@@ -979,6 +1002,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Some(-1);
@@ -1002,6 +1026,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Some(-1);
@@ -1025,6 +1050,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Some(-1);
@@ -1059,6 +1085,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Some(-1);
@@ -1083,6 +1110,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Some(-1);
@@ -1107,6 +1135,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
+                    denial_category: None,
                 },
             );
             return Some(-1);
@@ -1151,6 +1180,7 @@ pub(crate) fn dispatch_host_call(
                 trace_id,
                 verification_report_hash: vr_hash,
                 trace_context: child_trace,
+                denial_category: None,
             });
         return Some(-1);
     };
@@ -1170,6 +1200,14 @@ pub(crate) fn dispatch_host_call(
         }
         Err(err) => Err(err),
     };
+    // Extract the generic audit category before the result is consumed.
+    // The category is opaque (no secret data) and recorded only in the audit
+    // log.  The caller only sees the -1 return code — no category is leaked.
+    let denial_category = result
+        .as_ref()
+        .err()
+        .and_then(|e| e.audit_category())
+        .map(|s| s.to_string());
     let succeeded = result.is_ok();
     let output_hash = result
         .as_ref()
@@ -1198,6 +1236,7 @@ pub(crate) fn dispatch_host_call(
                 trace_id,
                 verification_report_hash: vr_hash,
                 trace_context: child_trace,
+                denial_category,
             });
     }
 
