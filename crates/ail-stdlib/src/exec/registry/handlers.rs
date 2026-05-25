@@ -730,10 +730,21 @@ pub(super) fn concurrent_channel_len(args: &[StdlibValue]) -> Result<StdlibValue
 /// `std.bytes.length` — byte count of the buffer.
 ///
 /// Returns `Int(n)` where `n >= 0`.
+///
+/// # Errors
+///
+/// Returns [`StdlibExecError::Message`] if the buffer length cannot be
+/// represented as `i64` (requires >9 EiB; unreachable in practice but
+/// handled honestly rather than truncating silently).
 pub(super) fn bytes_length(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 1)?;
     match &args[0] {
-        StdlibValue::Bytes(b) => Ok(StdlibValue::Int(b.len() as i64)),
+        StdlibValue::Bytes(b) => {
+            let len = i64::try_from(b.len()).map_err(|_| {
+                StdlibExecError::Message("byte buffer length overflows i64".to_string())
+            })?;
+            Ok(StdlibValue::Int(len))
+        }
         _ => Err(StdlibExecError::Type { expected: "Bytes" }),
     }
 }
