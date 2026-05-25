@@ -20,8 +20,9 @@ use ail_compiler::{
 };
 use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_runtime::{
-    CapabilityManifest, PreflightFailure, ResourceLimits, RuntimeArg, RuntimeError, RuntimeHost,
-    RuntimeProfile, RuntimeValue, blake3_hex_of,
+    CapabilityGrant, CapabilityId, CapabilityManifest, ClockHandler, PreflightFailure,
+    ResourceLimits, RuntimeArg, RuntimeError, RuntimeHost, RuntimeProfile, RuntimeValue,
+    blake3_hex_of,
 };
 use ail_verify::report::VerificationReport;
 
@@ -4126,5 +4127,82 @@ end
         invoke_acl_export(acl, "main"),
         RuntimeValue::I64(10),
         "let(lst, list(5,10), index(lst,1)) must return I64(10) via IndexGet at offset 16"
+    );
+}
+
+// ── Wave 23B: ClockHandler epoch-milliseconds conformance ─────────────────
+//
+// RUNTIME-CLOCK-NOW-1
+//
+// effect_call(clock, now) must return the current wall time as
+// epoch-milliseconds, not epoch-seconds.
+//
+// Bounds used to distinguish the two units:
+//   lower: 1_000_000_000_000 ms  (2001-09-09T01:46:40Z — already past)
+//   upper: 10_000_000_000_000 ms (2286-11-20T17:46:40Z — far future)
+//
+// A result in [1e12, 1e13) proves epoch-ms.
+// A result in [1e9, 1e10) would prove epoch-s (the old bug).
+#[test]
+fn clock_now_effect_call_returns_epoch_milliseconds() {
+    use std::sync::Arc;
+
+    let clock_cap = CapabilityId::new("clock");
+
+    // fn.main = EffectCall { capability: "clock", func: "now", args: [] }
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.main".to_string(),
+        expr: AnfExpr::EffectCall {
+            capability: "clock".to_string(),
+            func: "now".to_string(),
+            args: vec![],
+        },
+    };
+    let anf = sealed_anf(vec![binding]);
+    let wasm = emit_wasm(&anf)
+        .expect("clock EffectCall ANF must compile")
+        .wasm;
+
+    let manifest = CapabilityManifest {
+        module: "clock-now-test".to_string(),
+        requires: vec![clock_cap.clone()],
+    };
+    let module_hash = blake3_hex_of(&wasm);
+    let manifest_hash = manifest.blake3_hex().expect("manifest hash must succeed");
+    let profile = RuntimeProfile::new(
+        "clock-now-test-profile".to_string(),
+        module_hash,
+        "a".repeat(64),
+        manifest_hash,
+        vec![CapabilityGrant {
+            module: "clock-now-test".to_string(),
+            capability: clock_cap,
+        }],
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+            ..Default::default()
+        },
+    );
+
+    let handler = Arc::new(ClockHandler::new());
+    let mut host = RuntimeHost::new().with_handler(handler);
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("clock WASM must instantiate");
+
+    let value = instance.invoke("main", &[]).expect("main must invoke");
+    let RuntimeValue::I64(now_ms) = value else {
+        panic!("clock.now must return I64, got {value:?}");
+    };
+    // epoch-ms in 2026 ≈ 1.75e12; these bounds distinguish ms from seconds.
+    assert!(
+        now_ms > 1_000_000_000_000,
+        "clock.now must return epoch-ms > 1e12, got {now_ms}"
+    );
+    assert!(
+        now_ms < 10_000_000_000_000,
+        "clock.now must return epoch-ms < 1e13, got {now_ms}"
     );
 }

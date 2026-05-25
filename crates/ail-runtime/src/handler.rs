@@ -240,11 +240,13 @@ impl Handler for ClockHandler {
         _operation: &str,
         _payload: &[u8],
     ) -> HostResult<Vec<u8>> {
-        let now = SystemTime::now()
+        // Contract: clock.now returns epoch-milliseconds as i64.
+        // Current epoch ms ≈ 1.7e12, well within i64::MAX (9.2e18).
+        let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| HostError::Custom(format!("clock before unix epoch: {e}")))?
-            .as_secs() as i64;
-        Ok(now.to_le_bytes().to_vec())
+            .as_millis() as i64;
+        Ok(now_ms.to_le_bytes().to_vec())
     }
 }
 
