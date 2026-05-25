@@ -663,10 +663,10 @@ Code references: `crates/ail-context/src/lib.rs`, `builder.rs`, `dto.rs`, `serve
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `seq` | `u64` | Monotonically increasing connection counter (1-based, per transport instance). |
+| `seq` | `u64` | Monotonically increasing connection counter (1-based, per transport instance).  Under the sequential `serve` loop, `seq` order equals insertion order.  Under a concurrent accept loop (one thread per connection), `seq` is assigned atomically before connection work but inserted into the log after — sort by `seq` if order matters. |
 | `peer` | `SocketAddr` | Client address.  Always loopback when `loopback_only = true`. |
 | `method` | `Option<String>` | JSON-RPC method name (e.g. `"context.query"`), or `None` when the body could not be parsed. |
-| `outcome` | `AuditOutcome` | One of: `Success`, `ParseError`, `RpcError { code }`, `NonLoopback`, `MethodNotAllowed`, `BodyTooLarge`, `TransportError`. |
+| `outcome` | `AuditOutcome` | One of: `Success`, `ParseError`, `RpcError { code }`, `NonLoopback`, `MethodNotAllowed`, `BodyTooLarge`, `TransportError`.  `MethodNotAllowed` and `BodyTooLarge` indicate the 405/413 response was sent successfully; if the write itself fails the outcome is `TransportError` instead. |
 | `elapsed_ms` | `u64` | Wall-clock milliseconds from connection accept to response flush. |
 
 **Usage:**

@@ -217,6 +217,15 @@ pub struct QueryAuditLog(Arc<Mutex<Vec<QueryAuditEvent>>>);
 
 impl QueryAuditLog {
     /// Return a point-in-time copy of all recorded events in insertion order.
+    ///
+    /// **Insertion order vs. `seq` order**: under the sequential [`HttpTransport::serve`]
+    /// loop each connection is handled one at a time, so insertion order and `seq` order
+    /// are identical.  If [`HttpTransport::serve_one`] is called concurrently from
+    /// multiple threads — for example in a custom accept loop that spawns one thread per
+    /// connection — `seq` is assigned atomically *before* connection work begins but the
+    /// `Vec` push (insertion) happens *after*.  A thread that received `seq=2` can
+    /// therefore push its event before the thread with `seq=1` finishes.  In that case,
+    /// sort the snapshot by `seq` to restore arrival order.
     pub fn snapshot(&self) -> Vec<QueryAuditEvent> {
         self.0.lock().unwrap().clone()
     }
@@ -362,6 +371,13 @@ where
     /// an async executor task, which would block the executor thread.
     pub fn serve_one(&self, stream: TcpStream) -> Result<(), HttpTransportError> {
         let start = Instant::now();
+        // Seq is assigned atomically here, before any connection work.
+        // In the sequential `serve` loop this means insertion order == seq order.
+        // If `serve_one` is called concurrently (e.g. one OS thread per accepted
+        // stream), the thread with seq=2 can push its audit event before the thread
+        // with seq=1 completes — so insertion order may differ from seq order.
+        // Callers using a concurrent accept loop should sort the snapshot by `seq`
+        // rather than relying on slice position for ordering.
         let seq = self
             .next_seq
             .fetch_add(1, Ordering::Relaxed)
@@ -417,7 +433,9 @@ where
         // peer is not loopback, we drop the connection silently (no response
         // body) to prevent probing.  This guards against accidental public
         // exposure when the caller binds to 0.0.0.0 instead of 127.0.0.1.
-        if self.loopback_only && let Err(e) = check_peer_addr(peer, self.loopback_only) {
+        if self.loopback_only
+            && let Err(e) = check_peer_addr(peer, self.loopback_only)
+        {
             *outcome = AuditOutcome::NonLoopback;
             return Err(e);
         }
@@ -431,25 +449,35 @@ where
 
         if method != "POST" {
             *outcome = AuditOutcome::MethodNotAllowed;
-            write_http_response(
+            // If the write itself fails, reclassify to TransportError so the audit
+            // event accurately distinguishes "client received 405" from "405 was
+            // attempted but the write also failed".  Mirrors the 200 response path.
+            if let Err(e) = write_http_response(
                 &mut writer,
                 405,
                 "Method Not Allowed",
                 b"Only POST is supported",
-            )
-            .map_err(HttpTransportError::Write)?;
+            ) {
+                *outcome = AuditOutcome::TransportError;
+                return Err(HttpTransportError::Write(e));
+            }
             return Ok(());
         }
 
         if content_length > self.max_body_bytes {
             *outcome = AuditOutcome::BodyTooLarge;
-            write_http_response(
+            // Reclassify to TransportError if the write fails — same rationale as
+            // the 405 path above: the audit event should reflect whether the error
+            // response was actually delivered to the client.
+            if let Err(e) = write_http_response(
                 &mut writer,
                 413,
                 "Content Too Large",
                 b"Request body exceeds limit",
-            )
-            .map_err(HttpTransportError::Write)?;
+            ) {
+                *outcome = AuditOutcome::TransportError;
+                return Err(HttpTransportError::Write(e));
+            }
             return Ok(());
         }
 
@@ -1132,8 +1160,16 @@ mod tests {
     }
 
     // ── audit_log_sequential_seqs ─────────────────────────────────────────
-    // Spec: two consecutive serve_one calls produce events with seq=1 then
-    //       seq=2 in the same audit log, in insertion order.
+    // Spec: two consecutive (non-concurrent) serve_one calls produce events
+    //       with seq=1 then seq=2 in the same audit log, with insertion order
+    //       matching seq order.
+    //
+    // Note: under a concurrent accept loop (multiple threads each calling
+    // serve_one simultaneously), seq is assigned atomically before connection
+    // work but the Vec push happens after — so a thread with seq=2 can insert
+    // its event before the one with seq=1.  This test exercises the sequential
+    // path only.  Concurrent callers should sort snapshot() by `seq` rather
+    // than trusting slice position.
     //
     // RED: next_seq field did not exist.
     // GREEN: next_seq AtomicU64 provides monotonic per-instance numbering.
