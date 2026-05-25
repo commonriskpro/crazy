@@ -24,7 +24,9 @@ use crate::error::{PreflightFailure, RuntimeError, RuntimeResult};
 use crate::handler::Handler;
 use crate::host_dispatch::{ClockFn, HostState, RuntimeInstance, instantiate_inner};
 use crate::manifest::{CapabilityManifest, blake3_hex_of};
-use crate::profile::{CapabilityId, CapabilityRevocationRegistry, RuntimeProfile};
+use crate::profile::{
+    AssumptionStatus, CapabilityId, CapabilityRevocationRegistry, RuntimeProfile,
+};
 use wasmtime::{Engine, Linker};
 
 // ── failure_parts ─────────────────────────────────────────────────────────
@@ -45,7 +47,8 @@ pub(crate) fn failure_parts(err: &RuntimeError) -> (Vec<CapabilityId>, Preflight
             | PreflightFailure::WasmValidationError(_)
             | PreflightFailure::HandlerNotBound { .. }
             | PreflightFailure::ResourceLimitExceeded { .. }
-            | PreflightFailure::HandlerTrustViolation { .. },
+            | PreflightFailure::HandlerTrustViolation { .. }
+            | PreflightFailure::AssumptionExpired { .. },
         ) => {
             let failure = match err {
                 RuntimeError::PreflightFailed(f) => f.clone(),
@@ -242,6 +245,41 @@ pub(crate) fn preflight_inner(
                 }
                 _ => {}
             }
+        }
+    }
+
+    // Stage 7 — Assumption expiry check (opt-in via `profile.assumptions()`).
+    //
+    // Rejects startup if any declared assumption is:
+    //   • AssumptionStatus::Expired
+    //   • AssumptionStatus::Inactive
+    //   • has an `expires_at` timestamp that is already in the past
+    //
+    // Profiles with an empty assumption list skip this stage entirely, so
+    // existing profiles and tests are unaffected (backward compatible).
+    for assumption in profile.assumptions() {
+        let expired_by_status = matches!(
+            assumption.status,
+            AssumptionStatus::Expired | AssumptionStatus::Inactive
+        );
+        let expired_by_time = assumption
+            .expires_at
+            .is_some_and(|t| t < std::time::SystemTime::now());
+
+        if expired_by_status || expired_by_time {
+            let reason = if matches!(assumption.status, AssumptionStatus::Expired) {
+                "status is Expired".to_string()
+            } else if matches!(assumption.status, AssumptionStatus::Inactive) {
+                "status is Inactive".to_string()
+            } else {
+                "expires_at is in the past".to_string()
+            };
+            return Err(RuntimeError::PreflightFailed(
+                PreflightFailure::AssumptionExpired {
+                    assumption_id: assumption.id.clone(),
+                    reason,
+                },
+            ));
         }
     }
 

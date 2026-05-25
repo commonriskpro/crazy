@@ -102,6 +102,21 @@ pub enum PreflightFailure {
         /// Actual trust level declared by the handler.
         actual: TrustLevel,
     },
+
+    /// A profile assumption is expired or inactive.
+    ///
+    /// Emitted during preflight stage 7 when an assumption declared by the
+    /// active profile has `status == Expired`, `status == Inactive`, or its
+    /// `expires_at` timestamp is in the past.
+    ///
+    /// Corresponds to `docs/runtime.md §Startup validation` step 7:
+    /// "assumptions used by profile are active/not expired".
+    AssumptionExpired {
+        /// Machine-readable ID of the assumption that failed the gate.
+        assumption_id: String,
+        /// Human-readable description of why the assumption was rejected.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for PreflightFailure {
@@ -160,6 +175,15 @@ impl std::fmt::Display for PreflightFailure {
                     f,
                     "handler trust violation: handler `{handler}` has trust level `{actual}`, \
                      profile requires `{required}`"
+                )
+            }
+            PreflightFailure::AssumptionExpired {
+                assumption_id,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "assumption expired: assumption `{assumption_id}` cannot be used — {reason}"
                 )
             }
         }
