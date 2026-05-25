@@ -122,7 +122,7 @@ packed-i64 convention used by Bytes-typed WASM exports:
 ```text
 byte_count = invoke("main", [])   // i32 from host_call_write
 if byte_count < 0 { /* denial — do not decode */ }
-packed = (byte_count as i64) << 32 | (out_ptr as i64)
+packed = (byte_count as i64) << 32 | (out_ptr as i64 & 0xFFFF_FFFF)
 decoded = ValueDecoder::decode(&ValueLayout::Bytes, packed, &wasm_memory)
 // → StructuredValue::Bytes { ptr: out_ptr, len: byte_count }
 actual  = read_wasm_memory(ptr, len)   // actual secret bytes; never log
@@ -136,7 +136,10 @@ Security constraints:
   call is the sole access point to the actual secret bytes.
 - Callers MUST check `byte_count >= 0` before packing; passing the -1 denial
   sentinel through the decoder produces `StructuredValue::Bytes` with a negative
-  `len`, which will cause `read_wasm_memory` to return `None`.
+  `len`.  Passing a negative `len` to `read_wasm_memory` is unsafe: a naive
+  `len as usize` cast wraps to `usize::MAX`, causing a massive allocation
+  attempt that panics or aborts.  Callers MUST check `len >= 0` before calling
+  `read_wasm_memory`.
 
 This pattern pins the current typed boundary for `secret.read → Bytes` without
 requiring schema changes to `CapabilityOutputSchema`.  A full typed ABI where

@@ -224,13 +224,7 @@ fn sb1_bytes_decode_of_secret_read_output_via_value_layout() {
     // ValueDecoder::decode for Bytes does NOT read memory — it only unpacks
     // ptr and len from the raw i64.  Memory is only needed if the caller
     // subsequently calls read_wasm_memory.
-    let memory_size = {
-        // Probe memory size via a known-safe read.
-        let probe = instance.read_wasm_memory(0, 0);
-        // We need a non-trivial size; use 65536 (one WASM page).
-        let _ = probe;
-        65536usize
-    };
+    let memory_size = 65536usize; // one WASM page
     let memory = instance
         .read_wasm_memory(0, memory_size)
         .unwrap_or_default();
