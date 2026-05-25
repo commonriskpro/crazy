@@ -270,7 +270,7 @@ fn emit_i64_primitive_call<'a>(
 }
 
 /// Load a local variable as an I64, zero-extending I32 values.
-/// Emits `I64Const(0)` if the name is not in scope.
+/// Emits `Unreachable` if the name is not in scope, matching `emit_local_get`.
 fn emit_local_as_i64<'a>(ctx: &WasmCodegenCtx<'a>, name: &str, insns: &mut Vec<Instruction<'a>>) {
     if let Some((idx, ty)) = ctx.lookup(name) {
         insns.push(Instruction::LocalGet(idx));
@@ -278,7 +278,7 @@ fn emit_local_as_i64<'a>(ctx: &WasmCodegenCtx<'a>, name: &str, insns: &mut Vec<I
             insns.push(Instruction::I64ExtendI32U);
         }
     } else {
-        insns.push(Instruction::I64Const(0));
+        insns.push(Instruction::Unreachable);
     }
 }
 

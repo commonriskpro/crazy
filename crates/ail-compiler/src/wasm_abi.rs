@@ -262,10 +262,11 @@ pub(crate) fn infer_expr_type(
         AnfExpr::EffectCall { .. } => Some(ValType::I64),
         // ── Cell primitives ───────────────────────────────────────────────
         // CellNew returns an I32 pointer; CellGet returns the I64 value;
-        // CellSet is a write-only effect that returns unit (None).
+        // CellSet is a write that returns unit (I32 0), consistent with
+        // the unit-as-I32(0) pattern used throughout the emit layer.
         AnfExpr::CellNew { .. } => Some(ValType::I32),
         AnfExpr::CellGet { .. } => Some(ValType::I64),
-        AnfExpr::CellSet { .. } => None,
+        AnfExpr::CellSet { .. } => Some(ValType::I32),
         // ── Collection constructors ───────────────────────────────────────
         // MapNew and SetNew return I32 pointers into linear memory.
         // IndexGet reads an element and returns I64.
@@ -680,11 +681,17 @@ impl EffectDataLayout {
                     self.collect_expr(payload);
                 }
             }
-            // ── Collection and cell constructors need linear memory ────────
-            // emit_alloc is used for MapNew, SetNew, and CellNew; without
-            // needs_memory=true the module is assembled without a memory
-            // section and emit_alloc produces an invalid module.
-            AnfExpr::CellNew { .. } | AnfExpr::MapNew { .. } | AnfExpr::SetNew { .. } => {
+            // ── Collection and cell primitives need linear memory ─────────
+            // emit_alloc is called for CellNew/MapNew/SetNew; CellGet and
+            // CellSet issue I64Load/I64Store; IndexGet issues I64Load at a
+            // dynamic offset.  All require the memory and bump-allocator-
+            // global sections to be present in the assembled module.
+            AnfExpr::CellNew { .. }
+            | AnfExpr::CellGet { .. }
+            | AnfExpr::CellSet { .. }
+            | AnfExpr::MapNew { .. }
+            | AnfExpr::SetNew { .. }
+            | AnfExpr::IndexGet { .. } => {
                 self.needs_memory = true;
             }
             _ => {}

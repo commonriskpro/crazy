@@ -2151,7 +2151,9 @@ fn infer_expr_type_map_set_new_is_i32() {
     );
 }
 
-// Scenario: infer_expr_type returns I32 for CellNew, I64 for CellGet, None for CellSet.
+// Scenario: infer_expr_type returns I32 for CellNew, I64 for CellGet, I32 for CellSet.
+// CellSet returns unit (I32 0), consistent with the unit-as-I32(0) pattern in
+// the emit layer.  Both infer and emit must agree: Some(I32).
 #[test]
 fn infer_expr_type_cell_ops_correct() {
     use wasm_encoder::ValType;
@@ -2184,8 +2186,49 @@ fn infer_expr_type_cell_ops_correct() {
             },
             &mut locals
         ),
-        None,
-        "CellSet must infer None (unit write)"
+        Some(ValType::I32),
+        "CellSet must infer I32 (unit-as-I32(0), matching emit)"
+    );
+}
+
+// W3 regression: CellGet, CellSet, and IndexGet must set needs_memory in
+// EffectDataLayout.  All three issue linear-memory loads or stores and require
+// the memory and bump-allocator-global sections to be present in the module.
+#[test]
+fn effect_data_layout_cell_get_set_index_get_need_memory() {
+    use ail_core::semantic_graph::NodeRef;
+
+    let make_layout = |expr: AnfExpr| {
+        let bindings = vec![AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.test".to_string(),
+            expr,
+        }];
+        EffectDataLayout::for_bindings(&bindings)
+    };
+
+    assert!(
+        make_layout(AnfExpr::CellGet {
+            cell: "c".to_string()
+        })
+        .needs_memory,
+        "CellGet issues I64Load — must set needs_memory"
+    );
+    assert!(
+        make_layout(AnfExpr::CellSet {
+            cell: "c".to_string(),
+            value: "v".to_string()
+        })
+        .needs_memory,
+        "CellSet issues I64Store — must set needs_memory"
+    );
+    assert!(
+        make_layout(AnfExpr::IndexGet {
+            collection: "c".to_string(),
+            index: "i".to_string()
+        })
+        .needs_memory,
+        "IndexGet issues I64Load at dynamic offset — must set needs_memory"
     );
 }
 
