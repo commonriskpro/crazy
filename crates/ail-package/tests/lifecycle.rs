@@ -545,6 +545,177 @@ fn lifecycle_wrong_signer_key_rejected_at_publish() {
     assert!(!resp.accepted, "forged package must not be accepted");
 }
 
+// ── Lifecycle scenario 11: HTTP e2e with reproducible evidence ────────────
+//
+// Spec scenario: "Signed manifest with reproducible evidence round-trips through HTTP"
+//   GIVEN a Verified manifest with ReproducibleBuildEvidence (all fields set)
+//   WHEN signed, published via HTTP, and fetched via HTTP
+//   THEN the fetched SignedPackage passes client-side Ed25519 verification
+//   AND the reproducible evidence fields survive the JSON/HTTP round-trip intact
+//   AND the publish response carries a non-empty log_id and a sequence anchor
+//   AND hash verification via the HTTP verify endpoint returns Ok
+//
+// This is the only test that exercises all three together:
+//   (1) HTTP transport, (2) non-None reproducible_evidence, (3) .verify() post-fetch.
+#[test]
+fn lifecycle_http_signed_lifecycle_with_reproducible_evidence() {
+    use ail_package::manifest::PackageDef;
+    use ail_package::remote_registry::RegistryClient as _;
+    use ail_package::{
+        FetchRequest, HttpRegistryClient, HttpRegistryServer, PackageKeypair, PublishRequest,
+        ReproducibleBuildEvidence, TrustLevel, VerifyOutcome, VerifyRequest,
+        manifest::PackageManifest,
+    };
+
+    // ── 1. Build a Verified manifest with full reproducible build evidence. ─
+    //
+    // source_digest and recipe_hash are BLAKE3 hex strings (64 chars each).
+    // build_inputs_hash is derived deterministically by ReproducibleBuildEvidence::new.
+    let source_digest = "a".repeat(64);
+    let recipe_hash = "b".repeat(64);
+    let toolchain_id = "ail-toolchain-0.1.0";
+    let evidence =
+        ReproducibleBuildEvidence::new(source_digest.clone(), toolchain_id, recipe_hash.clone());
+    let expected_build_inputs_hash =
+        ReproducibleBuildEvidence::compute_build_inputs_hash(&source_digest, toolchain_id);
+
+    let manifest = PackageManifest::from_def(PackageDef {
+        name: "lifecycle.http.repro".to_string(),
+        version: "1.0.0".to_string(),
+        trust_level: TrustLevel::Verified,
+        required_capabilities: vec![],
+        exported_capabilities: vec![],
+        assumptions: vec![],
+        unsafe_surface: vec![],
+        artifact_hashes: vec![],
+        build_env_hash: None,
+        handlers: vec![],
+        contracts: vec![],
+        exports: vec![],
+        imports: vec![],
+        boundaries: vec![],
+        license: None,
+        provenance: None,
+        verification_report: None,
+        graph_schema: None,
+        core_ir_schema: None,
+        reproducible_evidence: Some(evidence),
+    });
+
+    // ── 2. Capture hash before signing (BLAKE3 over CBOR). ──────────────────
+    let expected_hash = manifest.blake3_hex().expect("manifest hash must succeed");
+
+    // ── 3. Sign with a deterministic keypair. ───────────────────────────────
+    let kp = PackageKeypair::from_bytes(&[0xAB; 32]);
+    let signed = kp.sign_manifest(manifest).expect("sign must succeed");
+
+    // Verify locally before publishing — confirms the signature is good before
+    // any HTTP transport is involved.
+    signed
+        .verify()
+        .expect("local Ed25519 signature must be valid");
+
+    // ── 4. Start an HTTP registry server on an OS-assigned port. ────────────
+    let addr = HttpRegistryServer::bind("127.0.0.1:0")
+        .expect("bind HTTP registry server")
+        .spawn();
+    let client = HttpRegistryClient::new(addr.to_string());
+
+    // ── 5. Publish via HTTP. ─────────────────────────────────────────────────
+    let pub_resp = client
+        .publish(PublishRequest {
+            signed_package: signed.clone(),
+        })
+        .expect("HTTP publish must not return a transport error");
+
+    assert!(
+        pub_resp.accepted,
+        "HTTP server must accept a valid signed Verified package"
+    );
+    assert!(
+        pub_resp.error.is_none(),
+        "accepted publish must have no error"
+    );
+
+    // The publish response carries a transparency anchor — log_id + sequence.
+    let log_id = pub_resp
+        .log_id
+        .expect("log_id must be present in publish response");
+    let sequence = pub_resp
+        .sequence
+        .expect("sequence must be present in publish response");
+    assert!(!log_id.is_empty(), "log_id must not be empty");
+    assert_eq!(
+        sequence, 0,
+        "first publish on this server must have sequence 0"
+    );
+
+    // ── 6. Fetch via HTTP. ───────────────────────────────────────────────────
+    let fetch_resp = client
+        .fetch(FetchRequest {
+            name: "lifecycle.http.repro".to_string(),
+            version: "1.0.0".to_string(),
+        })
+        .expect("HTTP fetch must not return a transport error");
+
+    assert!(!fetch_resp.yanked, "package must not be yanked");
+    assert!(
+        fetch_resp.error.is_none(),
+        "successful fetch must have no error"
+    );
+    let fetched = fetch_resp
+        .signed_package
+        .expect("fetched signed package must be present");
+
+    // ── 7. Verify Ed25519 signature on the CLIENT side after HTTP round-trip.
+    //
+    // This is the core e2e assertion: JSON serialization + HTTP + deserialization
+    // must not corrupt the signing payload (manifest CBOR hash) or the signature
+    // bytes.  A corruption in any field would cause a BLAKE3 hash change and
+    // invalidate the Ed25519 signature.
+    fetched
+        .verify()
+        .expect("Ed25519 signature must be valid after HTTP JSON round-trip");
+
+    // ── 8. Confirm reproducible evidence fields survive the HTTP round-trip. ─
+    let evidence_after = fetched
+        .manifest
+        .reproducible_evidence
+        .expect("reproducible_evidence must survive HTTP JSON round-trip");
+
+    assert_eq!(
+        evidence_after.source_digest, source_digest,
+        "source_digest must be preserved through HTTP"
+    );
+    assert_eq!(
+        evidence_after.toolchain_id, toolchain_id,
+        "toolchain_id must be preserved through HTTP"
+    );
+    assert_eq!(
+        evidence_after.recipe_hash, recipe_hash,
+        "recipe_hash must be preserved through HTTP"
+    );
+    assert_eq!(
+        evidence_after.build_inputs_hash, expected_build_inputs_hash,
+        "build_inputs_hash must be stable and reproducible after HTTP round-trip"
+    );
+
+    // ── 9. Verify hash integrity via the HTTP verify endpoint. ───────────────
+    let verify_resp = client
+        .verify(VerifyRequest {
+            name: "lifecycle.http.repro".to_string(),
+            version: "1.0.0".to_string(),
+            expected_hash,
+        })
+        .expect("HTTP verify must not return a transport error");
+
+    assert_eq!(
+        verify_resp.outcome,
+        VerifyOutcome::Ok,
+        "hash must match registry and no advisory must be active"
+    );
+}
+
 // ── Lifecycle scenario 10: advisory checker standalone ────────────────────
 //
 // Spec scenario: "AdvisoryChecker works stand-alone against a fetched manifest"
