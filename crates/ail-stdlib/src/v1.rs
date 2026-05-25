@@ -767,6 +767,30 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
     });
 
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.core.option.ok_or".to_string()),
+        module_path: "std::core".to_string(),
+        name: "ok_or".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Result".to_string(),
+            generics: vec!["T".to_string(), "E".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec![
+                "first arg is Option<T>".to_string(),
+                "second arg is the error value E".to_string(),
+            ],
+            ensures: vec![
+                "Some(v) returns Ok(v)".to_string(),
+                "None returns Err(err)".to_string(),
+            ],
+        }),
+    });
+
     // ── std.core.result functions ─────────────────────────────────────────
 
     reg.entries.push(StdlibEntry {
@@ -1147,6 +1171,22 @@ mod tests {
                 && e.effect_row.is_some()
                 && e.capability_reqs.is_some()
         })
+    }
+
+    fn has_contract_clauses(id: &str) -> bool {
+        let reg = v1_registry_with_functions();
+        reg.entries
+            .iter()
+            .any(|e| e.id.0 == id && e.contract_clauses.is_some())
+    }
+
+    // Wave 17B: ok_or contract clauses survive the dedup loop
+    #[test]
+    fn v1_ok_or_has_contract_clauses() {
+        assert!(
+            has_contract_clauses("std.core.option.ok_or"),
+            "std.core.option.ok_or must have contract_clauses (pre-loop entry required)"
+        );
     }
 
     // A7: crypto pure function entries

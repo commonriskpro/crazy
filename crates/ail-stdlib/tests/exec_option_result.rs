@@ -192,3 +192,71 @@ fn result_unwrap_or_type_error_not_result() {
     );
     assert_eq!(result, Err(StdlibExecError::Type { expected: "Result" }));
 }
+
+// ── STDLIB-EXEC-OPT-OK-OR-1: ok_or Some(v) returns Ok(v) ─────────────────
+//
+// Contract: Some(v) → Ok(v) — the inner value is promoted, no copy of err.
+
+#[test]
+fn ok_or_some_returns_ok() {
+    let result = call_pure_stdlib(
+        "std.core.option.ok_or",
+        &[
+            StdlibValue::Option(Some(Box::new(StdlibValue::Int(42)))),
+            StdlibValue::Text("unused".to_string()),
+        ],
+    );
+    assert_eq!(
+        result,
+        Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Int(42)))))
+    );
+}
+
+// STDLIB-EXEC-OPT-OK-OR-2: ok_or None returns Err(err)
+//
+// Contract: None → Err(err) — the provided error value is wrapped.
+
+#[test]
+fn ok_or_none_returns_err() {
+    let result = call_pure_stdlib(
+        "std.core.option.ok_or",
+        &[
+            StdlibValue::Option(None),
+            StdlibValue::Text("missing".to_string()),
+        ],
+    );
+    assert_eq!(
+        result,
+        Ok(StdlibValue::Result(Err(Box::new(StdlibValue::Text(
+            "missing".to_string()
+        )))))
+    );
+}
+
+// STDLIB-EXEC-OPT-OK-OR-3: ok_or arity error — too few arguments
+
+#[test]
+fn ok_or_arity_error_too_few_args() {
+    let result = call_pure_stdlib(
+        "std.core.option.ok_or",
+        &[StdlibValue::Option(Some(Box::new(StdlibValue::Int(1))))],
+    );
+    assert_eq!(
+        result,
+        Err(StdlibExecError::Arity {
+            expected: 2,
+            actual: 1
+        })
+    );
+}
+
+// STDLIB-EXEC-OPT-OK-OR-4: ok_or type error — non-Option first arg
+
+#[test]
+fn ok_or_type_error_not_option() {
+    let result = call_pure_stdlib(
+        "std.core.option.ok_or",
+        &[StdlibValue::Int(1), StdlibValue::Text("e".to_string())],
+    );
+    assert_eq!(result, Err(StdlibExecError::Type { expected: "Option" }));
+}
