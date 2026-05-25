@@ -16,9 +16,7 @@ async fn cmd_apply_memory_store_requires_stored_changeset() {
             msg.contains("no verification report found"),
             "error must mention missing report; got: {msg}"
         ),
-        other => panic!(
-            "expected Domain error for missing verification report; got: {other:?}"
-        ),
+        other => panic!("expected Domain error for missing verification report; got: {other:?}"),
     }
 }
 

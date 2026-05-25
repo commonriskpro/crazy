@@ -188,8 +188,7 @@ fn t4_audit_event_for_secret_read_contains_only_hashes() {
     let last_event = log
         .events()
         .iter()
-        .filter(|e| e.is_capability_call())
-        .last()
+        .rfind(|e| e.is_capability_call())
         .expect("at least one capability call event");
 
     match last_event {
@@ -265,8 +264,7 @@ fn t5_audit_event_for_denied_secret_contains_no_value() {
     let last_event = log
         .events()
         .iter()
-        .filter(|e| e.is_capability_call())
-        .last()
+        .rfind(|e| e.is_capability_call())
         .expect("at least one capability call event");
 
     match last_event {
