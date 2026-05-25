@@ -631,12 +631,12 @@ The first implementation is an in-process semantic context API rather than a tra
 |-------|-----------------------|
 | Query syntax | All protocol-doc query variants (`context`, `impact`, `callers`, `callees`, `effects`, `contracts`, `proofs`, `resources`, `boundaries`, `history`, `why`, `diff`, `risks`, `todo`, `refactor_context`, `extract_candidates`, `move_safety`, `capabilities`, `handlers`, `concurrency`, `tasks`, `assumptions`, plus `graph`) are implemented as `ContextQuery` enum variants with graph traversal handlers in `selection.rs`. CLI/transport syntax remains future work. |
 | Transport adapter | `StdioTransport` in `crates/ail-context/src/transport.rs` provides newline-delimited JSON-RPC framing over `ContextServer::handle_rpc`. `ContextRpcRequest` / `ContextRpcResponse` remain the shared envelope; HTTP and MCP adapters can reuse them without changing the server. |
-| HTTP transport | `HttpTransport` in `crates/ail-context/src/http_transport.rs` provides a minimal HTTP/1.1 JSON-RPC adapter for local tooling (IDE extensions, integration tests). See **Local transport hardening** below. |
+| HTTP transport | `HttpTransport` in `crates/ail-context/src/http_transport.rs` provides a minimal HTTP/1.1 JSON-RPC adapter for local tooling (IDE extensions, integration tests). See **Local transport hardening** and **Query audit log** below. |
 | Summaries | Deterministic renderer in `crates/ail-context/src/summary.rs`. Structured data remains authoritative. |
 | Signing | Distributed signing is handled in remote/bundle primitives, not context responses yet. |
 | Budgets | Response DTOs include limits and budget-related errors; model-tier defaults remain policy work. |
 | Freshness | `ContextServer::query` resolves `Latest` when available and sets `freshness_status=stale` plus `query_latest` repair metadata for older snapshots. |
-| Audit/runtime exposure | Field-based node redaction is enforced before slice rendering. Direct queries for redacted targets return `E_ACCESS_DENIED` unless the session trust level satisfies the configured policy; full audit exposure policy remains future work. |
+| Audit/runtime exposure | Field-based node redaction is enforced before slice rendering. Direct queries for redacted targets return `E_ACCESS_DENIED` unless the session trust level satisfies the configured policy. Transport-level query audit events are recorded per-connection (see **Query audit log** below); full semantic audit policy (what was queried, by whom, across sessions) remains future work. |
 
 Code references: `crates/ail-context/src/lib.rs`, `builder.rs`, `dto.rs`, `server.rs`, `summary.rs`.
 
@@ -653,6 +653,36 @@ Code references: `crates/ail-context/src/lib.rs`, `builder.rs`, `dto.rs`, `serve
 | Per-connection write timeout | 30 s | Set via `TcpStream::set_write_timeout`. |
 | Method enforcement | POST only | Any other method returns HTTP 405. |
 | One request per connection | enforced | Each accepted connection handles exactly one request/response pair then closes. |
+| Query audit log | **enabled** | Every accepted connection appends a `QueryAuditEvent` to the transport's `QueryAuditLog`.  Records: monotonic seq, peer addr, JSON-RPC method name, `AuditOutcome` classification, and elapsed milliseconds.  **Never records query body content, snapshot data, or secret values** — the event is safe to log without further redaction.  Access via `HttpTransport::audit_log()`. |
+
+### Query audit log
+
+`HttpTransport` maintains a `QueryAuditLog` — a thread-safe, append-only list of `QueryAuditEvent` records, one per accepted connection.
+
+**Audit event fields** (none can carry secret values):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `seq` | `u64` | Monotonically increasing connection counter (1-based, per transport instance). |
+| `peer` | `SocketAddr` | Client address.  Always loopback when `loopback_only = true`. |
+| `method` | `Option<String>` | JSON-RPC method name (e.g. `"context.query"`), or `None` when the body could not be parsed. |
+| `outcome` | `AuditOutcome` | One of: `Success`, `ParseError`, `RpcError { code }`, `NonLoopback`, `MethodNotAllowed`, `BodyTooLarge`, `TransportError`. |
+| `elapsed_ms` | `u64` | Wall-clock milliseconds from connection accept to response flush. |
+
+**Usage:**
+
+```rust
+let log = transport.audit_log().clone(); // clone to share across threads
+std::thread::spawn(move || transport.serve(listener).unwrap());
+
+// inspect from another thread:
+let events = log.snapshot();
+for ev in &events {
+    println!("seq={} method={:?} outcome={:?} elapsed={}ms", ev.seq, ev.method, ev.outcome, ev.elapsed_ms);
+}
+```
+
+The audit log is designed for local/dev observability (IDE extensions, CLI tooling, integration tests).  It is **not** a durable audit trail — events are in-process only and lost when the transport is dropped.
 
 ### Production hardening (future)
 
@@ -663,7 +693,7 @@ The following are **not** implemented and are explicitly out of scope until the 
 - Distributed authentication (OAuth2, API keys, capability tokens)
 - Rate limiting and per-client quotas
 - Distributed trust / multi-tenant isolation
-- Audit log for context queries
+- Durable / cross-session audit log with semantic query detail
 - MCP transport adapter
 ```
 

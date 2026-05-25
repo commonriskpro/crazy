@@ -35,7 +35,9 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use futures::executor::block_on;
 
@@ -140,6 +142,100 @@ impl std::fmt::Display for HttpTransportError {
 
 impl std::error::Error for HttpTransportError {}
 
+// ── Query audit ───────────────────────────────────────────────────────────
+
+/// Transport-level outcome for a single HTTP/JSON-RPC connection.
+///
+/// Recorded in a [`QueryAuditEvent`] and stored in the [`QueryAuditLog`].
+/// Does **not** contain query body content, snapshot data, or secrets — only
+/// the framing-level classification needed for local observability.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuditOutcome {
+    /// The JSON-RPC request parsed successfully and the server returned a
+    /// result response (no error code).
+    Success,
+    /// The HTTP body could not be deserialized as a valid [`ContextRpcRequest`].
+    ParseError,
+    /// The request parsed and dispatched, but the server returned a
+    /// JSON-RPC error response.  `code` is the JSON-RPC error code.
+    RpcError {
+        /// JSON-RPC error code (e.g. `-32700`, `-32601`).
+        code: i64,
+    },
+    /// The connection was dropped because the peer address is not loopback.
+    /// Only occurs when `loopback_only = true` (the default).
+    NonLoopback,
+    /// The request used a non-POST HTTP method (e.g. GET); HTTP 405 returned.
+    MethodNotAllowed,
+    /// The declared `Content-Length` exceeded the configured body limit;
+    /// HTTP 413 returned without reading any body bytes.
+    BodyTooLarge,
+    /// An I/O, timeout, or serialization error prevented normal completion.
+    TransportError,
+}
+
+/// Audit record for a single HTTP connection accepted by [`HttpTransport`].
+///
+/// Fields are chosen to be observability-useful but **never contain raw query
+/// content, snapshot bytes, or secret values**.  The struct is safe to log
+/// or export without further redaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryAuditEvent {
+    /// Monotonically increasing sequence number within this
+    /// [`HttpTransport`] instance (1-based; wraps on `u64` overflow).
+    pub seq: u64,
+    /// Peer socket address.  Always a loopback address in the default
+    /// `loopback_only = true` configuration.
+    pub peer: std::net::SocketAddr,
+    /// JSON-RPC method name (e.g. `"context.query"`), or `None` when the
+    /// request body could not be parsed.  Never contains request body content.
+    pub method: Option<String>,
+    /// How the connection was resolved.
+    pub outcome: AuditOutcome,
+    /// Wall-clock milliseconds from connection acceptance to response flush.
+    pub elapsed_ms: u64,
+}
+
+/// Shared, append-only audit log for all connections handled by an
+/// [`HttpTransport`] instance.
+///
+/// Cloning the handle gives a second view onto the same underlying list;
+/// useful for inspecting the log from a test thread while the transport
+/// serves on another thread.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let log = transport.audit_log().clone();
+/// std::thread::spawn(move || transport.serve(listener).unwrap());
+/// // after serving:
+/// let events = log.snapshot();
+/// assert_eq!(events[0].outcome, AuditOutcome::Success);
+/// ```
+#[derive(Clone, Default)]
+pub struct QueryAuditLog(Arc<Mutex<Vec<QueryAuditEvent>>>);
+
+impl QueryAuditLog {
+    /// Return a point-in-time copy of all recorded events in insertion order.
+    pub fn snapshot(&self) -> Vec<QueryAuditEvent> {
+        self.0.lock().unwrap().clone()
+    }
+
+    /// Number of events recorded so far.
+    pub fn len(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+
+    /// Returns `true` when no events have been recorded yet.
+    pub fn is_empty(&self) -> bool {
+        self.0.lock().unwrap().is_empty()
+    }
+
+    fn record(&self, event: QueryAuditEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
 // ── HttpTransport ─────────────────────────────────────────────────────────
 
 /// Minimal HTTP/1.1 JSON-RPC transport over a TCP listener.
@@ -181,6 +277,10 @@ pub struct HttpTransport<S> {
     write_timeout: Duration,
     /// Reject connections whose peer IP is not a loopback address.
     loopback_only: bool,
+    /// Append-only audit log; one entry per accepted connection.
+    audit_log: QueryAuditLog,
+    /// Monotonic connection counter; wraps on `u64` overflow (unreachable in practice).
+    next_seq: AtomicU64,
 }
 
 impl<S> HttpTransport<S> {
@@ -197,12 +297,22 @@ impl<S> HttpTransport<S> {
             read_timeout: HTTP_READ_TIMEOUT,
             write_timeout: HTTP_WRITE_TIMEOUT,
             loopback_only: true,
+            audit_log: QueryAuditLog::default(),
+            next_seq: AtomicU64::new(0),
         }
     }
 
     /// Return a reference to the inner server.
     pub fn server(&self) -> &ContextServer<S> {
         &self.server
+    }
+
+    /// Return a reference to the shared audit log.
+    ///
+    /// Clone the returned handle to observe events from another thread while
+    /// the transport is serving.  See [`QueryAuditLog`] for usage.
+    pub fn audit_log(&self) -> &QueryAuditLog {
+        &self.audit_log
     }
 
     /// Override the maximum request body size in bytes (default: [`HTTP_MAX_BODY_BYTES`]).
@@ -241,11 +351,59 @@ where
     /// through the context server, and writes the HTTP response.  The
     /// connection is closed when this method returns.
     ///
+    /// Every connection — successful or not — appends a [`QueryAuditEvent`]
+    /// to this transport's [`QueryAuditLog`].  The event records the peer
+    /// address, JSON-RPC method name, and outcome classification but **never**
+    /// raw query content or secret values.
+    ///
     /// Uses `futures::executor::block_on` internally to drive the async
     /// `handle_rpc` future.  Call from a plain OS thread or a
     /// `tokio::task::spawn_blocking` closure — not directly from inside
     /// an async executor task, which would block the executor thread.
     pub fn serve_one(&self, stream: TcpStream) -> Result<(), HttpTransportError> {
+        let start = Instant::now();
+        let seq = self
+            .next_seq
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+
+        // Best-effort peer address for audit and loopback guard.
+        // `peer_addr()` is a cheap syscall; an error here is only possible on
+        // already-closed sockets (vanishingly rare), so we fall back to an
+        // unspecified sentinel rather than failing the whole connection.
+        let peer: std::net::SocketAddr = stream
+            .peer_addr()
+            .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+
+        let mut rpc_method: Option<String> = None;
+        let mut outcome = AuditOutcome::TransportError;
+
+        let result = self.serve_connection(stream, peer, &mut rpc_method, &mut outcome);
+
+        self.audit_log.record(QueryAuditEvent {
+            seq,
+            peer,
+            method: rpc_method,
+            outcome,
+            elapsed_ms: start.elapsed().as_millis() as u64,
+        });
+
+        result
+    }
+
+    /// Inner implementation of [`serve_one`][Self::serve_one].
+    ///
+    /// Separated to let `serve_one` wrap it with clean audit-event recording
+    /// at a single call site.  The `rpc_method` and `outcome` out-parameters
+    /// are updated as the connection progresses so that even early returns
+    /// produce accurate audit events.
+    fn serve_connection(
+        &self,
+        stream: TcpStream,
+        peer: std::net::SocketAddr,
+        rpc_method: &mut Option<String>,
+        outcome: &mut AuditOutcome,
+    ) -> Result<(), HttpTransportError> {
         stream
             .set_read_timeout(Some(self.read_timeout))
             .map_err(HttpTransportError::Read)?;
@@ -259,9 +417,9 @@ where
         // peer is not loopback, we drop the connection silently (no response
         // body) to prevent probing.  This guards against accidental public
         // exposure when the caller binds to 0.0.0.0 instead of 127.0.0.1.
-        if self.loopback_only {
-            let peer = stream.peer_addr().map_err(HttpTransportError::Read)?;
-            check_peer_addr(peer, self.loopback_only)?;
+        if self.loopback_only && let Err(e) = check_peer_addr(peer, self.loopback_only) {
+            *outcome = AuditOutcome::NonLoopback;
+            return Err(e);
         }
 
         // Clone the file descriptor so BufReader can own the read side while
@@ -272,6 +430,7 @@ where
         let (method, content_length) = self.read_headers(&mut reader)?;
 
         if method != "POST" {
+            *outcome = AuditOutcome::MethodNotAllowed;
             write_http_response(
                 &mut writer,
                 405,
@@ -283,6 +442,7 @@ where
         }
 
         if content_length > self.max_body_bytes {
+            *outcome = AuditOutcome::BodyTooLarge;
             write_http_response(
                 &mut writer,
                 413,
@@ -305,15 +465,34 @@ where
         );
         let _guard = BlockOnGuard::new();
         let rpc_response = match serde_json::from_slice::<ContextRpcRequest>(&body) {
-            Ok(request) => block_on(self.server.handle_rpc(request)),
-            Err(e) => ContextRpcResponse::parse_error(e.to_string()),
+            Ok(request) => {
+                *rpc_method = Some(request.method.clone());
+                let resp = block_on(self.server.handle_rpc(request));
+                // Classify outcome from the RPC response before writing it.
+                *outcome = match &resp.error {
+                    Some(err) => AuditOutcome::RpcError { code: err.code },
+                    None => AuditOutcome::Success,
+                };
+                resp
+            }
+            Err(e) => {
+                *outcome = AuditOutcome::ParseError;
+                ContextRpcResponse::parse_error(e.to_string())
+            }
         };
 
-        let response_bytes = serde_json::to_vec(&rpc_response)
-            .map_err(|e| HttpTransportError::Encode(e.to_string()))?;
+        let response_bytes = match serde_json::to_vec(&rpc_response) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                *outcome = AuditOutcome::TransportError;
+                return Err(HttpTransportError::Encode(e.to_string()));
+            }
+        };
 
-        write_http_response(&mut writer, 200, "OK", &response_bytes)
-            .map_err(HttpTransportError::Write)?;
+        if let Err(e) = write_http_response(&mut writer, 200, "OK", &response_bytes) {
+            *outcome = AuditOutcome::TransportError;
+            return Err(HttpTransportError::Write(e));
+        }
 
         Ok(())
     }
@@ -873,6 +1052,220 @@ mod tests {
             http_status(&response),
             200,
             "loopback client must receive HTTP 200 when loopback_only=false"
+        );
+    }
+
+    // ── Query audit log tests ─────────────────────────────────────────────
+
+    // ── audit_log_records_successful_query_event ──────────────────────────
+    // Spec: after serving one valid context.query POST, the audit log
+    //       contains exactly one event with outcome=Success and the correct
+    //       method name.
+    //
+    // RED: HttpTransport had no audit_log field.
+    // GREEN: serve_one records the event via serve_connection out-params.
+    #[test]
+    fn audit_log_records_successful_query_event() {
+        let transport = make_transport();
+        let log = transport.audit_log().clone();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+
+        let request = valid_query_request("audit-1");
+        let body = serde_json::to_vec(&request).unwrap();
+
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            transport.serve_one(stream).expect("serve_one");
+        });
+
+        post(addr, &body);
+        handle.join().expect("thread join");
+
+        let events = log.snapshot();
+        assert_eq!(events.len(), 1, "exactly one audit event must be recorded");
+        let ev = &events[0];
+        assert_eq!(ev.seq, 1, "first event must have seq=1");
+        assert!(ev.peer.ip().is_loopback(), "peer must be loopback");
+        assert_eq!(
+            ev.method.as_deref(),
+            Some(crate::server::CONTEXT_RPC_QUERY_METHOD),
+            "method must be context.query"
+        );
+        assert_eq!(
+            ev.outcome,
+            AuditOutcome::Success,
+            "valid query must produce Success outcome"
+        );
+    }
+
+    // ── audit_log_records_parse_error_event ───────────────────────────────
+    // Spec: after serving a POST with a malformed JSON body, the audit log
+    //       contains one event with outcome=ParseError and method=None.
+    //
+    // RED: HttpTransport had no audit_log field.
+    // GREEN: serve_connection sets *outcome = ParseError on serde_json failure.
+    #[test]
+    fn audit_log_records_parse_error_event() {
+        let transport = make_transport();
+        let log = transport.audit_log().clone();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            transport.serve_one(stream).expect("serve_one");
+        });
+
+        post(addr, b"{not valid json}");
+        handle.join().expect("thread join");
+
+        let events = log.snapshot();
+        assert_eq!(events.len(), 1, "exactly one audit event must be recorded");
+        let ev = &events[0];
+        assert_eq!(
+            ev.outcome,
+            AuditOutcome::ParseError,
+            "malformed body must produce ParseError"
+        );
+        assert!(ev.method.is_none(), "method must be None when parse fails");
+    }
+
+    // ── audit_log_sequential_seqs ─────────────────────────────────────────
+    // Spec: two consecutive serve_one calls produce events with seq=1 then
+    //       seq=2 in the same audit log, in insertion order.
+    //
+    // RED: next_seq field did not exist.
+    // GREEN: next_seq AtomicU64 provides monotonic per-instance numbering.
+    #[test]
+    fn audit_log_sequential_seqs() {
+        let transport = make_transport();
+        let log = transport.audit_log().clone();
+
+        let request = valid_query_request("seq-test");
+        let body = serde_json::to_vec(&request).unwrap();
+
+        for _ in 0..2 {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let addr = listener.local_addr().expect("local_addr");
+            // Serve on the main thread (transport is not Send) by accepting
+            // after the client thread has sent the request.  Clone body each
+            // iteration so the closure captures its own copy.
+            let body_clone = body.clone();
+            let client = thread::spawn(move || post(addr, &body_clone));
+            let (stream, _) = listener.accept().expect("accept");
+            transport.serve_one(stream).expect("serve_one");
+            client.join().expect("client join");
+        }
+
+        let events = log.snapshot();
+        assert_eq!(
+            events.len(),
+            2,
+            "two serve_one calls must produce two events"
+        );
+        assert_eq!(events[0].seq, 1, "first event must have seq=1");
+        assert_eq!(events[1].seq, 2, "second event must have seq=2");
+    }
+
+    // ── audit_event_fields_contain_no_secret ──────────────────────────────
+    // Spec: even when the graph has a node carrying a sensitive literal value,
+    //       the QueryAuditEvent Debug representation must not contain that
+    //       value — proving that no query body content leaks into audit records.
+    //
+    // This is the transport-level analogue of the server-level redaction
+    // guarantee test in tests/context_response.rs.
+    //
+    // RED: no audit log existed; no proof that transport-layer observability
+    //      records are safe to emit without further redaction.
+    // GREEN: QueryAuditEvent only records method name, peer addr, outcome, and
+    //        elapsed_ms — none of which can carry query body content.
+    #[test]
+    fn audit_event_fields_contain_no_secret() {
+        use crate::server::{ContextServer, ContextServerConfig, FieldRedactionRule, TrustLevel};
+        use crate::source::InMemoryContextSource;
+        use ail_core::semantic_graph::{NodeKind, NodeRef, SemanticGraph};
+        use ail_storage::graph::SnapshotEnvelope;
+        use ail_storage::object::ObjectId;
+
+        const SECRET: &str = "TRANSPORT-AUDIT-SECRET-abc999";
+
+        let snap_id = ObjectId::from_bytes(b"audit-secret-snap");
+        let snap = SnapshotEnvelope {
+            id: snap_id,
+            graph_root_hash: snap_id,
+            parent_id: None,
+            applied_change_id: None,
+            created_at: 1,
+            verification_report_hash: None,
+            ..Default::default()
+        };
+
+        let mut sensitive =
+            ail_core::semantic_graph::GraphNode::new(NodeRef(0), NodeKind::Function, "secret_fn");
+        sensitive.body_expr = Some(SECRET.to_string());
+        let graph = SemanticGraph {
+            nodes: vec![sensitive],
+            edges: vec![],
+        };
+
+        let source = InMemoryContextSource::new();
+        source.insert_snapshot(snap.clone());
+        source.insert_graph(snap.graph_root_hash, graph);
+
+        let server = ContextServer::new(source).with_config(ContextServerConfig {
+            redaction_rules: vec![FieldRedactionRule {
+                field: "body_expr".to_string(),
+                min_trust: TrustLevel::Privileged,
+                category: "secrets".to_string(),
+            }],
+            ..Default::default()
+        });
+
+        let transport = HttpTransport::new(server);
+        let log = transport.audit_log().clone();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+
+        // Issue a graph query (no session = public trust; body_expr is redacted).
+        let request = ContextRpcRequest::new(
+            "audit-secret",
+            crate::server::CONTEXT_RPC_QUERY_METHOD,
+            crate::server::ContextRequest::Query {
+                query: crate::dto::ContextQuery::Graph {
+                    scope: crate::QueryScope::Full,
+                    budget: crate::QueryBudget::default(),
+                },
+                snapshot: crate::dto::SnapshotSelector::ById(snap_id),
+                session: None,
+            },
+        );
+        let body = serde_json::to_vec(&request).unwrap();
+
+        let client = thread::spawn(move || post(addr, &body));
+        let (stream, _) = listener.accept().expect("accept");
+        transport.serve_one(stream).expect("serve_one");
+        client.join().expect("client join");
+
+        let events = log.snapshot();
+        assert_eq!(events.len(), 1, "expected exactly one audit event");
+        let ev = &events[0];
+
+        // The audit event must have recorded a successful dispatch (the server
+        // redacted the node but still returned a result, not an error).
+        assert_eq!(
+            ev.outcome,
+            AuditOutcome::Success,
+            "redacted query must still produce Success outcome in audit log"
+        );
+
+        // Core guarantee: the secret literal must not appear anywhere in the
+        // Debug representation of the event — covering all fields.
+        let debug_repr = format!("{ev:?}");
+        assert!(
+            !debug_repr.contains(SECRET),
+            "audit event Debug must not contain the secret value; \
+             found in: {debug_repr}"
         );
     }
 }
