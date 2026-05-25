@@ -5,7 +5,7 @@ use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_verify::report::VerificationReport;
 
 use super::emit_wasm;
-use crate::anf::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, SourceMap};
+use crate::anf::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, AnfSelectClause, SourceMap};
 use crate::core_ir::{LiteralValue, StageHashes};
 use crate::error::CompileError;
 use crate::lower::{lower_to_anf, lower_to_core_ir};
@@ -2939,18 +2939,21 @@ fn fold_nested_in_let_returns_unsupported_construct_error() {
     );
 }
 
-// Scenario: UnsupportedWasmConstruct Display mentions "Fold" and "call_indirect".
+// Scenario: UnsupportedWasmConstruct Display names the unsupported construct.
 // Expects: actionable message for callers without pattern-matching on internals.
+// Note: the Display is construct-agnostic; it no longer hard-codes "call_indirect"
+// because different constructs (Fold, TaskSpawn, Dispatch, …) have different
+// missing infrastructure. The construct name in the payload identifies the gap.
 #[test]
-fn fold_unsupported_error_display_mentions_fold_and_call_indirect() {
+fn fold_unsupported_error_display_mentions_fold() {
     let msg = CompileError::UnsupportedWasmConstruct("Fold".to_string()).to_string();
     assert!(
         msg.contains("Fold"),
         "error display must name the unsupported construct: {msg}"
     );
     assert!(
-        msg.contains("call_indirect"),
-        "error display must explain the missing infrastructure: {msg}"
+        msg.contains("WASM"),
+        "error display must mention WASM: {msg}"
     );
 }
 
@@ -2983,3 +2986,348 @@ fn non_fold_binding_is_unaffected_by_fold_gate() {
 }
 
 // ── End Wave 9A Fold diagnostic tests ─────────────────────────────────────
+
+// ── Wave 10B: generalized unsupported-construct diagnostics ───────────────
+//
+// Proves that emit_wasm returns CompileError::UnsupportedWasmConstruct for
+// each concurrency/dispatch construct that is not yet implemented in the WASM
+// backend, rather than silently emitting an unreachable trap.
+//
+// Pattern per construct:
+//   1. Top-level binding → error with the right name.
+//   2. Representative nested case (for a subset of constructs).
+//
+// Defence-in-depth: the unreachable fallback in emit_anf_expr still fires for
+// direct callers that bypass emit_wasm_with_profile; this test suite exercises
+// the pre-flight gate in emit_wasm_with_profile.
+
+// ── Dispatch ──────────────────────────────────────────────────────────────
+
+// Scenario: top-level Dispatch binding → UnsupportedWasmConstruct("Dispatch").
+#[test]
+fn dispatch_top_level_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.dynamic_call".to_string(),
+        expr: AnfExpr::Dispatch {
+            handler: "vtable".to_string(),
+            method: "run".to_string(),
+            args: vec![],
+        },
+    }]);
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "Dispatch"
+        ),
+        "expected UnsupportedWasmConstruct(\"Dispatch\"), got {result:?}"
+    );
+}
+
+// ── TaskSpawn ─────────────────────────────────────────────────────────────
+
+// Scenario: top-level TaskSpawn → UnsupportedWasmConstruct("TaskSpawn").
+#[test]
+fn task_spawn_top_level_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.spawn".to_string(),
+        expr: AnfExpr::TaskSpawn {
+            func: "worker".to_string(),
+            args: vec![],
+        },
+    }]);
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "TaskSpawn"
+        ),
+        "expected UnsupportedWasmConstruct(\"TaskSpawn\"), got {result:?}"
+    );
+}
+
+// Scenario: TaskSpawn nested inside a Let chain → pre-flight still catches it.
+#[test]
+fn task_spawn_nested_in_let_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.nested_spawn".to_string(),
+        expr: AnfExpr::Let {
+            name: "arg0".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
+            body: Box::new(AnfExpr::TaskSpawn {
+                func: "worker".to_string(),
+                args: vec!["arg0".to_string()],
+            }),
+        },
+    }]);
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(result, Err(CompileError::UnsupportedWasmConstruct(_))),
+        "pre-flight gate must detect TaskSpawn nested in Let, got {result:?}"
+    );
+}
+
+// ── TaskAwait ─────────────────────────────────────────────────────────────
+
+// Scenario: top-level TaskAwait → UnsupportedWasmConstruct("TaskAwait").
+#[test]
+fn task_await_top_level_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.await_task".to_string(),
+        expr: AnfExpr::TaskAwait {
+            task: "t1".to_string(),
+        },
+    }]);
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "TaskAwait"
+        ),
+        "expected UnsupportedWasmConstruct(\"TaskAwait\"), got {result:?}"
+    );
+}
+
+// ── TaskCancel ────────────────────────────────────────────────────────────
+
+// Scenario: top-level TaskCancel → UnsupportedWasmConstruct("TaskCancel").
+#[test]
+fn task_cancel_top_level_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.cancel_task".to_string(),
+        expr: AnfExpr::TaskCancel {
+            task: "t1".to_string(),
+        },
+    }]);
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "TaskCancel"
+        ),
+        "expected UnsupportedWasmConstruct(\"TaskCancel\"), got {result:?}"
+    );
+}
+
+// ── TaskGroup ─────────────────────────────────────────────────────────────
+
+// Scenario: top-level TaskGroup → UnsupportedWasmConstruct("TaskGroup").
+// TaskGroup itself is unsupported; the pre-flight returns "TaskGroup" before
+// inspecting its body — the body does not need to contain another unsupported
+// construct to trigger the gate.
+#[test]
+fn task_group_top_level_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.group".to_string(),
+        expr: AnfExpr::TaskGroup {
+            body: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+        },
+    }]);
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "TaskGroup"
+        ),
+        "expected UnsupportedWasmConstruct(\"TaskGroup\"), got {result:?}"
+    );
+}
+
+// ── ChannelNew ────────────────────────────────────────────────────────────
+
+// Scenario: top-level ChannelNew → UnsupportedWasmConstruct("ChannelNew").
+#[test]
+fn channel_new_top_level_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.make_chan".to_string(),
+        expr: AnfExpr::ChannelNew { capacity: None },
+    }]);
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "ChannelNew"
+        ),
+        "expected UnsupportedWasmConstruct(\"ChannelNew\"), got {result:?}"
+    );
+}
+
+// Scenario: ChannelNew nested inside an If branch → gate still fires.
+#[test]
+fn channel_new_nested_in_if_branch_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.conditional_chan".to_string(),
+        expr: AnfExpr::Let {
+            name: "flag".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Bool(true))),
+            body: Box::new(AnfExpr::If {
+                cond: "flag".to_string(),
+                then_branch: Box::new(AnfExpr::ChannelNew { capacity: Some(4) }),
+                else_branch: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+            }),
+        },
+    }]);
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(result, Err(CompileError::UnsupportedWasmConstruct(_))),
+        "pre-flight gate must detect ChannelNew inside If branch, got {result:?}"
+    );
+}
+
+// ── ChannelSend ───────────────────────────────────────────────────────────
+
+// Scenario: top-level ChannelSend → UnsupportedWasmConstruct("ChannelSend").
+#[test]
+fn channel_send_top_level_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.send".to_string(),
+        expr: AnfExpr::ChannelSend {
+            channel: "ch".to_string(),
+            value: "v".to_string(),
+        },
+    }]);
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "ChannelSend"
+        ),
+        "expected UnsupportedWasmConstruct(\"ChannelSend\"), got {result:?}"
+    );
+}
+
+// ── ChannelReceive ────────────────────────────────────────────────────────
+
+// Scenario: top-level ChannelReceive → UnsupportedWasmConstruct("ChannelReceive").
+#[test]
+fn channel_receive_top_level_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.recv".to_string(),
+        expr: AnfExpr::ChannelReceive {
+            channel: "ch".to_string(),
+        },
+    }]);
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "ChannelReceive"
+        ),
+        "expected UnsupportedWasmConstruct(\"ChannelReceive\"), got {result:?}"
+    );
+}
+
+// ── Select ────────────────────────────────────────────────────────────────
+
+// Scenario: top-level Select → UnsupportedWasmConstruct("Select").
+#[test]
+fn select_top_level_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.select".to_string(),
+        expr: AnfExpr::Select {
+            branches: vec![AnfSelectClause {
+                channel: "ch1".to_string(),
+                binding: "v".to_string(),
+                body: AnfExpr::Literal(LiteralValue::Unit),
+            }],
+        },
+    }]);
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "Select"
+        ),
+        "expected UnsupportedWasmConstruct(\"Select\"), got {result:?}"
+    );
+}
+
+// ── Timeout ───────────────────────────────────────────────────────────────
+
+// Scenario: top-level Timeout → UnsupportedWasmConstruct("Timeout").
+#[test]
+fn timeout_top_level_returns_unsupported_construct_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.timed".to_string(),
+        expr: AnfExpr::Timeout {
+            duration: "dur".to_string(),
+            body: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+        },
+    }]);
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "Timeout"
+        ),
+        "expected UnsupportedWasmConstruct(\"Timeout\"), got {result:?}"
+    );
+}
+
+// ── Cross-construct regression ────────────────────────────────────────────
+
+// Scenario: a module with one clean binding and one TaskSpawn binding in
+// the same AnfIr → the pre-flight still rejects the whole compilation.
+// Ensures the gate walks ALL bindings, not just the first.
+#[test]
+fn clean_binding_followed_by_task_spawn_is_rejected() {
+    let anf = sealed_anf(vec![
+        AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.answer".to_string(),
+            expr: AnfExpr::Literal(LiteralValue::Int(42)),
+        },
+        AnfBinding {
+            source_ref: NodeRef(1),
+            name: "fn.spawn".to_string(),
+            expr: AnfExpr::TaskSpawn {
+                func: "worker".to_string(),
+                args: vec![],
+            },
+        },
+    ]);
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(result, Err(CompileError::UnsupportedWasmConstruct(_))),
+        "pre-flight gate must scan all bindings; expected error for TaskSpawn in second binding, got {result:?}"
+    );
+}
+
+// Scenario: Display for each unsupported construct names the construct.
+// Ensures the error payload is included in every Display string.
+#[test]
+fn unsupported_construct_display_names_the_construct() {
+    for name in &[
+        "Fold",
+        "Dispatch",
+        "TaskSpawn",
+        "TaskAwait",
+        "TaskCancel",
+        "TaskGroup",
+        "ChannelNew",
+        "ChannelSend",
+        "ChannelReceive",
+        "Select",
+        "Timeout",
+    ] {
+        let msg = CompileError::UnsupportedWasmConstruct(name.to_string()).to_string();
+        assert!(
+            msg.contains(name),
+            "Display for UnsupportedWasmConstruct(\"{name}\") must include the construct name; got: {msg}"
+        );
+    }
+}
+
+// ── End Wave 10B unsupported-construct diagnostic tests ───────────────────

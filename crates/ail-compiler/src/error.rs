@@ -46,9 +46,12 @@ pub enum CompileError {
     /// This is a compile-time gate — the caller should lower to a
     /// supported form or wait for the required backend feature.
     ///
-    /// Current unsupported construct:
-    /// - `"Fold"` — requires `call_indirect` + element section (function
-    ///   table); not yet implemented in the WASM backend.
+    /// Current unsupported constructs:
+    /// - `"Fold"` — requires `call_indirect` + element section (function table)
+    /// - `"Dispatch"` — dynamic dispatch requires `call_indirect` + vtable
+    /// - `"TaskSpawn"`, `"TaskAwait"`, `"TaskCancel"`, `"TaskGroup"` — require async runtime
+    /// - `"ChannelNew"`, `"ChannelSend"`, `"ChannelReceive"` — require channel runtime
+    /// - `"Select"`, `"Timeout"` — require channel/timer runtime
     UnsupportedWasmConstruct(String),
 }
 
@@ -77,8 +80,7 @@ impl std::fmt::Display for CompileError {
             CompileError::UnsupportedWasmConstruct(name) => {
                 write!(
                     f,
-                    "unsupported WASM construct: {name} requires call_indirect + element section \
-                     (function table); not yet implemented in the WASM backend"
+                    "unsupported WASM construct: {name}; not yet implemented in the WASM backend"
                 )
             }
         }

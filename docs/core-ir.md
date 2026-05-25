@@ -1163,11 +1163,11 @@ Current executable support is narrower than the full IR:
   - **Lambdas**: `lambda(params..., body)` — all but last arg are param names.
   - **Iteration**: `foreach(binding, collection, body)` — WASM emit is implemented (inline loop, no call_indirect). `fold(init, list, func)` — parse correct; WASM emit returns `CompileError::UnsupportedWasmConstruct("Fold")` at compile time (requires call_indirect + element section; not yet implemented).
   - **Cells**: `cell_new(init)`, `cell_get(cell)`, `cell_set(cell, value)`.
-- `wasm.rs` emits real bodies for simple values, control flow, effect calls, cells (`CellNew`/`CellGet`/`CellSet`), collection constructors (`MapNew`, `SetNew`), indexed access (`IndexGet`), and `ForEach` (inline loop over length-prefixed list); `Fold` is rejected at compile time with `CompileError::UnsupportedWasmConstruct` (requires call_indirect + element section); tasks, channels, and resources still emit stubs/traps.
+- `wasm.rs` emits real bodies for simple values, control flow, effect calls, cells (`CellNew`/`CellGet`/`CellSet`), collection constructors (`MapNew`, `SetNew`), indexed access (`IndexGet`), and `ForEach` (inline loop over length-prefixed list); `Fold`, `Dispatch`, all task primitives (`TaskSpawn`/`TaskAwait`/`TaskCancel`/`TaskGroup`), and all channel/concurrency primitives (`ChannelNew`/`ChannelSend`/`ChannelReceive`/`Select`/`Timeout`) are rejected at compile time with `CompileError::UnsupportedWasmConstruct` via a pre-flight walker in `emit_wasm_with_profile`.
 - Executable `Match` supports integer literal, boolean literal, wildcard, tag-only constructor (`None`), and single-binding constructor (`Ok(val)`, `Some(x)`, `Err(e)`) patterns. The WASM backend loads the i32 tag at offset 0 and, for payload-binding patterns, loads the i64 payload at offset 8. Multi-binding patterns (e.g. `Ok(a, b)`) are not yet supported and emit `Unreachable`.
 - Full memory/value layout for handles, text, bytes, and nested structured payloads is still tracked as ABI validation work; records, variants, lists, `Option`, and `Result` are currently executable for scalar-slot payloads.
 
-**Executable gaps — primitives that parse or are defined in `CoreExpr`/`CoreType` but do not yet produce real WASM emit (emit `Unreachable` or trap stubs):**
+**Executable gaps — primitives that parse or are defined in `CoreExpr`/`CoreType` but do not yet produce real WASM emit:**
 
 | Primitive | Status |
 |-----------|--------|
@@ -1178,10 +1178,10 @@ Current executable support is narrower than the full IR:
 | `CellGet` | **Implemented** — I64Load at offset 0 from cell ptr; validates |
 | `CellSet` | **Implemented** — I64Store at offset 0 from cell ptr; validates |
 | `ForEach` | **Implemented** — inline WASM loop over `[count:i64, elem:i64, ...]` list; no call_indirect needed; validates |
-| `Fold` | Parses; WASM emit returns `CompileError::UnsupportedWasmConstruct("Fold")` — requires call_indirect + element section (function table); not yet implemented |
+| `Fold` | **Compile-time diagnostic** — `emit_wasm_with_profile` returns `CompileError::UnsupportedWasmConstruct("Fold")`; requires call_indirect + element section (function table); not yet implemented |
 | `ResourceAcquire` | **Implemented** — emits `ail/resource_acquire(res_ptr, res_len, args_ptr, args_count) → i64` host import call; interns resource name in data section; returns opaque handle as i64; validates |
 | `ResourceRelease` | **Implemented** — emits `ail/resource_release(handle: i64) → ()` host import call; no return value; validates |
-| `TaskSpawn`, `TaskAwait`, `TaskCancel`, `TaskGroup` | Emit `Unreachable` in WASM |
-| `ChannelNew`, `ChannelSend`, `ChannelReceive`, `Select`, `Timeout` | Emit `Unreachable` in WASM |
-| `Dispatch` (dynamic dispatch) | Emits `Unreachable` in WASM |
+| `TaskSpawn`, `TaskAwait`, `TaskCancel`, `TaskGroup` | **Compile-time diagnostic** — `emit_wasm_with_profile` returns `CompileError::UnsupportedWasmConstruct("<name>")`; require async runtime; not yet implemented |
+| `ChannelNew`, `ChannelSend`, `ChannelReceive`, `Select`, `Timeout` | **Compile-time diagnostic** — `emit_wasm_with_profile` returns `CompileError::UnsupportedWasmConstruct("<name>")`; require channel/timer runtime; not yet implemented |
+| `Dispatch` (dynamic dispatch) | **Compile-time diagnostic** — `emit_wasm_with_profile` returns `CompileError::UnsupportedWasmConstruct("Dispatch")`; requires call_indirect + vtable; not yet implemented |
 | `Bytes` type | No executable emit or derive path; see [ABI value contract](abi-value-contract.md) |
