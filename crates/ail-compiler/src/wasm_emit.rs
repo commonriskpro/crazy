@@ -667,6 +667,17 @@ fn emit_anf_expr<'a>(
         }
 
         AnfExpr::WhileLoop { cond, body } => {
+            // Direct ANF while-loop.  `cond` must be an immutable ANF-local
+            // binding (a `String` name).  `emit_condition_get` reads it via a
+            // single `local.get` on every iteration — the local may be an I32
+            // Bool (used directly) or an I64 truthy value (reduced via
+            // `i64.ne 0`).  It does NOT re-evaluate a computed expression.
+            // Callers that need per-iteration re-evaluation of a computed
+            // condition should use
+            // `CoreExpr::WhileLoop`, which the lowering pipeline desugars into
+            // `Loop + If + Break/Continue` with the condition lowered inside
+            // the loop body.  See `AnfExpr::WhileLoop` doc and the
+            // `CoreExpr::WhileLoop` arm in `lower/lower_expr.rs` for details.
             insns.push(Instruction::Block(BlockType::Empty));
             ctx.labels.push(LabelKind::LoopBreak);
             insns.push(Instruction::Loop(BlockType::Empty));
