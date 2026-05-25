@@ -4128,3 +4128,86 @@ end
         "let(lst, list(5,10), index(lst,1)) must return I64(10) via IndexGet at offset 16"
     );
 }
+
+// RUNTIME-ACL-FOLD-2
+//
+// ACL body: fold(0, list(1,2,3), lambda(acc, x, add(acc, x)))
+//
+//   Pipeline:
+//   1. `lambda(acc, x, add(acc, x))` → CoreExpr::Lambda{params:["acc","x"],
+//      body:CoreExpr::Add(Var("acc"), Var("x"))}
+//   2. Fold atomizes init→_t0=0, list→_t1=ListNew([1,2,3]),
+//      func→_t2=Lambda{params,captures:[],body:Call{add,[acc,x]}}.
+//   3. ANF: Let{_t0=0, Let{_t1=ListNew([1,2,3]), Let{_t2=Lambda{...},
+//      Fold{init:_t0,list:_t1,func:_t2}}}}
+//   4. emit_wasm Lambda: 2 params, 0 captures → hoistable fold reducer;
+//      emits i64.const <table_idx>.  Fold dispatches via call_indirect using
+//      fold_reducer_type (i64,i64)→i64.
+//   5. Fold execution: acc=0 → add(0,1)=1 → add(1,2)=3 → add(3,3)=6.
+//   6. Returns I64(6).
+//
+// Proves the full ACL source → inline-lambda-as-fold-reducer → runtime path
+// for the no-capture (hoistable) Lambda shape.
+#[test]
+fn acl_fold_inline_lambda_reducer_over_list_123_yields_6() {
+    let acl = "\
+change acl_fold_2 base=0
+author tester
+description fold(0, list(1,2,3), lambda(acc,x,add(acc,x))): inline no-capture lambda reducer must return 6
+op create_function id=fn.main return=Int body=fold(0, list(1, 2, 3), lambda(acc, x, add(acc, x)))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(6),
+        "fold(0, list(1,2,3), lambda(acc,x,add(acc,x))): inline lambda reducer must return I64(6)"
+    );
+}
+
+// RUNTIME-ACL-FOLD-3
+//
+// ACL body: let(bias, 10, fold(0, list(1,2), lambda(acc, x, add(add(acc, x), bias))))
+//
+//   Pipeline:
+//   1. Outer let binds bias=10.
+//   2. `lambda(acc, x, add(add(acc, x), bias))` → CoreExpr::Lambda{params:["acc","x"],
+//      body:CoreExpr::Add(Add(Var("acc"),Var("x")), Var("bias"))}
+//   3. Lower lambda body: Add(Add(acc,x), bias) →
+//      Let{_t0=Call{add,[acc,x]}, Call{add,[_t0,bias]}}.
+//      collect_free_vars with bound=["acc","x"]: "bias" is free → captures=["bias"].
+//   4. Fold atomizes: init→_t1=0, list→_t2=ListNew([1,2]),
+//      func→_t3=Lambda{params,captures:["bias"],body:Let{...}}.
+//   5. ANF (simplified):
+//      Let{bias=10,
+//        Let{_t1=0,
+//          Let{_t2=ListNew([1,2]),
+//            Let{_t3=Lambda{params:[acc,x],captures:[bias],body:...},
+//              Fold{init:_t1,list:_t2,func:_t3}}}}}
+//   6. emit_wasm Lambda: 2 params, 1 capture → closure-hoistable reducer;
+//      Lambda node writes closure env to heap: [fn_idx: i64 @ 0, bias: i64 @ 8].
+//      Fold loads env_ptr (I32), promotes to I64, and dispatches via
+//      call_indirect(closure_reducer_type, table[env.fn_idx]) passing
+//      (env_ptr, acc, elem).  Reducer body loads bias from env at offset 8.
+//   7. Fold execution with bias=10:
+//      acc=0 → add(add(0,1),10) = add(1,10) = 11
+//      acc=11 → add(add(11,2),10) = add(13,10) = 23
+//   8. Returns I64(23).
+//
+// Proves the full ACL source → inline-lambda-with-closure → runtime path
+// for the capturing Lambda shape, including env write, env read inside the
+// loop body, and correct carry of the bias value across all iterations.
+#[test]
+fn acl_fold_inline_capturing_lambda_with_bias_over_list_12_yields_23() {
+    let acl = "\
+change acl_fold_3 base=0
+author tester
+description let(bias,10,fold(0,list(1,2),lambda(acc,x,add(add(acc,x),bias)))): capturing lambda reducer must return 23
+op create_function id=fn.main return=Int body=let(bias, 10, fold(0, list(1, 2), lambda(acc, x, add(add(acc, x), bias))))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(23),
+        "fold with capturing lambda (bias=10) over [1,2]: step1=11 step2=23 → must return I64(23)"
+    );
+}
