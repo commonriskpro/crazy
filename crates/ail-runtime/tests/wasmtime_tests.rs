@@ -4997,7 +4997,8 @@ end
 //
 // Spec scenarios covered (RUNTIME-ACL-NOT-1, RUNTIME-ACL-NOT-2,
 //                          RUNTIME-ACL-NOT-3,
-//                          RUNTIME-ACL-MOD-1,  RUNTIME-ACL-MOD-2):
+//                          RUNTIME-ACL-MOD-1,  RUNTIME-ACL-MOD-2,
+//                          RUNTIME-ACL-MOD-3,  RUNTIME-ACL-MOD-4):
 //
 //  RUNTIME-ACL-NOT-1: ACL body `not(true)` lowers through
 //    CoreExpr::Not → lower_core_unary_to_anf("not") → ANF Call "not" with 1
@@ -5022,6 +5023,21 @@ end
 //  RUNTIME-ACL-MOD-2: ACL body `mod(10,2)`.
 //    10 rem_s 2 = 0 → I64(0).
 //    Proves exact divisibility returns I64(0).
+//
+//  RUNTIME-ACL-MOD-3: signed remainder with negative dividend.
+//    Helper fn `signed_mod(a: Int, b: Int) = mod(a, b)` exposes `a` and `b`
+//    as function parameters (local variables in WASM), ensuring the I64RemS
+//    instruction executes `local.get a; local.get b; i64.rem_s` rather than a
+//    folded I64Const.  `main` calls `signed_mod(sub(0,10), 3)`.
+//    i64.rem_s(-10, 3): trunc(-10/3)=-3; remainder=-10-(-3*3)=-10+9=-1.
+//    Returns I64(-1).
+//
+//  RUNTIME-ACL-MOD-4: signed remainder with negative divisor.
+//    Same helper pattern; `main` calls `signed_mod(10, sub(0,3))`.
+//    i64.rem_s(10, -3): sign of result = sign of dividend (+10).
+//    trunc(10/-3)=-3; remainder=10-(-3*-3)=10-9=1.
+//    Returns I64(1).
+//    (WASM i64.rem_s sign follows the *dividend*, not the divisor.)
 //
 // These tests exercise the full pipeline from ACL source:
 //   parse_changeset → canonicalize → apply → lower_to_core_ir →
@@ -5164,5 +5180,86 @@ end
         invoke_acl_export(acl, "main"),
         RuntimeValue::I64(0),
         "mod(10,2) must return I64(0): 10 is exactly divisible by 2"
+    );
+}
+
+// RUNTIME-ACL-MOD-3
+//
+// ACL body: signed_mod(sub(0,10), 3) where signed_mod(a,b) = mod(a,b)
+//
+//   Strategy: `a` and `b` are function parameters, which lower to WASM local
+//   variables.  The `mod(a, b)` body therefore emits
+//     local.get a; local.get b; i64.rem_s
+//   rather than a constant-folded I64Const — exercising real WASM codegen.
+//   `main` passes `sub(0, 10)` as the dividend; the optimizer may fold the
+//   sub, but the rem_s in `signed_mod` always operates on locals.
+//
+//   Pipeline:
+//   1. `mod(a, b)` → CoreExpr::Mod(Var "a", Var "b")
+//   2. lower → Call "mod" [a, b]  (locals, not consts)
+//   3. WASM: I64RemS(local.get a, local.get b).
+//   4. dividend = -10, divisor = 3.
+//      trunc(-10 / 3) = -3; remainder = -10 - (-3 * 3) = -10 + 9 = -1.
+//   5. Returns I64(-1).
+//
+// Proves: mod() with a negative dividend returns a negative remainder under
+//   WASM i64.rem_s (truncation-toward-zero, sign follows dividend).
+#[test]
+fn acl_mod_neg10_3_returns_neg1() {
+    let acl = "\
+change acl_mod_3 base=0
+author tester
+description mod(-10,3): negative dividend signed remainder must return I64(-1)
+op create_function id=fn.signed_mod return=Int
+op add_param target=fn.signed_mod name=a type=Int
+op add_param target=fn.signed_mod name=b type=Int
+op set_body target=fn.signed_mod body=mod(a, b)
+op create_function id=fn.main return=Int body=signed_mod(sub(0, 10), 3)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(-1),
+        "mod(-10, 3) must return I64(-1): signed remainder sign follows dividend"
+    );
+}
+
+// RUNTIME-ACL-MOD-4
+//
+// ACL body: signed_mod(10, sub(0,3)) where signed_mod(a,b) = mod(a,b)
+//
+//   Strategy: same as MOD-3 — `a` and `b` are function parameters (WASM
+//   locals), so `mod(a, b)` emits local.get a; local.get b; i64.rem_s.
+//   `main` passes `sub(0, 3)` as the divisor to exercise the negative-divisor
+//   path.
+//
+//   Pipeline:
+//   1. `mod(a, b)` → CoreExpr::Mod(Var "a", Var "b")
+//   2. lower → Call "mod" [a, b]  (locals)
+//   3. WASM: I64RemS(local.get a, local.get b).
+//   4. dividend = 10, divisor = -3.
+//      trunc(10 / -3) = -3; remainder = 10 - (-3 * -3) = 10 - 9 = 1.
+//   5. Returns I64(1).
+//
+// Proves: mod() with a negative divisor returns a positive remainder under
+//   WASM i64.rem_s — the sign of the result follows the *dividend* (+10),
+//   not the divisor (-3).  This is C/WASM truncation-toward-zero semantics.
+#[test]
+fn acl_mod_10_neg3_returns_1() {
+    let acl = "\
+change acl_mod_4 base=0
+author tester
+description mod(10,-3): negative divisor signed remainder must return I64(1)
+op create_function id=fn.signed_mod return=Int
+op add_param target=fn.signed_mod name=a type=Int
+op add_param target=fn.signed_mod name=b type=Int
+op set_body target=fn.signed_mod body=mod(a, b)
+op create_function id=fn.main return=Int body=signed_mod(10, sub(0, 3))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(1),
+        "mod(10, -3) must return I64(1): i64.rem_s sign follows dividend (+10), not divisor (-3)"
     );
 }
