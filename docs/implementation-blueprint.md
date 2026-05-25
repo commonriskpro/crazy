@@ -44,9 +44,9 @@ The product only becomes AI-native when graph, ChangeSet, verifier, compiler, ru
 | Verification | Implemented subset | `crates/ail-verify/src/lib.rs`, pipeline/checker tests | Prod/critical profile rigor, solver limits, translation validation, policy UX. |
 | Compiler | Implemented subset | `crates/ail-compiler/src/lib.rs`, lowering/WASM/native tests | Full executable surface, backend parity, large-project performance evidence. |
 | Runtime | Implemented subset | `crates/ail-runtime/src/lib.rs`, runtime tests | Rich typed WASM ABI, memory/resource model, hardened isolation, operational limits. |
-| Context Server | Implemented subset | `crates/ail-context/src/lib.rs`, `transport.rs` | HTTP transport, distributed auth, distributed freshness, redaction operations. |
+| Context Server | Implemented subset | `crates/ail-context/src/lib.rs`, `transport.rs`, `http_transport.rs` | TLS, distributed auth, distributed freshness, redaction operations. |
 | Stdlib | Implemented subset | `crates/ail-stdlib/src/lib.rs`, module tests | Compatibility policy, official packages/adapters, verified contracts. |
-| Packages | Implemented subset | `crates/ail-package/src/lib.rs`, package tests | Registry operations, federation, reproducible-build proof workflows. |
+| Packages | Implemented subset | `crates/ail-package/src/lib.rs`, `http_registry.rs`, `signing.rs` | Federation, deployed registry server, keyless/Sigstore signing, reproducible-build proof end-to-end. |
 | Coordination / remote | Implemented subset | `crates/ail-coordinator/src/lib.rs`, `crates/ail-remote/src/lib.rs` | Durable remote sync service, multi-hop collaboration, key management. |
 | Dogfooding | Completed validation milestone | `crates/ail-dogfood/src/lib.rs`, dogfood tests | Real project authoring loop using AIL itself, not only Rust examples. |
 | Release hardening | Implemented subset | `docs/release-policy.md`, `docs/migration-guide.md`, `scripts/tag-release.sh`, `scripts/release-preflight.sh` | Published compatibility guarantees and production release discipline. |
@@ -84,9 +84,9 @@ Scores are rough upper bounds on "what fraction of the documented target design 
 | Verification | ~72% | `verified_profile` embedded, assumption-expiry gate, report index | Translation validation, prod/critical policy rigor |
 | Compiler | ~68% | `Bytes` ABI (WASM + native), `Fold`/`ForEach` execution, Lambda hoisting | Captured closure reducers, full language surface, native archive auto-build |
 | Runtime | ~78% | Handler trust, secret vault + provider trait, schema enforcement, typed `Bytes` ABI, e2e | External secret providers (no real adapters), full async/channel runtime, fuzz coverage |
-| Context Server | ~58% | Query-variant docs alignment (code was already present) | HTTP transport, distributed auth, freshness operations |
+| Context Server | ~68% | HTTP/1.1 TCP JSON-RPC transport (`http_transport.rs`), stdio/MCP-like transport (`transport.rs`) | TLS, distributed auth tokens, deployed production server, distributed freshness |
 | Stdlib | ~52% | Minor | Compatibility policy, official adapters, verified contracts |
-| Packages | ~46% | Minor | Registry network ops, federation, reproducible-build proof |
+| Packages | ~58% | HTTP registry client/server (`http_registry.rs`), Ed25519 signing/verification + in-memory transparency log (`signing.rs`) | Federation, keyless/Sigstore signing, deployed registry server, reproducible-build proof end-to-end |
 | Coordination / remote | ~46% | Minor | Durable remote sync, multi-hop collaboration, key management |
 | Dogfooding | ~62% | Minor | Real project authoring loop (not only Rust examples) |
 | Release hardening | ~73% | `--runtime-lib` workflow documented | Published compatibility guarantees, production release discipline |
@@ -101,10 +101,10 @@ The following gaps are confirmed absent or only stub-level. Do not claim coverag
 - **Native runtime archive auto-build**: `--runtime-lib` accepts a pre-built `ail_runtime.a`; there is no `build.rs` or CI step that auto-builds and bundles the archive.
 - **Schema-driven typed capability output**: `CapabilityOutputSchema` validates JSON field presence; it is not bridged to Core IR `ValueLayout` types — field types are free-form strings, not IR-typed.
 - **Runnable native executable workflow**: `ail compile --native` + `ail link --runtime-lib` produces a native object and links it, but the full path to a standalone runnable binary (including runtime archive build) has no automated workflow or CI evidence.
-- **Full language surface (records, variants, pattern matching)**: Many `Instruction::Unreachable` stubs remain in `wasm_emit.rs` for these constructs. Execution traps at runtime; there is no compile-time rejection for most of them.
+- **Language surface gap — pattern matching completeness**: Basic records (`RecordNew`, `FieldGet`, `FieldUpdate`), simple variants (`VariantNew`), and single-binding constructor patterns in `match` are implemented. Not yet supported: nested patterns, structural record-field patterns, exhaustiveness checking, and multi-binding patterns. Unrecognised patterns emit `Instruction::Unreachable` at runtime with no compile-time diagnostic.
 - **Performance validation**: No benchmarks, regression thresholds, or large-graph fixtures exist for storage, compiler, or runtime.
-- **Networked Context Server transport**: Context slices work in-process only; HTTP/stdio transport is not implemented.
-- **Package registry network operations**: No HTTP registry client/server path; no Ed25519-verified package exchange.
+- **Context Server production deployment**: HTTP/1.1 TCP JSON-RPC (`http_transport.rs`) and stdio (`transport.rs`) transports are implemented for loopback/tooling use. Missing: TLS, distributed auth tokens, and a hardened production-ready server with multi-node freshness operations.
+- **Package registry federation and deployment**: HTTP registry client/server (`http_registry.rs`) and Ed25519 package signing/verification with an in-memory transparency log (`signing.rs`) are implemented. Missing: registry federation, keyless/Sigstore signing integration, a deployed registry server, and reproducible-build proof end-to-end.
 
 ## Next recommended milestones
 
