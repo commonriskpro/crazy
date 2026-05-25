@@ -832,6 +832,48 @@ mod tests {
         );
     }
 
+    // ── http_publish_sequence_monotonic_on_same_version_republish ────────
+    // Spec: re-publishing the same name/version through the HTTP path must still
+    // advance the sequence number — it must not repeat the previous value or go
+    // backward.  This is the HTTP-transport leg of the sequence-monotonicity
+    // regression (W1 from the Wave 15C review).
+    //
+    //   GIVEN an HTTP registry server
+    //   WHEN pkg v1.0.0 is published twice (same name/version) via HTTP
+    //   THEN the second publish response has a strictly higher sequence number
+    #[test]
+    fn http_publish_sequence_monotonic_on_same_version_republish() {
+        let addr = start_server();
+        let client = HttpRegistryClient::new(&addr);
+
+        let kp = gen_keypair();
+        let r1 = client
+            .publish(PublishRequest {
+                signed_package: kp
+                    .sign_manifest(make_manifest("http.mono.pkg", "1.0.0"))
+                    .expect("sign first"),
+            })
+            .expect("first publish");
+        // Re-publish identical name/version through HTTP.
+        let r2 = client
+            .publish(PublishRequest {
+                signed_package: kp
+                    .sign_manifest(make_manifest("http.mono.pkg", "1.0.0"))
+                    .expect("sign second"),
+            })
+            .expect("second publish");
+
+        assert!(r1.accepted);
+        assert!(r2.accepted);
+
+        let s1 = r1.sequence.expect("sequence on first publish");
+        let s2 = r2.sequence.expect("sequence on second publish");
+        assert!(
+            s2 > s1,
+            "re-publishing same name/version via HTTP must still advance sequence: s1={s1} s2={s2}"
+        );
+    }
+
     // ── header_too_large_returns_bad_request ─────────────────────────────
     // Spec: a request whose header block exceeds MAX_HEADER_SIZE bytes is
     // rejected with 400 without reading the body.
