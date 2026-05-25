@@ -128,12 +128,15 @@ impl SecretVault {
         self.secrets.insert(vault_path.into(), value.into());
     }
 
-    /// Resolve a vault path to its secret bytes.
+    /// Return the raw secret bytes stored at `vault_path`.
     ///
     /// Returns `None` if no secret is stored at `vault_path`.
     /// The returned slice MUST NOT be written to logs or audit fields;
     /// the audit infrastructure accepts only hashes.
-    pub fn resolve(&self, vault_path: &str) -> Option<&[u8]> {
+    ///
+    /// Use [`SecretProvider::resolve`] instead when access through the trait
+    /// abstraction is preferred (returns an owned `Vec<u8>`).
+    pub fn get_bytes(&self, vault_path: &str) -> Option<&[u8]> {
         self.secrets.get(vault_path).map(Vec::as_slice)
     }
 }
@@ -323,13 +326,13 @@ mod tests {
     fn vault_resolve_present() {
         let mut v = SecretVault::new();
         v.insert("path/to/key", b"supersecret".to_vec());
-        assert_eq!(v.resolve("path/to/key"), Some(b"supersecret".as_slice()));
+        assert_eq!(v.get_bytes("path/to/key"), Some(b"supersecret".as_slice()));
     }
 
     #[test]
     fn vault_resolve_absent() {
         let v = SecretVault::new();
-        assert_eq!(v.resolve("nonexistent"), None);
+        assert_eq!(v.get_bytes("nonexistent"), None);
     }
 
     #[test]
