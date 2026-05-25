@@ -134,7 +134,12 @@ pub(super) fn lower_lambda(
         lam_builder.seal_block(lam_block);
 
         // Bind params to local names.
-        let mut lam_ctx = NativeCodegenCtx::new(ctx.data_ids, ctx.data_layout, ctx.host_call_id);
+        let mut lam_ctx = NativeCodegenCtx::new(
+            ctx.data_ids,
+            ctx.data_layout,
+            ctx.bytes_data_ids,
+            ctx.host_call_id,
+        );
         lam_ctx.malloc_id = ctx.malloc_id;
         lam_ctx.runtime_call_id = ctx.runtime_call_id;
         for (i, param_name) in params.iter().enumerate() {

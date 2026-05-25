@@ -29,6 +29,8 @@ use crate::native_types::NativeDataLayout;
 pub(crate) struct LowerBindingEnv<'a> {
     pub(crate) data_ids: &'a [DataId],
     pub(crate) data_layout: &'a NativeDataLayout,
+    /// Data object IDs for `LiteralValue::Bytes` buffers (index = bytes_table index).
+    pub(crate) bytes_data_ids: &'a [DataId],
     pub(crate) host_call_id: Option<FuncId>,
     pub(crate) malloc_id: Option<FuncId>,
     pub(crate) runtime_call_id: Option<FuncId>,
@@ -72,8 +74,12 @@ pub(crate) fn lower_binding(
         builder.switch_to_block(block);
         builder.seal_block(block);
 
-        let mut codegen_ctx =
-            NativeCodegenCtx::new(env.data_ids, env.data_layout, env.host_call_id);
+        let mut codegen_ctx = NativeCodegenCtx::new(
+            env.data_ids,
+            env.data_layout,
+            env.bytes_data_ids,
+            env.host_call_id,
+        );
         codegen_ctx.malloc_id = env.malloc_id;
         codegen_ctx.runtime_call_id = env.runtime_call_id;
         match lower_anf_expr_cranelift(expr, &mut codegen_ctx, &mut builder, module) {

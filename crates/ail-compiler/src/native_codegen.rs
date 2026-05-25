@@ -67,6 +67,11 @@ pub(crate) struct NativeCodegenCtx<'a> {
     pub(crate) data_ids: &'a [DataId],
     /// Layout describing which strings map to which data_ids index.
     pub(crate) data_layout: &'a NativeDataLayout,
+    /// Interned data object IDs for `LiteralValue::Bytes` byte buffers.
+    ///
+    /// Index matches `NativeDataLayout::bytes_table` — entry `i` here is the
+    /// `DataId` for `bytes_table[i]`.
+    pub(crate) bytes_data_ids: &'a [DataId],
     /// Imported host_call FuncId if the program uses EffectCall.
     pub(crate) host_call_id: Option<FuncId>,
     /// Imported __ail_malloc FuncId for heap allocation of compound values.
@@ -81,6 +86,7 @@ impl<'a> NativeCodegenCtx<'a> {
     pub(crate) fn new(
         data_ids: &'a [DataId],
         data_layout: &'a NativeDataLayout,
+        bytes_data_ids: &'a [DataId],
         host_call_id: Option<FuncId>,
     ) -> Self {
         Self {
@@ -90,6 +96,7 @@ impl<'a> NativeCodegenCtx<'a> {
             variant_tags: BTreeMap::new(),
             data_ids,
             data_layout,
+            bytes_data_ids,
             host_call_id,
             malloc_id: None,
             runtime_call_id: None,
@@ -166,6 +173,7 @@ pub(crate) fn infer_cranelift_return_type(
         AnfExpr::Literal(LiteralValue::Bool(_)) => Some(types::I8),
         AnfExpr::Literal(LiteralValue::Float(_)) => Some(types::F64),
         AnfExpr::Literal(LiteralValue::Text(_)) => Some(types::I64),
+        AnfExpr::Literal(LiteralValue::Bytes(_)) => Some(types::I64),
         AnfExpr::Let { body, .. } => infer_cranelift_return_type(body),
         AnfExpr::Return(inner) => infer_cranelift_return_type(inner),
         AnfExpr::Call { func, .. } => match func.as_str() {

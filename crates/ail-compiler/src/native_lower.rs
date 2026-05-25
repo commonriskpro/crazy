@@ -91,13 +91,23 @@ pub(crate) fn lower_anf_expr_cranelift(
                 let packed = builder.ins().bor(len_shifted, ptr);
                 LowerResult::Value(packed)
             }
-            LiteralValue::Bytes(_) => {
-                // Native-backend Bytes emit is deferred to a future wave.
-                // Wave 10A closes the WASM/ABI Bytes gap only.
-                // NativeDataLayout will need a bytes-data table (separate from
-                // the string table) before this arm can produce real code.
-                builder.ins().trap(TrapCode::user(1).unwrap());
-                LowerResult::Terminated
+            LiteralValue::Bytes(data) => {
+                // Emit a packed (len << 32) | ptr i64 — the same encoding as
+                // Text.  The byte buffer is in a separate __ail_bytes_N data
+                // object interned by NativeDataLayout::bytes_table.
+                let (idx, len) = ctx.data_layout.get_bytes(data.as_slice());
+                if idx >= ctx.bytes_data_ids.len() {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    return LowerResult::Terminated;
+                }
+                let data_id = ctx.bytes_data_ids[idx];
+                let gv = module.declare_data_in_func(data_id, builder.func);
+                let ptr = builder.ins().symbol_value(types::I64, gv);
+                // Pack: (len as i64) << 32 | ptr
+                let len_val = builder.ins().iconst(types::I64, len as i64);
+                let len_shifted = builder.ins().ishl_imm(len_val, 32);
+                let packed = builder.ins().bor(len_shifted, ptr);
+                LowerResult::Value(packed)
             }
         },
 
