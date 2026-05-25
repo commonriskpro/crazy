@@ -77,14 +77,49 @@ use crate::wasm_abi::{EffectDataLayout, binding_result, binding_signatures, expo
 use crate::wasm_artifact::code_entry_offsets;
 use crate::wasm_emit::build_code_section;
 use crate::wasm_sections::{
-    align_to_i64, build_data_section, build_export_section_with_memory, build_function_section,
-    build_global_section, build_import_section, build_memory_section, build_type_section,
-    build_type_section_with_host_call,
+    align_to_i64, build_data_section, build_element_section, build_export_section_with_memory,
+    build_function_section, build_global_section, build_import_section, build_memory_section,
+    build_table_section, build_type_section, build_type_section_with_host_call,
 };
 
 #[cfg(test)]
 #[path = "wasm_tests.rs"]
 mod tests;
+
+// ── anf_has_fold ──────────────────────────────────────────────────────────
+
+/// Returns `true` if any sub-expression in `expr` is `AnfExpr::Fold`.
+///
+/// Used by `emit_wasm_with_profile` to decide whether to add the function
+/// table, element section, and fold-reducer type to the WASM module.
+fn anf_has_fold(expr: &AnfExpr) -> bool {
+    match expr {
+        AnfExpr::Fold { .. } => true,
+        AnfExpr::Let { value, body, .. } => anf_has_fold(value) || anf_has_fold(body),
+        AnfExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => anf_has_fold(then_branch) || anf_has_fold(else_branch),
+        AnfExpr::Return(inner) => anf_has_fold(inner),
+        AnfExpr::Seq(exprs) => exprs.iter().any(anf_has_fold),
+        AnfExpr::Match { arms, .. } => arms.iter().any(|a| anf_has_fold(&a.body)),
+        AnfExpr::Lambda { body, .. } => anf_has_fold(body),
+        AnfExpr::Loop { body } | AnfExpr::TaskGroup { body } => anf_has_fold(body),
+        AnfExpr::Timeout { body, .. } => anf_has_fold(body),
+        AnfExpr::Break { value } => anf_has_fold(value),
+        AnfExpr::WhileLoop { body, .. } | AnfExpr::ForEach { body, .. } => anf_has_fold(body),
+        AnfExpr::RecordNew { fields } => fields.iter().any(|(_, v)| anf_has_fold(v)),
+        AnfExpr::FieldUpdate { value, .. } => anf_has_fold(value),
+        AnfExpr::TupleNew(elems) | AnfExpr::ListNew(elems) => elems.iter().any(anf_has_fold),
+        AnfExpr::VariantNew { payload, .. } => payload.as_deref().is_some_and(anf_has_fold),
+        AnfExpr::ShortCircuitAnd { right, .. } | AnfExpr::ShortCircuitOr { right, .. } => {
+            anf_has_fold(right)
+        }
+        // Atomic or unimplemented variants — no Fold sub-expression.
+        _ => false,
+    }
+}
 
 // ── first_unsupported_wasm_construct ──────────────────────────────────────
 
@@ -97,16 +132,17 @@ mod tests;
 /// `unreachable` traps at runtime.
 ///
 /// **Unsupported constructs (compile-time diagnostic gate):**
-/// - `"Fold"` — requires `call_indirect` + element section (function table)
 /// - `"Dispatch"` — dynamic dispatch requires `call_indirect` + vtable
 /// - `"TaskSpawn"`, `"TaskAwait"`, `"TaskCancel"`, `"TaskGroup"` — require async runtime
 /// - `"ChannelNew"`, `"ChannelSend"`, `"ChannelReceive"`, `"Select"`, `"Timeout"` — require channel runtime
+///
+/// Note: `Fold` is now implemented via `call_indirect` + function table and is
+/// NOT listed here.
 ///
 /// All other variants are either implemented or are atomic (no sub-expressions).
 fn first_unsupported_wasm_construct(expr: &AnfExpr) -> Option<&'static str> {
     match expr {
         // ── Unsupported constructs — return diagnostic name immediately ───
-        AnfExpr::Fold { .. } => Some("Fold"),
         AnfExpr::Dispatch { .. } => Some("Dispatch"),
         AnfExpr::TaskSpawn { .. } => Some("TaskSpawn"),
         AnfExpr::TaskAwait { .. } => Some("TaskAwait"),
@@ -149,7 +185,7 @@ fn first_unsupported_wasm_construct(expr: &AnfExpr) -> Option<&'static str> {
         AnfExpr::ShortCircuitOr { right, .. } => first_unsupported_wasm_construct(right),
         AnfExpr::ForEach { body, .. } => first_unsupported_wasm_construct(body),
 
-        // ── Atomic variants — no sub-expressions to inspect ───────────────
+        // ── Atomic or implemented variants — no sub-expressions to inspect ──
         AnfExpr::Literal(_)
         | AnfExpr::Var(_)
         | AnfExpr::Call { .. }
@@ -167,7 +203,9 @@ fn first_unsupported_wasm_construct(expr: &AnfExpr) -> Option<&'static str> {
         | AnfExpr::MapNew { .. }
         | AnfExpr::SetNew { .. }
         | AnfExpr::Continue
-        | AnfExpr::Placeholder => None,
+        | AnfExpr::Placeholder
+        // Fold is now implemented via call_indirect + function table.
+        | AnfExpr::Fold { .. } => None,
     }
 }
 
@@ -205,8 +243,9 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     // a structured CompileError::UnsupportedWasmConstruct instead of a silent
     // unreachable trap at runtime.
     //
-    // Unsupported: Fold (call_indirect), Dispatch, TaskSpawn/Await/Cancel/Group
-    // (async runtime), ChannelNew/Send/Receive/Select/Timeout (channel runtime).
+    // Unsupported: Dispatch, TaskSpawn/Await/Cancel/Group (async runtime),
+    // ChannelNew/Send/Receive/Select/Timeout (channel runtime).
+    // Note: Fold is now implemented via call_indirect + function table.
     for binding in &anf.bindings {
         if let Some(name) = first_unsupported_wasm_construct(&binding.expr) {
             return Err(CompileError::UnsupportedWasmConstruct(name.to_string()));
@@ -234,7 +273,24 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         needs_host_call as u32 + needs_host_call_write as u32 + needs_resource_call as u32 * 2;
     let function_offset = type_offset;
 
+    // Detect whether any binding contains a Fold expression.
+    // When true: add a function table, element section, and fold-reducer type.
+    let needs_fold = anf.bindings.iter().any(|b| anf_has_fold(&b.expr));
+    let n_functions = anf.bindings.len() as u32;
+
+    // fold_reducer_type_idx: the type-section index of (i64, i64) → i64.
+    // It is appended after all host-import types and binding signatures:
+    //   index = type_offset + signatures.len()
+    let fold_reducer_type_idx: Option<u32> = if needs_fold {
+        Some(type_offset + signatures.len() as u32)
+    } else {
+        None
+    };
+
     // Assemble WASM module first so we can compute byte offsets.
+    // Section order follows the WASM binary format spec:
+    //   Type(1) Import(2) Function(3) Table(4) Memory(5) Global(6)
+    //   Export(7) Element(9) Code(10) Data(11)
     let mut module = Module::new();
     if needs_host_call || needs_resource_call {
         module.section(&build_type_section_with_host_call(
@@ -242,8 +298,9 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
             needs_host_call,
             needs_host_call_write,
             needs_resource_call,
+            needs_fold,
         ));
-    } else if let Some(types) = build_type_section(&signatures) {
+    } else if let Some(types) = build_type_section(&signatures, needs_fold) {
         module.section(&types);
     }
     if let Some(imports) =
@@ -253,6 +310,10 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     }
     if let Some(functions) = build_function_section(&signatures, type_offset) {
         module.section(&functions);
+    }
+    // Table section (4): required for call_indirect when Fold is present.
+    if needs_fold && let Some(table) = build_table_section(n_functions) {
+        module.section(&table);
     }
     if let Some(memory) = build_memory_section(needs_memory) {
         module.section(&memory);
@@ -266,7 +327,17 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     {
         module.section(&exports);
     }
-    if let Some(codes) = build_code_section(&anf.bindings, &effect_data, function_offset) {
+    // Element section (9): populates the function table for call_indirect.
+    // Must appear after Export and before Code per WASM binary format.
+    if needs_fold && let Some(elems) = build_element_section(function_offset, n_functions) {
+        module.section(&elems);
+    }
+    if let Some(codes) = build_code_section(
+        &anf.bindings,
+        &effect_data,
+        function_offset,
+        fold_reducer_type_idx,
+    ) {
         module.section(&codes);
     }
     if let Some(data) = build_data_section(&effect_data) {

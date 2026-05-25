@@ -6,9 +6,12 @@
 // metadata and effect-layout data.  Consumed exclusively by
 // `emit_wasm_with_profile` in `wasm.rs`.
 
+use std::borrow::Cow;
+
 use wasm_encoder::{
-    ConstExpr, DataSection, EntityType, ExportKind, ExportSection, FunctionSection, GlobalSection,
-    GlobalType, ImportSection, MemorySection, MemoryType, TypeSection, ValType,
+    ConstExpr, DataSection, ElementSection, Elements, EntityType, ExportKind, ExportSection,
+    FunctionSection, GlobalSection, GlobalType, ImportSection, MemorySection, MemoryType, RefType,
+    TableSection, TableType, TypeSection, ValType,
 };
 
 use crate::anf::AnfBinding;
@@ -18,10 +21,16 @@ use crate::wasm_abi::{EffectDataLayout, WasmSignature, binding_result, export_na
 
 /// Build a type section with one entry per function signature.
 ///
-/// Returns `None` when `signatures` is empty — no type section is needed for
-/// an empty module.
-pub(crate) fn build_type_section(signatures: &[WasmSignature]) -> Option<TypeSection> {
-    if signatures.is_empty() {
+/// When `needs_fold` is `true`, appends the fold-reducer type
+/// `(i64, i64) → i64` at the end of the section.  Its type index is
+/// `signatures.len() as u32` (the entry after all binding signatures).
+///
+/// Returns `None` when `signatures` is empty AND `needs_fold` is `false`.
+pub(crate) fn build_type_section(
+    signatures: &[WasmSignature],
+    needs_fold: bool,
+) -> Option<TypeSection> {
+    if signatures.is_empty() && !needs_fold {
         return None;
     }
     let mut types = TypeSection::new();
@@ -32,6 +41,13 @@ pub(crate) fn build_type_section(signatures: &[WasmSignature]) -> Option<TypeSec
             None => types.ty().function(params, []),
         }
     }
+    if needs_fold {
+        // Fold-reducer type: (i64, i64) → i64.  Appended after all binding
+        // signatures so the type index = type_offset + signatures.len().
+        types
+            .ty()
+            .function([ValType::I64, ValType::I64], [ValType::I64]);
+    }
     Some(types)
 }
 
@@ -40,6 +56,7 @@ pub(crate) fn build_type_section_with_host_call(
     needs_host_call: bool,
     needs_host_call_write: bool,
     needs_resource_call: bool,
+    needs_fold: bool,
 ) -> TypeSection {
     let mut types = TypeSection::new();
     if needs_host_call {
@@ -87,6 +104,13 @@ pub(crate) fn build_type_section_with_host_call(
             Some(result_ty) => types.ty().function(params, [result_ty]),
             None => types.ty().function(params, []),
         }
+    }
+    if needs_fold {
+        // Fold-reducer type: (i64, i64) → i64.  Appended after host types and
+        // binding signatures so the type index = type_offset + signatures.len().
+        types
+            .ty()
+            .function([ValType::I64, ValType::I64], [ValType::I64]);
     }
     types
 }
@@ -233,4 +257,65 @@ pub(crate) fn build_data_section(layout: &EffectDataLayout) -> Option<DataSectio
         data.active(0, &ConstExpr::i32_const(*ptr), bytes.iter().copied());
     }
     Some(data)
+}
+
+// ── build_table_section ───────────────────────────────────────────────────
+
+/// Build a table section with a single `funcref` table of `n_functions` slots.
+///
+/// The table holds exactly `n_functions` elements (one per compiled function
+/// in the code section).  Used by `call_indirect` to dispatch Fold reducer
+/// callbacks via the element section populated by `build_element_section`.
+///
+/// Returns `None` when `n_functions == 0` (no functions, no table needed).
+pub(crate) fn build_table_section(n_functions: u32) -> Option<TableSection> {
+    if n_functions == 0 {
+        return None;
+    }
+    let mut tables = TableSection::new();
+    tables.table(TableType {
+        element_type: RefType::FUNCREF,
+        minimum: n_functions as u64,
+        maximum: Some(n_functions as u64),
+        table64: false,
+        shared: false,
+    });
+    Some(tables)
+}
+
+// ── build_element_section ─────────────────────────────────────────────────
+
+/// Build an active element segment that populates table 0 with all compiled
+/// function indices in order.
+///
+/// `function_offset` is the number of imported functions (host calls, resource
+/// acquire/release) that precede the defined functions in the function index
+/// space.  The active segment starts at table offset 0 and populates
+/// `n_functions` consecutive entries:
+///   `table[0] = function_offset + 0`
+///   `table[1] = function_offset + 1`
+///   …
+///   `table[n_functions - 1] = function_offset + n_functions - 1`
+///
+/// This makes the table index of binding `i` equal to `i` (0-based), so
+/// `call_indirect` on table index `i` dispatches to the function compiled
+/// from binding `i`.
+///
+/// Returns `None` when `n_functions == 0`.
+pub(crate) fn build_element_section(
+    function_offset: u32,
+    n_functions: u32,
+) -> Option<ElementSection> {
+    if n_functions == 0 {
+        return None;
+    }
+    let func_indices: Vec<u32> = (function_offset..function_offset + n_functions).collect();
+    let mut elements = ElementSection::new();
+    // `None` table forces the MVP 0x00 encoding which implicitly references table 0.
+    elements.active(
+        None,
+        &ConstExpr::i32_const(0),
+        Elements::Functions(Cow::Owned(func_indices)),
+    );
+    Some(elements)
 }

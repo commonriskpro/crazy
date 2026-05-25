@@ -54,6 +54,13 @@ struct WasmCodegenCtx<'a> {
     variant_tags: BTreeMap<String, u32>,
     /// Counter for the next unassigned variant discriminant.
     next_variant_tag: u32,
+    /// Type index of the fold-reducer signature `(i64, i64) → i64` in the
+    /// module type section.  `None` when no Fold is present in this module.
+    fold_reducer_type_idx: Option<u32>,
+    /// Number of imported functions (host calls, resource acquire/release)
+    /// that precede the defined functions in the function index space.
+    /// Used to compute table indices: `table_idx = func_idx - function_offset`.
+    function_offset: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,7 +71,12 @@ enum LabelKind {
 }
 
 impl<'a> WasmCodegenCtx<'a> {
-    fn new(params: Vec<&'a str>, effect_data: &'a EffectDataLayout) -> Self {
+    fn new(
+        params: Vec<&'a str>,
+        effect_data: &'a EffectDataLayout,
+        fold_reducer_type_idx: Option<u32>,
+        function_offset: u32,
+    ) -> Self {
         let param_count = params.len() as u32;
         WasmCodegenCtx {
             locals: params
@@ -79,6 +91,8 @@ impl<'a> WasmCodegenCtx<'a> {
             record_layouts: BTreeMap::new(),
             variant_tags: BTreeMap::new(),
             next_variant_tag: 0,
+            fold_reducer_type_idx,
+            function_offset,
         }
     }
 
@@ -1262,20 +1276,157 @@ fn emit_anf_expr<'a>(
             None
         }
 
-        // ── Fold — unreachable safety-net ────────────────────────────────
+        // ── Fold — call_indirect over function table ──────────────────────
         //
-        // Fold { init, list, func } dispatches through `func`, an I64
-        // function pointer, requiring call_indirect + an element section
-        // (function table) — neither of which the WASM backend builds yet.
+        // Fold { init, list, func } accumulates over a length-prefixed list
+        // by calling `func(acc, elem) → i64` for each element.
         //
-        // `emit_wasm_with_profile` detects Fold during a pre-flight walk and
-        // returns `CompileError::UnsupportedWasmConstruct("Fold")` before
-        // reaching this arm.  This Unreachable is therefore a defence-in-depth
-        // fallback for direct callers of `emit_anf_expr` (e.g. unit tests that
-        // bypass the top-level gate).
-        AnfExpr::Fold { .. } => {
+        // WASM emission:
+        //   1. Load list element count from header (offset 0).
+        //   2. Initialise accumulator from `init` and counter to 0.
+        //   3. Loop:
+        //        a. If i >= count → break with current acc (result of block).
+        //        b. Load element: list_ptr + 8 + i * 8.
+        //        c. call_indirect(fold_reducer_type, table 0) with acc and elem.
+        //        d. Update acc; increment i; continue.
+        //
+        // `func` is resolved as one of:
+        //   • A top-level function name (in the `functions` map) — table index
+        //     is `func_idx - function_offset`, pushed as `i32.const`.
+        //   • A local I32 variable (closure env) — loads `fn_idx` (i64) from
+        //     offset 0 of the env pointer, wraps to i32.
+        //   • A local I64 variable — wraps directly to i32.
+        //
+        // Limitation: nested Lambda bodies are not hoisted into separate
+        // functions, so `fn_idx = 0` stored in a closure env will call the
+        // FIRST compiled function.  Fold + nested Lambda requires lambda
+        // hoisting (deferred to a future wave).  Fold + top-level named
+        // function works correctly.
+        AnfExpr::Fold { init, list, func } => {
+            let Some(fold_type_idx) = ctx.fold_reducer_type_idx else {
+                // Pre-flight gate should have inserted the type; trap defensively.
+                insns.push(Instruction::Unreachable);
+                return None;
+            };
+
+            let Some((list_local, _)) = ctx.lookup(list) else {
+                insns.push(Instruction::Unreachable);
+                return None;
+            };
+
+            // Allocate locals: count, loop index, accumulator, element.
+            let count_idx = ctx.bind("__fold_count", ValType::I64);
+            let i_idx = ctx.bind("__fold_i", ValType::I64);
+            let acc_idx = ctx.bind("__fold_acc", ValType::I64);
+            let elem_idx = ctx.bind("__fold_elem", ValType::I64);
+
+            // Load element count from list header (offset 0).
+            insns.push(Instruction::LocalGet(list_local));
+            load_i64_at(0, insns);
+            insns.push(Instruction::LocalSet(count_idx));
+
+            // Initialise accumulator from `init`.
+            emit_local_as_i64(ctx, init, insns);
+            insns.push(Instruction::LocalSet(acc_idx));
+
+            // Initialise loop counter to 0.
+            insns.push(Instruction::I64Const(0));
+            insns.push(Instruction::LocalSet(i_idx));
+
+            // block (result I64) — break target that yields the final accumulator.
+            insns.push(Instruction::Block(BlockType::Result(ValType::I64)));
+            ctx.labels.push(LabelKind::LoopBreak);
+            insns.push(Instruction::Loop(BlockType::Empty));
+            ctx.labels.push(LabelKind::LoopContinue);
+
+            // Exit check: if i >= count, break with the current accumulator.
+            insns.push(Instruction::LocalGet(i_idx));
+            insns.push(Instruction::LocalGet(count_idx));
+            insns.push(Instruction::I64GeU);
+            insns.push(Instruction::If(BlockType::Empty));
+            ctx.labels.push(LabelKind::Other);
+            insns.push(Instruction::LocalGet(acc_idx));
+            // Break to the enclosing block (carries acc as the block result).
+            // Depth from inside the If: 0 = If, 1 = Loop, 2 = Block.
+            let break_depth = ctx.branch_depth(LabelKind::LoopBreak).unwrap_or(2);
+            insns.push(Instruction::Br(break_depth));
+            ctx.labels.pop(); // Other (If body)
+            insns.push(Instruction::End); // end if
+
+            // Load element: list_ptr + 8 + i * 8.
+            insns.push(Instruction::LocalGet(list_local));
+            insns.push(Instruction::LocalGet(i_idx));
+            insns.push(Instruction::I64Const(8));
+            insns.push(Instruction::I64Mul);
+            insns.push(Instruction::I64Const(8));
+            insns.push(Instruction::I64Add);
+            insns.push(Instruction::I32WrapI64);
+            insns.push(Instruction::I32Add);
+            load_i64_at(0, insns);
+            insns.push(Instruction::LocalSet(elem_idx));
+
+            // Push reducer arguments: acc (i64), elem (i64).
+            insns.push(Instruction::LocalGet(acc_idx));
+            insns.push(Instruction::LocalGet(elem_idx));
+
+            // Push callee table index (i32).
+            if let Some(&func_idx) = functions.get(func.as_str()) {
+                // Top-level function: table index = absolute func idx − offset.
+                let table_idx = func_idx.saturating_sub(ctx.function_offset);
+                insns.push(Instruction::I32Const(table_idx as i32));
+            } else if let Some((local_idx, local_ty)) = ctx.lookup(func) {
+                insns.push(Instruction::LocalGet(local_idx));
+                match local_ty {
+                    ValType::I32 => {
+                        // Closure env pointer: fn_idx at offset 0 is a placeholder
+                        // (0) written by Lambda — no reliable way to distinguish a
+                        // valid env from the placeholder without lambda hoisting
+                        // (deferred to a future wave).  Trap at runtime rather than
+                        // silently dispatching to table[0].
+                        insns.push(Instruction::Drop);
+                        insns.push(Instruction::Unreachable);
+                    }
+                    ValType::I64 => {
+                        // Direct table index packed as i64.
+                        insns.push(Instruction::I32WrapI64);
+                    }
+                    _ => {
+                        // Unexpected local type (neither I32 env pointer nor I64
+                        // table index).  Trap rather than silently dispatching to
+                        // table[0].
+                        insns.push(Instruction::Drop);
+                        insns.push(Instruction::Unreachable);
+                    }
+                }
+            } else {
+                // Unresolved function reference — trap at runtime.
+                insns.push(Instruction::Unreachable);
+            }
+
+            // call_indirect: pops [acc: i64, elem: i64, callee: i32] → i64.
+            insns.push(Instruction::CallIndirect {
+                type_index: fold_type_idx,
+                table_index: 0,
+            });
+            insns.push(Instruction::LocalSet(acc_idx));
+
+            // Increment loop counter.
+            insns.push(Instruction::LocalGet(i_idx));
+            insns.push(Instruction::I64Const(1));
+            insns.push(Instruction::I64Add);
+            insns.push(Instruction::LocalSet(i_idx));
+
+            // Branch back to loop header.
+            insns.push(Instruction::Br(0));
+
+            ctx.labels.pop(); // LoopContinue
+            insns.push(Instruction::End); // end loop
+            // Unreachable: the loop always exits via Br(break_depth) above.
             insns.push(Instruction::Unreachable);
-            None
+            ctx.labels.pop(); // LoopBreak
+            insns.push(Instruction::End); // end block — I64 result from Br
+
+            Some(ValType::I64)
         }
 
         // ── Placeholder ───────────────────────────────────────────────────
@@ -1294,11 +1445,15 @@ fn emit_anf_expr<'a>(
 /// variable slots for ANF let-bindings.  The final value on the stack is
 /// dropped before `end` so the function type remains `() -> ()`.
 ///
+/// `fold_reducer_type_idx` is the type-section index of the `(i64, i64) → i64`
+/// fold-reducer signature, or `None` if the module contains no Fold.
+///
 /// Returns `None` when `bindings` is empty.
 pub(crate) fn build_code_section(
     bindings: &[AnfBinding],
     effect_data: &EffectDataLayout,
     function_offset: u32,
+    fold_reducer_type_idx: Option<u32>,
 ) -> Option<CodeSection> {
     if bindings.is_empty() {
         return None;
@@ -1321,7 +1476,12 @@ pub(crate) fn build_code_section(
         let mut all_params = binding_params(binding);
         all_params.extend(lambda_own_params.iter().map(String::as_str));
 
-        let mut ctx = WasmCodegenCtx::new(all_params, effect_data);
+        let mut ctx = WasmCodegenCtx::new(
+            all_params,
+            effect_data,
+            fold_reducer_type_idx,
+            function_offset,
+        );
         let mut insns: Vec<Instruction<'_>> = Vec::new();
 
         let emitted_ty = emit_anf_expr(body_to_emit, &mut ctx, &functions, &mut insns);
