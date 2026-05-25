@@ -2389,11 +2389,12 @@ fn set_new_returns_non_null_pointer() {
     );
 }
 
-// ── Wave 19C: ACL source-level E2E conformance — variant + match + string + while ──
+// ── Wave 19C / Wave 20A: ACL source-level E2E conformance — variant + match + string + while ──
 //
 // Spec scenarios covered (RUNTIME-ACL-SOME-1, RUNTIME-ACL-NONE-1,
 // RUNTIME-ACL-OK-1, RUNTIME-ACL-ERR-1, RUNTIME-ACL-STRING-1,
-// RUNTIME-ACL-WHILE-1, RUNTIME-ACL-WHILE-2):
+// RUNTIME-ACL-WHILE-1, RUNTIME-ACL-WHILE-2,
+// RUNTIME-ACL-WHILE-3, RUNTIME-ACL-WHILE-4):
 //
 //  RUNTIME-ACL-SOME-1: ACL body `match(some(42), Some(x), x, _, 0)` must
 //    construct a Some(42) variant, enter the Some(x) arm, bind x=42, and
@@ -2430,6 +2431,20 @@ fn set_new_returns_non_null_pointer() {
 //    break exits the loop.  All sub-expression arguments are pre-bound Vars
 //    so that no atomized binding is lost through the lower_core_expr_to_anf_local
 //    `_` fallthrough (documented gap: non-Var while-condition expressions).
+//
+//  RUNTIME-ACL-WHILE-3 (Wave 20A): ACL body uses `while(lt(x, 3), ...)` where
+//    the condition is a computed `lt` call, not a pre-bound Var.  With the
+//    lower_core_expr_to_anf_local fix (WhileLoop arm), the binding for the
+//    computed condition is properly emitted as a Let before the WhileLoop.
+//    x=0 → lt(0,3)=true → loop body runs, writes 99 to cell, breaks.
+//    CellGet must return I64(99).  Without the fix the condition binding is
+//    discarded, emit_condition_get falls back to I32Const(0), the loop never
+//    runs, and CellGet returns I64(0).
+//
+//  RUNTIME-ACL-WHILE-4 (Wave 20A): ACL body uses `while(eq(cell_get(c), zero),
+//    ...)` where the condition involves a CellGet call.  Exercises the WhileLoop
+//    + CellGet atomization fix together.  c=0, zero=0 → eq(0,0)=true → loop
+//    body runs, writes 7 to cell, breaks.  CellGet must return I64(7).
 
 // RUNTIME-ACL-SOME-1
 //
@@ -2641,5 +2656,91 @@ end
         invoke_acl_export(acl, "main"),
         RuntimeValue::I64(1),
         "while body must run once: CellSet(c,1) then break → CellGet(c) must return I64(1)"
+    );
+}
+
+// RUNTIME-ACL-WHILE-3 (Wave 20A)
+//
+// ACL body:
+//   let(x, 0,
+//     let(c, cell_new(x),
+//       let(_w, while(lt(x, 3),
+//         let(_s, cell_set(c, 99),
+//           break(x)
+//         )
+//       ),
+//       cell_get(c)
+//     )
+//   )
+//
+//   Pipeline:
+//   1. x=0 (I64 0), c=CellNew(x) — cell initialised to 0.
+//   2. Condition: lower_core_expr_to_anf_local emits
+//      Let { anf_0 = 3; Let { anf_1 = lt(x, anf_0); WhileLoop{cond:anf_1, ...} } }.
+//      anf_1 = lt(0, 3) = I64(1) → truthy → loop body enters.
+//   3. Body: anf_2 = 99; CellSet(c, anf_2); break(x) → Br(1) exits loop.
+//   4. WhileLoop → I32Const(0) as _w.
+//   5. CellGet(c) → I64(99).
+//
+// Regression: without the WhileLoop arm in lower_core_expr_to_anf_local, the
+// `_` fallthrough discards the binding for `anf_1`; emit_condition_get falls
+// back to I32Const(0) (condition always false); loop never runs; CellGet → 0.
+#[test]
+fn acl_while_computed_lt_condition_body_runs() {
+    let acl = "\
+change acl_while_3 base=0
+author tester
+description while(lt(x,3)) with x=0: condition is computed, body must run and set cell to 99
+op create_function id=fn.main return=Int body=let(x, 0, let(c, cell_new(x), let(_w, while(lt(x, 3), let(_s, cell_set(c, 99), break(x))), cell_get(c))))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(99),
+        "while(lt(x,3)) with x=0: body must run once, CellSet(c,99), CellGet must return I64(99)"
+    );
+}
+
+// RUNTIME-ACL-WHILE-4 (Wave 20A)
+//
+// ACL body:
+//   let(zero, 0,
+//     let(c, cell_new(zero),
+//       let(_w, while(eq(cell_get(c), zero),
+//         let(seven, 7,
+//           let(_s, cell_set(c, seven),
+//             break(zero)
+//           )
+//         )
+//       ),
+//       cell_get(c)
+//     )
+//   )
+//
+//   Pipeline:
+//   1. zero=0, c=CellNew(0) — cell initialised to 0.
+//   2. Condition: lower_core_expr_to_anf_local emits
+//      Let { anf_N = CellGet("c"); Let { anf_M = eq(anf_N, zero);
+//            Let { anf_K = anf_M; WhileLoop{cond:anf_K, ...} } } }.
+//      anf_M = eq(0, 0) = I64(1) → truthy → loop body enters.
+//   3. Body: seven=7; CellSet(c, seven); break(zero) → Br(1) exits loop.
+//   4. WhileLoop → I32Const(0) as _w.
+//   5. CellGet(c) → I64(7).
+//
+// Regression: exercises WhileLoop + CellGet atomization fix together.
+// Without fix: condition binding lost → loop never runs → CellGet → I64(0).
+#[test]
+fn acl_while_computed_cell_get_eq_condition_body_runs() {
+    let acl = "\
+change acl_while_4 base=0
+author tester
+description while(eq(cell_get(c),zero)) with c=0: computed cell condition, body must run and set cell to 7
+op create_function id=fn.main return=Int body=let(zero, 0, let(c, cell_new(zero), let(_w, while(eq(cell_get(c), zero), let(seven, 7, let(_s, cell_set(c, seven), break(zero)))), cell_get(c))))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(7),
+        "while(eq(cell_get(c),zero)) with c=0: body must run once, CellSet(c,7), CellGet must return I64(7)"
     );
 }
