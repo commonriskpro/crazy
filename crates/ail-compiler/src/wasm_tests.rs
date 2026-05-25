@@ -1758,3 +1758,435 @@ fn lambda_bindings_with_different_capture_counts_produce_different_hashes() {
 }
 
 // ── End WASM closure capture tests ───────────────────────────────────────
+
+// ── Wave 7C: CellNew / CellGet / CellSet / MapNew / SetNew / IndexGet ─────
+//
+// Proves that the six collection/cell primitives no longer emit unconditional
+// Unreachable and instead produce valid, executable WASM that uses linear
+// memory correctly.
+
+// Scenario: CellNew allocates 8 bytes and stores the initial value.
+// Expects: memory section present, I64Store emitted, WASM validates.
+#[test]
+fn cell_new_emits_alloc_and_store_validates() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.make_cell".to_string(),
+        expr: AnfExpr::Let {
+            name: "init_val".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(99))),
+            body: Box::new(AnfExpr::CellNew {
+                init: "init_val".to_string(),
+            }),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for CellNew");
+    wasmparser::validate(&artifact.wasm).expect("CellNew module must validate");
+
+    let mut saw_memory = false;
+    let mut saw_store = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        match payload.unwrap() {
+            Payload::MemorySection(_) => saw_memory = true,
+            Payload::CodeSectionEntry(body) => {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    if let Operator::I64Store { .. } = reader.read().unwrap() {
+                        saw_store = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert!(saw_memory, "CellNew must declare linear memory");
+    assert!(
+        saw_store,
+        "CellNew must emit I64Store for the initial value"
+    );
+}
+
+// Scenario: CellGet loads the stored value from the cell pointer.
+// Expects: I64Load emitted, WASM validates.
+#[test]
+fn cell_get_emits_i64_load_validates() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    // let cell = CellNew { init: 42 }; CellGet { cell }
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.read_cell".to_string(),
+        expr: AnfExpr::Let {
+            name: "init_val".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
+            body: Box::new(AnfExpr::Let {
+                name: "cell".to_string(),
+                value: Box::new(AnfExpr::CellNew {
+                    init: "init_val".to_string(),
+                }),
+                body: Box::new(AnfExpr::CellGet {
+                    cell: "cell".to_string(),
+                }),
+            }),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for CellGet");
+    wasmparser::validate(&artifact.wasm).expect("CellGet module must validate");
+
+    let mut saw_load = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                if let Operator::I64Load { memarg } = reader.read().unwrap()
+                    && memarg.offset == 0
+                {
+                    saw_load = true;
+                }
+            }
+        }
+    }
+
+    assert!(
+        saw_load,
+        "CellGet must emit I64Load at offset 0 to read the cell value"
+    );
+}
+
+// Scenario: CellSet writes a new value into the cell.
+// Expects: multiple I64Stores (init + set), WASM validates.
+#[test]
+fn cell_set_emits_i64_store_validates() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    // let v = 1; let cell = CellNew { init: v }; let new_v = 2; CellSet { cell, value: new_v }
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.write_cell".to_string(),
+        expr: AnfExpr::Let {
+            name: "v".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+            body: Box::new(AnfExpr::Let {
+                name: "cell".to_string(),
+                value: Box::new(AnfExpr::CellNew {
+                    init: "v".to_string(),
+                }),
+                body: Box::new(AnfExpr::Let {
+                    name: "new_v".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(2))),
+                    body: Box::new(AnfExpr::CellSet {
+                        cell: "cell".to_string(),
+                        value: "new_v".to_string(),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for CellSet");
+    wasmparser::validate(&artifact.wasm).expect("CellSet module must validate");
+
+    let mut store_count = 0usize;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                if let Operator::I64Store { .. } = reader.read().unwrap() {
+                    store_count += 1;
+                }
+            }
+        }
+    }
+
+    // At least two I64Stores: one for CellNew (init), one for CellSet (write).
+    assert!(
+        store_count >= 2,
+        "CellNew + CellSet must emit at least 2 I64Stores; got {store_count}"
+    );
+}
+
+// Scenario: MapNew stores count + interleaved key-value pairs.
+// Expects: memory section, count I64Const, I64Stores for entries, WASM validates.
+#[test]
+fn map_new_stores_count_and_kv_pairs_validates() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    // let k = 10; let v = 20; MapNew { entries: [(k, v)] }
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.make_map".to_string(),
+        expr: AnfExpr::Let {
+            name: "k".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+            body: Box::new(AnfExpr::Let {
+                name: "v".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(20))),
+                body: Box::new(AnfExpr::MapNew {
+                    entries: vec![("k".to_string(), "v".to_string())],
+                }),
+            }),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for MapNew");
+    wasmparser::validate(&artifact.wasm).expect("MapNew module must validate");
+
+    let mut saw_memory = false;
+    let mut store_count = 0usize;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        match payload.unwrap() {
+            Payload::MemorySection(_) => saw_memory = true,
+            Payload::CodeSectionEntry(body) => {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    if let Operator::I64Store { .. } = reader.read().unwrap() {
+                        store_count += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert!(saw_memory, "MapNew must declare linear memory");
+    // 3 I64Stores: count + key + value.
+    assert!(
+        store_count >= 3,
+        "MapNew with 1 entry must emit >= 3 I64Stores (count, key, value); got {store_count}"
+    );
+}
+
+// TRIANGULATE: empty MapNew still produces a valid module with a count of 0.
+#[test]
+fn map_new_empty_validates() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.empty_map".to_string(),
+        expr: AnfExpr::MapNew { entries: vec![] },
+    }]);
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for empty MapNew");
+    wasmparser::validate(&artifact.wasm).expect("empty MapNew module must validate");
+}
+
+// Scenario: SetNew stores count + element values.
+// Expects: memory section, I64Stores for count + elements, WASM validates.
+#[test]
+fn set_new_stores_count_and_elements_validates() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    // let e1 = 1; let e2 = 2; SetNew { elements: [e1, e2] }
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.make_set".to_string(),
+        expr: AnfExpr::Let {
+            name: "e1".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+            body: Box::new(AnfExpr::Let {
+                name: "e2".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(2))),
+                body: Box::new(AnfExpr::SetNew {
+                    elements: vec!["e1".to_string(), "e2".to_string()],
+                }),
+            }),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for SetNew");
+    wasmparser::validate(&artifact.wasm).expect("SetNew module must validate");
+
+    let mut saw_memory = false;
+    let mut store_count = 0usize;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        match payload.unwrap() {
+            Payload::MemorySection(_) => saw_memory = true,
+            Payload::CodeSectionEntry(body) => {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    if let Operator::I64Store { .. } = reader.read().unwrap() {
+                        store_count += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert!(saw_memory, "SetNew must declare linear memory");
+    // 3 I64Stores: count + e1 + e2.
+    assert!(
+        store_count >= 3,
+        "SetNew with 2 elements must emit >= 3 I64Stores; got {store_count}"
+    );
+}
+
+// TRIANGULATE: empty SetNew produces a valid module.
+#[test]
+fn set_new_empty_validates() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.empty_set".to_string(),
+        expr: AnfExpr::SetNew { elements: vec![] },
+    }]);
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for empty SetNew");
+    wasmparser::validate(&artifact.wasm).expect("empty SetNew module must validate");
+}
+
+// Scenario: IndexGet loads an element from a list by dynamic index.
+// Expects: I64Mul + I64Add + I32WrapI64 + I32Add + I64Load sequence, WASM validates.
+#[test]
+fn index_get_emits_dynamic_load_validates() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    // let list = ListNew([10, 20, 30]); let idx = 1; IndexGet { collection: list, index: idx }
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.get_elem".to_string(),
+        expr: AnfExpr::Let {
+            name: "list".to_string(),
+            value: Box::new(AnfExpr::ListNew(vec![
+                AnfExpr::Literal(LiteralValue::Int(10)),
+                AnfExpr::Literal(LiteralValue::Int(20)),
+                AnfExpr::Literal(LiteralValue::Int(30)),
+            ])),
+            body: Box::new(AnfExpr::Let {
+                name: "idx".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                body: Box::new(AnfExpr::IndexGet {
+                    collection: "list".to_string(),
+                    index: "idx".to_string(),
+                }),
+            }),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for IndexGet");
+    wasmparser::validate(&artifact.wasm).expect("IndexGet module must validate");
+
+    // Verify the dynamic address computation instructions are present.
+    let mut saw_i64_mul = false;
+    let mut saw_i64_add = false;
+    let mut saw_i32_wrap = false;
+    let mut saw_i32_add = false;
+    let mut saw_i64_load = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                match reader.read().unwrap() {
+                    Operator::I64Mul => saw_i64_mul = true,
+                    Operator::I64Add => saw_i64_add = true,
+                    Operator::I32WrapI64 => saw_i32_wrap = true,
+                    Operator::I32Add => saw_i32_add = true,
+                    Operator::I64Load { .. } => saw_i64_load = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    assert!(saw_i64_mul, "IndexGet must emit I64Mul for index * 8");
+    assert!(saw_i64_add, "IndexGet must emit I64Add for offset + 8");
+    assert!(
+        saw_i32_wrap,
+        "IndexGet must emit I32WrapI64 to convert offset"
+    );
+    assert!(
+        saw_i32_add,
+        "IndexGet must emit I32Add to compute final address"
+    );
+    assert!(
+        saw_i64_load,
+        "IndexGet must emit I64Load to read the element"
+    );
+}
+
+// TRIANGULATE: IndexGet with out-of-bounds index still produces valid WASM
+// (bounds checking is runtime responsibility; the codegen is always structurally valid).
+#[test]
+fn index_get_out_of_bounds_still_validates() {
+    // Same structure as above but with an idx that would be OOB at runtime.
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.oob".to_string(),
+        expr: AnfExpr::Let {
+            name: "list".to_string(),
+            value: Box::new(AnfExpr::ListNew(vec![AnfExpr::Literal(LiteralValue::Int(
+                1,
+            ))])),
+            body: Box::new(AnfExpr::Let {
+                name: "idx".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(999))),
+                body: Box::new(AnfExpr::IndexGet {
+                    collection: "list".to_string(),
+                    index: "idx".to_string(),
+                }),
+            }),
+        },
+    }]);
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("OOB IndexGet module must still be valid WASM");
+}
+
+// Scenario: infer_expr_type returns I32 for MapNew and SetNew (they are pointers).
+#[test]
+fn infer_expr_type_map_set_new_is_i32() {
+    use wasm_encoder::ValType;
+    let map = AnfExpr::MapNew { entries: vec![] };
+    let set = AnfExpr::SetNew { elements: vec![] };
+    let mut locals = vec![];
+    assert_eq!(
+        crate::wasm_abi::infer_expr_type(&map, &mut locals),
+        Some(ValType::I32),
+        "MapNew must infer I32 (pointer)"
+    );
+    assert_eq!(
+        crate::wasm_abi::infer_expr_type(&set, &mut locals),
+        Some(ValType::I32),
+        "SetNew must infer I32 (pointer)"
+    );
+}
+
+// Scenario: infer_expr_type returns I32 for CellNew, I64 for CellGet, None for CellSet.
+#[test]
+fn infer_expr_type_cell_ops_correct() {
+    use wasm_encoder::ValType;
+    let mut locals = vec![("c".to_string(), ValType::I32)];
+    assert_eq!(
+        crate::wasm_abi::infer_expr_type(
+            &AnfExpr::CellNew {
+                init: "c".to_string()
+            },
+            &mut locals
+        ),
+        Some(ValType::I32),
+        "CellNew must infer I32"
+    );
+    assert_eq!(
+        crate::wasm_abi::infer_expr_type(
+            &AnfExpr::CellGet {
+                cell: "c".to_string()
+            },
+            &mut locals
+        ),
+        Some(ValType::I64),
+        "CellGet must infer I64"
+    );
+    assert_eq!(
+        crate::wasm_abi::infer_expr_type(
+            &AnfExpr::CellSet {
+                cell: "c".to_string(),
+                value: "c".to_string()
+            },
+            &mut locals
+        ),
+        None,
+        "CellSet must infer None (unit write)"
+    );
+}
+
+// ── End Wave 7C collection/cell tests ────────────────────────────────────

@@ -260,6 +260,17 @@ pub(crate) fn infer_expr_type(
         | AnfExpr::Seq(_) => Some(ValType::I32),
         AnfExpr::FieldGet { .. } | AnfExpr::Call { .. } => Some(ValType::I64),
         AnfExpr::EffectCall { .. } => Some(ValType::I64),
+        // ── Cell primitives ───────────────────────────────────────────────
+        // CellNew returns an I32 pointer; CellGet returns the I64 value;
+        // CellSet is a write-only effect that returns unit (None).
+        AnfExpr::CellNew { .. } => Some(ValType::I32),
+        AnfExpr::CellGet { .. } => Some(ValType::I64),
+        AnfExpr::CellSet { .. } => None,
+        // ── Collection constructors ───────────────────────────────────────
+        // MapNew and SetNew return I32 pointers into linear memory.
+        // IndexGet reads an element and returns I64.
+        AnfExpr::MapNew { .. } | AnfExpr::SetNew { .. } => Some(ValType::I32),
+        AnfExpr::IndexGet { .. } => Some(ValType::I64),
         AnfExpr::Placeholder
         | AnfExpr::Dispatch { .. }
         | AnfExpr::TaskSpawn { .. }
@@ -271,20 +282,14 @@ pub(crate) fn infer_expr_type(
         | AnfExpr::ChannelReceive { .. }
         | AnfExpr::Select { .. }
         | AnfExpr::Timeout { .. }
-        | AnfExpr::CellNew { .. }
-        | AnfExpr::CellGet { .. }
-        | AnfExpr::CellSet { .. }
         | AnfExpr::RuntimeCheck { .. }
         | AnfExpr::ResourceAcquire { .. }
         | AnfExpr::ResourceRelease { .. }
-        // ola5 Gap 2 — new primitives
+        // ola5 Gap 2 — remaining stubs
         | AnfExpr::Assume { .. }
         | AnfExpr::Abort { .. }
         | AnfExpr::ForEach { .. }
         | AnfExpr::Fold { .. } => None,
-        AnfExpr::MapNew { .. }
-        | AnfExpr::SetNew { .. }
-        | AnfExpr::IndexGet { .. } => Some(ValType::I64),
         AnfExpr::FieldUpdate { value, .. } => infer_expr_type(value, locals).or(Some(ValType::I32)),
     }
 }
@@ -674,6 +679,13 @@ impl EffectDataLayout {
                 if let Some(payload) = payload {
                     self.collect_expr(payload);
                 }
+            }
+            // ── Collection and cell constructors need linear memory ────────
+            // emit_alloc is used for MapNew, SetNew, and CellNew; without
+            // needs_memory=true the module is assembled without a memory
+            // section and emit_alloc produces an invalid module.
+            AnfExpr::CellNew { .. } | AnfExpr::MapNew { .. } | AnfExpr::SetNew { .. } => {
+                self.needs_memory = true;
             }
             _ => {}
         }

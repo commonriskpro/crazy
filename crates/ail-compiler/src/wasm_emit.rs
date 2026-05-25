@@ -269,6 +269,19 @@ fn emit_i64_primitive_call<'a>(
     Some(ValType::I64)
 }
 
+/// Load a local variable as an I64, zero-extending I32 values.
+/// Emits `I64Const(0)` if the name is not in scope.
+fn emit_local_as_i64<'a>(ctx: &WasmCodegenCtx<'a>, name: &str, insns: &mut Vec<Instruction<'a>>) {
+    if let Some((idx, ty)) = ctx.lookup(name) {
+        insns.push(Instruction::LocalGet(idx));
+        if ty == ValType::I32 {
+            insns.push(Instruction::I64ExtendI32U);
+        }
+    } else {
+        insns.push(Instruction::I64Const(0));
+    }
+}
+
 fn emit_condition_get<'a>(ctx: &WasmCodegenCtx<'a>, name: &str, insns: &mut Vec<Instruction<'a>>) {
     if let Some((idx, ty)) = ctx.lookup(name) {
         insns.push(Instruction::LocalGet(idx));
@@ -898,6 +911,53 @@ fn emit_anf_expr<'a>(
             Some(ValType::I32)
         }
 
+        // ── CellNew — allocate an 8-byte mutable cell initialised to `init` ─
+        //
+        // Layout: [value: i64] at offset 0.
+        // Returns: I32 pointer to the cell.
+        AnfExpr::CellNew { init } => {
+            emit_alloc(8, insns);
+            let ptr = ctx.bind("__cell_ptr", ValType::I32);
+            insns.push(Instruction::LocalSet(ptr));
+            insns.push(Instruction::LocalGet(ptr));
+            emit_local_as_i64(ctx, init, insns);
+            store_i64_at(0, insns);
+            insns.push(Instruction::LocalGet(ptr));
+            Some(ValType::I32)
+        }
+
+        // ── CellGet — read the I64 value stored in a cell ─────────────────
+        //
+        // `cell` is an I32 pointer (produced by CellNew).
+        // Returns: I64 value at offset 0 of the cell.
+        AnfExpr::CellGet { cell } => {
+            if let Some((idx, _)) = ctx.lookup(cell) {
+                insns.push(Instruction::LocalGet(idx));
+                load_i64_at(0, insns);
+                Some(ValType::I64)
+            } else {
+                insns.push(Instruction::Unreachable);
+                None
+            }
+        }
+
+        // ── CellSet — write a new value into a cell ────────────────────────
+        //
+        // `cell` is an I32 pointer; `value` is the new I64 value.
+        // Returns: unit (I32 0).
+        AnfExpr::CellSet { cell, value } => {
+            if let Some((cell_idx, _)) = ctx.lookup(cell) {
+                insns.push(Instruction::LocalGet(cell_idx));
+                emit_local_as_i64(ctx, value, insns);
+                store_i64_at(0, insns);
+                insns.push(Instruction::I32Const(0));
+                Some(ValType::I32)
+            } else {
+                insns.push(Instruction::Unreachable);
+                None
+            }
+        }
+
         // ── Effect/concurrent/resource variants ───────────────────────────
         // These are host-managed. The WASM body emits unreachable to signal
         // that the host runtime must intercept and dispatch.
@@ -911,9 +971,6 @@ fn emit_anf_expr<'a>(
         | AnfExpr::ChannelReceive { .. }
         | AnfExpr::Select { .. }
         | AnfExpr::Timeout { .. }
-        | AnfExpr::CellNew { .. }
-        | AnfExpr::CellGet { .. }
-        | AnfExpr::CellSet { .. }
         | AnfExpr::ResourceAcquire { .. }
         | AnfExpr::ResourceRelease { .. } => {
             // Emission gap — ResourceAcquire note: `derive_wasm_type` maps
@@ -948,12 +1005,100 @@ fn emit_anf_expr<'a>(
             insns.push(Instruction::Unreachable);
             None
         }
-        // Collection construction and access — WASM stubs (host-managed).
-        AnfExpr::MapNew { .. }
-        | AnfExpr::SetNew { .. }
-        | AnfExpr::IndexGet { .. }
-        | AnfExpr::ForEach { .. }
-        | AnfExpr::Fold { .. } => {
+        // ── MapNew — construct a key-value map in linear memory ───────────
+        //
+        // Layout: [count: i64, k0: i64, v0: i64, k1: i64, v1: i64, ...]
+        // Returns: I32 pointer to the map header.
+        AnfExpr::MapNew { entries } => {
+            let byte_size = ((1 + entries.len() * 2) * 8).max(8) as i32;
+            emit_alloc(byte_size, insns);
+            let ptr = ctx.bind("__map_ptr", ValType::I32);
+            insns.push(Instruction::LocalSet(ptr));
+            // Store count at offset 0.
+            insns.push(Instruction::LocalGet(ptr));
+            insns.push(Instruction::I64Const(entries.len() as i64));
+            store_i64_at(0, insns);
+            // Store interleaved key-value pairs: k at 8+i*16, v at 16+i*16.
+            for (i, (k, v)) in entries.iter().enumerate() {
+                let key_offset = (8 + i * 16) as u64;
+                let val_offset = (16 + i * 16) as u64;
+                insns.push(Instruction::LocalGet(ptr));
+                emit_local_as_i64(ctx, k, insns);
+                store_i64_at(key_offset, insns);
+                insns.push(Instruction::LocalGet(ptr));
+                emit_local_as_i64(ctx, v, insns);
+                store_i64_at(val_offset, insns);
+            }
+            insns.push(Instruction::LocalGet(ptr));
+            Some(ValType::I32)
+        }
+
+        // ── SetNew — construct a set in linear memory ──────────────────────
+        //
+        // Layout: [count: i64, elem0: i64, elem1: i64, ...]
+        // Returns: I32 pointer to the set header.
+        AnfExpr::SetNew { elements } => {
+            let byte_size = ((1 + elements.len()) * 8).max(8) as i32;
+            emit_alloc(byte_size, insns);
+            let ptr = ctx.bind("__set_ptr", ValType::I32);
+            insns.push(Instruction::LocalSet(ptr));
+            // Store count at offset 0.
+            insns.push(Instruction::LocalGet(ptr));
+            insns.push(Instruction::I64Const(elements.len() as i64));
+            store_i64_at(0, insns);
+            // Store elements at offsets 8, 16, ...
+            for (i, elem) in elements.iter().enumerate() {
+                insns.push(Instruction::LocalGet(ptr));
+                emit_local_as_i64(ctx, elem, insns);
+                store_i64_at((8 + i * 8) as u64, insns);
+            }
+            insns.push(Instruction::LocalGet(ptr));
+            Some(ValType::I32)
+        }
+
+        // ── IndexGet — dynamic indexed element access from a list ──────────
+        //
+        // List layout: [len: i64, elem0: i64, elem1: i64, ...]
+        // Element at index i: ptr + 8 + i * 8
+        // Returns: I64 element value.
+        //
+        // Emission sequence:
+        //   local.get collection   ; [I32] list pointer
+        //   local.get index        ; [I32, I64]
+        //   i64.const 8
+        //   i64.mul                ; [I32, I64]  index * 8
+        //   i64.const 8
+        //   i64.add                ; [I32, I64]  8 + index * 8
+        //   i32.wrap_i64           ; [I32, I32]  byte offset
+        //   i32.add                ; [I32]        ptr + 8 + index * 8
+        //   i64.load { offset: 0 } ; [I64]        element
+        AnfExpr::IndexGet { collection, index } => {
+            let Some((coll_idx, _)) = ctx.lookup(collection) else {
+                insns.push(Instruction::Unreachable);
+                return None;
+            };
+            let Some((idx_idx, idx_ty)) = ctx.lookup(index) else {
+                insns.push(Instruction::Unreachable);
+                return None;
+            };
+            insns.push(Instruction::LocalGet(coll_idx));
+            insns.push(Instruction::LocalGet(idx_idx));
+            // Normalise index to I64 for arithmetic.
+            if idx_ty == ValType::I32 {
+                insns.push(Instruction::I64ExtendI32U);
+            }
+            insns.push(Instruction::I64Const(8));
+            insns.push(Instruction::I64Mul);
+            insns.push(Instruction::I64Const(8));
+            insns.push(Instruction::I64Add);
+            insns.push(Instruction::I32WrapI64);
+            insns.push(Instruction::I32Add);
+            load_i64_at(0, insns);
+            Some(ValType::I64)
+        }
+
+        // Collection iteration — WASM stubs (require loop + call_indirect).
+        AnfExpr::ForEach { .. } | AnfExpr::Fold { .. } => {
             insns.push(Instruction::Unreachable);
             None
         }
