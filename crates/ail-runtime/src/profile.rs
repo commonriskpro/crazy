@@ -336,6 +336,17 @@ pub struct RuntimeProfile {
     /// [`with_handler_binding_required`]: RuntimeProfile::with_handler_binding_required
     require_handler_binding: bool,
 
+    /// Optional minimum trust tier for bound handlers.
+    ///
+    /// `None` disables the handler trust gate entirely (preserves existing
+    /// behaviour for callers that don't opt in to handler trust checking).
+    /// `Some(level)` causes preflight to reject any handler that serves a
+    /// granted capability but whose `trust_level()` does not satisfy `level`.
+    ///
+    /// Corresponds to `docs/runtime.md §Handler execution model` rule:
+    /// "unverified handler blocked in prod/critical unless policy exception".
+    min_handler_trust: Option<TrustLevel>,
+
     /// Named policies applied in this profile.
     ///
     /// Policies govern payload redaction, unsafe-surface approval,
@@ -384,6 +395,7 @@ impl RuntimeProfile {
             limits,
             min_package_trust: None,
             require_handler_binding: false,
+            min_handler_trust: None,
             policies: Vec::new(),
             secrets_mapping: Vec::new(),
             audit_config: None,
@@ -411,6 +423,21 @@ impl RuntimeProfile {
     /// The default is `false` — existing call sites are unaffected.
     pub fn with_handler_binding_required(mut self) -> Self {
         self.require_handler_binding = true;
+        self
+    }
+
+    /// Set the minimum handler trust tier for this profile.
+    ///
+    /// Consumes `self` and returns a new `RuntimeProfile` with
+    /// `min_handler_trust` set to `Some(level)`.  Use this builder method
+    /// to opt in to handler trust gating without changing the `new`
+    /// constructor signature.
+    ///
+    /// When set, preflight will fail with
+    /// [`PreflightFailure::HandlerTrustViolation`](crate::error::PreflightFailure::HandlerTrustViolation)
+    /// for any bound handler whose `trust_level()` does not satisfy `level`.
+    pub fn with_min_handler_trust(mut self, level: TrustLevel) -> Self {
+        self.min_handler_trust = Some(level);
         self
     }
 
@@ -515,5 +542,12 @@ impl RuntimeProfile {
     /// `true` if preflight must verify handler binding for all grants.
     pub fn require_handler_binding(&self) -> bool {
         self.require_handler_binding
+    }
+
+    /// Minimum handler trust tier required by this profile.
+    ///
+    /// `None` means the handler trust gate is disabled.
+    pub fn min_handler_trust(&self) -> Option<TrustLevel> {
+        self.min_handler_trust
     }
 }

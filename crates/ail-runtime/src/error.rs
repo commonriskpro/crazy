@@ -85,6 +85,23 @@ pub enum PreflightFailure {
         /// Human-readable description of the limit that was hit.
         reason: String,
     },
+
+    /// A bound handler's trust level is below the profile's minimum.
+    ///
+    /// Emitted during preflight when `profile.min_handler_trust()` is
+    /// `Some(required)` and the handler serving a granted capability declares
+    /// a `trust_level()` that does not satisfy `required`.
+    ///
+    /// Corresponds to `docs/runtime.md §Handler execution model` rule:
+    /// "unverified handler blocked in prod/critical unless policy exception".
+    HandlerTrustViolation {
+        /// Human-readable name of the handler that failed the trust gate.
+        handler: String,
+        /// Minimum trust level required by the active profile.
+        required: TrustLevel,
+        /// Actual trust level declared by the handler.
+        actual: TrustLevel,
+    },
 }
 
 impl std::fmt::Display for PreflightFailure {
@@ -133,6 +150,17 @@ impl std::fmt::Display for PreflightFailure {
             }
             PreflightFailure::ResourceLimitExceeded { reason } => {
                 write!(f, "resource limit exceeded: {reason}")
+            }
+            PreflightFailure::HandlerTrustViolation {
+                handler,
+                required,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "handler trust violation: handler `{handler}` has trust level `{actual}`, \
+                     profile requires `{required}`"
+                )
             }
         }
     }

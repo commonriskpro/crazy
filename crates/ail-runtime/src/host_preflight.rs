@@ -44,7 +44,8 @@ pub(crate) fn failure_parts(err: &RuntimeError) -> (Vec<CapabilityId>, Preflight
             | PreflightFailure::HashMismatch { .. }
             | PreflightFailure::WasmValidationError(_)
             | PreflightFailure::HandlerNotBound { .. }
-            | PreflightFailure::ResourceLimitExceeded { .. },
+            | PreflightFailure::ResourceLimitExceeded { .. }
+            | PreflightFailure::HandlerTrustViolation { .. },
         ) => {
             let failure = match err {
                 RuntimeError::PreflightFailed(f) => f.clone(),
@@ -202,18 +203,42 @@ pub(crate) fn preflight_inner(
         clock_fn,
     )?;
 
-    // Stage 6 — Handler binding check (opt-in).
-    if profile.require_handler_binding() {
+    // Stage 6 — Handler binding check (opt-in) and handler trust gate.
+    //
+    // This stage runs when either:
+    //   a) `profile.require_handler_binding()` is true  — every granted capability
+    //      must have a registered handler, or preflight fails with HandlerNotBound.
+    //   b) `profile.min_handler_trust()` is Some(level) — every bound handler that
+    //      serves a granted capability must declare at least `level` trust, or
+    //      preflight fails with HandlerTrustViolation.
+    let min_handler_trust = profile.min_handler_trust();
+    if profile.require_handler_binding() || min_handler_trust.is_some() {
         for grant in profile.grants() {
-            let bound = handlers
+            let handler = handlers
                 .iter()
-                .any(|h| h.capabilities().contains(&grant.capability));
-            if !bound {
-                return Err(RuntimeError::PreflightFailed(
-                    PreflightFailure::HandlerNotBound {
-                        capability: grant.capability.clone(),
-                    },
-                ));
+                .find(|h| h.capabilities().contains(&grant.capability));
+
+            match handler {
+                None if profile.require_handler_binding() => {
+                    return Err(RuntimeError::PreflightFailed(
+                        PreflightFailure::HandlerNotBound {
+                            capability: grant.capability.clone(),
+                        },
+                    ));
+                }
+                Some(h) if let Some(required) = min_handler_trust => {
+                    let actual = h.trust_level();
+                    if !actual.satisfies(required) {
+                        return Err(RuntimeError::PreflightFailed(
+                            PreflightFailure::HandlerTrustViolation {
+                                handler: h.name().to_string(),
+                                required,
+                                actual,
+                            },
+                        ));
+                    }
+                }
+                _ => {}
             }
         }
     }
