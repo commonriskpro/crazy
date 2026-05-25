@@ -828,5 +828,5 @@ impl EffectDataLayout {
 
 // ── Tests are in pattern_string.rs (canonical location) ──────────────────
 //
-// The arm_payload_binding function is re-exported from pattern_string and
+// The arm_payload_binding function is imported from pattern_string and
 // fully tested there. No duplicate tests are kept here.
