@@ -669,7 +669,13 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Option<T>".to_string()],
+            ensures: vec![
+                "None returns None without calling f".to_string(),
+                "Some(v) returns Some(f(v))".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
@@ -684,7 +690,13 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Option<T>".to_string()],
+            ensures: vec![
+                "None short-circuits without calling f".to_string(),
+                "Some(v) returns f(v)".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
@@ -699,7 +711,13 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Option<T>".to_string()],
+            ensures: vec![
+                "None returns the default value".to_string(),
+                "Some(v) returns v".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
@@ -714,7 +732,14 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Option<Result<T, E>>".to_string()],
+            ensures: vec![
+                "Some(Ok(v)) -> Ok(Some(v))".to_string(),
+                "Some(Err(e)) -> Err(e)".to_string(),
+                "None -> Ok(None)".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
@@ -729,7 +754,13 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Vec<Result<T, E>>".to_string()],
+            ensures: vec![
+                "Ok(Vec<T>) when all items are Ok".to_string(),
+                "Err(e) on the first Err encountered".to_string(),
+            ],
+        }),
     });
 
     // ── std.result functions ──────────────────────────────────────────────
@@ -746,7 +777,13 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Result<T, E>".to_string()],
+            ensures: vec![
+                "Err(e) passes through unchanged without calling f".to_string(),
+                "Ok(v) returns Ok(f(v))".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
@@ -761,7 +798,13 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Result<T, E>".to_string()],
+            ensures: vec![
+                "Err(e) short-circuits without calling f".to_string(),
+                "Ok(v) returns f(v)".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
@@ -776,7 +819,13 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Result<T, E>".to_string()],
+            ensures: vec![
+                "Err returns the default value".to_string(),
+                "Ok(v) returns v".to_string(),
+            ],
+        }),
     });
 
     reg.entries.push(StdlibEntry {
@@ -791,7 +840,14 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
         effect_row: None,
         capability_reqs: None,
-        contract_clauses: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Result<Option<T>, E>".to_string()],
+            ensures: vec![
+                "Ok(Some(v)) -> Some(Ok(v))".to_string(),
+                "Ok(None) -> None".to_string(),
+                "Err(e) -> Some(Err(e))".to_string(),
+            ],
+        }),
     });
 
     // ── std.text functions ────────────────────────────────────────────────
