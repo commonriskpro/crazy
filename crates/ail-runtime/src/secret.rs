@@ -1,16 +1,22 @@
 // ── ail-runtime::secret ──────────────────────────────────────────────────
 //
-// In-memory secret vault and `secret.read` capability handler.
+// Secret provider abstraction, in-memory vault, and `secret.read` handler.
 //
 // Design:
-//   `SecretVault` — maps vault paths to secret bytes in memory.
-//     Debug output is intentionally redacted; secret values are never exposed
-//     through Display, Debug, or any log-facing path.
+//   `SecretProvider` — trait that decouples `SecretReadHandler` from any
+//     specific vault backend.  The single required method is `resolve`, which
+//     maps a vault path to its secret bytes.  Future adapters (HashiCorp Vault,
+//     AWS Secrets Manager, etc.) implement this trait without touching handler
+//     or host code.
+//
+//   `SecretVault` — in-memory `SecretProvider` implementation.  Maps vault
+//     paths to secret bytes.  Debug output is intentionally redacted; secret
+//     values are never exposed through Display, Debug, or any log-facing path.
 //
 //   `SecretReadHandler` — a `Handler` implementation that serves
 //     `secret.read:<secret_id>` capabilities.  It resolves the logical
 //     secret ID through the profile's `secrets_mapping` (id → vault_path),
-//     then fetches the value from the vault.
+//     then fetches the value from any `SecretProvider`.
 //
 // Security invariants:
 //   1. `SecretVault` values MUST NOT appear in `Debug` or `Display`.
@@ -22,7 +28,7 @@
 //      `HostError::CapabilityDenied`, not a more informative error, to
 //      avoid leaking which secrets exist.
 //
-// Usage:
+// Usage (in-memory vault):
 //   ```rust,ignore
 //   use std::sync::Arc;
 //   use ail_runtime::secret::{SecretVault, SecretReadHandler};
@@ -39,6 +45,22 @@
 //   let handler = SecretReadHandler::new(mapping, Arc::new(vault));
 //   let host = RuntimeHost::new().with_handler(Arc::new(handler));
 //   ```
+//
+// Usage (custom provider):
+//   ```rust,ignore
+//   use ail_runtime::secret::SecretProvider;
+//
+//   struct MyVaultClient { /* ... */ }
+//
+//   impl SecretProvider for MyVaultClient {
+//       fn resolve(&self, vault_path: &str) -> Option<Vec<u8>> {
+//           // call external vault API
+//           todo!()
+//       }
+//   }
+//
+//   let handler = SecretReadHandler::new(mapping, Arc::new(MyVaultClient { /* ... */ }));
+//   ```
 
 use std::collections::HashMap;
 use std::fmt;
@@ -48,13 +70,37 @@ use crate::abi::{HostError, HostResult};
 use crate::handler::Handler;
 use crate::profile::{CapabilityId, SecretEntry};
 
+// ── SecretProvider ────────────────────────────────────────────────────────
+
+/// Trait for backends that resolve vault paths to secret byte values.
+///
+/// The in-memory implementation is [`SecretVault`].  Future adapters (e.g.
+/// HashiCorp Vault, AWS Secrets Manager) can implement this trait and be
+/// passed to [`SecretReadHandler::new`] without any other code changes.
+///
+/// # Security contract
+///
+/// - Implementors MUST NOT log or expose the returned bytes through any
+///   public interface.  Only BLAKE3 hashes of secret payloads may appear in
+///   audit events.
+/// - Implementors must be `Send + Sync` so the provider can be shared behind
+///   an `Arc` across threads (required by Wasmtime host-function closures).
+pub trait SecretProvider: Send + Sync {
+    /// Resolve `vault_path` to its secret bytes.
+    ///
+    /// Returns `None` if the path is unknown to this provider.
+    /// The returned bytes MUST NOT be written to logs or audit fields;
+    /// the audit infrastructure accepts only hashes.
+    fn resolve(&self, vault_path: &str) -> Option<Vec<u8>>;
+}
+
 // ── SecretVault ───────────────────────────────────────────────────────────
 
 /// In-memory vault mapping vault paths to secret byte values.
 ///
-/// Values are NEVER exposed through `Debug` or `Display`.  This type is
-/// intentionally opaque to prevent accidental secret leakage through
-/// logging or error messages.
+/// Implements [`SecretProvider`].  Values are NEVER exposed through `Debug`
+/// or `Display`.  This type is intentionally opaque to prevent accidental
+/// secret leakage through logging or error messages.
 ///
 /// # Construction
 ///
@@ -108,15 +154,32 @@ impl fmt::Debug for SecretVault {
     }
 }
 
+impl SecretProvider for SecretVault {
+    /// Resolve a vault path to an owned copy of its secret bytes.
+    ///
+    /// Returns `None` if the path is unknown.  The returned bytes inherit
+    /// all security invariants documented on [`SecretProvider::resolve`].
+    fn resolve(&self, vault_path: &str) -> Option<Vec<u8>> {
+        self.secrets.get(vault_path).cloned()
+    }
+}
+
 // ── SecretReadHandler ─────────────────────────────────────────────────────
 
 /// Capability handler for `secret.read:<secret_id>` calls.
 ///
 /// Constructed from a profile's `secrets_mapping` (logical secret IDs → vault
-/// paths) and an [`Arc<SecretVault>`].  At construction time, this handler
-/// builds a [`CapabilityId`] for each entry in the mapping
+/// paths) and any [`SecretProvider`] implementation.  At construction time,
+/// this handler builds a [`CapabilityId`] for each entry in the mapping
 /// (`"secret.read:<secret_id>"`), so the runtime grants system can verify
 /// the handler covers exactly the set of secrets declared in the profile.
+///
+/// # Provider abstraction
+///
+/// The handler accepts any `P: SecretProvider + 'static`.  Pass
+/// `Arc::new(SecretVault::new())` for the in-memory implementation, or any
+/// custom adapter implementing [`SecretProvider`] for external vault backends.
+/// No other code changes are required when swapping providers.
 ///
 /// # Resolution flow
 ///
@@ -124,7 +187,7 @@ impl fmt::Debug for SecretVault {
 /// capability = "secret.read:StripeApiKey"
 ///   → strip "secret.read:" prefix → secret_id = "StripeApiKey"
 ///   → find SecretEntry where secret_id == "StripeApiKey" → vault_path
-///   → SecretVault::resolve(vault_path) → secret bytes
+///   → SecretProvider::resolve(vault_path) → secret bytes
 ///   → return bytes (never logged; audit records only the BLAKE3 hash)
 /// ```
 ///
@@ -138,20 +201,26 @@ pub struct SecretReadHandler {
     caps: Vec<CapabilityId>,
     // (secret_id, vault_path) parallel to caps, same index ordering.
     mapping: Vec<(String, String)>,
-    vault: Arc<SecretVault>,
+    provider: Arc<dyn SecretProvider>,
 }
 
 /// Capability prefix used by all secret-read capabilities.
 const SECRET_READ_PREFIX: &str = "secret.read:";
 
 impl SecretReadHandler {
-    /// Construct a handler from a list of secret entries and a shared vault.
+    /// Construct a handler from a list of secret entries and a secret provider.
     ///
     /// `secrets_mapping` is typically sourced from
     /// [`RuntimeProfile::secrets_mapping`](crate::profile::RuntimeProfile::secrets_mapping).
     ///
+    /// `provider` can be any `SecretProvider + 'static`, including
+    /// [`SecretVault`] (in-memory) or a custom external adapter.
+    ///
     /// Each entry produces a capability with ID `"secret.read:<secret_id>"`.
-    pub fn new(secrets_mapping: Vec<SecretEntry>, vault: Arc<SecretVault>) -> Self {
+    pub fn new<P: SecretProvider + 'static>(
+        secrets_mapping: Vec<SecretEntry>,
+        provider: Arc<P>,
+    ) -> Self {
         let (caps, mapping): (Vec<_>, Vec<_>) = secrets_mapping
             .into_iter()
             .map(|entry| {
@@ -164,12 +233,12 @@ impl SecretReadHandler {
         SecretReadHandler {
             caps,
             mapping,
-            vault,
+            provider,
         }
     }
 }
 
-/// Intentionally omits vault contents and capability names from debug output.
+/// Intentionally omits provider contents and capability names from debug output.
 ///
 /// Exposing the `caps` list would reveal the enumeration of secret IDs
 /// declared in the profile.  Only the count is shown.
@@ -177,7 +246,7 @@ impl fmt::Debug for SecretReadHandler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SecretReadHandler")
             .field("caps_count", &self.caps.len())
-            .field("vault", &"[redacted]")
+            .field("provider", &"[redacted]")
             .finish()
     }
 }
@@ -234,9 +303,9 @@ impl Handler for SecretReadHandler {
             }
         };
 
-        // Resolve vault_path → secret bytes.
-        match self.vault.resolve(vault_path) {
-            Some(bytes) => Ok(bytes.to_vec()),
+        // Resolve vault_path → secret bytes via the provider.
+        match self.provider.resolve(vault_path) {
+            Some(bytes) => Ok(bytes),
             None => Err(HostError::CapabilityDenied(
                 "secret access denied".to_string(),
             )),
@@ -294,7 +363,7 @@ mod tests {
             !debug.contains("supersecret"),
             "secret value must be hidden"
         );
-        // The vault inner should be hidden.
+        // The provider inner should be hidden.
         assert!(debug.contains("redacted"), "debug must mention redacted");
         // Capability names (= secret IDs) must NOT appear; only the count.
         assert!(
@@ -436,5 +505,98 @@ mod tests {
         let h = SecretReadHandler::new(mapping, Arc::new(vault));
         let caps: Vec<&str> = h.capabilities().iter().map(|c| c.as_str()).collect();
         assert_eq!(caps, vec!["secret.read:KeyA", "secret.read:KeyB"]);
+    }
+
+    // ── SecretProvider trait: custom provider tests ───────────────────────
+
+    #[test]
+    fn handler_works_with_custom_provider() {
+        // Custom provider that serves a single hard-coded secret.
+        struct StaticProvider;
+        impl SecretProvider for StaticProvider {
+            fn resolve(&self, vault_path: &str) -> Option<Vec<u8>> {
+                match vault_path {
+                    "custom/key" => Some(b"custom_secret_value".to_vec()),
+                    _ => None,
+                }
+            }
+        }
+
+        let mapping = vec![SecretEntry {
+            secret_id: "CustomKey".to_string(),
+            vault_path: "custom/key".to_string(),
+        }];
+        let h = SecretReadHandler::new(mapping, Arc::new(StaticProvider));
+        let cap = CapabilityId::new("secret.read:CustomKey");
+        let result = h
+            .handle(&cap, "read", b"")
+            .expect("custom provider must resolve");
+        assert_eq!(result, b"custom_secret_value");
+    }
+
+    #[test]
+    fn handler_custom_provider_denial_is_opaque() {
+        // Provider that always returns None — simulates a vault that has no
+        // secrets (e.g. wrong environment, permissions not yet provisioned).
+        struct EmptyProvider;
+        impl SecretProvider for EmptyProvider {
+            fn resolve(&self, _vault_path: &str) -> Option<Vec<u8>> {
+                None
+            }
+        }
+
+        let mapping = vec![SecretEntry {
+            secret_id: "AnyKey".to_string(),
+            vault_path: "any/path".to_string(),
+        }];
+        let h = SecretReadHandler::new(mapping, Arc::new(EmptyProvider));
+        let cap = CapabilityId::new("secret.read:AnyKey");
+        let err = h
+            .handle(&cap, "read", b"")
+            .expect_err("empty provider must deny");
+        match &err {
+            HostError::CapabilityDenied(m) => {
+                assert_eq!(m, "secret access denied", "denial message must be opaque");
+                assert!(!m.contains("AnyKey"), "must not leak secret ID");
+                assert!(!m.contains("any/path"), "must not leak vault path");
+            }
+            other => panic!("expected CapabilityDenied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn custom_provider_denial_matches_vault_denial() {
+        // Verify that a custom provider's denial and the vault's missing-path
+        // denial produce exactly the same error — no oracle leak via error
+        // message differences across provider implementations.
+        struct NullProvider;
+        impl SecretProvider for NullProvider {
+            fn resolve(&self, _: &str) -> Option<Vec<u8>> {
+                None
+            }
+        }
+
+        let mapping = vec![SecretEntry {
+            secret_id: "Key".to_string(),
+            vault_path: "p".to_string(),
+        }];
+
+        // Denial from custom provider.
+        let h_custom = SecretReadHandler::new(mapping.clone(), Arc::new(NullProvider));
+        let cap = CapabilityId::new("secret.read:Key");
+        let err_custom = h_custom
+            .handle(&cap, "read", b"")
+            .expect_err("null provider must deny");
+
+        // Denial from empty SecretVault (missing vault path).
+        let h_vault = SecretReadHandler::new(mapping, Arc::new(SecretVault::new()));
+        let err_vault = h_vault
+            .handle(&cap, "read", b"")
+            .expect_err("empty vault must deny");
+
+        assert_eq!(
+            err_custom, err_vault,
+            "denial must be identical regardless of provider implementation"
+        );
     }
 }

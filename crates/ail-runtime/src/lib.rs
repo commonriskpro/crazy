@@ -91,7 +91,7 @@ pub use schema::{
     CapabilityDefinition, CapabilityErrorSchema, CapabilityInputSchema, CapabilityOutputSchema,
     CapabilitySchema, SchemaField, SchemaValidationError, SchemaVariant,
 };
-pub use secret::{SecretReadHandler, SecretVault};
+pub use secret::{SecretProvider, SecretReadHandler, SecretVault};
 pub use transaction::{
     CompensationPolicy, CompensationRequired, TransactionEntry, TransactionGroup,
     TransactionPolicy, TransactionStatus,
