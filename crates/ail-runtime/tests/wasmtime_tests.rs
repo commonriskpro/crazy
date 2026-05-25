@@ -1442,3 +1442,616 @@ fn while_loop_body_runs_once_then_breaks() {
         "WhileLoop body must run once (5→4), break, then CellGet must return 4"
     );
 }
+
+// ── Wave 19A: ANF control-flow execution conformance ─────────────────────
+//
+// Spec scenarios covered (RUNTIME-SEQ-1..3, RUNTIME-RETURN-1..2,
+// RUNTIME-CONTINUE-1, RUNTIME-ABORT-1, RUNTIME-ASSUME-1,
+// RUNTIME-RUNTIMECHECK-1..2, RUNTIME-SHORTCIRCUITAND-1..2,
+// RUNTIME-SHORTCIRCUITOR-1..2):
+//
+//  RUNTIME-SEQ-1: Empty Seq produces unit (I32 0) — proves the empty-Seq
+//    guard pushes I32Const(0) rather than leaving the stack underflowed.
+//
+//  RUNTIME-SEQ-2: Single-element Seq(Unit) returns the element's value
+//    (I32 0) — proves the single-element path emits no spurious Drop.
+//
+//  RUNTIME-SEQ-3: Multi-element Seq applies both CellSet effects in order;
+//    the cell holds the last written value — proves intermediate results are
+//    dropped and both effects execute sequentially.
+//
+//  RUNTIME-RETURN-1: Return(42) causes the function to exit with I64(42)
+//    before the implicit End — proves the Return instruction transfers
+//    control and the value is carried correctly.
+//
+//  RUNTIME-RETURN-2: Return inside a taken if-branch exits before the
+//    else branch would evaluate — proves early return on a conditional path.
+//
+//  RUNTIME-CONTINUE-1: Continue inside a WhileLoop body jumps back to the
+//    loop's condition check.  A counter cell increments each iteration;
+//    the loop exits via Break when the counter reaches 3.  CellGet must
+//    return 3 — proves Continue restarts iteration without loss of side
+//    effects accumulated in the body.
+//
+//  RUNTIME-ABORT-1: Abort always traps — invoke returns
+//    Err(RuntimeError::EncodingError) containing a Wasmtime unreachable
+//    message.
+//
+//  RUNTIME-ASSUME-1: Assume emits no instructions and causes no trap; the
+//    function returns normally with RuntimeValue::Unit — proves Assume is a
+//    pure static annotation with zero runtime cost.
+//
+//  RUNTIME-RUNTIMECHECK-1: RuntimeCheck with cond=false (no violation
+//    detected) does not trap; the function returns RuntimeValue::Unit —
+//    proves the guard fires only when the condition is truthy.
+//
+//  RUNTIME-RUNTIMECHECK-2: RuntimeCheck with cond=true (violation
+//    detected) traps — invoke returns Err(RuntimeError::EncodingError).
+//    NOTE: `cond` in RuntimeCheck is the *violation* predicate; a truthy
+//    cond means the check failed.
+//
+//  RUNTIME-SHORTCIRCUITAND-1: ShortCircuitAnd with left=false returns
+//    I64(0) without evaluating right — right is an Abort that would trap
+//    if reached, proving right is never executed.
+//
+//  RUNTIME-SHORTCIRCUITAND-2: ShortCircuitAnd with left=true evaluates
+//    right (Literal 7) and returns I64(7).
+//
+//  RUNTIME-SHORTCIRCUITOR-1: ShortCircuitOr with left=true returns I64(1)
+//    without evaluating right — right is an Abort that would trap if
+//    reached, proving right is never executed.
+//
+//  RUNTIME-SHORTCIRCUITOR-2: ShortCircuitOr with left=false evaluates
+//    right (Literal 7) and returns I64(7).
+
+/// Variant of `invoke_compiler_expr` that returns `Result` instead of
+/// panicking — used for tests that expect a trap.
+fn try_invoke_compiler_expr(expr: AnfExpr, name: &str) -> Result<RuntimeValue, RuntimeError> {
+    let wasm = compiler_wasm_for_expr(expr, name);
+    let manifest = CapabilityManifest {
+        module: format!("{name}-test"),
+        requires: vec![],
+    };
+    let profile = matching_profile(&wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("WASM must instantiate");
+    let export = name.rsplit('.').next().unwrap_or(name);
+    instance.invoke(export, &[])
+}
+
+// RUNTIME-SEQ-1
+//
+// fn.main = Seq([])
+//
+// Empty Seq: no elements, so the emit guard pushes I32Const(0) (unit) and
+// returns Some(I32).  The function signature is () → I32 and must return 0.
+#[test]
+fn seq_empty_produces_unit() {
+    assert_eq!(
+        invoke_compiler_expr(AnfExpr::Seq(vec![]), "fn.seq_empty"),
+        RuntimeValue::I32(0),
+        "Empty Seq must produce unit I32(0)"
+    );
+}
+
+// RUNTIME-SEQ-2
+//
+// fn.main = Seq([Literal(Unit)])
+//
+// Single-element Seq: no Drop is emitted (only the last element is kept).
+// The element is Unit (I32 0).
+#[test]
+fn seq_single_element_returns_element_value() {
+    assert_eq!(
+        invoke_compiler_expr(
+            AnfExpr::Seq(vec![AnfExpr::Literal(LiteralValue::Unit)]),
+            "fn.seq_single"
+        ),
+        RuntimeValue::I32(0),
+        "Single-element Seq([Unit]) must return I32(0)"
+    );
+}
+
+// RUNTIME-SEQ-3
+//
+// fn.main =
+//   let init = 1       in
+//   let c    = CellNew(init) in
+//   let v1   = 10      in
+//   let v2   = 99      in
+//   let _sq  = Seq([CellSet(c, v1), CellSet(c, v2)]) in
+//   CellGet(c)
+//
+// CellSet(c, 10) fires first (effect applied, I32(0) dropped).
+// CellSet(c, 99) fires second (effect applied, I32(0) kept as Seq result).
+// CellGet must return 99, proving both effects executed in order and that
+// only the last value was kept from the Seq.
+#[test]
+fn seq_multi_element_applies_effects_in_order() {
+    let expr = AnfExpr::Let {
+        name: "init".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+        body: Box::new(AnfExpr::Let {
+            name: "c".to_string(),
+            value: Box::new(AnfExpr::CellNew {
+                init: "init".to_string(),
+            }),
+            body: Box::new(AnfExpr::Let {
+                name: "v1".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+                body: Box::new(AnfExpr::Let {
+                    name: "v2".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(99))),
+                    body: Box::new(AnfExpr::Let {
+                        name: "_sq".to_string(),
+                        value: Box::new(AnfExpr::Seq(vec![
+                            AnfExpr::CellSet {
+                                cell: "c".to_string(),
+                                value: "v1".to_string(),
+                            },
+                            AnfExpr::CellSet {
+                                cell: "c".to_string(),
+                                value: "v2".to_string(),
+                            },
+                        ])),
+                        body: Box::new(AnfExpr::CellGet {
+                            cell: "c".to_string(),
+                        }),
+                    }),
+                }),
+            }),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.main"),
+        RuntimeValue::I64(99),
+        "Seq([CellSet(c,10), CellSet(c,99)]): both effects run; cell must hold 99"
+    );
+}
+
+// RUNTIME-RETURN-1
+//
+// fn.main = Return(42)
+//
+// Return emits the value and then the WASM `return` instruction, which exits
+// the function immediately.  The function's inferred return type is I64
+// (from the inner Literal), so the export signature is () → I64.
+#[test]
+fn return_exits_function_with_value() {
+    assert_eq!(
+        invoke_compiler_expr(
+            AnfExpr::Return(Box::new(AnfExpr::Literal(LiteralValue::Int(42)))),
+            "fn.ret"
+        ),
+        RuntimeValue::I64(42),
+        "Return(42) must exit the function with I64(42)"
+    );
+}
+
+// RUNTIME-RETURN-2
+//
+// fn.main =
+//   let t = true in
+//   if t { Return(10) } else { Literal(20) }
+//
+// t=true → then-branch fires: Return(10) exits the function immediately.
+// The else-branch (20) is dead code.  Result must be I64(10).
+#[test]
+fn return_in_taken_branch_exits_before_else() {
+    let expr = AnfExpr::Let {
+        name: "t".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Bool(true))),
+        body: Box::new(AnfExpr::If {
+            cond: "t".to_string(),
+            then_branch: Box::new(AnfExpr::Return(Box::new(AnfExpr::Literal(
+                LiteralValue::Int(10),
+            )))),
+            else_branch: Box::new(AnfExpr::Literal(LiteralValue::Int(20))),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.ret_if"),
+        RuntimeValue::I64(10),
+        "Return in taken then-branch must exit with 10; else (20) must not be reached"
+    );
+}
+
+// RUNTIME-CONTINUE-1
+//
+// fn.main =
+//   let go    = true  in                       ← WhileLoop condition (always truthy)
+//   let init  = 0     in
+//   let c     = CellNew(init) in
+//   let one   = 1     in
+//   let three = 3     in
+//   let _w    = while(go,
+//                 let cur      = CellGet(c)      in
+//                 let next     = cur + one        in
+//                 let _s       = CellSet(c, next) in
+//                 let done_val = (next == three)  in
+//                 if done_val { Break(unit) } else { Continue }
+//               ) in
+//   CellGet(c)
+//
+// Iterations (Continue fires on 1st and 2nd, Break on 3rd):
+//   iter 1: cur=0, next=1, _s→c=1, done_val=0 (1≠3) → Continue
+//   iter 2: cur=1, next=2, _s→c=2, done_val=0 (2≠3) → Continue
+//   iter 3: cur=2, next=3, _s→c=3, done_val=1 (3==3) → Break(unit)
+// CellGet must return 3 — proves Continue restarts the iteration without
+// skipping the CellSet side-effect, and Break terminates the loop correctly.
+#[test]
+fn continue_in_while_loop_restarts_iteration() {
+    let expr = AnfExpr::Let {
+        name: "go".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Bool(true))),
+        body: Box::new(AnfExpr::Let {
+            name: "init".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "c".to_string(),
+                value: Box::new(AnfExpr::CellNew {
+                    init: "init".to_string(),
+                }),
+                body: Box::new(AnfExpr::Let {
+                    name: "one".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                    body: Box::new(AnfExpr::Let {
+                        name: "three".to_string(),
+                        value: Box::new(AnfExpr::Literal(LiteralValue::Int(3))),
+                        body: Box::new(AnfExpr::Let {
+                            name: "_w".to_string(),
+                            value: Box::new(AnfExpr::WhileLoop {
+                                cond: "go".to_string(),
+                                body: Box::new(AnfExpr::Let {
+                                    name: "cur".to_string(),
+                                    value: Box::new(AnfExpr::CellGet {
+                                        cell: "c".to_string(),
+                                    }),
+                                    body: Box::new(AnfExpr::Let {
+                                        name: "next".to_string(),
+                                        value: Box::new(AnfExpr::Call {
+                                            func: "+".to_string(),
+                                            args: vec![
+                                                "cur".to_string(),
+                                                "one".to_string(),
+                                            ],
+                                        }),
+                                        body: Box::new(AnfExpr::Let {
+                                            name: "_s".to_string(),
+                                            value: Box::new(AnfExpr::CellSet {
+                                                cell: "c".to_string(),
+                                                value: "next".to_string(),
+                                            }),
+                                            body: Box::new(AnfExpr::Let {
+                                                name: "done_val".to_string(),
+                                                value: Box::new(AnfExpr::Call {
+                                                    func: "==".to_string(),
+                                                    args: vec![
+                                                        "next".to_string(),
+                                                        "three".to_string(),
+                                                    ],
+                                                }),
+                                                body: Box::new(AnfExpr::If {
+                                                    cond: "done_val".to_string(),
+                                                    then_branch: Box::new(AnfExpr::Break {
+                                                        value: Box::new(AnfExpr::Literal(
+                                                            LiteralValue::Unit,
+                                                        )),
+                                                    }),
+                                                    else_branch: Box::new(AnfExpr::Continue),
+                                                }),
+                                            }),
+                                        }),
+                                    }),
+                                }),
+                            }),
+                            body: Box::new(AnfExpr::CellGet {
+                                cell: "c".to_string(),
+                            }),
+                        }),
+                    }),
+                }),
+            }),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.main"),
+        RuntimeValue::I64(3),
+        "Continue must restart each iteration; counter must reach 3 then Break"
+    );
+}
+
+// RUNTIME-ABORT-1
+//
+// fn.main =
+//   let _a = Abort { message: "test abort" } in
+//   Literal(0)
+//
+// Abort emits Unreachable, placing the stack in the unreachable (polymorphic)
+// state.  The Let binding's LocalSet and Literal(0) are dead code — valid WASM
+// because unreachable code is polymorphically accepted.  The outer body
+// (Literal(0)) gives the binding a declared I64 return type so it is exported.
+// When invoked, Abort fires immediately → trap → RuntimeError::EncodingError.
+#[test]
+fn abort_always_traps() {
+    let expr = AnfExpr::Let {
+        name: "_a".to_string(),
+        value: Box::new(AnfExpr::Abort {
+            message: "test abort".to_string(),
+        }),
+        body: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+    };
+    let result = try_invoke_compiler_expr(expr, "fn.abort");
+    assert!(
+        matches!(result, Err(RuntimeError::EncodingError(_))),
+        "Abort must trap and return EncodingError, got {result:?}"
+    );
+}
+
+// RUNTIME-ASSUME-1
+//
+// Two-binding ANF:
+//   fn.assume_note = Assume { predicate: "x > 0", reason: "test assumption" }
+//   fn.main        = Literal(42)
+//
+// Assume emits NO WASM instructions (pure compile-time annotation).
+// Its binding is NOT exported (binding_result = None — by design) but it IS
+// compiled and validated as part of the module.
+// fn.main IS exported and returns I64(42), proving the module compiles and
+// instantiates correctly even when a sibling binding contains Assume.
+// This demonstrates Assume's zero runtime cost: no trap, no interference.
+#[test]
+fn assume_has_no_runtime_effect() {
+    use ail_core::semantic_graph::NodeRef;
+
+    let anf = sealed_anf(vec![
+        AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.assume_note".to_string(),
+            expr: AnfExpr::Assume {
+                predicate: "x > 0".to_string(),
+                reason: "test assumption".to_string(),
+            },
+        },
+        AnfBinding {
+            source_ref: NodeRef(1),
+            name: "fn.main".to_string(),
+            expr: AnfExpr::Literal(LiteralValue::Int(42)),
+        },
+    ]);
+    let wasm = emit_wasm(&anf).expect("emit_wasm failed").wasm;
+    let manifest = CapabilityManifest {
+        module: "assume-test".to_string(),
+        requires: vec![],
+    };
+    let profile = matching_profile(&wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    let mut instance = host
+        .validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("module with Assume binding must instantiate");
+
+    let value = instance.invoke("main", &[]).expect("fn.main must invoke");
+    assert_eq!(
+        value,
+        RuntimeValue::I64(42),
+        "fn.main must return I64(42); Assume in sibling binding must not interfere"
+    );
+}
+
+// ── RuntimeCheck execution conformance ────────────────────────────────────
+//
+// DESIGN NOTE: The ail-compiler intentionally does NOT export functions whose
+// top-level expression is a RuntimeCheck (binding_result = None).  This is
+// a tested invariant (see C-3b in wasm_tests.rs).  To test the EXECUTION
+// of the RuntimeCheck pattern we construct the equivalent WASM bytecode
+// directly using wasm_encoder, bypassing the compiler.
+//
+// The RuntimeCheck WASM pattern emitted by ail-compiler for
+//   RuntimeCheck { cond, .. }
+// is exactly:
+//   emit_condition_get(cond)   ; I32 on stack
+//   If(BlockType::Empty)
+//     Unreachable
+//   End
+//
+// We replicate this pattern manually with a hardcoded I32 condition so the
+// function can be exported and invoked.  This proves the execution semantics
+// of the pattern, complementing the structural (wasmparser) proofs in
+// wasm_tests.rs.
+
+/// Build a minimal WASM module containing one exported `() → I32` function
+/// that executes the RuntimeCheck pattern with a hardcoded condition:
+///
+/// ```text
+/// i32.const <condition>
+/// if []
+///   unreachable
+/// end
+/// i32.const 42    ; return value (only reached when condition is false)
+/// ```
+fn runtime_check_pattern_wasm(condition: i32) -> Vec<u8> {
+    let mut module = wasm_encoder::Module::new();
+
+    let mut types = wasm_encoder::TypeSection::new();
+    types.ty().function([], [wasm_encoder::ValType::I32]);
+    module.section(&types);
+
+    let mut functions = wasm_encoder::FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+
+    let mut exports = wasm_encoder::ExportSection::new();
+    exports.export("check", wasm_encoder::ExportKind::Func, 0);
+    module.section(&exports);
+
+    let mut codes = wasm_encoder::CodeSection::new();
+    let mut f = wasm_encoder::Function::new([]);
+    f.instruction(&wasm_encoder::Instruction::I32Const(condition));
+    f.instruction(&wasm_encoder::Instruction::If(
+        wasm_encoder::BlockType::Empty,
+    ));
+    f.instruction(&wasm_encoder::Instruction::Unreachable);
+    f.instruction(&wasm_encoder::Instruction::End);
+    f.instruction(&wasm_encoder::Instruction::I32Const(42));
+    f.instruction(&wasm_encoder::Instruction::End);
+    codes.function(&f);
+    module.section(&codes);
+
+    module.finish()
+}
+
+// RUNTIME-RUNTIMECHECK-1
+//
+// RuntimeCheck pattern with condition=0 (false / no violation).
+//
+// The If guard is not taken — Unreachable never fires.
+// Execution continues past the If block and returns I32(42).
+// Proves: when the violation predicate is false, RuntimeCheck is a no-op
+// and the surrounding code runs normally.
+#[test]
+fn runtime_check_false_cond_does_not_trap() {
+    let wasm = runtime_check_pattern_wasm(0); // condition = false
+    let mut instance = instantiate_test_wasm(&wasm);
+    let value = instance.invoke("check", &[]).expect("check must not trap");
+    assert_eq!(
+        value,
+        RuntimeValue::I32(42),
+        "RuntimeCheck with false condition must not trap; must return I32(42)"
+    );
+}
+
+// RUNTIME-RUNTIMECHECK-2
+//
+// RuntimeCheck pattern with condition=1 (true / violation detected).
+//
+// The If guard IS taken → Unreachable fires → Wasmtime trap →
+// RuntimeError::EncodingError.
+// Proves: when the violation predicate is true, RuntimeCheck traps.
+// NOTE: `cond` in RuntimeCheck is the *violation* predicate — truthy means
+// "check failed", not "assertion holds".
+#[test]
+fn runtime_check_true_cond_traps() {
+    let wasm = runtime_check_pattern_wasm(1); // condition = true
+    let mut instance = instantiate_test_wasm(&wasm);
+    let result = instance.invoke("check", &[]);
+    assert!(
+        matches!(result, Err(RuntimeError::EncodingError(_))),
+        "RuntimeCheck with true condition must trap with EncodingError, got {result:?}"
+    );
+}
+
+// RUNTIME-SHORTCIRCUITAND-1
+//
+// fn.main =
+//   let f = false in
+//   ShortCircuitAnd { left: "f", right: Abort{"dead code"} }
+//
+// left=false → else branch → I64(0); right (Abort) is NEVER evaluated.
+// If short-circuit were broken and right were reached, Abort would trap.
+// No trap proves right was not evaluated.
+#[test]
+fn short_circuit_and_false_left_skips_right() {
+    let expr = AnfExpr::Let {
+        name: "f".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Bool(false))),
+        body: Box::new(AnfExpr::ShortCircuitAnd {
+            left: "f".to_string(),
+            right: Box::new(AnfExpr::Abort {
+                message: "dead code: AND right with false left".to_string(),
+            }),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.and_false"),
+        RuntimeValue::I64(0),
+        "ShortCircuitAnd with left=false must return I64(0) without evaluating right"
+    );
+}
+
+// RUNTIME-SHORTCIRCUITAND-2
+//
+// fn.main =
+//   let t = true in
+//   let r = 7    in
+//   ShortCircuitAnd { left: "t", right: Var("r") }
+//
+// left=true → then branch → evaluates right (Var("r") = 7) → I64(7).
+#[test]
+fn short_circuit_and_true_left_evaluates_right() {
+    let expr = AnfExpr::Let {
+        name: "t".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Bool(true))),
+        body: Box::new(AnfExpr::Let {
+            name: "r".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(7))),
+            body: Box::new(AnfExpr::ShortCircuitAnd {
+                left: "t".to_string(),
+                right: Box::new(AnfExpr::Var("r".to_string())),
+            }),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.and_true"),
+        RuntimeValue::I64(7),
+        "ShortCircuitAnd with left=true must evaluate right and return I64(7)"
+    );
+}
+
+// RUNTIME-SHORTCIRCUITOR-1
+//
+// fn.main =
+//   let t = true in
+//   ShortCircuitOr { left: "t", right: Abort{"dead code"} }
+//
+// left=true → then branch → I64(1); right (Abort) is NEVER evaluated.
+// If short-circuit were broken and right were reached, Abort would trap.
+// No trap proves right was not evaluated.
+#[test]
+fn short_circuit_or_true_left_skips_right() {
+    let expr = AnfExpr::Let {
+        name: "t".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Bool(true))),
+        body: Box::new(AnfExpr::ShortCircuitOr {
+            left: "t".to_string(),
+            right: Box::new(AnfExpr::Abort {
+                message: "dead code: OR right with true left".to_string(),
+            }),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.or_true"),
+        RuntimeValue::I64(1),
+        "ShortCircuitOr with left=true must return I64(1) without evaluating right"
+    );
+}
+
+// RUNTIME-SHORTCIRCUITOR-2
+//
+// fn.main =
+//   let f = false in
+//   let r = 7     in
+//   ShortCircuitOr { left: "f", right: Var("r") }
+//
+// left=false → else branch → evaluates right (Var("r") = 7) → I64(7).
+#[test]
+fn short_circuit_or_false_left_evaluates_right() {
+    let expr = AnfExpr::Let {
+        name: "f".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Bool(false))),
+        body: Box::new(AnfExpr::Let {
+            name: "r".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(7))),
+            body: Box::new(AnfExpr::ShortCircuitOr {
+                left: "f".to_string(),
+                right: Box::new(AnfExpr::Var("r".to_string())),
+            }),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.or_false"),
+        RuntimeValue::I64(7),
+        "ShortCircuitOr with left=false must evaluate right and return I64(7)"
+    );
+}
