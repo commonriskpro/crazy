@@ -16,10 +16,10 @@
 //        native magic as build_runtime_stub_object() alone.
 //   B4 — Both the object and the archive are byte-identical across repeated
 //        calls (determinism).
-//   B5 — The stub object bytes for __ail_malloc differ from those of a
-//        hypothetical archive generated when host_call would return -1 — i.e.
-//        the three stubs produce genuinely distinct code patterns.
-//        (Structural proxy: object sizes change when behaviors change.)
+//   B5 — The stub object exceeds the minimum size threshold expected from
+//        trivially empty functions, suggesting real instruction bytes were
+//        emitted for all three stubs.
+//        (Structural proxy only — trap opcode presence is not directly verified.)
 //
 // # Symbol behavior contracts (not runtime-checked here)
 //
@@ -236,18 +236,15 @@ fn stub_archive_is_deterministic() {
     );
 }
 
-// ── B5 — __ail_malloc trap produces distinct object bytes ─────────────────
+// ── B5 — stub has non-trivial size (structural proxy for real bodies) ──────
 
-/// Stub symbol behavior B5: the stub archive has non-trivial size, indicating
-/// that the three stub functions (including the __ail_malloc trap) produced
-/// distinct machine code rather than empty stubs.
+/// Stub symbol behavior B5: the stub object exceeds the minimum size expected
+/// from trivially empty functions.
 ///
-/// Since we cannot execute the stubs in a pure-Rust unit test, this is a
-/// structural proxy: the total object size must exceed what three trivially
-/// empty functions would produce.
-///
-/// A trap instruction is machine code — Cranelift emits real bytes for it.
-/// The function body is not empty even though it never returns a value.
+/// This is a STRUCTURAL PROXY, not proof of specific opcodes.  A size
+/// threshold above what three no-op stubs would produce is consistent with
+/// real instruction bytes having been emitted, but does not directly verify
+/// that a trap opcode is present in the __ail_malloc body.
 #[test]
 fn stub_object_has_real_function_bodies_not_empty_stubs() {
     let obj = build_runtime_stub_object().expect("build_runtime_stub_object must succeed");
