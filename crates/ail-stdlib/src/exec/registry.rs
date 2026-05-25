@@ -17,8 +17,9 @@ use self::handlers::{
     numeric_checked_sub, numeric_narrow_to_i32, numeric_narrow_to_u32, numeric_saturating_add,
     numeric_wrapping_add, option_and_then, option_collect_results, option_map, option_ok_or,
     option_transpose, option_unwrap_or, result_and_then, result_map, result_transpose,
-    result_unwrap_or, set_contains, set_insert, text_decode, text_encode, text_format, text_join,
-    text_length_graphemes_exec, text_normalize, text_regex, text_split, text_trim,
+    result_unwrap_or, set_contains, set_insert, text_contains_exec, text_decode, text_encode,
+    text_ends_with_exec, text_format, text_join, text_length_graphemes_exec, text_normalize,
+    text_regex, text_replace_exec, text_split, text_starts_with_exec, text_trim,
     time_add_duration_exec, time_duration_since_exec, time_instant_to_ms_exec,
 };
 
@@ -251,11 +252,14 @@ pub fn stdlib_function_entries() -> Vec<FunctionEntry> {
             "Text",
             text_join,
         ),
+        // "Text?" marks the second param as optional (no convention existed
+        // before v1; `?` suffix signals variadic/optional for introspection).
+        // Calling with 1 arg selects NFC; 2 args select the form ("nfc"|"nfd").
         pure(
             "std.text.normalize",
             "std.text",
             "normalize",
-            &["Text"],
+            &["Text", "Text?"],
             "Text",
             text_normalize,
         ),
@@ -402,6 +406,38 @@ pub fn stdlib_function_entries() -> Vec<FunctionEntry> {
             &["Text"],
             "Int",
             text_length_graphemes_exec,
+        ),
+        pure(
+            "std.text.starts_with",
+            "std.text",
+            "starts_with",
+            &["Text", "Text"],
+            "Bool",
+            text_starts_with_exec,
+        ),
+        pure(
+            "std.text.ends_with",
+            "std.text",
+            "ends_with",
+            &["Text", "Text"],
+            "Bool",
+            text_ends_with_exec,
+        ),
+        pure(
+            "std.text.contains",
+            "std.text",
+            "contains",
+            &["Text", "Text"],
+            "Bool",
+            text_contains_exec,
+        ),
+        pure(
+            "std.text.replace",
+            "std.text",
+            "replace",
+            &["Text", "Text", "Text"],
+            "Text",
+            text_replace_exec,
         ),
         pure(
             "std.time.duration_since",
