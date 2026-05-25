@@ -9,7 +9,7 @@
 use ail_core::semantic_graph::NodeRef;
 
 use crate::anf::{AnfBinding, AnfExpr};
-use crate::core_ir::CoreExpr;
+use crate::core_ir::{CoreExpr, LiteralValue};
 
 // ── atomize ───────────────────────────────────────────────────────────────
 
@@ -305,34 +305,59 @@ pub(super) fn lower_core_expr_to_anf_local(
         // Continue: no sub-expressions.
         CoreExpr::Continue => AnfExpr::Continue,
 
-        // WhileLoop: condition must be atomic (atomize_local if non-Var).
-        // Body is lowered recursively.  The `_` fallthrough previously called
-        // `lower_core_expr_to_anf(..., &mut Vec::new())` here, discarding the
-        // synthesised binding for a computed condition such as `lt(x, 3)`.
+        // WhileLoop: desugar into Loop + If + Break/Continue so the condition
+        // expression is re-evaluated inside the loop body on every iteration.
         //
-        // LIMITATION — single evaluation per loop entry:
-        // `atomize_local` hoists the condition binding OUTSIDE the `WhileLoop`
-        // ANF node.  A computed condition (e.g. `lt(x, 3)`) is therefore
-        // evaluated exactly once — before the first iteration — and subsequent
-        // iterations reuse the same stale binding value.  Correct
-        // multi-iteration re-evaluation requires the condition computation to
-        // live inside the loop body (e.g. desugar WhileLoop to
-        // `Loop { If { cond_expr, Break, body } }`).  Only `CoreExpr::Var`
-        // conditions — a name already in scope — produce correct per-iteration
-        // semantics with the current encoding.  Full desugaring is tracked as
-        // future architectural work.
+        // CoreExpr::WhileLoop { cond, body }
+        // ↦
+        // Seq([
+        //   Loop {
+        //     body: Let { anf_N = lower(cond),   ← re-evaluated each iteration
+        //             If { cond: anf_N,
+        //                  then_: Let { anf_M = lower(body), Continue },
+        //                  else_: Break { Literal(Unit) } } }
+        //   },
+        //   Literal(Unit),   ← unit sentinel produced after the loop exits
+        // ])
+        //
+        // The condition is lowered into the Loop body (not hoisted outside),
+        // which fixes the stale-condition bug: previously `atomize_local`
+        // hoisted the condition outside the AnfExpr::WhileLoop, so a computed
+        // expression like `lt(cell_get(c), 3)` was evaluated exactly once and
+        // subsequent iterations re-used the stale binding value.
+        //
+        // AnfExpr::WhileLoop is preserved for direct ANF construction
+        // (backward compatibility).  Only the CoreExpr → ANF lowering path
+        // is changed here.
         CoreExpr::WhileLoop { cond, body, .. } => {
-            let (cond_name, cond_binding) = atomize_local(cond, fresh, source_ref);
-            let anf_body = lower_core_expr_to_anf_local(body, fresh, source_ref);
-            let while_expr = AnfExpr::WhileLoop {
-                cond: cond_name,
-                body: Box::new(anf_body),
+            let cond_lowered = lower_core_expr_to_anf_local(cond, fresh, source_ref);
+            let cond_tmp = format!("anf_{}", *fresh);
+            *fresh += 1;
+            let body_lowered = lower_core_expr_to_anf_local(body, fresh, source_ref);
+            let body_tmp = format!("anf_{}", *fresh);
+            *fresh += 1;
+            let if_expr = AnfExpr::If {
+                cond: cond_tmp.clone(),
+                then_branch: Box::new(AnfExpr::Let {
+                    name: body_tmp,
+                    value: Box::new(body_lowered),
+                    body: Box::new(AnfExpr::Continue),
+                }),
+                else_branch: Box::new(AnfExpr::Break {
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+                }),
             };
-            if let Some(binding) = cond_binding {
-                wrap_local_bindings(vec![binding], while_expr)
-            } else {
-                while_expr
-            }
+            let loop_body = AnfExpr::Let {
+                name: cond_tmp,
+                value: Box::new(cond_lowered),
+                body: Box::new(if_expr),
+            };
+            AnfExpr::Seq(vec![
+                AnfExpr::Loop {
+                    body: Box::new(loop_body),
+                },
+                AnfExpr::Literal(LiteralValue::Unit),
+            ])
         }
 
         // ForEach: collection must be atomic; body is lowered recursively.
@@ -682,16 +707,17 @@ pub fn lower_core_expr_to_anf(
 
         CoreExpr::Continue => AnfExpr::Continue,
 
-        // WhileLoop: condition must be atomic; body is lowered recursively.
-        // The termination field is not used during ANF lowering.
-        CoreExpr::WhileLoop { cond, body, .. } => {
-            let cond_name = atomize(cond, fresh, source_ref, out);
-            let anf_body = lower_core_expr_to_anf(body, fresh, source_ref, out);
-            AnfExpr::WhileLoop {
-                cond: cond_name,
-                body: Box::new(anf_body),
-            }
-        }
+        // WhileLoop: delegate to the local lowering path.
+        //
+        // The desugared form (Loop + If + Break/Continue) is self-contained —
+        // the condition expression lives inside the Loop body node and must not
+        // be pushed to the outer `out` bindings.  Delegating to
+        // `lower_core_expr_to_anf_local` produces the fully nested Let form
+        // with correct per-iteration condition re-evaluation.
+        //
+        // See the `lower_core_expr_to_anf_local` WhileLoop arm for the full
+        // desugaring rationale and structure.
+        CoreExpr::WhileLoop { .. } => lower_core_expr_to_anf_local(expr, fresh, source_ref),
 
         // ── G20 R2: new semantic variants ────────────────────────────────
 

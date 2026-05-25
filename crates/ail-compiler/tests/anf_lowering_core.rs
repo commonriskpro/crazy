@@ -87,8 +87,14 @@ fn loop_break_continue_lower_to_anf_loop_variants() {
     assert_eq!(lower_expr(&CoreExpr::Continue), AnfExpr::Continue);
 }
 
+// Wave 21A: WhileLoop with a computed condition desugars into
+// Seq([Loop { body: Let { cond_tmp = cond_expr, If { ... } } }, Literal(Unit)])
+// so the condition is re-evaluated on every iteration.
+//
+// The condition is NO LONGER atomized into an outer binding (no `out` entry).
+// Instead it lives inside the Loop body as a Let, which is re-run each iteration.
 #[test]
-fn while_loop_condition_is_atomized() {
+fn while_loop_computed_condition_desugars_into_loop_if() {
     let expr = CoreExpr::WhileLoop {
         cond: Box::new(CoreExpr::Call {
             func: "is_ready".to_string(),
@@ -100,9 +106,75 @@ fn while_loop_condition_is_atomized() {
 
     let (synth, root) = lower_and_collect(&expr);
 
-    assert_eq!(synth.len(), 1, "while condition call must be let-bound");
-    assert!(matches!(synth[0].expr, AnfExpr::Call { .. }));
-    assert!(matches!(root, AnfExpr::WhileLoop { cond, .. } if cond == "anf_0"));
+    // No bindings pushed to the outer `out` — the condition lives inside the loop.
+    assert!(
+        synth.is_empty(),
+        "desugared WhileLoop must push no outer synthetic bindings; got {synth:?}"
+    );
+
+    // Root must be Seq([Loop { ... }, Literal(Unit)]).
+    let AnfExpr::Seq(seq) = root else {
+        panic!("desugared WhileLoop must be AnfExpr::Seq, got {root:?}");
+    };
+    assert_eq!(
+        seq.len(),
+        2,
+        "Seq must have 2 elements: Loop + Literal(Unit)"
+    );
+    assert!(
+        matches!(seq[1], AnfExpr::Literal(LiteralValue::Unit)),
+        "second Seq element must be Literal(Unit)"
+    );
+
+    // The first element must be a Loop.
+    let AnfExpr::Loop { body } = &seq[0] else {
+        panic!("first Seq element must be AnfExpr::Loop, got {:?}", seq[0]);
+    };
+
+    // The Loop body must be a Let whose value is the lowered condition expression.
+    let AnfExpr::Let {
+        name: cond_tmp,
+        value: cond_expr,
+        body: if_body,
+    } = body.as_ref()
+    else {
+        panic!("Loop body must be AnfExpr::Let (condition binding), got {body:?}");
+    };
+
+    // The condition expression must be the Call to "is_ready".
+    assert!(
+        matches!(cond_expr.as_ref(), AnfExpr::Call { func, .. } if func == "is_ready"),
+        "condition Let value must be Call to is_ready; got {cond_expr:?}"
+    );
+
+    // The If must branch on the condition variable.
+    let AnfExpr::If {
+        cond: if_cond,
+        then_branch,
+        else_branch,
+    } = if_body.as_ref()
+    else {
+        panic!("Loop body's Let body must be AnfExpr::If, got {if_body:?}");
+    };
+    assert_eq!(
+        if_cond, cond_tmp,
+        "If condition must reference the bound condition temp"
+    );
+
+    // then_branch: Let { body_tmp = body_lowered, Continue }
+    assert!(
+        matches!(then_branch.as_ref(), AnfExpr::Let { body, .. } if matches!(body.as_ref(), AnfExpr::Continue)),
+        "then_branch must be Let {{ ..., body: Continue }}; got {then_branch:?}"
+    );
+
+    // else_branch: Break { value: Literal(Unit) }
+    assert!(
+        matches!(
+            else_branch.as_ref(),
+            AnfExpr::Break { value } if matches!(value.as_ref(), AnfExpr::Literal(LiteralValue::Unit))
+        ),
+        "else_branch must be Break {{ value: Literal(Unit) }}; got {else_branch:?}"
+    );
 }
 
 // ── S2: Var lowers trivially ─────────────────────────────────────────────
