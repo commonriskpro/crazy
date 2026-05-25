@@ -1370,8 +1370,14 @@ fn emit_anf_expr<'a>(
             ctx.labels.pop();
             insns.push(Instruction::End); // end block
 
-            // ForEach is side-effect only — no value on the stack.
-            None
+            // ForEach is side-effect only in terms of semantics, but it
+            // must produce a unit value on the WASM stack so that it can
+            // appear as the `value` in an `AnfExpr::Let` binding or as an
+            // intermediate element in a `Seq` without causing a stack-
+            // underflow validation error.  Push I32 0 (unit) here so that
+            // the enclosing `LocalSet` or `Drop` has something to consume.
+            insns.push(Instruction::I32Const(0));
+            Some(ValType::I32)
         }
 
         // ── Fold — call_indirect over function table ──────────────────────

@@ -288,8 +288,10 @@ pub(crate) fn infer_expr_type(
         // IndexGet reads an element and returns I64.
         AnfExpr::MapNew { .. } | AnfExpr::SetNew { .. } => Some(ValType::I32),
         AnfExpr::IndexGet { .. } => Some(ValType::I64),
-        // ForEach is side-effect only — no value produced.
-        AnfExpr::ForEach { .. } => None,
+        // ForEach produces a unit (I32 0) so it can appear as the value in
+        // a `Let` binding or as an intermediate element in a `Seq` without
+        // causing a WASM stack-underflow validation error.
+        AnfExpr::ForEach { .. } => Some(ValType::I32),
         // Fold reduces a list to an I64 accumulator via call_indirect.
         // emit_anf_expr returns Some(ValType::I64) for Fold; this must match.
         AnfExpr::Fold { .. } => Some(ValType::I64),
