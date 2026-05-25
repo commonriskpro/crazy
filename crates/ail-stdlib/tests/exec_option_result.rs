@@ -1,7 +1,7 @@
 // Tests for option and result exec handlers — arity errors, type errors, and
 // negative execution paths through call_pure_stdlib.
 //
-// Spec: STDLIB-EXEC-OPT-1..6, STDLIB-EXEC-RES-1..6
+// Spec: STDLIB-EXEC-OPT-1..6, STDLIB-EXEC-RES-1..6, STDLIB-EXEC-OPT-OK-OR-1..4
 // These tests provide verified execution evidence for StabilityTier::Stable
 // entries std.core.option.* and std.core.result.*.
 
