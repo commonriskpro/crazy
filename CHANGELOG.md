@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contract.
 - **`ClockHandler` rejects unknown operations** (Wave 24C): any operation string other
   than `"now"` previously returned epoch-ms silently. `handle` now matches on the
-  operation name and returns `HostError::Custom("unknown clock operation: {op}")` for
+  operation name and returns `HostError::Custom(format!("unknown clock operation: {op}"))` for
   unrecognised ops, enforcing the operation contract.
 - **`uses_var` silent miss on `ShortCircuitAnd`/`ShortCircuitOr` left atom** (Wave 24D):
   both arms only inspected the right sub-expression, so the dead-let pass eliminated
@@ -119,13 +119,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proves user-defined discriminant assignment (first-encounter order, starting at 0),
   multi-tag dispatch, and wildcard fallthrough through ACL parser → Core → ANF → WASM.
 - **Wave 24C** — `ClockHandler` operation contract (RUNTIME-CLOCK-OP-CONTRACT-1/2):
-  CLOCK-OP-CONTRACT-1 asserts `clock.now` returns epoch-ms in `[1e12, 1e13)`;
+  CLOCK-OP-CONTRACT-1 asserts `clock.now` returns epoch-ms in `[1e12, 1e13)` — distinct
+  from RUNTIME-CLOCK-NOW-1 (Wave 23B) in that it adds an upper-bound check and exercises
+  the handler operation-dispatch contract directly rather than through the ACL pipeline;
   CLOCK-OP-CONTRACT-2 asserts `clock.elapsed` returns `HostError::Custom` identifying
   the unknown operation.
 - **Wave 24D** — ACL boolean short-circuit E2E (RUNTIME-ACL-AND-1/2, RUNTIME-ACL-OR-1/2):
   exercises `and()`/`or()` through the full ACL → ANF → `ShortCircuitAnd`/`ShortCircuitOr`
   → WASM pipeline. AND-2 and OR-1 use `abort("dead")` as the right operand to prove
   non-evaluation by absence of trap. Adds `abort(msg)` form to `expr_parser`.
-- **Wave 24D (unit)** — `uses_var` coverage for `ShortCircuitAnd`/`Or`
-  (OPT-USESVAR-AND-1/2, OPT-USESVAR-OR-1/2) and `abort()` parser coverage
-  (PARSE-ABORT-1/2/3: well-formed, non-literal arg rejected, zero-arg rejected).
+  - **unit tests** — `uses_var` coverage for `ShortCircuitAnd`/`Or`
+    (OPT-USESVAR-AND-1/2, OPT-USESVAR-OR-1/2) and `abort()` parser coverage
+    (PARSE-ABORT-1/2/3: well-formed, non-literal arg rejected, zero-arg rejected).
