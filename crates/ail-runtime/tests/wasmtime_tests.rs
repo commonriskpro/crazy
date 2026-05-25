@@ -1445,7 +1445,7 @@ fn while_loop_body_runs_once_then_breaks() {
 
 // ── Wave 19A: ANF control-flow execution conformance ─────────────────────
 //
-// Spec scenarios covered (RUNTIME-SEQ-1..3, RUNTIME-RETURN-1..2,
+// Spec scenarios covered (RUNTIME-SEQ-1..3, RUNTIME-RETURN-1..3,
 // RUNTIME-CONTINUE-1, RUNTIME-ABORT-1, RUNTIME-ASSUME-1,
 // RUNTIME-RUNTIMECHECK-1..2, RUNTIME-SHORTCIRCUITAND-1..2,
 // RUNTIME-SHORTCIRCUITOR-1..2):
@@ -1466,6 +1466,12 @@ fn while_loop_body_runs_once_then_breaks() {
 //
 //  RUNTIME-RETURN-2: Return inside a taken if-branch exits before the
 //    else branch would evaluate — proves early return on a conditional path.
+//
+//  RUNTIME-RETURN-3: Return(Unit) is the first element of a Seq; the second
+//    element is Abort.  The function returns I32(0) without trapping, proving
+//    Return's early-exit semantics: if Return did not emit the WASM `return`
+//    instruction, Abort would fire and the invocation would return
+//    Err(EncodingError) instead of Ok(I32(0)).
 //
 //  RUNTIME-CONTINUE-1: Continue inside a WhileLoop body jumps back to the
 //    loop's condition check.  A counter cell increments each iteration;
@@ -1658,6 +1664,38 @@ fn return_in_taken_branch_exits_before_else() {
     );
 }
 
+// RUNTIME-RETURN-3
+//
+// fn.main = Seq([Return(Unit), Abort("unreachable — Return above must exit")])
+//
+// Return(Unit) emits I32Const(0) + WASM `return`, which exits the function
+// immediately.  The second Seq element (Abort → WASM `unreachable`) is dead
+// code and is never reached at runtime.
+//
+// If Return did NOT emit the WASM `return` instruction, the Abort would fire
+// and the invocation would return Err(EncodingError) rather than Ok(I32(0)).
+// Receiving I32(0) without a trap is the proof that Return causes a genuine
+// early exit before any subsequent statement in the same Seq executes.
+//
+// Type note: Seq always infers I32 as its result type; Return(Unit) → I32(0)
+// matches that type exactly, so the generated WASM function is well-typed.
+#[test]
+fn return_in_seq_before_abort_proves_early_exit() {
+    assert_eq!(
+        invoke_compiler_expr(
+            AnfExpr::Seq(vec![
+                AnfExpr::Return(Box::new(AnfExpr::Literal(LiteralValue::Unit))),
+                AnfExpr::Abort {
+                    message: "unreachable — Return above must exit the function".to_string(),
+                },
+            ]),
+            "fn.ret_early"
+        ),
+        RuntimeValue::I32(0),
+        "Return in Seq must exit before Abort; I32(0) without trap proves early exit"
+    );
+}
+
 // RUNTIME-CONTINUE-1
 //
 // fn.main =
@@ -1713,10 +1751,7 @@ fn continue_in_while_loop_restarts_iteration() {
                                         name: "next".to_string(),
                                         value: Box::new(AnfExpr::Call {
                                             func: "+".to_string(),
-                                            args: vec![
-                                                "cur".to_string(),
-                                                "one".to_string(),
-                                            ],
+                                            args: vec!["cur".to_string(), "one".to_string()],
                                         }),
                                         body: Box::new(AnfExpr::Let {
                                             name: "_s".to_string(),
