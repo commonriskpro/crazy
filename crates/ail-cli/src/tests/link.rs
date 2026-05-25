@@ -16,12 +16,21 @@ use crate::store_artifacts::NativeArtifactBytes;
 struct FakeLinker;
 
 impl LinkerBoundary for FakeLinker {
-    fn link(&self, object_path: &Path, output_path: &Path) -> Result<LinkerResult, CliError> {
+    fn link(
+        &self,
+        object_path: &Path,
+        output_path: &Path,
+        runtime_lib: Option<&Path>,
+    ) -> Result<LinkerResult, CliError> {
+        let rt = runtime_lib
+            .map(|p| format!(" {}", p.display()))
+            .unwrap_or_default();
         Ok(LinkerResult {
             command: format!(
-                "fake-cc {} -o {}",
+                "fake-cc {} -o {}{}",
                 object_path.display(),
-                output_path.display()
+                output_path.display(),
+                rt,
             ),
             output_path: output_path.to_path_buf(),
         })
@@ -32,33 +41,50 @@ impl LinkerBoundary for FakeLinker {
 struct FailingLinker;
 
 impl LinkerBoundary for FailingLinker {
-    fn link(&self, _object_path: &Path, _output_path: &Path) -> Result<LinkerResult, CliError> {
+    fn link(
+        &self,
+        _object_path: &Path,
+        _output_path: &Path,
+        _runtime_lib: Option<&Path>,
+    ) -> Result<LinkerResult, CliError> {
         Err(CliError::Domain(
             "linker 'cc' unavailable: no such file or directory".to_string(),
         ))
     }
 }
 
-/// Test double: records the output_path it received so tests can assert on it.
+/// Test double: records both output_path and runtime_lib it received.
 struct CapturingLinker {
     captured_output: RefCell<Option<PathBuf>>,
+    captured_runtime_lib: RefCell<Option<PathBuf>>,
 }
 
 impl CapturingLinker {
     fn new() -> Self {
         Self {
             captured_output: RefCell::new(None),
+            captured_runtime_lib: RefCell::new(None),
         }
     }
 
     fn captured_output(&self) -> Option<PathBuf> {
         self.captured_output.borrow().clone()
     }
+
+    fn captured_runtime_lib(&self) -> Option<PathBuf> {
+        self.captured_runtime_lib.borrow().clone()
+    }
 }
 
 impl LinkerBoundary for CapturingLinker {
-    fn link(&self, object_path: &Path, output_path: &Path) -> Result<LinkerResult, CliError> {
+    fn link(
+        &self,
+        object_path: &Path,
+        output_path: &Path,
+        runtime_lib: Option<&Path>,
+    ) -> Result<LinkerResult, CliError> {
         *self.captured_output.borrow_mut() = Some(output_path.to_path_buf());
+        *self.captured_runtime_lib.borrow_mut() = runtime_lib.map(|p| p.to_path_buf());
         Ok(LinkerResult {
             command: format!(
                 "capturing-cc {} -o {}",
@@ -90,7 +116,7 @@ fn detect_system_linker_cmd_returns_non_empty() {
 fn build_linker_args_first_arg_is_object_path() {
     let obj = PathBuf::from("/tmp/foo.o");
     let out = PathBuf::from("/tmp/foo");
-    let args = build_linker_args(&obj, &out);
+    let args = build_linker_args(&obj, &out, None);
 
     assert!(
         !args.is_empty(),
@@ -111,7 +137,7 @@ fn build_linker_args_first_arg_is_object_path() {
 fn build_linker_args_includes_output_path() {
     let obj = PathBuf::from("/tmp/bar.o");
     let out = PathBuf::from("/tmp/bar");
-    let args = build_linker_args(&obj, &out);
+    let args = build_linker_args(&obj, &out, None);
 
     let joined = args.join(" ");
     assert!(
@@ -128,7 +154,7 @@ fn build_linker_args_includes_output_path() {
 fn build_linker_args_has_at_least_two_elements() {
     let obj = PathBuf::from("/a/b.o");
     let out = PathBuf::from("/a/b");
-    let args = build_linker_args(&obj, &out);
+    let args = build_linker_args(&obj, &out, None);
     assert!(
         args.len() >= 2,
         "linker args must have at least 2 elements; got: {args:?}"
@@ -148,7 +174,7 @@ fn cmd_link_missing_artifact_returns_domain_error() {
     init_file_layout(&ail_dir).expect("init layout");
     let store = file_store(ail_dir);
 
-    let result = cmd_link(OutputMode::Human, "dev", None, &store, &FakeLinker);
+    let result = cmd_link(OutputMode::Human, "dev", None, None, &store, &FakeLinker);
     let err = result.expect_err("must fail when no artifact is present");
     let msg = format!("{err}");
     assert!(
@@ -164,7 +190,7 @@ fn cmd_link_missing_artifact_returns_domain_error() {
 #[test]
 fn cmd_link_memory_store_returns_domain_error() {
     let store = memory_store();
-    let result = cmd_link(OutputMode::Human, "dev", None, &store, &FakeLinker);
+    let result = cmd_link(OutputMode::Human, "dev", None, None, &store, &FakeLinker);
     assert!(
         result.is_err(),
         "memory store must return an error (no persisted artifact)"
@@ -204,7 +230,7 @@ fn cmd_link_persisted_artifact_succeeds_with_fake_linker() {
         )
         .expect("save must succeed");
 
-    let result = cmd_link(OutputMode::Human, "dev", None, &store, &FakeLinker);
+    let result = cmd_link(OutputMode::Human, "dev", None, None, &store, &FakeLinker);
     assert!(
         result.is_ok(),
         "cmd_link must succeed with a persisted artifact and FakeLinker; got: {result:?}"
@@ -244,7 +270,7 @@ fn cmd_link_resolves_object_path_from_index() {
         "object file must exist before cmd_link"
     );
 
-    let result = cmd_link(OutputMode::Human, "prod", None, &store, &FakeLinker);
+    let result = cmd_link(OutputMode::Human, "prod", None, None, &store, &FakeLinker);
     assert!(
         result.is_ok(),
         "cmd_link must resolve the object path from the index; got: {result:?}"
@@ -282,6 +308,7 @@ fn cmd_link_custom_output_path_is_accepted() {
         OutputMode::Human,
         "dev",
         Some(custom_out.as_path()),
+        None,
         &store,
         &FakeLinker,
     );
@@ -317,7 +344,7 @@ fn cmd_link_linker_failure_returns_domain_error() {
         )
         .expect("save must succeed");
 
-    let result = cmd_link(OutputMode::Human, "dev", None, &store, &FailingLinker);
+    let result = cmd_link(OutputMode::Human, "dev", None, None, &store, &FailingLinker);
     let err = result.expect_err("must fail when linker fails");
     let msg = format!("{err}");
     assert!(
@@ -352,7 +379,7 @@ fn cmd_link_json_mode_succeeds() {
         )
         .expect("save must succeed");
 
-    let result = cmd_link(OutputMode::Json, "dev", None, &store, &FakeLinker);
+    let result = cmd_link(OutputMode::Json, "dev", None, None, &store, &FakeLinker);
     assert!(
         result.is_ok(),
         "cmd_link in Json mode must succeed; got: {result:?}"
@@ -386,7 +413,7 @@ fn cmd_link_default_output_path_uses_profile_name() {
         .expect("save must succeed");
 
     let capturing = CapturingLinker::new();
-    let result = cmd_link(OutputMode::Human, "myapp", None, &store, &capturing);
+    let result = cmd_link(OutputMode::Human, "myapp", None, None, &store, &capturing);
     assert!(
         result.is_ok(),
         "cmd_link must succeed with persisted artifact; got: {result:?}"
@@ -444,16 +471,148 @@ fn cmd_link_json_output_contract_fields_are_present() {
     // Json mode: verifies all required contract fields are reachable by cmd_link.
     // If any field were missing (object_path, output_path, linker_command, status,
     // profile), the json!() macro call inside cmd_link would fail at construction.
-    let result = cmd_link(OutputMode::Json, "dev", None, &store, &FakeLinker);
+    let result = cmd_link(OutputMode::Json, "dev", None, None, &store, &FakeLinker);
     assert!(
         result.is_ok(),
         "cmd_link Json mode must return Ok when all contract fields are present; got: {result:?}"
     );
 
     // Human mode: verify the status line is present in formatted output.
-    let result_human = cmd_link(OutputMode::Human, "dev", None, &store, &FakeLinker);
+    let result_human = cmd_link(OutputMode::Human, "dev", None, None, &store, &FakeLinker);
     assert!(
         result_human.is_ok(),
         "cmd_link Human mode must also return Ok; got: {result_human:?}"
+    );
+}
+
+// ── Runtime-lib tests ─────────────────────────────────────────────────────
+
+// Scenario: build_linker_args appends runtime_lib when Some.
+//   GIVEN object_path, output_path, and a runtime_lib path
+//   WHEN build_linker_args is called with runtime_lib = Some(...)
+//   THEN the runtime_lib path appears in the args after the output path
+#[test]
+fn build_linker_args_appends_runtime_lib_when_some() {
+    let obj = PathBuf::from("/tmp/prog.o");
+    let out = PathBuf::from("/tmp/prog");
+    let lib = PathBuf::from("/usr/local/lib/ail_runtime.a");
+
+    let args = build_linker_args(&obj, &out, Some(&lib));
+
+    let joined = args.join(" ");
+    assert!(
+        joined.contains("ail_runtime.a"),
+        "args must contain the runtime_lib path; got: {joined}"
+    );
+    // The lib path must appear AFTER the output path in the argument list.
+    let out_pos = joined
+        .find("/tmp/prog")
+        .expect("output path must be present");
+    let lib_pos = joined
+        .find("ail_runtime.a")
+        .expect("runtime_lib must be present");
+    assert!(
+        lib_pos > out_pos,
+        "runtime_lib must appear after the output path; got: {joined}"
+    );
+}
+
+// TRIANGULATE: build_linker_args without runtime_lib does NOT include ail_runtime.
+//   GIVEN object_path and output_path, no runtime_lib
+//   WHEN build_linker_args is called with runtime_lib = None
+//   THEN the args do not contain "runtime"
+#[test]
+fn build_linker_args_no_runtime_lib_when_none() {
+    let obj = PathBuf::from("/tmp/prog.o");
+    let out = PathBuf::from("/tmp/prog");
+    let args = build_linker_args(&obj, &out, None);
+    let joined = args.join(" ");
+    assert!(
+        !joined.contains("runtime"),
+        "args must not reference runtime when runtime_lib is None; got: {joined}"
+    );
+}
+
+// Scenario: cmd_link forwards runtime_lib to the linker boundary.
+//   GIVEN a file store with a saved native artifact and a fake runtime_lib path
+//   WHEN cmd_link is called with runtime_lib = Some(...)
+//   THEN CapturingLinker records the runtime_lib path
+#[test]
+fn cmd_link_forwards_runtime_lib_to_linker() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    let store = file_store(ail_dir.clone());
+
+    let fake_hash = "1".repeat(64);
+    store
+        .save_native_artifact(
+            &fake_hash,
+            "dev",
+            "native",
+            NativeArtifactBytes {
+                object: b"obj-rt",
+                source_map_json: b"{}",
+                artifact_manifest_json: b"{}",
+                capabilities_manifest_json: b"{\"entries\":[]}",
+            },
+        )
+        .expect("save must succeed");
+
+    let runtime_lib_path = PathBuf::from("/usr/local/lib/ail_runtime.a");
+    let capturing = CapturingLinker::new();
+    let result = cmd_link(
+        OutputMode::Human,
+        "dev",
+        None,
+        Some(runtime_lib_path.as_path()),
+        &store,
+        &capturing,
+    );
+    assert!(
+        result.is_ok(),
+        "cmd_link must succeed with runtime_lib; got: {result:?}"
+    );
+
+    let recorded_lib = capturing
+        .captured_runtime_lib()
+        .expect("CapturingLinker must have recorded a runtime_lib path");
+    assert_eq!(
+        recorded_lib, runtime_lib_path,
+        "runtime_lib forwarded to linker must match the provided path"
+    );
+}
+
+// Scenario: cmd_link succeeds without runtime_lib (hint emitted, not an error).
+//   GIVEN a file store with a saved native artifact
+//   WHEN cmd_link is called with runtime_lib = None
+//   THEN Ok is returned (no mandatory runtime_lib requirement)
+#[test]
+fn cmd_link_succeeds_without_runtime_lib() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    let store = file_store(ail_dir.clone());
+
+    let fake_hash = "2".repeat(64);
+    store
+        .save_native_artifact(
+            &fake_hash,
+            "dev",
+            "native",
+            NativeArtifactBytes {
+                object: b"obj-no-rt",
+                source_map_json: b"{}",
+                artifact_manifest_json: b"{}",
+                capabilities_manifest_json: b"{\"entries\":[]}",
+            },
+        )
+        .expect("save must succeed");
+
+    // No runtime_lib — cmd_link should still succeed (the hint is advisory).
+    let result = cmd_link(OutputMode::Human, "dev", None, None, &store, &FakeLinker);
+    assert!(
+        result.is_ok(),
+        "cmd_link must succeed even when runtime_lib is None; got: {result:?}"
     );
 }

@@ -327,6 +327,7 @@ prod runtime rejects non-prod artifacts
 ```txt
 ail link --profile dev
 ail link --profile prod --output ./my-program
+ail link --profile dev --runtime-lib /path/to/ail_runtime.a
 ```
 
 Links the latest persisted native object file for a profile into a runnable
@@ -337,6 +338,7 @@ Inputs:
 
 ```txt
 persisted native artifact (.ail/native/<hash>.o)
+optional: runtime library archive (ail_runtime.a) via --runtime-lib
 ```
 
 Outputs:
@@ -344,6 +346,7 @@ Outputs:
 ```txt
 linked executable at ./<profile> (default) or --output path
 linker_command (for diagnostics)
+runtime_lib (null or the provided path, in JSON output)
 ```
 
 Rules:
@@ -353,6 +356,10 @@ ail link requires a prior ail compile --target native for the profile.
 The system linker (cc on Unix, link.exe on Windows) must be installed.
 Default output path is ./<profile> in the current working directory.
 Use --output to override the executable name.
+Use --runtime-lib to supply the ail-runtime archive and resolve runtime stubs.
+Without --runtime-lib, a hint is emitted advising the user; the link may fail
+  with "undefined symbol" errors for host_call / __ail_malloc / ail_runtime_call
+  unless those symbols are supplied through another mechanism.
 ```
 
 > **Implementation note — native compile+link flow:**
@@ -364,14 +371,25 @@ Use --output to override the executable name.
 >
 > The two-step flow is:
 > ```txt
-> ail compile --target native --profile dev   # emits .ail/native/<hash>.o
-> ail link --profile dev                      # links → ./dev (executable)
+> ail compile --target native --profile dev          # emits .ail/native/<hash>.o
+> ail link --profile dev                             # links → ./dev (hint: no runtime)
+> ail link --profile dev --runtime-lib ail_runtime.a # links → ./dev (self-contained)
 > ```
 >
-> Current limitations: runtime stubs (`host_call`, `__ail_malloc`,
-> `ail_runtime_call`) are not yet bundled by `ail link` — they must be
-> supplied externally at link time.  Full runtime bundling is deferred to
-> Phase 9+.
+> The native object imports three symbols that must be resolved at link time:
+> - `host_call`        — capability dispatch (ail-runtime host boundary)
+> - `__ail_malloc`     — heap allocator stub (ail-runtime allocator)
+> - `ail_runtime_call` — concurrency/resource/channel dispatch (Phase 9+)
+>
+> Pass `--runtime-lib <path/to/ail_runtime.a>` to bundle these into the linked
+> executable.  When the flag is absent, `ail link` succeeds but emits a hint
+> advising the user; the downstream linker will fail with "undefined symbol"
+> errors if those symbols are not otherwise provided.  The hint is advisory and
+> not a hard error — advanced users may supply the symbols via custom link scripts
+> or `-L`/`-l` flags through a wrapper.
+>
+> Full deterministic runtime archive provisioning (building and distributing
+> `ail_runtime.a`) is deferred to Phase 9.
 
 ### Run workflow
 

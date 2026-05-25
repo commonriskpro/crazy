@@ -216,6 +216,14 @@ enum Commands {
     /// Resolves the latest persisted native artifact for the given profile and
     /// invokes the system linker (`cc` on Unix, `link.exe` on Windows).
     /// Run `ail compile --target native` first to produce the object file.
+    ///
+    /// The native object imports three symbols that must be supplied at link time:
+    ///   host_call        — capability dispatch (ail-runtime host boundary)
+    ///   __ail_malloc     — heap allocator stub (ail-runtime allocator)
+    ///   ail_runtime_call — concurrency/resource/channel dispatch (Phase 9+)
+    /// Pass --runtime-lib <path/to/ail_runtime.a> to bundle these into the
+    /// linked executable.  Without it the linker may fail with undefined-symbol
+    /// errors unless the symbols are supplied through another mechanism.
     Link {
         /// Compilation profile to link (e.g. `dev`, `prod`).
         #[arg(long, default_value = "dev")]
@@ -224,6 +232,14 @@ enum Commands {
         /// Defaults to the profile name in the current directory.
         #[arg(long, short = 'o')]
         output: Option<PathBuf>,
+        /// Path to the ail-runtime static archive (e.g. `ail_runtime.a`).
+        ///
+        /// When provided, the archive is appended to the linker command so that
+        /// the native object's unresolved imports (host_call, __ail_malloc,
+        /// ail_runtime_call) are resolved at link time.  Without this flag the
+        /// linker may report undefined-symbol errors.
+        #[arg(long)]
+        runtime_lib: Option<PathBuf>,
     },
 
     /// Evaluate an inline expression without initializing a project.
@@ -565,9 +581,18 @@ pub async fn run() -> Result<(), CliError> {
             )
             .await
         }
-        Commands::Link { profile, output } => {
-            cmd_link(mode, &profile, output.as_deref(), &store, &SystemLinker)
-        }
+        Commands::Link {
+            profile,
+            output,
+            runtime_lib,
+        } => cmd_link(
+            mode,
+            &profile,
+            output.as_deref(),
+            runtime_lib.as_deref(),
+            &store,
+            &SystemLinker,
+        ),
         Commands::Eval { expression } => cmd_eval(mode, &expression),
         Commands::Init { branch } => cmd_init(mode, &store, &branch).await,
         Commands::Status => cmd_status(mode, &store).await,
