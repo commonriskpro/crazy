@@ -25,12 +25,19 @@ use crate::wasm_abi::{EffectDataLayout, WasmSignature, binding_result, export_na
 /// `(i64, i64) → i64` at the end of the section.  Its type index is
 /// `signatures.len() as u32` (the entry after all binding signatures).
 ///
-/// Returns `None` when `signatures` is empty AND `needs_fold` is `false`.
+/// When `needs_closure_reducer` is `true`, appends the closure-reducer type
+/// `(i64, i64, i64) → i64` immediately after the fold-reducer type.
+/// This type is used by `call_indirect` when dispatching Fold with a captured
+/// Lambda reducer (PR3 general closure dispatch).
+///
+/// Returns `None` when `signatures` is empty AND `needs_fold` is `false`
+/// AND `needs_closure_reducer` is `false`.
 pub(crate) fn build_type_section(
     signatures: &[WasmSignature],
     needs_fold: bool,
+    needs_closure_reducer: bool,
 ) -> Option<TypeSection> {
-    if signatures.is_empty() && !needs_fold {
+    if signatures.is_empty() && !needs_fold && !needs_closure_reducer {
         return None;
     }
     let mut types = TypeSection::new();
@@ -48,6 +55,15 @@ pub(crate) fn build_type_section(
             .ty()
             .function([ValType::I64, ValType::I64], [ValType::I64]);
     }
+    if needs_closure_reducer {
+        // Closure-reducer type: (i64, i64, i64) → i64.
+        // Params: (env_ptr: i64, acc: i64, elem: i64).
+        // Appended after fold_reducer_type (if any).  Used for call_indirect
+        // dispatch when the Fold reducer is a captured Lambda (PR3).
+        types
+            .ty()
+            .function([ValType::I64, ValType::I64, ValType::I64], [ValType::I64]);
+    }
     Some(types)
 }
 
@@ -57,6 +73,7 @@ pub(crate) fn build_type_section_with_host_call(
     needs_host_call_write: bool,
     needs_resource_call: bool,
     needs_fold: bool,
+    needs_closure_reducer: bool,
 ) -> TypeSection {
     let mut types = TypeSection::new();
     if needs_host_call {
@@ -112,6 +129,15 @@ pub(crate) fn build_type_section_with_host_call(
             .ty()
             .function([ValType::I64, ValType::I64], [ValType::I64]);
     }
+    if needs_closure_reducer {
+        // Closure-reducer type: (i64, i64, i64) → i64.
+        // Params: (env_ptr: i64, acc: i64, elem: i64).
+        // Appended after fold_reducer_type (if any).  Used for call_indirect
+        // dispatch when the Fold reducer is a captured Lambda (PR3).
+        types
+            .ty()
+            .function([ValType::I64, ValType::I64, ValType::I64], [ValType::I64]);
+    }
     types
 }
 
@@ -123,14 +149,20 @@ pub(crate) fn build_type_section_with_host_call(
 /// each referencing `fold_reducer_type_idx`.  These correspond to nested
 /// Lambda bodies that were hoisted into the function table (Wave 12A).
 ///
-/// Returns `None` when `signatures` is empty AND `hoisted_count == 0`.
+/// `closure_hoisted_count` extra entries are appended after those, each
+/// referencing `closure_reducer_type_idx`.  These correspond to Lambda bodies
+/// with captures that were hoisted into the function table (Wave 16A PR3).
+///
+/// Returns `None` when `signatures` is empty AND all hoisted counts are 0.
 pub(crate) fn build_function_section(
     signatures: &[WasmSignature],
     type_offset: u32,
     hoisted_count: u32,
     fold_reducer_type_idx: Option<u32>,
+    closure_hoisted_count: u32,
+    closure_reducer_type_idx: Option<u32>,
 ) -> Option<FunctionSection> {
-    if signatures.is_empty() && hoisted_count == 0 {
+    if signatures.is_empty() && hoisted_count == 0 && closure_hoisted_count == 0 {
         return None;
     }
     let mut functions = FunctionSection::new();
@@ -142,6 +174,14 @@ pub(crate) fn build_function_section(
         let fold_type = fold_reducer_type_idx.unwrap_or(type_offset + signatures.len() as u32);
         for _ in 0..hoisted_count {
             functions.function(fold_type);
+        }
+    }
+    // Closure-hoisted Lambda bodies have the closure-reducer type (i64, i64, i64) → i64.
+    if closure_hoisted_count > 0 {
+        let closure_type = closure_reducer_type_idx
+            .unwrap_or(type_offset + signatures.len() as u32 + hoisted_count + 1);
+        for _ in 0..closure_hoisted_count {
+            functions.function(closure_type);
         }
     }
     Some(functions)
