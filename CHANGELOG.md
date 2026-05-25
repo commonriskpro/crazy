@@ -177,12 +177,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Wave 26B** — `SeededRandom` operation contract
   (`seeded_random_unknown_op_returns_error` in `replay_tests.rs`): asserts any
   operation string other than `"next_u64"` returns `HostError::Custom` naming the
-  handler and the unknown op.
+  handler and the unknown op. Companion positive-path test
+  `seeded_random_next_u64_returns_8_bytes` asserts `"next_u64"` returns exactly
+  8 bytes of random data.
 - **Wave 26C** — Fold wrong-arity preflight guard unit tests: proves 1-param, 3-param,
   and 0-param capture-free Lambda reducers in `Fold` return
   `UnsupportedWasmConstruct("FoldWithUncapturedWrongArityReducer")` before code
   generation; negative cases confirm 2-param capture-free (hoistable) and 2-param
-  captured Lambda are not rejected by the guard.
+  captured Lambda are not rejected by the guard. Transitive-alias case
+  (`fold_with_transitive_alias_of_wrong_arity_reducer_returns_uncaptured_wrong_arity_error`)
+  proves the guard propagates membership through `Var` aliases so an aliased
+  wrong-arity reducer is caught even when referenced indirectly.
 - **Wave 26D** — ACL `not()` and `mod()` E2E conformance (RUNTIME-ACL-NOT-1/2/3,
   RUNTIME-ACL-MOD-1/2): proves `not(true)`, `not(false)`, `not(eq(1,2))`,
   `mod(10,3)`, and `mod(10,2)` through ACL parser → Core → ANF → WASM → wasmtime
