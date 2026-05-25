@@ -18,10 +18,11 @@ use std::collections::BTreeSet;
 
 use ail_context::source::ContextSource;
 use ail_context::{
-    ContextError, ContextQuery, ContextResponse, InMemoryContextSource, QueryBudget, QueryScope,
-    ResponseBuilder, SnapshotSelector, StoreContextSource,
+    ContextError, ContextQuery, ContextResponse, ContextServer, ContextServerConfig,
+    FieldRedactionRule, InMemoryContextSource, QueryBudget, QueryScope, ResponseBuilder,
+    SnapshotSelector, StoreContextSource, TrustLevel,
 };
-use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef};
+use ail_core::semantic_graph::{GraphNode, NodeKind, NodeRef, SemanticGraph};
 use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::graph::GraphStore;
 use ail_storage::object::{ObjectId, ObjectStore, RawObject};
@@ -384,4 +385,86 @@ fn cbor_encode_decode_reencode_produces_identical_bytes() {
         bytes_first, bytes_second,
         "CBOR encode → decode → re-encode must produce byte-identical output"
     );
+}
+
+// ── 3.9 Redaction guarantee: sensitive body_expr never leaks through JSON ─
+//
+// Spec: "Redaction is explicit" (context-server.md §Security and redaction)
+//       "Summary cannot reveal redacted structured data."
+//
+//   GIVEN a ContextServer configured to redact `body_expr` for Public trust
+//   AND a graph node carrying a sensitive literal value in body_expr
+//   WHEN a Graph query is issued without a session (public trust)
+//   THEN:
+//     - the response is marked redacted
+//     - serde_json serialization of the full response does NOT contain the
+//       sensitive literal
+//     - the summary does NOT contain the sensitive literal
+//
+// This test pins the full server-to-JSON pipeline, not just ResponseBuilder.
+// It is the integration-level guarantee that redaction cannot be bypassed by
+// any serialization path added in the future.
+//
+// RED: no integration-level guarantee test existed for the JSON output path.
+// GREEN: ContextServer redaction rules filter body_expr before ResponseBuilder
+//        and the resulting JSON is verified to be clean.
+#[test]
+fn redacted_body_expr_does_not_leak_through_server_to_json() {
+    block_on(async {
+        const SECRET: &str = "SENSITIVE-CREDENTIAL-xyz987";
+
+        let snap = make_snapshot_envelope("redact-guarantee");
+        let mut sensitive = GraphNode::new(NodeRef(0), NodeKind::Function, "payment_handler");
+        sensitive.body_expr = Some(SECRET.to_string());
+        let graph = SemanticGraph {
+            nodes: vec![sensitive],
+            edges: vec![],
+        };
+
+        let source = InMemoryContextSource::new();
+        source.insert_snapshot(snap.clone());
+        source.insert_graph(snap.graph_root_hash, graph);
+
+        let server = ContextServer::new(source).with_config(ContextServerConfig {
+            redaction_rules: vec![FieldRedactionRule {
+                field: "body_expr".to_string(),
+                min_trust: TrustLevel::Privileged,
+                category: "restricted business logic".to_string(),
+            }],
+            ..Default::default()
+        });
+
+        let response = server
+            .query(
+                &ContextQuery::Graph {
+                    scope: QueryScope::Full,
+                    budget: QueryBudget::default(),
+                },
+                &SnapshotSelector::ById(snap.id),
+                None, // public session — no auth
+            )
+            .await
+            .expect("query must succeed even with redacted nodes");
+
+        assert!(
+            response.redacted,
+            "response must be marked redacted when body_expr is withheld"
+        );
+
+        // Guarantee: the sensitive literal must not appear anywhere in the
+        // JSON-serialized output, including nested fields and the summary.
+        let json = serde_json::to_string(&response)
+            .expect("JSON serialization of ContextResponse must succeed");
+        assert!(
+            !json.contains(SECRET),
+            "redacted body_expr must not appear in JSON output; \
+             sensitive value leaked through serialization: {json}"
+        );
+
+        // Guarantee: the summary renderer must also honour redaction.
+        assert!(
+            !response.summary.contains(SECRET),
+            "summary must not reveal the redacted body_expr value"
+        );
+    });
 }

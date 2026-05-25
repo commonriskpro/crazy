@@ -631,6 +631,7 @@ The first implementation is an in-process semantic context API rather than a tra
 |-------|-----------------------|
 | Query syntax | All protocol-doc query variants (`context`, `impact`, `callers`, `callees`, `effects`, `contracts`, `proofs`, `resources`, `boundaries`, `history`, `why`, `diff`, `risks`, `todo`, `refactor_context`, `extract_candidates`, `move_safety`, `capabilities`, `handlers`, `concurrency`, `tasks`, `assumptions`, plus `graph`) are implemented as `ContextQuery` enum variants with graph traversal handlers in `selection.rs`. CLI/transport syntax remains future work. |
 | Transport adapter | `StdioTransport` in `crates/ail-context/src/transport.rs` provides newline-delimited JSON-RPC framing over `ContextServer::handle_rpc`. `ContextRpcRequest` / `ContextRpcResponse` remain the shared envelope; HTTP and MCP adapters can reuse them without changing the server. |
+| HTTP transport | `HttpTransport` in `crates/ail-context/src/http_transport.rs` provides a minimal HTTP/1.1 JSON-RPC adapter for local tooling (IDE extensions, integration tests). See **Local transport hardening** below. |
 | Summaries | Deterministic renderer in `crates/ail-context/src/summary.rs`. Structured data remains authoritative. |
 | Signing | Distributed signing is handled in remote/bundle primitives, not context responses yet. |
 | Budgets | Response DTOs include limits and budget-related errors; model-tier defaults remain policy work. |
@@ -638,3 +639,32 @@ The first implementation is an in-process semantic context API rather than a tra
 | Audit/runtime exposure | Field-based node redaction is enforced before slice rendering. Direct queries for redacted targets return `E_ACCESS_DENIED` unless the session trust level satisfies the configured policy; full audit exposure policy remains future work. |
 
 Code references: `crates/ail-context/src/lib.rs`, `builder.rs`, `dto.rs`, `server.rs`, `summary.rs`.
+
+### Local transport hardening (current)
+
+`HttpTransport` is designed for **local/dev use only** (IDE extensions, CLI integrations, integration tests).  Its current hardening is conservative but sufficient for that scope:
+
+| Guard | Default | Notes |
+|-------|---------|-------|
+| Loopback-only peer filter | **enabled** | `serve_one` checks `stream.peer_addr()` and drops non-loopback connections without sending any response body.  Protects against accidental public exposure when the caller binds to `0.0.0.0` instead of `127.0.0.1`.  Disable via `HttpTransport::with_loopback_only(false)` only in tests or future remote wrappers. |
+| Request body size limit | 512 KiB | Checked against `Content-Length` before any body bytes are read; returns HTTP 413. |
+| Header size limit | 8 KiB | Cumulative bytes across request line + all headers; stops reading and returns an I/O error if exceeded. |
+| Per-connection read timeout | 30 s | Set via `TcpStream::set_read_timeout`. |
+| Per-connection write timeout | 30 s | Set via `TcpStream::set_write_timeout`. |
+| Method enforcement | POST only | Any other method returns HTTP 405. |
+| One request per connection | enforced | Each accepted connection handles exactly one request/response pair then closes. |
+
+### Production hardening (future)
+
+The following are **not** implemented and are explicitly out of scope until the protocol is validated in local use:
+
+```txt
+- TLS (mTLS for remote deployments)
+- Distributed authentication (OAuth2, API keys, capability tokens)
+- Rate limiting and per-client quotas
+- Distributed trust / multi-tenant isolation
+- Audit log for context queries
+- MCP transport adapter
+```
+
+The `ContextRpcRequest` / `ContextRpcResponse` envelope is transport-agnostic: adding TLS or a different auth layer does not require changing `ContextServer`.
