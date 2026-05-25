@@ -241,11 +241,16 @@ impl Handler for ClockHandler {
         _payload: &[u8],
     ) -> HostResult<Vec<u8>> {
         // Contract: clock.now returns epoch-milliseconds as i64.
-        // Current epoch ms ≈ 1.7e12, well within i64::MAX (9.2e18).
-        let now_ms = SystemTime::now()
+        // Current epoch ms ≈ 1.7e12, well within i64::MAX (9.2e18), but we
+        // use a checked conversion so a pathological system clock (or a host
+        // running after year ~292 million) produces a clear error instead of
+        // silently wrapping.
+        let now_ms: i64 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| HostError::Custom(format!("clock before unix epoch: {e}")))?
-            .as_millis() as i64;
+            .as_millis()
+            .try_into()
+            .map_err(|_| HostError::Custom("epoch-ms overflows i64".to_string()))?;
         Ok(now_ms.to_le_bytes().to_vec())
     }
 }
