@@ -4128,3 +4128,82 @@ end
         "let(lst, list(5,10), index(lst,1)) must return I64(10) via IndexGet at offset 16"
     );
 }
+
+// ── Wave 23C: ACL source-level E2E tests for record field update ──────────
+//
+// Spec scenarios covered (RUNTIME-ACL-RECORD-UPDATE-1,
+//                          RUNTIME-ACL-RECORD-UPDATE-2):
+//
+//  RUNTIME-ACL-RECORD-UPDATE-1: ACL body
+//    `let(r, record(x,10,y,42), let(_u, update(r,y,99), field(r,y)))`
+//    must:
+//    (1) create the two-field record; (2) bind it as `r` (layout ["x","y"]);
+//    (3) `update(r, y, 99)` → CoreExpr::FieldUpdate{record:Var("r"),
+//        field:"y", value:Lit(99)} → AnfExpr::FieldUpdate → wasm_emit stores
+//        I64(99) at ptr+8 in-place and returns ptr;
+//    (4) `field(r, y)` → FieldGet at offset 8 → I64(99).
+//    Returns I64(99).  Proves the full ACL source → update → field pipeline.
+//
+//  RUNTIME-ACL-RECORD-UPDATE-2: Same record and update as above but reads
+//    `field(r, x)` (offset 0) instead of `field(r, y)`.  Must return I64(10).
+//    Proves FieldUpdate does not corrupt the adjacent field; the update is
+//    field-surgical and leaves `x` untouched.
+
+// RUNTIME-ACL-RECORD-UPDATE-1
+//
+// ACL body: let(r, record(x, 10, y, 42), let(_u, update(r, y, 99), field(r, y)))
+//
+//   Pipeline:
+//   1. `record(x, 10, y, 42)` → RecordNew{fields:[("x",Lit(10)),("y",Lit(42))]}
+//   2. `let(r, <record>, ...)` binds "r" and registers layout ["x","y"].
+//   3. `update(r, y, 99)` → FieldUpdate{record:Var("r"), field:"y", value:Lit(99)}.
+//      ANF lower: let _t0=99 in FieldUpdate{record:"r", field:"y", value:Var("_t0")}.
+//      WASM emit: load r_ptr, i64.const 99, i64.store offset=8 → stores 99 @ ptr+8;
+//      returns ptr as I32 (_u = ptr).
+//   4. `field(r, y)` → FieldGet{record:"r", field:"y"} → offset 8 → I64(99).
+//   5. Returns I64(99).
+//
+// RecordNew memory layout: x @ offset 0 (I64 10), y @ offset 8 (I64 99 after update).
+#[test]
+fn acl_record_field_update_mutates_target_field() {
+    let acl = "\
+change acl_record_update_1 base=0
+author tester
+description let(r,record(x,10,y,42),let(_u,update(r,y,99),field(r,y))): update(y←99) must be visible via field(r,y)
+op create_function id=fn.main return=Int body=let(r, record(x, 10, y, 42), let(_u, update(r, y, 99), field(r, y)))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(99),
+        "update(r,y,99) must store 99 at field y; field(r,y) must return I64(99)"
+    );
+}
+
+// RUNTIME-ACL-RECORD-UPDATE-2
+//
+// ACL body: let(r, record(x, 10, y, 42), let(_u, update(r, y, 99), field(r, x)))
+//
+//   Pipeline:
+//   1..3. Same as RUNTIME-ACL-RECORD-UPDATE-1 up through FieldUpdate execution.
+//         After update: memory = [I64(10) @ 0, I64(99) @ 8].
+//   4. `field(r, x)` → FieldGet{record:"r", field:"x"} → offset 0 → I64(10).
+//   5. Returns I64(10).
+//
+// Proves FieldUpdate is field-surgical: writing to offset 8 (field "y") does
+// not corrupt the value at offset 0 (field "x").
+#[test]
+fn acl_record_field_update_leaves_adjacent_field_unchanged() {
+    let acl = "\
+change acl_record_update_2 base=0
+author tester
+description let(r,record(x,10,y,42),let(_u,update(r,y,99),field(r,x))): update(y←99) must not corrupt field x
+op create_function id=fn.main return=Int body=let(r, record(x, 10, y, 42), let(_u, update(r, y, 99), field(r, x)))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(10),
+        "update(r,y,99) must not corrupt field x; field(r,x) must still return I64(10)"
+    );
+}
