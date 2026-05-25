@@ -988,6 +988,24 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         }),
     });
 
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.regex".to_string()),
+        module_path: "std::text".to_string(),
+        name: "regex".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Bool".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["pattern is a valid regex".to_string()],
+            ensures: vec!["returns Bool indicating whether pattern matches the input".to_string()],
+        }),
+    });
+
     // ── std.iter functions ────────────────────────────────────────────────
 
     reg.entries.push(StdlibEntry {
