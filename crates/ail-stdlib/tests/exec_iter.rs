@@ -1,11 +1,13 @@
 // Tests for iter functional exec entries via call_pure_stdlib.
 //
 // TDD: written BEFORE T8 implementation.
-// Spec: STDLIB-EXEC-ITER-1..6
+// Spec: STDLIB-EXEC-ITER-1..6, STDLIB-ITER-CONTRACT-1..4
 //
 // fold convention: fn receives List([acc, item]) as single arg (binary encoding).
 
+use ail_core::semantic_graph::NodeKind;
 use ail_stdlib::exec::{StdlibExecError, StdlibValue, call_pure_stdlib};
+use ail_stdlib::v1_registry_with_functions;
 
 // Helper: function that doubles an Int
 fn double(v: StdlibValue) -> Result<StdlibValue, StdlibExecError> {
@@ -175,4 +177,71 @@ fn iter_map_non_list_arg_returns_type_error() {
         &[StdlibValue::Int(1), StdlibValue::Function(double)],
     );
     assert_eq!(result, Err(StdlibExecError::Type { expected: "List" }));
+}
+
+// ── STDLIB-ITER-CONTRACT-1..4: v1 contract_clauses content ──────────────
+//
+// Prove that all four std.iter.* function entries carry honest, non-empty
+// contract_clauses with at least one requires and one ensures clause.
+
+fn iter_entry_contracts(id: &str) -> Option<(Vec<String>, Vec<String>)> {
+    let reg = v1_registry_with_functions();
+    reg.entries.iter().find_map(|e| {
+        if e.id.0 == id && e.kind == NodeKind::Function {
+            e.contract_clauses
+                .as_ref()
+                .map(|c| (c.requires.clone(), c.ensures.clone()))
+        } else {
+            None
+        }
+    })
+}
+
+// STDLIB-ITER-CONTRACT-1
+#[test]
+fn v1_iter_map_has_function_entry_with_contracts() {
+    let (req, ens) = iter_entry_contracts("std.iter.map")
+        .expect("std.iter.map must be a Function entry with contract_clauses");
+    assert!(!req.is_empty(), "std.iter.map requires must be non-empty");
+    assert!(!ens.is_empty(), "std.iter.map ensures must be non-empty");
+}
+
+// STDLIB-ITER-CONTRACT-2
+#[test]
+fn v1_iter_filter_has_function_entry_with_contracts() {
+    let (req, ens) = iter_entry_contracts("std.iter.filter")
+        .expect("std.iter.filter must be a Function entry with contract_clauses");
+    assert!(
+        !req.is_empty(),
+        "std.iter.filter requires must be non-empty"
+    );
+    assert!(!ens.is_empty(), "std.iter.filter ensures must be non-empty");
+}
+
+// STDLIB-ITER-CONTRACT-3: also verifies fold's binary-pair calling convention
+#[test]
+fn v1_iter_fold_has_function_entry_with_contracts() {
+    let (req, ens) = iter_entry_contracts("std.iter.fold")
+        .expect("std.iter.fold must be a Function entry with contract_clauses");
+    assert!(!req.is_empty(), "std.iter.fold requires must be non-empty");
+    assert!(!ens.is_empty(), "std.iter.fold ensures must be non-empty");
+    assert!(
+        req.iter().any(|r| r.contains("List([acc, item])")),
+        "std.iter.fold requires must document the List([acc, item]) binary-pair convention; got: {req:?}"
+    );
+}
+
+// STDLIB-ITER-CONTRACT-4
+#[test]
+fn v1_iter_traverse_has_function_entry_with_contracts() {
+    let (req, ens) = iter_entry_contracts("std.iter.traverse")
+        .expect("std.iter.traverse must be a Function entry with contract_clauses");
+    assert!(
+        !req.is_empty(),
+        "std.iter.traverse requires must be non-empty"
+    );
+    assert!(
+        !ens.is_empty(),
+        "std.iter.traverse ensures must be non-empty"
+    );
 }
