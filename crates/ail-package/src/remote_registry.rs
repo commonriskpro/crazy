@@ -195,6 +195,16 @@ pub trait RegistryClient {
 /// package/version replaces the stored entry but the sequence number still
 /// advances, preserving the transparency-log invariant that sequence numbers
 /// are strictly increasing across the lifetime of a registry instance.
+///
+/// ## Single-thread contract
+///
+/// `signed_packages` and `next_sequence` use `RefCell`/`Cell` for interior
+/// mutability.  Both types are `!Sync` — the compiler prevents sharing across
+/// threads.  The HTTP server creates one `InMemoryRegistryClient` per spawned
+/// thread and processes connections serially, so no synchronisation is
+/// required.  A future multi-threaded registry would need to wrap both fields
+/// together in a `Mutex<(Vec<SignedPackage>, u64)>` to keep the two mutations
+/// atomic as a pair.
 pub struct InMemoryRegistryClient {
     registry: crate::registry::PackageRegistry,
     signed_packages: RefCell<Vec<SignedPackage>>,
@@ -915,6 +925,52 @@ mod tests {
             s2 > s1,
             "re-publishing same name/version must still advance sequence: s1={s1} s2={s2}"
         );
+    }
+
+    // ── search_exactly_one_result_after_same_version_republish ───────────
+    // Structural invariant: retain() removes the previous entry before the new
+    // one is pushed, so a same-name/version republish must not leave duplicate
+    // rows in the store.  Search must return exactly 1 result.
+    //
+    //   GIVEN an in-memory registry
+    //   WHEN pkg v1.0.0 is published and then republished (same name/version)
+    //   THEN search("dedup") returns exactly 1 result
+    #[test]
+    fn search_exactly_one_result_after_same_version_republish() {
+        let kp = gen_keypair();
+        let client = InMemoryRegistryClient::new();
+
+        client
+            .publish(PublishRequest {
+                signed_package: kp
+                    .sign_manifest(make_manifest("dedup.pkg", "1.0.0"))
+                    .expect("sign first"),
+            })
+            .expect("first publish");
+
+        // Re-publish the same name/version; retain() must deduplicate.
+        client
+            .publish(PublishRequest {
+                signed_package: kp
+                    .sign_manifest(make_manifest("dedup.pkg", "1.0.0"))
+                    .expect("sign second"),
+            })
+            .expect("second publish");
+
+        let search = client
+            .search(SearchRequest {
+                query: "dedup".to_string(),
+                limit: None,
+            })
+            .expect("search");
+
+        assert_eq!(
+            search.results.len(),
+            1,
+            "same-version republish must not leave duplicate search entries"
+        );
+        assert_eq!(search.results[0].name, "dedup.pkg");
+        assert_eq!(search.results[0].latest_version, "1.0.0");
     }
 
     // ── sequence_monotonic_across_unrelated_publishes ─────────────────────
