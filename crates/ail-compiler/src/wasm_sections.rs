@@ -178,8 +178,16 @@ pub(crate) fn build_function_section(
     }
     // Closure-hoisted Lambda bodies have the closure-reducer type (i64, i64, i64) → i64.
     if closure_hoisted_count > 0 {
-        let closure_type = closure_reducer_type_idx
-            .unwrap_or(type_offset + signatures.len() as u32 + hoisted_count + 1);
+        // Fallback formula: closure-reducer type is always at
+        //   type_offset + signatures.len() + 1
+        // (immediately after fold_reducer_type which is at type_offset + signatures.len()).
+        // The previous formula incorrectly included `+ hoisted_count`, which
+        // references the function section (not the type section) and would
+        // produce an out-of-range type index.  This fallback is dead code in
+        // practice (closure_reducer_type_idx is always Some when needs_fold),
+        // but the formula is kept correct as a defence-in-depth safeguard.
+        let closure_type =
+            closure_reducer_type_idx.unwrap_or(type_offset + signatures.len() as u32 + 1);
         for _ in 0..closure_hoisted_count {
             functions.function(closure_type);
         }

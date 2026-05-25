@@ -272,6 +272,61 @@ fn collect_closure_in_expr(expr: &AnfExpr, out: &mut Vec<(Vec<String>, Vec<Strin
     }
 }
 
+// ── expr_contains_2param_lambda ───────────────────────────────────────────
+
+/// Returns `true` when `expr` contains — directly or through recursive
+/// sub-expressions — any `Lambda` node with exactly 2 parameters.
+///
+/// Used by the nested-hoistable-Lambda gate in `emit_wasm_with_profile`:
+/// both `collect_hoistable_lambdas` and `collect_closure_hoistable_lambdas`
+/// do NOT recurse into Lambda bodies.  A 2-param Lambda nested inside a
+/// hoisted or closure-hoisted Lambda body would consume a table index that
+/// was never allocated, silently writing an out-of-range index into linear
+/// memory (not caught by `wasmparser::validate`).
+///
+/// The gate rejects such programs at compile time with
+/// `CompileError::UnsupportedWasmConstruct` until recursive
+/// collection/indexing is implemented.
+fn expr_contains_2param_lambda(expr: &AnfExpr) -> bool {
+    match expr {
+        AnfExpr::Lambda { params, body, .. } => {
+            // If this Lambda itself has 2 params it IS a hoistable/closure-hoistable
+            // nested Lambda — the problem case.  Otherwise recurse into its body.
+            params.len() == 2 || expr_contains_2param_lambda(body)
+        }
+        AnfExpr::Let { value, body, .. } => {
+            expr_contains_2param_lambda(value) || expr_contains_2param_lambda(body)
+        }
+        AnfExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => expr_contains_2param_lambda(then_branch) || expr_contains_2param_lambda(else_branch),
+        AnfExpr::Return(inner) => expr_contains_2param_lambda(inner),
+        AnfExpr::Seq(exprs) => exprs.iter().any(expr_contains_2param_lambda),
+        AnfExpr::Match { arms, .. } => arms.iter().any(|a| expr_contains_2param_lambda(&a.body)),
+        AnfExpr::Loop { body } => expr_contains_2param_lambda(body),
+        AnfExpr::Break { value } => expr_contains_2param_lambda(value),
+        AnfExpr::WhileLoop { body, .. } | AnfExpr::ForEach { body, .. } => {
+            expr_contains_2param_lambda(body)
+        }
+        AnfExpr::RecordNew { fields } => fields.iter().any(|(_, v)| expr_contains_2param_lambda(v)),
+        AnfExpr::FieldUpdate { value, .. } => expr_contains_2param_lambda(value),
+        AnfExpr::TupleNew(elems) | AnfExpr::ListNew(elems) => {
+            elems.iter().any(expr_contains_2param_lambda)
+        }
+        AnfExpr::VariantNew {
+            payload: Some(p), ..
+        } => expr_contains_2param_lambda(p),
+        AnfExpr::VariantNew { payload: None, .. } => false,
+        AnfExpr::ShortCircuitAnd { right, .. } | AnfExpr::ShortCircuitOr { right, .. } => {
+            expr_contains_2param_lambda(right)
+        }
+        // Atomic or non-recursive variants — no nested Lambdas.
+        _ => false,
+    }
+}
+
 // ── has_fold_with_captured_reducer ───────────────────────────────────────
 
 /// Returns `true` when any `Fold` in `bindings` has a `func` that is
@@ -604,6 +659,30 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         vec![]
     };
     let n_closure_hoisted = closure_hoistable_lambdas.len() as u32;
+
+    // Gate: W1 — nested 2-param Lambdas inside hoisted Lambda bodies.
+    //
+    // `collect_hoistable_lambdas` and `collect_closure_hoistable_lambdas` do
+    // NOT recurse into Lambda bodies (those become separate WASM functions).
+    // A 2-param Lambda nested inside a hoisted or closure-hoisted Lambda body
+    // would consume a table index that was never allocated, silently writing an
+    // out-of-range index into linear memory — not caught by wasmparser::validate.
+    //
+    // Reject at compile time until recursive collection/indexing is implemented.
+    for (_, body) in &hoisted_lambdas {
+        if expr_contains_2param_lambda(body) {
+            return Err(CompileError::UnsupportedWasmConstruct(
+                "NestedHoistableLambda".to_string(),
+            ));
+        }
+    }
+    for (_, _, body) in &closure_hoistable_lambdas {
+        if expr_contains_2param_lambda(body) {
+            return Err(CompileError::UnsupportedWasmConstruct(
+                "NestedClosureHoistableLambda".to_string(),
+            ));
+        }
+    }
 
     // Total functions in the module = bindings + hoisted + closure-hoisted.
     let n_bindings = anf.bindings.len() as u32;

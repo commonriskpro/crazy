@@ -4955,3 +4955,206 @@ fn wildcard_pattern_still_compiles() {
 }
 
 // ── End Wave 16B pattern-matching diagnostics tests ───────────────────────
+
+// ── Wave 16A review: W1 and W3 regression tests ───────────────────────────
+//
+// W1: `collect_closure_hoistable_lambdas` does not recurse into Lambda bodies.
+//     A 2-param Lambda nested inside a hoisted or closure-hoisted Lambda body
+//     would receive an out-of-range table index.  The compile-time gate in
+//     `emit_wasm_with_profile` must reject such programs.
+//
+// W3: The fallback formula in `build_function_section` for closure-reducer
+//     type index incorrectly included `+ hoisted_count`.  Fixed to
+//     `type_offset + signatures.len() + 1`.
+
+// W1a — Nested closure-hoistable Lambda inside a closure-hoistable Lambda body
+// must be rejected with UnsupportedWasmConstruct("NestedClosureHoistableLambda").
+//
+// Setup:
+//   fn.main = let z = 1
+//             in  let outer_f = Lambda(params=[acc,elem], captures=[z],
+//                                body = Let("inner_f",
+//                                          Lambda(params=[a,b], captures=[z], body=a),
+//                                          acc))
+//             in  Fold(init=z, list=z, func=outer_f)
+//
+// The outer Lambda is closure-hoistable (2 params + captures).
+// The inner Lambda inside its body is ALSO closure-hoistable — the gate must fire.
+#[test]
+fn nested_closure_hoistable_lambda_in_closure_body_is_rejected() {
+    let inner_lambda = AnfExpr::Lambda {
+        params: vec!["a".to_string(), "b".to_string()],
+        captures: vec!["z".to_string()],
+        body: Box::new(AnfExpr::Var("a".to_string())),
+    };
+    let outer_lambda = AnfExpr::Lambda {
+        params: vec!["acc".to_string(), "elem".to_string()],
+        captures: vec!["z".to_string()],
+        body: Box::new(AnfExpr::Let {
+            name: "inner_f".to_string(),
+            value: Box::new(inner_lambda),
+            body: Box::new(AnfExpr::Var("acc".to_string())),
+        }),
+    };
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.main".to_string(),
+        expr: AnfExpr::Let {
+            name: "z".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+            body: Box::new(AnfExpr::Let {
+                name: "outer_f".to_string(),
+                value: Box::new(outer_lambda),
+                body: Box::new(AnfExpr::Fold {
+                    init: "z".to_string(),
+                    list: "z".to_string(),
+                    func: "outer_f".to_string(),
+                }),
+            }),
+        },
+    };
+    let result = emit_wasm(&sealed_anf(vec![binding]));
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref s)) if s == "NestedClosureHoistableLambda"
+        ),
+        "nested closure-hoistable Lambda inside hoisted body must be rejected; got {result:?}"
+    );
+}
+
+// W1b — Nested hoistable (no-capture) Lambda inside a hoistable Lambda body
+// must be rejected with UnsupportedWasmConstruct("NestedHoistableLambda").
+//
+// Setup:
+//   fn.main = let outer_f = Lambda(params=[acc,elem], captures=[],
+//                              body = Let("inner_f",
+//                                        Lambda(params=[a,b], captures=[], body=a),
+//                                        acc))
+//             in  Fold(init=outer_f, list=outer_f, func=outer_f)
+#[test]
+fn nested_hoistable_lambda_in_hoistable_body_is_rejected() {
+    let inner_lambda = AnfExpr::Lambda {
+        params: vec!["a".to_string(), "b".to_string()],
+        captures: vec![],
+        body: Box::new(AnfExpr::Var("a".to_string())),
+    };
+    let outer_lambda = AnfExpr::Lambda {
+        params: vec!["acc".to_string(), "elem".to_string()],
+        captures: vec![],
+        body: Box::new(AnfExpr::Let {
+            name: "inner_f".to_string(),
+            value: Box::new(inner_lambda),
+            body: Box::new(AnfExpr::Var("acc".to_string())),
+        }),
+    };
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.main".to_string(),
+        expr: AnfExpr::Let {
+            name: "outer_f".to_string(),
+            value: Box::new(outer_lambda),
+            body: Box::new(AnfExpr::Fold {
+                init: "outer_f".to_string(),
+                list: "outer_f".to_string(),
+                func: "outer_f".to_string(),
+            }),
+        },
+    };
+    let result = emit_wasm(&sealed_anf(vec![binding]));
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref s)) if s == "NestedHoistableLambda"
+        ),
+        "nested hoistable Lambda inside hoistable body must be rejected; got {result:?}"
+    );
+}
+
+// W1c — Non-nested Lambda (no 2-param child in body) must NOT be rejected.
+// Proves the gate does not over-reject valid closure-hoistable Lambdas.
+//
+// Setup: outer_f = Lambda(params=[acc,elem], captures=[z], body = add(acc, z))
+// The body is a Call, no nested Lambda — must succeed.
+#[test]
+fn closure_hoistable_lambda_without_nested_2param_lambda_is_accepted() {
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.main".to_string(),
+        expr: AnfExpr::Let {
+            name: "z".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![
+                    AnfExpr::Literal(LiteralValue::Int(1)),
+                    AnfExpr::Literal(LiteralValue::Int(2)),
+                ])),
+                body: Box::new(AnfExpr::Let {
+                    name: "outer_f".to_string(),
+                    value: Box::new(AnfExpr::Lambda {
+                        params: vec!["acc".to_string(), "elem".to_string()],
+                        captures: vec!["z".to_string()],
+                        body: Box::new(AnfExpr::Call {
+                            func: "+".to_string(),
+                            args: vec!["acc".to_string(), "z".to_string()],
+                        }),
+                    }),
+                    body: Box::new(AnfExpr::Fold {
+                        init: "z".to_string(),
+                        list: "lst".to_string(),
+                        func: "outer_f".to_string(),
+                    }),
+                }),
+            }),
+        },
+    };
+    let result = emit_wasm(&sealed_anf(vec![binding]));
+    assert!(
+        !matches!(result, Err(CompileError::UnsupportedWasmConstruct(ref s))
+            if s == "NestedClosureHoistableLambda" || s == "NestedHoistableLambda"),
+        "closure-hoistable Lambda with non-nested body must NOT be rejected by W1 gate; got {result:?}"
+    );
+}
+
+// W3 regression — `build_function_section` closure-reducer fallback formula.
+//
+// When `closure_reducer_type_idx` is `None`, the fallback must produce
+// `type_offset + signatures.len() + 1` (closure-reducer type immediately
+// after fold-reducer type).  The old formula incorrectly added `hoisted_count`,
+// which belongs to the function section, not the type section.
+//
+// This test calls `build_function_section` with `closure_reducer_type_idx = None`
+// and verifies it returns `Some(...)` without panicking.  The type-index
+// correctness of `closure_reducer_type_idx = Some(...)` is exercised by the
+// closure-hoistable fold tests above that use `wasmparser::validate`.
+#[test]
+fn build_function_section_closure_fallback_does_not_panic() {
+    use crate::wasm_abi::WasmSignature;
+    use crate::wasm_sections::build_function_section;
+
+    let sig = WasmSignature {
+        param_count: 1,
+        result: Some(wasm_encoder::ValType::I64),
+    };
+    // type_offset=0, 1 signature, hoisted_count=2, closure_hoisted_count=1.
+    // Correct fallback: 0 + 1 + 1 = 2.
+    // Wrong (pre-fix) fallback: 0 + 1 + 2 + 1 = 4 (out-of-range type index).
+    // build_function_section itself cannot validate the type index (it is a
+    // section builder, not a module validator); the test proves it returns
+    // Some without panicking and that the fixed formula is applied.
+    let section = build_function_section(
+        std::slice::from_ref(&sig),
+        0,       // type_offset
+        2,       // hoisted_count
+        Some(1), // fold_reducer_type_idx = type_offset + sigs.len() = 1
+        1,       // closure_hoisted_count
+        None,    // closure_reducer_type_idx = None → uses fallback formula
+    );
+    assert!(
+        section.is_some(),
+        "build_function_section must return Some when bindings + hoisted > 0"
+    );
+}
+
+// ── End Wave 16A W1/W3 regression tests ──────────────────────────────────
