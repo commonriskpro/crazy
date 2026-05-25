@@ -3532,3 +3532,283 @@ end
         "let(r, record(x,10,y,42), field(r,y)) must return I64(42) via FieldGet at offset 8"
     );
 }
+
+// ── Wave 21C: memory layout conformance — ListNew / TupleNew / RecordNew ──
+//
+// These tests upgrade the structural proofs (ptr > 0 only) for ListNew,
+// TupleNew, and RecordNew to full layout proofs that read actual i64 values
+// from WASM linear memory using `RuntimeInstance::read_memory_i64`.
+//
+// Compiler-defined layouts (from wasm_emit.rs):
+//
+//   ListNew layout  : [count: i64 @ 0, e0: i64 @ 8,  e1: i64 @ 16, ...]
+//                     Allocates: 8 + n*8 bytes.
+//
+//   TupleNew layout : [e0: i64 @ 0, e1: i64 @ 8, ...]  (no count prefix)
+//                     Allocates: (n*8).max(1) bytes.
+//
+//   RecordNew layout: [f0: i64 @ 0, f1: i64 @ 8, ...]  (no count prefix)
+//                     Allocates: (n*8).max(1) bytes.
+//                     Field order matches the fields vec order.
+//
+// Spec scenarios (RUNTIME-LIST-1..2, RUNTIME-TUPLE-3, RUNTIME-RECORD-3..4):
+//
+//  RUNTIME-LIST-1: ListNew([1,2,3]) — proves count=3 at offset 0, and
+//    elem0=1 @ 8, elem1=2 @ 16, elem2=3 @ 24 via read_memory_i64.
+//
+//  RUNTIME-LIST-2: ListNew([]) — proves count=0 at offset 0; the allocator
+//    still returns a positive pointer because 8 bytes are always reserved.
+//
+//  RUNTIME-TUPLE-3: TupleNew([10,20]) — proves no count word: elem0=10 @ 0,
+//    elem1=20 @ 8 via read_memory_i64.  Complements RUNTIME-TUPLE-1..2
+//    (FieldGet round-trips) with a raw memory read.
+//
+//  RUNTIME-RECORD-3: RecordNew({x:42,y:99}) — proves field0=42 @ 0,
+//    field1=99 @ 8 via read_memory_i64.  Complements RUNTIME-RECORD-1..2
+//    (FieldGet round-trips) with a raw memory read.
+//
+//  RUNTIME-RECORD-4: RecordNew({}) — proves the allocator always returns a
+//    positive pointer even for a zero-field record (.max(1) guard).
+
+// RUNTIME-LIST-1
+//
+// fn.list_layout =
+//   let e0 = Literal(1) in
+//   let e1 = Literal(2) in
+//   let e2 = Literal(3) in
+//   ListNew([Var("e0"), Var("e1"), Var("e2")])
+//
+// Expected heap layout at the returned ptr (heap_start = 8):
+//   offset  0 → count = 3  (i64 LE)
+//   offset  8 → e0    = 1  (i64 LE)
+//   offset 16 → e1    = 2  (i64 LE)
+//   offset 24 → e2    = 3  (i64 LE)
+#[test]
+fn list_new_layout_count_and_elements() {
+    let expr = AnfExpr::Let {
+        name: "e0".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+        body: Box::new(AnfExpr::Let {
+            name: "e1".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(2))),
+            body: Box::new(AnfExpr::Let {
+                name: "e2".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(3))),
+                body: Box::new(AnfExpr::ListNew(vec![
+                    AnfExpr::Var("e0".to_string()),
+                    AnfExpr::Var("e1".to_string()),
+                    AnfExpr::Var("e2".to_string()),
+                ])),
+            }),
+        }),
+    };
+    let mut instance = compile_and_instantiate_expr(expr, "fn.list_layout");
+    let ptr = match instance
+        .invoke("list_layout", &[])
+        .expect("invoke must succeed")
+    {
+        RuntimeValue::I32(p) => p,
+        other => panic!("ListNew must return I32 ptr; got {other:?}"),
+    };
+
+    assert!(ptr > 0, "heap pointer must be positive; got {ptr}");
+
+    assert_eq!(
+        instance
+            .read_memory_i64(ptr, 0)
+            .expect("count at offset 0 must be readable"),
+        3,
+        "count at offset 0 must be 3 for a three-element list"
+    );
+    assert_eq!(
+        instance
+            .read_memory_i64(ptr, 8)
+            .expect("e0 at offset 8 must be readable"),
+        1,
+        "e0 at offset 8 must be 1"
+    );
+    assert_eq!(
+        instance
+            .read_memory_i64(ptr, 16)
+            .expect("e1 at offset 16 must be readable"),
+        2,
+        "e1 at offset 16 must be 2"
+    );
+    assert_eq!(
+        instance
+            .read_memory_i64(ptr, 24)
+            .expect("e2 at offset 24 must be readable"),
+        3,
+        "e2 at offset 24 must be 3"
+    );
+}
+
+// RUNTIME-LIST-2
+//
+// fn.list_empty_layout = ListNew([])
+//
+// Expected heap layout at the returned ptr (heap_start = 8):
+//   offset 0 → count = 0  (i64 LE)
+//
+// Empty ListNew allocates exactly 8 bytes (just the count word).  The bump
+// pointer advances by 8, so the returned pointer is always positive.
+#[test]
+fn list_new_empty_layout_count_zero() {
+    let expr = AnfExpr::ListNew(vec![]);
+    let mut instance = compile_and_instantiate_expr(expr, "fn.list_empty_layout");
+    let ptr = match instance
+        .invoke("list_empty_layout", &[])
+        .expect("invoke must succeed")
+    {
+        RuntimeValue::I32(p) => p,
+        other => panic!("empty ListNew must return I32 ptr; got {other:?}"),
+    };
+
+    assert!(ptr > 0, "heap pointer must be positive even for empty list; got {ptr}");
+
+    assert_eq!(
+        instance
+            .read_memory_i64(ptr, 0)
+            .expect("count at offset 0 must be readable"),
+        0,
+        "count at offset 0 must be 0 for an empty list"
+    );
+}
+
+// RUNTIME-TUPLE-3
+//
+// fn.tuple_layout =
+//   let e0 = Literal(10) in
+//   let e1 = Literal(20) in
+//   TupleNew([Var("e0"), Var("e1")])
+//
+// Expected heap layout at the returned ptr (heap_start = 8):
+//   offset 0 → e0 = 10  (i64 LE)  — no count prefix
+//   offset 8 → e1 = 20  (i64 LE)
+//
+// TupleNew has NO count word: elements start at offset 0.
+// This complements RUNTIME-TUPLE-1..2 (FieldGet round-trips) by directly
+// reading the raw memory bytes.
+#[test]
+fn tuple_new_layout_elements_no_count() {
+    let expr = AnfExpr::Let {
+        name: "e0".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(10))),
+        body: Box::new(AnfExpr::Let {
+            name: "e1".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(20))),
+            body: Box::new(AnfExpr::TupleNew(vec![
+                AnfExpr::Var("e0".to_string()),
+                AnfExpr::Var("e1".to_string()),
+            ])),
+        }),
+    };
+    let mut instance = compile_and_instantiate_expr(expr, "fn.tuple_layout");
+    let ptr = match instance
+        .invoke("tuple_layout", &[])
+        .expect("invoke must succeed")
+    {
+        RuntimeValue::I32(p) => p,
+        other => panic!("TupleNew must return I32 ptr; got {other:?}"),
+    };
+
+    assert!(ptr > 0, "heap pointer must be positive; got {ptr}");
+
+    assert_eq!(
+        instance
+            .read_memory_i64(ptr, 0)
+            .expect("e0 at offset 0 must be readable"),
+        10,
+        "e0 at offset 0 must be 10 (TupleNew has no count prefix)"
+    );
+    assert_eq!(
+        instance
+            .read_memory_i64(ptr, 8)
+            .expect("e1 at offset 8 must be readable"),
+        20,
+        "e1 at offset 8 must be 20"
+    );
+}
+
+// RUNTIME-RECORD-3
+//
+// fn.record_layout =
+//   let f0 = Literal(42) in
+//   let f1 = Literal(99) in
+//   RecordNew { fields: [("x", Var("f0")), ("y", Var("f1"))] }
+//
+// Expected heap layout at the returned ptr (heap_start = 8):
+//   offset 0 → x = 42  (i64 LE)  — no count prefix
+//   offset 8 → y = 99  (i64 LE)
+//
+// RecordNew has NO count word: fields start at offset 0 in declaration order.
+// This complements RUNTIME-RECORD-1..2 (FieldGet round-trips) by directly
+// reading the raw memory bytes.
+#[test]
+fn record_new_layout_fields_at_expected_offsets() {
+    let expr = AnfExpr::Let {
+        name: "f0".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(42))),
+        body: Box::new(AnfExpr::Let {
+            name: "f1".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(99))),
+            body: Box::new(AnfExpr::RecordNew {
+                fields: vec![
+                    ("x".to_string(), AnfExpr::Var("f0".to_string())),
+                    ("y".to_string(), AnfExpr::Var("f1".to_string())),
+                ],
+            }),
+        }),
+    };
+    let mut instance = compile_and_instantiate_expr(expr, "fn.record_layout");
+    let ptr = match instance
+        .invoke("record_layout", &[])
+        .expect("invoke must succeed")
+    {
+        RuntimeValue::I32(p) => p,
+        other => panic!("RecordNew must return I32 ptr; got {other:?}"),
+    };
+
+    assert!(ptr > 0, "heap pointer must be positive; got {ptr}");
+
+    assert_eq!(
+        instance
+            .read_memory_i64(ptr, 0)
+            .expect("field x at offset 0 must be readable"),
+        42,
+        "field x at offset 0 must be 42 (RecordNew has no count prefix)"
+    );
+    assert_eq!(
+        instance
+            .read_memory_i64(ptr, 8)
+            .expect("field y at offset 8 must be readable"),
+        99,
+        "field y at offset 8 must be 99"
+    );
+}
+
+// RUNTIME-RECORD-4
+//
+// fn.record_empty = RecordNew { fields: [] }
+//
+// RecordNew with zero fields allocates (0*8).max(1) = 1 byte.  The bump
+// pointer always advances, so the returned I32 pointer must be positive.
+// There is no memory to read (no count word, no fields), so we only assert
+// structural liveness.
+#[test]
+fn record_new_empty_returns_non_null_pointer() {
+    let expr = AnfExpr::RecordNew { fields: vec![] };
+    let mut instance = compile_and_instantiate_expr(expr, "fn.record_empty");
+    let ptr = match instance
+        .invoke("record_empty", &[])
+        .expect("invoke must succeed")
+    {
+        RuntimeValue::I32(p) => p,
+        other => panic!("empty RecordNew must return I32 ptr; got {other:?}"),
+    };
+
+    assert!(
+        ptr > 0,
+        "empty RecordNew must return a positive I32 heap pointer; got {ptr}"
+    );
+}
