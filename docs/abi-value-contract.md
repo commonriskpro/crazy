@@ -74,6 +74,10 @@ runtime caller; it is not embedded into the WASM module.
 
 The current descriptor contract recognized by the compiler/runtime boundary is:
 
+> This table describes the WASM runtime boundary. The native backend can emit
+> the same packed scalar representation in object data, but it does not use the
+> `ail-runtime` decode path.
+
 | Compiler descriptor | Runtime layout | Current payload shape |
 | --- | --- | --- |
 | `Scalar(I64)` | `ValueLayout::Scalar` | raw `i64` return |
