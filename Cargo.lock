@@ -257,6 +257,7 @@ dependencies = [
  "ail-core",
  "blake3",
  "ciborium",
+ "regex",
  "serde",
  "unicode-normalization",
  "unicode-segmentation",
