@@ -31,14 +31,17 @@
 //   compact_merged_count_matches_range
 //   compact_originals_are_removed
 
+use std::collections::BTreeSet;
+
 use ail_storage::{
-    BranchRegistry, BranchStore, GraphStore, ObjectBackedGraphStore, SnapshotEnvelope, TagRegistry,
-    TagStore,
+    BranchRegistry, BranchStore, EnumerableObjectStore, GraphStore, ObjectBackedGraphStore,
+    SnapshotEnvelope, TagRegistry, TagStore,
     backends::memory::MemoryObjectStore,
     object::ObjectId,
     retention::{
         GcReport, RetentionPolicy, SnapshotHolds, collect_branch_holds,
-        collect_branch_holds_with_ancestry, collect_tag_holds, compact_snapshots, gc_unreferenced,
+        collect_branch_holds_with_ancestry, collect_reachable_object_ids_for_snapshots,
+        collect_tag_holds, compact_snapshots, gc_unreferenced, run_gc,
     },
 };
 use futures::executor::block_on;
@@ -1065,4 +1068,217 @@ fn collect_ancestry_holds_deduplicates_shared_ancestors() {
     assert!(ids.contains(&oid("shared-genesis")));
     assert!(ids.contains(&oid("b1-head")));
     assert!(ids.contains(&oid("b2-head")));
+}
+
+// ── collect_reachable_object_ids_for_snapshots ────────────────────────────
+
+// Scenario: run_gc without envelope CAS id corrupts the store.
+//
+// `ObjectBackedGraphStore::save_snapshot` writes two CAS objects per snapshot:
+//   A. The CBOR-encoded SnapshotEnvelope (envelope bytes).
+//   B. The graph_root_hash object — stored separately by the graph layer, NOT
+//      by save_snapshot itself.
+//
+// After save_snapshot, the backing ObjectStore holds the envelope CBOR bytes
+// (object A). Their CAS id is distinct from envelope.graph_root_hash.
+//
+// If run_gc is called with a reachable set that contains ONLY graph_root_hash,
+// the envelope bytes (object A) are treated as unreachable and deleted.
+// The snapshot_index still maps envelope.id → deleted CAS id, so subsequent
+// list_snapshots calls return StorageError::NotFound — data corruption with
+// no error at GC time.
+//
+// GIVEN a snapshot saved to an ObjectBackedGraphStore
+// WHEN  run_gc is called with only graph_root_hash in reachable
+// THEN  the envelope CAS object is deleted
+// AND   list_snapshots subsequently returns an error (corrupted index)
+#[test]
+fn run_gc_omitting_envelope_id_corrupts_snapshot_index() {
+    // Clone the MemoryObjectStore before wrapping it so we can call run_gc
+    // on the same underlying storage while graph_store holds a reference.
+    let obj_store = MemoryObjectStore::new();
+    let obj_store_for_gc = obj_store.clone(); // shares the same Arc<Mutex<...>>
+    let graph_store = ObjectBackedGraphStore::new(obj_store);
+
+    let snap = snapshot("envelope-risk", 1000, None, None);
+    block_on(graph_store.save_snapshot(&snap)).expect("save must succeed");
+
+    // Confirm exactly one CAS object exists after save_snapshot.
+    // That object is the CBOR-encoded envelope, NOT the graph root content.
+    let all_ids = block_on(obj_store_for_gc.list_object_ids()).expect("list");
+    assert_eq!(
+        all_ids.len(),
+        1,
+        "exactly one CAS object (the serialized envelope) must exist"
+    );
+
+    // Build reachable with ONLY the graph_root_hash — the common mistake.
+    // The envelope CAS id is absent from this set.
+    let graph_root_only = BTreeSet::from([snap.graph_root_hash]);
+    let report = block_on(run_gc(&obj_store_for_gc, &graph_root_only)).expect("run_gc");
+
+    assert_eq!(
+        report.objects_deleted, 1,
+        "envelope CAS object must be deleted when its id is absent from reachable"
+    );
+    assert_eq!(report.objects_examined, 1);
+
+    // The snapshot_index still maps envelope.id → deleted CAS id.
+    // list_snapshots must now return an error because the CAS object is gone.
+    let result = block_on(graph_store.list_snapshots());
+    assert!(
+        result.is_err(),
+        "list_snapshots must fail after envelope deletion — index points to missing CAS object"
+    );
+}
+
+// Scenario: collect_reachable_object_ids_for_snapshots prevents envelope deletion.
+//
+// Using the helper to build the reachable set includes both:
+//   - the envelope CBOR bytes CAS id
+//   - the graph_root_hash
+//
+// run_gc then has no unreachable objects to delete, and the snapshot index
+// remains intact.
+//
+// GIVEN a snapshot saved to an ObjectBackedGraphStore
+// WHEN  collect_reachable_object_ids_for_snapshots is used to build reachable
+// AND   run_gc is called with that reachable set
+// THEN  no CAS objects are deleted
+// AND   list_snapshots returns the snapshot correctly
+#[test]
+fn run_gc_with_collect_helper_preserves_snapshot_envelope() {
+    let obj_store = MemoryObjectStore::new();
+    let obj_store_for_gc = obj_store.clone();
+    let graph_store = ObjectBackedGraphStore::new(obj_store);
+
+    let snap = snapshot("envelope-safe", 2000, None, None);
+    block_on(graph_store.save_snapshot(&snap)).expect("save must succeed");
+
+    // Use the helper to build the correct reachable set.
+    let reachable = collect_reachable_object_ids_for_snapshots(std::slice::from_ref(&snap))
+        .expect("collect must succeed");
+
+    // The helper must include both the graph_root_hash and the envelope CAS id.
+    assert!(
+        reachable.contains(&snap.graph_root_hash),
+        "reachable must include graph_root_hash"
+    );
+    assert_eq!(
+        reachable.len(),
+        2,
+        "reachable must contain exactly two ids: envelope CAS id + graph_root_hash"
+    );
+
+    let report = block_on(run_gc(&obj_store_for_gc, &reachable)).expect("run_gc");
+
+    assert_eq!(
+        report.objects_deleted, 0,
+        "no CAS objects must be deleted when reachable includes the envelope id"
+    );
+    assert_eq!(report.objects_examined, 1);
+
+    // Snapshot index is intact — list_snapshots and load_snapshot must work.
+    let list = block_on(graph_store.list_snapshots()).expect("list_snapshots must succeed");
+    assert_eq!(list.len(), 1, "snapshot must survive GC");
+    assert_eq!(
+        list[0].id, snap.id,
+        "surviving snapshot must be the correct one"
+    );
+
+    let loaded = block_on(graph_store.load_snapshot(&snap.id))
+        .expect("load_snapshot must succeed")
+        .expect("snapshot must be present");
+    assert_eq!(loaded, snap, "loaded snapshot must equal original");
+}
+
+// Scenario: end-to-end two-phase GC with gc_unreferenced + run_gc.
+//
+// Demonstrate the full correct GC workflow:
+//   1. gc_unreferenced removes unreachable snapshot index entries.
+//   2. list_snapshots enumerates retained snapshots.
+//   3. collect_reachable_object_ids_for_snapshots builds the CAS reachable set.
+//   4. run_gc deletes unreachable CAS objects, preserving retained envelopes.
+//
+// GIVEN three snapshots: one genesis (retained by keep_releases), two unprotected
+// WHEN  the two-phase GC runs
+// THEN  the genesis snapshot's envelope CAS object survives
+// AND   the two unprotected envelopes' CAS objects are deleted
+#[test]
+fn end_to_end_two_phase_gc_preserves_retained_envelope_cas_objects() {
+    let obj_store = MemoryObjectStore::new();
+    let obj_store_for_gc = obj_store.clone();
+    let graph_store = ObjectBackedGraphStore::new(obj_store);
+
+    let genesis = snapshot("e2e-genesis", 100, None, None);
+    let drop1 = snapshot("e2e-drop1", 200, Some("e2e-genesis"), None);
+    let drop2 = snapshot("e2e-drop2", 300, Some("e2e-genesis"), None);
+
+    block_on(async {
+        graph_store
+            .save_snapshot(&genesis)
+            .await
+            .expect("save genesis");
+        graph_store.save_snapshot(&drop1).await.expect("save drop1");
+        graph_store.save_snapshot(&drop2).await.expect("save drop2");
+    });
+
+    // Three snapshots → three envelope CAS objects in the ObjectStore.
+    let initial_count = block_on(obj_store_for_gc.list_object_ids())
+        .expect("list")
+        .len();
+    assert_eq!(
+        initial_count, 3,
+        "three envelope CAS objects must exist initially"
+    );
+
+    // Phase 1: snapshot-level GC — removes index entries for unprotected snapshots.
+    let policy = RetentionPolicy {
+        max_age_days: None,
+        keep_releases: true, // genesis (parent_id == None) is retained
+        keep_tagged: false,
+    };
+    let gc_report = block_on(gc_unreferenced(
+        &graph_store,
+        &policy,
+        &SnapshotHolds::default(),
+        u64::MAX,
+    ))
+    .expect("gc_unreferenced must succeed");
+
+    assert_eq!(gc_report.snapshots_retained, 1, "only genesis is retained");
+    assert_eq!(
+        gc_report.snapshots_removed, 2,
+        "two unprotected snapshots removed"
+    );
+
+    // Phase 2: collect reachable CAS ids from remaining snapshots.
+    let retained = block_on(graph_store.list_snapshots()).expect("list after snapshot gc");
+    assert_eq!(retained.len(), 1, "only genesis snapshot remains in index");
+
+    let reachable = collect_reachable_object_ids_for_snapshots(&retained)
+        .expect("collect_reachable must succeed");
+
+    // Phase 3: object-level GC — deletes CAS objects not in reachable.
+    let obj_report = block_on(run_gc(&obj_store_for_gc, &reachable)).expect("run_gc");
+
+    assert_eq!(
+        obj_report.objects_examined, 3,
+        "all three envelope objects must be examined"
+    );
+    assert_eq!(
+        obj_report.objects_deleted, 2,
+        "two unreachable envelope objects must be deleted"
+    );
+    assert!(obj_report.bytes_freed > 0, "bytes_freed must be positive");
+
+    // Genesis snapshot must still be fully accessible.
+    let final_list = block_on(graph_store.list_snapshots()).expect("final list must succeed");
+    assert_eq!(final_list.len(), 1, "genesis snapshot must survive");
+    assert_eq!(final_list[0].id, genesis.id);
+
+    let loaded = block_on(graph_store.load_snapshot(&genesis.id))
+        .expect("load_snapshot must succeed")
+        .expect("genesis must be present");
+    assert_eq!(loaded.id, genesis.id);
 }

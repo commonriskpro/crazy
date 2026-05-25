@@ -39,6 +39,7 @@ use std::future::Future;
 use serde::{Deserialize, Serialize};
 
 use crate::branch::BranchStore;
+use crate::codec::{CborCodec, ContentCodec};
 use crate::error::{StorageError, StorageResult};
 use crate::graph::{GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
 use crate::object::{ObjectId, ObjectStore, RawObject};
@@ -365,6 +366,80 @@ pub struct ObjectGcReport {
     pub bytes_freed: u64,
 }
 
+// ── collect_reachable_object_ids_for_snapshots ───────────────────────────
+
+/// Collect the set of CAS `ObjectId`s that must be retained when running
+/// [`run_gc`] on an `ObjectStore` shared with an [`ObjectBackedGraphStore`].
+///
+/// For each [`SnapshotEnvelope`] in `retained`, this function adds **two**
+/// CAS object IDs to the returned set:
+///
+/// 1. `envelope.graph_root_hash` — the CAS id of the graph content root
+///    object written by the graph layer before the snapshot was saved.
+/// 2. The CAS id of the **serialized snapshot envelope itself** — the BLAKE3
+///    hash of the CBOR bytes that [`GraphStore::save_snapshot`] writes to the
+///    backing `ObjectStore`.
+///
+/// # Why both IDs are required
+///
+/// [`ObjectBackedGraphStore::save_snapshot`] encodes each [`SnapshotEnvelope`]
+/// with [`CborCodec`] and stores the result as a `RawObject`.  The content-
+/// addressed id of those bytes (`cas_id`) is what the internal
+/// `snapshot_index` maps to for `load_snapshot` and `list_snapshots`.  That
+/// `cas_id` is **distinct** from `envelope.graph_root_hash`.
+///
+/// If [`run_gc`] is called with a `reachable` set that contains only
+/// `graph_root_hash` values, the stored envelope bytes are treated as
+/// unreachable and deleted.  The snapshot index still references those CAS
+/// ids, so subsequent calls to `list_snapshots` return
+/// [`StorageError::NotFound`] — a silent data-corruption scenario with no
+/// error at GC time.
+///
+/// # Encoding contract
+///
+/// The envelope CAS id is recomputed by encoding each [`SnapshotEnvelope`]
+/// with the same [`CborCodec`] used by
+/// [`ObjectBackedGraphStore::save_snapshot`].  This is correct as long as:
+/// - The codec is deterministic (guaranteed by [`CborCodec`]'s invariants).
+/// - The envelope struct has not been mutated between `save_snapshot` and
+///   the call to this function.  Always load envelopes from the live store
+///   immediately before calling this function.
+///
+/// # Usage
+///
+/// Call this after [`gc_unreferenced`] has removed unreachable *snapshots*,
+/// then pass the result as `reachable` to [`run_gc`]:
+///
+/// ```ignore
+/// // 1. Remove unreachable snapshot index entries.
+/// gc_unreferenced(&graph_store, &policy, &holds, now_ms).await?;
+/// // 2. Enumerate the retained snapshots.
+/// let retained = graph_store.list_snapshots().await?;
+/// // 3. Build the CAS reachable set (graph roots + envelope bytes).
+/// let reachable = collect_reachable_object_ids_for_snapshots(&retained)?;
+/// // 4. Delete unreachable raw CAS objects.
+/// run_gc(&object_store, &reachable).await?;
+/// ```
+///
+/// # Errors
+///
+/// Returns [`StorageError::Codec`] if CBOR encoding fails.  This should not
+/// occur for well-formed [`SnapshotEnvelope`] values.
+pub fn collect_reachable_object_ids_for_snapshots(
+    retained: &[SnapshotEnvelope],
+) -> StorageResult<BTreeSet<ObjectId>> {
+    let codec = CborCodec;
+    let mut reachable = BTreeSet::new();
+    for envelope in retained {
+        // The CAS id of the CBOR-encoded envelope bytes written by save_snapshot.
+        let bytes = codec.encode(envelope)?;
+        reachable.insert(ObjectId::from_bytes(&bytes));
+        // The graph content root referenced by this snapshot.
+        reachable.insert(envelope.graph_root_hash);
+    }
+    Ok(reachable)
+}
+
 // ── run_gc ────────────────────────────────────────────────────────────────
 
 /// Physical garbage-collect unreachable CAS objects.
@@ -379,11 +454,14 @@ pub struct ObjectGcReport {
 ///
 /// # Design
 ///
-/// The caller is responsible for computing `reachable` from the graph store
-/// (e.g. by calling `gc_unreferenced` first to identify retained snapshots
-/// and then collecting their `graph_root_hash` fields).  This separation keeps
-/// `run_gc` independent of the snapshot/graph layer and fully testable with a
-/// plain `MemoryObjectStore`.
+/// The caller is responsible for computing `reachable` from the graph store.
+/// Call [`gc_unreferenced`] first to remove unreachable snapshot index entries,
+/// then call [`collect_reachable_object_ids_for_snapshots`] on the surviving
+/// snapshots to build the `reachable` set — that function adds **both** the
+/// `graph_root_hash` and the envelope CAS id for every retained snapshot,
+/// preventing the silent data-corruption that occurs when only `graph_root_hash`
+/// fields are collected.  This separation keeps `run_gc` independent of the
+/// snapshot/graph layer and fully testable with a plain `MemoryObjectStore`.
 ///
 /// # Warning: include snapshot envelope CAS IDs
 ///
