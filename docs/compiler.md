@@ -367,10 +367,12 @@ emit_native(anf) → NativeArtifact {
 **Current limitations (Native-1 slice):**
 
 ```txt
-- No linker invocation. A system linker (cc, lld) is required to produce
-  a runnable executable from the emitted object file.
-- No runtime host: imported stubs (host_call, __ail_malloc, ail_runtime_call)
-  must be supplied at link time.
+- Linker invocation requires a system linker (cc, lld): use ail link --profile <name>.
+  Use --runtime-lib <path/to/ail_runtime.a> to supply runtime stubs at link time
+  (Wave 12B); without it the linker may fail with "undefined symbol" errors.
+- No runtime archive: ail_runtime.a is not yet built or distributed at a deterministic
+  path. Users must build the archive manually from crates/ail-runtime and pass it
+  via --runtime-lib. Deterministic archive provisioning is deferred to Phase 9.
 - No self-hosting: ail-compiler itself is not compiled by ail-compiler.
 - Lambda compiles: params bound, body lowered, address returned as I64.
   Closure captures are deferred to Phase 9+.
@@ -417,12 +419,16 @@ emit_native(anf) → NativeArtifact {
 ```txt
 Implemented: ail link — emit_native output linked via system cc/link.exe using
              ail link --profile <name>. LinkerBoundary injectable; CI uses FakeLinker.
-             Runtime stubs (host_call, __ail_malloc, ail_runtime_call) must still be
-             supplied at link time; full bundling is Phase 9.
+Implemented: --runtime-lib flag (Wave 12B) — ail link --runtime-lib <path/to/ail_runtime.a>
+             appends the archive to the linker command so host_call, __ail_malloc, and
+             ail_runtime_call are resolved at link time. Without the flag, ail link emits
+             a hint; the downstream linker will fail with "undefined symbol" errors unless
+             the symbols are supplied through another mechanism.
 Phase 9:  Heap model — __ail_malloc supplied by runtime; records/variants/lists
           survive function return.
-Phase 9:  Runtime bundling — link ail_runtime.a alongside the native object so
-          ail link produces a self-contained runnable binary without external stubs.
+Phase 9:  Runtime archive — build and distribute ail_runtime.a at a deterministic
+          path so ail link --runtime-lib can locate it automatically; full
+          self-contained runnable binary without external stubs.
 Phase 10: ABI stabilization — ail_runtime_call, host_call signatures frozen.
 Phase 11+: Full expression body lowering — Lambda, closures, concurrency.
 Phase N:  Self-hosting — ail-compiler's own source compiled by ail-compiler.
