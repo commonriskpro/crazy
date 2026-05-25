@@ -11,8 +11,10 @@
 //   AE6 — Active assumption with past expires_at → fails with AssumptionExpired
 //   AE7 — Multiple assumptions: first expired stops check → AssumptionExpired
 //   AE8 — AssumptionExpired Display mentions assumption_id and reason
+//   AE9 — Injected clock drives expires_at boundary (not SystemTime::now)
 
-use std::time::{Duration, SystemTime};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ail_runtime::{
     AssumptionStatus, CapabilityGrant, CapabilityManifest, PreflightFailure, ProfileAssumption,
@@ -246,4 +248,43 @@ fn ae8_assumption_expired_display_contains_id_and_reason() {
         msg.contains("Expired"),
         "display must include reason: {msg}"
     );
+}
+
+// ── AE9 — Injected clock drives expires_at boundary (not SystemTime::now) ──
+
+#[test]
+fn ae9_injected_clock_drives_expiry_boundary() {
+    // FIXED_NOW_NANOS is a point in time well beyond wall-clock "now" (~year 2033).
+    // With SystemTime::now(), expires_at would look like the future → preflight
+    // would pass.  With the injected clock set to FIXED_NOW_NANOS, expires_at is
+    // 1 ms in the past → preflight must fail with AssumptionExpired.
+    const FIXED_NOW_NANOS: u64 = 2_000_000_000_000_000_000;
+    let expires_at_st = UNIX_EPOCH + Duration::from_nanos(FIXED_NOW_NANOS - 1_000_000);
+
+    let wasm = minimal_wasm();
+    let (manifest, profile) = empty_manifest_profile(&wasm);
+    let assumption = ProfileAssumption {
+        id: "clock-injected-check".to_string(),
+        status: AssumptionStatus::Active,
+        expires_at: Some(expires_at_st),
+    };
+    let profile = profile.with_assumptions(vec![assumption]);
+
+    let clock_fn = Arc::new(move || FIXED_NOW_NANOS);
+    let mut host = RuntimeHost::new().with_clock_fn(clock_fn);
+    let result = host.validate_and_instantiate(&wasm, &manifest, &profile);
+
+    match result {
+        Err(RuntimeError::PreflightFailed(PreflightFailure::AssumptionExpired {
+            assumption_id,
+            reason,
+        })) => {
+            assert_eq!(assumption_id, "clock-injected-check");
+            assert!(
+                reason.contains("past"),
+                "reason must mention past expiry: {reason}"
+            );
+        }
+        other => panic!("expected AssumptionExpired driven by injected clock, got {other:?}"),
+    }
 }

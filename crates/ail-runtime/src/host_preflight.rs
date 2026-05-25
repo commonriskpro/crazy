@@ -10,6 +10,7 @@
 //   1. WASM bytes hash check
 //   2. Manifest CBOR hash check
 //   3. Capability grant check
+//   7. Assumption expiry check (opt-in; runs early to skip unnecessary Wasmtime work)
 //   4+5. Wasmtime validate + instantiate (via `instantiate_inner`)
 //   6. Handler binding check + handler trust gate (both opt-in)
 
@@ -138,6 +139,8 @@ pub(crate) fn check_package_trust(
 ///   1. WASM bytes hash check
 ///   2. Manifest CBOR hash check
 ///   3. Capability grant check (module-scoped)
+///   7. Assumption expiry check (opt-in via `profile.assumptions()`; runs before
+///      stages 4–6 so a stale profile avoids the Wasmtime compile cost)
 ///   4. Wasmtime module validation (via `instantiate_inner`)
 ///   5. Wasmtime instantiation (via `instantiate_inner`)
 ///   6. Handler binding check (opt-in via `profile.require_handler_binding()`)
@@ -195,6 +198,44 @@ pub(crate) fn preflight_inner(
         ));
     }
 
+    // Stage 7 — Assumption expiry check (opt-in via `profile.assumptions()`).
+    //
+    // Runs here — before stages 4+5 — because this is a cheap metadata-only
+    // check.  A stale profile should never pay the Wasmtime compile cost.
+    //
+    // Rejects startup if any declared assumption is:
+    //   • AssumptionStatus::Expired
+    //   • AssumptionStatus::Inactive
+    //   • has an `expires_at` timestamp that is already in the past
+    //
+    // Uses the injected `clock_fn` (nanoseconds since UNIX_EPOCH) so expiry
+    // is deterministic under test.  Profiles with an empty assumption list
+    // skip this stage entirely (backward compatible).
+    let now_st = std::time::UNIX_EPOCH + std::time::Duration::from_nanos(clock_fn());
+    for assumption in profile.assumptions() {
+        let expired_by_status = matches!(
+            assumption.status,
+            AssumptionStatus::Expired | AssumptionStatus::Inactive
+        );
+        let expired_by_time = assumption.expires_at.is_some_and(|t| t < now_st);
+
+        if expired_by_status || expired_by_time {
+            let reason = if matches!(assumption.status, AssumptionStatus::Expired) {
+                "status is Expired".to_string()
+            } else if matches!(assumption.status, AssumptionStatus::Inactive) {
+                "status is Inactive".to_string()
+            } else {
+                "expires_at is in the past".to_string()
+            };
+            return Err(RuntimeError::PreflightFailed(
+                PreflightFailure::AssumptionExpired {
+                    assumption_id: assumption.id.clone(),
+                    reason,
+                },
+            ));
+        }
+    }
+
     // Stages 4+5 — Wasmtime validate + instantiate via linker.
     let instance = instantiate_inner(
         engine,
@@ -245,41 +286,6 @@ pub(crate) fn preflight_inner(
                 }
                 _ => {}
             }
-        }
-    }
-
-    // Stage 7 — Assumption expiry check (opt-in via `profile.assumptions()`).
-    //
-    // Rejects startup if any declared assumption is:
-    //   • AssumptionStatus::Expired
-    //   • AssumptionStatus::Inactive
-    //   • has an `expires_at` timestamp that is already in the past
-    //
-    // Profiles with an empty assumption list skip this stage entirely, so
-    // existing profiles and tests are unaffected (backward compatible).
-    for assumption in profile.assumptions() {
-        let expired_by_status = matches!(
-            assumption.status,
-            AssumptionStatus::Expired | AssumptionStatus::Inactive
-        );
-        let expired_by_time = assumption
-            .expires_at
-            .is_some_and(|t| t < std::time::SystemTime::now());
-
-        if expired_by_status || expired_by_time {
-            let reason = if matches!(assumption.status, AssumptionStatus::Expired) {
-                "status is Expired".to_string()
-            } else if matches!(assumption.status, AssumptionStatus::Inactive) {
-                "status is Inactive".to_string()
-            } else {
-                "expires_at is in the past".to_string()
-            };
-            return Err(RuntimeError::PreflightFailed(
-                PreflightFailure::AssumptionExpired {
-                    assumption_id: assumption.id.clone(),
-                    reason,
-                },
-            ));
         }
     }
 

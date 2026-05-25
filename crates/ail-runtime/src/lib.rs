@@ -20,6 +20,7 @@
 //! RuntimeHost::validate_and_instantiate
 //!         │ hash wasm, hash manifest
 //!         │ check required capabilities ⊆ grants
+//!         │ [opt] check assumption expiry (stage 7 — runs before Wasmtime)
 //!         │ validate Module with Wasmtime
 //!         │ [opt] check handler binding
 //!         │ append PreflightPassed / PreflightFailed
