@@ -2646,7 +2646,7 @@ end
 
 // ── Wave 20C: ACL source-level E2E conformance — map and set constructors ──
 //
-// Spec scenarios covered (RUNTIME-ACL-MAP-1, RUNTIME-ACL-SET-1):
+// Spec scenarios covered (RUNTIME-ACL-MAP-1..3, RUNTIME-ACL-SET-1..2):
 //
 //  RUNTIME-ACL-MAP-1: ACL body `map(1, 10)` must parse to
 //    CoreExpr::MapNew { entries: [(Literal(1), Literal(10))] }, lower to
@@ -2663,6 +2663,61 @@ end
 //    CoreExpr::SetNew { elements: [Literal(42)] }, lower to AnfExpr::SetNew
 //    with one atomized var, emit WASM, instantiate, and return I32(ptr > 0).
 //    Same structural proof as RUNTIME-ACL-MAP-1 for the SetNew constructor.
+
+// RUNTIME-ACL-MAP-2
+//
+// ACL body: map()  — empty map
+//
+//   Pipeline:
+//   1. `map()` → parse_expr → CoreExpr::MapNew { entries: [] }
+//   2. lower_to_anf → no atomizations; AnfExpr::MapNew { entries: [] }.
+//   3. emit_wasm → allocates 8-byte header (count=0); returns I32(ptr > 0).
+//
+// This covers the zero-entry path through the MapNew emitter (the .max(8)
+// guard ensures at least a count word is allocated).
+#[test]
+fn acl_map_empty_form_returns_non_null_pointer() {
+    let acl = "\
+change acl_map_2 base=0
+author tester
+description map() empty map must compile and return a non-null heap pointer
+op create_function id=fn.main return=Int body=map()
+end
+";
+    let value = invoke_acl_export(acl, "main");
+    assert!(
+        matches!(value, RuntimeValue::I32(ptr) if ptr > 0),
+        "map() must return a positive I32 heap pointer; got {value:?}"
+    );
+}
+
+// RUNTIME-ACL-MAP-3
+//
+// ACL body: map(1, 10, 2, 20)  — two-pair map
+//
+//   Pipeline:
+//   1. `map(1, 10, 2, 20)` → parse_expr →
+//      CoreExpr::MapNew { entries: [(Lit(1),Lit(10)), (Lit(2),Lit(20))] }
+//   2. lower_to_anf → atomize 4 literals → _t0.._t3;
+//      AnfExpr::MapNew { entries: [("_t0","_t1"), ("_t2","_t3")] }.
+//   3. emit_wasm → allocates (1+2*2)*8 = 40 bytes; returns I32(ptr > 0).
+//
+// Proves the multi-entry atomization path and layout arithmetic are correct.
+#[test]
+fn acl_map_multi_pair_form_returns_non_null_pointer() {
+    let acl = "\
+change acl_map_3 base=0
+author tester
+description map(1,10,2,20) two-pair map must compile and return a non-null heap pointer
+op create_function id=fn.main return=Int body=map(1, 10, 2, 20)
+end
+";
+    let value = invoke_acl_export(acl, "main");
+    assert!(
+        matches!(value, RuntimeValue::I32(ptr) if ptr > 0),
+        "map(1, 10, 2, 20) must return a positive I32 heap pointer; got {value:?}"
+    );
+}
 
 // RUNTIME-ACL-MAP-1
 //
@@ -2720,5 +2775,32 @@ end
     assert!(
         matches!(value, RuntimeValue::I32(ptr) if ptr > 0),
         "set(42) must return a positive I32 heap pointer; got {value:?}"
+    );
+}
+
+// RUNTIME-ACL-SET-2
+//
+// ACL body: set()  — empty set
+//
+//   Pipeline:
+//   1. `set()` → parse_expr → CoreExpr::SetNew { elements: [] }
+//   2. lower_to_anf → no atomizations; AnfExpr::SetNew { elements: [] }.
+//   3. emit_wasm → allocates 8-byte header (count=0); returns I32(ptr > 0).
+//
+// Covers the zero-element path through the SetNew emitter (the .max(8)
+// guard ensures at least a count word is always allocated).
+#[test]
+fn acl_set_empty_form_returns_non_null_pointer() {
+    let acl = "\
+change acl_set_2 base=0
+author tester
+description set() empty set must compile and return a non-null heap pointer
+op create_function id=fn.main return=Int body=set()
+end
+";
+    let value = invoke_acl_export(acl, "main");
+    assert!(
+        matches!(value, RuntimeValue::I32(ptr) if ptr > 0),
+        "set() must return a positive I32 heap pointer; got {value:?}"
     );
 }

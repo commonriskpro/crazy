@@ -320,6 +320,13 @@ pub(super) fn lower_core_expr_to_anf_local(
             }
             wrap_local_bindings(bindings, AnfExpr::SetNew { elements: anf_elements })
         }
+        // All remaining variants (Literal, Var, Unit, FieldAccess, FieldUpdate,
+        // TupleNew, ListNew handled above, RecordNew, Abort, Return, etc.) are
+        // handled by the global binder.  They either produce no synthetic
+        // temporaries or carry their own atomization inside lower_core_expr_to_anf.
+        // NOTE: WhileLoop, ForEach, Fold, CellNew/Get/Set, Loop/Break/Continue
+        // were moved to explicit arms (Wave 20A) so they no longer fall through
+        // here with a discarded &mut Vec::new() binder.
         _ => lower_core_expr_to_anf(expr, fresh, source_ref, &mut Vec::new()),
     }
 }
