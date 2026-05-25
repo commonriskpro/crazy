@@ -652,6 +652,20 @@ fn host_call_write_denied_capability_returns_minus_one() {
 //   The runtime decoder unpacks ptr and len WITHOUT reading memory.
 //   To verify actual bytes the caller must read_wasm_memory(ptr, len).
 //
+// ── H-2: Bytes ABI end-to-end roundtrip ──────────────────────────────────
+//
+// Mirror of H-1 for LiteralValue::Bytes — opaque byte buffers.
+//
+// ABI contract for Bytes (from docs/abi-value-contract.md):
+//   The compiler packs Bytes as a single i64: (len << 32) | ptr
+//   where ptr is the byte offset of the data in WASM linear memory.
+//   No UTF-8 assumption is made — the bytes are opaque.
+//   The runtime decoder unpacks ptr and len WITHOUT reading memory.
+//   To access actual bytes the caller must read_wasm_memory(ptr, len).
+//
+//  H-2a: invoke_typed_bytes_packed_encoding_roundtrip
+//  H-2b: invoke_typed_bytes_memory_bytes_match_literal
+//
 // For a binding whose only string is the literal itself, the compiler's
 // EffectDataLayout assigns ptr = 0 (first intern gets next_offset = 0).
 
@@ -765,5 +779,75 @@ fn invoke_typed_text_multibyte_len_is_byte_length() {
     assert_eq!(
         recovered, literal,
         "recovered string must equal original literal"
+    );
+}
+
+// ── H-2a: Bytes packed encoding roundtrip ────────────────────────────────
+
+#[test]
+fn invoke_typed_bytes_packed_encoding_roundtrip() {
+    // Compile a Bytes literal through the full WASM path and verify that
+    // invoke_typed decodes the packed i64 into StructuredValue::Bytes with
+    // the correct ptr and len — without any memory read.
+    //
+    // The EffectDataLayout interns the first (and only) bytes buffer at ptr=0.
+    // len is the raw byte count of the literal.
+    let literal: &[u8] = b"raw_bytes_literal";
+    let expr = AnfExpr::Literal(LiteralValue::Bytes(literal.to_vec()));
+    let wasm = compiler_wasm_for_expr(expr, "get_bytes");
+    let mut instance = instantiate(&wasm);
+
+    let result = instance
+        .invoke_typed("get_bytes", &[], &ValueLayout::Bytes)
+        .expect("invoke_typed must succeed");
+
+    assert_eq!(
+        result,
+        StructuredValue::Bytes {
+            ptr: 0,
+            len: literal.len() as i32,
+        },
+        "packed Bytes encoding must decode to ptr=0, len=byte_count"
+    );
+}
+
+// ── H-2b: Bytes memory contents match literal ────────────────────────────
+
+#[test]
+fn invoke_typed_bytes_memory_bytes_match_literal() {
+    // Full roundtrip: compile, instantiate, invoke, then read WASM linear
+    // memory at the decoded ptr to verify the raw bytes match the original
+    // literal.  ValueDecoder unpacks ptr/len but does not read memory —
+    // this test closes that loop.
+    let literal: &[u8] = b"raw_bytes_literal";
+    let expr = AnfExpr::Literal(LiteralValue::Bytes(literal.to_vec()));
+    let wasm = compiler_wasm_for_expr(expr, "get_raw_bytes");
+    let mut instance = instantiate(&wasm);
+
+    let result = instance
+        .invoke_typed("get_raw_bytes", &[], &ValueLayout::Bytes)
+        .expect("invoke_typed must succeed");
+
+    let (ptr, len) = match result {
+        StructuredValue::Bytes { ptr, len } => (ptr, len),
+        other => panic!("expected StructuredValue::Bytes, got {other:?}"),
+    };
+
+    assert_eq!(
+        len,
+        literal.len() as i32,
+        "decoded len must equal the raw byte count of the literal"
+    );
+
+    // A Bytes literal binding forces the compiler to include a memory export,
+    // so read_wasm_memory is always available here.
+    let mem_bytes = instance
+        .read_wasm_memory(ptr, len as usize)
+        .expect("read_wasm_memory must succeed for a bytes-bearing module");
+
+    assert_eq!(
+        mem_bytes.as_slice(),
+        literal,
+        "WASM linear memory at ptr must contain the exact bytes of the literal"
     );
 }

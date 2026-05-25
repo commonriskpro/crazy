@@ -110,6 +110,42 @@ The runtime crate intentionally does not depend on `ail-compiler`; callers that
 own a `WasmArtifact` are responsible for translating `export_types` into
 `ValueLayout` before invoking typed exports.
 
+## secret.read typed boundary
+
+`SecretReadHandler` (via `dispatch_host_call_write`) returns raw bytes and writes
+them into WASM linear memory at a caller-supplied `out_ptr`.  The host import
+returns the byte count as i32.
+
+A typed caller can treat this output as a `Bytes` value by following the same
+packed-i64 convention used by Bytes-typed WASM exports:
+
+```text
+byte_count = invoke("main", [])   // i32 from host_call_write
+if byte_count < 0 { /* denial — do not decode */ }
+packed = (byte_count as i64) << 32 | (out_ptr as i64 & 0xFFFF_FFFF)
+decoded = ValueDecoder::decode(&ValueLayout::Bytes, packed, &wasm_memory)
+// → StructuredValue::Bytes { ptr: out_ptr, len: byte_count }
+actual  = read_wasm_memory(ptr, len)   // actual secret bytes; never log
+```
+
+Security constraints:
+- The raw bytes MUST NOT be logged at any step.
+- The audit event records only the BLAKE3 hash of the output — not the raw value.
+- `ValueDecoder::decode` for `ValueLayout::Bytes` does NOT read memory; it only
+  unpacks `ptr` and `len` from the raw i64.  The caller's `read_wasm_memory`
+  call is the sole access point to the actual secret bytes.
+- Callers MUST check `byte_count >= 0` before packing; passing the -1 denial
+  sentinel through the decoder produces `StructuredValue::Bytes` with a negative
+  `len`.  Passing a negative `len` to `read_wasm_memory` is unsafe: a naive
+  `len as usize` cast wraps to `usize::MAX`, causing a massive allocation
+  attempt that panics or aborts.  Callers MUST check `len >= 0` before calling
+  `read_wasm_memory`.
+
+This pattern pins the current typed boundary for `secret.read → Bytes` without
+requiring schema changes to `CapabilityOutputSchema`.  A full typed ABI where
+the schema declares `output: Bytes` and the runtime validates it automatically is
+a future milestone.
+
 ## Current limitations
 
 - `Bytes` literals (`LiteralValue::Bytes(Vec<u8>)`) are now executable in both
