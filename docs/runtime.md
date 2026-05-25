@@ -293,7 +293,7 @@ Rules:
 5. Handler binding is explicit per profile/environment.
 ```
 
-Implementation note: rule 4 is target design only. The `Handler` trait (`crates/ail-runtime/src/handler.rs`) has no `trust_level()` method. The runtime currently gates capability dispatch by package trust level (from profile grants), not by a per-handler trust declaration. Per-handler trust enforcement is a data-model gap, not a currently enforced property.
+Implementation note: rule 4 is implemented as an opt-in preflight gate. `Handler::trust_level()` is a default method on the `Handler` trait (`crates/ail-runtime/src/handler.rs`) that returns `TrustLevel::Assumed` for backward compatibility — existing handlers that do not override it continue to work unchanged. Profiles that call `RuntimeProfile::with_min_handler_trust(level)` enforce a minimum trust level in preflight stage 6; profiles that omit `min_handler_trust` skip the gate entirely (default-disabled).
 
 ### Handler execution model
 
@@ -323,7 +323,7 @@ remote handler requires boundary contract
 unverified handler blocked in prod/critical unless policy exception
 ```
 
-Implementation note: handler trust-level classification and the blocking rules above are target design. The `Handler` trait does not declare a trust level; the runtime does not inspect handler trust at dispatch time. These rules apply at package-import policy gates, not at handler execution.
+Implementation note: handler trust-level classification is implemented as an opt-in preflight gate. `Handler::trust_level()` (default: `Assumed`) lets each handler declare its implementation trust level. `RuntimeProfile::with_min_handler_trust(level)` activates the gate; preflight stage 6 then checks every bound handler that serves a granted capability and fails with `HandlerTrustViolation` if its declared level does not satisfy the minimum. Profiles without `min_handler_trust` skip the gate, so existing handlers and profiles are backward compatible.
 
 ### Runtime checks
 
@@ -647,7 +647,7 @@ Runtime cannot upgrade verification state. It can only enforce and produce evide
 1. WASM has no direct world access.
 2. Every world access is a capability call.
 3. Every capability call requires grant + handler binding.
-4. Every handler declares internal effects and trust.  [trust declaration: target design]
+4. Every handler declares internal effects and trust.  [trust level: opt-in via Handler::trust_level(), implemented]
 5. Runtime is deny-by-default.
 6. Runtime validates artifact hashes before execution.
 7. Runtime audits capability calls.
@@ -669,7 +669,7 @@ The current implemented runtime subset resolves the original open questions for 
 | Capability call limits | `ResourceLimits::max_capability_calls` is enforced after the grant check and before handler dispatch; denied ungranted capabilities still return `CapabilityDenied` first. |
 | WASI exposure | Hidden behind the host runtime. The workspace owns direct `wasmtime` usage in `ail-runtime`; programs interact through host calls and exported functions. |
 | Handler execution | In-process Rust `Handler` trait implementations. Verified-module handlers remain future work. |
-| Handler trust enforcement | The `Handler` trait has no `trust_level()` method. Handler trust-level rules (§Handler binding, §Handler execution model) are target design only; the runtime gates on package trust via profile grants. |
+| Handler trust enforcement | `Handler::trust_level()` default method returns `TrustLevel::Assumed` (backward compatible). `RuntimeProfile::with_min_handler_trust(level)` enables a minimum-trust preflight gate (stage 6): fails with `HandlerTrustViolation` when a bound handler's declared level does not satisfy the minimum. Gate is opt-in; profiles without `min_handler_trust` skip it entirely. |
 | Startup assumption expiry (step 7) | `host_preflight` does not enforce assumption expiry. Step 7 in §Startup validation is target design. |
 | Secret vault | Only `SecretEntry`/`secrets_mapping` data model exists in `profile.rs`. No vault client, `secret.read` dispatch, or secret injection is implemented. §Security model secret rules are target design. |
 | In-flight revocation policy | `InFlightPolicy` enum variants are stored but not enforced. `revoke_capability` denies new calls only (`CapabilityDenied`). `allow_complete`/`cancel`/`timeout_then_cancel` semantics are target design. |

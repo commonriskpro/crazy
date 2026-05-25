@@ -12,6 +12,8 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ail_package::trust::TrustLevel;
+
 use crate::abi::{HostError, HostResult};
 use crate::codec::StructuredValue;
 use crate::profile::CapabilityId;
@@ -33,6 +35,22 @@ use crate::profile::CapabilityId;
 pub trait Handler: Send + Sync {
     /// Human-readable name for this handler (appears in audit events).
     fn name(&self) -> &str;
+
+    /// Implementation trust level declared by this handler.
+    ///
+    /// Trust levels correspond to `docs/runtime.md §Handler execution model`:
+    ///
+    /// - [`TrustLevel::Verified`]   — handler identity has been attested/signed.
+    /// - [`TrustLevel::Assumed`]    — internally trusted by convention (default).
+    /// - [`TrustLevel::Unverified`] — no trust claim; blocked in prod/critical.
+    /// - [`TrustLevel::Unsafe`]     — explicitly unsafe; requires strong approval.
+    ///
+    /// The default implementation returns [`TrustLevel::Assumed`], which
+    /// preserves backward compatibility for all existing handler implementations.
+    /// Override to declare a more precise trust level.
+    fn trust_level(&self) -> TrustLevel {
+        TrustLevel::Assumed
+    }
 
     /// Capabilities that this handler can serve.
     ///

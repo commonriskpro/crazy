@@ -11,7 +11,7 @@
 //   2. Manifest CBOR hash check
 //   3. Capability grant check
 //   4+5. Wasmtime validate + instantiate (via `instantiate_inner`)
-//   6. Handler binding check (opt-in)
+//   6. Handler binding check + handler trust gate (both opt-in)
 
 use std::sync::{Arc, Mutex};
 
@@ -44,7 +44,8 @@ pub(crate) fn failure_parts(err: &RuntimeError) -> (Vec<CapabilityId>, Preflight
             | PreflightFailure::HashMismatch { .. }
             | PreflightFailure::WasmValidationError(_)
             | PreflightFailure::HandlerNotBound { .. }
-            | PreflightFailure::ResourceLimitExceeded { .. },
+            | PreflightFailure::ResourceLimitExceeded { .. }
+            | PreflightFailure::HandlerTrustViolation { .. },
         ) => {
             let failure = match err {
                 RuntimeError::PreflightFailed(f) => f.clone(),
@@ -134,8 +135,10 @@ pub(crate) fn check_package_trust(
 ///   1. WASM bytes hash check
 ///   2. Manifest CBOR hash check
 ///   3. Capability grant check (module-scoped)
-///   4. Wasmtime validate + instantiate
-///   5. Handler binding check (opt-in via `profile.require_handler_binding()`)
+///   4. Wasmtime module validation (via `instantiate_inner`)
+///   5. Wasmtime instantiation (via `instantiate_inner`)
+///   6. Handler binding check (opt-in via `profile.require_handler_binding()`)
+///      and handler trust gate (opt-in via `profile.min_handler_trust()`)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn preflight_inner(
     engine: &Engine,
@@ -202,18 +205,42 @@ pub(crate) fn preflight_inner(
         clock_fn,
     )?;
 
-    // Stage 6 — Handler binding check (opt-in).
-    if profile.require_handler_binding() {
+    // Stage 6 — Handler binding check (opt-in) and handler trust gate.
+    //
+    // This stage runs when either:
+    //   a) `profile.require_handler_binding()` is true  — every granted capability
+    //      must have a registered handler, or preflight fails with HandlerNotBound.
+    //   b) `profile.min_handler_trust()` is Some(level) — every bound handler that
+    //      serves a granted capability must declare at least `level` trust, or
+    //      preflight fails with HandlerTrustViolation.
+    let min_handler_trust = profile.min_handler_trust();
+    if profile.require_handler_binding() || min_handler_trust.is_some() {
         for grant in profile.grants() {
-            let bound = handlers
+            let handler = handlers
                 .iter()
-                .any(|h| h.capabilities().contains(&grant.capability));
-            if !bound {
-                return Err(RuntimeError::PreflightFailed(
-                    PreflightFailure::HandlerNotBound {
-                        capability: grant.capability.clone(),
-                    },
-                ));
+                .find(|h| h.capabilities().contains(&grant.capability));
+
+            match handler {
+                None if profile.require_handler_binding() => {
+                    return Err(RuntimeError::PreflightFailed(
+                        PreflightFailure::HandlerNotBound {
+                            capability: grant.capability.clone(),
+                        },
+                    ));
+                }
+                Some(h) if let Some(required) = min_handler_trust => {
+                    let actual = h.trust_level();
+                    if !actual.satisfies(required) {
+                        return Err(RuntimeError::PreflightFailed(
+                            PreflightFailure::HandlerTrustViolation {
+                                handler: h.name().to_string(),
+                                required,
+                                actual,
+                            },
+                        ));
+                    }
+                }
+                _ => {}
             }
         }
     }
