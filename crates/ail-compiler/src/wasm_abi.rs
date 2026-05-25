@@ -268,9 +268,11 @@ pub(crate) fn infer_expr_type(
         AnfExpr::Loop { body } => infer_expr_type(body, locals),
         AnfExpr::Break { value } => infer_expr_type(value, locals),
         AnfExpr::Continue => None,
-        // WhileLoop pushes a unit (I32 0) after the loop ends so it can appear
-        // as the value in a Let binding without causing a stack-underflow error.
-        // Mirrors the ForEach fix from Wave 18B.
+        // WhileLoop always produces I32 0 (unit) after the loop: the outer WASM
+        // block has arity 0, so no value is threaded through Break; after the
+        // block exits, I32Const 0 is pushed unconditionally.  This allows
+        // WhileLoop to appear in a Let binding or Seq without a stack-underflow
+        // validation error.  Mirrors the ForEach fix from Wave 18B.
         AnfExpr::WhileLoop { .. } => Some(ValType::I32),
         AnfExpr::RecordNew { .. }
         | AnfExpr::TupleNew(_)
