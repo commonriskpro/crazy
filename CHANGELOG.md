@@ -25,6 +25,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bindings whose sole use was as the left operand of a short-circuit expression. The
   missing left-atom check is now added; `let x = true in or(x, abort("dead"))` no
   longer mis-fires.
+- **`FixedClock` rejects unknown operations** (Wave 25B): `FixedClock::handle` previously
+  ignored the operation parameter and always returned the pinned timestamp. Any operation
+  string other than `"now"` now returns
+  `HostError::Custom(format!("unknown FixedClock operation: {op}"))`, matching the
+  contract enforcement added to `ClockHandler` in Wave 24C.
+- **Variant well-known/user tag collision** (Wave 25C): user-defined variant tags were
+  allocated starting at `0`, colliding with reserved well-known IDs `0` (None/Ok) and
+  `1` (Some/Err). `WasmCodegenCtx::next_variant_tag` now initialises to `2` so user
+  tags can never alias the well-known set.
+- **`uses_var` silent skip of `ForEach` body when binding is empty** (Wave 25D):
+  the `!binding.is_empty()` guard in the `ForEach` arm of `uses_var` suppressed body
+  scanning whenever the loop variable was an empty string, causing dead-let elimination
+  to incorrectly remove variables used only inside the body. Guard removed; body is now
+  always scanned regardless of binding length.
 - **`bytes_length` lossy cast** (Wave 19): replaced `as i64` with `i64::try_from`,
   surfacing an error instead of silently truncating byte-buffer lengths above `i64::MAX`.
 - **`CoreExpr::WhileLoop` single-evaluation bug** (Wave 21A): condition was compiled
@@ -131,3 +145,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **unit tests** — `uses_var` coverage for `ShortCircuitAnd`/`Or`
     (OPT-USESVAR-AND-1/2, OPT-USESVAR-OR-1/2) and `abort()` parser coverage
     (PARSE-ABORT-1/2/3: well-formed, non-literal arg rejected, zero-arg rejected).
+- **Wave 25B** — `FixedClock` operation replay contract (REPLAY-FIXEDCLOCK-OP-CONTRACT-1/2;
+  `REPLAY-` prefix reflects placement in `replay_tests.rs`):
+  OP-CONTRACT-1 (`fixed_clock_now_op_returns_timestamp`) asserts `"now"` returns the
+  configured pinned timestamp; OP-CONTRACT-2 (`fixed_clock_unknown_op_returns_error`)
+  asserts any other operation returns `HostError::Custom` naming the unknown op.
+- **Wave 25C** — Variant tag collision conformance (RUNTIME-ACL-VARIANT-COLLISION-1/2/3):
+  COLLISION-1 proves user tag `Active` (now assigned `2`) does not fire the `None` arm
+  (discriminant `0`); COLLISION-2 proves `variant(None)` and `none()` both resolve to
+  discriminant `0` via the well-known path; COLLISION-3 proves well-known IDs
+  `None`=0, `Ok`=0, `Some`=1, `Err`=1 remain stable after the reservation change.
+- **Wave 25D** — `uses_var` unit coverage for collection exprs
+  (OPT-USESVAR-INDEXGET-1/2/3, OPT-USESVAR-MAPNEW-1/2/3, OPT-USESVAR-SETNEW-1/2,
+  OPT-USESVAR-FOREACH-1/2/3, OPT-USESVAR-FOREACH-SHADOW-1): each form tested for
+  true-hit, false-miss, and unrelated-variable scenarios. Fixed narrow bug in the
+  `ForEach` arm: the `!binding.is_empty()` guard silently suppressed body scan when
+  the loop variable was an empty string; guard removed.
