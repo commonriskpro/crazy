@@ -3873,6 +3873,96 @@ fn two_hoistable_lambdas_get_distinct_table_indices() {
     );
 }
 
+// Scenario: function_offset > 0 (module with a host_call import preceding the
+// defined functions) + hoistable Lambda + Fold.  Proves `first_hoisted_table_idx`
+// is `n_bindings` (not `function_offset + n_bindings`).
+//
+// Module layout:
+//   import[0]  ail/host_call          → function index 0   (function_offset = 1)
+//   defined[0] fn.io_noop (EffectCall) → function index 1  (table index 0)
+//   defined[1] fn.sum (Fold)           → function index 2  (table index 1)
+//   hoisted[0] reducer body            → function index 3  (table index 2)
+//
+// The hoistable Lambda must emit I64Const(2) — table index n_bindings=2.
+// The buggy formula (function_offset + n_bindings = 1+2=3) would emit I64Const(3),
+// which is out of the table range [0..2] and would trap at runtime.
+#[test]
+fn fold_with_nonzero_function_offset_hoistable_lambda_uses_correct_table_idx() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    // binding 0: EffectCall with no args — brings in ail/host_call import.
+    // binding 1: hoistable Lambda + Fold — hoisted Lambda must get table index 2.
+    let anf = sealed_anf(vec![
+        AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.io_noop".to_string(),
+            expr: AnfExpr::EffectCall {
+                capability: "io".to_string(),
+                func: "noop".to_string(),
+                args: vec![],
+            },
+        },
+        AnfBinding {
+            source_ref: NodeRef(1),
+            name: "fn.sum".to_string(),
+            expr: AnfExpr::Let {
+                name: "reducer".to_string(),
+                value: Box::new(AnfExpr::Lambda {
+                    params: vec!["acc".to_string(), "x".to_string()],
+                    captures: vec![],
+                    body: Box::new(AnfExpr::Call {
+                        func: "+".to_string(),
+                        args: vec!["acc".to_string(), "x".to_string()],
+                    }),
+                }),
+                body: Box::new(AnfExpr::Let {
+                    name: "acc0".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                    body: Box::new(AnfExpr::Let {
+                        name: "lst".to_string(),
+                        value: Box::new(AnfExpr::ListNew(vec![])),
+                        body: Box::new(AnfExpr::Fold {
+                            init: "acc0".to_string(),
+                            list: "lst".to_string(),
+                            func: "reducer".to_string(),
+                        }),
+                    }),
+                }),
+            },
+        },
+    ]);
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed with function_offset > 0");
+    wasmparser::validate(&artifact.wasm)
+        .expect("module with host import + hoistable Lambda Fold must validate");
+
+    // Collect all I64Const values from the code section.
+    // The hoistable Lambda emits I64Const(table_idx) where table_idx = n_bindings = 2.
+    // The buggy formula would emit I64Const(3) (= function_offset + n_bindings).
+    let mut i64_consts: Vec<i64> = Vec::new();
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                if let Operator::I64Const { value } = reader.read().unwrap() {
+                    i64_consts.push(value);
+                }
+            }
+        }
+    }
+
+    assert!(
+        i64_consts.contains(&2),
+        "hoistable Lambda must emit I64Const(2) (table index = n_bindings = 2); \
+         got consts: {i64_consts:?}"
+    );
+    assert!(
+        !i64_consts.contains(&3),
+        "hoistable Lambda must NOT emit I64Const(3) (buggy: function_offset + n_bindings = 3 \
+         is out of table bounds [0..2]); got consts: {i64_consts:?}"
+    );
+}
+
 // ── End Wave 12A nested Lambda hoisting tests ─────────────────────────────
 
 // ── End Wave 11B Fold implementation tests ────────────────────────────────

@@ -921,8 +921,10 @@ fn emit_anf_expr<'a>(
             captures,
             body: _,
         } => {
-            if params.len() == 2 && captures.is_empty() {
+            if params.len() == 2 && captures.is_empty() && ctx.fold_reducer_type_idx.is_some() {
                 // Hoistable fold reducer: emit table index directly as I64.
+                // Only reached when a function table exists (fold_reducer_type_idx.is_some()),
+                // guaranteeing the table and hoisted body are present.
                 // `build_code_section` emits the body as an extra function at
                 // the same index, in the same DFS encounter order.
                 let table_idx = ctx.next_hoisted_table_idx;
@@ -1333,11 +1335,10 @@ fn emit_anf_expr<'a>(
         //     offset 0 of the env pointer, wraps to i32.
         //   • A local I64 variable — wraps directly to i32.
         //
-        // Limitation: nested Lambda bodies are not hoisted into separate
-        // functions, so `fn_idx = 0` stored in a closure env will call the
-        // FIRST compiled function.  Fold + nested Lambda requires lambda
-        // hoisting (deferred to a future wave).  Fold + top-level named
-        // function works correctly.
+        // Note: capture-free 2-param Lambdas are hoisted (Wave 12A) and
+        // dispatch via the I64 path above.  Lambdas with captures still emit a
+        // closure env (I32 pointer) whose fn_idx is a placeholder; the I32
+        // path below traps at runtime.  General closure hoisting is deferred.
         AnfExpr::Fold { init, list, func } => {
             let Some(fold_type_idx) = ctx.fold_reducer_type_idx else {
                 // Pre-flight gate should have inserted the type; trap defensively.
@@ -1490,8 +1491,8 @@ fn emit_anf_expr<'a>(
 /// functions.  Their type is `(i64, i64) → i64` (fold-reducer shape) and
 /// they do not appear in the export section.
 ///
-/// The counter `next_hoisted_table_idx` starts at
-/// `function_offset + n_bindings` and increments once per hoistable Lambda
+/// The counter `next_hoisted_table_idx` starts at `n_bindings` and
+/// increments once per hoistable Lambda
 /// encountered during DFS traversal.  The same DFS order is used in
 /// `collect_hoistable_lambdas` (called from `emit_wasm_with_profile`) and
 /// in `emit_anf_expr` when it encounters `AnfExpr::Lambda` nodes, so the
@@ -1512,8 +1513,10 @@ pub(crate) fn build_code_section(
     let mut codes = CodeSection::new();
     let functions = function_index(bindings, function_offset);
 
-    // First hoisted table index: comes after all binding functions.
-    let first_hoisted_table_idx = function_offset + bindings.len() as u32;
+    // First hoisted table index: element table index i maps to function index
+    // `function_offset + i`, so table index for the first hoisted Lambda is
+    // simply `bindings.len()` (not `function_offset + bindings.len()`).
+    let first_hoisted_table_idx = bindings.len() as u32;
     // Running counter shared (by sequential extraction) across all binding ctx.
     let mut next_hoisted_table_idx = first_hoisted_table_idx;
 
