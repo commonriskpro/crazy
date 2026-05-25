@@ -84,6 +84,16 @@ pub(crate) fn render_match_pattern(pattern: CoreExpr) -> Result<String, ParseErr
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(format!("{func}({})", rendered_args.join(", ")))
         }
+        // `(variant "Tag" payload)` desugars to VariantNew at parse time;
+        // when it appears in a match-pattern position it must render as the
+        // canonical constructor-pattern string the WASM backend expects.
+        CoreExpr::VariantNew { tag, payload } => match payload {
+            None => Ok(tag),
+            Some(inner) => {
+                let rendered = render_match_pattern(*inner)?;
+                Ok(format!("{tag}({rendered})"))
+            }
+        },
         _ => Err(ParseError::new(
             "match pattern must be an identifier, literal, wildcard, or constructor pattern",
         )),
@@ -110,4 +120,44 @@ pub(crate) fn expect_arity<const N: usize>(
     let actual = args.len();
     args.try_into()
         .map_err(|_| ParseError::new(format!("{func} expects {N} args, got {actual}")))
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use crate::core_ir::{CoreExpr, LiteralValue};
+
+    use super::render_match_pattern;
+
+    #[test]
+    fn rmp_variant_tag_only() {
+        // `(variant "None")` → no payload → renders as the bare tag string.
+        let expr = CoreExpr::VariantNew {
+            tag: "None".to_string(),
+            payload: None,
+        };
+        assert_eq!(render_match_pattern(expr).unwrap(), "None");
+    }
+
+    #[test]
+    fn rmp_variant_with_var_payload() {
+        // `(variant "Some" x)` → renders as `Some(x)` — canonical constructor
+        // pattern string expected by the WASM backend.
+        let expr = CoreExpr::VariantNew {
+            tag: "Some".to_string(),
+            payload: Some(Box::new(CoreExpr::Var("x".to_string()))),
+        };
+        assert_eq!(render_match_pattern(expr).unwrap(), "Some(x)");
+    }
+
+    #[test]
+    fn rmp_variant_with_literal_payload() {
+        // Payload may itself be a literal; render_match_pattern recurses.
+        let expr = CoreExpr::VariantNew {
+            tag: "Ok".to_string(),
+            payload: Some(Box::new(CoreExpr::Literal(LiteralValue::Int(42)))),
+        };
+        assert_eq!(render_match_pattern(expr).unwrap(), "Ok(42)");
+    }
 }
