@@ -83,10 +83,16 @@ fn different_anf_produces_different_wasm_hash() {
     );
 }
 
-// Scenario: build_type_section returns None for 0 functions.
+// Scenario: build_type_section returns None for 0 functions and no fold.
 #[test]
 fn build_type_section_none_for_zero() {
-    assert!(build_type_section(&[]).is_none());
+    assert!(build_type_section(&[], false).is_none());
+}
+
+// Scenario: build_type_section returns Some when needs_fold is true even with 0 signatures.
+#[test]
+fn build_type_section_some_when_needs_fold() {
+    assert!(build_type_section(&[], true).is_some());
 }
 
 // TRIANGULATE: build_type_section returns Some for N > 0.
@@ -96,8 +102,8 @@ fn build_type_section_some_for_nonzero() {
         param_count: 0,
         result: None,
     };
-    assert!(build_type_section(std::slice::from_ref(&signature)).is_some());
-    assert!(build_type_section(&vec![signature; 5]).is_some());
+    assert!(build_type_section(std::slice::from_ref(&signature), false).is_some());
+    assert!(build_type_section(&vec![signature; 5], false).is_some());
 }
 
 fn sealed_anf(bindings: Vec<AnfBinding>) -> AnfIr {
@@ -2995,19 +3001,23 @@ fn resource_release_only_module_has_no_memory_section() {
 
 // ── End Wave 8C iteration tests ───────────────────────────────────────────
 
-// ── Wave 9A: Fold diagnostic gate ─────────────────────────────────────────
+// ── Wave 11B: Fold via call_indirect + function table ─────────────────────
 //
-// Proves that emit_wasm returns CompileError::UnsupportedWasmConstruct("Fold")
-// instead of emitting a silent unreachable trap, so callers get an actionable
-// compile-time error rather than a runtime surprise.
+// Fold is now implemented.  A module containing Fold:
+//   1. Emits a table section (one funcref table, N slots).
+//   2. Emits an element section (populates table with all function indices).
+//   3. Adds a fold-reducer type (i64, i64) → i64 to the type section.
+//   4. Emits a call_indirect loop in the code section.
+//   5. The final WASM module validates with wasmparser.
 //
-// Fold requires call_indirect + element section (function table), which the
-// WASM backend does not yet build.
+// The previous diagnostic tests (Wave 9A) have been replaced by these
+// verification tests that assert successful compilation and structural
+// correctness.
 
-// Scenario: top-level Fold binding → UnsupportedWasmConstruct error.
-// Expects: emit_wasm returns Err(CompileError::UnsupportedWasmConstruct("Fold")).
+// Scenario: top-level Fold binding now emits successfully.
+// Previously expected UnsupportedWasmConstruct; now expects Ok.
 #[test]
-fn fold_top_level_returns_unsupported_construct_error() {
+fn fold_top_level_emits_successfully() {
     let anf = sealed_anf(vec![AnfBinding {
         source_ref: NodeRef(0),
         name: "fn.reduce".to_string(),
@@ -3020,18 +3030,16 @@ fn fold_top_level_returns_unsupported_construct_error() {
 
     let result = emit_wasm(&anf);
     assert!(
-        matches!(
-            result,
-            Err(CompileError::UnsupportedWasmConstruct(ref name)) if name == "Fold"
-        ),
-        "expected UnsupportedWasmConstruct(\"Fold\"), got {result:?}"
+        result.is_ok(),
+        "Fold binding must compile successfully now that call_indirect is implemented; \
+         got {result:?}"
     );
 }
 
-// Scenario: Fold nested inside a Let chain → error is still detected.
-// Expects: pre-flight walker finds Fold regardless of nesting depth.
+// Scenario: Fold nested inside a Let chain — still emits successfully.
+// Verifies that the recursion detection (anf_has_fold) correctly spots nested Fold.
 #[test]
-fn fold_nested_in_let_returns_unsupported_construct_error() {
+fn fold_nested_in_let_emits_successfully() {
     let anf = sealed_anf(vec![AnfBinding {
         source_ref: NodeRef(0),
         name: "fn.nested_fold".to_string(),
@@ -3052,21 +3060,18 @@ fn fold_nested_in_let_returns_unsupported_construct_error() {
 
     let result = emit_wasm(&anf);
     assert!(
-        matches!(result, Err(CompileError::UnsupportedWasmConstruct(_))),
-        "pre-flight gate must detect Fold nested inside a Let chain, got {result:?}"
+        result.is_ok(),
+        "Fold nested inside a Let chain must compile successfully; got {result:?}"
     );
 }
 
-// Scenario: UnsupportedWasmConstruct Display names the unsupported construct.
-// Expects: actionable message for callers without pattern-matching on internals.
-// Note: the Display is construct-agnostic; it no longer hard-codes "call_indirect"
-// because different constructs (Fold, TaskSpawn, Dispatch, …) have different
-// missing infrastructure. The construct name in the payload identifies the gap.
+// Scenario: UnsupportedWasmConstruct Display still names the unsupported construct.
+// Fold is gone from the error set; the Display contract applies to other constructs.
 #[test]
-fn fold_unsupported_error_display_mentions_fold() {
-    let msg = CompileError::UnsupportedWasmConstruct("Fold".to_string()).to_string();
+fn unsupported_wasm_construct_error_display_names_construct() {
+    let msg = CompileError::UnsupportedWasmConstruct("TaskSpawn".to_string()).to_string();
     assert!(
-        msg.contains("Fold"),
+        msg.contains("TaskSpawn"),
         "error display must name the unsupported construct: {msg}"
     );
     assert!(
@@ -3076,8 +3081,6 @@ fn fold_unsupported_error_display_mentions_fold() {
 }
 
 // TRIANGULATE: UnsupportedWasmConstruct is distinct from EncodingError.
-// Expects: the two error types do not compare equal, ensuring callers can
-// distinguish a missing-feature diagnostic from a serialization failure.
 #[test]
 fn fold_unsupported_error_is_distinct_from_encoding_error() {
     let unsupported = CompileError::UnsupportedWasmConstruct("Fold".to_string());
@@ -3088,22 +3091,293 @@ fn fold_unsupported_error_is_distinct_from_encoding_error() {
     );
 }
 
-// Scenario: a binding WITHOUT Fold still emits successfully.
-// Regression guard — the pre-flight gate must not affect non-Fold bindings.
+// Scenario: a binding WITHOUT Fold emits successfully and has no table section.
+// Regression guard — Fold implementation must not add table to non-Fold modules.
 #[test]
-fn non_fold_binding_is_unaffected_by_fold_gate() {
+fn non_fold_binding_has_no_table_section() {
+    use wasmparser::{Parser, Payload};
+
     let anf = sealed_anf(vec![AnfBinding {
         source_ref: NodeRef(0),
         name: "fn.simple".to_string(),
         expr: AnfExpr::Literal(LiteralValue::Int(1)),
     }]);
+    let artifact = emit_wasm(&anf).expect("non-Fold binding must compile successfully");
+
+    let mut saw_table = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::TableSection(_) = payload.unwrap() {
+            saw_table = true;
+        }
+    }
     assert!(
-        emit_wasm(&anf).is_ok(),
-        "non-Fold bindings must not be rejected by the Fold pre-flight gate"
+        !saw_table,
+        "non-Fold module must NOT have a table section (fold infrastructure is gated)"
     );
 }
 
-// ── End Wave 9A Fold diagnostic tests ─────────────────────────────────────
+// Scenario: a Fold module emits a TableSection.
+// Proves the function table is added when Fold is present.
+#[test]
+fn fold_module_has_table_section() {
+    use wasmparser::{Parser, Payload};
+
+    // Two bindings: a reducer and a Fold over it.
+    let anf = sealed_anf(vec![
+        AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.add".to_string(),
+            expr: AnfExpr::Lambda {
+                params: vec!["acc".to_string(), "x".to_string()],
+                captures: vec![],
+                body: Box::new(AnfExpr::Call {
+                    func: "+".to_string(),
+                    args: vec!["acc".to_string(), "x".to_string()],
+                }),
+            },
+        },
+        AnfBinding {
+            source_ref: NodeRef(1),
+            name: "fn.sum".to_string(),
+            expr: AnfExpr::Let {
+                name: "acc0".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                body: Box::new(AnfExpr::Let {
+                    name: "lst".to_string(),
+                    value: Box::new(AnfExpr::ListNew(vec![
+                        AnfExpr::Literal(LiteralValue::Int(1)),
+                        AnfExpr::Literal(LiteralValue::Int(2)),
+                        AnfExpr::Literal(LiteralValue::Int(3)),
+                    ])),
+                    body: Box::new(AnfExpr::Fold {
+                        init: "acc0".to_string(),
+                        list: "lst".to_string(),
+                        func: "fn.add".to_string(),
+                    }),
+                }),
+            },
+        },
+    ]);
+
+    let artifact = emit_wasm(&anf).expect("Fold module must compile successfully");
+    wasmparser::validate(&artifact.wasm).expect("Fold module WASM must validate");
+
+    let mut saw_table = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::TableSection(_) = payload.unwrap() {
+            saw_table = true;
+        }
+    }
+    assert!(saw_table, "Fold module must include a TableSection");
+}
+
+// Scenario: a Fold module emits an ElementSection.
+// Proves the element segment populates the function table.
+#[test]
+fn fold_module_has_element_section() {
+    use wasmparser::{Parser, Payload};
+
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.reduce".to_string(),
+        expr: AnfExpr::Fold {
+            init: "acc0".to_string(),
+            list: "lst".to_string(),
+            func: "f".to_string(),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("Fold module must compile");
+
+    let mut saw_element = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::ElementSection(_) = payload.unwrap() {
+            saw_element = true;
+        }
+    }
+    assert!(saw_element, "Fold module must include an ElementSection");
+}
+
+// Scenario: a Fold module emits a CallIndirect instruction.
+// Proves the actual call_indirect dispatch is in the code section.
+// `acc0` and `lst` must be in scope (let-bound) so the Fold emission
+// reaches the call_indirect instruction rather than short-circuiting on
+// the unresolved `list` variable.
+#[test]
+fn fold_module_emits_call_indirect() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.reduce".to_string(),
+        // Let-bind acc0 and lst so they are in scope when Fold is emitted.
+        // func = "f" is intentionally unresolved — the emitter falls through
+        // to the Unreachable+CallIndirect path (dead code, but syntactically
+        // present and parseable by wasmparser).
+        expr: AnfExpr::Let {
+            name: "acc0".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Fold {
+                    init: "acc0".to_string(),
+                    list: "lst".to_string(),
+                    func: "f".to_string(),
+                }),
+            }),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("Fold module must compile");
+
+    let mut saw_call_indirect = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                if let Operator::CallIndirect { .. } = reader.read().unwrap() {
+                    saw_call_indirect = true;
+                }
+            }
+        }
+    }
+    assert!(
+        saw_call_indirect,
+        "Fold module must emit CallIndirect in the code section"
+    );
+}
+
+// Scenario: Fold with a named top-level reducer function validates.
+// Proves the full Fold pipeline: reducer function + Fold via named function ref.
+#[test]
+fn fold_with_named_reducer_validates() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let anf = sealed_anf(vec![
+        AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.add".to_string(),
+            expr: AnfExpr::Lambda {
+                params: vec!["acc".to_string(), "x".to_string()],
+                captures: vec![],
+                body: Box::new(AnfExpr::Call {
+                    func: "+".to_string(),
+                    args: vec!["acc".to_string(), "x".to_string()],
+                }),
+            },
+        },
+        AnfBinding {
+            source_ref: NodeRef(1),
+            name: "fn.sum".to_string(),
+            expr: AnfExpr::Let {
+                name: "acc0".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                body: Box::new(AnfExpr::Let {
+                    name: "lst".to_string(),
+                    value: Box::new(AnfExpr::ListNew(vec![
+                        AnfExpr::Literal(LiteralValue::Int(10)),
+                        AnfExpr::Literal(LiteralValue::Int(20)),
+                    ])),
+                    body: Box::new(AnfExpr::Fold {
+                        init: "acc0".to_string(),
+                        list: "lst".to_string(),
+                        // "fn.add" resolves as a top-level function name.
+                        func: "fn.add".to_string(),
+                    }),
+                }),
+            },
+        },
+    ]);
+
+    let artifact = emit_wasm(&anf).expect("Fold with named reducer must compile");
+    wasmparser::validate(&artifact.wasm).expect("Fold with named reducer must validate");
+
+    // Verify call_indirect is emitted for the sum function.
+    let mut saw_call_indirect = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                if let Operator::CallIndirect { .. } = reader.read().unwrap() {
+                    saw_call_indirect = true;
+                }
+            }
+        }
+    }
+    assert!(
+        saw_call_indirect,
+        "Fold with named reducer must emit CallIndirect"
+    );
+}
+
+// Scenario: fold-reducer type is appended at the correct type index.
+// Proves that type_offset + signatures.len() == fold_reducer_type_idx.
+// The type section for a 2-binding module with no host imports and fold:
+//   type[0]: binding[0] sig
+//   type[1]: binding[1] sig
+//   type[2]: (i64, i64) → i64  (fold reducer, index 2)
+#[test]
+fn fold_reducer_type_index_matches_call_indirect_type_index() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let anf = sealed_anf(vec![
+        AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.reducer".to_string(),
+            expr: AnfExpr::Lambda {
+                params: vec!["acc".to_string(), "x".to_string()],
+                captures: vec![],
+                body: Box::new(AnfExpr::Call {
+                    func: "+".to_string(),
+                    args: vec!["acc".to_string(), "x".to_string()],
+                }),
+            },
+        },
+        AnfBinding {
+            source_ref: NodeRef(1),
+            name: "fn.fold_user".to_string(),
+            expr: AnfExpr::Let {
+                name: "z".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                body: Box::new(AnfExpr::Let {
+                    name: "xs".to_string(),
+                    value: Box::new(AnfExpr::ListNew(vec![])),
+                    body: Box::new(AnfExpr::Fold {
+                        init: "z".to_string(),
+                        list: "xs".to_string(),
+                        func: "fn.reducer".to_string(),
+                    }),
+                }),
+            },
+        },
+    ]);
+
+    let artifact = emit_wasm(&anf).expect("2-binding Fold module must compile");
+    wasmparser::validate(&artifact.wasm).expect("2-binding Fold module must validate");
+
+    // For a 2-binding module with no host imports: fold_reducer_type_idx = 0 + 2 = 2.
+    let expected_type_idx: u32 = 2;
+    let mut saw_expected = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                if let Operator::CallIndirect { type_index, .. } = reader.read().unwrap() {
+                    if type_index == expected_type_idx {
+                        saw_expected = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        saw_expected,
+        "CallIndirect must use type_index={expected_type_idx} (fold reducer type)"
+    );
+}
+
+// ── End Wave 11B Fold implementation tests ────────────────────────────────
 
 // ── Wave 10B: generalized unsupported-construct diagnostics ───────────────
 //
