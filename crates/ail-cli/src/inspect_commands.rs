@@ -181,7 +181,10 @@ pub(crate) async fn cmd_inspect(
                     Err(e) => (None, Some(e)),
                 };
                 if let Some(r) = hash_report {
-                    (r, "persisted_by_hash", id.to_string(), None::<String>)
+                    // Prefer the profile embedded in the report object (Wave 8A).
+                    // Falls back to None for reports written before the field was added.
+                    let profile = r.verified_profile.clone();
+                    (r, "persisted_by_hash", id.to_string(), profile)
                 } else if let Some((r, hash, profile)) =
                     store.load_verification_report_by_change_id(id).await?
                 {

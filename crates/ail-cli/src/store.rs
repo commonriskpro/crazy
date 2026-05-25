@@ -334,8 +334,13 @@ impl StoreHandle {
         profile: &str,
         report: &VerificationReport,
     ) -> Result<ObjectId, CliError> {
+        // Embed the profile into the stored object so hash-addressed lookup
+        // (`inspect report <hash>`) can surface the profile without the sidecar.
+        // The caller's `report` is not mutated; only the persisted bytes carry the field.
+        let mut enriched = report.clone();
+        enriched.verified_profile = Some(profile.to_string());
         let mut bytes = Vec::new();
-        ciborium::into_writer(report, &mut bytes)
+        ciborium::into_writer(&enriched, &mut bytes)
             .map_err(|e| CliError::Domain(format!("report encoding failed: {e}")))?;
 
         match self {
@@ -984,10 +989,16 @@ mod tests {
             .await
             .expect("load_verification_report_by_hash must succeed");
 
+        // save_verification_report embeds the profile in the stored CBOR, so the
+        // loaded report has verified_profile set even though the original did not.
+        let expected = VerificationReport {
+            verified_profile: Some("dev".to_string()),
+            ..report.clone()
+        };
         assert_eq!(
             loaded,
-            Some(report),
-            "loaded report must equal the saved report"
+            Some(expected),
+            "loaded report must match the enriched (profile-embedded) saved report"
         );
     }
 
@@ -1011,13 +1022,22 @@ mod tests {
             .await
             .expect("save_verification_report must succeed for file store");
 
+        // save_verification_report embeds the profile in the stored CBOR.
+        let expected = VerificationReport {
+            verified_profile: Some("dev".to_string()),
+            ..report.clone()
+        };
+
         // Load by hash.
         let by_hash = store
             .load_verification_report_by_hash(&hash)
             .await
             .expect("load_verification_report_by_hash must succeed")
             .expect("report must be present when loaded by hash");
-        assert_eq!(by_hash, report, "hash-loaded report must match original");
+        assert_eq!(
+            by_hash, expected,
+            "hash-loaded report must match enriched report (profile embedded)"
+        );
 
         // Load by change_id via sidecar.
         let by_change_id = store
@@ -1026,8 +1046,8 @@ mod tests {
             .expect("load_verification_report_by_change_id must succeed")
             .expect("report must be present when loaded by change_id");
         assert_eq!(
-            by_change_id.0, report,
-            "change-id-loaded report must match original"
+            by_change_id.0, expected,
+            "change-id-loaded report must match enriched report (profile embedded)"
         );
         assert_eq!(
             by_change_id.1, hash,
@@ -1085,6 +1105,102 @@ mod tests {
             .expect("must not error");
 
         assert_eq!(result, None, "unknown hash must return None");
+    }
+
+    // ── T4b: Wave 8A — verified_profile embedded in hash-addressed object ────
+
+    // Scenario: save embeds profile in the CBOR object; hash-load reflects it.
+    //   GIVEN a memory StoreHandle and a VerificationReport without verified_profile
+    //   WHEN save_verification_report("dev") is called
+    //   THEN load_by_hash returns a report with verified_profile = Some("dev")
+    #[tokio::test]
+    async fn save_verification_report_embeds_profile_in_object() {
+        let store = memory_store();
+        let change_id = "f".repeat(64);
+        let report = minimal_report(); // verified_profile: None
+
+        let hash = store
+            .save_verification_report(&change_id, "dev", &report)
+            .await
+            .expect("save must succeed");
+
+        let loaded = store
+            .load_verification_report_by_hash(&hash)
+            .await
+            .expect("load must succeed")
+            .expect("report must exist");
+
+        assert_eq!(
+            loaded.verified_profile,
+            Some("dev".to_string()),
+            "loaded report must carry the profile that was passed to save"
+        );
+        // The caller's original report is NOT mutated.
+        assert_eq!(
+            report.verified_profile, None,
+            "save must not mutate the caller's report"
+        );
+    }
+
+    // Scenario: different profiles are embedded distinctly.
+    //   GIVEN two save calls with profiles "dev" and "prod"
+    //   WHEN each report is loaded by its distinct hash
+    //   THEN each carries the correct profile
+    #[tokio::test]
+    async fn save_verification_report_distinct_profiles_stored_distinctly() {
+        let store = memory_store();
+        let change_dev = "a".repeat(64);
+        let change_prod = "b".repeat(64);
+        let report = minimal_report();
+
+        let hash_dev = store
+            .save_verification_report(&change_dev, "dev", &report)
+            .await
+            .expect("save dev must succeed");
+        let hash_prod = store
+            .save_verification_report(&change_prod, "prod", &report)
+            .await
+            .expect("save prod must succeed");
+
+        // Different profiles produce different CBOR → different hashes.
+        assert_ne!(hash_dev, hash_prod, "dev and prod hashes must differ");
+
+        let loaded_dev = store
+            .load_verification_report_by_hash(&hash_dev)
+            .await
+            .expect("load dev must succeed")
+            .expect("dev report must exist");
+        let loaded_prod = store
+            .load_verification_report_by_hash(&hash_prod)
+            .await
+            .expect("load prod must succeed")
+            .expect("prod report must exist");
+
+        assert_eq!(loaded_dev.verified_profile, Some("dev".to_string()));
+        assert_eq!(loaded_prod.verified_profile, Some("prod".to_string()));
+    }
+
+    // Scenario: old CBOR without verified_profile field still deserializes.
+    //   GIVEN CBOR bytes of a VerificationReport without the verified_profile field
+    //   WHEN deserialized into VerificationReport
+    //   THEN verified_profile defaults to None (backward compat)
+    #[test]
+    fn old_report_cbor_without_verified_profile_defaults_to_none() {
+        // Encode a report that has verified_profile = None (as if from Wave 7).
+        let old_report = VerificationReport {
+            verified_profile: None,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        ciborium::into_writer(&old_report, &mut buf).expect("CBOR encode must succeed");
+
+        // Decode — must succeed with verified_profile = None.
+        let decoded: VerificationReport =
+            ciborium::from_reader(buf.as_slice()).expect("CBOR decode must succeed");
+        assert_eq!(
+            decoded.verified_profile, None,
+            "old reports without verified_profile must deserialize to None"
+        );
     }
 
     // (T4 WASM artifact and T5 native artifact tests moved to store_artifacts.rs)
