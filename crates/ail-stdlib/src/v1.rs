@@ -1394,11 +1394,12 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         contract_clauses: Some(ContractClauses {
             requires: vec![
                 "first arg is List<T>".to_string(),
-                "second arg is UInt (index)".to_string(),
+                "second arg is Int (index)".to_string(),
             ],
             ensures: vec![
-                "Some(element) when index < length".to_string(),
+                "Some(element) when 0 <= index < length".to_string(),
                 "None when index >= length".to_string(),
+                "None when index < 0".to_string(),
             ],
         }),
     });
@@ -1469,7 +1470,7 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
             requires: vec![
                 "first arg is List<T>".to_string(),
                 "second arg is initial accumulator U".to_string(),
-                "third arg is fold function".to_string(),
+                "third arg is Fn(List([acc, item])) -> U (binary encoding: function receives List([acc, item]))".to_string(),
             ],
             ensures: vec![
                 "empty list returns the initial accumulator unchanged".to_string(),
@@ -1622,8 +1623,8 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         contract_clauses: Some(ContractClauses {
             requires: vec!["both args are Int (millisecond epoch instants)".to_string()],
             ensures: vec![
-                "result is (second - first) in milliseconds".to_string(),
-                "result may be negative when first instant is later than second".to_string(),
+                "result is (first - second) in milliseconds".to_string(),
+                "result is negative when second instant is later than first".to_string(),
             ],
         }),
     });
@@ -1689,7 +1690,8 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
         contract_clauses: Some(ContractClauses {
             requires: vec!["clock.now capability must be granted".to_string()],
             ensures: vec![
-                "result is Int (millisecond Unix epoch timestamp)".to_string(),
+                "result is Instant (runtime representation: Int epoch-ms since Unix epoch)"
+                    .to_string(),
                 "result > 0 for any real-world wall-clock call".to_string(),
             ],
         }),
@@ -2022,6 +2024,14 @@ mod tests {
         assert!(
             has_contract_clauses("std.time.now"),
             "std.time.now must have contract_clauses (pre-loop entry required)"
+        );
+    }
+
+    #[test]
+    fn v1_time_now_has_capability_effect() {
+        assert!(
+            has_capability_effect("std.time.now"),
+            "std.time.now must have effect_row and capability_reqs (clock.now)"
         );
     }
 
