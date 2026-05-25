@@ -2091,6 +2091,24 @@ fn short_circuit_or_false_left_evaluates_right() {
     );
 }
 
+/// Compile `expr` to WASM and return the live `RuntimeInstance` **without**
+/// invoking any export.
+///
+/// Use this (instead of [`invoke_compiler_expr`]) when the test needs to keep
+/// the instance alive after invocation so it can call
+/// [`RuntimeInstance::read_memory_i64`] to inspect linear memory.
+fn compile_and_instantiate_expr(expr: AnfExpr, name: &str) -> ail_runtime::RuntimeInstance {
+    let wasm = compiler_wasm_for_expr(expr, name);
+    let manifest = CapabilityManifest {
+        module: format!("{name}-test"),
+        requires: vec![],
+    };
+    let profile = matching_profile(&wasm, &manifest);
+    let mut host = RuntimeHost::new();
+    host.validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("WASM must instantiate")
+}
+
 // ── Wave 19B: data-structure execution conformance ────────────────────────
 //
 // Spec scenarios covered (RUNTIME-RECORD-1..2, RUNTIME-FIELDUPDATE-1..2,
@@ -2742,5 +2760,261 @@ end
         invoke_acl_export(acl, "main"),
         RuntimeValue::I64(7),
         "while(eq(cell_get(c),zero)) with c=0: body must run once, CellSet(c,7), CellGet must return I64(7)"
+    );
+}
+
+// ── Wave 20B: MapNew/SetNew memory-layout proof via read_memory_i64 ────────
+//
+// These tests upgrade the structural proofs from Wave 19B (RUNTIME-MAP-1,
+// RUNTIME-SET-1 — only asserted ptr > 0) to full layout proofs that read
+// actual i64 values from WASM linear memory using
+// `RuntimeInstance::read_memory_i64(ptr, byte_offset)`.
+//
+// Compiler-defined layouts (from wasm_emit.rs):
+//
+//   MapNew layout  : [count: i64 @ 0, k0: i64 @ 8,  v0: i64 @ 16,
+//                                     k1: i64 @ 24, v1: i64 @ 32, ...]
+//   SetNew layout  : [count: i64 @ 0, e0: i64 @ 8,  e1: i64 @ 16, ...]
+//
+// Heap start: align_to_i64(effect_data.next_offset).  For expressions with no
+// interned strings / capability args, next_offset == 0 and
+// align_to_i64(0) = 8.  The bump pointer is therefore initialised to 8 and
+// the first allocation starts there.
+//
+// Spec scenarios (RUNTIME-MAP-2..3, RUNTIME-SET-2..3):
+//
+//  RUNTIME-MAP-2: MapNew({k:1, v:100}) — proves count=1 at offset 0,
+//    key=1 at offset 8, value=100 at offset 16.
+//
+//  RUNTIME-MAP-3: MapNew({k0:1, v0:100, k1:2, v1:200}) — proves the second
+//    entry is written at the correct interleaved offsets (k1 @ 24, v1 @ 32).
+//
+//  RUNTIME-SET-2: SetNew({7}) — proves count=1 at offset 0, elem=7 at offset 8.
+//
+//  RUNTIME-SET-3: SetNew({7, 13}) — proves the second element lands at offset 16.
+
+// RUNTIME-MAP-2
+//
+// fn.map_layout =
+//   let k = Literal(1)   in
+//   let v = Literal(100) in
+//   MapNew { entries: [("k", "v")] }
+//
+// Expected heap layout at the returned ptr (heap_start = 8):
+//   offset  0 → count  = 1   (i64 LE)
+//   offset  8 → key    = 1   (i64 LE, value of local k)
+//   offset 16 → value  = 100 (i64 LE, value of local v)
+#[test]
+fn map_new_layout_count_key_value() {
+    let expr = AnfExpr::Let {
+        name: "k".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+        body: Box::new(AnfExpr::Let {
+            name: "v".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(100))),
+            body: Box::new(AnfExpr::MapNew {
+                entries: vec![("k".to_string(), "v".to_string())],
+            }),
+        }),
+    };
+    let mut instance = compile_and_instantiate_expr(expr, "fn.map_layout");
+    let ptr = match instance
+        .invoke("map_layout", &[])
+        .expect("invoke must succeed")
+    {
+        RuntimeValue::I32(p) => p,
+        other => panic!("MapNew must return I32 ptr; got {other:?}"),
+    };
+
+    assert!(ptr > 0, "heap pointer must be positive; got {ptr}");
+
+    let count = instance
+        .read_memory_i64(ptr, 0)
+        .expect("count at offset 0 must be readable");
+    assert_eq!(
+        count, 1,
+        "count at offset 0 must be 1 for a single-entry map"
+    );
+
+    let key = instance
+        .read_memory_i64(ptr, 8)
+        .expect("key at offset 8 must be readable");
+    assert_eq!(key, 1, "key0 at offset 8 must be 1 (value of k)");
+
+    let val = instance
+        .read_memory_i64(ptr, 16)
+        .expect("value at offset 16 must be readable");
+    assert_eq!(val, 100, "value0 at offset 16 must be 100 (value of v)");
+}
+
+// RUNTIME-MAP-3
+//
+// fn.map_layout2 =
+//   let k0 = Literal(1)   in
+//   let v0 = Literal(100) in
+//   let k1 = Literal(2)   in
+//   let v1 = Literal(200) in
+//   MapNew { entries: [("k0","v0"), ("k1","v1")] }
+//
+// Expected heap layout at the returned ptr (heap_start = 8):
+//   offset  0 → count = 2   (i64 LE)
+//   offset  8 → k0    = 1   (i64 LE)
+//   offset 16 → v0    = 100 (i64 LE)
+//   offset 24 → k1    = 2   (i64 LE)
+//   offset 32 → v1    = 200 (i64 LE)
+#[test]
+fn map_new_two_entries_layout() {
+    let expr = AnfExpr::Let {
+        name: "k0".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+        body: Box::new(AnfExpr::Let {
+            name: "v0".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(100))),
+            body: Box::new(AnfExpr::Let {
+                name: "k1".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(2))),
+                body: Box::new(AnfExpr::Let {
+                    name: "v1".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(200))),
+                    body: Box::new(AnfExpr::MapNew {
+                        entries: vec![
+                            ("k0".to_string(), "v0".to_string()),
+                            ("k1".to_string(), "v1".to_string()),
+                        ],
+                    }),
+                }),
+            }),
+        }),
+    };
+    let mut instance = compile_and_instantiate_expr(expr, "fn.map_layout2");
+    let ptr = match instance
+        .invoke("map_layout2", &[])
+        .expect("invoke must succeed")
+    {
+        RuntimeValue::I32(p) => p,
+        other => panic!("MapNew must return I32 ptr; got {other:?}"),
+    };
+
+    assert!(ptr > 0, "heap pointer must be positive; got {ptr}");
+
+    assert_eq!(
+        instance.read_memory_i64(ptr, 0).expect("count readable"),
+        2,
+        "count at offset 0 must be 2 for a two-entry map"
+    );
+    assert_eq!(
+        instance.read_memory_i64(ptr, 8).expect("k0 readable"),
+        1,
+        "k0 at offset 8 must be 1"
+    );
+    assert_eq!(
+        instance.read_memory_i64(ptr, 16).expect("v0 readable"),
+        100,
+        "v0 at offset 16 must be 100"
+    );
+    assert_eq!(
+        instance.read_memory_i64(ptr, 24).expect("k1 readable"),
+        2,
+        "k1 at offset 24 must be 2"
+    );
+    assert_eq!(
+        instance.read_memory_i64(ptr, 32).expect("v1 readable"),
+        200,
+        "v1 at offset 32 must be 200"
+    );
+}
+
+// RUNTIME-SET-2
+//
+// fn.set_layout =
+//   let elem = Literal(7) in
+//   SetNew { elements: ["elem"] }
+//
+// Expected heap layout at the returned ptr (heap_start = 8):
+//   offset  0 → count = 1  (i64 LE)
+//   offset  8 → elem  = 7  (i64 LE)
+#[test]
+fn set_new_layout_count_element() {
+    let expr = AnfExpr::Let {
+        name: "elem".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(7))),
+        body: Box::new(AnfExpr::SetNew {
+            elements: vec!["elem".to_string()],
+        }),
+    };
+    let mut instance = compile_and_instantiate_expr(expr, "fn.set_layout");
+    let ptr = match instance
+        .invoke("set_layout", &[])
+        .expect("invoke must succeed")
+    {
+        RuntimeValue::I32(p) => p,
+        other => panic!("SetNew must return I32 ptr; got {other:?}"),
+    };
+
+    assert!(ptr > 0, "heap pointer must be positive; got {ptr}");
+
+    let count = instance
+        .read_memory_i64(ptr, 0)
+        .expect("count at offset 0 must be readable");
+    assert_eq!(
+        count, 1,
+        "count at offset 0 must be 1 for a single-element set"
+    );
+
+    let elem = instance
+        .read_memory_i64(ptr, 8)
+        .expect("element at offset 8 must be readable");
+    assert_eq!(elem, 7, "elem0 at offset 8 must be 7");
+}
+
+// RUNTIME-SET-3
+//
+// fn.set_layout2 =
+//   let e0 = Literal(7)  in
+//   let e1 = Literal(13) in
+//   SetNew { elements: ["e0", "e1"] }
+//
+// Expected heap layout at the returned ptr (heap_start = 8):
+//   offset  0 → count = 2  (i64 LE)
+//   offset  8 → e0    = 7  (i64 LE)
+//   offset 16 → e1    = 13 (i64 LE)
+#[test]
+fn set_new_two_elements_layout() {
+    let expr = AnfExpr::Let {
+        name: "e0".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(7))),
+        body: Box::new(AnfExpr::Let {
+            name: "e1".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(13))),
+            body: Box::new(AnfExpr::SetNew {
+                elements: vec!["e0".to_string(), "e1".to_string()],
+            }),
+        }),
+    };
+    let mut instance = compile_and_instantiate_expr(expr, "fn.set_layout2");
+    let ptr = match instance
+        .invoke("set_layout2", &[])
+        .expect("invoke must succeed")
+    {
+        RuntimeValue::I32(p) => p,
+        other => panic!("SetNew must return I32 ptr; got {other:?}"),
+    };
+
+    assert!(ptr > 0, "heap pointer must be positive; got {ptr}");
+
+    assert_eq!(
+        instance.read_memory_i64(ptr, 0).expect("count readable"),
+        2,
+        "count at offset 0 must be 2 for a two-element set"
+    );
+    assert_eq!(
+        instance.read_memory_i64(ptr, 8).expect("e0 readable"),
+        7,
+        "e0 at offset 8 must be 7"
+    );
+    assert_eq!(
+        instance.read_memory_i64(ptr, 16).expect("e1 readable"),
+        13,
+        "e1 at offset 16 must be 13"
     );
 }
