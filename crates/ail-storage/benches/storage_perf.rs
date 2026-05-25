@@ -25,11 +25,11 @@ use std::hint::black_box;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-use ail_storage::RetentionPolicy;
 use ail_storage::backends::memory::MemoryObjectStore;
 use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::graph::{GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
 use ail_storage::object::{ObjectId, ObjectStore, RawObject};
+use ail_storage::{RetentionPolicy, SnapshotHolds};
 use ail_storage::{compact_snapshots, gc_unreferenced};
 
 // ── runtime helpers ───────────────────────────────────────────────────────
@@ -255,7 +255,7 @@ fn bench_gc(c: &mut Criterion) {
                 |store| {
                     rt.block_on(async {
                         black_box(
-                            gc_unreferenced(&store, &policy, u64::MAX)
+                            gc_unreferenced(&store, &policy, &SnapshotHolds::default(), u64::MAX)
                                 .await
                                 .expect("gc"),
                         )

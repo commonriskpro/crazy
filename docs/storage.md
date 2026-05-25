@@ -459,8 +459,24 @@ links, change/report/artifact links, approvals, assumptions, and indexes).
 implement read-only `EnumerableObjectStore`, reloads each object, and reports
 listed-missing objects or BLAKE3 hash mismatches without mutating storage.
 `MutableObjectStore` extends that enumerable contract with deletion for GC. The
-in-memory and tempfile stores support executable object GC through `run_gc`;
-broader policy coverage for branches/tags/audit holds remains target design.
+in-memory and tempfile stores support executable object GC through `run_gc`.
+`gc_unreferenced` now accepts a `SnapshotHolds` parameter that enforces
+branch-head locks, tag locks, and audit/legal holds: snapshots pointed to by
+active branches or tags survive GC even when `RetentionPolicy` alone would
+not protect them. Use `collect_branch_holds` / `collect_tag_holds` to derive
+holds from `BranchRegistry` / `TagRegistry` before each GC run.
+
+**Ancestry protection**: `collect_branch_holds` protects only the HEAD
+snapshot of each branch. Intermediate ancestors are NOT automatically held;
+they survive only if the retention policy independently protects them (e.g.
+`max_age_days`). Use `collect_branch_holds_with_ancestry` to hold the full
+parent chain of every live branch.
+
+**Compaction interaction**: `compact_snapshots` replaces original snapshot IDs
+with a new covering-snapshot ID. Holds built before compaction become stale
+and no longer protect the covering snapshot. Always refresh holds (by calling
+`collect_branch_holds` / `collect_tag_holds` after updating branch/tag
+pointers) before the next `gc_unreferenced` run.
 
 ### Final rules
 

@@ -38,9 +38,11 @@ use std::future::Future;
 
 use serde::{Deserialize, Serialize};
 
+use crate::branch::BranchStore;
 use crate::error::{StorageError, StorageResult};
 use crate::graph::{GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
 use crate::object::{ObjectId, ObjectStore, RawObject};
+use crate::tag::TagStore;
 
 // ── RetentionPolicy ───────────────────────────────────────────────────────
 
@@ -89,6 +91,195 @@ impl RetentionPolicy {
         }
         false
     }
+}
+
+// ── SnapshotHolds ─────────────────────────────────────────────────────────
+
+/// Snapshot IDs that must survive GC regardless of `RetentionPolicy` rules.
+///
+/// Holds complement `RetentionPolicy`: the policy guards snapshots by
+/// age/type heuristics; holds guard by explicit live reference — an active
+/// branch head, an immutable tag lock, or an audit/legal hold.
+///
+/// Build holds via [`collect_branch_holds`] / [`collect_tag_holds`] from
+/// their respective registries, merge with any explicit audit/legal holds,
+/// then pass to [`gc_unreferenced`].
+///
+/// # Determinism
+///
+/// `Vec<ObjectId>` fields use sorted (or deduped) inputs; the
+/// [`as_set`](SnapshotHolds::as_set) method converts to a `BTreeSet` for
+/// O(log n) GC lookup in deterministic iteration order.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotHolds {
+    /// Snapshot IDs currently pointed to by active branch heads.
+    ///
+    /// A branch head snapshot must never be garbage-collected while the branch
+    /// is live, even if the snapshot is older than `max_age_days`.
+    pub branch_heads: Vec<ObjectId>,
+    /// Snapshot IDs locked by immutable tags (release or named tags).
+    ///
+    /// Tags are append-only pointers; a tagged snapshot must survive for as
+    /// long as the tag exists.
+    pub tag_locks: Vec<ObjectId>,
+    /// Snapshot IDs under an explicit audit or legal hold.
+    ///
+    /// Legal and compliance requirements may mandate that specific snapshots
+    /// be retained beyond what the retention policy alone would protect.
+    pub audit_holds: Vec<ObjectId>,
+}
+
+impl SnapshotHolds {
+    /// Return `true` if `id` is protected by any hold category.
+    ///
+    /// # Performance
+    ///
+    /// Each call scans up to three `Vec`s linearly — `O(n)` per call where `n`
+    /// is the total number of held IDs.  Do **not** call this in a loop over
+    /// many snapshot IDs; instead call [`as_set`](SnapshotHolds::as_set) once
+    /// and use the returned `BTreeSet` for `O(log n)` per-snapshot lookup.
+    /// [`gc_unreferenced`] already follows this pattern internally.
+    pub fn is_held(&self, id: &ObjectId) -> bool {
+        self.branch_heads.contains(id)
+            || self.tag_locks.contains(id)
+            || self.audit_holds.contains(id)
+    }
+
+    /// Merge all held IDs into a `BTreeSet` for efficient O(log n) lookup.
+    ///
+    /// Called once per GC run; the set is used for every snapshot check in
+    /// `gc_unreferenced`.
+    pub fn as_set(&self) -> BTreeSet<ObjectId> {
+        let mut set = BTreeSet::new();
+        set.extend(self.branch_heads.iter().copied());
+        set.extend(self.tag_locks.iter().copied());
+        set.extend(self.audit_holds.iter().copied());
+        set
+    }
+}
+
+// ── collect_branch_holds ──────────────────────────────────────────────────
+
+/// Collect the snapshot IDs currently pointed to by all active branch heads.
+///
+/// Call this before [`gc_unreferenced`] and populate
+/// `SnapshotHolds::branch_heads` with the result to prevent GC from
+/// deleting snapshots that are reachable from any live branch.
+///
+/// # HEAD-only constraint
+///
+/// This function returns **only** the HEAD snapshot of each branch — the
+/// snapshot the branch pointer currently references.  Intermediate snapshots
+/// in the branch's parent chain are **not** added to the hold set.  If the
+/// retention policy does not independently protect those ancestors (e.g. via
+/// `max_age_days` or `keep_tagged`), they may be GC'd while the branch is
+/// live, breaking history traversal.
+///
+/// Use [`collect_branch_holds_with_ancestry`] when full parent-chain
+/// protection is required.
+///
+/// # Errors
+///
+/// Propagates any [`StorageError`] from `branch_store.list_branches()`.
+pub async fn collect_branch_holds<B>(branch_store: &B) -> StorageResult<Vec<ObjectId>>
+where
+    B: BranchStore + Send + Sync,
+{
+    let branches = branch_store.list_branches().await?;
+    Ok(branches.into_iter().map(|b| b.target_snapshot_id).collect())
+}
+
+// ── collect_branch_holds_with_ancestry ───────────────────────────────────
+
+/// Collect snapshot IDs for all active branch heads **and their full ancestor
+/// chains**.
+///
+/// For each branch returned by `branch_store.list_branches()`, this function
+/// traverses the `parent_id` chain in `graph_store` until a genesis snapshot
+/// (`parent_id == None`) or an already-visited node is reached.  All visited
+/// snapshot IDs — heads and every ancestor — are returned as a deduplicated,
+/// sorted `Vec<ObjectId>`.
+///
+/// # When to prefer this over [`collect_branch_holds`]
+///
+/// [`collect_branch_holds`] protects only the HEAD snapshot of each branch.
+/// If intermediate ancestors are not independently retained by policy (e.g.
+/// `max_age_days` or `keep_tagged`), GC can delete them while the branch is
+/// live, breaking history traversal.  Use this function when the full parent
+/// chain of every active branch must survive GC.
+///
+/// # Cost
+///
+/// Makes one `list_snapshots` call to build an in-memory parent-link index,
+/// then performs `O(depth)` map lookups per branch.  Total cost is
+/// `O(total_snapshots)` — the same order as [`gc_unreferenced`] itself, which
+/// also calls `list_snapshots`.
+///
+/// # Errors
+///
+/// Propagates any [`StorageError`] from `branch_store.list_branches()` or
+/// `graph_store.list_snapshots()`.
+pub async fn collect_branch_holds_with_ancestry<B, G>(
+    branch_store: &B,
+    graph_store: &G,
+) -> StorageResult<Vec<ObjectId>>
+where
+    B: BranchStore + Send + Sync,
+    G: GraphStore + Send + Sync,
+{
+    let branches = branch_store.list_branches().await?;
+    if branches.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Build id → parent_id map from all snapshots.
+    // Using HashMap for internal computation is fine — only serializable
+    // types must avoid HashMap per the project's determinism contract.
+    let all_snapshots = graph_store.list_snapshots().await?;
+    let parent_map: std::collections::HashMap<ObjectId, Option<ObjectId>> = all_snapshots
+        .into_iter()
+        .map(|s| (s.id, s.parent_id))
+        .collect();
+
+    // Walk from each branch head up through the parent chain.
+    // BTreeSet gives deterministic iteration order and O(log n) deduplication.
+    let mut held: BTreeSet<ObjectId> = BTreeSet::new();
+    for branch in branches {
+        let mut current = Some(branch.target_snapshot_id);
+        while let Some(id) = current {
+            if !held.insert(id) {
+                // Already visited — convergent chains share a common ancestor;
+                // no need to re-walk the shared suffix.
+                break;
+            }
+            // Flatten Option<&Option<ObjectId>> → Option<ObjectId>:
+            //   - Not in map (snapshot compacted or not yet saved): stop.
+            //   - parent_id == None (genesis): stop.
+            //   - parent_id == Some(pid): advance to pid.
+            current = parent_map.get(&id).copied().flatten();
+        }
+    }
+
+    Ok(held.into_iter().collect())
+}
+
+// ── collect_tag_holds ─────────────────────────────────────────────────────
+
+/// Collect the snapshot IDs locked by all tags in `tag_store`.
+///
+/// Call this before [`gc_unreferenced`] and populate
+/// `SnapshotHolds::tag_locks` with the result to prevent GC from deleting
+/// any snapshot that a tag still points to.
+///
+/// # Errors
+///
+/// Propagates any [`StorageError`] from `tag_store.list_tags()`.
+pub async fn collect_tag_holds<T>(tag_store: &T) -> StorageResult<Vec<ObjectId>>
+where
+    T: TagStore + Send + Sync,
+{
+    let tags = tag_store.list_tags().await?;
+    Ok(tags.into_iter().map(|t| t.snapshot_id).collect())
 }
 
 // ── GcReport ──────────────────────────────────────────────────────────────
@@ -180,8 +371,7 @@ pub struct ObjectGcReport {
 ///
 /// # Parameters
 /// - `store`     — a `MutableObjectStore` (list + delete).
-/// - `reachable` — the set of `ObjectId`s that must be kept (e.g. the
-///   `graph_root_hash` values of all retained snapshots).  Objects NOT in
+/// - `reachable` — the set of `ObjectId`s that must be kept.  Objects NOT in
 ///   this set are considered unreachable and will be deleted.
 ///
 /// # Returns
@@ -194,6 +384,21 @@ pub struct ObjectGcReport {
 /// and then collecting their `graph_root_hash` fields).  This separation keeps
 /// `run_gc` independent of the snapshot/graph layer and fully testable with a
 /// plain `MemoryObjectStore`.
+///
+/// # Warning: include snapshot envelope CAS IDs
+///
+/// When `store` is the same `ObjectStore` that backs an
+/// `ObjectBackedGraphStore`, the `reachable` set must include **both**:
+/// - The `graph_root_hash` of each retained snapshot (graph content objects).
+/// - The CAS `ObjectId` of each retained snapshot *envelope* — the CBOR
+///   bytes written to the `ObjectStore` by `GraphStore::save_snapshot`.
+///
+/// Omitting the envelope CAS IDs causes `run_gc` to treat the serialized
+/// snapshot envelopes as unreachable and delete them, corrupting the store
+/// even though the logical snapshot index still references those objects.
+/// To obtain an envelope CAS ID, re-encode the `SnapshotEnvelope` with the
+/// same codec used by the graph store (`CborCodec`) and hash the result with
+/// `ObjectId::from_bytes`.
 pub async fn run_gc<S>(store: &S, reachable: &BTreeSet<ObjectId>) -> StorageResult<ObjectGcReport>
 where
     S: MutableObjectStore + Send + Sync,
@@ -219,11 +424,22 @@ where
 
 // ── gc_unreferenced ───────────────────────────────────────────────────────
 
-/// Identify and remove snapshots that are not retained by `policy`.
+/// Identify and remove snapshots that are not retained by `policy` or `holds`.
+///
+/// A snapshot survives GC when **either** of these conditions holds:
+/// - `policy.is_retained(snapshot, now_ms)` returns `true` (age/type rules), or
+/// - `holds.is_held(&snapshot.id)` returns `true` (branch head, tag lock, or
+///   audit/legal hold).
+///
+/// This two-layer check ensures that live branch heads and tag-locked
+/// snapshots are never collected even if the retention policy alone would
+/// not protect them (e.g. an old snapshot pointed to by an active branch).
 ///
 /// # Parameters
 /// - `store`  — a `MutableGraphStore` (supports both read and delete).
 /// - `policy` — the retention policy to apply.
+/// - `holds`  — explicit holds from branch heads, tags, and audit requirements.
+///   Pass `&SnapshotHolds::default()` when no holds are registered.
 /// - `now_ms` — current Unix time in milliseconds (injected for determinism).
 ///
 /// # Returns
@@ -234,6 +450,7 @@ where
 pub async fn gc_unreferenced<S>(
     store: &S,
     policy: &RetentionPolicy,
+    holds: &SnapshotHolds,
     now_ms: u64,
 ) -> StorageResult<GcReport>
 where
@@ -246,11 +463,14 @@ where
         snapshots_retained: 0,
     };
 
+    // Materialise holds into a BTreeSet once for O(log n) per-snapshot lookup.
+    let hold_set = holds.as_set();
+
     // Build the set of retained snapshot ids first, so that we can skip
-    // deletion for anything that is retained.
+    // deletion for anything that is retained by policy or by a hold.
     let retained_ids: BTreeSet<ObjectId> = snapshots
         .iter()
-        .filter(|s| policy.is_retained(s, now_ms))
+        .filter(|s| policy.is_retained(s, now_ms) || hold_set.contains(&s.id))
         .map(|s| s.id)
         .collect();
 
