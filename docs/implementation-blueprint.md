@@ -51,6 +51,61 @@ The product only becomes AI-native when graph, ChangeSet, verifier, compiler, ru
 | Dogfooding | Completed validation milestone | `crates/ail-dogfood/src/lib.rs`, dogfood tests | Real project authoring loop using AIL itself, not only Rust examples. |
 | Release hardening | Implemented subset | `docs/release-policy.md`, `docs/migration-guide.md`, `scripts/tag-release.sh`, `scripts/release-preflight.sh` | Published compatibility guarantees and production release discipline. |
 
+## Implementation coverage score (Wave 13D audit — 2026-05-24)
+
+Waves 7–12 closed a meaningful set of gaps. This section records what changed and what remains. Estimates measure the fraction of the target design (as documented) that is functionally implemented with tests. They are deliberately conservative; the full target design remains larger than the current executable surface.
+
+**Overall estimate: ~70% of documented target design implemented (up from ~65% before waves 7–12).**
+
+No area has reached production-ready status.
+
+### What waves 7–12 added
+
+| Wave block | Key deliverables |
+|------------|-----------------|
+| W7–8 (compiler) | Closure env layout in linear memory; WASM resource primitives (`CellNew`/`Get`/`Set`, `MapNew`, `SetNew`, `IndexGet`); `ForEach` inline loop emission; `Fold` compile-time diagnostic gate. |
+| W9 (storage + runtime + verify) | GC retention holds (branch/tag/audit); `collect_reachable_object_ids_for_snapshots` helper; handler trust level API + preflight enforcement; assumption-expiry preflight gate (stage 7); `verified_profile` embedding in persisted `VerificationReport`. |
+| W10 (compiler + storage) | `Bytes` literal ABI for WASM (packed ptr/len `i64` + data section); generalized unsupported-construct diagnostic gate; Postgres report index; in-process memory report index. |
+| W11 (compiler + runtime) | `Fold` via `call_indirect` + function table; native `Bytes` backend (packed `i64`); improved native-link usability (JSON errors, docs); in-memory secret vault + `secret.read` handler; secret WASM e2e tests. |
+| W12 (compiler + runtime) | Lambda hoisting: capture-free 2-param Lambdas into WASM function table; `--runtime-lib` flag for `ail link`; `SecretProvider` trait (pluggable vault backend); typed `Bytes` ABI boundary tests; apply-gate profile matching enforcement. |
+| Docs alignment (W9–W11) | Compiler, runtime security, context-server, and ABI-value-contract docs updated to match implemented subset. |
+
+### Per-area coverage after waves 7–12
+
+Scores are rough upper bounds on "what fraction of the documented target design is implemented and tested."
+
+| Area | Estimate | Notable additions (W7–12) | Primary remaining gap |
+|------|----------|--------------------------|----------------------|
+| Design baseline / docs | ~85% | Docs alignment passes in four lanes | Ongoing drift as code evolves |
+| Workspace / CLI | ~68% | Apply-gate profile matching, `--runtime-lib` flag | Durable workflows, `.ail/` persistence, UX polish |
+| Storage | ~75% | GC retention holds, reachability helper, report indexes | Production scale, migration runbooks, operational backups |
+| Semantic Graph / Core IR | ~58% | Minor: Bytes/Fold/ForEach expand executable surface slightly | Records, variants, `Result`/`Option`, pattern matching |
+| ChangeSets / ACL | ~65% | Verification gate enforced before apply | Full operation surface, richer repair loop |
+| Verification | ~72% | `verified_profile` embedded, assumption-expiry gate, report index | Translation validation, prod/critical policy rigor |
+| Compiler | ~68% | `Bytes` ABI (WASM + native), `Fold`/`ForEach` execution, Lambda hoisting | Captured closure reducers, full language surface, native archive auto-build |
+| Runtime | ~78% | Handler trust, secret vault + provider trait, schema enforcement, typed `Bytes` ABI, e2e | External secret providers (no real adapters), full async/channel runtime, fuzz coverage |
+| Context Server | ~58% | Query-variant docs alignment (code was already present) | HTTP transport, distributed auth, freshness operations |
+| Stdlib | ~52% | Minor | Compatibility policy, official adapters, verified contracts |
+| Packages | ~46% | Minor | Registry network ops, federation, reproducible-build proof |
+| Coordination / remote | ~46% | Minor | Durable remote sync, multi-hop collaboration, key management |
+| Dogfooding | ~62% | Minor | Real project authoring loop (not only Rust examples) |
+| Release hardening | ~73% | `--runtime-lib` workflow documented | Published compatibility guarantees, production release discipline |
+
+### Remaining known gaps (not yet addressed)
+
+The following gaps are confirmed absent or only stub-level. Do not claim coverage here without new implementation evidence:
+
+- **Captured closure reducers**: Non-hoistable Lambdas (with captures, or param count ≠ 2) emit a closure env struct but `fn_idx` is a placeholder `0`; `call_indirect` dispatch for these is not implemented (`wasm_emit.rs` line 913–914 comment).
+- **Full async/channel runtime**: `invoke_async` wraps synchronous WASM execution in a Tokio task; there is no channel-based runtime, actor model, or async-capable WASM primitive dispatch.
+- **External secret providers**: `SecretProvider` trait is defined and `SecretVault` implements it; no real adapter for HashiCorp Vault, AWS Secrets Manager, or any external store exists.
+- **Native runtime archive auto-build**: `--runtime-lib` accepts a pre-built `ail_runtime.a`; there is no `build.rs` or CI step that auto-builds and bundles the archive.
+- **Schema-driven typed capability output**: `CapabilityOutputSchema` validates JSON field presence; it is not bridged to Core IR `ValueLayout` types — field types are free-form strings, not IR-typed.
+- **Runnable native executable workflow**: `ail compile --native` + `ail link --runtime-lib` produces a native object and links it, but the full path to a standalone runnable binary (including runtime archive build) has no automated workflow or CI evidence.
+- **Full language surface (records, variants, pattern matching)**: Many `Instruction::Unreachable` stubs remain in `wasm_emit.rs` for these constructs. Execution traps at runtime; there is no compile-time rejection for most of them.
+- **Performance validation**: No benchmarks, regression thresholds, or large-graph fixtures exist for storage, compiler, or runtime.
+- **Networked Context Server transport**: Context slices work in-process only; HTTP/stdio transport is not implemented.
+- **Package registry network operations**: No HTTP registry client/server path; no Ed25519-verified package exchange.
+
 ## Next recommended milestones
 
 | Milestone | Goal | Success evidence |
