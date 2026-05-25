@@ -3664,7 +3664,10 @@ fn list_new_empty_layout_count_zero() {
         other => panic!("empty ListNew must return I32 ptr; got {other:?}"),
     };
 
-    assert!(ptr > 0, "heap pointer must be positive even for empty list; got {ptr}");
+    assert!(
+        ptr > 0,
+        "heap pointer must be positive even for empty list; got {ptr}"
+    );
 
     assert_eq!(
         instance
