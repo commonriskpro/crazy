@@ -908,13 +908,12 @@ fn closure_fold_multiple_captures_both_loaded_from_env() {
 //
 // Design note — arm body shape:
 //   Arms that bind a payload variable `x` use `Call { "+", ["x", "x"] }` as
-//   the body rather than the bare `Var("x")`.  This is because `infer_expr_type`
-//   determines the function's return type before emitting the Match arms (at
-//   which point the pattern-introduced binding `x` is not yet in the local
-//   map), so `Var("x")` would infer as `None` and cause the value to be
-//   silently dropped.  `Call { .. }` always infers as `Some(ValType::I64)`,
-//   which resolves correctly.  Using `x + x` with a half-payload (e.g. 21)
-//   still fully proves that the correct payload value was extracted from memory.
+//   the body rather than the bare `Var("x")`.  Both forms now work: the Wave 17D
+//   `infer_expr_type` fix temporarily adds the payload binding to `locals` before
+//   inferring each arm's body type, so `Var("x")` resolves to `Some(I64)` rather
+//   than `None`.  `x + x` is a deliberate proof-of-value choice — the result 42
+//   (= 21 + 21) proves both that the correct payload (21) was extracted from
+//   linear memory and that the binding is live in the arm body.
 
 /// Build the ANF expression:
 ///   `let v = VariantNew(tag, payload?) in match v { arms... }`

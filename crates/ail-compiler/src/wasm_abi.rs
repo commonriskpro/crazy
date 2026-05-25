@@ -859,3 +859,72 @@ impl EffectDataLayout {
             .expect("byte literal not interned; call intern_bytes first")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::arm_payload_binding;
+
+    // ── arm_payload_binding ────────────────────────────────────────────────
+
+    #[test]
+    fn arm_payload_binding_single_var() {
+        assert_eq!(arm_payload_binding("Ok(x)"), Some("x"));
+        assert_eq!(arm_payload_binding("Some(value)"), Some("value"));
+        assert_eq!(arm_payload_binding("Err(e)"), Some("e"));
+    }
+
+    #[test]
+    fn arm_payload_binding_tag_only_returns_none() {
+        // No parens → no binding variable.
+        assert_eq!(arm_payload_binding("None"), None);
+        assert_eq!(arm_payload_binding("True"), None);
+    }
+
+    #[test]
+    fn arm_payload_binding_bare_wildcard_returns_none() {
+        // "_" does not start with an uppercase letter.
+        assert_eq!(arm_payload_binding("_"), None);
+    }
+
+    #[test]
+    fn arm_payload_binding_inner_wildcard_returns_none() {
+        // "Ok(_)" — the inner binding is "_", which is not a real variable.
+        assert_eq!(arm_payload_binding("Ok(_)"), None);
+    }
+
+    #[test]
+    fn arm_payload_binding_trims_inner_whitespace() {
+        assert_eq!(arm_payload_binding("Ok( x )"), Some("x"));
+        assert_eq!(arm_payload_binding("  Ok(x)  "), Some("x"));
+    }
+
+    #[test]
+    fn arm_payload_binding_nested_constructor_returns_none() {
+        // Inner contains '(' → unsupported nested form.
+        assert_eq!(arm_payload_binding("Ok(Some(x))"), None);
+    }
+
+    #[test]
+    fn arm_payload_binding_multi_binding_returns_none() {
+        // Inner contains ',' → unsupported multi-binding form.
+        assert_eq!(arm_payload_binding("Pair(a, b)"), None);
+    }
+
+    #[test]
+    fn arm_payload_binding_lowercase_start_returns_none() {
+        // Does not start with an uppercase letter → None.
+        assert_eq!(arm_payload_binding("ok(x)"), None);
+        assert_eq!(arm_payload_binding(""), None);
+    }
+
+    #[test]
+    fn arm_payload_binding_malformed_no_close_paren() {
+        // "Ok(" — no closing ')'.  strip_suffix(')') returns None so
+        // unwrap_or("") leaves inner as "".  The empty string passes all
+        // rejection checks and the function returns Some("").
+        // This edge case is a known divergence from parse_constructor_pattern
+        // (which returns None for the same input); documented here as a
+        // regression guard — callers never synthesise such malformed patterns.
+        assert_eq!(arm_payload_binding("Ok("), Some(""));
+    }
+}
