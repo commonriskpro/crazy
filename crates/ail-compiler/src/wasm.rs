@@ -21,8 +21,12 @@
 //   - `AnfExpr::Call { func, args }` → `call <func_ref>` (host import)
 //   - `AnfExpr::If` → `block/if/else/end`
 //   - `AnfExpr::Let` → let-bind value, then emit body
-//   - Effect/concurrency/runtime-check/resource variants → `unreachable`
-//     (host-managed; emitting a trap stub signals "needs host dispatch")
+//   - Effect variants with real emit (`EffectCall`, `ResourceAcquire`,
+//     `ResourceRelease`, `RuntimeCheck`) → host-import calls / conditional trap
+//   - Concurrency variants (Task*/Channel*/Select/Timeout) and `Dispatch` →
+//     `CompileError::UnsupportedWasmConstruct` at compile time (pre-flight gate
+//     in `emit_wasm_with_profile`); `unreachable` in `emit_anf_expr` as a
+//     defence-in-depth fallback for direct callers.
 //   - `AnfExpr::Placeholder` → `unreachable`
 //
 // An `AnfIr` with zero bindings produces a minimal valid WASM module
@@ -41,7 +45,9 @@
 //
 // - No optimization.
 // - No runtime / Wasmtime dependency.
-// - Host capability calls are emitted as `unreachable` (host dispatch stubs).
+// - Concurrency primitives (Task*/Channel*/Select/Timeout/Dispatch) are
+//   rejected at compile time via `emit_wasm_with_profile`; they are NOT
+//   silently trapped at runtime.
 //
 // # Module layout
 //
@@ -56,7 +62,7 @@ use std::collections::BTreeMap;
 use ail_core::semantic_graph::NodeRef;
 use wasm_encoder::Module;
 
-use crate::anf::{AnfExpr, AnfIr, AnfSelectClause, SourceMap, SourceMapEntry};
+use crate::anf::{AnfExpr, AnfIr, SourceMap, SourceMapEntry};
 use crate::artifact_manifest::ArtifactManifest;
 use crate::capabilities::CapabilitiesManifest;
 use crate::error::CompileError;
@@ -80,64 +86,78 @@ use crate::wasm_sections::{
 #[path = "wasm_tests.rs"]
 mod tests;
 
-// ── anf_contains_fold ─────────────────────────────────────────────────────
+// ── first_unsupported_wasm_construct ──────────────────────────────────────
 
-/// Returns `true` if `expr` or any of its sub-expressions is `AnfExpr::Fold`.
+/// Returns the name of the first WASM-unsupported construct found in `expr`,
+/// or `None` if every sub-expression is supported by the current backend.
 ///
-/// Used by the WASM pre-flight gate: `Fold` dispatches through an I64
-/// function pointer and requires `call_indirect` + an element section
-/// (function table), neither of which the WASM backend currently builds.
-/// Detecting Fold before code generation lets us return a structured
-/// `CompileError::UnsupportedWasmConstruct` instead of emitting a silent
-/// `unreachable` trap.
-fn anf_contains_fold(expr: &AnfExpr) -> bool {
+/// Used by the WASM pre-flight gate in `emit_wasm_with_profile`: detecting
+/// unsupported constructs before code generation lets us return a structured
+/// `CompileError::UnsupportedWasmConstruct` instead of emitting silent
+/// `unreachable` traps at runtime.
+///
+/// **Unsupported constructs (compile-time diagnostic gate):**
+/// - `"Fold"` — requires `call_indirect` + element section (function table)
+/// - `"Dispatch"` — dynamic dispatch requires `call_indirect` + vtable
+/// - `"TaskSpawn"`, `"TaskAwait"`, `"TaskCancel"`, `"TaskGroup"` — require async runtime
+/// - `"ChannelNew"`, `"ChannelSend"`, `"ChannelReceive"`, `"Select"`, `"Timeout"` — require channel runtime
+///
+/// All other variants are either implemented or are atomic (no sub-expressions).
+fn first_unsupported_wasm_construct(expr: &AnfExpr) -> Option<&'static str> {
     match expr {
-        AnfExpr::Fold { .. } => true,
+        // ── Unsupported constructs — return diagnostic name immediately ───
+        AnfExpr::Fold { .. } => Some("Fold"),
+        AnfExpr::Dispatch { .. } => Some("Dispatch"),
+        AnfExpr::TaskSpawn { .. } => Some("TaskSpawn"),
+        AnfExpr::TaskAwait { .. } => Some("TaskAwait"),
+        AnfExpr::TaskCancel { .. } => Some("TaskCancel"),
+        AnfExpr::TaskGroup { .. } => Some("TaskGroup"),
+        AnfExpr::ChannelNew { .. } => Some("ChannelNew"),
+        AnfExpr::ChannelSend { .. } => Some("ChannelSend"),
+        AnfExpr::ChannelReceive { .. } => Some("ChannelReceive"),
+        AnfExpr::Select { .. } => Some("Select"),
+        AnfExpr::Timeout { .. } => Some("Timeout"),
 
-        // Recursive variants — walk all sub-expressions.
-        AnfExpr::Let { value, body, .. } => anf_contains_fold(value) || anf_contains_fold(body),
+        // ── Recursive variants — walk all sub-expressions ─────────────────
+        AnfExpr::Let { value, body, .. } => first_unsupported_wasm_construct(value)
+            .or_else(|| first_unsupported_wasm_construct(body)),
         AnfExpr::If {
             then_branch,
             else_branch,
             ..
-        } => anf_contains_fold(then_branch) || anf_contains_fold(else_branch),
-        AnfExpr::Return(inner) => anf_contains_fold(inner),
-        AnfExpr::Seq(exprs) => exprs.iter().any(anf_contains_fold),
-        AnfExpr::Match { arms, .. } => arms.iter().any(|a| anf_contains_fold(&a.body)),
-        AnfExpr::Lambda { body, .. } => anf_contains_fold(body),
-        AnfExpr::RecordNew { fields } => fields.iter().any(|(_, v)| anf_contains_fold(v)),
-        AnfExpr::FieldUpdate { value, .. } => anf_contains_fold(value),
-        AnfExpr::TupleNew(elems) => elems.iter().any(anf_contains_fold),
-        AnfExpr::VariantNew { payload, .. } => payload.as_deref().is_some_and(anf_contains_fold),
-        AnfExpr::ListNew(elems) => elems.iter().any(anf_contains_fold),
-        AnfExpr::Loop { body } => anf_contains_fold(body),
-        AnfExpr::Break { value } => anf_contains_fold(value),
-        AnfExpr::WhileLoop { body, .. } => anf_contains_fold(body),
-        AnfExpr::ShortCircuitAnd { right, .. } => anf_contains_fold(right),
-        AnfExpr::ShortCircuitOr { right, .. } => anf_contains_fold(right),
-        AnfExpr::TaskGroup { body } => anf_contains_fold(body),
-        AnfExpr::Select { branches } => branches
+        } => first_unsupported_wasm_construct(then_branch)
+            .or_else(|| first_unsupported_wasm_construct(else_branch)),
+        AnfExpr::Return(inner) => first_unsupported_wasm_construct(inner),
+        AnfExpr::Seq(exprs) => exprs.iter().find_map(first_unsupported_wasm_construct),
+        AnfExpr::Match { arms, .. } => arms
             .iter()
-            .any(|b: &AnfSelectClause| anf_contains_fold(&b.body)),
-        AnfExpr::Timeout { body, .. } => anf_contains_fold(body),
-        AnfExpr::ForEach { body, .. } => anf_contains_fold(body),
+            .find_map(|a| first_unsupported_wasm_construct(&a.body)),
+        AnfExpr::Lambda { body, .. } => first_unsupported_wasm_construct(body),
+        AnfExpr::RecordNew { fields } => fields
+            .iter()
+            .find_map(|(_, v)| first_unsupported_wasm_construct(v)),
+        AnfExpr::FieldUpdate { value, .. } => first_unsupported_wasm_construct(value),
+        AnfExpr::TupleNew(elems) => elems.iter().find_map(first_unsupported_wasm_construct),
+        AnfExpr::VariantNew { payload, .. } => payload
+            .as_deref()
+            .and_then(first_unsupported_wasm_construct),
+        AnfExpr::ListNew(elems) => elems.iter().find_map(first_unsupported_wasm_construct),
+        AnfExpr::Loop { body } => first_unsupported_wasm_construct(body),
+        AnfExpr::Break { value } => first_unsupported_wasm_construct(value),
+        AnfExpr::WhileLoop { body, .. } => first_unsupported_wasm_construct(body),
+        AnfExpr::ShortCircuitAnd { right, .. } => first_unsupported_wasm_construct(right),
+        AnfExpr::ShortCircuitOr { right, .. } => first_unsupported_wasm_construct(right),
+        AnfExpr::ForEach { body, .. } => first_unsupported_wasm_construct(body),
 
-        // Atomic variants — no sub-expressions to inspect.
+        // ── Atomic variants — no sub-expressions to inspect ───────────────
         AnfExpr::Literal(_)
         | AnfExpr::Var(_)
         | AnfExpr::Call { .. }
         | AnfExpr::FieldGet { .. }
         | AnfExpr::EffectCall { .. }
-        | AnfExpr::Dispatch { .. }
-        | AnfExpr::TaskSpawn { .. }
-        | AnfExpr::ChannelSend { .. }
-        | AnfExpr::ChannelReceive { .. }
         | AnfExpr::RuntimeCheck { .. }
         | AnfExpr::ResourceAcquire { .. }
         | AnfExpr::ResourceRelease { .. }
-        | AnfExpr::TaskAwait { .. }
-        | AnfExpr::TaskCancel { .. }
-        | AnfExpr::ChannelNew { .. }
         | AnfExpr::CellNew { .. }
         | AnfExpr::CellGet { .. }
         | AnfExpr::CellSet { .. }
@@ -147,7 +167,7 @@ fn anf_contains_fold(expr: &AnfExpr) -> bool {
         | AnfExpr::MapNew { .. }
         | AnfExpr::SetNew { .. }
         | AnfExpr::Continue
-        | AnfExpr::Placeholder => false,
+        | AnfExpr::Placeholder => None,
     }
 }
 
@@ -180,12 +200,16 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         .anf_ir_hash
         .ok_or_else(|| CompileError::EncodingError("anf_ir_hash not sealed".to_string()))?;
 
-    // Gate: Fold requires call_indirect + element section (function table).
-    // Detect it before code generation so callers receive a structured error
-    // instead of a silent unreachable trap at runtime.
+    // Gate: unsupported WASM constructs.
+    // Walk every binding's expression before code generation so callers receive
+    // a structured CompileError::UnsupportedWasmConstruct instead of a silent
+    // unreachable trap at runtime.
+    //
+    // Unsupported: Fold (call_indirect), Dispatch, TaskSpawn/Await/Cancel/Group
+    // (async runtime), ChannelNew/Send/Receive/Select/Timeout (channel runtime).
     for binding in &anf.bindings {
-        if anf_contains_fold(&binding.expr) {
-            return Err(CompileError::UnsupportedWasmConstruct("Fold".to_string()));
+        if let Some(name) = first_unsupported_wasm_construct(&binding.expr) {
+            return Err(CompileError::UnsupportedWasmConstruct(name.to_string()));
         }
     }
 

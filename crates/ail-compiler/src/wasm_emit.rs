@@ -967,9 +967,16 @@ fn emit_anf_expr<'a>(
             }
         }
 
-        // ── Effect/concurrent variants (host-interception stubs) ──────────
-        // These are host-managed. The WASM body emits unreachable to signal
-        // that the host runtime must intercept and dispatch.
+        // ── Concurrency / dispatch stubs (defence-in-depth) ──────────────
+        //
+        // `emit_wasm_with_profile` detects these before code generation and
+        // returns `CompileError::UnsupportedWasmConstruct` so callers never
+        // reach these arms via the top-level entry point.
+        //
+        // The `unreachable` here is a defence-in-depth fallback: unit tests or
+        // other callers that invoke `emit_anf_expr` directly (bypassing
+        // `emit_wasm_with_profile`) will still get a runtime trap rather than
+        // undefined behaviour or silent corruption.
         AnfExpr::Dispatch { .. }
         | AnfExpr::TaskSpawn { .. }
         | AnfExpr::TaskAwait { .. }
