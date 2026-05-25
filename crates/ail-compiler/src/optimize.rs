@@ -893,8 +893,11 @@ fn uses_var(expr: &AnfExpr, name: &str) -> bool {
         AnfExpr::MapNew { entries } => entries.iter().any(|(k, v)| k == name || v == name),
         AnfExpr::SetNew { elements } => elements.iter().any(|e| e == name),
         AnfExpr::ForEach { collection, body, binding } => {
-            collection == name
-                || (!binding.is_empty() && binding != name && uses_var(body, name))
+            // `binding` is the loop variable; it shadows the outer `name` when
+            // they are equal.  If binding is empty (no loop variable) the outer
+            // `name` is still freely accessible inside the body, so we must
+            // not gate the body scan on `!binding.is_empty()`.
+            collection == name || (binding != name && uses_var(body, name))
         }
     }
 }
@@ -1419,6 +1422,189 @@ mod tests {
         assert!(
             !uses_var(&expr, "z"),
             "uses_var must return false when name is absent from ShortCircuitOr"
+        );
+    }
+
+    // ── uses_var: IndexGet ────────────────────────────────────────────────
+
+    // OPT-USESVAR-INDEXGET-1: uses_var returns true when the queried name
+    // matches the collection atom of IndexGet.
+    #[test]
+    fn uses_var_index_get_true_for_collection_name() {
+        let expr = AnfExpr::IndexGet {
+            collection: "lst".to_string(),
+            index: "i".to_string(),
+        };
+        assert!(
+            uses_var(&expr, "lst"),
+            "uses_var must return true when name matches IndexGet.collection"
+        );
+    }
+
+    // OPT-USESVAR-INDEXGET-2: uses_var returns true when the queried name
+    // matches the index atom of IndexGet.
+    #[test]
+    fn uses_var_index_get_true_for_index_name() {
+        let expr = AnfExpr::IndexGet {
+            collection: "lst".to_string(),
+            index: "i".to_string(),
+        };
+        assert!(
+            uses_var(&expr, "i"),
+            "uses_var must return true when name matches IndexGet.index"
+        );
+    }
+
+    // OPT-USESVAR-INDEXGET-3: uses_var returns false when the queried name
+    // does not appear in either IndexGet atom.
+    #[test]
+    fn uses_var_index_get_false_for_unrelated_name() {
+        let expr = AnfExpr::IndexGet {
+            collection: "lst".to_string(),
+            index: "i".to_string(),
+        };
+        assert!(
+            !uses_var(&expr, "z"),
+            "uses_var must return false when name is absent from IndexGet"
+        );
+    }
+
+    // ── uses_var: MapNew ──────────────────────────────────────────────────
+
+    // OPT-USESVAR-MAPNEW-1: uses_var returns true when the queried name
+    // matches a key atom in MapNew.entries.
+    #[test]
+    fn uses_var_map_new_true_for_key_name() {
+        let expr = AnfExpr::MapNew {
+            entries: vec![("k".to_string(), "v".to_string())],
+        };
+        assert!(
+            uses_var(&expr, "k"),
+            "uses_var must return true when name matches a MapNew key"
+        );
+    }
+
+    // OPT-USESVAR-MAPNEW-2: uses_var returns true when the queried name
+    // matches a value atom in MapNew.entries.
+    #[test]
+    fn uses_var_map_new_true_for_value_name() {
+        let expr = AnfExpr::MapNew {
+            entries: vec![("k".to_string(), "v".to_string())],
+        };
+        assert!(
+            uses_var(&expr, "v"),
+            "uses_var must return true when name matches a MapNew value"
+        );
+    }
+
+    // OPT-USESVAR-MAPNEW-3: uses_var returns false when the queried name
+    // does not appear in any MapNew entry.
+    #[test]
+    fn uses_var_map_new_false_for_unrelated_name() {
+        let expr = AnfExpr::MapNew {
+            entries: vec![("k".to_string(), "v".to_string())],
+        };
+        assert!(
+            !uses_var(&expr, "z"),
+            "uses_var must return false when name is absent from MapNew"
+        );
+    }
+
+    // ── uses_var: SetNew ──────────────────────────────────────────────────
+
+    // OPT-USESVAR-SETNEW-1: uses_var returns true when the queried name
+    // matches an element atom in SetNew.elements.
+    #[test]
+    fn uses_var_set_new_true_for_element_name() {
+        let expr = AnfExpr::SetNew {
+            elements: vec!["a".to_string(), "b".to_string()],
+        };
+        assert!(
+            uses_var(&expr, "a"),
+            "uses_var must return true when name matches a SetNew element"
+        );
+    }
+
+    // OPT-USESVAR-SETNEW-2: uses_var returns false when the queried name
+    // does not appear in any SetNew element.
+    #[test]
+    fn uses_var_set_new_false_for_unrelated_name() {
+        let expr = AnfExpr::SetNew {
+            elements: vec!["a".to_string(), "b".to_string()],
+        };
+        assert!(
+            !uses_var(&expr, "z"),
+            "uses_var must return false when name is absent from SetNew"
+        );
+    }
+
+    // ── uses_var: ForEach ─────────────────────────────────────────────────
+
+    // OPT-USESVAR-FOREACH-1: uses_var returns true when the queried name
+    // matches the collection atom of ForEach.
+    #[test]
+    fn uses_var_foreach_true_for_collection_name() {
+        let expr = AnfExpr::ForEach {
+            collection: "lst".to_string(),
+            binding: "item".to_string(),
+            body: Box::new(AnfExpr::Var("item".to_string())),
+        };
+        assert!(
+            uses_var(&expr, "lst"),
+            "uses_var must return true when name matches ForEach.collection"
+        );
+    }
+
+    // OPT-USESVAR-FOREACH-2: uses_var returns true when the queried name
+    // appears in the body and is not shadowed by the loop binding.
+    #[test]
+    fn uses_var_foreach_true_for_body_reference() {
+        // body references both the loop variable ("item") and an outer var ("ctx").
+        // uses_var("ctx") must return true because "item" != "ctx".
+        let expr = AnfExpr::ForEach {
+            collection: "lst".to_string(),
+            binding: "item".to_string(),
+            body: Box::new(AnfExpr::Call {
+                func: "print".to_string(),
+                args: vec!["item".to_string(), "ctx".to_string()],
+            }),
+        };
+        assert!(
+            uses_var(&expr, "ctx"),
+            "uses_var must return true when name appears in ForEach body and is not shadowed"
+        );
+    }
+
+    // OPT-USESVAR-FOREACH-3: uses_var returns false when the queried name
+    // does not appear in ForEach.collection or the body.
+    #[test]
+    fn uses_var_foreach_false_for_unrelated_name() {
+        let expr = AnfExpr::ForEach {
+            collection: "lst".to_string(),
+            binding: "item".to_string(),
+            body: Box::new(AnfExpr::Var("item".to_string())),
+        };
+        assert!(
+            !uses_var(&expr, "z"),
+            "uses_var must return false when name is absent from ForEach"
+        );
+    }
+
+    // OPT-USESVAR-FOREACH-SHADOW-1: uses_var returns false when the queried
+    // name equals the loop binding — the binding shadows the outer name inside
+    // the body, so the outer binding is NOT considered used.
+    #[test]
+    fn uses_var_foreach_false_when_binding_shadows_name() {
+        // binding = "x", body = Var("x").  The "x" inside the body refers to
+        // the loop variable, not the outer "x" we are asking about.
+        let expr = AnfExpr::ForEach {
+            collection: "lst".to_string(),
+            binding: "x".to_string(),
+            body: Box::new(AnfExpr::Var("x".to_string())),
+        };
+        assert!(
+            !uses_var(&expr, "x"),
+            "ForEach binding 'x' shadows the outer 'x' — uses_var must return false"
         );
     }
 }
