@@ -546,7 +546,7 @@ fn compact_originals_are_removed() {
 fn gc_branch_head_survives_gc() {
     let store = make_store();
     let old_snap = snapshot("branch-head", 0, Some("parent"), None); // policy alone would remove it
-    save_all(&store, &[old_snap.clone()]);
+    save_all(&store, std::slice::from_ref(&old_snap));
 
     let holds = SnapshotHolds {
         branch_heads: vec![oid("branch-head")],
