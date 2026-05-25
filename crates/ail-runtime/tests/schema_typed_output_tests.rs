@@ -14,6 +14,7 @@
 // SO-3 — schema_field_to_value_layout: numeric primitives → ValueLayout::Scalar
 // SO-4 — schema_field_to_value_layout: Handle → ValueLayout::Handle
 // SO-5 — schema_field_to_value_layout: unknown type → None
+// SO-5b — schema_field_to_value_layout: float type names → None (no ValueLayout::Float)
 // SO-6 — declared_value_layout: single Bytes field → Some(Bytes)
 // SO-7 — declared_value_layout: empty schema → None
 // SO-8 — declared_value_layout: multi-field schema → None
@@ -113,6 +114,21 @@ fn so5_unknown_type_returns_none() {
             schema_field_to_value_layout(&field),
             None,
             "domain type \"{type_name}\" must return None"
+        );
+    }
+}
+
+#[test]
+fn so5b_float_type_names_return_none() {
+    // ValueLayout has no Float variant — the WASM ABI encodes all scalars as
+    // i64.  Float type names must therefore return None, not Some(Scalar) or
+    // any other layout, to avoid silent mis-classification.
+    for type_name in &["f32", "f64", "Float"] {
+        let field = SchemaField::new("value", *type_name);
+        assert_eq!(
+            schema_field_to_value_layout(&field),
+            None,
+            "float type \"{type_name}\" must return None — no ValueLayout::Float exists"
         );
     }
 }

@@ -336,6 +336,9 @@ impl CapabilityOutputSchema {
     /// | `"Scalar"`                               |               |
     /// | `"Handle"`                               | `Handle`      |
     ///
+    /// `"f32"`, `"f64"`, and `"Float"` are not listed: `ValueLayout` has no
+    /// `Float` variant, so those type names return `None`.
+    ///
     /// # Example
     ///
     /// ```rust
@@ -395,6 +398,10 @@ impl CapabilityOutputSchema {
             Some(ValueLayout::Bytes) => {
                 // Shape check only — the bytes content is never read or logged here.
                 let len = response.len();
+                // Overflow guard: responses larger than i32::MAX (> 2 GiB) would
+                // overflow the i32 len field in StructuredValue::Bytes.  A unit
+                // test for this boundary is infeasible — it would require a ~2 GiB
+                // allocation on CI — so the guard is verified by inspection only.
                 if len > i32::MAX as usize {
                     return Err(SchemaValidationError {
                         message: format!(
@@ -411,7 +418,9 @@ impl CapabilityOutputSchema {
             }
             Some(_) => Err(SchemaValidationError {
                 message: "BytesOutputError: schema output is not declared as Bytes; \
-                          use validate() for text-encoded outputs"
+                          use the appropriate validator for your schema type \
+                          (e.g. validate() for text-encoded payloads, or a typed \
+                          decoder for Scalar and Handle layouts)"
                     .to_string(),
             }),
             None => Err(SchemaValidationError {
@@ -441,6 +450,11 @@ impl CapabilityOutputSchema {
 /// | `"i128"`, `"u128"`, `"Int"`, `"Bool"`,  |               |
 /// | `"Scalar"`                              |               |
 /// | `"Handle"`                              | `Handle`      |
+///
+/// **Note on floating-point types**: `"f32"`, `"f64"`, and `"Float"` are
+/// intentionally absent from the table.  `ValueLayout` has no `Float` variant
+/// — the WASM ABI represents all numeric scalars as `i64` — so those type
+/// names return `None`.
 ///
 /// # Example
 ///
