@@ -454,11 +454,14 @@ pub fn collect_reachable_object_ids_for_snapshots(
 ///
 /// # Design
 ///
-/// The caller is responsible for computing `reachable` from the graph store
-/// (e.g. by calling `gc_unreferenced` first to identify retained snapshots
-/// and then collecting their `graph_root_hash` fields).  This separation keeps
-/// `run_gc` independent of the snapshot/graph layer and fully testable with a
-/// plain `MemoryObjectStore`.
+/// The caller is responsible for computing `reachable` from the graph store.
+/// Call [`gc_unreferenced`] first to remove unreachable snapshot index entries,
+/// then call [`collect_reachable_object_ids_for_snapshots`] on the surviving
+/// snapshots to build the `reachable` set — that function adds **both** the
+/// `graph_root_hash` and the envelope CAS id for every retained snapshot,
+/// preventing the silent data-corruption that occurs when only `graph_root_hash`
+/// fields are collected.  This separation keeps `run_gc` independent of the
+/// snapshot/graph layer and fully testable with a plain `MemoryObjectStore`.
 ///
 /// # Warning: include snapshot envelope CAS IDs
 ///
