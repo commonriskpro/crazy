@@ -113,25 +113,34 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     let effect_data = EffectDataLayout::for_bindings(&anf.bindings);
     let needs_host_call = effect_data.needs_host_call;
     let needs_host_call_write = effect_data.needs_host_call_write;
-    let needs_memory = effect_data.needs_host_call || effect_data.needs_memory;
-    // type_offset: bindings start after the host import type entries.
-    // function_offset: bindings start after the imported functions.
-    // When only host_call is imported: offset = 1.
-    // When host_call + host_call_write are both imported: offset = 2.
-    let type_offset = needs_host_call as u32 + needs_host_call_write as u32;
-    let function_offset = needs_host_call as u32 + needs_host_call_write as u32;
+    let needs_resource_call = effect_data.needs_resource_call;
+    let needs_memory =
+        effect_data.needs_host_call || effect_data.needs_memory || needs_resource_call;
+    // type_offset / function_offset: bindings start after all imported function entries.
+    // Import order:
+    //   [0]  ail/host_call          (if needs_host_call)
+    //   [1]  ail/host_call_write    (if needs_host_call_write)
+    //   [N]  ail/resource_acquire   (if needs_resource_call)
+    //   [N+1] ail/resource_release  (if needs_resource_call)
+    let type_offset =
+        needs_host_call as u32 + needs_host_call_write as u32 + needs_resource_call as u32 * 2;
+    let function_offset = type_offset;
 
     // Assemble WASM module first so we can compute byte offsets.
     let mut module = Module::new();
-    if needs_host_call {
+    if needs_host_call || needs_resource_call {
         module.section(&build_type_section_with_host_call(
             &signatures,
+            needs_host_call,
             needs_host_call_write,
+            needs_resource_call,
         ));
     } else if let Some(types) = build_type_section(&signatures) {
         module.section(&types);
     }
-    if let Some(imports) = build_import_section(needs_host_call, needs_host_call_write) {
+    if let Some(imports) =
+        build_import_section(needs_host_call, needs_host_call_write, needs_resource_call)
+    {
         module.section(&imports);
     }
     if let Some(functions) = build_function_section(&signatures, type_offset) {

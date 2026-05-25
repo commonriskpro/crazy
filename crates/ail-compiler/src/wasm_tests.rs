@@ -2447,4 +2447,268 @@ fn foreach_infer_expr_type_is_none() {
     );
 }
 
+// ── Wave 9B: ResourceAcquire / ResourceRelease WASM emission ─────────────
+
+/// Build a minimal `AnfIr` with a single binding whose body is the given expr.
+fn anf_with_single_binding(name: &str, body: AnfExpr) -> AnfIr {
+    sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(42),
+        name: name.to_string(),
+        expr: body,
+    }])
+}
+
+// R9B-S1: ResourceAcquire emits `ail/resource_acquire` import.
+#[test]
+fn resource_acquire_emits_resource_acquire_import() {
+    use wasmparser::{Parser, Payload};
+
+    let anf = anf_with_single_binding(
+        "acquire_db",
+        AnfExpr::ResourceAcquire {
+            resource: "db.connection".to_string(),
+            args: vec![],
+        },
+    );
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for ResourceAcquire");
+    wasmparser::validate(&artifact.wasm).expect("ResourceAcquire WASM must be valid");
+
+    let mut found_resource_acquire = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::ImportSection(imports) = payload.unwrap() {
+            for imp in imports.into_imports() {
+                let imp = imp.unwrap();
+                if imp.module == "ail" && imp.name == "resource_acquire" {
+                    found_resource_acquire = true;
+                }
+            }
+        }
+    }
+    assert!(
+        found_resource_acquire,
+        "ResourceAcquire must import 'ail'/'resource_acquire'"
+    );
+}
+
+// R9B-S2: ResourceRelease emits `ail/resource_release` import.
+#[test]
+fn resource_release_emits_resource_release_import() {
+    use wasmparser::{Parser, Payload};
+
+    // ResourceRelease needs a handle local — wrap in a Let that binds an i64.
+    let anf = anf_with_single_binding(
+        "release_db",
+        AnfExpr::Let {
+            name: "h".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+            body: Box::new(AnfExpr::ResourceRelease {
+                handle: "h".to_string(),
+            }),
+        },
+    );
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for ResourceRelease");
+    wasmparser::validate(&artifact.wasm).expect("ResourceRelease WASM must be valid");
+
+    let mut found_resource_release = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::ImportSection(imports) = payload.unwrap() {
+            for imp in imports.into_imports() {
+                let imp = imp.unwrap();
+                if imp.module == "ail" && imp.name == "resource_release" {
+                    found_resource_release = true;
+                }
+            }
+        }
+    }
+    assert!(
+        found_resource_release,
+        "ResourceRelease must import 'ail'/'resource_release'"
+    );
+}
+
+// R9B-S3: Both `ail/resource_acquire` and `ail/resource_release` are imported
+// when a binding contains both primitives.
+#[test]
+fn resource_acquire_and_release_both_imported_together() {
+    use wasmparser::{Parser, Payload};
+
+    // Let h = ResourceAcquire { .. }; ResourceRelease { handle: h }
+    let anf = anf_with_single_binding(
+        "acquire_then_release",
+        AnfExpr::Let {
+            name: "h".to_string(),
+            value: Box::new(AnfExpr::ResourceAcquire {
+                resource: "fs.file".to_string(),
+                args: vec![],
+            }),
+            body: Box::new(AnfExpr::ResourceRelease {
+                handle: "h".to_string(),
+            }),
+        },
+    );
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("acquire+release WASM must be valid");
+
+    let mut found_acquire = false;
+    let mut found_release = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::ImportSection(imports) = payload.unwrap() {
+            for imp in imports.into_imports() {
+                let imp = imp.unwrap();
+                if imp.module == "ail" {
+                    if imp.name == "resource_acquire" {
+                        found_acquire = true;
+                    } else if imp.name == "resource_release" {
+                        found_release = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(found_acquire, "must import 'ail'/'resource_acquire'");
+    assert!(found_release, "must import 'ail'/'resource_release'");
+}
+
+// R9B-S4: infer_expr_type for ResourceAcquire returns Some(I64) — handle slot.
+#[test]
+fn resource_acquire_infer_expr_type_is_i64() {
+    use crate::wasm_abi::infer_expr_type;
+    use wasm_encoder::ValType;
+
+    let expr = AnfExpr::ResourceAcquire {
+        resource: "db.connection".to_string(),
+        args: vec![],
+    };
+    let mut locals: Vec<(String, ValType)> = vec![];
+    assert_eq!(
+        infer_expr_type(&expr, &mut locals),
+        Some(ValType::I64),
+        "ResourceAcquire must return Some(I64) — the handle slot"
+    );
+}
+
+// R9B-S5: infer_expr_type for ResourceRelease returns None — void return.
+#[test]
+fn resource_release_infer_expr_type_is_none() {
+    use crate::wasm_abi::infer_expr_type;
+    use wasm_encoder::ValType;
+
+    let expr = AnfExpr::ResourceRelease {
+        handle: "h".to_string(),
+    };
+    let mut locals: Vec<(String, ValType)> = vec![];
+    assert_eq!(
+        infer_expr_type(&expr, &mut locals),
+        None,
+        "ResourceRelease is side-effect only — must return None"
+    );
+}
+
+// R9B-S6: EffectDataLayout sets needs_resource_call for ResourceAcquire.
+#[test]
+fn effect_data_layout_needs_resource_call_for_acquire() {
+    let bindings = vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "acquire_db".to_string(),
+        expr: AnfExpr::ResourceAcquire {
+            resource: "db.connection".to_string(),
+            args: vec![],
+        },
+    }];
+    let layout = EffectDataLayout::for_bindings(&bindings);
+    assert!(
+        layout.needs_resource_call,
+        "EffectDataLayout must set needs_resource_call for ResourceAcquire"
+    );
+    assert!(
+        layout.needs_memory,
+        "ResourceAcquire requires linear memory (data section for resource name)"
+    );
+    assert!(
+        layout.args_offset > 0,
+        "args_offset must be set when needs_resource_call (got {})",
+        layout.args_offset
+    );
+}
+
+// R9B-S7: EffectDataLayout sets needs_resource_call for ResourceRelease.
+#[test]
+fn effect_data_layout_needs_resource_call_for_release() {
+    let bindings = vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "release_h".to_string(),
+        expr: AnfExpr::ResourceRelease {
+            handle: "h".to_string(),
+        },
+    }];
+    let layout = EffectDataLayout::for_bindings(&bindings);
+    assert!(
+        layout.needs_resource_call,
+        "EffectDataLayout must set needs_resource_call for ResourceRelease"
+    );
+}
+
+// R9B-S8: ResourceAcquire with args — all args written to the args buffer
+// and passed correctly to resource_acquire.  WASM validates.
+#[test]
+fn resource_acquire_with_args_emits_valid_wasm() {
+    let anf = anf_with_single_binding(
+        "acquire_with_args",
+        AnfExpr::Let {
+            name: "timeout".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(5000))),
+            body: Box::new(AnfExpr::ResourceAcquire {
+                resource: "db.connection".to_string(),
+                args: vec!["timeout".to_string()],
+            }),
+        },
+    );
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for ResourceAcquire with args");
+    wasmparser::validate(&artifact.wasm)
+        .expect("ResourceAcquire with args must produce valid WASM");
+}
+
+// R9B-S9: resource_acquire func index is 0 when no EffectCall imports precede it.
+#[test]
+fn resource_acquire_func_index_is_zero_without_effect_calls() {
+    let bindings = vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "acquire_only".to_string(),
+        expr: AnfExpr::ResourceAcquire {
+            resource: "db".to_string(),
+            args: vec![],
+        },
+    }];
+    let layout = EffectDataLayout::for_bindings(&bindings);
+    assert_eq!(
+        layout.resource_acquire_func_index(),
+        0,
+        "resource_acquire must be function index 0 when no host_call imports precede it"
+    );
+    assert_eq!(
+        layout.resource_release_func_index(),
+        1,
+        "resource_release must be function index 1 when no host_call imports precede it"
+    );
+}
+
+// R9B-S10: ABI descriptor marks ResourceAcquire binding as Handle.
+#[test]
+fn resource_acquire_abi_descriptor_is_handle() {
+    let anf = anf_with_single_binding(
+        "acquire_db",
+        AnfExpr::ResourceAcquire {
+            resource: "db.connection".to_string(),
+            args: vec![],
+        },
+    );
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
+    let descriptor = artifact.export_types.get("acquire_db");
+    assert_eq!(
+        descriptor,
+        Some(&WasmTypeDescriptor::Handle),
+        "ResourceAcquire binding must have Handle ABI descriptor"
+    );
+}
+
 // ── End Wave 8C iteration tests ───────────────────────────────────────────
