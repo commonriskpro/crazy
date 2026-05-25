@@ -4523,9 +4523,10 @@ end
 //    → lower → wasm_emit → runtime dispatch.
 //
 //    Tag-assignment note: "Status" is not a well-known tag (None/Ok/Some/Err),
-//    so assign_tag assigns it discriminant 0 on first encounter.  The
-//    constructor stores 0 at heap offset 0; the match arm checks offset 0 == 0
-//    → fires; payload (1) is loaded from offset 8 and bound to x.
+//    so assign_tag assigns it discriminant 2 on first encounter (user tags
+//    start at 2 after the fix that reserves 0/1 for well-known tags).  The
+//    constructor stores 2 at heap offset 0; the match arm checks offset 0 == 2
+//    (cache hit) → fires; payload (1) is loaded from offset 8 and bound to x.
 //    ANF ordering: VariantNew emit precedes Match emit via let-binding, so the tag cache is populated before arm walk.
 //
 //  RUNTIME-ACL-VARIANT-USER-2: Two user-defined tags Active and Inactive
@@ -4562,11 +4563,12 @@ end
 //      CoreExpr::VariantNew { tag: "Status", payload: Some(Literal(1)) }
 //   2. lower_to_anf → let _t0=1 in let _t1=VariantNew{tag:"Status",payload:_t0} in
 //      Match{scrutinee:"_t1", arms:[Status(x)→Var("x"), _→Literal(0)]}
-//   3. WASM emit VariantNew: assign_tag("Status")=0 (no well-known tags present);
-//      alloc 16 bytes; store tag_id=0 at offset 0 (I32), store 1 at offset 8 (I64).
+//   3. WASM emit VariantNew: assign_tag("Status")=2 (user tags start at 2;
+//      no well-known tags present in this context);
+//      alloc 16 bytes; store tag_id=2 at offset 0 (I32), store 1 at offset 8 (I64).
 //   4. Match arm "Status(x)": parse_constructor_pattern → ("Status", Some("x"));
-//      load I32 @ offset 0 = 0; assign_tag("Status")=0 (from cache);
-//      I32Eq(0, 0) → true → bind x = I64 @ offset 8 = 1 → return Var("x") = 1.
+//      load I32 @ offset 0 = 2; assign_tag("Status")=2 (from cache);
+//      I32Eq(2, 2) → true → bind x = I64 @ offset 8 = 1 → return Var("x") = 1.
 //   5. Wildcard arm is dead code in this invocation.
 //   6. Returns I64(1).
 //
@@ -4596,17 +4598,17 @@ end
 //   fn.test_inactive: body = match(variant(Inactive), Active, 1, Inactive, 2, _, 0)
 //
 // fn.test_active emit context:
-//   - VariantNew "Active"   → assign_tag("Active")   = 0  (first encounter)
-//   - Match arm "Active"    → assign_tag("Active")   = 0  (cache hit) → 0==0 fires → 1
+//   - VariantNew "Active"   → assign_tag("Active")   = 2  (first user tag; starts at 2)
+//   - Match arm "Active"    → assign_tag("Active")   = 2  (cache hit) → 2==2 fires → 1
 //
 // fn.test_inactive emit context (fresh WasmCodegenCtx — build_code_section creates a fresh context; no shared tag cache):
-//   - VariantNew "Inactive"  → assign_tag("Inactive")  = 0  (first encounter)
-//   - Match arm "Active"     → assign_tag("Active")    = 1  (second tag)
-//   - Match arm "Inactive"   → assign_tag("Inactive")  = 0  (cache hit) → 0==0 fires → 2
+//   - VariantNew "Inactive"  → assign_tag("Inactive")  = 2  (first user tag)
+//   - Match arm "Active"     → assign_tag("Active")    = 3  (second user tag)
+//   - Match arm "Inactive"   → assign_tag("Inactive")  = 2  (cache hit) → 2==2 fires → 2
 //
 // Proves:
-// - fn.test_active  → I64(1): Active arm fires, Inactive arm is not reached.
-// - fn.test_inactive → I64(2): Active arm fails (0≠1), Inactive arm fires.
+// - fn.test_active  → I64(1): Active arm fires (2==2), Inactive arm is not reached.
+// - fn.test_inactive → I64(2): Active arm fails (2≠3), Inactive arm fires (2==2).
 //
 // Each function gets a fresh WasmCodegenCtx (build_code_section creates a fresh
 // context; no shared tag cache), so tag assignments in each function are
@@ -4641,10 +4643,10 @@ end
 //   1. `variant(Pending)` → VariantNew { tag: "Pending", payload: None }
 //   2. lower_to_anf → let _t0=VariantNew{tag:"Pending",payload:None} in
 //      Match{scrutinee:"_t0", arms:[Active→1, Inactive→2, _→99]}
-//   3. WASM emit VariantNew: assign_tag("Pending")=0 (first encounter);
-//      alloc 16 bytes; store tag_id=0 at offset 0 (I32); no payload written.
-//   4. Match arm "Active":   assign_tag("Active")  =1; I32Eq(0,1)=false → Else.
-//      Match arm "Inactive": assign_tag("Inactive")=2; I32Eq(0,2)=false → Else.
+//   3. WASM emit VariantNew: assign_tag("Pending")=2 (first user tag; starts at 2);
+//      alloc 16 bytes; store tag_id=2 at offset 0 (I32); no payload written.
+//   4. Match arm "Active":   assign_tag("Active")  =3; I32Eq(2,3)=false → Else.
+//      Match arm "Inactive": assign_tag("Inactive")=4; I32Eq(2,4)=false → Else.
 //      Wildcard "_": unconditionally emits body → Literal(99).
 //   5. Returns I64(99).
 //
@@ -4665,6 +4667,142 @@ end
         invoke_acl_export(acl, "main"),
         RuntimeValue::I64(99),
         "variant(Pending) must skip Active and Inactive arms and fall to wildcard returning I64(99)"
+    );
+}
+
+// ── Wave 25C: ACL E2E tests — well-known vs user-defined variant tag collision ──
+//
+// Spec scenarios covered (RUNTIME-ACL-VARIANT-COLLISION-1..3):
+//
+//  RUNTIME-ACL-VARIANT-COLLISION-1: user tag `Active` must NOT match the
+//    `None` arm.  Before the fix (`next_variant_tag: 0`), `assign_tag("Active")`
+//    would return 0 — the same discriminant as well-known `None` — causing
+//    the `None` arm to fire erroneously.  After the fix (`next_variant_tag: 2`),
+//    user tags start at 2 and can never collide with reserved IDs 0 (`None`/`Ok`)
+//    or 1 (`Some`/`Err`).  The wildcard arm must fire, returning I64(99).
+//
+//  RUNTIME-ACL-VARIANT-COLLISION-2: `variant(None)` and `none()` must produce
+//    the same discriminant (0).  Both forms resolve through `well_known_variant_tag`,
+//    bypassing the user-tag counter entirely.  Two functions in the same module —
+//    one using `none()`, the other using `variant(None)` — must both match the
+//    `None` arm and return I64(42).
+//
+//  RUNTIME-ACL-VARIANT-COLLISION-3: well-known `None`=0 and `Some`=1 must
+//    remain stable after the user-tag-reservation fix.  The `next_variant_tag`
+//    counter starts at 2 but well-known tags bypass it; the `max` guard in
+//    `assign_tag` ensures the counter is never lowered below its current value.
+//    `none()` must still match the `None` arm (discriminant 0) and `some(42)`
+//    must still match the `Some(x)` arm (discriminant 1).
+
+// RUNTIME-ACL-VARIANT-COLLISION-1
+//
+// ACL body: match(variant(Active), None, 1, _, 99)
+//
+//   Pre-fix behaviour (WRONG — exposes the bug):
+//     assign_tag("Active") = 0  (next_variant_tag started at 0)
+//     assign_tag("None")   = 0  (well-known)
+//     I32Eq(0, 0) → true → None arm fires → returns I64(1)  ← COLLISION
+//
+//   Post-fix behaviour (CORRECT):
+//     assign_tag("Active") = 2  (user tags start at 2)
+//     assign_tag("None")   = 0  (well-known; counter unchanged)
+//     I32Eq(2, 0) → false → Else → wildcard fires → returns I64(99)
+//
+// Proves: user-defined tags are guaranteed never to alias well-known IDs 0/1.
+#[test]
+fn acl_variant_collision_1_user_active_does_not_match_none_arm() {
+    let acl = "\
+change acl_variant_collision_1 base=0
+author tester
+description user tag Active must not collide with well-known None discriminant 0
+op create_function id=fn.main return=Int body=match(variant(Active), None, 1, _, 99)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(99),
+        "user tag Active (discriminant 2) must not match None arm (discriminant 0); wildcard must fire returning I64(99)"
+    );
+}
+
+// RUNTIME-ACL-VARIANT-COLLISION-2
+//
+// Two functions, same module:
+//   fn.via_none_call:    body = match(none(),         None, 42, _, 0)
+//   fn.via_variant_none: body = match(variant(None),  None, 42, _, 0)
+//
+//   Pipeline for fn.via_none_call:
+//     `none()` → VariantNew{tag:"None", payload:None}
+//     assign_tag("None") → well_known_variant_tag("None") = 0; store tag 0.
+//     Match "None" → assign_tag("None") = 0 (cache); I32Eq(0,0) → fires → 42.
+//
+//   Pipeline for fn.via_variant_none:
+//     `variant(None)` → parse_variant_call → VariantNew{tag:"None", payload:None}
+//     assign_tag("None") → well_known_variant_tag("None") = 0; store tag 0.
+//     Match "None" → assign_tag("None") = 0 (cache); I32Eq(0,0) → fires → 42.
+//
+// Both forms resolve "None" through well_known_variant_tag, so they produce
+// identical discriminant 0 — the user-tag counter is never involved.
+#[test]
+fn acl_variant_collision_2_variant_none_and_none_call_same_discriminant() {
+    let acl = "\
+change acl_variant_collision_2 base=0
+author tester
+description variant(None) and none() must both produce discriminant 0 and match the None arm
+op create_function id=fn.via_none_call return=Int body=match(none(), None, 42, _, 0)
+op create_function id=fn.via_variant_none return=Int body=match(variant(None), None, 42, _, 0)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "via_none_call"),
+        RuntimeValue::I64(42),
+        "none() must produce discriminant 0 and match the None arm, returning I64(42)"
+    );
+    assert_eq!(
+        invoke_acl_export(acl, "via_variant_none"),
+        RuntimeValue::I64(42),
+        "variant(None) must produce discriminant 0 — same as none() — and match the None arm, returning I64(42)"
+    );
+}
+
+// RUNTIME-ACL-VARIANT-COLLISION-3
+//
+// Two functions proving well-known discriminants are stable after the fix:
+//   fn.none_stable: match(none(),     None,    10, _, 0)  → I64(10)
+//   fn.some_stable: match(some(42),   Some(x), x,  _, 0)  → I64(42)
+//
+//   Pipeline for fn.none_stable:
+//     `none()` → VariantNew{tag:"None"} → assign_tag("None")=0 (well-known).
+//     Store tag 0.  Match "None" → 0==0 → fires → 10.  Returns I64(10).
+//
+//   Pipeline for fn.some_stable:
+//     `some(42)` → VariantNew{tag:"Some", payload:42} → assign_tag("Some")=1 (well-known).
+//     Store tag 1, payload 42.  Match "Some(x)" → assign_tag("Some")=1 (cache);
+//     1==1 → fires → bind x=42 → return x.  Returns I64(42).
+//
+//   The fix sets `next_variant_tag: 2` but well-known tags bypass the counter
+//   entirely (resolved via well_known_variant_tag).  The max-guard in assign_tag
+//   prevents the counter from being lowered, so 2 stays at ≥2 even after a
+//   well-known tag is seen.  None=0 and Some=1 are unaffected.
+#[test]
+fn acl_variant_collision_3_well_known_none_and_some_remain_stable() {
+    let acl = "\
+change acl_variant_collision_3 base=0
+author tester
+description well-known None=0 and Some=1 remain stable; not displaced by user-tag reservation
+op create_function id=fn.none_stable return=Int body=match(none(), None, 10, _, 0)
+op create_function id=fn.some_stable return=Int body=match(some(42), Some(x), x, _, 0)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "none_stable"),
+        RuntimeValue::I64(10),
+        "none() must still match None arm (discriminant 0 unchanged) and return I64(10)"
+    );
+    assert_eq!(
+        invoke_acl_export(acl, "some_stable"),
+        RuntimeValue::I64(42),
+        "some(42) must still match Some(x) arm (discriminant 1 unchanged), bind x=42, return I64(42)"
     );
 }
 
