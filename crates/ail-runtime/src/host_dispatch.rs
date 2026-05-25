@@ -286,6 +286,31 @@ impl RuntimeInstance {
         Some(buf)
     }
 
+    /// Read a little-endian `i64` from WASM linear memory at `ptr + byte_offset`.
+    ///
+    /// This is a **read-only, bounds-checked** helper intended for test-side
+    /// memory introspection.  It does not modify the WASM linear memory.
+    ///
+    /// Returns `None` if:
+    /// - Either `ptr` or `byte_offset` is negative.
+    /// - `ptr + byte_offset` overflows a `u32` (WASM memory is 32-bit addressed).
+    /// - The result exceeds `i32::MAX` (would become negative when passed to the
+    ///   memory accessor).
+    /// - The module has no exported `"memory"`.
+    /// - The 8-byte read range `[ptr + byte_offset, ptr + byte_offset + 8)` is
+    ///   out of bounds for the current linear-memory size.
+    pub fn read_memory_i64(&mut self, ptr: i32, byte_offset: i32) -> Option<i64> {
+        if ptr < 0 || byte_offset < 0 {
+            return None;
+        }
+        // Use u32 arithmetic to detect overflow before narrowing to i32.
+        let base = (ptr as u32).checked_add(byte_offset as u32)?;
+        let base_i32 = i32::try_from(base).ok()?;
+        let bytes = self.read_wasm_memory(base_i32, 8)?;
+        let arr: [u8; 8] = bytes.try_into().ok()?;
+        Some(i64::from_le_bytes(arr))
+    }
+
     /// Write `bytes` into WASM linear memory at `ptr`.
     ///
     /// Returns `true` on success, `false` if `ptr` is negative, if the module
