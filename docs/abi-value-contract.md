@@ -108,12 +108,14 @@ own a `WasmArtifact` are responsible for translating `export_types` into
 
 ## Current limitations
 
-- `Bytes` literals (`LiteralValue::Bytes(Vec<u8>)`) are now executable: the
+- `Bytes` literals (`LiteralValue::Bytes(Vec<u8>)`) are now executable in the
+  WASM backend: the
   compiler interns the byte buffer in the WASM data section and emits a packed
   `(len << 32) | ptr` i64 return — the same encoding used for `Text`.  The
   runtime decodes this via `ValueLayout::Bytes` → `StructuredValue::Bytes { ptr,
   len }`.  `derive_wasm_type` maps `Literal(Bytes(_))` to
-  `WasmTypeDescriptor::Bytes` so callers receive the correct descriptor.
+  `WasmTypeDescriptor::Bytes` so callers receive the correct descriptor. Native
+  Bytes emission is still deferred and traps if reached.
 - `Unit` is currently represented by the compiler as `Scalar(I32)`. The runtime
   decoder maps `ValueLayout::Scalar` to `StructuredValue::Scalar(raw)`; only a
   raw `RuntimeValue::Unit` from `invoke` becomes `StructuredValue::Unit` in
