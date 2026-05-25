@@ -493,6 +493,15 @@ fn emit_anf_expr<'a>(
                 insns.push(Instruction::I64Const(packed));
                 Some(ValType::I64)
             }
+            LiteralValue::Bytes(data) => {
+                // Same packed encoding as Text: upper 32 = len, lower 32 = ptr.
+                // The runtime decodes this via ValueLayout::Bytes →
+                // StructuredValue::Bytes { ptr, len } with no UTF-8 assumption.
+                let (ptr, len) = ctx.effect_data.bytes(data);
+                let packed = ((len as i64) << 32) | (ptr as i64);
+                insns.push(Instruction::I64Const(packed));
+                Some(ValType::I64)
+            }
             LiteralValue::Unit => {
                 insns.push(Instruction::I32Const(0));
                 Some(ValType::I32)

@@ -218,7 +218,7 @@ pub(crate) fn align_to_i64(offset: i32) -> i32 {
 }
 
 pub(crate) fn build_data_section(layout: &EffectDataLayout) -> Option<DataSection> {
-    if layout.strings.is_empty() {
+    if layout.strings.is_empty() && layout.bytes_entries.is_empty() {
         return None;
     }
     let mut data = DataSection::new();
@@ -228,6 +228,9 @@ pub(crate) fn build_data_section(layout: &EffectDataLayout) -> Option<DataSectio
             &ConstExpr::i32_const(*ptr),
             value.as_bytes().iter().copied(),
         );
+    }
+    for (bytes, ptr) in &layout.bytes_entries {
+        data.active(0, &ConstExpr::i32_const(*ptr), bytes.iter().copied());
     }
     Some(data)
 }

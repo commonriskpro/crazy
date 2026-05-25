@@ -91,6 +91,14 @@ pub(crate) fn lower_anf_expr_cranelift(
                 let packed = builder.ins().bor(len_shifted, ptr);
                 LowerResult::Value(packed)
             }
+            LiteralValue::Bytes(_) => {
+                // Native-backend Bytes emit is deferred to a future wave.
+                // Wave 10A closes the WASM/ABI Bytes gap only.
+                // NativeDataLayout will need a bytes-data table (separate from
+                // the string table) before this arm can produce real code.
+                builder.ins().trap(TrapCode::user(1).unwrap());
+                LowerResult::Terminated
+            }
         },
 
         // ── Variable reference ────────────────────────────────────────────

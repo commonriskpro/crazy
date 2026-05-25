@@ -1184,4 +1184,4 @@ Current executable support is narrower than the full IR:
 | `TaskSpawn`, `TaskAwait`, `TaskCancel`, `TaskGroup` | Emit `Unreachable` in WASM |
 | `ChannelNew`, `ChannelSend`, `ChannelReceive`, `Select`, `Timeout` | Emit `Unreachable` in WASM |
 | `Dispatch` (dynamic dispatch) | Emits `Unreachable` in WASM |
-| `Bytes` type | No executable emit or derive path; see [ABI value contract](abi-value-contract.md) |
+| `Bytes` type | **Implemented for WASM** — `LiteralValue::Bytes(Vec<u8>)` interns the byte buffer in the WASM data section and emits a packed `(len << 32) \| ptr` i64 return; `derive_wasm_type` maps it to `WasmTypeDescriptor::Bytes`; runtime decodes via `ValueLayout::Bytes` → `StructuredValue::Bytes { ptr, len }`; native Bytes emission is still deferred; see [ABI value contract](abi-value-contract.md) |
