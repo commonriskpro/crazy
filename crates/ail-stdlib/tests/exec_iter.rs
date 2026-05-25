@@ -1,11 +1,13 @@
 // Tests for iter functional exec entries via call_pure_stdlib.
 //
 // TDD: written BEFORE T8 implementation.
-// Spec: STDLIB-EXEC-ITER-1..6
+// Spec: STDLIB-EXEC-ITER-1..6, STDLIB-ITER-CONTRACT-1..4
 //
 // fold convention: fn receives List([acc, item]) as single arg (binary encoding).
 
+use ail_core::semantic_graph::NodeKind;
 use ail_stdlib::exec::{StdlibExecError, StdlibValue, call_pure_stdlib};
+use ail_stdlib::v1_registry_with_functions;
 
 // Helper: function that doubles an Int
 fn double(v: StdlibValue) -> Result<StdlibValue, StdlibExecError> {
@@ -175,4 +177,51 @@ fn iter_map_non_list_arg_returns_type_error() {
         &[StdlibValue::Int(1), StdlibValue::Function(double)],
     );
     assert_eq!(result, Err(StdlibExecError::Type { expected: "List" }));
+}
+
+// ── STDLIB-ITER-CONTRACT-1..4: v1 contract_clauses presence ──────────────
+//
+// Prove that all four std.iter.* function entries carry honest contract_clauses.
+
+fn iter_entry_has_contracts(id: &str) -> bool {
+    let reg = v1_registry_with_functions();
+    reg.entries
+        .iter()
+        .any(|e| e.id.0 == id && e.kind == NodeKind::Function && e.contract_clauses.is_some())
+}
+
+// STDLIB-ITER-CONTRACT-1
+#[test]
+fn v1_iter_map_has_function_entry_with_contracts() {
+    assert!(
+        iter_entry_has_contracts("std.iter.map"),
+        "std.iter.map must be a Function entry with contract_clauses"
+    );
+}
+
+// STDLIB-ITER-CONTRACT-2
+#[test]
+fn v1_iter_filter_has_function_entry_with_contracts() {
+    assert!(
+        iter_entry_has_contracts("std.iter.filter"),
+        "std.iter.filter must be a Function entry with contract_clauses"
+    );
+}
+
+// STDLIB-ITER-CONTRACT-3
+#[test]
+fn v1_iter_fold_has_function_entry_with_contracts() {
+    assert!(
+        iter_entry_has_contracts("std.iter.fold"),
+        "std.iter.fold must be a Function entry with contract_clauses"
+    );
+}
+
+// STDLIB-ITER-CONTRACT-4
+#[test]
+fn v1_iter_traverse_has_function_entry_with_contracts() {
+    assert!(
+        iter_entry_has_contracts("std.iter.traverse"),
+        "std.iter.traverse must be a Function entry with contract_clauses"
+    );
 }
