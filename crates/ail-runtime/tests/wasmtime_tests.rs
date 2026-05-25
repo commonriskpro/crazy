@@ -2090,3 +2090,259 @@ fn short_circuit_or_false_left_evaluates_right() {
         "ShortCircuitOr with left=false must evaluate right and return I64(7)"
     );
 }
+
+// ── Wave 19C: ACL source-level E2E conformance — variant + match + string + while ──
+//
+// Spec scenarios covered (RUNTIME-ACL-SOME-1, RUNTIME-ACL-NONE-1,
+// RUNTIME-ACL-OK-1, RUNTIME-ACL-ERR-1, RUNTIME-ACL-STRING-1,
+// RUNTIME-ACL-WHILE-1, RUNTIME-ACL-WHILE-2):
+//
+//  RUNTIME-ACL-SOME-1: ACL body `match(some(42), Some(x), x, _, 0)` must
+//    construct a Some(42) variant, enter the Some(x) arm, bind x=42, and
+//    return I64(42).  Proves the full pipeline from ACL source through
+//    VariantNew emission and constructor-pattern match dispatch.
+//
+//  RUNTIME-ACL-NONE-1: ACL body `match(none(), None, 99, _, 0)` must
+//    construct a None variant (tag_id=0) and dispatch to the `None` arm
+//    (tag-only, no payload binding), returning I64(99).  Proves tag-only
+//    constructor patterns fire correctly.
+//
+//  RUNTIME-ACL-OK-1: ACL body `match(ok(7), Ok(v), v, Err(e), 0)` must
+//    construct an Ok(7) variant and dispatch to the Ok(v) arm, returning I64(7).
+//    Proves Ok/Err share the same well-known tag encoding as None/Some.
+//
+//  RUNTIME-ACL-ERR-1: ACL body `match(err(5), Ok(v), 0, Err(e), e)` must
+//    construct an Err(5) variant, skip the Ok(v) arm (tag mismatch), dispatch
+//    to Err(e), and return I64(5).  Proves the second arm fires correctly.
+//
+//  RUNTIME-ACL-STRING-1: ACL body `let(s, "hello", s)` must compile the
+//    string literal "hello" and return it as a packed I64 where the upper
+//    32 bits encode the string length (5).  Proves string literals survive the
+//    ACL parse → expr_parser → lower → WASM emit pipeline without loss.
+//
+//  RUNTIME-ACL-WHILE-1: ACL body `let(flag, false, while(flag, 42))` must
+//    enter the while loop, find the condition false, never execute the body,
+//    and return I32(0) (unit).  Proves WhileLoop with a Var-condition at the
+//    ACL level exits immediately and produces the unit sentinel.
+//
+//  RUNTIME-ACL-WHILE-2: A multi-let ACL body creates a cell, runs a while
+//    loop that writes 1 to the cell and breaks, then reads the cell.  Must
+//    return I64(1).  Proves the while body executes exactly once, CellSet
+//    persists to linear memory, CellGet reads back the written value, and
+//    break exits the loop.  All sub-expression arguments are pre-bound Vars
+//    so that no atomized binding is lost through the lower_core_expr_to_anf_local
+//    `_` fallthrough (documented gap: non-Var while-condition expressions).
+
+// RUNTIME-ACL-SOME-1
+//
+// ACL body: match(some(42), Some(x), x, _, 0)
+//
+//   Pipeline:
+//   1. `some(42)` → CoreExpr::VariantNew{tag:"Some", payload:Literal(42)}
+//   2. Lowered to: Let{anf_0=42, anf_1=VariantNew{tag:"Some",payload:Var(anf_0)},
+//                      Match{scrutinee:anf_1, arms:[Some(x)→x, _→0]}}
+//   3. WASM: alloc 16 bytes, store tag_id("Some")=1 at offset 0,
+//      store I64(42) at offset 8; then match: tag==1 → bind x=payload → x=42.
+//   4. Returns I64(42).
+#[test]
+fn acl_some_match_extracts_payload() {
+    let acl = "\
+change acl_some_1 base=0
+author tester
+description some/match round-trip: Some(x) arm extracts the i64 payload
+op create_function id=fn.main return=Int body=match(some(42), Some(x), x, _, 0)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(42),
+        "match(some(42), Some(x), x, _, 0) must return I64(42)"
+    );
+}
+
+// RUNTIME-ACL-NONE-1
+//
+// ACL body: match(none(), None, 99, _, 0)
+//
+//   Pipeline:
+//   1. `none()` → CoreExpr::VariantNew{tag:"None", payload:None}
+//   2. Lowered to: Let{anf_0=VariantNew{tag:"None",payload:None},
+//                      Match{scrutinee:anf_0, arms:[None→99, _→0]}}
+//   3. WASM: alloc 16 bytes, store tag_id("None")=0 at offset 0;
+//      match: tag==0 → no payload binding → body=99.
+//   4. Returns I64(99).
+//
+// Well-known tag table: None=0, Ok=0, Some=1, Err=1.
+#[test]
+fn acl_none_match_fires_none_arm() {
+    let acl = "\
+change acl_none_1 base=0
+author tester
+description none/match: None tag-only arm fires, wildcard fallback returns 0
+op create_function id=fn.main return=Int body=match(none(), None, 99, _, 0)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(99),
+        "match(none(), None, 99, _, 0) must return I64(99)"
+    );
+}
+
+// RUNTIME-ACL-OK-1
+//
+// ACL body: match(ok(7), Ok(v), v, Err(e), 0)
+//
+//   Pipeline:
+//   1. `ok(7)` → VariantNew{tag:"Ok", payload:Literal(7)}, tag_id("Ok")=0
+//   2. Match: Ok(v) arm → tag_id("Ok")=0 matches → bind v=7 → return v.
+//   3. Err(e) arm is unreachable in this invocation.
+//   4. Returns I64(7).
+#[test]
+fn acl_ok_match_extracts_ok_payload() {
+    let acl = "\
+change acl_ok_1 base=0
+author tester
+description ok/match round-trip: Ok(v) arm extracts the i64 payload
+op create_function id=fn.main return=Int body=match(ok(7), Ok(v), v, Err(e), 0)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(7),
+        "match(ok(7), Ok(v), v, Err(e), 0) must return I64(7)"
+    );
+}
+
+// RUNTIME-ACL-ERR-1
+//
+// ACL body: match(err(5), Ok(v), 0, Err(e), e)
+//
+//   Pipeline:
+//   1. `err(5)` → VariantNew{tag:"Err", payload:Literal(5)}, tag_id("Err")=1
+//   2. Match: Ok(v) arm → tag_id("Ok")=0 ≠ 1 → skip.
+//             Err(e) arm → tag_id("Err")=1 matches → bind e=5 → return e.
+//   3. Returns I64(5).
+//
+// Proves the second match arm fires when the first arm's tag does not match.
+#[test]
+fn acl_err_match_fires_err_arm() {
+    let acl = "\
+change acl_err_1 base=0
+author tester
+description err/match: Err(e) arm fires when Ok(v) arm tag does not match
+op create_function id=fn.main return=Int body=match(err(5), Ok(v), 0, Err(e), e)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(5),
+        "match(err(5), Ok(v), 0, Err(e), e) must return I64(5)"
+    );
+}
+
+// RUNTIME-ACL-STRING-1
+//
+// ACL body: let(s, "hello", s)
+//
+//   Pipeline:
+//   1. `bare_value_end` preserves inner quotes: body_expr = `let(s, "hello", s)`.
+//   2. expr_parser sees `"hello"` inside parse_args → Literal(Text("hello")).
+//   3. WASM emit: Text literal → I64Const((len << 32) | ptr).
+//      For "hello" (5 bytes): upper 32 bits = 5.
+//   4. Returns I64(packed) with upper 32 bits = 5.
+//
+// The exact ptr (lower 32 bits) depends on the data segment and is not
+// asserted — only the stable length field is checked.
+#[test]
+fn acl_string_literal_body_encodes_length_in_upper_bits() {
+    let acl = r#"
+change acl_string_1 base=0
+author tester
+description string literal body: "hello" must encode len=5 in upper I64 bits
+op create_function id=fn.main return=Text body=let(s, "hello", s)
+end
+"#;
+    let value = invoke_acl_export(acl, "main");
+    let RuntimeValue::I64(packed) = value else {
+        panic!("expected RuntimeValue::I64 for string body, got {value:?}");
+    };
+    let len = (packed as u64 >> 32) as u32;
+    assert_eq!(
+        len,
+        5,
+        "string \"hello\" must encode length 5 in upper 32 bits of the packed I64; got len={len}"
+    );
+}
+
+// RUNTIME-ACL-WHILE-1
+//
+// ACL body: let(flag, false, while(flag, 42))
+//
+//   Pipeline:
+//   1. flag = I64(0) (false).
+//   2. WhileLoop: emit_condition_get("flag") → I64(0); I64Const(0); I64Ne → I32(0);
+//      I32Eqz → I32(1); BrIf(1) → branch taken (condition is zero).
+//      Body (Literal(42)) is never reached.
+//   3. WhileLoop pushes I32Const(0) → returns I32(0) (unit).
+//
+// Constraint: the while-condition must be a Var already in scope.
+// If the condition expression is non-atomic (e.g. `while(lt(x,5), ...)`),
+// the lower_core_expr_to_anf_local `_` fallthrough loses atomized bindings —
+// see documented gap in Wave 19C session summary.
+#[test]
+fn acl_while_false_condition_body_never_runs() {
+    let acl = "\
+change acl_while_1 base=0
+author tester
+description while(flag=false, body) must skip body and return unit I32(0)
+op create_function id=fn.main return=Int body=let(flag, false, while(flag, 42))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I32(0),
+        "let(flag, false, while(flag, 42)) must return I32(0) without running the body"
+    );
+}
+
+// RUNTIME-ACL-WHILE-2
+//
+// ACL body (multi-let):
+//   let(zero, 0,
+//     let(c, cell_new(zero),
+//       let(one, 1,
+//         let(go, true,
+//           let(_w, while(go, let(_s, cell_set(c, one), break(go))),
+//             cell_get(c)
+//           )
+//         )
+//       )
+//     )
+//   )
+//
+//   Pipeline:
+//   1. zero=0, c=CellNew(0), one=1, go=true (I64 1).
+//   2. WhileLoop: go=truthy → enter body.
+//      Body: _s=CellSet(c, one=1) — writes I64(1) into cell; break(go) → Br(1).
+//   3. WhileLoop exits via break; pushes I32Const(0) as _w.
+//   4. CellGet(c) → I64(1).
+//
+// Proves: ACL while body executes exactly once; CellSet persists through
+// linear memory; CellGet reads back the written value; break exits the loop.
+// All sub-expression arguments are pre-bound Vars — no atomized binding is lost.
+#[test]
+fn acl_while_body_runs_once_and_mutates_cell() {
+    let acl = "\
+change acl_while_2 base=0
+author tester
+description while body runs once: CellSet writes 1 to cell, CellGet reads 1
+op create_function id=fn.main return=Int body=let(zero, 0, let(c, cell_new(zero), let(one, 1, let(go, true, let(_w, while(go, let(_s, cell_set(c, one), break(go))), cell_get(c))))))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(1),
+        "while body must run once: CellSet(c,1) then break → CellGet(c) must return I64(1)"
+    );
+}
