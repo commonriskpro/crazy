@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`clock.now` epoch-ms capability boundary**: replaced silent-truncating `.as_millis() as i64`
+  cast in `ClockHandler::handle` with a checked `try_into()` conversion. A pathological system
+  clock that produces a value exceeding `i64::MAX` now surfaces a `HostError::Custom` instead
+  of silently wrapping.
+
 ### Added
 
 - **Supply-chain audit gate** (`deny.toml`, `.cargo/audit.toml`, CI job): `cargo deny
