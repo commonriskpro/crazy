@@ -158,6 +158,28 @@ impl LinkerBoundary for SystemLinker {
     }
 }
 
+/// Build the JSON success response for a completed link operation.
+///
+/// Extracted so tests can assert the stable field names directly without
+/// capturing stdout.  The fields here ARE the JSON contract for `ail link --json`.
+/// If you rename a field, update the corresponding contract test in `tests/link.rs`.
+pub(crate) fn build_link_result_json(
+    profile: &str,
+    object_path: &Path,
+    output_path: &Path,
+    linker_command: &str,
+    runtime_lib: Option<&str>,
+) -> serde_json::Value {
+    json!({
+        "profile": profile,
+        "object_path": object_path.to_string_lossy(),
+        "output_path": output_path.to_string_lossy(),
+        "linker_command": linker_command,
+        "runtime_lib": runtime_lib,
+        "status": "linked",
+    })
+}
+
 // ── Command handler ───────────────────────────────────────────────────────
 
 /// `ail link --profile <name> [--output <path>] [--runtime-lib <path>]`
@@ -246,17 +268,13 @@ pub(crate) fn cmd_link(
         output_path.display(),
         result.command,
     );
-    print_response(
-        mode,
-        &human_msg,
-        json!({
-            "profile": profile,
-            "object_path": object_path.to_string_lossy(),
-            "output_path": result.output_path.to_string_lossy(),
-            "linker_command": result.command,
-            "runtime_lib": runtime_lib_str,
-            "status": "linked",
-        }),
+    let json_response = build_link_result_json(
+        profile,
+        object_path,
+        &result.output_path,
+        &result.command,
+        runtime_lib_str.as_deref(),
     );
+    print_response(mode, &human_msg, json_response);
     Ok(())
 }

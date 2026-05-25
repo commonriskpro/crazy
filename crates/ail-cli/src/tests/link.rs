@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use crate::error::CliError;
 use crate::link_commands::{
-    LinkerBoundary, LinkerResult, build_linker_args, cmd_link, detect_system_linker_cmd,
+    LinkerBoundary, LinkerResult, build_link_result_json, build_linker_args, cmd_link,
+    detect_system_linker_cmd,
 };
 use crate::store::{file_store, init_file_layout, memory_store};
 use crate::store_artifacts::NativeArtifactBytes;
@@ -437,51 +438,51 @@ fn cmd_link_default_output_path_uses_profile_name() {
     );
 }
 
-// Scenario: cmd_link JSON output contains all expected contract keys.
-//   GIVEN a file store with a saved native artifact for profile "dev"
-//   WHEN cmd_link is called in Json mode with FakeLinker
-//   THEN the print_response call completes (Ok) — contract keys are validated
-//   by asserting on the human-mode output which mirrors the JSON fields.
+// Scenario: build_link_result_json produces all required contract field names.
+//   GIVEN representative values for profile, paths, linker command, and runtime_lib
+//   WHEN build_link_result_json is called
+//   THEN the returned Value contains every stable key in the `ail link --json` contract.
 //
-// Note: print_response writes to stdout; this test validates Ok-return which
-// confirms the JSON value was fully constructed (all required fields present).
-// A broken field serialization would propagate as a compile error or panic.
+// This test calls the same helper used by cmd_link so a field rename in either
+// place is caught at compile time (import) or at runtime (assert below).
+// If you rename a field in build_link_result_json, update this list.
 #[test]
 fn cmd_link_json_output_contract_fields_are_present() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let ail_dir = temp.path().join(".ail");
-    init_file_layout(&ail_dir).expect("init layout");
-    let store = file_store(ail_dir.clone());
+    let obj = PathBuf::from("/tmp/prog.o");
+    let out = PathBuf::from("/tmp/prog");
+    let cmd = "fake-cc /tmp/prog.o -o /tmp/prog";
 
-    let fake_hash = "9".repeat(64);
-    store
-        .save_native_artifact(
-            &fake_hash,
-            "dev",
-            "native",
-            NativeArtifactBytes {
-                object: b"obj-contract",
-                source_map_json: b"{}",
-                artifact_manifest_json: b"{}",
-                capabilities_manifest_json: b"{\"entries\":[]}",
-            },
-        )
-        .expect("save must succeed");
+    // Without runtime_lib.
+    let value = build_link_result_json("dev", &obj, &out, cmd, None);
+    let obj_map = value.as_object().expect("result must be a JSON object");
+    for key in &[
+        "profile",
+        "object_path",
+        "output_path",
+        "linker_command",
+        "runtime_lib",
+        "status",
+    ] {
+        assert!(
+            obj_map.contains_key(*key),
+            "JSON contract must include key '{key}'; got keys: {:?}",
+            obj_map.keys().collect::<Vec<_>>()
+        );
+    }
 
-    // Json mode: verifies all required contract fields are reachable by cmd_link.
-    // If any field were missing (object_path, output_path, linker_command, status,
-    // profile), the json!() macro call inside cmd_link would fail at construction.
-    let result = cmd_link(OutputMode::Json, "dev", None, None, &store, &FakeLinker);
-    assert!(
-        result.is_ok(),
-        "cmd_link Json mode must return Ok when all contract fields are present; got: {result:?}"
+    // Status must be the stable string "linked".
+    assert_eq!(
+        value["status"].as_str(),
+        Some("linked"),
+        "status field must equal \"linked\""
     );
 
-    // Human mode: verify the status line is present in formatted output.
-    let result_human = cmd_link(OutputMode::Human, "dev", None, None, &store, &FakeLinker);
+    // With runtime_lib: field must be non-null.
+    let value_with_lib =
+        build_link_result_json("dev", &obj, &out, cmd, Some("/usr/local/lib/ail_runtime.a"));
     assert!(
-        result_human.is_ok(),
-        "cmd_link Human mode must also return Ok; got: {result_human:?}"
+        !value_with_lib["runtime_lib"].is_null(),
+        "runtime_lib field must be non-null when a lib path is supplied"
     );
 }
 
@@ -499,21 +500,25 @@ fn build_linker_args_appends_runtime_lib_when_some() {
 
     let args = build_linker_args(&obj, &out, Some(&lib));
 
-    let joined = args.join(" ");
+    // Compare vector element positions, not substring positions.
+    // Substring search on the joined string is unreliable here: "/tmp/prog" is a
+    // prefix of "/tmp/prog.o", so `joined.find("/tmp/prog")` would match the
+    // object-path element first, making the ordering assertion trivially pass.
+    let out_str = out.to_string_lossy();
+    let lib_str = lib.to_string_lossy();
+
+    let out_idx = args
+        .iter()
+        .position(|a| a == out_str.as_ref())
+        .expect("output path must appear as an exact arg element");
+    let lib_idx = args
+        .iter()
+        .position(|a| a == lib_str.as_ref())
+        .expect("runtime_lib must appear as an exact arg element");
+
     assert!(
-        joined.contains("ail_runtime.a"),
-        "args must contain the runtime_lib path; got: {joined}"
-    );
-    // The lib path must appear AFTER the output path in the argument list.
-    let out_pos = joined
-        .find("/tmp/prog")
-        .expect("output path must be present");
-    let lib_pos = joined
-        .find("ail_runtime.a")
-        .expect("runtime_lib must be present");
-    assert!(
-        lib_pos > out_pos,
-        "runtime_lib must appear after the output path; got: {joined}"
+        lib_idx > out_idx,
+        "runtime_lib arg (idx {lib_idx}) must appear after output_path arg (idx {out_idx}); args: {args:?}"
     );
 }
 
