@@ -283,7 +283,6 @@ pub(super) fn lower_core_expr_to_anf_local(
             }
             wrap_local_bindings(bindings, AnfExpr::ListNew(anf_elems))
         }
-
         // ── Loop constructs ───────────────────────────────────────────────
         //
         // These variants were previously handled by the `_` fallthrough which
@@ -410,6 +409,50 @@ pub(super) fn lower_core_expr_to_anf_local(
             wrap_local_bindings(bindings, cell_expr)
         }
 
+        // MapNew: atomize each key and value into local let-bindings.
+        // Uses atomize_local (not atomize) so synthetic temporaries are scoped
+        // as inline AnfExpr::Let nodes visible to the WASM emitter.
+        CoreExpr::MapNew { entries } => {
+            let mut bindings = Vec::new();
+            let mut anf_entries = Vec::with_capacity(entries.len());
+            for (k, v) in entries {
+                let (k_name, k_binding) = atomize_local(k, fresh, source_ref);
+                let (v_name, v_binding) = atomize_local(v, fresh, source_ref);
+                if let Some(binding) = k_binding {
+                    bindings.push(binding);
+                }
+                if let Some(binding) = v_binding {
+                    bindings.push(binding);
+                }
+                anf_entries.push((k_name, v_name));
+            }
+            wrap_local_bindings(
+                bindings,
+                AnfExpr::MapNew {
+                    entries: anf_entries,
+                },
+            )
+        }
+
+        // SetNew: atomize each element into a local let-binding.
+        CoreExpr::SetNew { elements } => {
+            let mut bindings = Vec::new();
+            let mut anf_elements = Vec::with_capacity(elements.len());
+            for elem in elements {
+                let (name, binding) = atomize_local(elem, fresh, source_ref);
+                if let Some(binding) = binding {
+                    bindings.push(binding);
+                }
+                anf_elements.push(name);
+            }
+            wrap_local_bindings(
+                bindings,
+                AnfExpr::SetNew {
+                    elements: anf_elements,
+                },
+            )
+        }
+
         // ── Fallthrough gap ───────────────────────────────────────────────
         //
         // Variants without an explicit local arm fall here.
@@ -423,8 +466,8 @@ pub(super) fn lower_core_expr_to_anf_local(
         // arm is added — sub-expression bindings would be discarded and the
         // resulting ANF would reference undefined names:
         //   EffectCall, Dispatch, TaskSpawn, ChannelSend, ChannelReceive,
-        //   Select, Timeout, ResourceUsing, Lambda, MapNew, SetNew,
-        //   IndexGet, BoundaryCall, DynCall, CapabilityUse, ...
+        //   Select, Timeout, ResourceUsing, Lambda, IndexGet, BoundaryCall,
+        //   DynCall, CapabilityUse, ...
         //
         // Add an explicit arm in this function before the parser exposes any
         // of the unsafe variants in a local expression position.
