@@ -67,6 +67,7 @@ use crate::graph_query_commands::{cmd_callers, cmd_effects, cmd_impact, cmd_proo
 use crate::inspect_commands::cmd_inspect;
 use crate::link_commands::{
     SystemLinker, cmd_emit_runtime_stub, cmd_link, cmd_print_runtime_symbols,
+    validate_link_mode_flags,
 };
 use crate::output::OutputMode;
 use crate::package_commands::cmd_package;
@@ -608,6 +609,7 @@ pub async fn run() -> Result<(), CliError> {
             emit_runtime_stub,
             print_runtime_symbols,
         } => {
+            validate_link_mode_flags(print_runtime_symbols, emit_runtime_stub.is_some())?;
             if print_runtime_symbols {
                 cmd_print_runtime_symbols(mode);
                 Ok(())

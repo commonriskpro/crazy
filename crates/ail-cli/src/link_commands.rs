@@ -281,6 +281,33 @@ pub(crate) fn cmd_link(
     Ok(())
 }
 
+// ── Flag validation ───────────────────────────────────────────────────────
+
+/// Validate that at most one standalone link mode flag is supplied.
+///
+/// `--print-runtime-symbols` and `--emit-runtime-stub` are standalone modes
+/// (they exit without invoking the linker).  Supplying both together is
+/// ambiguous; this function returns a [`CliError::Domain`] so the caller
+/// receives an explicit diagnostic rather than silent flag precedence.
+///
+/// # Errors
+///
+/// Returns `Err(CliError::Domain)` when both `print_runtime_symbols` and
+/// `emit_runtime_stub` are `true`.
+pub(crate) fn validate_link_mode_flags(
+    print_runtime_symbols: bool,
+    emit_runtime_stub: bool,
+) -> Result<(), CliError> {
+    if print_runtime_symbols && emit_runtime_stub {
+        return Err(CliError::Domain(
+            "--print-runtime-symbols and --emit-runtime-stub are standalone modes; \
+             supply only one at a time"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 // ── Runtime stub emit ─────────────────────────────────────────────────────
 
 /// `ail link --print-runtime-symbols`

@@ -6,7 +6,7 @@
 // implementations of the three symbols imported by native objects:
 //
 //   host_call(i64 × 6) → i64           — capability dispatch no-op; returns -1
-//   __ail_malloc(i64)  → i64           — allocator stub; returns 0 (null)
+//   __ail_malloc(i64)  → i64           — allocator stub; returns 0 (null; smoke-test only)
 //   ail_runtime_call(i64 × 3) → i64   — runtime dispatch no-op; returns -1
 //
 // # Design
@@ -51,8 +51,11 @@ use crate::error::CompileError;
 
 // ── Public constants ──────────────────────────────────────────────────────
 
-/// The three runtime symbols imported by every native object emitted by
-/// `emit_native`.  Listed in definition order (matches `native.rs`).
+/// Runtime symbols potentially imported by native objects emitted by
+/// `emit_native`, conditional on the `needs_host_call`, `needs_heap_alloc`,
+/// and `needs_runtime_call` flags computed from the data layout.  A given
+/// native object may import only a subset of these.  Listed in definition
+/// order (matches `native.rs`).
 ///
 /// Used for diagnostic output and to drive stub generation.
 pub const RUNTIME_SYMBOLS: [&str; 3] = ["host_call", "__ail_malloc", "ail_runtime_call"];
@@ -88,7 +91,9 @@ pub fn build_runtime_stub_object() -> Result<Vec<u8>, CompileError> {
     // host_call(i64 × 6) → i64  — returns -1 (no-op denial)
     define_stub(&mut module, "host_call", 6, -1)?;
 
-    // __ail_malloc(i64) → i64   — returns 0 (null; allocation fails gracefully)
+    // __ail_malloc(i64) → i64   — returns 0 (null pointer; smoke-test stub only;
+    //                             any code that dereferences the result will trap
+    //                             or segfault — do not use in production binaries)
     define_stub(&mut module, "__ail_malloc", 1, 0)?;
 
     // ail_runtime_call(i64 × 3) → i64 — returns -1 (no-op denial)

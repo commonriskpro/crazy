@@ -13,6 +13,7 @@
 //   S4 — cmd_emit_runtime_stub writes a valid archive to a temp file.
 //   S5 — cmd_print_runtime_symbols succeeds (no panic/error).
 //   S6 — build_emit_stub_result_json contract fields are present.
+//   S7 — validate_link_mode_flags rejects both standalone flags at once.
 
 use std::path::PathBuf;
 
@@ -21,6 +22,7 @@ use ail_compiler::build_runtime_stub_archive;
 
 use crate::link_commands::{
     build_emit_stub_result_json, cmd_emit_runtime_stub, cmd_print_runtime_symbols,
+    validate_link_mode_flags,
 };
 use crate::output::OutputMode;
 
@@ -222,5 +224,44 @@ fn emit_stub_result_json_size_bytes_matches_input() {
         value["size_bytes"].as_u64(),
         Some(42_000),
         "size_bytes must equal the supplied byte count"
+    );
+}
+
+// ── S7 — validate_link_mode_flags ────────────────────────────────────────
+
+// Scenario: validate_link_mode_flags rejects both standalone flags supplied together.
+//   --print-runtime-symbols and --emit-runtime-stub are standalone modes;
+//   combining them is ambiguous and must produce an explicit error instead of
+//   silently applying flag precedence.
+//
+//   GIVEN both print_runtime_symbols=true and emit_runtime_stub=true
+//   WHEN validate_link_mode_flags is called
+//   THEN it returns Err(CliError::Domain)
+#[test]
+fn validate_link_mode_flags_errors_when_both_set() {
+    let result = validate_link_mode_flags(true, true);
+    assert!(
+        result.is_err(),
+        "validate_link_mode_flags must return Err when both standalone flags are set"
+    );
+}
+
+// Scenario: validate_link_mode_flags accepts each standalone flag alone.
+//   GIVEN only one of the two standalone flags is set (or neither)
+//   WHEN validate_link_mode_flags is called
+//   THEN it returns Ok
+#[test]
+fn validate_link_mode_flags_accepts_single_or_neither() {
+    assert!(
+        validate_link_mode_flags(true, false).is_ok(),
+        "print-only must be accepted"
+    );
+    assert!(
+        validate_link_mode_flags(false, true).is_ok(),
+        "emit-only must be accepted"
+    );
+    assert!(
+        validate_link_mode_flags(false, false).is_ok(),
+        "neither flag must be accepted (normal link mode)"
     );
 }
