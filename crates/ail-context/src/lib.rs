@@ -40,8 +40,8 @@ pub use error::{
     E_SNAPSHOT_NOT_FOUND,
 };
 pub use http_transport::{
-    HTTP_MAX_BODY_BYTES, HTTP_MAX_HEADER_BYTES, HTTP_READ_TIMEOUT, HTTP_WRITE_TIMEOUT,
-    HttpTransport, HttpTransportError,
+    AuditOutcome, HTTP_MAX_BODY_BYTES, HTTP_MAX_HEADER_BYTES, HTTP_READ_TIMEOUT,
+    HTTP_WRITE_TIMEOUT, HttpTransport, HttpTransportError, QueryAuditEvent, QueryAuditLog,
 };
 pub use server::{
     AuthSession, CONTEXT_RPC_AUTH_METHOD, CONTEXT_RPC_QUERY_METHOD, CONTEXT_RPC_SUBSCRIBE_METHOD,
