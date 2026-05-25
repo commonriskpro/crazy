@@ -113,8 +113,10 @@ own a `WasmArtifact` are responsible for translating `export_types` into
   the data section and emits a packed `(len << 32) | ptr` i64 return — the same
   encoding used for `Text`.  In the native backend the same packed encoding is
   used: the byte buffer is placed in a `__ail_bytes_N` local data object and the
-  Cranelift IR emits `symbol_value + ishl_imm(32) + bor`.  The runtime decodes
-  this via `ValueLayout::Bytes` → `StructuredValue::Bytes { ptr, len }`.
+  Cranelift IR emits `symbol_value + ishl_imm(32) + bor`.  (WASM only) The
+  runtime decodes this via `ValueLayout::Bytes` →
+  `StructuredValue::Bytes { ptr, len }`; native emits the same packed i64 in
+  object data but has no ail-runtime decode path.
   `derive_wasm_type` maps `Literal(Bytes(_))` to `WasmTypeDescriptor::Bytes` so
   callers receive the correct descriptor.  `infer_cranelift_return_type` returns
   `I64` for `Bytes` on the native path.
