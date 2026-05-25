@@ -27,6 +27,11 @@
 // - `degradation_events` — every state downgrade with reason and repair options
 // - `artifact_hashes`   — artifact hash entries for codegen consistency
 //
+// # Wave 8A extension
+//
+// `verified_profile` was added so hash-addressed reports carry the profile used
+// at `ail verify` time without requiring the sidecar index.
+//
 // All new fields use `serde(default)` so older CBOR/JSON without them still
 // deserializes cleanly.
 
@@ -499,6 +504,18 @@ pub struct VerificationReport {
     /// Empty when no approvals were provided.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub approvals: Vec<ApprovalRecord>,
+
+    /// Verification profile used when this report was produced.
+    ///
+    /// Embedded at `ail verify` time so that hash-addressed report lookup
+    /// (`inspect report <hash>`) can surface the profile without requiring
+    /// the sidecar index.  The sidecar remains the authoritative source for
+    /// the apply gate; this field is a first-class complement.
+    ///
+    /// `None` for reports persisted before Wave 8A (backward compatible via
+    /// `serde(default)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_profile: Option<String>,
 }
 
 /// Aggregated counts of entries by verification state.

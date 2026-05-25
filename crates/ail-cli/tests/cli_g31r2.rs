@@ -841,6 +841,104 @@ fn inspect_report_returns_report_metadata() {
     );
 }
 
+/// SC-INS2b (Wave 8A): inspect report by hash shows embedded verified_profile.
+///
+/// Scenario:
+///   GIVEN a file-backed project where `ail verify --profile dev` has been run
+///   WHEN `ail inspect report <report_hash>` is called with the hash returned by verify
+///   THEN the JSON response contains verified_profile = "dev"
+///
+/// This closes the gap identified in Wave 8A: before this change, loading a
+/// report by its content-addressed hash returned `verified_profile: null`
+/// because only the sidecar index carried the profile.
+#[test]
+fn inspect_report_by_hash_shows_embedded_profile() {
+    use assert_fs::TempDir;
+
+    let dir = TempDir::new().expect("temp dir");
+
+    // Initialize a file-backed store so the report is persisted.
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let change_id = create_sample_change(dir.path());
+
+    // Verify with profile "dev"; capture the report hash from the JSON output.
+    let verify_output = ail()
+        .args(["verify", &change_id, "--profile", "dev", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let verify_json = parse_json_output(&verify_output);
+    let report_hash = verify_json["data"]["verification_report_hash"]
+        .as_str()
+        .expect("verify must return verification_report_hash");
+    assert_eq!(report_hash.len(), 64, "report hash must be 64 hex chars");
+
+    // Inspect by report hash — must show verified_profile = "dev".
+    let inspect_output = ail()
+        .args(["inspect", "report", report_hash, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&inspect_output);
+    assert_eq!(v["status"], "ok", "inspect report by hash must succeed");
+    assert_eq!(v["data"]["type"], "report");
+    assert_eq!(
+        v["data"]["source"], "persisted_by_hash",
+        "must load from object store by hash, not sidecar"
+    );
+    assert_eq!(
+        v["data"]["verified_profile"], "dev",
+        "inspect report by hash must show verified_profile from embedded field; got: {v}"
+    );
+}
+
+/// SC-INS2c (Wave 8A): inspect report by change_id still shows profile (sidecar compat).
+///
+/// Ensures the Wave 7 sidecar path is unaffected: loading by change_id still
+/// surfaces the profile even for the updated code path.
+#[test]
+fn inspect_report_by_change_id_shows_sidecar_profile() {
+    use assert_fs::TempDir;
+
+    let dir = TempDir::new().expect("temp dir");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let change_id = create_sample_change(dir.path());
+
+    ail()
+        .args(["verify", &change_id, "--profile", "dev"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Inspect by change_id — sidecar path must still return verified_profile.
+    let inspect_output = ail()
+        .args(["inspect", "report", &change_id, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&inspect_output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(
+        v["data"]["source"], "persisted_by_change_id",
+        "must load via sidecar when given a change_id"
+    );
+    assert_eq!(
+        v["data"]["verified_profile"], "dev",
+        "sidecar-loaded report must still show verified_profile; got: {v}"
+    );
+}
+
 /// SC-INS3: inspect artifact returns name/hash/profile.
 #[test]
 fn inspect_artifact_returns_artifact_metadata() {
