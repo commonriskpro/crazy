@@ -321,7 +321,8 @@ impl StoreHandle {
     ///
     /// The report is CBOR-encoded with `ciborium` and stored under its BLAKE3 hash.
     /// For file-backed stores a sidecar at `.ail/reports/<change_id>` is also written
-    /// so the report can later be resolved by the originating change-id.
+    /// so the report can later be resolved by the originating change-id.  The sidecar
+    /// format is `<hash> <profile>\n` so that `ail apply` can enforce profile matching.
     ///
     /// Returns the `ObjectId` (BLAKE3 hash of the CBOR bytes).
     ///
@@ -330,6 +331,7 @@ impl StoreHandle {
     pub async fn save_verification_report(
         &self,
         change_id: &str,
+        profile: &str,
         report: &VerificationReport,
     ) -> Result<ObjectId, CliError> {
         let mut bytes = Vec::new();
@@ -342,10 +344,14 @@ impl StoreHandle {
                 objects, ail_dir, ..
             } => {
                 let id = objects.put(RawObject(bytes)).await?;
-                // Sidecar: .ail/reports/<change_id> → hex hash of the report object.
+                // Sidecar: .ail/reports/<change_id> → "<hash> <profile>\n"
+                // The profile field enables per-profile gate enforcement in `ail apply`.
                 let sidecar = ail_dir.join("reports").join(change_id);
-                atomic_write(&sidecar, format!("{}\n", id.to_hex()).as_bytes())
-                    .map_err(CliError::Storage)?;
+                atomic_write(
+                    &sidecar,
+                    format!("{} {}\n", id.to_hex(), profile).as_bytes(),
+                )
+                .map_err(CliError::Storage)?;
                 Ok(id)
             }
             StoreHandle::Postgres(_) => Err(CliError::Domain(
@@ -378,15 +384,17 @@ impl StoreHandle {
     /// Load a `VerificationReport` by the `change_id` of the verify run that produced it.
     ///
     /// File-backed stores resolve the sidecar at `.ail/reports/<change_id>` to obtain
-    /// the report hash, then load the object.
+    /// the report hash and profile, then load the object.
     /// Memory and Postgres stores always return `Ok(None)`.
     ///
-    /// On success returns `Some((report, hash))` where `hash` is the BLAKE3 hash of the
-    /// CBOR-encoded report.
+    /// On success returns `Some((report, hash, profile))` where:
+    /// - `hash` is the BLAKE3 hash of the CBOR-encoded report.
+    /// - `profile` is the verification profile recorded at `ail verify` time, or `"dev"`
+    ///   for legacy sidecars that predate profile tracking (migration fallback).
     pub async fn load_verification_report_by_change_id(
         &self,
         change_id: &str,
-    ) -> Result<Option<(VerificationReport, ObjectId)>, CliError> {
+    ) -> Result<Option<(VerificationReport, ObjectId, String)>, CliError> {
         let StoreHandle::File { ail_dir, .. } = self else {
             return Ok(None);
         };
@@ -395,7 +403,14 @@ impl StoreHandle {
             return Ok(None);
         }
         let content = std::fs::read_to_string(&sidecar).map_err(CliError::Io)?;
-        let hex = content.trim();
+        let line = content.trim();
+        // Sidecar format: "<hash> <profile>\n" (current) or "<hash>\n" (legacy).
+        // Legacy sidecars (no space) are treated as profile "dev" for migration compat.
+        let (hex, verified_profile) = if let Some((h, p)) = line.split_once(' ') {
+            (h, p.trim().to_string())
+        } else {
+            (line, "dev".to_string())
+        };
         if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(CliError::Domain(format!(
                 "corrupt report sidecar for {change_id}: bad hash '{hex}'"
@@ -403,7 +418,7 @@ impl StoreHandle {
         }
         let hash = hex_to_object_id(hex).map_err(CliError::Storage)?;
         let report = self.load_verification_report_by_hash(&hash).await?;
-        Ok(report.map(|r| (r, hash)))
+        Ok(report.map(|r| (r, hash, verified_profile)))
     }
 }
 
@@ -960,7 +975,7 @@ mod tests {
         let report = minimal_report();
 
         let hash = store
-            .save_verification_report(&change_id, &report)
+            .save_verification_report(&change_id, "dev", &report)
             .await
             .expect("save_verification_report must succeed for memory store");
 
@@ -992,7 +1007,7 @@ mod tests {
         let report = minimal_report();
 
         let hash = store
-            .save_verification_report(&change_id, &report)
+            .save_verification_report(&change_id, "dev", &report)
             .await
             .expect("save_verification_report must succeed for file store");
 
@@ -1018,6 +1033,10 @@ mod tests {
             by_change_id.1, hash,
             "change-id-loaded hash must match the stored hash"
         );
+        assert_eq!(
+            by_change_id.2, "dev",
+            "change-id-loaded profile must match the saved profile"
+        );
 
         // Sidecar file exists at the expected path.
         assert!(
@@ -1036,7 +1055,7 @@ mod tests {
         let change_id = "e".repeat(64);
         let report = minimal_report();
         store
-            .save_verification_report(&change_id, &report)
+            .save_verification_report(&change_id, "dev", &report)
             .await
             .expect("save must succeed");
 

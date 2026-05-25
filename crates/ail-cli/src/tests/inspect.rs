@@ -213,6 +213,103 @@ async fn cmd_inspect_artifact_prefers_persisted_native_over_on_demand() {
     );
 }
 
+// Scenario: cmd_inspect report surfaces verified_profile from file-backed sidecar.
+//   GIVEN a file store with a report saved under a non-hex change-id with profile "prod"
+//   WHEN cmd_inspect report is called with that change-id
+//   THEN the call succeeds (verified_profile is surfaced, not discarded with _profile)
+//
+// Uses a non-hex change-id to exercise the sidecar branch directly, avoiding the
+// pre-existing object-store collision where the changeset's CBOR bytes occupy the
+// same content-addressed slot as the expected report hash.
+#[tokio::test]
+async fn cmd_inspect_report_surfaces_verified_profile_from_sidecar() {
+    use crate::store::{file_store, init_file_layout};
+    use ail_verify::report::VerificationReport;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    std::fs::create_dir_all(ail_dir.join("reports")).expect("create reports dir");
+    let store = file_store(ail_dir);
+
+    // Save a report directly with profile "prod" under a non-hex change-id.
+    let change_id = "change.inspect_profile_test";
+    let report = VerificationReport::default();
+    store
+        .save_verification_report(change_id, "prod", &report)
+        .await
+        .expect("save report");
+
+    // inspect report by non-hex change-id — must succeed (verified_profile surfaced, not dropped).
+    let result = cmd_inspect(OutputMode::Human, "report", change_id, &store).await;
+    assert!(
+        result.is_ok(),
+        "inspect report by change-id must succeed when sidecar contains verified_profile; got: {result:?}"
+    );
+}
+
+// Scenario: cmd_inspect report succeeds when id is a 64-char hex change-id that
+// also happens to be the BLAKE3 hash of a stored CanonicalChangeSet object.
+//
+// Regression guard for the latent `cmd_inspect report` bug:
+//   The first hash-lookup branch calls `load_verification_report_by_hash(change_id)`.
+//   When the changeset CBOR is stored at that content-address, CBOR decoding as
+//   VerificationReport fails with "missing field entries".  The fix captures that
+//   error and falls back to the sidecar index before propagating it.
+//
+// Setup:
+//   1. Save a CanonicalChangeSet via save_changeset_payload(change_id, cbor_bytes).
+//      The object store now holds the changeset CBOR at ObjectId == change_id.
+//   2. Save a VerificationReport via save_verification_report(change_id, "prod", &report).
+//      A sidecar at .ail/reports/<change_id> records the report hash + profile.
+//   3. cmd_inspect report <change_id> must succeed and surface verified_profile.
+#[tokio::test]
+async fn cmd_inspect_report_succeeds_when_change_id_collides_with_changeset_hash() {
+    use ail_change::canonical::CanonicalChangeSet;
+    use ail_storage::object::ObjectId;
+    use ail_verify::report::VerificationReport;
+
+    use crate::store::{file_store, init_file_layout};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    std::fs::create_dir_all(ail_dir.join("reports")).expect("create reports dir");
+    let store = file_store(ail_dir);
+
+    // Build a CanonicalChangeSet and derive its change_id (64-char hex BLAKE3 hash).
+    let canonical = CanonicalChangeSet::default();
+    let mut cbor_bytes = Vec::new();
+    ciborium::into_writer(&canonical, &mut cbor_bytes).expect("CBOR encode");
+    // change_id IS the content-addressed ObjectId of the changeset bytes.
+    let change_id = ObjectId::from_bytes(&cbor_bytes).to_hex();
+
+    // 1. Store the changeset payload — this writes changeset CBOR at the same
+    //    object-store key that the hash-lookup branch will try to decode as a report.
+    store
+        .save_changeset_payload(&change_id, &cbor_bytes)
+        .await
+        .expect("save_changeset_payload must succeed");
+
+    // 2. Store a VerificationReport under the same change_id — the sidecar records
+    //    the report hash + profile so the fallback branch can find it.
+    let report = VerificationReport::default();
+    store
+        .save_verification_report(&change_id, "prod", &report)
+        .await
+        .expect("save_verification_report must succeed");
+
+    // 3. inspect report <change_id> — before the fix this failed with a cryptic
+    //    "report decoding failed: missing field `entries`" error because the hash
+    //    lookup found changeset CBOR and tried to decode it as VerificationReport.
+    let result = cmd_inspect(OutputMode::Human, "report", &change_id, &store).await;
+    assert!(
+        result.is_ok(),
+        "inspect report with hex change_id that collides with changeset hash must succeed \
+         (sidecar fallback); got: {result:?}"
+    );
+}
+
 // Scenario: inspect artifact dev.o resolves native when both WASM and native artifacts coexist.
 //   GIVEN a file store where both cmd_compile --target wasm and --target native have been run
 //   WHEN cmd_inspect artifact is called with "dev.o"

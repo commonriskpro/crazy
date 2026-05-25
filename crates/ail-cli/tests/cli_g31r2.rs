@@ -309,9 +309,10 @@ fn apply_prod_json_with_yes_marks_operator_confirmation_not_persisted_approval()
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
     let change_id = create_sample_change(dir.path());
-    // Verification gate: run verify before apply.
+    // Verification gate: must verify with --profile prod before applying with --policy prod.
+    // Verifying with a different profile (e.g. dev) would be rejected by the profile gate.
     ail()
-        .args(["verify", &change_id])
+        .args(["verify", &change_id, "--profile", "prod"])
         .current_dir(dir.path())
         .assert()
         .success();

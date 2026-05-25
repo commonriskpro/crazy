@@ -60,6 +60,10 @@ async fn cmd_verify_persists_report_and_apply_captures_hash() {
         !loaded.1.to_hex().is_empty(),
         "report hash must be non-empty"
     );
+    assert_eq!(
+        loaded.2, "dev",
+        "profile must be 'dev' (used during verify call)"
+    );
 
     // Run apply — the new snapshot must carry the verification_report_hash.
     let apply_result = cmd_apply(OutputMode::Human, &change_id, false, None, &store).await;
@@ -98,7 +102,7 @@ async fn cmd_inspect_report_loads_persisted_by_hash() {
     let change_id = "f".repeat(64);
     let report = VerificationReport::default();
     let hash = store
-        .save_verification_report(&change_id, &report)
+        .save_verification_report(&change_id, "dev", &report)
         .await
         .expect("save report");
 
@@ -128,11 +132,11 @@ async fn load_verification_report_by_non_hex_change_id() {
     let change_id = "change.add_checkout";
     let report = VerificationReport::default();
     let saved_hash = store
-        .save_verification_report(change_id, &report)
+        .save_verification_report(change_id, "dev", &report)
         .await
         .expect("save report");
 
-    let (_loaded_report, loaded_hash) = store
+    let (_loaded_report, loaded_hash, _profile) = store
         .load_verification_report_by_change_id(change_id)
         .await
         .expect("load by change id must not error")
@@ -172,10 +176,10 @@ async fn load_verification_report_by_hex_change_id_sidecar_after_hash_miss() {
 
     let report = VerificationReport::default();
     let saved_hash = store
-        .save_verification_report(&change_id, &report)
+        .save_verification_report(&change_id, "dev", &report)
         .await
         .expect("save report");
-    let (_loaded_report, loaded_hash) = store
+    let (_loaded_report, loaded_hash, _profile) = store
         .load_verification_report_by_change_id(&change_id)
         .await
         .expect("change-id sidecar lookup should not error")

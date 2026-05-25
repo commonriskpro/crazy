@@ -166,28 +166,56 @@ pub(crate) async fn cmd_inspect(
             //   1. If `id` is a 64-char hex hash → load by hash from the object store.
             //   2. Otherwise treat `id` as a change-id and load via the sidecar index.
             //   3. If neither is found → derive from the current graph (fallback).
-            let (report, source, resolved_id) = if is_valid_change_id(id) {
-                // Try hash lookup first.
+            let (report, source, resolved_id, verified_profile) = if is_valid_change_id(id) {
+                // `id` is a 64-char hex string that may be either a report hash
+                // or a change-id.  Attempt the hash lookup, but do NOT propagate
+                // a decode error immediately: if the content-addressed object at
+                // this address is a CanonicalChangeSet (or any other non-report
+                // object), the CBOR will fail to decode as VerificationReport.
+                // Fall back to the sidecar index before surfacing that error.
                 let hash_oid = hex_to_object_id(id)?;
-                if let Some(r) = store.load_verification_report_by_hash(&hash_oid).await? {
-                    (r, "persisted_by_hash", id.to_string())
-                } else if let Some((r, hash)) =
+                let by_hash = store.load_verification_report_by_hash(&hash_oid).await;
+                let (hash_report, hash_err) = match by_hash {
+                    Ok(Some(r)) => (Some(r), None),
+                    Ok(None) => (None, None),
+                    Err(e) => (None, Some(e)),
+                };
+                if let Some(r) = hash_report {
+                    (r, "persisted_by_hash", id.to_string(), None::<String>)
+                } else if let Some((r, hash, profile)) =
                     store.load_verification_report_by_change_id(id).await?
                 {
-                    (r, "persisted_by_change_id", hash.to_hex())
+                    (r, "persisted_by_change_id", hash.to_hex(), Some(profile))
+                } else if let Some(e) = hash_err {
+                    // Hash lookup found bytes but they are not a VerificationReport,
+                    // and no sidecar exists for this change-id.  Propagate the
+                    // decode error: a genuine report hash should decode cleanly.
+                    return Err(e);
                 } else {
                     let graph = load_current_graph_for_cli(store).await?;
                     let r = Checker::check(&graph);
-                    (r, "derived_from_current_graph", id.to_string())
+                    (
+                        r,
+                        "derived_from_current_graph",
+                        id.to_string(),
+                        None::<String>,
+                    )
                 }
             } else {
                 // id is not a valid 64-char hex; try it as a change-id sidecar lookup.
-                if let Some((r, hash)) = store.load_verification_report_by_change_id(id).await? {
-                    (r, "persisted_by_change_id", hash.to_hex())
+                if let Some((r, hash, profile)) =
+                    store.load_verification_report_by_change_id(id).await?
+                {
+                    (r, "persisted_by_change_id", hash.to_hex(), Some(profile))
                 } else {
                     let graph = load_current_graph_for_cli(store).await?;
                     let r = Checker::check(&graph);
-                    (r, "derived_from_current_graph", id.to_string())
+                    (
+                        r,
+                        "derived_from_current_graph",
+                        id.to_string(),
+                        None::<String>,
+                    )
                 }
             };
 
@@ -212,8 +240,12 @@ pub(crate) async fn cmd_inspect(
                 .iter()
                 .map(|d| serde_json::to_value(d).unwrap_or_else(|_| json!({ "code": "" })))
                 .collect();
+            let profile_line = verified_profile
+                .as_deref()
+                .map(|p| format!("\nverified_profile: {p}"))
+                .unwrap_or_default();
             let human_msg = format!(
-                "type: report\nid: {resolved_id}\nsource: {source}\nsummary: {summary}\nentries: {entries_count}\ndiagnostics: {diagnostics_count}"
+                "type: report\nid: {resolved_id}\nsource: {source}{profile_line}\nsummary: {summary}\nentries: {entries_count}\ndiagnostics: {diagnostics_count}"
             );
             print_response(
                 mode,
@@ -222,6 +254,7 @@ pub(crate) async fn cmd_inspect(
                     "type": "report",
                     "id": resolved_id,
                     "source": source,
+                    "verified_profile": verified_profile,
                     "status": summary,
                     "entries": entries_json,
                     "diagnostics": diagnostics_json,
