@@ -733,7 +733,7 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     // receive a structured `UnsupportedWasmConstruct` instead.
     if has_fold_with_uncaptured_wrong_arity_reducer(&anf.bindings) {
         return Err(CompileError::UnsupportedWasmConstruct(
-            "FoldWithNonHoistableReducer".to_string(),
+            "FoldWithUncapturedWrongArityReducer".to_string(),
         ));
     }
 

@@ -4331,7 +4331,7 @@ fn unsupported_construct_display_names_the_construct() {
         "Select",
         "Timeout",
         "FoldWithCapturedReducer",
-        "FoldWithNonHoistableReducer",
+        "FoldWithUncapturedWrongArityReducer",
     ] {
         let msg = CompileError::UnsupportedWasmConstruct(name.to_string()).to_string();
         assert!(
@@ -4837,7 +4837,7 @@ fn closure_hoisted_fold_module_has_correct_function_count() {
 // trap rather than a deterministic compile error.
 //
 // Wave 26C adds a narrow preflight guard (`has_fold_with_uncaptured_wrong_arity_reducer`)
-// that returns `CompileError::UnsupportedWasmConstruct("FoldWithNonHoistableReducer")`
+// that returns `CompileError::UnsupportedWasmConstruct("FoldWithUncapturedWrongArityReducer")`
 // before code generation.
 //
 // Tests below prove:
@@ -4883,9 +4883,9 @@ fn fold_with_1param_no_capture_reducer_returns_non_hoistable_error() {
         matches!(
             result,
             Err(CompileError::UnsupportedWasmConstruct(ref name))
-                if name == "FoldWithNonHoistableReducer"
+                if name == "FoldWithUncapturedWrongArityReducer"
         ),
-        "1-param capture-free Lambda in Fold must return FoldWithNonHoistableReducer \
+        "1-param capture-free Lambda in Fold must return FoldWithUncapturedWrongArityReducer \
          (not silent fn_idx=0 dispatch); got {result:?}"
     );
 }
@@ -4927,9 +4927,9 @@ fn fold_with_3param_no_capture_reducer_returns_non_hoistable_error() {
         matches!(
             result,
             Err(CompileError::UnsupportedWasmConstruct(ref name))
-                if name == "FoldWithNonHoistableReducer"
+                if name == "FoldWithUncapturedWrongArityReducer"
         ),
-        "3-param capture-free Lambda in Fold must return FoldWithNonHoistableReducer; \
+        "3-param capture-free Lambda in Fold must return FoldWithUncapturedWrongArityReducer; \
          got {result:?}"
     );
 }
@@ -4973,9 +4973,9 @@ fn fold_with_2param_no_capture_reducer_unaffected_by_non_hoistable_guard() {
         !matches!(
             result,
             Err(CompileError::UnsupportedWasmConstruct(ref name))
-                if name == "FoldWithNonHoistableReducer"
+                if name == "FoldWithUncapturedWrongArityReducer"
         ),
-        "2-param capture-free Lambda must NOT be rejected by FoldWithNonHoistableReducer guard; \
+        "2-param capture-free Lambda must NOT be rejected by FoldWithUncapturedWrongArityReducer guard; \
          got {result:?}"
     );
     assert!(
@@ -5027,9 +5027,9 @@ fn fold_with_2param_captured_reducer_unaffected_by_non_hoistable_guard() {
         !matches!(
             result,
             Err(CompileError::UnsupportedWasmConstruct(ref name))
-                if name == "FoldWithNonHoistableReducer"
+                if name == "FoldWithUncapturedWrongArityReducer"
         ),
-        "2-param captured Lambda must NOT be rejected by FoldWithNonHoistableReducer guard; \
+        "2-param captured Lambda must NOT be rejected by FoldWithUncapturedWrongArityReducer guard; \
          got {result:?}"
     );
     assert!(
@@ -5039,6 +5039,100 @@ fn fold_with_2param_captured_reducer_unaffected_by_non_hoistable_guard() {
     );
     wasmparser::validate(&result.unwrap().wasm)
         .expect("closure-hoistable fold module must validate");
+}
+
+// Scenario: Fold with a 0-param capture-free Lambda (wrong arity) returns the
+// same deterministic compile error.
+#[test]
+fn fold_with_0param_no_capture_reducer_returns_uncaptured_wrong_arity_error() {
+    // let reducer = fn() { 0 }  — 0 params, no captures (non-hoistable)
+    // fold(zero, lst, reducer)
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.bad_fold_0p".to_string(),
+        expr: AnfExpr::Let {
+            name: "zero".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Let {
+                    name: "reducer".to_string(),
+                    value: Box::new(AnfExpr::Lambda {
+                        params: vec![],   // 0 params — non-hoistable
+                        captures: vec![], // no captures
+                        body: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                    }),
+                    body: Box::new(AnfExpr::Fold {
+                        init: "zero".to_string(),
+                        list: "lst".to_string(),
+                        func: "reducer".to_string(),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name))
+                if name == "FoldWithUncapturedWrongArityReducer"
+        ),
+        "0-param capture-free Lambda in Fold must return FoldWithUncapturedWrongArityReducer \
+         (not silent fn_idx=0 dispatch); got {result:?}"
+    );
+}
+
+// Scenario: Fold whose func is a transitive alias of a wrong-arity capture-free
+// Lambda is caught by the guard via alias propagation.
+//
+//   let f = fn(acc) { acc }   -- 1-param, no captures, non-hoistable
+//   let g = f                  -- alias; guard must propagate membership
+//   fold(zero, lst, g)         -- must still trigger the error
+#[test]
+fn fold_with_transitive_alias_of_wrong_arity_reducer_returns_uncaptured_wrong_arity_error() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.alias_fold".to_string(),
+        expr: AnfExpr::Let {
+            name: "zero".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Let {
+                    name: "f".to_string(),
+                    value: Box::new(AnfExpr::Lambda {
+                        params: vec!["acc".to_string()], // 1 param, non-hoistable
+                        captures: vec![],
+                        body: Box::new(AnfExpr::Var("acc".to_string())),
+                    }),
+                    body: Box::new(AnfExpr::Let {
+                        name: "g".to_string(),
+                        value: Box::new(AnfExpr::Var("f".to_string())), // alias
+                        body: Box::new(AnfExpr::Fold {
+                            init: "zero".to_string(),
+                            list: "lst".to_string(),
+                            func: "g".to_string(), // uses alias
+                        }),
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let result = emit_wasm(&anf);
+    assert!(
+        matches!(
+            result,
+            Err(CompileError::UnsupportedWasmConstruct(ref name))
+                if name == "FoldWithUncapturedWrongArityReducer"
+        ),
+        "Fold via transitive alias of wrong-arity capture-free Lambda must return \
+         FoldWithUncapturedWrongArityReducer; got {result:?}"
+    );
 }
 
 // ── End Wave 26C non-hoistable reducer guard tests ─────────────────────────
