@@ -66,8 +66,8 @@ use crate::eval_commands::cmd_eval;
 use crate::graph_query_commands::{cmd_callers, cmd_effects, cmd_impact, cmd_proofs};
 use crate::inspect_commands::cmd_inspect;
 use crate::link_commands::{
-    SystemLinker, cmd_emit_runtime_stub, cmd_link, cmd_print_runtime_symbols,
-    validate_link_mode_flags,
+    RUNTIME_STUB_SUBDIR, SystemLinker, cmd_emit_runtime_stub, cmd_link, cmd_print_runtime_symbols,
+    ensure_runtime_stub_at, validate_link_mode_flags,
 };
 use crate::output::OutputMode;
 use crate::package_commands::cmd_package;
@@ -225,7 +225,11 @@ enum Commands {
     ///   __ail_malloc     — heap allocator stub (ail-runtime allocator)
     ///   ail_runtime_call — concurrency/resource/channel dispatch (Phase 9+)
     ///
-    /// Workflow:
+    /// Workflows:
+    ///   # One-step: auto-generate and cache stub archive, then link
+    ///   ail link --profile dev --ensure-runtime-stub
+    ///
+    ///   # Two-step: emit stub archive explicitly, then link
     ///   ail link --emit-runtime-stub ./ail_runtime.a
     ///   ail link --profile dev --runtime-lib ./ail_runtime.a
     ///
@@ -261,6 +265,18 @@ enum Commands {
         /// objects and exit.  Useful for diagnostics and linker script authoring.
         #[arg(long)]
         print_runtime_symbols: bool,
+        /// Auto-generate and cache `.ail/runtime/ail_runtime.a` if absent,
+        /// then use it as the runtime library for this link invocation.
+        ///
+        /// The archive is written once using the same pure-Rust generator as
+        /// `--emit-runtime-stub`; subsequent calls reuse the cached file without
+        /// regenerating it.  The canonical project-local path is:
+        ///   `.ail/runtime/ail_runtime.a`
+        ///
+        /// Incompatible with `--runtime-lib` (conflicting path sources),
+        /// `--emit-runtime-stub`, and `--print-runtime-symbols`.
+        #[arg(long)]
+        ensure_runtime_stub: bool,
     },
 
     /// Evaluate an inline expression without initializing a project.
@@ -608,19 +624,36 @@ pub async fn run() -> Result<(), CliError> {
             runtime_lib,
             emit_runtime_stub,
             print_runtime_symbols,
+            ensure_runtime_stub,
         } => {
-            validate_link_mode_flags(print_runtime_symbols, emit_runtime_stub.is_some())?;
+            validate_link_mode_flags(
+                print_runtime_symbols,
+                emit_runtime_stub.is_some(),
+                ensure_runtime_stub,
+                runtime_lib.is_some(),
+            )?;
             if print_runtime_symbols {
                 cmd_print_runtime_symbols(mode);
                 Ok(())
             } else if let Some(stub_out) = emit_runtime_stub {
                 cmd_emit_runtime_stub(mode, &stub_out)
             } else {
+                // Resolve the effective runtime library path.
+                // When --ensure-runtime-stub is set, auto-generate and cache
+                // .ail/runtime/ail_runtime.a (idempotent), then use that path.
+                // Otherwise, use the explicit --runtime-lib path (may be None).
+                let ensured: Option<PathBuf> = if ensure_runtime_stub {
+                    let stub_dir = PathBuf::from(".ail").join(RUNTIME_STUB_SUBDIR);
+                    Some(ensure_runtime_stub_at(&stub_dir)?)
+                } else {
+                    None
+                };
+                let effective_runtime_lib: Option<PathBuf> = ensured.or(runtime_lib);
                 cmd_link(
                     mode,
                     &profile,
                     output.as_deref(),
-                    runtime_lib.as_deref(),
+                    effective_runtime_lib.as_deref(),
                     &store,
                     &SystemLinker,
                 )
@@ -786,3 +819,7 @@ mod tests_link;
 #[cfg(test)]
 #[path = "tests/link_stub.rs"]
 mod tests_link_stub;
+
+#[cfg(test)]
+#[path = "tests/link_ensure.rs"]
+mod tests_link_ensure;

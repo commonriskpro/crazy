@@ -283,25 +283,55 @@ pub(crate) fn cmd_link(
 
 // ── Flag validation ───────────────────────────────────────────────────────
 
-/// Validate that at most one standalone link mode flag is supplied.
+/// Validate that link mode flags are not in conflict.
 ///
-/// `--print-runtime-symbols` and `--emit-runtime-stub` are standalone modes
-/// (they exit without invoking the linker).  Supplying both together is
-/// ambiguous; this function returns a [`CliError::Domain`] so the caller
-/// receives an explicit diagnostic rather than silent flag precedence.
+/// The standalone modes (`--print-runtime-symbols`, `--emit-runtime-stub`) exit
+/// immediately without invoking the linker and cannot be combined with each
+/// other or with `--ensure-runtime-stub`.  `--ensure-runtime-stub` manages the
+/// runtime library path automatically and therefore conflicts with an explicit
+/// `--runtime-lib` path.
+///
+/// | Conflict                                      | Reason                              |
+/// |-----------------------------------------------|-------------------------------------|
+/// | print + emit                                  | both are standalone exit-early modes |
+/// | print + ensure                                | print is a standalone exit-early mode |
+/// | emit  + ensure                                | both produce/manage the stub archive |
+/// | ensure + runtime_lib                          | conflicting path sources             |
 ///
 /// # Errors
 ///
-/// Returns `Err(CliError::Domain)` when both `print_runtime_symbols` and
-/// `emit_runtime_stub` are `true`.
+/// Returns `Err(CliError::Domain)` for any of the above conflicts.
 pub(crate) fn validate_link_mode_flags(
     print_runtime_symbols: bool,
     emit_runtime_stub: bool,
+    ensure_runtime_stub: bool,
+    has_runtime_lib: bool,
 ) -> Result<(), CliError> {
     if print_runtime_symbols && emit_runtime_stub {
         return Err(CliError::Domain(
             "--print-runtime-symbols and --emit-runtime-stub are standalone modes; \
              supply only one at a time"
+                .to_string(),
+        ));
+    }
+    if print_runtime_symbols && ensure_runtime_stub {
+        return Err(CliError::Domain(
+            "--print-runtime-symbols and --ensure-runtime-stub cannot be combined; \
+             --print-runtime-symbols is a standalone diagnostic mode"
+                .to_string(),
+        ));
+    }
+    if emit_runtime_stub && ensure_runtime_stub {
+        return Err(CliError::Domain(
+            "--emit-runtime-stub and --ensure-runtime-stub cannot be combined; \
+             supply only one at a time"
+                .to_string(),
+        ));
+    }
+    if ensure_runtime_stub && has_runtime_lib {
+        return Err(CliError::Domain(
+            "--ensure-runtime-stub and --runtime-lib cannot be combined; \
+             --ensure-runtime-stub manages the runtime library path automatically"
                 .to_string(),
         ));
     }
@@ -340,6 +370,60 @@ pub(crate) fn build_emit_stub_result_json(
         "symbols":     RUNTIME_SYMBOLS.to_vec(),
         "status":      "emitted",
     })
+}
+
+// ── Runtime stub auto-location ────────────────────────────────────────────
+
+/// Subdirectory within `.ail/` that holds the cached runtime stub archive.
+///
+/// The canonical project-local path for the auto-managed archive is
+/// `.ail/runtime/ail_runtime.a`.  Use [`ensure_runtime_stub_at`] to
+/// create and cache it.
+pub(crate) const RUNTIME_STUB_SUBDIR: &str = "runtime";
+
+/// Idempotently ensure the runtime stub archive exists at `stub_dir/ail_runtime.a`.
+///
+/// - Creates `stub_dir` (and any missing parent directories) if absent.
+/// - Generates and writes the archive using [`build_runtime_stub_archive`] if
+///   the file does not yet exist.
+/// - Returns the path to the archive.
+///
+/// Calling this multiple times is safe: when the archive already exists it is
+/// returned as-is with no byte writes or regeneration.
+///
+/// Canonical usage (called from `ail link --ensure-runtime-stub`):
+/// ```text
+/// let stub_dir = PathBuf::from(".ail").join(RUNTIME_STUB_SUBDIR);
+/// let lib_path = ensure_runtime_stub_at(&stub_dir)?;
+/// cmd_link(mode, profile, output, Some(&lib_path), store, linker)?;
+/// ```
+///
+/// # Errors
+///
+/// Returns `Err(CliError::Domain)` on:
+/// - I/O failure creating `stub_dir`
+/// - Cranelift compilation failure (e.g. unsupported host ISA)
+/// - I/O failure writing the archive
+pub(crate) fn ensure_runtime_stub_at(stub_dir: &Path) -> Result<PathBuf, CliError> {
+    let stub_path = stub_dir.join("ail_runtime.a");
+    if stub_path.exists() {
+        return Ok(stub_path);
+    }
+    std::fs::create_dir_all(stub_dir).map_err(|e| {
+        CliError::Domain(format!(
+            "failed to create runtime stub directory {}: {e}",
+            stub_dir.display()
+        ))
+    })?;
+    let archive_bytes = build_runtime_stub_archive()
+        .map_err(|e| CliError::Domain(format!("failed to build runtime stub archive: {e}")))?;
+    std::fs::write(&stub_path, &archive_bytes).map_err(|e| {
+        CliError::Domain(format!(
+            "failed to write runtime stub archive {}: {e}",
+            stub_path.display()
+        ))
+    })?;
+    Ok(stub_path)
 }
 
 /// `ail link --emit-runtime-stub <output>`

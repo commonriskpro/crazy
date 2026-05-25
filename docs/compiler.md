@@ -379,6 +379,11 @@ emit_native(anf) → NativeArtifact {
   The stubs allow linking to succeed; a binary linked with stubs will fail at runtime
   when it invokes capability calls or concurrency primitives. Full runtime
   implementations are deferred to Phase 9.
+- Runtime stub auto-location (Wave 14A): ail link --profile dev --ensure-runtime-stub
+  combines both steps above into one: generates .ail/runtime/ail_runtime.a if absent
+  (same pure-Rust generator), then links using it as --runtime-lib. Subsequent calls
+  reuse the cached archive (idempotent). Cannot be combined with --runtime-lib,
+  --emit-runtime-stub, or --print-runtime-symbols.
 - No self-hosting: ail-compiler itself is not compiled by ail-compiler.
 - Lambda compiles: params bound, body lowered, address returned as I64.
   Closure captures are deferred to Phase 9+.
@@ -436,6 +441,14 @@ Implemented: --emit-runtime-stub (Wave 13A) — ail link --emit-runtime-stub <pa
              for capability/concurrency calls. Full implementations are Phase 9+.
 Implemented: --print-runtime-symbols (Wave 13A) — prints the three imported symbol
              names for diagnostic use: host_call __ail_malloc ail_runtime_call.
+Implemented: --ensure-runtime-stub (Wave 14A) — ail link --profile <name> --ensure-runtime-stub
+             auto-generates and caches .ail/runtime/ail_runtime.a if absent, then
+             passes it as --runtime-lib for this invocation. Idempotent: subsequent
+             calls reuse the cached archive without regenerating it. Equivalent to:
+               ail link --emit-runtime-stub .ail/runtime/ail_runtime.a  # once
+               ail link --profile dev --runtime-lib .ail/runtime/ail_runtime.a
+             Incompatible with --runtime-lib (conflicting path sources),
+             --emit-runtime-stub, and --print-runtime-symbols.
 Phase 9:  Heap model — __ail_malloc supplied by runtime; records/variants/lists
           survive function return.
 Phase 9:  Runtime archive — replace stub implementations with real host dispatch;
