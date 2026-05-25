@@ -2711,4 +2711,168 @@ fn resource_acquire_abi_descriptor_is_handle() {
     );
 }
 
+// R9B-S11: Mixed EffectCall + ResourceAcquire — import index arithmetic.
+//
+// When ail/host_call is imported before ail/resource_acquire in the same
+// module, `resource_acquire_func_index()` must return 1 (not 0) and
+// `resource_release_func_index()` must return 2.  This exercises the
+// arithmetic in `EffectDataLayout` for the mixed-import case.
+#[test]
+fn mixed_effect_call_and_resource_acquire_index_arithmetic() {
+    let bindings = vec![
+        AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.read_data".to_string(),
+            expr: AnfExpr::EffectCall {
+                capability: "io".to_string(),
+                func: "read".to_string(),
+                args: vec![],
+            },
+        },
+        AnfBinding {
+            source_ref: NodeRef(1),
+            name: "fn.acquire_db".to_string(),
+            expr: AnfExpr::ResourceAcquire {
+                resource: "db.connection".to_string(),
+                args: vec![],
+            },
+        },
+    ];
+    let layout = EffectDataLayout::for_bindings(&bindings);
+    assert!(layout.needs_host_call, "needs_host_call must be true");
+    assert!(
+        layout.needs_resource_call,
+        "needs_resource_call must be true"
+    );
+    assert!(
+        !layout.needs_host_call_write,
+        "no structured return — host_call_write must not be needed"
+    );
+    assert_eq!(
+        layout.resource_acquire_func_index(),
+        1,
+        "resource_acquire must be at import index 1 when host_call is at 0"
+    );
+    assert_eq!(
+        layout.resource_release_func_index(),
+        2,
+        "resource_release must be at import index 2"
+    );
+}
+
+// End-to-end: mixed EffectCall + ResourceAcquire emits valid WASM with the
+// correct import ordering (host_call before resource_acquire).
+#[test]
+fn mixed_effect_call_and_resource_acquire_emits_valid_wasm_with_correct_import_order() {
+    use wasmparser::{Parser, Payload};
+
+    let anf = sealed_anf(vec![
+        AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.read_data".to_string(),
+            expr: AnfExpr::EffectCall {
+                capability: "io".to_string(),
+                func: "read".to_string(),
+                args: vec![],
+            },
+        },
+        AnfBinding {
+            source_ref: NodeRef(1),
+            name: "fn.acquire_db".to_string(),
+            expr: AnfExpr::ResourceAcquire {
+                resource: "db.connection".to_string(),
+                args: vec![],
+            },
+        },
+    ]);
+    let artifact =
+        emit_wasm(&anf).expect("emit_wasm must succeed for mixed EffectCall + ResourceAcquire");
+    wasmparser::validate(&artifact.wasm).expect("mixed WASM must be valid");
+
+    // Collect ail import names in declaration order.
+    let mut import_names: Vec<String> = Vec::new();
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::ImportSection(imports) = payload.unwrap() {
+            for imp in imports.into_imports() {
+                let imp = imp.unwrap();
+                if imp.module == "ail" {
+                    import_names.push(imp.name.to_string());
+                }
+            }
+        }
+    }
+    let host_pos = import_names.iter().position(|n| n == "host_call");
+    let acquire_pos = import_names.iter().position(|n| n == "resource_acquire");
+    assert!(
+        host_pos.is_some(),
+        "host_call must be imported; got: {import_names:?}"
+    );
+    assert!(
+        acquire_pos.is_some(),
+        "resource_acquire must be imported; got: {import_names:?}"
+    );
+    assert!(
+        host_pos.unwrap() < acquire_pos.unwrap(),
+        "host_call (idx {}) must appear before resource_acquire (idx {}) in import section",
+        host_pos.unwrap(),
+        acquire_pos.unwrap()
+    );
+}
+
+// R9B-S12: ResourceRelease-only module must NOT include a memory section.
+//
+// ResourceRelease emits only LocalGet(handle) + Call(resource_release) —
+// no string interning, no args buffer, no heap access.  Folding
+// `needs_resource_call` into the `needs_memory` guard would cause a wasteful
+// memory + global section to appear in the binary.
+#[test]
+fn effect_data_layout_resource_release_does_not_set_needs_memory() {
+    let bindings = vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "release_h".to_string(),
+        expr: AnfExpr::ResourceRelease {
+            handle: "h".to_string(),
+        },
+    }];
+    let layout = EffectDataLayout::for_bindings(&bindings);
+    assert!(
+        layout.needs_resource_call,
+        "needs_resource_call must be true for ResourceRelease"
+    );
+    assert!(
+        !layout.needs_memory,
+        "ResourceRelease does not access linear memory — needs_memory must be false"
+    );
+}
+
+#[test]
+fn resource_release_only_module_has_no_memory_section() {
+    use wasmparser::{Parser, Payload};
+
+    let anf = anf_with_single_binding(
+        "release_h",
+        AnfExpr::Let {
+            name: "h".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+            body: Box::new(AnfExpr::ResourceRelease {
+                handle: "h".to_string(),
+            }),
+        },
+    );
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for ResourceRelease-only module");
+    wasmparser::validate(&artifact.wasm).expect("ResourceRelease-only WASM must be valid");
+
+    let mut saw_memory = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::MemorySection(_) = payload.unwrap() {
+            saw_memory = true;
+        }
+    }
+    assert!(
+        !saw_memory,
+        "ResourceRelease-only module must not include a memory section \
+         (no string interning, no args buffer, no heap access)"
+    );
+}
+
 // ── End Wave 8C iteration tests ───────────────────────────────────────────

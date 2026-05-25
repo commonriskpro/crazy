@@ -114,8 +114,12 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     let needs_host_call = effect_data.needs_host_call;
     let needs_host_call_write = effect_data.needs_host_call_write;
     let needs_resource_call = effect_data.needs_resource_call;
-    let needs_memory =
-        effect_data.needs_host_call || effect_data.needs_memory || needs_resource_call;
+    // ResourceAcquire sets `needs_memory = true` directly in `collect_expr`
+    // (it interns the resource name string and writes the args buffer in linear
+    // memory).  ResourceRelease only passes an i64 handle — no memory access —
+    // so `needs_resource_call` is NOT folded in here; doing so would
+    // over-provision a memory section for ResourceRelease-only modules.
+    let needs_memory = effect_data.needs_host_call || effect_data.needs_memory;
     // type_offset / function_offset: bindings start after all imported function entries.
     // Import order:
     //   [0]  ail/host_call          (if needs_host_call)
