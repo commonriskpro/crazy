@@ -721,6 +721,108 @@ pub(super) fn concurrent_channel_len(args: &[StdlibValue]) -> Result<StdlibValue
     Ok(StdlibValue::Int(ch.len() as i64))
 }
 
+// ── Bytes adapters ────────────────────────────────────────────────────────
+//
+// All five handlers operate on `StdlibValue::Bytes(Vec<u8>)` directly; they
+// do not depend on `crate::bytes::Bytes` in order to avoid a layer boundary
+// that would add no semantic value here.
+
+/// `std.bytes.length` — byte count of the buffer.
+///
+/// Returns `Int(n)` where `n >= 0`.
+///
+/// # Errors
+///
+/// Returns [`StdlibExecError::Message`] if the buffer length cannot be
+/// represented as `i64` (requires >9 EiB; unreachable in practice but
+/// handled honestly rather than truncating silently).
+pub(super) fn bytes_length(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Bytes(b) => {
+            let len = i64::try_from(b.len()).map_err(|_| {
+                StdlibExecError::Message("byte buffer length overflows i64".to_string())
+            })?;
+            Ok(StdlibValue::Int(len))
+        }
+        _ => Err(StdlibExecError::Type { expected: "Bytes" }),
+    }
+}
+
+/// `std.bytes.at` — single byte at `index`.
+///
+/// Returns `Option<Int>`:
+/// - `Some(v)` where `v` is the byte value in `0..=255` when `0 <= index < length`.
+/// - `None` when `index` is negative or out of bounds.
+pub(super) fn bytes_at(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::Bytes(b) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Bytes" });
+    };
+    let StdlibValue::Int(idx) = args[1] else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    let value = usize::try_from(idx)
+        .ok()
+        .and_then(|i| b.get(i).copied())
+        .map(|byte| Box::new(StdlibValue::Int(i64::from(byte))));
+    Ok(StdlibValue::Option(value))
+}
+
+/// `std.bytes.slice` — sub-buffer `[start..end]`.
+///
+/// Returns `Option<Bytes>`:
+/// - `Some(Bytes)` containing the sub-buffer when `0 <= start <= end <= length`.
+/// - `None` when either index is negative, `start > end`, or `end > length`.
+pub(super) fn bytes_slice(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let StdlibValue::Bytes(b) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Bytes" });
+    };
+    let StdlibValue::Int(start) = args[1] else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    let StdlibValue::Int(end) = args[2] else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    // `Option::zip` + `slice::get` returns None for any out-of-range or
+    // start > end combination without panicking.
+    let result = usize::try_from(start)
+        .ok()
+        .zip(usize::try_from(end).ok())
+        .and_then(|(s, e)| b.get(s..e))
+        .map(|slice| Box::new(StdlibValue::Bytes(slice.to_vec())));
+    Ok(StdlibValue::Option(result))
+}
+
+/// `std.bytes.concat` — concatenate two byte buffers.
+///
+/// Returns a new `Bytes` containing all bytes of `a` followed by all bytes of `b`.
+/// Pure: neither input is mutated.
+pub(super) fn bytes_concat(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::Bytes(a) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Bytes" });
+    };
+    let StdlibValue::Bytes(b) = &args[1] else {
+        return Err(StdlibExecError::Type { expected: "Bytes" });
+    };
+    let mut result = a.clone();
+    result.extend_from_slice(b);
+    Ok(StdlibValue::Bytes(result))
+}
+
+/// `std.bytes.empty` — predicate: is the buffer empty?
+///
+/// Returns `Bool(true)` when `length == 0`; `Bool(false)` otherwise.
+pub(super) fn bytes_empty(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Bytes(b) => Ok(StdlibValue::Bool(b.is_empty())),
+        _ => Err(StdlibExecError::Type { expected: "Bytes" }),
+    }
+}
+
 // ── Time pure adapters ────────────────────────────────────────────────────
 //
 // Instants are represented as Int(epoch_ms), consistent with clock.now.
