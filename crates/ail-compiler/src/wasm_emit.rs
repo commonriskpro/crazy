@@ -126,7 +126,10 @@ impl<'a> WasmCodegenCtx<'a> {
             labels: Vec::new(),
             record_layouts: BTreeMap::new(),
             variant_tags: BTreeMap::new(),
-            next_variant_tag: 0,
+            // IDs 0 and 1 are reserved for well-known tags (None/Ok=0,
+            // Some/Err=1).  User-defined tags start at 2 to prevent
+            // collisions when a function mixes well-known and user tags.
+            next_variant_tag: 2,
             fold_reducer_type_idx,
             closure_reducer_type_idx,
             function_offset,
@@ -139,7 +142,10 @@ impl<'a> WasmCodegenCtx<'a> {
     /// Assign a stable discriminant to `tag` within this function context.
     ///
     /// The same tag name always returns the same u32 within one codegen
-    /// context.  New tags are assigned in first-encounter order (0, 1, 2, …).
+    /// context.  Well-known tags (`None`/`Ok`=0, `Some`/`Err`=1) are resolved
+    /// directly and never consume the user-tag counter.  User-defined tags are
+    /// assigned in first-encounter order starting at 2, so they can never
+    /// collide with reserved IDs 0 or 1.
     fn assign_tag(&mut self, tag: &str) -> u32 {
         if let Some(&existing) = self.variant_tags.get(tag) {
             existing
