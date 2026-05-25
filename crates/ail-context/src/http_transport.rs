@@ -421,8 +421,12 @@ fn write_http_response<W: Write>(
 
 // ── Loopback peer address check ───────────────────────────────────────────
 
-/// Returns `Ok(())` when `loopback_only` is `false` or `addr.ip().is_loopback()`;
-/// otherwise returns `Err(HttpTransportError::NonLoopback(addr))`.
+/// Returns `Ok(())` when `loopback_only` is `false` or the peer IP is a
+/// loopback address; otherwise returns `Err(HttpTransportError::NonLoopback(addr))`.
+///
+/// Uses [`IpAddr::to_canonical`] before [`IpAddr::is_loopback`] so that
+/// IPv4-mapped IPv6 loopback addresses (`::ffff:127.0.0.1`) are accepted on
+/// dual-stack sockets alongside `127.0.0.1` and `::1`.
 ///
 /// Extracted from [`HttpTransport::serve_one`] to allow exhaustive unit
 /// testing of the IP classification logic without spinning up real TCP
@@ -431,7 +435,7 @@ fn check_peer_addr(
     addr: std::net::SocketAddr,
     loopback_only: bool,
 ) -> Result<(), HttpTransportError> {
-    if loopback_only && !addr.ip().is_loopback() {
+    if loopback_only && !addr.ip().to_canonical().is_loopback() {
         Err(HttpTransportError::NonLoopback(addr))
     } else {
         Ok(())
@@ -727,7 +731,7 @@ mod tests {
     }
 
     // ── check_peer_addr_rejects_ipv6_non_loopback ─────────────────────────
-    // Spec: loopback_only=true, peer=::ffff:10.0.0.1 → Err(NonLoopback)
+    // Spec: loopback_only=true, peer=2001:db8::1 → Err(NonLoopback)
     //
     // RED: no check_peer_addr function.
     // GREEN: check_peer_addr returns Err when ip is not loopback.
@@ -741,6 +745,25 @@ mod tests {
                 Err(HttpTransportError::NonLoopback(_))
             ),
             "2001:db8::1 must be rejected with loopback_only=true"
+        );
+    }
+
+    // ── check_peer_addr_accepts_ipv4_mapped_ipv6_loopback ─────────────────
+    // Spec: loopback_only=true, peer=::ffff:127.0.0.1 → Ok(())
+    //
+    // Dual-stack sockets on Linux/macOS deliver IPv4 clients as
+    // IPv4-mapped IPv6 addresses (::ffff:127.x.x.x).  `is_loopback()` alone
+    // returns false for these; `to_canonical().is_loopback()` is required.
+    //
+    // RED: check_peer_addr used is_loopback() directly → rejected mapped loopback.
+    // GREEN: check_peer_addr uses to_canonical().is_loopback() → accepts it.
+    #[test]
+    fn check_peer_addr_accepts_ipv4_mapped_ipv6_loopback() {
+        use std::net::SocketAddr;
+        let addr: SocketAddr = "[::ffff:127.0.0.1]:12345".parse().unwrap();
+        assert!(
+            check_peer_addr(addr, true).is_ok(),
+            "::ffff:127.0.0.1 must be accepted with loopback_only=true"
         );
     }
 
