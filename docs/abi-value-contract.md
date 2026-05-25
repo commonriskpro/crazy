@@ -142,9 +142,78 @@ Security constraints:
   `read_wasm_memory`.
 
 This pattern pins the current typed boundary for `secret.read → Bytes` without
-requiring schema changes to `CapabilityOutputSchema`.  A full typed ABI where
-the schema declares `output: Bytes` and the runtime validates it automatically is
-a future milestone.
+requiring schema changes to `CapabilityOutputSchema`.
+
+## Schema-to-ValueLayout bridge (Wave 14B)
+
+`ail-runtime::schema` now provides a bridge between the string-based capability
+schema layer and the typed ABI codec.
+
+### `schema_field_to_value_layout`
+
+```rust
+pub fn schema_field_to_value_layout(field: &SchemaField) -> Option<ValueLayout>
+```
+
+Maps a `SchemaField` type name to a `ValueLayout` for simple scalar-like types:
+
+| Type name(s)                            | `ValueLayout` |
+|-----------------------------------------|---------------|
+| `"Bytes"`                               | `Bytes`       |
+| `"Text"`, `"String"`                    | `Text`        |
+| `"i8"`, `"i16"`, `"i32"`, `"i64"`,     | `Scalar`      |
+| `"u8"`, `"u16"`, `"u32"`, `"u64"`,     |               |
+| `"i128"`, `"u128"`, `"Int"`, `"Bool"`,  |               |
+| `"Scalar"`                              |               |
+| `"Handle"`                              | `Handle`      |
+
+Domain-specific record types (e.g. `"PaymentReceipt"`) return `None`.
+
+### `CapabilityOutputSchema::declared_value_layout`
+
+Returns the `ValueLayout` derived from the schema when it contains exactly one
+top-level field whose type name maps to a simple layout.  Returns `None` for
+empty schemas, multi-field schemas, or domain type names.
+
+### `CapabilityOutputSchema::validate_bytes_response`
+
+```rust
+pub fn validate_bytes_response(
+    &self,
+    response: &[u8],
+) -> Result<StructuredValue, SchemaValidationError>
+```
+
+Validates a raw byte handler response for a schema that declares `output: Bytes`
+(single field with `type_name == "Bytes"`).  Returns
+`Ok(StructuredValue::Bytes { ptr: 0, len })` on success, where `ptr: 0` is a
+sentinel meaning "the response bytes themselves" — not a WASM linear memory
+pointer.
+
+Security constraints:
+- The byte content is never read or logged inside this method.
+- Only `response.len()` is inspected to produce the length field.
+- Schemas declared as any non-Bytes type return `Err(SchemaValidationError)`.
+
+This closes the gap for capabilities like `secret.read` that return raw opaque
+bytes and need schema-level Bytes validation without the manual pack/decode
+pattern.  The prior manual approach (described above) remains valid for WASM
+module boundaries; `validate_bytes_response` is the host-side equivalent.
+
+**Example** — secret.read with Bytes schema:
+
+```rust
+let schema = CapabilityOutputSchema::new(vec![SchemaField::new("data", "Bytes")]);
+let raw_output: Vec<u8> = handler.handle(&cap, "read", b"")?;
+let sv = schema.validate_bytes_response(&raw_output)?;
+// sv = StructuredValue::Bytes { ptr: 0, len: raw_output.len() as i32 }
+// Raw bytes are NOT exposed through sv; access them via raw_output directly.
+```
+
+**Remaining gap**: A full typed ABI where the schema declares `output: Bytes` and
+`call_capability` in `RuntimeHost` automatically calls `validate_bytes_response`
+instead of (or in addition to) the text key-value `validate()` is a future
+milestone.  The current `schema_enforcement` path uses `validate()` exclusively.
 
 ## Current limitations
 

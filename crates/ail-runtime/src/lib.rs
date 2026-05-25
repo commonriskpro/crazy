@@ -90,6 +90,7 @@ pub use report::{
 pub use schema::{
     CapabilityDefinition, CapabilityErrorSchema, CapabilityInputSchema, CapabilityOutputSchema,
     CapabilitySchema, SchemaField, SchemaValidationError, SchemaVariant,
+    schema_field_to_value_layout,
 };
 pub use secret::{SecretProvider, SecretProviderError, SecretReadHandler, SecretVault};
 pub use transaction::{

@@ -25,6 +25,7 @@
 //   minimal boundary protocol for this implementation; a full CBOR/JSON schema
 //   validation can replace it without changing the `validate()` signature.
 
+use crate::codec::{StructuredValue, ValueLayout};
 use crate::profile::CapabilityId;
 use std::collections::HashMap;
 
@@ -312,6 +313,162 @@ impl CapabilityOutputSchema {
     /// An empty schema accepts any response.
     pub fn validate(&self, response: &[u8]) -> Result<(), SchemaValidationError> {
         validate_fields(response, &self.fields)
+    }
+
+    /// Derive a [`ValueLayout`] from this output schema when it contains exactly
+    /// one top-level field whose type name maps to a simple layout via
+    /// [`schema_field_to_value_layout`].
+    ///
+    /// Returns `None` when the schema has zero or more than one field, or when
+    /// the single field's type name is not a recognized simple type (e.g. a
+    /// domain record type like `"PaymentReceipt"` has no direct `ValueLayout`
+    /// equivalent).
+    ///
+    /// # Supported type names
+    ///
+    /// | Type name(s)                             | `ValueLayout` |
+    /// |------------------------------------------|---------------|
+    /// | `"Bytes"`                                | `Bytes`       |
+    /// | `"Text"`, `"String"`                     | `Text`        |
+    /// | `"i8"`, `"i16"`, `"i32"`, `"i64"`,      | `Scalar`      |
+    /// | `"u8"`, `"u16"`, `"u32"`, `"u64"`,      |               |
+    /// | `"i128"`, `"u128"`, `"Int"`, `"Bool"`,  |               |
+    /// | `"Scalar"`                               |               |
+    /// | `"Handle"`                               | `Handle`      |
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ail_runtime::schema::{CapabilityOutputSchema, SchemaField};
+    /// use ail_runtime::codec::ValueLayout;
+    ///
+    /// let schema = CapabilityOutputSchema::new(vec![SchemaField::new("data", "Bytes")]);
+    /// assert_eq!(schema.declared_value_layout(), Some(ValueLayout::Bytes));
+    ///
+    /// let multi = CapabilityOutputSchema::new(vec![
+    ///     SchemaField::new("a", "Bytes"),
+    ///     SchemaField::new("b", "Bytes"),
+    /// ]);
+    /// assert_eq!(multi.declared_value_layout(), None);
+    /// ```
+    pub fn declared_value_layout(&self) -> Option<ValueLayout> {
+        match self.fields.as_slice() {
+            [field] => schema_field_to_value_layout(field),
+            _ => None,
+        }
+    }
+
+    /// Validate a raw byte handler response for a `Bytes`-declared output schema.
+    ///
+    /// Returns `Ok(StructuredValue::Bytes { ptr: 0, len })` when the schema
+    /// declares `output: Bytes` (single field with `type_name == "Bytes"`).
+    /// `ptr: 0` is a sentinel — in the capability host context there is no WASM
+    /// linear memory pointer; the response bytes ARE the value.  Callers that
+    /// feed the result into [`ValueDecoder`](crate::codec::ValueDecoder) should
+    /// use the actual in-process bytes slice directly rather than re-reading via
+    /// a memory pointer.
+    ///
+    /// Returns `Err(SchemaValidationError)` when:
+    /// - The schema is not declared as a single `Bytes`-typed output field.
+    /// - The response byte count exceeds `i32::MAX`.
+    ///
+    /// **Security contract**: this method does NOT read or log the response
+    /// bytes.  It only inspects `response.len()` to produce the length field.
+    /// The raw bytes are never written to any observable side-channel here.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ail_runtime::schema::{CapabilityOutputSchema, SchemaField};
+    /// use ail_runtime::codec::StructuredValue;
+    ///
+    /// let schema = CapabilityOutputSchema::new(vec![SchemaField::new("data", "Bytes")]);
+    /// let response = b"\xde\xad\xbe\xef";
+    /// let sv = schema.validate_bytes_response(response).unwrap();
+    /// assert_eq!(sv, StructuredValue::Bytes { ptr: 0, len: 4 });
+    /// ```
+    pub fn validate_bytes_response(
+        &self,
+        response: &[u8],
+    ) -> Result<StructuredValue, SchemaValidationError> {
+        match self.declared_value_layout() {
+            Some(ValueLayout::Bytes) => {
+                // Shape check only — the bytes content is never read or logged here.
+                let len = response.len();
+                if len > i32::MAX as usize {
+                    return Err(SchemaValidationError {
+                        message: format!(
+                            "BytesOutputError: response length {len} exceeds i32::MAX"
+                        ),
+                    });
+                }
+                // ptr: 0 — sentinel for "the response bytes themselves";
+                // not a WASM linear memory pointer.
+                Ok(StructuredValue::Bytes {
+                    ptr: 0,
+                    len: len as i32,
+                })
+            }
+            Some(_) => Err(SchemaValidationError {
+                message: "BytesOutputError: schema output is not declared as Bytes; \
+                          use validate() for text-encoded outputs"
+                    .to_string(),
+            }),
+            None => Err(SchemaValidationError {
+                message: "BytesOutputError: schema has no single simple-typed output field; \
+                          cannot derive a Bytes layout"
+                    .to_string(),
+            }),
+        }
+    }
+}
+
+// ── schema_field_to_value_layout ─────────────────────────────────────────
+
+/// Map a [`SchemaField`] type name to a [`ValueLayout`] for simple scalar-like
+/// types.
+///
+/// This is the bridge between the string-based capability schema layer and the
+/// typed WASM ABI codec.  Only simple, unambiguous type names are mapped;
+/// domain-specific record types (e.g. `"PaymentReceipt"`) return `None`.
+///
+/// | Type name(s)                            | `ValueLayout` |
+/// |-----------------------------------------|---------------|
+/// | `"Bytes"`                               | `Bytes`       |
+/// | `"Text"`, `"String"`                    | `Text`        |
+/// | `"i8"`, `"i16"`, `"i32"`, `"i64"`,     | `Scalar`      |
+/// | `"u8"`, `"u16"`, `"u32"`, `"u64"`,     |               |
+/// | `"i128"`, `"u128"`, `"Int"`, `"Bool"`,  |               |
+/// | `"Scalar"`                              |               |
+/// | `"Handle"`                              | `Handle`      |
+///
+/// # Example
+///
+/// ```rust
+/// use ail_runtime::schema::{schema_field_to_value_layout, SchemaField};
+/// use ail_runtime::codec::ValueLayout;
+///
+/// assert_eq!(
+///     schema_field_to_value_layout(&SchemaField::new("data", "Bytes")),
+///     Some(ValueLayout::Bytes),
+/// );
+/// assert_eq!(
+///     schema_field_to_value_layout(&SchemaField::new("name", "String")),
+///     Some(ValueLayout::Text),
+/// );
+/// assert_eq!(
+///     schema_field_to_value_layout(&SchemaField::new("receipt", "PaymentReceipt")),
+///     None,
+/// );
+/// ```
+pub fn schema_field_to_value_layout(field: &SchemaField) -> Option<ValueLayout> {
+    match field.type_name() {
+        "Bytes" => Some(ValueLayout::Bytes),
+        "Text" | "String" => Some(ValueLayout::Text),
+        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "i128" | "u128" | "Int"
+        | "Bool" | "Scalar" => Some(ValueLayout::Scalar),
+        "Handle" => Some(ValueLayout::Handle),
+        _ => None,
     }
 }
 
