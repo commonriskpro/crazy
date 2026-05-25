@@ -4731,10 +4731,10 @@ fn closure_hoisted_lambda_writes_real_fn_idx_not_zero() {
                 ops.push(reader.read().unwrap());
             }
             for window in ops.windows(2) {
-                if let [Operator::I64Const { value }, Operator::I64Store { .. }] = window {
-                    if *value > 0 {
-                        saw_nonzero_fn_idx_store = true;
-                    }
+                if let [Operator::I64Const { value }, Operator::I64Store { .. }] = window
+                    && *value > 0
+                {
+                    saw_nonzero_fn_idx_store = true;
                 }
             }
         }
@@ -4836,7 +4836,7 @@ fn match_anf_with_pattern(fn_name: &str, pattern: &str) -> AnfIr {
     };
     AnfIr {
         schema_version: crate::anf::ANF_SCHEMA_VERSION,
-        source_map: SourceMap::from_bindings(&[binding.clone()]),
+        source_map: SourceMap::from_bindings(std::slice::from_ref(&binding)),
         bindings: vec![binding],
         stage_hashes: StageHashes {
             graph_snapshot_hash: [0u8; 32],
