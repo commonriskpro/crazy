@@ -2090,3 +2090,301 @@ fn short_circuit_or_false_left_evaluates_right() {
         "ShortCircuitOr with left=false must evaluate right and return I64(7)"
     );
 }
+
+// ── Wave 19B: data-structure execution conformance ────────────────────────
+//
+// Spec scenarios covered (RUNTIME-RECORD-1..2, RUNTIME-FIELDUPDATE-1..2,
+// RUNTIME-TUPLE-1..2, RUNTIME-MAP-1, RUNTIME-SET-1):
+//
+//  RUNTIME-RECORD-1: RecordNew({x:10, y:42}) + FieldGet("y") returns I64(42)
+//    — proves the second field is stored at offset 8 and retrieved correctly.
+//
+//  RUNTIME-RECORD-2: RecordNew({x:10, y:42}) + FieldGet("x") returns I64(10)
+//    — proves the first field is stored at offset 0 and retrieved correctly.
+//    Together with RECORD-1 this is the RecordNew+FieldGet round-trip proof.
+//
+//  RUNTIME-FIELDUPDATE-1: FieldUpdate mutates "y" to 99 in-place; subsequent
+//    FieldGet("y") on the original record name returns I64(99) — proves that
+//    FieldUpdate stores the new value at the correct field offset and that the
+//    record pointer remains valid after the mutation.
+//
+//  RUNTIME-FIELDUPDATE-2: After the same FieldUpdate(y←99), FieldGet("x")
+//    on the original record still returns I64(10) — proves FieldUpdate does
+//    not corrupt adjacent fields.
+//
+//  RUNTIME-TUPLE-1: TupleNew([10, 42]) + FieldGet("0") returns I64(10)
+//    — proves the first tuple element is at byte offset 0.  FieldGet uses
+//    the numeric field-name fallback (`field.parse::<usize>()`) because
+//    TupleNew does not register a named record layout.
+//
+//  RUNTIME-TUPLE-2: TupleNew([10, 42]) + FieldGet("1") returns I64(42)
+//    — proves the second element is at byte offset 8, confirming the 8-byte
+//    stride is correct for tuple elements.
+//
+//  RUNTIME-MAP-1: MapNew with one key-value pair returns I32(ptr > 0)
+//    — structural proof that MapNew compiles, instantiates, and allocates
+//    without trapping.  Memory layout integrity requires introspection
+//    infrastructure beyond what invoke_compiler_expr exposes.
+//
+//  RUNTIME-SET-1: SetNew with one element returns I32(ptr > 0)
+//    — same structural proof as RUNTIME-MAP-1 for the SetNew constructor.
+
+// RUNTIME-RECORD-1
+//
+// fn.main =
+//   let r = RecordNew { fields: [("x", Literal(10)), ("y", Literal(42))] } in
+//   FieldGet { record: "r", field: "y" }
+//
+// RecordNew layout: x at offset 0 (I64 10), y at offset 8 (I64 42).
+// FieldGet("y"): record_layouts["r"] = ["x","y"] → index 1 → offset 8.
+// load_i64_at(8, ptr) → I64(42).
+#[test]
+fn record_new_field_get_second_field() {
+    let expr = AnfExpr::Let {
+        name: "r".to_string(),
+        value: Box::new(AnfExpr::RecordNew {
+            fields: vec![
+                ("x".to_string(), AnfExpr::Literal(LiteralValue::Int(10))),
+                ("y".to_string(), AnfExpr::Literal(LiteralValue::Int(42))),
+            ],
+        }),
+        body: Box::new(AnfExpr::FieldGet {
+            record: "r".to_string(),
+            field: "y".to_string(),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.record_get_y"),
+        RuntimeValue::I64(42),
+        "FieldGet(y) on RecordNew{{x:10,y:42}} must return I64(42)"
+    );
+}
+
+// RUNTIME-RECORD-2
+//
+// fn.main =
+//   let r = RecordNew { fields: [("x", Literal(10)), ("y", Literal(42))] } in
+//   FieldGet { record: "r", field: "x" }
+//
+// FieldGet("x"): record_layouts["r"] = ["x","y"] → index 0 → offset 0.
+// load_i64_at(0, ptr) → I64(10).
+#[test]
+fn record_new_field_get_first_field() {
+    let expr = AnfExpr::Let {
+        name: "r".to_string(),
+        value: Box::new(AnfExpr::RecordNew {
+            fields: vec![
+                ("x".to_string(), AnfExpr::Literal(LiteralValue::Int(10))),
+                ("y".to_string(), AnfExpr::Literal(LiteralValue::Int(42))),
+            ],
+        }),
+        body: Box::new(AnfExpr::FieldGet {
+            record: "r".to_string(),
+            field: "x".to_string(),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.record_get_x"),
+        RuntimeValue::I64(10),
+        "FieldGet(x) on RecordNew{{x:10,y:42}} must return I64(10)"
+    );
+}
+
+// RUNTIME-FIELDUPDATE-1
+//
+// fn.main =
+//   let r    = RecordNew { fields: [("x", Literal(10)), ("y", Literal(42))] } in
+//   let _upd = FieldUpdate { record: "r", field: "y", value: Literal(99) }   in
+//   FieldGet { record: "r", field: "y" }
+//
+// FieldUpdate stores 99 at ptr + 8 (field "y") in-place and returns ptr.
+// The original Let-binding "r" still holds the same pointer; memory is now
+// [I64(10), I64(99)].  FieldGet("y") on "r" reads offset 8 → I64(99).
+#[test]
+fn field_update_mutates_target_field() {
+    let expr = AnfExpr::Let {
+        name: "r".to_string(),
+        value: Box::new(AnfExpr::RecordNew {
+            fields: vec![
+                ("x".to_string(), AnfExpr::Literal(LiteralValue::Int(10))),
+                ("y".to_string(), AnfExpr::Literal(LiteralValue::Int(42))),
+            ],
+        }),
+        body: Box::new(AnfExpr::Let {
+            name: "_upd".to_string(),
+            value: Box::new(AnfExpr::FieldUpdate {
+                record: "r".to_string(),
+                field: "y".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(99))),
+            }),
+            body: Box::new(AnfExpr::FieldGet {
+                record: "r".to_string(),
+                field: "y".to_string(),
+            }),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.fieldupdate_y"),
+        RuntimeValue::I64(99),
+        "FieldUpdate(y←99) must be visible via subsequent FieldGet(y)"
+    );
+}
+
+// RUNTIME-FIELDUPDATE-2
+//
+// fn.main =
+//   let r    = RecordNew { fields: [("x", Literal(10)), ("y", Literal(42))] } in
+//   let _upd = FieldUpdate { record: "r", field: "y", value: Literal(99) }   in
+//   FieldGet { record: "r", field: "x" }
+//
+// After FieldUpdate(y←99): memory = [I64(10), I64(99)].
+// FieldGet("x") reads offset 0 → I64(10).  Proves FieldUpdate does not
+// corrupt the adjacent field at offset 0.
+#[test]
+fn field_update_leaves_other_field_unchanged() {
+    let expr = AnfExpr::Let {
+        name: "r".to_string(),
+        value: Box::new(AnfExpr::RecordNew {
+            fields: vec![
+                ("x".to_string(), AnfExpr::Literal(LiteralValue::Int(10))),
+                ("y".to_string(), AnfExpr::Literal(LiteralValue::Int(42))),
+            ],
+        }),
+        body: Box::new(AnfExpr::Let {
+            name: "_upd".to_string(),
+            value: Box::new(AnfExpr::FieldUpdate {
+                record: "r".to_string(),
+                field: "y".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(99))),
+            }),
+            body: Box::new(AnfExpr::FieldGet {
+                record: "r".to_string(),
+                field: "x".to_string(),
+            }),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.fieldupdate_x_unchanged"),
+        RuntimeValue::I64(10),
+        "FieldUpdate(y←99) must not corrupt field x; FieldGet(x) must still return I64(10)"
+    );
+}
+
+// RUNTIME-TUPLE-1
+//
+// fn.main =
+//   let t = TupleNew([Literal(10), Literal(42)]) in
+//   FieldGet { record: "t", field: "0" }
+//
+// TupleNew layout (no count prefix): elem0 at offset 0 (I64 10),
+//                                    elem1 at offset 8 (I64 42).
+// FieldGet("0"): TupleNew does not register a record layout, so
+//   field_offset falls back to `"0".parse::<usize>().unwrap_or(0)` = 0
+//   → offset 0.  load_i64_at(0, ptr) → I64(10).
+#[test]
+fn tuple_new_field_get_at_index_zero() {
+    let expr = AnfExpr::Let {
+        name: "t".to_string(),
+        value: Box::new(AnfExpr::TupleNew(vec![
+            AnfExpr::Literal(LiteralValue::Int(10)),
+            AnfExpr::Literal(LiteralValue::Int(42)),
+        ])),
+        body: Box::new(AnfExpr::FieldGet {
+            record: "t".to_string(),
+            field: "0".to_string(),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.tuple_get_0"),
+        RuntimeValue::I64(10),
+        "FieldGet(\"0\") on TupleNew([10,42]) must return the first element I64(10)"
+    );
+}
+
+// RUNTIME-TUPLE-2
+//
+// fn.main =
+//   let t = TupleNew([Literal(10), Literal(42)]) in
+//   FieldGet { record: "t", field: "1" }
+//
+// FieldGet("1"): `"1".parse::<usize>()` = 1 → offset 1*8 = 8.
+// load_i64_at(8, ptr) → I64(42).  Confirms the 8-byte element stride.
+#[test]
+fn tuple_new_field_get_at_index_one() {
+    let expr = AnfExpr::Let {
+        name: "t".to_string(),
+        value: Box::new(AnfExpr::TupleNew(vec![
+            AnfExpr::Literal(LiteralValue::Int(10)),
+            AnfExpr::Literal(LiteralValue::Int(42)),
+        ])),
+        body: Box::new(AnfExpr::FieldGet {
+            record: "t".to_string(),
+            field: "1".to_string(),
+        }),
+    };
+    assert_eq!(
+        invoke_compiler_expr(expr, "fn.tuple_get_1"),
+        RuntimeValue::I64(42),
+        "FieldGet(\"1\") on TupleNew([10,42]) must return the second element I64(42)"
+    );
+}
+
+// RUNTIME-MAP-1
+//
+// fn.main =
+//   let k = Literal(1)   in
+//   let v = Literal(100) in
+//   MapNew { entries: [("k", "v")] }
+//
+// MapNew allocates [(1+1*2)*8 = 24] bytes.  Heap starts at offset 8 (the
+// bump-pointer initial value when there is no effect data), so the returned
+// pointer is > 0.
+//
+// NOTE: We can only prove structural non-crash here; verifying that the
+// count (I64 1) and the k/v pair are written correctly requires memory-
+// introspection infrastructure that invoke_compiler_expr does not expose.
+#[test]
+fn map_new_returns_non_null_pointer() {
+    let expr = AnfExpr::Let {
+        name: "k".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+        body: Box::new(AnfExpr::Let {
+            name: "v".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(100))),
+            body: Box::new(AnfExpr::MapNew {
+                entries: vec![("k".to_string(), "v".to_string())],
+            }),
+        }),
+    };
+    let result = invoke_compiler_expr(expr, "fn.map_new");
+    assert!(
+        matches!(result, RuntimeValue::I32(ptr) if ptr > 0),
+        "MapNew must return a positive I32 heap pointer; got {result:?}"
+    );
+}
+
+// RUNTIME-SET-1
+//
+// fn.main =
+//   let elem = Literal(7) in
+//   SetNew { elements: ["elem"] }
+//
+// SetNew allocates [(1+1)*8 = 16] bytes.  The returned pointer must be > 0.
+//
+// NOTE: Same structural-proof limitation as RUNTIME-MAP-1; memory layout
+// (count at offset 0, element at offset 8) is not verified here.
+#[test]
+fn set_new_returns_non_null_pointer() {
+    let expr = AnfExpr::Let {
+        name: "elem".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(7))),
+        body: Box::new(AnfExpr::SetNew {
+            elements: vec!["elem".to_string()],
+        }),
+    };
+    let result = invoke_compiler_expr(expr, "fn.set_new");
+    assert!(
+        matches!(result, RuntimeValue::I32(ptr) if ptr > 0),
+        "SetNew must return a positive I32 heap pointer; got {result:?}"
+    );
+}
