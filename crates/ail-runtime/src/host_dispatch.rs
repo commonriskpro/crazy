@@ -1162,8 +1162,7 @@ pub(crate) fn dispatch_host_call(
                 && bytes.len() as u64 > max_output_bytes
             {
                 Err(HostError::LimitExceeded(format!(
-                    "output_size_limit exceeded: limit={max_output_bytes}, actual={}",
-                    bytes.len()
+                    "output_size_limit exceeded: limit={max_output_bytes}"
                 )))
             } else {
                 Ok(bytes)
