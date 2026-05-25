@@ -39,6 +39,32 @@ fn fixed_clock_name_is_fixed_clock() {
     assert_eq!(clock.name(), "FixedClock");
 }
 
+#[test]
+fn fixed_clock_now_op_returns_timestamp() {
+    // Explicit guard: the "now" operation must remain valid.
+    let clock = FixedClock::new(1_700_000_000_000);
+    let cap = CapabilityId::new("clock.now");
+    let bytes = clock
+        .handle(&cap, "now", &[])
+        .expect("FixedClock 'now' must succeed");
+    let ts = u64::from_le_bytes(bytes.try_into().unwrap());
+    assert_eq!(ts, 1_700_000_000_000);
+}
+
+#[test]
+fn fixed_clock_unknown_op_returns_error() {
+    // Any operation other than "now" must be rejected.
+    let clock = FixedClock::new(42);
+    let cap = CapabilityId::new("clock.now");
+    let result = clock.handle(&cap, "tick", &[]);
+    assert!(result.is_err(), "unknown operation must return error");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("unknown FixedClock operation") && err.contains("tick"),
+        "error must name the unknown operation: got {err}"
+    );
+}
+
 // ── SeededRandom ──────────────────────────────────────────────────────────
 
 #[test]

@@ -92,9 +92,14 @@ impl Handler for FixedClock {
     fn handle(
         &self,
         _capability: &CapabilityId,
-        _operation: &str,
+        operation: &str,
         _payload: &[u8],
     ) -> HostResult<Vec<u8>> {
+        if operation != "now" {
+            return Err(HostError::Custom(format!(
+                "unknown FixedClock operation: {operation}"
+            )));
+        }
         Ok(self.timestamp_ms.to_le_bytes().to_vec())
     }
 }
