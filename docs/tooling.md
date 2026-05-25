@@ -263,11 +263,12 @@ Rules:
 >   store.  `load_verification_report_by_change_id` resolves via this index so
 >   `ail apply` blocks identically to the file-backed store within a single process.
 >
-> - **Postgres backend does not enforce the gate.**  No report index table exists
->   yet; `load_verification_report_by_change_id` returns `not_persisted` and the
->   gate is skipped for Postgres-backed workflows.  Tracking issue: add a
->   `report_index` table (change_id → hash + profile) and wire it into
->   `save_verification_report` / `load_verification_report_by_change_id`.
+> - **Postgres backend now enforces the gate** (Wave 10C).  A `report_index`
+>   table (`change_id TEXT PRIMARY KEY, report_hash BYTEA, profile TEXT`) was
+>   added to `PostgresGraphStore::connect()`.  `save_verification_report` writes
+>   to `cas_objects` + `report_index`; `load_verification_report_by_change_id`
+>   resolves from `report_index` and decodes from `cas_objects`.  All three
+>   backends — file, memory, and Postgres — now enforce the apply gate.
 
 In `apply --json`, stale-base failures still exit non-zero and keep the human error on stderr, but stdout includes a machine-readable envelope:
 

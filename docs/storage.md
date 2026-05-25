@@ -543,7 +543,7 @@ Current storage keeps path/database layout deliberately simpler than the concept
 
 - `TempfileObjectStore` writes each object as a single file named by lower-hex `ObjectId`.
 - `PostgresObjectStore` writes raw CAS bytes to `cas_objects(id BYTEA PRIMARY KEY, data BYTEA NOT NULL)`.
-- `PostgresGraphStore` stores snapshots as CBOR CAS objects and records `envelope_id -> cas_id` in `snapshots_index` for listing.
+- `PostgresGraphStore` stores snapshots as CBOR CAS objects and records `envelope_id -> cas_id` in `snapshots_index` for listing.  A `report_index` table (`change_id TEXT PRIMARY KEY, report_hash BYTEA, profile TEXT`) maps each change-id to the BLAKE3 hash and profile of its verification report, enabling the apply gate for Postgres-backed workflows (Wave 10C).
 - Semantic meaning stays in CBOR objects and graph envelopes, not directory names.
 
 Code references: `crates/ail-storage/src/object.rs`, `crates/ail-storage/src/backends/tempfile.rs`, `crates/ail-storage/src/backends/postgres.rs`.

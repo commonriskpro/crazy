@@ -177,9 +177,13 @@ impl StoreHandle {
     /// `change_id → (hash, profile)` index in `report_index`.  Both enforce
     /// the verification gate in `ail apply`.
     ///
-    /// Postgres returns `false` — report index not yet implemented.
+    /// Postgres stores now also support report lookup via the `report_index`
+    /// table (added in Wave 10C).
     pub fn supports_report_lookup_by_change_id(&self) -> bool {
-        matches!(self, StoreHandle::File { .. } | StoreHandle::Memory { .. })
+        matches!(
+            self,
+            StoreHandle::File { .. } | StoreHandle::Memory { .. } | StoreHandle::Postgres(_)
+        )
     }
 
     /// Return the file-backed context index cache path when available.
@@ -337,8 +341,8 @@ impl StoreHandle {
     ///
     /// Returns the `ObjectId` (BLAKE3 hash of the CBOR bytes).
     ///
-    /// Postgres report persistence is not implemented yet and returns an
-    /// explicit unsupported-backend error rather than a fake content hash.
+    /// All three backends are now supported.  Postgres persists via the
+    /// `report_index` table added in Wave 10C.
     pub async fn save_verification_report(
         &self,
         change_id: &str,
@@ -381,16 +385,17 @@ impl StoreHandle {
                 .map_err(CliError::Storage)?;
                 Ok(id)
             }
-            StoreHandle::Postgres(_) => Err(CliError::Domain(
-                "save_verification_report is not supported for the Postgres backend".to_string(),
-            )),
+            StoreHandle::Postgres(s) => s
+                .save_report(change_id, profile, bytes)
+                .await
+                .map_err(CliError::Storage),
         }
     }
 
     /// Load a `VerificationReport` by its BLAKE3 content-addressed hash.
     ///
     /// Returns `Ok(None)` when the object is absent from the store.
-    /// Postgres always returns `Ok(None)` (report storage not supported).
+    /// All three backends are supported; Postgres uses `cas_objects`.
     pub async fn load_verification_report_by_hash(
         &self,
         hash: &ObjectId,
@@ -398,7 +403,11 @@ impl StoreHandle {
         let raw = match self {
             StoreHandle::Memory { objects, .. } => objects.get(hash).await?,
             StoreHandle::File { objects, .. } => objects.get(hash).await?,
-            StoreHandle::Postgres(_) => return Ok(None),
+            StoreHandle::Postgres(s) => s
+                .get_report_bytes(hash)
+                .await
+                .map_err(CliError::Storage)?
+                .map(RawObject),
         };
         let Some(raw) = raw else {
             return Ok(None);
@@ -413,7 +422,7 @@ impl StoreHandle {
     /// File-backed stores resolve the sidecar at `.ail/reports/<change_id>` to obtain
     /// the report hash and profile, then load the object.
     /// Memory stores resolve via the in-process `report_index` sidecar (Wave 9D).
-    /// Postgres stores always return `Ok(None)` — no report index table yet.
+    /// Postgres stores resolve via the `report_index` table (Wave 10C).
     ///
     /// On success returns `Some((report, hash, profile))` where:
     /// - `hash` is the BLAKE3 hash of the CBOR-encoded report.
@@ -431,6 +440,19 @@ impl StoreHandle {
                 .get(change_id)
                 .cloned();
             let Some((hash, verified_profile)) = entry else {
+                return Ok(None);
+            };
+            let report = self.load_verification_report_by_hash(&hash).await?;
+            return Ok(report.map(|r| (r, hash, verified_profile)));
+        }
+
+        // Postgres backend: resolve via the report_index table (Wave 10C).
+        if let StoreHandle::Postgres(s) = self {
+            let Some((hash, verified_profile)) = s
+                .load_report_by_change_id(change_id)
+                .await
+                .map_err(CliError::Storage)?
+            else {
                 return Ok(None);
             };
             let report = self.load_verification_report_by_hash(&hash).await?;
@@ -1321,4 +1343,118 @@ mod tests {
     }
 
     // (T4 WASM artifact and T5 native artifact tests moved to store_artifacts.rs)
+
+    // ── Postgres report index: Wave 10C integration tests ─────────────────
+    //
+    // These tests require a live Postgres instance and are gated with #[ignore].
+    // Run with: cargo test -p ail-cli -- --include-ignored
+    // Requires: AIL_TEST_DB_URL env var pointing to a Postgres instance.
+
+    // Scenario: Postgres supports_report_lookup_by_change_id returns true.
+    //   GIVEN a Postgres StoreHandle connected to a live DB
+    //   WHEN supports_report_lookup_by_change_id is called
+    //   THEN true is returned — gate is enforced for all backends
+    #[tokio::test]
+    #[ignore = "requires AIL_TEST_DB_URL pointing to a live Postgres instance"]
+    async fn postgres_supports_report_lookup_by_change_id() {
+        let url = std::env::var("AIL_TEST_DB_URL")
+            .expect("AIL_TEST_DB_URL must be set for Postgres integration tests");
+        let store = connect_postgres(&url).await.expect("connect must succeed");
+
+        assert!(
+            store.supports_report_lookup_by_change_id(),
+            "Postgres backend must support report lookup after Wave 10C"
+        );
+    }
+
+    // Scenario: Postgres save + load by change_id roundtrip.
+    //   GIVEN a Postgres StoreHandle connected to a live DB
+    //   WHEN save_verification_report then load_verification_report_by_change_id
+    //   THEN Some((report, hash, profile)) is returned with correct values
+    #[tokio::test]
+    #[ignore = "requires AIL_TEST_DB_URL pointing to a live Postgres instance"]
+    async fn postgres_save_load_verification_report_by_change_id() {
+        let url = std::env::var("AIL_TEST_DB_URL")
+            .expect("AIL_TEST_DB_URL must be set for Postgres integration tests");
+        let store = connect_postgres(&url).await.expect("connect must succeed");
+        let change_id = "0".repeat(64);
+        let report = minimal_report();
+
+        let hash = store
+            .save_verification_report(&change_id, "dev", &report)
+            .await
+            .expect("save_verification_report must succeed for Postgres");
+
+        let result = store
+            .load_verification_report_by_change_id(&change_id)
+            .await
+            .expect("load must not error")
+            .expect("report must resolve via report_index table");
+
+        let expected = VerificationReport {
+            verified_profile: Some("dev".to_string()),
+            ..report
+        };
+        assert_eq!(
+            result.0, expected,
+            "loaded report must match the enriched saved report"
+        );
+        assert_eq!(result.1, hash, "loaded hash must match the stored hash");
+        assert_eq!(result.2, "dev", "loaded profile must match saved profile");
+    }
+
+    // Scenario: Postgres load by hash roundtrip.
+    //   GIVEN a Postgres StoreHandle connected to a live DB
+    //   WHEN save_verification_report then load_verification_report_by_hash
+    //   THEN Some(report) is returned with profile embedded
+    #[tokio::test]
+    #[ignore = "requires AIL_TEST_DB_URL pointing to a live Postgres instance"]
+    async fn postgres_save_load_verification_report_by_hash() {
+        let url = std::env::var("AIL_TEST_DB_URL")
+            .expect("AIL_TEST_DB_URL must be set for Postgres integration tests");
+        let store = connect_postgres(&url).await.expect("connect must succeed");
+        let change_id = "1".repeat(64);
+        let report = minimal_report();
+
+        let hash = store
+            .save_verification_report(&change_id, "prod", &report)
+            .await
+            .expect("save_verification_report must succeed for Postgres");
+
+        let loaded = store
+            .load_verification_report_by_hash(&hash)
+            .await
+            .expect("load_verification_report_by_hash must succeed")
+            .expect("report bytes must be in cas_objects after save");
+
+        assert_eq!(
+            loaded.verified_profile,
+            Some("prod".to_string()),
+            "report loaded by hash must carry the embedded profile"
+        );
+    }
+
+    // Scenario: Postgres load by change_id returns None when not saved.
+    //   GIVEN a Postgres StoreHandle connected to a live DB
+    //   WHEN load_verification_report_by_change_id is called with unknown change_id
+    //   THEN Ok(None) is returned
+    #[tokio::test]
+    #[ignore = "requires AIL_TEST_DB_URL pointing to a live Postgres instance"]
+    async fn postgres_load_verification_report_unknown_change_id_returns_none() {
+        let url = std::env::var("AIL_TEST_DB_URL")
+            .expect("AIL_TEST_DB_URL must be set for Postgres integration tests");
+        let store = connect_postgres(&url).await.expect("connect must succeed");
+        // A change_id that was never stored.
+        let unknown = format!("unknown-change-{}", "z".repeat(48));
+
+        let result = store
+            .load_verification_report_by_change_id(&unknown)
+            .await
+            .expect("must not error for unknown change_id");
+
+        assert_eq!(
+            result, None,
+            "unknown change_id must return None for Postgres"
+        );
+    }
 }
