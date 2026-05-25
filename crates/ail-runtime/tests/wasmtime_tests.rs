@@ -4128,4 +4128,3 @@ end
         "let(lst, list(5,10), index(lst,1)) must return I64(10) via IndexGet at offset 16"
     );
 }
-

@@ -1329,10 +1329,7 @@ mod tests {
             ..
         } = result[0].expr
         else {
-            panic!(
-                "expected outer Let (acc0); got {:?}",
-                result[0].expr
-            );
+            panic!("expected outer Let (acc0); got {:?}", result[0].expr);
         };
         assert_eq!(n1, "acc0", "outer Let must bind 'acc0'");
 
