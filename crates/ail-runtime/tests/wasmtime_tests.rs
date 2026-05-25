@@ -4439,7 +4439,7 @@ end
 // Proves the 8-byte stride formula `index * 8` resolves field "c" (index 2)
 // to offset 16 end-to-end through the full ACL source pipeline.
 #[test]
-fn acl_record_three_field_get_third_field_at_offset_16() {
+fn acl_record_three_field_get_third_field_returns_value() {
     let acl = "\
 change acl_record_3field_1 base=0
 author tester
@@ -4456,29 +4456,23 @@ end
 
 // RUNTIME-ACL-RECORD-3FIELD-UPDATE-1
 //
-// Update middle field b (offset 8); verify a (offset 0) and c (offset 16)
-// are both unchanged.
+// Update middle field b (offset 8); verify that the left neighbour a (offset 0)
+// and the right neighbour c (offset 16) are each left intact.  The two
+// sub-cases are exercised as separate tests so a failure pinpoints exactly
+// which neighbour is affected.
+
+// Sub-case A: left neighbour — field a must remain I64(1) after update(b←99).
 //
-// Two sub-cases exercised within this test:
+// ACL body: let(r, record(a,1,b,2,c,3), let(_u, update(r,b,99), field(r,a)))
 //
-//   Sub-case A — field a must remain I64(1) after update(b←99):
-//     ACL body:
-//       let(r, record(a,1,b,2,c,3), let(_u, update(r,b,99), field(r,a)))
-//     Memory after update: [I64(1) @ 0, I64(99) @ 8, I64(3) @ 16].
-//     field(r,a) → offset 0 → I64(1).
+// Memory after update: [I64(1) @ 0, I64(99) @ 8, I64(3) @ 16].
+// field(r,a) → offset 0 → I64(1).
 //
-//   Sub-case B — field c must remain I64(3) after update(b←99):
-//     ACL body:
-//       let(r, record(a,1,b,2,c,3), let(_u, update(r,b,99), field(r,c)))
-//     field(r,c) → offset 16 → I64(3).
-//
-// Together the two sub-cases prove FieldUpdate targeting the middle field is
-// field-surgical: it writes only to offset 8, leaving both the lower
-// neighbour (a @ offset 0) and the upper neighbour (c @ offset 16) intact.
+// Proves FieldUpdate targeting offset 8 (field b) does not corrupt the
+// lower neighbour at offset 0 (field a).
 #[test]
-fn acl_record_update_middle_field_leaves_neighbours_unchanged() {
-    // Sub-case A: a must remain I64(1)
-    let acl_a = "\
+fn acl_record_update_middle_field_leaves_left_neighbour_unchanged() {
+    let acl = "\
 change acl_record_3field_update_1a base=0
 author tester
 description let(r,record(a,1,b,2,c,3),let(_u,update(r,b,99),field(r,a))): update(b←99) must not corrupt a
@@ -4486,13 +4480,24 @@ op create_function id=fn.main return=Int body=let(r, record(a, 1, b, 2, c, 3), l
 end
 ";
     assert_eq!(
-        invoke_acl_export(acl_a, "main"),
+        invoke_acl_export(acl, "main"),
         RuntimeValue::I64(1),
         "update(r,b,99) must not corrupt field a; field(r,a) must still return I64(1)"
     );
+}
 
-    // Sub-case B: c must remain I64(3)
-    let acl_c = "\
+// Sub-case B: right neighbour — field c must remain I64(3) after update(b←99).
+//
+// ACL body: let(r, record(a,1,b,2,c,3), let(_u, update(r,b,99), field(r,c)))
+//
+// Memory after update: [I64(1) @ 0, I64(99) @ 8, I64(3) @ 16].
+// field(r,c) → offset 16 → I64(3).
+//
+// Proves FieldUpdate targeting offset 8 (field b) does not corrupt the
+// upper neighbour at offset 16 (field c).
+#[test]
+fn acl_record_update_middle_field_leaves_right_neighbour_unchanged() {
+    let acl = "\
 change acl_record_3field_update_1b base=0
 author tester
 description let(r,record(a,1,b,2,c,3),let(_u,update(r,b,99),field(r,c))): update(b←99) must not corrupt c
@@ -4500,7 +4505,7 @@ op create_function id=fn.main return=Int body=let(r, record(a, 1, b, 2, c, 3), l
 end
 ";
     assert_eq!(
-        invoke_acl_export(acl_c, "main"),
+        invoke_acl_export(acl, "main"),
         RuntimeValue::I64(3),
         "update(r,b,99) must not corrupt field c; field(r,c) must still return I64(3)"
     );
