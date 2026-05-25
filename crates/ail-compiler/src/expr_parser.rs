@@ -460,6 +460,18 @@ impl Parser<'_> {
             //
             // Any arity is accepted, including zero (empty set).
             "set" => Ok(CoreExpr::SetNew { elements: args }),
+            // `index(collection, index)` — read an element from a list by
+            // zero-based integer index.
+            //
+            // Exactly 2 arguments required: the collection expression and the
+            // index expression.  Wrong arity is a parse error.
+            "index" => {
+                let [collection, index] = expect_arity::<2>(func, args)?;
+                Ok(CoreExpr::IndexGet {
+                    collection: Box::new(collection),
+                    index: Box::new(index),
+                })
+            }
             _ => Ok(CoreExpr::Call { func, args }),
         }
     }
