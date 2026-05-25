@@ -275,6 +275,9 @@ pub(crate) fn infer_expr_type(
         // ForEach is side-effect only — no value produced.
         // Fold is a stub (requires call_indirect); treat as no-value for now.
         AnfExpr::ForEach { .. } | AnfExpr::Fold { .. } => None,
+        // ResourceAcquire returns an opaque resource handle packed as i64.
+        AnfExpr::ResourceAcquire { .. } => Some(ValType::I64),
+        // ResourceRelease is a side-effect with no return value.
         AnfExpr::Placeholder
         | AnfExpr::Dispatch { .. }
         | AnfExpr::TaskSpawn { .. }
@@ -287,7 +290,6 @@ pub(crate) fn infer_expr_type(
         | AnfExpr::Select { .. }
         | AnfExpr::Timeout { .. }
         | AnfExpr::RuntimeCheck { .. }
-        | AnfExpr::ResourceAcquire { .. }
         | AnfExpr::ResourceRelease { .. }
         // ola5 Gap 2 — remaining stubs
         | AnfExpr::Assume { .. }
@@ -578,16 +580,35 @@ pub(crate) struct EffectDataLayout {
     /// (Record, Variant, List, Option, or Result). Causes `ail/host_call_write`
     /// to be imported and used in place of `ail/host_call` for those calls.
     pub(crate) needs_host_call_write: bool,
+    /// True when any binding contains `ResourceAcquire` or `ResourceRelease`.
+    /// Causes `ail/resource_acquire` and `ail/resource_release` to be imported.
+    pub(crate) needs_resource_call: bool,
     pub(crate) needs_memory: bool,
 }
 
 impl EffectDataLayout {
+    /// Function index of `ail/resource_acquire` within the import table.
+    ///
+    /// Resource imports are placed after `ail/host_call[_write]` imports:
+    /// - index 0: `ail/host_call`         (if `needs_host_call`)
+    /// - index 1: `ail/host_call_write`   (if `needs_host_call_write`)
+    /// - index N: `ail/resource_acquire`  (if `needs_resource_call`)
+    /// - index N+1: `ail/resource_release`
+    pub(crate) fn resource_acquire_func_index(&self) -> u32 {
+        self.needs_host_call as u32 + self.needs_host_call_write as u32
+    }
+
+    /// Function index of `ail/resource_release` within the import table.
+    pub(crate) fn resource_release_func_index(&self) -> u32 {
+        self.resource_acquire_func_index() + 1
+    }
+
     pub(crate) fn for_bindings(bindings: &[AnfBinding]) -> Self {
         let mut layout = Self::default();
         for binding in bindings {
             layout.collect_expr(&binding.expr);
         }
-        if layout.needs_host_call {
+        if layout.needs_host_call || layout.needs_resource_call {
             layout.args_offset = layout.next_offset.max(1);
         }
         // Detect structured EffectCall: any binding that both (a) contains an
@@ -698,6 +719,19 @@ impl EffectDataLayout {
             AnfExpr::ForEach { body, .. } => {
                 self.needs_memory = true;
                 self.collect_expr(body);
+            }
+            // ── Resource primitives need the import table + linear memory ──
+            // `ResourceAcquire` interns the resource name string (data section)
+            // and uses the shared args buffer, both of which live in linear memory.
+            // `ResourceRelease` only passes an i64 handle — no memory needed —
+            // but it still requires the `ail/resource_release` import.
+            AnfExpr::ResourceAcquire { resource, .. } => {
+                self.needs_resource_call = true;
+                self.needs_memory = true;
+                self.intern(resource);
+            }
+            AnfExpr::ResourceRelease { .. } => {
+                self.needs_resource_call = true;
             }
             _ => {}
         }

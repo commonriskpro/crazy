@@ -958,7 +958,7 @@ fn emit_anf_expr<'a>(
             }
         }
 
-        // ── Effect/concurrent/resource variants ───────────────────────────
+        // ── Effect/concurrent variants (host-interception stubs) ──────────
         // These are host-managed. The WASM body emits unreachable to signal
         // that the host runtime must intercept and dispatch.
         AnfExpr::Dispatch { .. }
@@ -970,19 +970,76 @@ fn emit_anf_expr<'a>(
         | AnfExpr::ChannelSend { .. }
         | AnfExpr::ChannelReceive { .. }
         | AnfExpr::Select { .. }
-        | AnfExpr::Timeout { .. }
-        | AnfExpr::ResourceAcquire { .. }
-        | AnfExpr::ResourceRelease { .. } => {
-            // Emission gap — ResourceAcquire note: `derive_wasm_type` maps
-            // `ResourceAcquire` to `WasmTypeDescriptor::Handle`, but this emit
-            // arm produces `Unreachable` with no return slot.  The discrepancy
-            // is intentional: resource acquisition is handled entirely out-of-band
-            // by the host runtime, which intercepts the export before the WASM
-            // function body executes and never lets execution reach this stub.
-            // Until the concurrency/resource ABI is stabilised and given a real
-            // codegen path, the placeholder `Unreachable` emission is the correct
-            // sentinel for the host-interception model.
+        | AnfExpr::Timeout { .. } => {
             insns.push(Instruction::Unreachable);
+            None
+        }
+
+        // ── ResourceAcquire ───────────────────────────────────────────────
+        //
+        // ABI: `ail/resource_acquire(res_ptr: i32, res_len: i32,
+        //                             args_ptr: i32, args_count: i32) → i64`
+        //
+        // The resource name is stored in the data section (interned by
+        // `EffectDataLayout::collect_expr`).  Each arg is written as an i64
+        // into the shared args buffer at `args_offset + i * 8`, then
+        // `resource_acquire` is called with the buffer start and count.
+        // Returns an opaque handle packed as i64.
+        AnfExpr::ResourceAcquire { resource, args } => {
+            // Write args into the shared args buffer.
+            for (idx, arg_name) in args.iter().enumerate() {
+                insns.push(Instruction::I32Const(
+                    ctx.effect_data.args_offset + (idx as i32 * 8),
+                ));
+                if let Some((local_idx, arg_ty)) = ctx.lookup(arg_name) {
+                    insns.push(Instruction::LocalGet(local_idx));
+                    if arg_ty == ValType::I32 {
+                        insns.push(Instruction::I64ExtendI32U);
+                    }
+                    insns.push(Instruction::I64Store(wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 3,
+                        memory_index: 0,
+                    }));
+                } else {
+                    insns.push(Instruction::Unreachable);
+                    return None;
+                }
+            }
+            // Push resource name (ptr, len) from the interned data section.
+            let (res_ptr, res_len) = ctx.effect_data.string(resource);
+            insns.push(Instruction::I32Const(res_ptr));
+            insns.push(Instruction::I32Const(res_len));
+            // Push args buffer start and count.
+            insns.push(Instruction::I32Const(ctx.effect_data.args_offset));
+            insns.push(Instruction::I32Const(args.len() as i32));
+            // Call ail/resource_acquire.
+            insns.push(Instruction::Call(
+                ctx.effect_data.resource_acquire_func_index(),
+            ));
+            Some(ValType::I64)
+        }
+
+        // ── ResourceRelease ───────────────────────────────────────────────
+        //
+        // ABI: `ail/resource_release(handle: i64) → (void)`
+        //
+        // The handle local is pushed as i64 and passed directly to
+        // `resource_release`.  No return value.
+        AnfExpr::ResourceRelease { handle } => {
+            if let Some((local_idx, handle_ty)) = ctx.lookup(handle) {
+                insns.push(Instruction::LocalGet(local_idx));
+                // Handles are i64; extend if the local was stored as i32.
+                if handle_ty == ValType::I32 {
+                    insns.push(Instruction::I64ExtendI32U);
+                }
+            } else {
+                insns.push(Instruction::Unreachable);
+                return None;
+            }
+            insns.push(Instruction::Call(
+                ctx.effect_data.resource_release_func_index(),
+            ));
             None
         }
 

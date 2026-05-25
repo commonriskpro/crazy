@@ -1179,7 +1179,8 @@ Current executable support is narrower than the full IR:
 | `CellSet` | **Implemented** — I64Store at offset 0 from cell ptr; validates |
 | `ForEach` | **Implemented** — inline WASM loop over `[count:i64, elem:i64, ...]` list; no call_indirect needed; validates |
 | `Fold` | Parses; WASM emit returns `CompileError::UnsupportedWasmConstruct("Fold")` — requires call_indirect + element section (function table); not yet implemented |
-| `ResourceAcquire`, `ResourceRelease` | Emit `Unreachable` in WASM |
+| `ResourceAcquire` | **Implemented** — emits `ail/resource_acquire(res_ptr, res_len, args_ptr, args_count) → i64` host import call; interns resource name in data section; returns opaque handle as i64; validates |
+| `ResourceRelease` | **Implemented** — emits `ail/resource_release(handle: i64) → ()` host import call; no return value; validates |
 | `TaskSpawn`, `TaskAwait`, `TaskCancel`, `TaskGroup` | Emit `Unreachable` in WASM |
 | `ChannelNew`, `ChannelSend`, `ChannelReceive`, `Select`, `Timeout` | Emit `Unreachable` in WASM |
 | `Dispatch` (dynamic dispatch) | Emits `Unreachable` in WASM |

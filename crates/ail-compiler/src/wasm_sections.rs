@@ -37,23 +37,13 @@ pub(crate) fn build_type_section(signatures: &[WasmSignature]) -> Option<TypeSec
 
 pub(crate) fn build_type_section_with_host_call(
     signatures: &[WasmSignature],
+    needs_host_call: bool,
     needs_host_call_write: bool,
+    needs_resource_call: bool,
 ) -> TypeSection {
     let mut types = TypeSection::new();
-    // type 0: ail/host_call — (i32 × 6) → i64
-    types.ty().function(
-        [
-            ValType::I32,
-            ValType::I32,
-            ValType::I32,
-            ValType::I32,
-            ValType::I32,
-            ValType::I32,
-        ],
-        [ValType::I64],
-    );
-    if needs_host_call_write {
-        // type 1: ail/host_call_write — (i32 × 8) → i32
+    if needs_host_call {
+        // type 0: ail/host_call — (i32 × 6) → i64
         types.ty().function(
             [
                 ValType::I32,
@@ -62,11 +52,34 @@ pub(crate) fn build_type_section_with_host_call(
                 ValType::I32,
                 ValType::I32,
                 ValType::I32,
-                ValType::I32,
-                ValType::I32,
             ],
-            [ValType::I32],
+            [ValType::I64],
         );
+        if needs_host_call_write {
+            // type 1: ail/host_call_write — (i32 × 8) → i32
+            types.ty().function(
+                [
+                    ValType::I32,
+                    ValType::I32,
+                    ValType::I32,
+                    ValType::I32,
+                    ValType::I32,
+                    ValType::I32,
+                    ValType::I32,
+                    ValType::I32,
+                ],
+                [ValType::I32],
+            );
+        }
+    }
+    if needs_resource_call {
+        // ail/resource_acquire — (res_ptr: i32, res_len: i32, args_ptr: i32, args_count: i32) → i64
+        types.ty().function(
+            [ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            [ValType::I64],
+        );
+        // ail/resource_release — (handle: i64) → ()
+        types.ty().function([ValType::I64], []);
     }
     for signature in signatures {
         let params = vec![ValType::I64; signature.param_count];
@@ -133,14 +146,37 @@ pub(crate) fn build_export_section_with_memory(
 pub(crate) fn build_import_section(
     needs_host_call: bool,
     needs_host_call_write: bool,
+    needs_resource_call: bool,
 ) -> Option<ImportSection> {
-    if !needs_host_call {
+    if !needs_host_call && !needs_resource_call {
         return None;
     }
     let mut imports = ImportSection::new();
-    imports.import("ail", "host_call", EntityType::Function(0));
-    if needs_host_call_write {
-        imports.import("ail", "host_call_write", EntityType::Function(1));
+    let mut next_type_idx: u32 = 0;
+    if needs_host_call {
+        imports.import("ail", "host_call", EntityType::Function(next_type_idx));
+        next_type_idx += 1;
+        if needs_host_call_write {
+            imports.import(
+                "ail",
+                "host_call_write",
+                EntityType::Function(next_type_idx),
+            );
+            next_type_idx += 1;
+        }
+    }
+    if needs_resource_call {
+        imports.import(
+            "ail",
+            "resource_acquire",
+            EntityType::Function(next_type_idx),
+        );
+        next_type_idx += 1;
+        imports.import(
+            "ail",
+            "resource_release",
+            EntityType::Function(next_type_idx),
+        );
     }
     Some(imports)
 }
