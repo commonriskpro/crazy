@@ -3082,9 +3082,9 @@ fn unsupported_wasm_construct_error_display_names_construct() {
 
 // TRIANGULATE: UnsupportedWasmConstruct is distinct from EncodingError.
 #[test]
-fn fold_unsupported_error_is_distinct_from_encoding_error() {
-    let unsupported = CompileError::UnsupportedWasmConstruct("Fold".to_string());
-    let encoding = CompileError::EncodingError("Fold".to_string());
+fn unsupported_construct_error_is_distinct_from_encoding_error() {
+    let unsupported = CompileError::UnsupportedWasmConstruct("TaskSpawn".to_string());
+    let encoding = CompileError::EncodingError("TaskSpawn".to_string());
     assert_ne!(
         unsupported, encoding,
         "UnsupportedWasmConstruct must be a distinct variant from EncodingError"
@@ -3374,6 +3374,116 @@ fn fold_reducer_type_index_matches_call_indirect_type_index() {
     assert!(
         saw_expected,
         "CallIndirect must use type_index={expected_type_idx} (fold reducer type)"
+    );
+}
+
+// Scenario: Fold where `func` resolves to an I32 local (closure-env pointer)
+// must emit Unreachable — not silently dispatch to table[0] via a placeholder
+// fn_idx=0.  Proves the W1 guard: Lambda writes fn_idx=0 as a placeholder;
+// until lambda hoisting is implemented there is no safe way to use the env.
+//
+// `env` is bound by VariantNew which yields an I32 pointer.
+#[test]
+fn fold_with_i32_local_func_emits_unreachable_guard() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.guarded_fold".to_string(),
+        expr: AnfExpr::Let {
+            name: "acc0".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Let {
+                    name: "env".to_string(),
+                    // VariantNew → I32 pointer; serves as the closure-env path.
+                    value: Box::new(AnfExpr::VariantNew {
+                        tag: "Closure".to_string(),
+                        payload: None,
+                    }),
+                    body: Box::new(AnfExpr::Fold {
+                        init: "acc0".to_string(),
+                        list: "lst".to_string(),
+                        func: "env".to_string(), // I32 local → triggers guard
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    // emit_wasm must succeed: the guard is a runtime trap, not a compile error.
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for I32-func Fold");
+    // The module must validate: Unreachable is polymorphic.
+    wasmparser::validate(&artifact.wasm)
+        .expect("I32-func Fold module must validate despite Unreachable guard");
+
+    // The code section must contain Unreachable (the guard against silent fn-0 call).
+    let mut saw_unreachable = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                if let Operator::Unreachable = reader.read().unwrap() {
+                    saw_unreachable = true;
+                }
+            }
+        }
+    }
+    assert!(
+        saw_unreachable,
+        "Fold with I32 closure-env func must emit Unreachable (W1 guard — not silent call fn 0)"
+    );
+}
+
+// Scenario: Fold where `func` resolves to an unexpected local type (F64) must
+// emit Unreachable — not silently dispatch to table[0].  Proves the W2 guard.
+#[test]
+fn fold_with_unexpected_type_func_emits_unreachable_guard() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.bad_type_fold".to_string(),
+        expr: AnfExpr::Let {
+            name: "acc0".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+            body: Box::new(AnfExpr::Let {
+                name: "lst".to_string(),
+                value: Box::new(AnfExpr::ListNew(vec![])),
+                body: Box::new(AnfExpr::Let {
+                    name: "flt".to_string(),
+                    // Float literal → F64 local (neither I32 env nor I64 index).
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Float(1.0))),
+                    body: Box::new(AnfExpr::Fold {
+                        init: "acc0".to_string(),
+                        list: "lst".to_string(),
+                        func: "flt".to_string(), // F64 local → triggers _ arm guard
+                    }),
+                }),
+            }),
+        },
+    }]);
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed for F64-func Fold");
+    wasmparser::validate(&artifact.wasm)
+        .expect("F64-func Fold module must validate despite Unreachable guard");
+
+    let mut saw_unreachable = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                if let Operator::Unreachable = reader.read().unwrap() {
+                    saw_unreachable = true;
+                }
+            }
+        }
+    }
+    assert!(
+        saw_unreachable,
+        "Fold with unexpected-type (F64) func must emit Unreachable (W2 guard — not silent call fn 0)"
     );
 }
 
@@ -3702,7 +3812,6 @@ fn clean_binding_followed_by_task_spawn_is_rejected() {
 #[test]
 fn unsupported_construct_display_names_the_construct() {
     for name in &[
-        "Fold",
         "Dispatch",
         "TaskSpawn",
         "TaskAwait",

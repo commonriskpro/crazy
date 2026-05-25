@@ -1378,17 +1378,24 @@ fn emit_anf_expr<'a>(
                 insns.push(Instruction::LocalGet(local_idx));
                 match local_ty {
                     ValType::I32 => {
-                        // Closure env pointer — load fn_idx from offset 0.
-                        load_i64_at(0, insns);
-                        insns.push(Instruction::I32WrapI64);
+                        // Closure env pointer: fn_idx at offset 0 is a placeholder
+                        // (0) written by Lambda — no reliable way to distinguish a
+                        // valid env from the placeholder without lambda hoisting
+                        // (deferred to a future wave).  Trap at runtime rather than
+                        // silently dispatching to table[0].
+                        insns.push(Instruction::Drop);
+                        insns.push(Instruction::Unreachable);
                     }
                     ValType::I64 => {
                         // Direct table index packed as i64.
                         insns.push(Instruction::I32WrapI64);
                     }
                     _ => {
-                        insns.push(Instruction::Drop); // discard unexpected type
-                        insns.push(Instruction::I32Const(0)); // fallback: call fn 0
+                        // Unexpected local type (neither I32 env pointer nor I64
+                        // table index).  Trap rather than silently dispatching to
+                        // table[0].
+                        insns.push(Instruction::Drop);
+                        insns.push(Instruction::Unreachable);
                     }
                 }
             } else {

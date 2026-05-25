@@ -312,9 +312,7 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
         module.section(&functions);
     }
     // Table section (4): required for call_indirect when Fold is present.
-    if needs_fold
-        && let Some(table) = build_table_section(n_functions)
-    {
+    if needs_fold && let Some(table) = build_table_section(n_functions) {
         module.section(&table);
     }
     if let Some(memory) = build_memory_section(needs_memory) {
@@ -331,9 +329,7 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
     }
     // Element section (9): populates the function table for call_indirect.
     // Must appear after Export and before Code per WASM binary format.
-    if needs_fold
-        && let Some(elems) = build_element_section(function_offset, n_functions)
-    {
+    if needs_fold && let Some(elems) = build_element_section(function_offset, n_functions) {
         module.section(&elems);
     }
     if let Some(codes) = build_code_section(
