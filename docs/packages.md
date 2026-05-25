@@ -563,4 +563,42 @@ The original package questions are resolved for the current implemented package 
 | Proof checking | Package verification surfaces exist; deep proof distribution policy remains future work. |
 | Yanking | Yank model exists while content-addressed artifacts preserve old resolved builds. |
 
-Code references: `crates/ail-package/src/*`.
+Code references: `crates/ail-package/src/*`, `crates/ail-package/tests/lifecycle.rs`.
+
+#### End-to-end test evidence (Wave 14D)
+
+`crates/ail-package/tests/lifecycle.rs` contains integrated lifecycle scenarios
+executed against the public API of `ail-package`.  The scenarios cover:
+
+| Scenario | Transport | Signed | Evidence |
+|----------|-----------|--------|----------|
+| Full lifecycle: sign → publish → fetch → verify sig → verify hash | InMemory | Ed25519 | — |
+| Yank blocks verify; fetch preserves package + signature | InMemory | Ed25519 | — |
+| Advisory blocks verify; fetch and signature unaffected | InMemory | Ed25519 | — |
+| Tampered package rejected; NotFound on verify | InMemory | Ed25519 (tampered) | — |
+| Yank takes priority over advisory in verify | InMemory | Ed25519 | — |
+| Valid publish succeeds after rejected tamper attempt | InMemory | Ed25519 | — |
+| Transparency log records sequential publications | In-process | Ed25519 | — |
+| Advisory semver range covers old versions, not patched ones | InMemory | Ed25519 | — |
+| Forged signer key rejected at local verify and publish | InMemory | Ed25519 | — |
+| AdvisoryChecker mirrors registry verify result | InMemory | Ed25519 | — |
+| HTTP e2e: sign → publish → fetch → verify sig + evidence | **HTTP** | **Ed25519** | **ReproducibleBuildEvidence** |
+
+The HTTP e2e scenario (`lifecycle_http_signed_lifecycle_with_reproducible_evidence`)
+is the only test that combines HTTP transport, a non-None `reproducible_evidence`
+record, and client-side `SignedPackage::verify()` after fetch.  It confirms:
+
+- The full manifest (including nested `reproducible_evidence`) survives JSON
+  serialization and HTTP transport without corruption.
+- The Ed25519 signature remains valid after the HTTP round-trip, proving the
+  BLAKE3 signing payload is not altered in transit.
+- The HTTP registry publish response carries a `log_id` and `sequence` that can
+  serve as a transparency anchor for the publish event.
+
+**Remaining gaps** (not covered by the current test suite):
+
+- Federation / cross-org registry operations.
+- Deployed (persistent, non-in-memory) registry server.
+- Sigstore-style keyless signing and external transparency log attestation.
+- Reproducible-build proof validation against an external rebuild — the current
+  `reproducible_evidence` record is locally-recorded metadata, not a rebuild proof.
