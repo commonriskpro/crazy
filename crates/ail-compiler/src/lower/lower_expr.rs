@@ -283,6 +283,121 @@ pub(super) fn lower_core_expr_to_anf_local(
             }
             wrap_local_bindings(bindings, AnfExpr::ListNew(anf_elems))
         }
+
+        // ── Loop constructs ───────────────────────────────────────────────
+        //
+        // These variants were previously handled by the `_` fallthrough which
+        // called `lower_core_expr_to_anf(..., &mut Vec::new())`.  That discards
+        // any atomized bindings, leaving the synthesised names undefined at
+        // runtime.  Each arm below uses `atomize_local` + `wrap_local_bindings`
+        // so no binding is lost.
+
+        // Loop: body is lowered recursively; no sub-expression needs atomizing.
+        CoreExpr::Loop { body, .. } => AnfExpr::Loop {
+            body: Box::new(lower_core_expr_to_anf_local(body, fresh, source_ref)),
+        },
+
+        // Break: value is lowered recursively; no atomization required at this
+        // level (Break's value is not required to be atomic in ANF).
+        CoreExpr::Break { value } => AnfExpr::Break {
+            value: Box::new(lower_core_expr_to_anf_local(value, fresh, source_ref)),
+        },
+
+        // Continue: no sub-expressions.
+        CoreExpr::Continue => AnfExpr::Continue,
+
+        // WhileLoop: condition must be atomic (atomize_local if non-Var).
+        // Body is lowered recursively.  The `_` fallthrough previously called
+        // `lower_core_expr_to_anf(..., &mut Vec::new())` here, discarding the
+        // synthesised binding for a computed condition such as `lt(x, 3)`.
+        CoreExpr::WhileLoop { cond, body, .. } => {
+            let (cond_name, cond_binding) = atomize_local(cond, fresh, source_ref);
+            let anf_body = lower_core_expr_to_anf_local(body, fresh, source_ref);
+            let while_expr = AnfExpr::WhileLoop {
+                cond: cond_name,
+                body: Box::new(anf_body),
+            };
+            if let Some(binding) = cond_binding {
+                wrap_local_bindings(vec![binding], while_expr)
+            } else {
+                while_expr
+            }
+        }
+
+        // ForEach: collection must be atomic; body is lowered recursively.
+        CoreExpr::ForEach {
+            binding,
+            collection,
+            body,
+        } => {
+            let (col_name, col_binding) = atomize_local(collection, fresh, source_ref);
+            let anf_body = lower_core_expr_to_anf_local(body, fresh, source_ref);
+            let for_expr = AnfExpr::ForEach {
+                binding: binding.clone(),
+                collection: col_name,
+                body: Box::new(anf_body),
+            };
+            if let Some(b) = col_binding {
+                wrap_local_bindings(vec![b], for_expr)
+            } else {
+                for_expr
+            }
+        }
+
+        // Fold: init, list, and func must all be atomic.
+        CoreExpr::Fold { init, list, func } => {
+            let (init_name, init_binding) = atomize_local(init, fresh, source_ref);
+            let (list_name, list_binding) = atomize_local(list, fresh, source_ref);
+            let (func_name, func_binding) = atomize_local(func, fresh, source_ref);
+            let fold_expr = AnfExpr::Fold {
+                init: init_name,
+                list: list_name,
+                func: func_name,
+            };
+            let bindings = [init_binding, list_binding, func_binding]
+                .into_iter()
+                .flatten()
+                .collect();
+            wrap_local_bindings(bindings, fold_expr)
+        }
+
+        // CellNew: init must be atomic.
+        CoreExpr::CellNew { init } => {
+            let (init_name, init_binding) = atomize_local(init, fresh, source_ref);
+            let cell_expr = AnfExpr::CellNew { init: init_name };
+            if let Some(binding) = init_binding {
+                wrap_local_bindings(vec![binding], cell_expr)
+            } else {
+                cell_expr
+            }
+        }
+
+        // CellGet: cell pointer must be atomic.
+        CoreExpr::CellGet { cell } => {
+            let (cell_name, cell_binding) = atomize_local(cell, fresh, source_ref);
+            let cell_expr = AnfExpr::CellGet { cell: cell_name };
+            if let Some(binding) = cell_binding {
+                wrap_local_bindings(vec![binding], cell_expr)
+            } else {
+                cell_expr
+            }
+        }
+
+        // CellSet: both cell pointer and value must be atomic.
+        CoreExpr::CellSet { cell, value } => {
+            let (cell_name, cell_binding) = atomize_local(cell, fresh, source_ref);
+            let (value_name, value_binding) = atomize_local(value, fresh, source_ref);
+            let cell_expr = AnfExpr::CellSet {
+                cell: cell_name,
+                value: value_name,
+            };
+            let bindings = [cell_binding, value_binding]
+                .into_iter()
+                .flatten()
+                .collect();
+            wrap_local_bindings(bindings, cell_expr)
+        }
+
         _ => lower_core_expr_to_anf(expr, fresh, source_ref, &mut Vec::new()),
     }
 }
