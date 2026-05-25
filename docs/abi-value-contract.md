@@ -210,10 +210,12 @@ let sv = schema.validate_bytes_response(&raw_output)?;
 // Raw bytes are NOT exposed through sv; access them via raw_output directly.
 ```
 
-**Remaining gap**: A full typed ABI where the schema declares `output: Bytes` and
-`call_capability` in `RuntimeHost` automatically calls `validate_bytes_response`
-instead of (or in addition to) the text key-value `validate()` is a future
-milestone.  The current `schema_enforcement` path uses `validate()` exclusively.
+**Wave 15A — gap closed**: `call_capability` in `RuntimeHost` now automatically
+routes to `validate_bytes_response` when `declared_value_layout()` returns
+`Some(ValueLayout::Bytes)`, and falls back to the text `validate()` path for all
+other schema layouts.  Raw bytes from handlers like `SecretReadHandler` are
+accepted without requiring UTF-8 encoding.  Tests: `schema_enforcement_tests.rs`
+§ "Wave 15A: Bytes output schema wiring".
 
 ## Current limitations
 

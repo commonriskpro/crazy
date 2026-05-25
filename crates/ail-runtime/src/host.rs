@@ -49,6 +49,7 @@ use ail_package::manifest::PackageManifest;
 
 use crate::abi::{HostError, HostResult};
 use crate::audit::{AuditEvent, AuditLog};
+use crate::codec::ValueLayout;
 use crate::error::RuntimeResult;
 use crate::handler::Handler;
 use crate::host_dispatch::{
@@ -750,14 +751,33 @@ impl RuntimeHost {
                         "output_size_limit exceeded: limit={max_output_bytes}"
                     )))
                 // Step 5: output schema/boundary validation (if registered).
-                } else if let Some(def) = self.schema_registry.get(capability.as_str())
-                    && let Err(schema_err) = def.schema().output().validate(&response)
-                {
-                    Err(HostError::ContractViolation(format!(
-                        "schema validation failed for `{}` response: {}",
-                        capability.as_str(),
-                        schema_err.message
-                    )))
+                //
+                // Branch on declared_value_layout() to pick the correct validator:
+                //   - Bytes layout → validate_bytes_response(): shape-only check;
+                //     byte content is never read or logged here.
+                //   - All other layouts (Text, Scalar, Handle, None/multi-field) →
+                //     validate(): text key=value boundary protocol.
+                } else if let Some(def) = self.schema_registry.get(capability.as_str()) {
+                    let output_schema = def.schema().output();
+                    if output_schema.declared_value_layout() == Some(ValueLayout::Bytes) {
+                        match output_schema.validate_bytes_response(&response) {
+                            Ok(_) => Ok(response),
+                            Err(schema_err) => Err(HostError::ContractViolation(format!(
+                                "schema validation failed for `{}` response: {}",
+                                capability.as_str(),
+                                schema_err.message
+                            ))),
+                        }
+                    } else {
+                        match output_schema.validate(&response) {
+                            Ok(()) => Ok(response),
+                            Err(schema_err) => Err(HostError::ContractViolation(format!(
+                                "schema validation failed for `{}` response: {}",
+                                capability.as_str(),
+                                schema_err.message
+                            ))),
+                        }
+                    }
                 } else {
                     Ok(response)
                 }

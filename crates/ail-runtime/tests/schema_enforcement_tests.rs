@@ -3,6 +3,7 @@
 // TDD tests for:
 //   1. Runtime payload/boundary schema validation at call sites (CRITICAL)
 //   2. CapabilityDefinition: schema attachment to capability (WARNING)
+//   3. Wave 15A: Bytes output schema wiring in call_capability (CRITICAL)
 //
 // Per runtime.md §"Payload schemas":
 //   Todo payload de capability tiene schema explícito: CapabilityInputSchema,
@@ -655,5 +656,216 @@ fn capability_call_with_schema_rejects_invalid_result_ok_handler_response() {
     match host.audit_log().events().last() {
         Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => assert!(!*succeeded),
         other => panic!("expected capability call audit event, got {other:?}"),
+    }
+}
+
+// ── Wave 15A: Bytes output schema wiring ─────────────────────────────────
+//
+// These tests verify that call_capability routes to validate_bytes_response
+// (shape-only, no content read) when the output schema declares a single
+// Bytes-typed field, and to validate() (text key=value) for all other schemas.
+//
+// Security invariant: raw bytes returned by the handler are never read or
+// logged inside the schema enforcement path; only response.len() is
+// inspected by validate_bytes_response.
+
+#[test]
+fn bytes_output_schema_accepts_binary_response() {
+    // Schema declares a single Bytes field → validate_bytes_response path.
+    // Handler returns non-UTF-8 binary bytes; the text validate() path would
+    // reject these with PayloadDecodeError. The Bytes path must accept them.
+    let cap_id = CapabilityId::new("secret.read:ApiKey");
+    // Non-UTF-8 bytes that would cause validate() to fail.
+    let raw_bytes: Vec<u8> = vec![0xde, 0xad, 0xbe, 0xef, 0xff, 0x00];
+    let mut host = host_with_output_schema(
+        &cap_id,
+        raw_bytes.clone(),
+        vec![SchemaField::new("data", "Bytes")],
+    );
+
+    let result = host.call_capability(&cap_id, "read", b"");
+
+    assert_eq!(
+        result,
+        Ok(raw_bytes),
+        "Bytes output schema must accept binary response without UTF-8 decode"
+    );
+    match host.audit_log().events().last() {
+        Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => {
+            assert!(
+                *succeeded,
+                "audit must record success for valid Bytes response"
+            )
+        }
+        other => panic!("expected capability call audit event, got {other:?}"),
+    }
+}
+
+#[test]
+fn bytes_output_schema_audit_records_blake3_hash_not_raw_bytes() {
+    // Verify that the audit event records only the BLAKE3 hash of the
+    // response, not the raw bytes.  The output_hash field must equal
+    // blake3_hex_of(response) and be a 64-character lowercase hex string
+    // (the fixed-length BLAKE3 output) — not the raw byte values.
+    let cap_id = CapabilityId::new("binary.read:Blob");
+    // Non-UTF-8 binary bytes.  Using values that can't form a valid hex
+    // string to prove output_hash contains the hash, not the raw bytes.
+    let raw_bytes: Vec<u8> = vec![0xca, 0xfe, 0xba, 0xbe, 0xde, 0xad];
+    let expected_hash = blake3_hex_of(&raw_bytes);
+    let mut host = host_with_output_schema(
+        &cap_id,
+        raw_bytes.clone(),
+        vec![SchemaField::new("data", "Bytes")],
+    );
+
+    host.call_capability(&cap_id, "read", b"")
+        .expect("Bytes schema must accept raw bytes");
+
+    let log = host.audit_log();
+    let last = log.events().last().expect("audit log must have an event");
+    match last {
+        AuditEvent::CapabilityCallExecuted {
+            succeeded,
+            output_hash,
+            ..
+        } => {
+            assert!(*succeeded, "audit succeeded must be true");
+            // output_hash must equal blake3_hex_of(response) — not the raw bytes.
+            assert_eq!(
+                output_hash.as_deref(),
+                Some(expected_hash.as_str()),
+                "audit output_hash must equal blake3(response)"
+            );
+            // The hash must be the 64-character BLAKE3 hex digest.
+            // If raw bytes were stored instead, the length would differ (6 bytes → 6 chars).
+            let hash = output_hash.as_deref().unwrap();
+            assert_eq!(
+                hash.len(),
+                64,
+                "output_hash must be a 64-char BLAKE3 hex digest, not raw bytes"
+            );
+            assert!(
+                hash.chars().all(|c| c.is_ascii_hexdigit()),
+                "output_hash must consist of hex digits only"
+            );
+        }
+        other => panic!("expected CapabilityCallExecuted, got {other:?}"),
+    }
+}
+
+#[test]
+fn bytes_output_schema_with_secret_read_handler_passes() {
+    // End-to-end: SecretReadHandler returns raw bytes; a Bytes output schema
+    // must pass validation without ContractViolation.
+    use ail_runtime::{SecretEntry, SecretReadHandler, SecretVault};
+
+    let secret_bytes = vec![0xca, 0xfe, 0xba, 0xbe];
+    let cap_id = CapabilityId::new("secret.read:StripeKey");
+
+    let wasm = minimal_wasm();
+    let manifest = CapabilityManifest {
+        module: "test".to_string(),
+        requires: vec![cap_id.clone()],
+    };
+    let profile = RuntimeProfile::new(
+        "test".to_string(),
+        blake3_hex_of(&wasm),
+        "vr-hash".to_string(),
+        manifest.blake3_hex().unwrap(),
+        vec![CapabilityGrant {
+            module: "test".to_string(),
+            capability: cap_id.clone(),
+        }],
+        ResourceLimits::default(),
+    );
+    let def = CapabilityDefinition::new(
+        cap_id.clone(),
+        CapabilitySchema::new(
+            CapabilityInputSchema::new(vec![]),
+            CapabilityOutputSchema::new(vec![SchemaField::new("data", "Bytes")]),
+            CapabilityErrorSchema::new(vec![]),
+        ),
+    );
+
+    let mut vault = SecretVault::new();
+    vault.insert("prod/stripe", secret_bytes.clone());
+    let mapping = vec![SecretEntry {
+        secret_id: "StripeKey".to_string(),
+        vault_path: "prod/stripe".to_string(),
+    }];
+    let handler = Arc::new(SecretReadHandler::new(mapping, Arc::new(vault)));
+
+    let mut host = RuntimeHost::new()
+        .with_handler(handler)
+        .with_capability_definition(def);
+    host.validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("preflight must pass");
+
+    let result = host.call_capability(&cap_id, "read", b"");
+    assert_eq!(
+        result,
+        Ok(secret_bytes),
+        "SecretReadHandler with Bytes output schema must pass without ContractViolation"
+    );
+    match host.audit_log().events().last() {
+        Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => {
+            assert!(
+                *succeeded,
+                "secret.read with Bytes schema must audit as succeeded"
+            )
+        }
+        other => panic!("expected audit event, got {other:?}"),
+    }
+}
+
+#[test]
+fn text_output_schema_path_unaffected_by_bytes_routing() {
+    // A single-field Text schema (declared_value_layout() == Some(Text)) must
+    // still use the text validate() path, not validate_bytes_response().
+    let cap_id = CapabilityId::new("payment.charge:PaymentProvider");
+    let response = b"receipt_id=rcpt-99".to_vec();
+    let mut host = host_with_output_schema(
+        &cap_id,
+        response.clone(),
+        vec![SchemaField::new("receipt_id", "String")],
+    );
+
+    let result = host.call_capability(&cap_id, "charge", b"");
+    assert_eq!(
+        result,
+        Ok(response),
+        "Text output schema must still accept valid key=value response"
+    );
+}
+
+#[test]
+fn non_bytes_schema_with_binary_response_produces_contract_violation() {
+    // A single String-typed field schema routes to the text validate() path.
+    // Non-UTF-8 binary bytes fail text validation → ContractViolation.
+    let cap_id = CapabilityId::new("payment.charge:PaymentProvider");
+    // Non-UTF-8 bytes that will fail the UTF-8 parse in validate_fields.
+    let binary_response: Vec<u8> = vec![0xff, 0xfe, 0xde, 0xad];
+    let mut host = host_with_output_schema(
+        &cap_id,
+        binary_response,
+        vec![SchemaField::new("receipt_id", "String")],
+    );
+
+    let err = host
+        .call_capability(&cap_id, "charge", b"")
+        .expect_err("text schema with binary bytes must produce ContractViolation");
+
+    assert!(
+        matches!(err, ail_runtime::HostError::ContractViolation(_)),
+        "expected ContractViolation for text schema + binary bytes, got {err:?}"
+    );
+    match host.audit_log().events().last() {
+        Some(AuditEvent::CapabilityCallExecuted { succeeded, .. }) => {
+            assert!(
+                !*succeeded,
+                "audit must record failure for rejected response"
+            )
+        }
+        other => panic!("expected audit event, got {other:?}"),
     }
 }
