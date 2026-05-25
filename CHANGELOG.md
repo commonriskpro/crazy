@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than `"now"` previously returned epoch-ms silently. `handle` now matches on the
   operation name and returns `HostError::Custom(format!("unknown clock operation: {op}"))` for
   unrecognised ops, enforcing the operation contract.
+- **`uses_var` silent miss on `ShortCircuitAnd`/`ShortCircuitOr` left atom** (Wave 24D):
+  both arms only inspected the right sub-expression, so the dead-let pass eliminated
+  bindings whose sole use was as the left operand of a short-circuit expression. The
+  missing left-atom check is now added; `let x = true in or(x, abort("dead"))` no
+  longer mis-fires.
 - **`FixedClock` rejects unknown operations** (Wave 25B): `FixedClock::handle` previously
   ignored the operation parameter and always returned the pinned timestamp. Any operation
   string other than `"now"` now returns
@@ -29,11 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allocated starting at `0`, colliding with reserved well-known IDs `0` (None/Ok) and
   `1` (Some/Err). `WasmCodegenCtx::next_variant_tag` now initialises to `2` so user
   tags can never alias the well-known set.
-- **`uses_var` silent miss on `ShortCircuitAnd`/`ShortCircuitOr` left atom** (Wave 24D):
-  both arms only inspected the right sub-expression, so the dead-let pass eliminated
-  bindings whose sole use was as the left operand of a short-circuit expression. The
-  missing left-atom check is now added; `let x = true in or(x, abort("dead"))` no
-  longer mis-fires.
+- **`uses_var` silent skip of `ForEach` body when binding is empty** (Wave 25D):
+  the `!binding.is_empty()` guard in the `ForEach` arm of `uses_var` suppressed body
+  scanning whenever the loop variable was an empty string, causing dead-let elimination
+  to incorrectly remove variables used only inside the body. Guard removed; body is now
+  always scanned regardless of binding length.
 - **`bytes_length` lossy cast** (Wave 19): replaced `as i64` with `i64::try_from`,
   surfacing an error instead of silently truncating byte-buffer lengths above `i64::MAX`.
 - **`CoreExpr::WhileLoop` single-evaluation bug** (Wave 21A): condition was compiled
@@ -140,7 +145,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **unit tests** — `uses_var` coverage for `ShortCircuitAnd`/`Or`
     (OPT-USESVAR-AND-1/2, OPT-USESVAR-OR-1/2) and `abort()` parser coverage
     (PARSE-ABORT-1/2/3: well-formed, non-literal arg rejected, zero-arg rejected).
-- **Wave 25B** — `FixedClock` operation contract (REPLAY-FIXEDCLOCK-OP-CONTRACT-1/2):
+- **Wave 25B** — `FixedClock` operation replay contract (REPLAY-FIXEDCLOCK-OP-CONTRACT-1/2;
+  `REPLAY-` prefix reflects placement in `replay_tests.rs`):
   OP-CONTRACT-1 (`fixed_clock_now_op_returns_timestamp`) asserts `"now"` returns the
   configured pinned timestamp; OP-CONTRACT-2 (`fixed_clock_unknown_op_returns_error`)
   asserts any other operation returns `HostError::Custom` naming the unknown op.
