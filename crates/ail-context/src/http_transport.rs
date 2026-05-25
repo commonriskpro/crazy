@@ -115,6 +115,13 @@ pub enum HttpTransportError {
     /// This should not occur in practice because all response types derive
     /// `Serialize`; it is retained as a safety net against future changes.
     Encode(String),
+    /// The accepted connection's peer address is not a loopback address.
+    ///
+    /// Returned by [`HttpTransport::serve_one`] when `loopback_only` is
+    /// enabled (the default for local/dev use) and the peer IP is not a
+    /// loopback address (`127.0.0.0/8` or `::1`).  The connection is
+    /// dropped without sending any response body — this prevents probing.
+    NonLoopback(std::net::SocketAddr),
 }
 
 impl std::fmt::Display for HttpTransportError {
@@ -124,6 +131,9 @@ impl std::fmt::Display for HttpTransportError {
             HttpTransportError::Read(e) => write!(f, "HTTP read error: {e}"),
             HttpTransportError::Write(e) => write!(f, "HTTP write error: {e}"),
             HttpTransportError::Encode(msg) => write!(f, "HTTP encode error: {msg}"),
+            HttpTransportError::NonLoopback(addr) => {
+                write!(f, "HTTP connection rejected: non-loopback peer {addr}")
+            }
         }
     }
 }
@@ -138,6 +148,18 @@ impl std::error::Error for HttpTransportError {}
 /// JSON-RPC envelopes as HTTP POST requests/responses.  Each accepted TCP
 /// connection carries exactly one request/response pair; the connection is
 /// closed afterwards.
+///
+/// # Local / dev hardening
+///
+/// By default (`loopback_only = true`) every accepted connection is validated
+/// against its peer IP address.  Connections from non-loopback peers are
+/// silently dropped — no response is sent, which prevents probing.  This
+/// guards against accidental public exposure when a caller binds the listener
+/// to `0.0.0.0` instead of `127.0.0.1`.
+///
+/// Disable via [`with_loopback_only(false)`][Self::with_loopback_only] only
+/// in integration tests or future remote-transport wrappers that enforce
+/// their own access control.
 ///
 /// # Example
 ///
@@ -157,10 +179,16 @@ pub struct HttpTransport<S> {
     max_body_bytes: usize,
     read_timeout: Duration,
     write_timeout: Duration,
+    /// Reject connections whose peer IP is not a loopback address.
+    loopback_only: bool,
 }
 
 impl<S> HttpTransport<S> {
     /// Create a transport wrapping the given server with conservative default limits.
+    ///
+    /// `loopback_only` defaults to `true`: connections from non-loopback peers
+    /// are rejected without sending any response.  See
+    /// [`with_loopback_only`][Self::with_loopback_only] to override.
     pub fn new(server: ContextServer<S>) -> Self {
         Self {
             server,
@@ -168,6 +196,7 @@ impl<S> HttpTransport<S> {
             max_body_bytes: HTTP_MAX_BODY_BYTES,
             read_timeout: HTTP_READ_TIMEOUT,
             write_timeout: HTTP_WRITE_TIMEOUT,
+            loopback_only: true,
         }
     }
 
@@ -182,6 +211,22 @@ impl<S> HttpTransport<S> {
     /// with HTTP 413 without reading any body bytes.
     pub fn with_max_body_bytes(mut self, limit: usize) -> Self {
         self.max_body_bytes = limit;
+        self
+    }
+
+    /// Override the loopback-only peer filter (default: `true`).
+    ///
+    /// When `true` (the default), [`serve_one`][Self::serve_one] rejects any
+    /// connection whose peer IP is not a loopback address (`127.0.0.0/8` or
+    /// `::1`) by returning
+    /// [`Err(HttpTransportError::NonLoopback)`][HttpTransportError::NonLoopback]
+    /// without sending any response body.  This guards against accidental
+    /// public exposure when the listener is bound to `0.0.0.0`.
+    ///
+    /// Set to `false` only in integration tests or future remote-transport
+    /// wrappers that enforce their own access control.
+    pub fn with_loopback_only(mut self, enabled: bool) -> Self {
+        self.loopback_only = enabled;
         self
     }
 }
@@ -207,6 +252,17 @@ where
         stream
             .set_write_timeout(Some(self.write_timeout))
             .map_err(HttpTransportError::Write)?;
+
+        // ── Loopback-only peer guard ──────────────────────────────────────
+        //
+        // Validate the peer address before reading any request data.  If the
+        // peer is not loopback, we drop the connection silently (no response
+        // body) to prevent probing.  This guards against accidental public
+        // exposure when the caller binds to 0.0.0.0 instead of 127.0.0.1.
+        if self.loopback_only {
+            let peer = stream.peer_addr().map_err(HttpTransportError::Read)?;
+            check_peer_addr(peer, self.loopback_only)?;
+        }
 
         // Clone the file descriptor so BufReader can own the read side while
         // we retain an independent write handle for the response.
@@ -361,6 +417,29 @@ fn write_http_response<W: Write>(
     writer.write_all(header.as_bytes())?;
     writer.write_all(body)?;
     writer.flush()
+}
+
+// ── Loopback peer address check ───────────────────────────────────────────
+
+/// Returns `Ok(())` when `loopback_only` is `false` or the peer IP is a
+/// loopback address; otherwise returns `Err(HttpTransportError::NonLoopback(addr))`.
+///
+/// Uses [`IpAddr::to_canonical`] before [`IpAddr::is_loopback`] so that
+/// IPv4-mapped IPv6 loopback addresses (`::ffff:127.0.0.1`) are accepted on
+/// dual-stack sockets alongside `127.0.0.1` and `::1`.
+///
+/// Extracted from [`HttpTransport::serve_one`] to allow exhaustive unit
+/// testing of the IP classification logic without spinning up real TCP
+/// connections.
+fn check_peer_addr(
+    addr: std::net::SocketAddr,
+    loopback_only: bool,
+) -> Result<(), HttpTransportError> {
+    if loopback_only && !addr.ip().to_canonical().is_loopback() {
+        Err(HttpTransportError::NonLoopback(addr))
+    } else {
+        Ok(())
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -621,6 +700,179 @@ mod tests {
             405,
             "expected HTTP 405, got: {}",
             String::from_utf8_lossy(&response)
+        );
+    }
+
+    // ── check_peer_addr unit tests ────────────────────────────────────────
+    //
+    // Spec: when loopback_only=true, non-loopback peers are rejected;
+    //       loopback peers (IPv4 + IPv6) are accepted.
+    //       When loopback_only=false, all peers are accepted.
+    //
+    // These tests exercise the classification logic without real TCP sockets
+    // so they run fast and deterministically on any platform.
+
+    // ── check_peer_addr_rejects_ipv4_non_loopback ─────────────────────────
+    // Spec: loopback_only=true, peer=192.168.1.1 → Err(NonLoopback)
+    //
+    // RED: no check_peer_addr function.
+    // GREEN: check_peer_addr returns Err when ip is not loopback.
+    #[test]
+    fn check_peer_addr_rejects_ipv4_non_loopback() {
+        use std::net::SocketAddr;
+        let addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
+        assert!(
+            matches!(
+                check_peer_addr(addr, true),
+                Err(HttpTransportError::NonLoopback(_))
+            ),
+            "192.168.1.1 must be rejected with loopback_only=true"
+        );
+    }
+
+    // ── check_peer_addr_rejects_ipv6_non_loopback ─────────────────────────
+    // Spec: loopback_only=true, peer=2001:db8::1 → Err(NonLoopback)
+    //
+    // RED: no check_peer_addr function.
+    // GREEN: check_peer_addr returns Err when ip is not loopback.
+    #[test]
+    fn check_peer_addr_rejects_ipv6_non_loopback() {
+        use std::net::SocketAddr;
+        let addr: SocketAddr = "[2001:db8::1]:8080".parse().unwrap();
+        assert!(
+            matches!(
+                check_peer_addr(addr, true),
+                Err(HttpTransportError::NonLoopback(_))
+            ),
+            "2001:db8::1 must be rejected with loopback_only=true"
+        );
+    }
+
+    // ── check_peer_addr_accepts_ipv4_mapped_ipv6_loopback ─────────────────
+    // Spec: loopback_only=true, peer=::ffff:127.0.0.1 → Ok(())
+    //
+    // Dual-stack sockets on Linux/macOS deliver IPv4 clients as
+    // IPv4-mapped IPv6 addresses (::ffff:127.x.x.x).  `is_loopback()` alone
+    // returns false for these; `to_canonical().is_loopback()` is required.
+    //
+    // RED: check_peer_addr used is_loopback() directly → rejected mapped loopback.
+    // GREEN: check_peer_addr uses to_canonical().is_loopback() → accepts it.
+    #[test]
+    fn check_peer_addr_accepts_ipv4_mapped_ipv6_loopback() {
+        use std::net::SocketAddr;
+        let addr: SocketAddr = "[::ffff:127.0.0.1]:12345".parse().unwrap();
+        assert!(
+            check_peer_addr(addr, true).is_ok(),
+            "::ffff:127.0.0.1 must be accepted with loopback_only=true"
+        );
+    }
+
+    // ── check_peer_addr_accepts_ipv4_loopback ─────────────────────────────
+    // Spec: loopback_only=true, peer=127.0.0.1 → Ok(())
+    //
+    // RED: no check_peer_addr function.
+    // GREEN: check_peer_addr returns Ok for 127.0.0.1.
+    #[test]
+    fn check_peer_addr_accepts_ipv4_loopback() {
+        use std::net::SocketAddr;
+        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        assert!(
+            check_peer_addr(addr, true).is_ok(),
+            "127.0.0.1 must be accepted with loopback_only=true"
+        );
+    }
+
+    // ── check_peer_addr_accepts_ipv6_loopback ─────────────────────────────
+    // Spec: loopback_only=true, peer=::1 → Ok(())
+    //
+    // RED: no check_peer_addr function.
+    // GREEN: check_peer_addr returns Ok for ::1.
+    #[test]
+    fn check_peer_addr_accepts_ipv6_loopback() {
+        use std::net::SocketAddr;
+        let addr: SocketAddr = "[::1]:12345".parse().unwrap();
+        assert!(
+            check_peer_addr(addr, true).is_ok(),
+            "::1 must be accepted with loopback_only=true"
+        );
+    }
+
+    // ── check_peer_addr_disabled_accepts_non_loopback ─────────────────────
+    // Spec: loopback_only=false, any peer → Ok(())
+    //
+    // RED: no check_peer_addr function.
+    // GREEN: check_peer_addr bypasses the IP check when disabled.
+    #[test]
+    fn check_peer_addr_disabled_accepts_non_loopback() {
+        use std::net::SocketAddr;
+        let addr: SocketAddr = "10.0.0.1:9999".parse().unwrap();
+        assert!(
+            check_peer_addr(addr, false).is_ok(),
+            "10.0.0.1 must be accepted when loopback_only=false"
+        );
+    }
+
+    // ── loopback_only_transport_accepts_loopback_connection ───────────────
+    // Spec: HttpTransport::new (loopback_only=true) accepts a real 127.0.0.1
+    //       client and dispatches the query normally.
+    //
+    // RED: loopback_only field did not exist; serve_one never checked peer.
+    // GREEN: serve_one validates peer addr; 127.0.0.1 passes and query succeeds.
+    #[test]
+    fn loopback_only_transport_accepts_loopback_connection() {
+        let transport = make_transport(); // default: loopback_only=true
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+
+        let request = valid_query_request("h-lo-accept");
+        let body = serde_json::to_vec(&request).unwrap();
+
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            transport
+                .serve_one(stream)
+                .expect("serve_one must succeed for loopback client")
+        });
+
+        let response = post(addr, &body);
+        handle.join().expect("thread join");
+
+        assert_eq!(
+            http_status(&response),
+            200,
+            "loopback client must receive HTTP 200 from loopback_only transport"
+        );
+    }
+
+    // ── with_loopback_only_false_accepts_loopback_client ─────────────────
+    // Spec: with_loopback_only(false) disables the guard; loopback clients
+    //       still work normally (guard disabled does not break dispatch).
+    //
+    // RED: with_loopback_only builder did not exist.
+    // GREEN: builder sets loopback_only=false; loopback client gets 200.
+    #[test]
+    fn with_loopback_only_false_accepts_loopback_client() {
+        let transport = make_transport().with_loopback_only(false);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+
+        let request = valid_query_request("h-nolo");
+        let body = serde_json::to_vec(&request).unwrap();
+
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            transport
+                .serve_one(stream)
+                .expect("serve_one must succeed when loopback_only=false")
+        });
+
+        let response = post(addr, &body);
+        handle.join().expect("thread join");
+
+        assert_eq!(
+            http_status(&response),
+            200,
+            "loopback client must receive HTTP 200 when loopback_only=false"
         );
     }
 }
