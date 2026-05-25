@@ -370,9 +370,15 @@ emit_native(anf) → NativeArtifact {
 - Linker invocation requires a system linker (cc, lld): use ail link --profile <name>.
   Use --runtime-lib <path/to/ail_runtime.a> to supply runtime stubs at link time
   (Wave 12B); without it the linker may fail with "undefined symbol" errors.
-- No runtime archive: ail_runtime.a is not yet built or distributed at a deterministic
-  path. Users must build the archive manually from crates/ail-runtime and pass it
-  via --runtime-lib. Deterministic archive provisioning is deferred to Phase 9.
+- Runtime stub archive (Wave 13A): ail link --emit-runtime-stub ail_runtime.a generates
+  a deterministic static archive containing stub implementations of host_call,
+  __ail_malloc, and ail_runtime_call (each returns -1/0 immediately). No system ar
+  or cc is required to produce it. Pass the result to --runtime-lib:
+    ail link --emit-runtime-stub ail_runtime.a
+    ail link --profile dev --runtime-lib ail_runtime.a
+  The stubs allow linking to succeed; a binary linked with stubs will fail at runtime
+  when it invokes capability calls or concurrency primitives. Full runtime
+  implementations are deferred to Phase 9.
 - No self-hosting: ail-compiler itself is not compiled by ail-compiler.
 - Lambda compiles: params bound, body lowered, address returned as I64.
   Closure captures are deferred to Phase 9+.
@@ -424,11 +430,16 @@ Implemented: --runtime-lib flag (Wave 12B) — ail link --runtime-lib <path/to/a
              ail_runtime_call are resolved at link time. Without the flag, ail link emits
              a hint; the downstream linker will fail with "undefined symbol" errors unless
              the symbols are supplied through another mechanism.
+Implemented: --emit-runtime-stub (Wave 13A) — ail link --emit-runtime-stub <path>
+             generates a deterministic stub archive (no system ar/cc required).
+             Stubs return -1/0; linking succeeds but the binary fails at runtime
+             for capability/concurrency calls. Full implementations are Phase 9+.
+Implemented: --print-runtime-symbols (Wave 13A) — prints the three imported symbol
+             names for diagnostic use: host_call __ail_malloc ail_runtime_call.
 Phase 9:  Heap model — __ail_malloc supplied by runtime; records/variants/lists
           survive function return.
-Phase 9:  Runtime archive — build and distribute ail_runtime.a at a deterministic
-          path so ail link --runtime-lib can locate it automatically; full
-          self-contained runnable binary without external stubs.
+Phase 9:  Runtime archive — replace stub implementations with real host dispatch;
+          self-contained runnable binary without linking against external stubs.
 Phase 10: ABI stabilization — ail_runtime_call, host_call signatures frozen.
 Phase 11+: Full expression body lowering — Lambda, closures, concurrency.
 Phase N:  Self-hosting — ail-compiler's own source compiled by ail-compiler.

@@ -327,7 +327,9 @@ prod runtime rejects non-prod artifacts
 ```txt
 ail link --profile dev
 ail link --profile prod --output ./my-program
-ail link --profile dev --runtime-lib /path/to/ail_runtime.a
+ail link --emit-runtime-stub ail_runtime.a
+ail link --profile dev --runtime-lib ail_runtime.a
+ail link --print-runtime-symbols
 ```
 
 Links the latest persisted native object file for a profile into a runnable
@@ -356,10 +358,15 @@ ail link requires a prior ail compile --target native for the profile.
 The system linker (cc on Unix, link.exe on Windows) must be installed.
 Default output path is ./<profile> in the current working directory.
 Use --output to override the executable name.
+Use --emit-runtime-stub <path> to generate the stub archive (no system ar required).
+  The generated archive contains stub implementations of the three runtime symbols.
+  Stubs return -1/0 immediately; linking succeeds but capability/concurrency calls
+  will fail at runtime. Use for smoke-testing the link step before Phase 9 runtime.
 Use --runtime-lib to supply the ail-runtime archive and resolve runtime stubs.
 Without --runtime-lib, a hint is emitted advising the user; the link may fail
   with "undefined symbol" errors for host_call / __ail_malloc / ail_runtime_call
   unless those symbols are supplied through another mechanism.
+Use --print-runtime-symbols to list the three imported symbol names (diagnostic).
 ```
 
 > **Implementation note — native compile+link flow:**
@@ -369,11 +376,11 @@ Without --runtime-lib, a hint is emitted advising the user; the link may fail
 > injectable; tests substitute a `FakeLinker` to verify command construction
 > and error paths without requiring a system C compiler in CI.
 >
-> The two-step flow is:
+> The three-step flow with the stub archive:
 > ```txt
-> ail compile --target native --profile dev          # emits .ail/native/<hash>.o
-> ail link --profile dev                             # links → ./dev (hint: no runtime)
-> ail link --profile dev --runtime-lib ail_runtime.a # links → ./dev (self-contained)
+> ail compile --target native --profile dev           # emits .ail/native/<hash>.o
+> ail link --emit-runtime-stub ail_runtime.a          # generates stub archive
+> ail link --profile dev --runtime-lib ail_runtime.a  # links → ./dev (stub runtime)
 > ```
 >
 > The native object imports three symbols that must be resolved at link time:
@@ -381,15 +388,17 @@ Without --runtime-lib, a hint is emitted advising the user; the link may fail
 > - `__ail_malloc`     — heap allocator stub (ail-runtime allocator)
 > - `ail_runtime_call` — concurrency/resource/channel dispatch (Phase 9+)
 >
+> `--emit-runtime-stub` generates a deterministic static archive in pure Rust
+> (no system `ar` or `cc`), using Cranelift to emit the three stubs in the same
+> object format as native program objects.  The stub archive is suitable for
+> smoke-testing the link flow; full runtime dispatch requires Phase 9+.
+>
 > Pass `--runtime-lib <path/to/ail_runtime.a>` to bundle these into the linked
 > executable.  When the flag is absent, `ail link` succeeds but emits a hint
 > advising the user; the downstream linker will fail with "undefined symbol"
 > errors if those symbols are not otherwise provided.  The hint is advisory and
 > not a hard error — advanced users may supply the symbols via custom link scripts
 > or `-L`/`-l` flags through a wrapper.
->
-> Full deterministic runtime archive provisioning (building and distributing
-> `ail_runtime.a`) is deferred to Phase 9.
 
 ### Run workflow
 
