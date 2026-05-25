@@ -252,11 +252,14 @@ pub fn stdlib_function_entries() -> Vec<FunctionEntry> {
             "Text",
             text_join,
         ),
+        // "Text?" marks the second param as optional (no convention existed
+        // before v1; `?` suffix signals variadic/optional for introspection).
+        // Calling with 1 arg selects NFC; 2 args select the form ("nfc"|"nfd").
         pure(
             "std.text.normalize",
             "std.text",
             "normalize",
-            &["Text"],
+            &["Text", "Text?"],
             "Text",
             text_normalize,
         ),

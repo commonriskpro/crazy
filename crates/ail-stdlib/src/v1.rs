@@ -1417,4 +1417,37 @@ mod tests {
     fn v1_contains_trace_event_with_effect() {
         assert!(has_capability_effect("std.trace.event"));
     }
+
+    // Wave 18C: text predicate entries
+    #[test]
+    fn v1_contains_text_starts_with() {
+        assert!(
+            has_function_entry("std.text.starts_with"),
+            "std.text.starts_with must be present"
+        );
+    }
+
+    #[test]
+    fn v1_contains_text_ends_with() {
+        assert!(
+            has_function_entry("std.text.ends_with"),
+            "std.text.ends_with must be present"
+        );
+    }
+
+    #[test]
+    fn v1_contains_text_contains() {
+        assert!(
+            has_function_entry("std.text.contains"),
+            "std.text.contains must be present"
+        );
+    }
+
+    #[test]
+    fn v1_contains_text_replace() {
+        assert!(
+            has_function_entry("std.text.replace"),
+            "std.text.replace must be present"
+        );
+    }
 }
