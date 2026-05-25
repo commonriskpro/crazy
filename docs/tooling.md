@@ -364,9 +364,13 @@ Use --ensure-runtime-stub to auto-generate and cache .ail/runtime/ail_runtime.a
   Subsequent calls reuse the cached archive (idempotent, no regeneration).
   Incompatible with --runtime-lib, --emit-runtime-stub, --print-runtime-symbols.
 Use --emit-runtime-stub <path> to generate the stub archive at an explicit path
-  (no system ar required). Stubs return -1/0 immediately; linking succeeds but
-  capability/concurrency calls will fail at runtime. Use for smoke-testing the
-  link step before Phase 9 runtime.
+  (no system ar required). Stub behaviors (Wave 15B):
+    host_call(i64×6)        returns -1 (no-op denial)
+    __ail_malloc(i64)       TRAPS — halts at call site with a diagnosable signal
+                            instead of returning a null pointer that segfaults later
+    ail_runtime_call(i64×3) returns -1 (no-op denial)
+  Programs that never reach a heap-allocation path at runtime run safely with the
+  stubs. Use for smoke-testing the link step before Phase 9 runtime.
 Use --runtime-lib to supply the ail-runtime archive and resolve runtime stubs.
 Without --runtime-lib or --ensure-runtime-stub, a hint is emitted advising the
   user; the link may fail with "undefined symbol" errors for host_call /
@@ -396,10 +400,11 @@ Use --print-runtime-symbols to list the three imported symbol names (diagnostic)
 > ail link --profile dev --runtime-lib ail_runtime.a  # links → ./dev (stub runtime)
 > ```
 >
-> The native object imports three symbols that must be resolved at link time:
-> - `host_call`        — capability dispatch (ail-runtime host boundary)
-> - `__ail_malloc`     — heap allocator stub (ail-runtime allocator)
-> - `ail_runtime_call` — concurrency/resource/channel dispatch (Phase 9+)
+ > The native object imports three symbols that must be resolved at link time:
+> - `host_call`        — capability dispatch (ail-runtime host boundary); stub returns -1
+> - `__ail_malloc`     — heap allocator (ail-runtime); stub TRAPS on call (Wave 15B:
+>                        trap instead of null-return for immediate diagnosable failure)
+> - `ail_runtime_call` — concurrency/resource/channel dispatch (Phase 9+); stub returns -1
 >
 > `--ensure-runtime-stub` and `--emit-runtime-stub` both use the same pure-Rust
 > archive generator (Cranelift-compiled stubs, no system `ar` or `cc` required).
