@@ -48,12 +48,12 @@
 //
 // Usage (custom provider):
 //   ```rust,ignore
-//   use ail_runtime::secret::SecretProvider;
+//   use ail_runtime::secret::{SecretProvider, SecretProviderError};
 //
 //   struct MyVaultClient { /* ... */ }
 //
 //   impl SecretProvider for MyVaultClient {
-//       fn resolve(&self, vault_path: &str) -> Option<Vec<u8>> {
+//       fn resolve(&self, vault_path: &str) -> Result<Vec<u8>, SecretProviderError> {
 //           // call external vault API
 //           todo!()
 //       }
