@@ -1097,8 +1097,106 @@ fn emit_anf_expr<'a>(
             Some(ValType::I64)
         }
 
-        // Collection iteration — WASM stubs (require loop + call_indirect).
-        AnfExpr::ForEach { .. } | AnfExpr::Fold { .. } => {
+        // ── ForEach — inline loop over a length-prefixed list ────────────
+        //
+        // List layout: [count: i64, elem0: i64, elem1: i64, ...]
+        //
+        // Emission:
+        //   1. Load count from list header (offset 0).
+        //   2. Initialise loop counter to 0.
+        //   3. block (empty) — break target.
+        //   4.   loop (empty) — continue target.
+        //   5.     i >= count  → br_if 1 (exit block).
+        //   6.     Load element at coll_ptr + 8 + i * 8.
+        //   7.     Store element to `binding` local.
+        //   8.     Emit body; drop result (ForEach is side-effect only).
+        //   9.     i += 1; br 0 (restart loop).
+        //  10. end loop / end block.
+        //
+        // No call_indirect is required: the body is already an inlined
+        // AnfExpr, so the loop executes it directly without a function
+        // pointer dispatch.
+        AnfExpr::ForEach {
+            binding,
+            collection,
+            body,
+        } => {
+            let Some((coll_idx, _)) = ctx.lookup(collection) else {
+                insns.push(Instruction::Unreachable);
+                return None;
+            };
+
+            // Allocate locals: count (I64), loop counter (I64), loop var (I64).
+            let count_idx = ctx.bind("__foreach_count", ValType::I64);
+            let i_idx = ctx.bind("__foreach_i", ValType::I64);
+            let elem_idx = ctx.bind(binding.as_str(), ValType::I64);
+
+            // Load element count from list header at offset 0.
+            insns.push(Instruction::LocalGet(coll_idx));
+            load_i64_at(0, insns);
+            insns.push(Instruction::LocalSet(count_idx));
+
+            // Initialise counter to 0.
+            insns.push(Instruction::I64Const(0));
+            insns.push(Instruction::LocalSet(i_idx));
+
+            // block (break target) + loop (continue target).
+            insns.push(Instruction::Block(BlockType::Empty));
+            ctx.labels.push(LabelKind::LoopBreak);
+            insns.push(Instruction::Loop(BlockType::Empty));
+            ctx.labels.push(LabelKind::LoopContinue);
+
+            // Exit condition: i >= count → break.
+            insns.push(Instruction::LocalGet(i_idx));
+            insns.push(Instruction::LocalGet(count_idx));
+            insns.push(Instruction::I64GeU);
+            let break_depth = ctx.branch_depth(LabelKind::LoopBreak).unwrap_or(1);
+            insns.push(Instruction::BrIf(break_depth));
+
+            // Load element at coll_ptr + 8 + i * 8.
+            insns.push(Instruction::LocalGet(coll_idx));
+            insns.push(Instruction::LocalGet(i_idx));
+            insns.push(Instruction::I64Const(8));
+            insns.push(Instruction::I64Mul);
+            insns.push(Instruction::I64Const(8));
+            insns.push(Instruction::I64Add);
+            insns.push(Instruction::I32WrapI64);
+            insns.push(Instruction::I32Add);
+            load_i64_at(0, insns);
+            insns.push(Instruction::LocalSet(elem_idx));
+
+            // Emit loop body; discard any produced value.
+            let body_ty = emit_anf_expr(body, ctx, functions, insns);
+            if body_ty.is_some() {
+                insns.push(Instruction::Drop);
+            }
+
+            // Increment counter: i += 1.
+            insns.push(Instruction::LocalGet(i_idx));
+            insns.push(Instruction::I64Const(1));
+            insns.push(Instruction::I64Add);
+            insns.push(Instruction::LocalSet(i_idx));
+
+            // Jump back to top of loop.
+            insns.push(Instruction::Br(0));
+
+            ctx.labels.pop();
+            insns.push(Instruction::End); // end loop
+            ctx.labels.pop();
+            insns.push(Instruction::End); // end block
+
+            // ForEach is side-effect only — no value on the stack.
+            None
+        }
+
+        // ── Fold — stub: requires call_indirect + element section ─────────
+        //
+        // Fold { init, list, func } dispatches through `func`, an I64
+        // function pointer.  Emitting call_indirect requires a function
+        // table and an element section, neither of which the WASM backend
+        // builds yet.  Keep as an explicit diagnostic trap until the
+        // element-section pass is implemented.
+        AnfExpr::Fold { .. } => {
             insns.push(Instruction::Unreachable);
             None
         }

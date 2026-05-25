@@ -272,6 +272,9 @@ pub(crate) fn infer_expr_type(
         // IndexGet reads an element and returns I64.
         AnfExpr::MapNew { .. } | AnfExpr::SetNew { .. } => Some(ValType::I32),
         AnfExpr::IndexGet { .. } => Some(ValType::I64),
+        // ForEach is side-effect only — no value produced.
+        // Fold is a stub (requires call_indirect); treat as no-value for now.
+        AnfExpr::ForEach { .. } | AnfExpr::Fold { .. } => None,
         AnfExpr::Placeholder
         | AnfExpr::Dispatch { .. }
         | AnfExpr::TaskSpawn { .. }
@@ -288,9 +291,7 @@ pub(crate) fn infer_expr_type(
         | AnfExpr::ResourceRelease { .. }
         // ola5 Gap 2 — remaining stubs
         | AnfExpr::Assume { .. }
-        | AnfExpr::Abort { .. }
-        | AnfExpr::ForEach { .. }
-        | AnfExpr::Fold { .. } => None,
+        | AnfExpr::Abort { .. } => None,
         AnfExpr::FieldUpdate { value, .. } => infer_expr_type(value, locals).or(Some(ValType::I32)),
     }
 }
@@ -684,8 +685,8 @@ impl EffectDataLayout {
             // ── Collection and cell primitives need linear memory ─────────
             // emit_alloc is called for CellNew/MapNew/SetNew; CellGet and
             // CellSet issue I64Load/I64Store; IndexGet issues I64Load at a
-            // dynamic offset.  All require the memory and bump-allocator-
-            // global sections to be present in the assembled module.
+            // dynamic offset.  ForEach issues I64Load to read list elements.
+            // All require the memory and bump-allocator-global sections.
             AnfExpr::CellNew { .. }
             | AnfExpr::CellGet { .. }
             | AnfExpr::CellSet { .. }
@@ -693,6 +694,10 @@ impl EffectDataLayout {
             | AnfExpr::SetNew { .. }
             | AnfExpr::IndexGet { .. } => {
                 self.needs_memory = true;
+            }
+            AnfExpr::ForEach { body, .. } => {
+                self.needs_memory = true;
+                self.collect_expr(body);
             }
             _ => {}
         }
