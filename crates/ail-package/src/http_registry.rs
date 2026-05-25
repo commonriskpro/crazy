@@ -777,9 +777,11 @@ mod tests {
         let bad_addr = listener.local_addr().unwrap().to_string();
         std::thread::spawn(move || {
             for mut conn in listener.incoming().flatten() {
-                // Drain request so the client does not get a broken-pipe write error.
-                let mut buf = [0u8; 4096];
-                let _ = <TcpStream as Read>::read(&mut conn, &mut buf);
+                // Drain the full HTTP request before responding. A single
+                // partial read can leave unread request bytes in the socket;
+                // on macOS, dropping such a socket may send RST and make the
+                // client observe `Connection reset` instead of the 500 body.
+                let _ = read_request(&mut conn);
                 write_response(&mut conn, 500, b"{\"error\":\"forced\"}");
             }
         });
