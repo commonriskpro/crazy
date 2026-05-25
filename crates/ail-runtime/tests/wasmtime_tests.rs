@@ -4384,6 +4384,7 @@ end
 //    so assign_tag assigns it discriminant 0 on first encounter.  The
 //    constructor stores 0 at heap offset 0; the match arm checks offset 0 == 0
 //    → fires; payload (1) is loaded from offset 8 and bound to x.
+//    ANF ordering: VariantNew emit precedes Match emit via let-binding, so the tag cache is populated before arm walk.
 //
 //  RUNTIME-ACL-VARIANT-USER-2: Two user-defined tags Active and Inactive
 //    dispatch to distinct arms.  Two functions in the same ACL module share
@@ -4456,7 +4457,7 @@ end
 //   - VariantNew "Active"   → assign_tag("Active")   = 0  (first encounter)
 //   - Match arm "Active"    → assign_tag("Active")   = 0  (cache hit) → 0==0 fires → 1
 //
-// fn.test_inactive emit context (independent):
+// fn.test_inactive emit context (fresh WasmCodegenCtx — build_code_section creates a fresh context; no shared tag cache):
 //   - VariantNew "Inactive"  → assign_tag("Inactive")  = 0  (first encounter)
 //   - Match arm "Active"     → assign_tag("Active")    = 1  (second tag)
 //   - Match arm "Inactive"   → assign_tag("Inactive")  = 0  (cache hit) → 0==0 fires → 2
@@ -4465,9 +4466,9 @@ end
 // - fn.test_active  → I64(1): Active arm fires, Inactive arm is not reached.
 // - fn.test_inactive → I64(2): Active arm fails (0≠1), Inactive arm fires.
 //
-// The two tags dispatch to distinct arms within each function's emit context,
-// confirming user-defined discriminants are internally consistent without
-// interference from well-known tags.
+// Each function gets a fresh WasmCodegenCtx (build_code_section creates a fresh
+// context; no shared tag cache), so tag assignments in each function are
+// independent and dispatch to distinct arms within their own emit context.
 #[test]
 fn acl_variant_user_2_active_inactive_dispatch_distinctly() {
     let acl = "\
