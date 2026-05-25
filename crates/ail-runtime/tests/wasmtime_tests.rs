@@ -5037,7 +5037,9 @@ end
 //    i64.rem_s(10, -3): sign of result = sign of dividend (+10).
 //    trunc(10/-3)=-3; remainder=10-(-3*-3)=10-9=1.
 //    Returns I64(1).
-//    (WASM i64.rem_s sign follows the *dividend*, not the divisor.)
+//    WASM i64.rem_s sign follows the *dividend*, not the divisor —
+//    mod(10, -3) == 1, NOT -1.  Only a negative dividend yields a
+//    negative remainder (cf. MOD-3 where mod(-10, 3) == -1).
 //
 // These tests exercise the full pipeline from ACL source:
 //   parse_changeset → canonicalize → apply → lower_to_core_ir →
@@ -5244,6 +5246,8 @@ end
 // Proves: mod() with a negative divisor returns a positive remainder under
 //   WASM i64.rem_s — the sign of the result follows the *dividend* (+10),
 //   not the divisor (-3).  This is C/WASM truncation-toward-zero semantics.
+//   Key invariant: mod(10, -3) == 1, NOT -1; the negative divisor does NOT
+//   flip the sign.  Compare with MOD-3: mod(-10, 3) == -1 (negative dividend).
 #[test]
 fn acl_mod_10_neg3_returns_1() {
     let acl = "\
