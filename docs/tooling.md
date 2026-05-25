@@ -51,6 +51,7 @@ ail change
 ail verify
 ail apply
 ail compile
+ail link
 ail run
 ail eval
 ail inspect
@@ -320,6 +321,57 @@ Rules:
 draft/dev/test artifacts are profile-bound
 prod runtime rejects non-prod artifacts
 ```
+
+### Link workflow
+
+```txt
+ail link --profile dev
+ail link --profile prod --output ./my-program
+```
+
+Links the latest persisted native object file for a profile into a runnable
+executable.  Requires a prior `ail compile --target native` run that wrote
+the artifact to `.ail/native/`.
+
+Inputs:
+
+```txt
+persisted native artifact (.ail/native/<hash>.o)
+```
+
+Outputs:
+
+```txt
+linked executable at ./<profile> (default) or --output path
+linker_command (for diagnostics)
+```
+
+Rules:
+
+```txt
+ail link requires a prior ail compile --target native for the profile.
+The system linker (cc on Unix, link.exe on Windows) must be installed.
+Default output path is ./<profile> in the current working directory.
+Use --output to override the executable name.
+```
+
+> **Implementation note — native compile+link flow:**
+> `ail link` resolves the latest native artifact for the profile from
+> `.ail/native/artifact-index.json`, then delegates to the system C compiler
+> (`cc` / `link.exe`) as a lightweight linker.  The linker boundary is
+> injectable; tests substitute a `FakeLinker` to verify command construction
+> and error paths without requiring a system C compiler in CI.
+>
+> The two-step flow is:
+> ```txt
+> ail compile --target native --profile dev   # emits .ail/native/<hash>.o
+> ail link --profile dev                      # links → ./dev (executable)
+> ```
+>
+> Current limitations: runtime stubs (`host_call`, `__ail_malloc`,
+> `ail_runtime_call`) are not yet bundled by `ail link` — they must be
+> supplied externally at link time.  Full runtime bundling is deferred to
+> Phase 9+.
 
 ### Run workflow
 
@@ -884,6 +936,8 @@ ail inspect report ver_123
 ail apply change.add_cart_total
 ail compile --profile dev --target wasm
 ail run --profile dev module.cart
+ail compile --profile dev --target native
+ail link --profile dev
 ```
 
 ### Final rules
@@ -916,6 +970,7 @@ The current implemented tooling subset resolves the original tooling questions a
 | `ail gc` | Implemented for the file store. Collects unreachable objects under `.ail/store/objects/`. Not supported for memory or Postgres backends. |
 | `policy list` / `policy add` | Implemented. Rules are persisted as text entries; `policy check` parses capability deny/allow rules from the list. |
 | `package init` / `package install` / `package search` | Implemented against the local in-process registry. `install` adds to the lockfile; `search` queries by name prefix. |
+| `ail link` | Implemented. Resolves the latest persisted native artifact for the given profile from `.ail/native/artifact-index.json` and invokes the system linker (`cc` on Unix, `link.exe` on Windows) through an injectable `LinkerBoundary`. Default output is `./<profile>` in the current working directory; `--output` overrides. Tests use `FakeLinker` (no live linker required in CI). See `crates/ail-cli/src/link_commands.rs`. |
 | `remote submit` | Implemented as `ail remote submit <change-id> --signer <key-ref> [--json]` against the local in-process `Coordinator::handle_remote_exchange` boundary. It loads and validates `.ail/remote.json` when present, and missing config defaults to deny-all in the loader, but submit still uses ephemeral in-process signer identity until durable key loading exists. It does not claim network transport. |
 | `remote push` / `remote pull` | Implemented as `ail remote push --root <object-id> [--json]` and `ail remote pull <root> [--json]` for initialized file-backed projects. Raw roots are bundled alone and report `bundle_scope=single_root_object`. Roots that decode as `SnapshotEnvelope` include required direct CAS dependencies declared by the envelope (`graph_root_hash`, `applied_change_id`, `audit_record_ids`, and `migration_metadata_ids` as applicable) and report `bundle_scope=root_with_snapshot_envelope_dependencies`. Missing real direct CAS dependencies fail bundle construction instead of producing partial bundles. `parent_id` remains snapshot identity metadata, not a direct CAS object dependency. Bundles are persisted under `.ail/remote/bundles/<root>.cbor` and checked through the in-process bundle exchange boundary. Transport scope is `local_file_bundle_store+in_process`; it does not claim network transport, federation, remote discovery, remote config loading for push/pull, raw graph traversal, or general transitive traversal. |
 

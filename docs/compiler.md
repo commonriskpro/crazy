@@ -415,10 +415,14 @@ emit_native(anf) → NativeArtifact {
 **Path to real binary / self-hosting:**
 
 ```txt
+Implemented: ail link — emit_native output linked via system cc/link.exe using
+             ail link --profile <name>. LinkerBoundary injectable; CI uses FakeLinker.
+             Runtime stubs (host_call, __ail_malloc, ail_runtime_call) must still be
+             supplied at link time; full bundling is Phase 9.
 Phase 9:  Heap model — __ail_malloc supplied by runtime; records/variants/lists
           survive function return.
-Phase 9:  Linker integration — emit_native output linked with cc/lld + ail_runtime.a
-          to produce a runnable native binary.
+Phase 9:  Runtime bundling — link ail_runtime.a alongside the native object so
+          ail link produces a self-contained runnable binary without external stubs.
 Phase 10: ABI stabilization — ail_runtime_call, host_call signatures frozen.
 Phase 11+: Full expression body lowering — Lambda, closures, concurrency.
 Phase N:  Self-hosting — ail-compiler's own source compiled by ail-compiler.
