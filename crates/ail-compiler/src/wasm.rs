@@ -398,16 +398,22 @@ fn expr_has_fold_with_captured_reducer<'a>(
             else_branch,
             ..
         } => {
-            expr_has_fold_with_captured_reducer(then_branch, captured_names)
-                || expr_has_fold_with_captured_reducer(else_branch, captured_names)
+            // Clone before each branch so names introduced in one branch cannot
+            // leak into the sibling branch and cause false positives.
+            let mut then_names = captured_names.clone();
+            let mut else_names = captured_names.clone();
+            expr_has_fold_with_captured_reducer(then_branch, &mut then_names)
+                || expr_has_fold_with_captured_reducer(else_branch, &mut else_names)
         }
         AnfExpr::Return(inner) => expr_has_fold_with_captured_reducer(inner, captured_names),
         AnfExpr::Seq(exprs) => exprs
             .iter()
             .any(|e| expr_has_fold_with_captured_reducer(e, captured_names)),
-        AnfExpr::Match { arms, .. } => arms
-            .iter()
-            .any(|a| expr_has_fold_with_captured_reducer(&a.body, captured_names)),
+        AnfExpr::Match { arms, .. } => arms.iter().any(|a| {
+            // Clone per arm: names from one arm must not contaminate sibling arms.
+            let mut arm_names = captured_names.clone();
+            expr_has_fold_with_captured_reducer(&a.body, &mut arm_names)
+        }),
         AnfExpr::Lambda { body, .. } => expr_has_fold_with_captured_reducer(body, captured_names),
         AnfExpr::Loop { body }
         | AnfExpr::WhileLoop { body, .. }
@@ -502,16 +508,22 @@ fn expr_has_fold_with_uncaptured_wrong_arity<'a>(
             else_branch,
             ..
         } => {
-            expr_has_fold_with_uncaptured_wrong_arity(then_branch, names)
-                || expr_has_fold_with_uncaptured_wrong_arity(else_branch, names)
+            // Clone before each branch so names introduced in one branch cannot
+            // leak into the sibling branch and cause false positives.
+            let mut then_names = names.clone();
+            let mut else_names = names.clone();
+            expr_has_fold_with_uncaptured_wrong_arity(then_branch, &mut then_names)
+                || expr_has_fold_with_uncaptured_wrong_arity(else_branch, &mut else_names)
         }
         AnfExpr::Return(inner) => expr_has_fold_with_uncaptured_wrong_arity(inner, names),
         AnfExpr::Seq(exprs) => exprs
             .iter()
             .any(|e| expr_has_fold_with_uncaptured_wrong_arity(e, names)),
-        AnfExpr::Match { arms, .. } => arms
-            .iter()
-            .any(|a| expr_has_fold_with_uncaptured_wrong_arity(&a.body, names)),
+        AnfExpr::Match { arms, .. } => arms.iter().any(|a| {
+            // Clone per arm: names from one arm must not contaminate sibling arms.
+            let mut arm_names = names.clone();
+            expr_has_fold_with_uncaptured_wrong_arity(&a.body, &mut arm_names)
+        }),
         AnfExpr::Lambda { body, .. } => expr_has_fold_with_uncaptured_wrong_arity(body, names),
         AnfExpr::Loop { body }
         | AnfExpr::WhileLoop { body, .. }
