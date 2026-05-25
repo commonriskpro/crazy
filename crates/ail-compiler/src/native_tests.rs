@@ -1189,3 +1189,83 @@ fn native_data_layout_lambda_no_captures_no_heap_alloc() {
         "Lambda with empty captures must not set needs_heap_alloc in NativeDataLayout"
     );
 }
+
+// ── Wave 11A: Native Bytes literal emit ───────────────────────────────
+//
+// Scenario map:
+//   B-1: Bytes literal compiles and produces different bytes than Placeholder.
+//   B-2: Two different byte slices produce different native_bytes.
+//   B-3: Same byte slice interns to the same index (deduplication).
+//   B-4: infer_cranelift_return_type returns I64 for Bytes.
+//   B-5: Empty byte slice compiles without panic.
+
+fn anf_with_bytes(data: Vec<u8>) -> AnfIr {
+    use crate::anf::{AnfBinding, AnfExpr};
+    use crate::core_ir::LiteralValue;
+    anf_for_binding(AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn_op".to_string(),
+        expr: AnfExpr::Literal(LiteralValue::Bytes(data)),
+    })
+}
+
+// B-1: Bytes literal compiles and differs from Placeholder.
+#[test]
+fn native_bytes_literal_differs_from_placeholder() {
+    let art = emit_native(&anf_with_bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])).unwrap();
+    let ph = emit_native(&placeholder_anf()).unwrap();
+    assert_ne!(
+        art.native_bytes, ph.native_bytes,
+        "Literal(Bytes([0xDE, 0xAD, 0xBE, 0xEF])) must produce different bytes than Placeholder"
+    );
+}
+
+// B-2: Two different byte slices produce different native_bytes (triangulation).
+#[test]
+fn native_bytes_two_slices_differ() {
+    let art1 = emit_native(&anf_with_bytes(vec![1, 2, 3])).unwrap();
+    let art2 = emit_native(&anf_with_bytes(vec![4, 5, 6])).unwrap();
+    assert_ne!(
+        art1.native_bytes, art2.native_bytes,
+        "Bytes([1,2,3]) and Bytes([4,5,6]) must produce different native_bytes"
+    );
+}
+
+// B-3: Same byte slice is interned once (deduplication in NativeDataLayout).
+#[test]
+fn native_bytes_same_slice_deduplicated() {
+    let mut layout = NativeDataLayout::default();
+    let idx1 = layout.intern_bytes(&[0xCA, 0xFE]);
+    let idx2 = layout.intern_bytes(&[0xCA, 0xFE]);
+    assert_eq!(idx1, idx2, "Same byte slice must intern to same index");
+    assert_eq!(
+        layout.bytes_table.len(),
+        1,
+        "Only one bytes_table entry should exist for duplicate slices"
+    );
+}
+
+// B-4: infer_cranelift_return_type returns I64 for Bytes.
+#[test]
+fn native_bytes_infer_return_type_is_i64() {
+    use crate::anf::AnfExpr;
+    use crate::core_ir::LiteralValue;
+    use cranelift_codegen::ir::types;
+    let expr = AnfExpr::Literal(LiteralValue::Bytes(vec![1, 2, 3]));
+    assert_eq!(
+        infer_cranelift_return_type(&expr),
+        Some(types::I64),
+        "infer_cranelift_return_type for Literal(Bytes) must return Some(I64)"
+    );
+}
+
+// B-5: Empty byte slice compiles without panic.
+#[test]
+fn native_bytes_empty_slice_compiles() {
+    let result = emit_native(&anf_with_bytes(vec![]));
+    assert!(
+        result.is_ok(),
+        "Literal(Bytes([])) must compile without panic: {:?}",
+        result.err()
+    );
+}

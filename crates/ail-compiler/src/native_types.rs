@@ -24,12 +24,22 @@ use crate::error::CompileError;
 ///
 /// Interns each unique string exactly once so that multiple bindings
 /// using the same literal share a single data object.
+///
+/// Also interns raw byte-buffer literals (`LiteralValue::Bytes`) in a
+/// separate `bytes_table` so they are stored as plain `__ail_bytes_N`
+/// data objects (no UTF-8 assumption, no NUL terminator).
 #[derive(Default)]
 pub struct NativeDataLayout {
     /// Interned strings: value → (index into `ordered`, byte length).
     strings: BTreeMap<String, (usize, usize)>,
     /// Ordered list of all interned strings (index = position in this vec).
     pub ordered: Vec<String>,
+    /// Interned byte buffers from `LiteralValue::Bytes` literals.
+    ///
+    /// Stored as an ordered `Vec` because `Vec<u8>` has no canonical key
+    /// suitable for `BTreeMap`; linear dedup is fine for small literal counts.
+    /// Each entry is the raw byte slice; index is the position in this vec.
+    pub bytes_table: Vec<Vec<u8>>,
     /// Set when any binding contains an `EffectCall` — triggers host_call import.
     pub needs_host_call: bool,
     /// Set when any binding allocates compound values (RecordNew, ListNew, etc.)
@@ -58,6 +68,30 @@ impl NativeDataLayout {
         self.strings.get(s).copied().unwrap_or((0, 0))
     }
 
+    /// Intern a raw byte buffer, returning its index into `bytes_table`.
+    ///
+    /// Deduplicates by value: identical byte slices share a single data object.
+    pub fn intern_bytes(&mut self, data: &[u8]) -> usize {
+        if let Some(pos) = self.bytes_table.iter().position(|b| b.as_slice() == data) {
+            return pos;
+        }
+        let idx = self.bytes_table.len();
+        self.bytes_table.push(data.to_vec());
+        idx
+    }
+
+    /// Return `(index, byte_len)` for a previously interned byte slice.
+    ///
+    /// Returns `(0, 0)` when the slice was not interned (defensive fallback).
+    pub fn get_bytes(&self, data: &[u8]) -> (usize, usize) {
+        self.bytes_table
+            .iter()
+            .enumerate()
+            .find(|(_, b)| b.as_slice() == data)
+            .map(|(i, b)| (i, b.len()))
+            .unwrap_or((0, 0))
+    }
+
     /// Pre-scan all bindings to intern strings and detect EffectCall usage.
     pub fn for_bindings(bindings: &[crate::anf::AnfBinding]) -> Self {
         let mut layout = Self::default();
@@ -73,6 +107,9 @@ impl NativeDataLayout {
         match expr {
             AnfExpr::Literal(LiteralValue::Text(s)) => {
                 self.intern(s);
+            }
+            AnfExpr::Literal(LiteralValue::Bytes(data)) => {
+                self.intern_bytes(data);
             }
             AnfExpr::EffectCall {
                 capability, func, ..
@@ -190,5 +227,35 @@ impl NativeDataLayout {
             data_ids.push(data_id);
         }
         Ok(data_ids)
+    }
+
+    /// Declare + define all interned byte-buffer data objects in the `ObjectModule`.
+    ///
+    /// Each entry in `bytes_table` becomes a `__ail_bytes_N` local data symbol.
+    /// The returned `Vec` maps index → `DataId` with the same indexing as
+    /// `bytes_table`.
+    pub fn define_all_bytes(&self, module: &mut ObjectModule) -> Result<Vec<DataId>, CompileError> {
+        let mut bytes_data_ids = Vec::with_capacity(self.bytes_table.len());
+        for (i, data) in self.bytes_table.iter().enumerate() {
+            let name = format!("__ail_bytes_{i}");
+            let data_id = module
+                .declare_data(&name, Linkage::Local, false, false)
+                .map_err(|e| {
+                    CompileError::NativeEncodingError(format!("declare_data({name}): {e}"))
+                })?;
+            let mut desc = DataDescription::new();
+            let raw: Box<[u8]> = data.clone().into_boxed_slice();
+            // Empty byte slices need at least one byte to be a valid data object.
+            if raw.is_empty() {
+                desc.define(Box::new([0u8]) as Box<[u8]>);
+            } else {
+                desc.define(raw);
+            }
+            module.define_data(data_id, &desc).map_err(|e| {
+                CompileError::NativeEncodingError(format!("define_data({name}): {e}"))
+            })?;
+            bytes_data_ids.push(data_id);
+        }
+        Ok(bytes_data_ids)
     }
 }

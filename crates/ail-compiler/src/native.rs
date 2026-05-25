@@ -182,6 +182,8 @@ pub fn emit_native_with_profile(
     // Pre-scan all bindings to build the data layout and detect EffectCall.
     let data_layout = NativeDataLayout::for_bindings(&anf.bindings);
     let data_ids = data_layout.define_all(&mut module)?;
+    // Define byte-buffer data objects for LiteralValue::Bytes literals.
+    let bytes_data_ids = data_layout.define_all_bytes(&mut module)?;
 
     // If any binding uses EffectCall, declare the imported host_call function.
     // Signature: (cap_ptr: I64, cap_len: I64, op_ptr: I64, op_len: I64,
@@ -263,6 +265,7 @@ pub fn emit_native_with_profile(
             LowerBindingEnv {
                 data_ids: &data_ids,
                 data_layout: &data_layout,
+                bytes_data_ids: &bytes_data_ids,
                 host_call_id,
                 malloc_id,
                 runtime_call_id,

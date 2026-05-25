@@ -108,14 +108,16 @@ own a `WasmArtifact` are responsible for translating `export_types` into
 
 ## Current limitations
 
-- `Bytes` literals (`LiteralValue::Bytes(Vec<u8>)`) are now executable in the
-  WASM backend: the
-  compiler interns the byte buffer in the WASM data section and emits a packed
-  `(len << 32) | ptr` i64 return — the same encoding used for `Text`.  The
-  runtime decodes this via `ValueLayout::Bytes` → `StructuredValue::Bytes { ptr,
-  len }`.  `derive_wasm_type` maps `Literal(Bytes(_))` to
-  `WasmTypeDescriptor::Bytes` so callers receive the correct descriptor. Native
-  Bytes emission is still deferred and traps if reached.
+- `Bytes` literals (`LiteralValue::Bytes(Vec<u8>)`) are now executable in both
+  the WASM and native backends.  In WASM the compiler interns the byte buffer in
+  the data section and emits a packed `(len << 32) | ptr` i64 return — the same
+  encoding used for `Text`.  In the native backend the same packed encoding is
+  used: the byte buffer is placed in a `__ail_bytes_N` local data object and the
+  Cranelift IR emits `symbol_value + ishl_imm(32) + bor`.  The runtime decodes
+  this via `ValueLayout::Bytes` → `StructuredValue::Bytes { ptr, len }`.
+  `derive_wasm_type` maps `Literal(Bytes(_))` to `WasmTypeDescriptor::Bytes` so
+  callers receive the correct descriptor.  `infer_cranelift_return_type` returns
+  `I64` for `Bytes` on the native path.
 - `Unit` is currently represented by the compiler as `Scalar(I32)`. The runtime
   decoder maps `ValueLayout::Scalar` to `StructuredValue::Scalar(raw)`; only a
   raw `RuntimeValue::Unit` from `invoke` becomes `StructuredValue::Unit` in
