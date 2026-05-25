@@ -32,6 +32,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
+use ail_compiler::{RUNTIME_SYMBOLS, build_runtime_stub_archive};
+
 use crate::error::CliError;
 use crate::output::{OutputMode, print_error_response, print_response};
 use crate::store::StoreHandle;
@@ -275,6 +277,114 @@ pub(crate) fn cmd_link(
         &result.command,
         runtime_lib_str.as_deref(),
     );
+    print_response(mode, &human_msg, json_response);
+    Ok(())
+}
+
+// ── Flag validation ───────────────────────────────────────────────────────
+
+/// Validate that at most one standalone link mode flag is supplied.
+///
+/// `--print-runtime-symbols` and `--emit-runtime-stub` are standalone modes
+/// (they exit without invoking the linker).  Supplying both together is
+/// ambiguous; this function returns a [`CliError::Domain`] so the caller
+/// receives an explicit diagnostic rather than silent flag precedence.
+///
+/// # Errors
+///
+/// Returns `Err(CliError::Domain)` when both `print_runtime_symbols` and
+/// `emit_runtime_stub` are `true`.
+pub(crate) fn validate_link_mode_flags(
+    print_runtime_symbols: bool,
+    emit_runtime_stub: bool,
+) -> Result<(), CliError> {
+    if print_runtime_symbols && emit_runtime_stub {
+        return Err(CliError::Domain(
+            "--print-runtime-symbols and --emit-runtime-stub are standalone modes; \
+             supply only one at a time"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+// ── Runtime stub emit ─────────────────────────────────────────────────────
+
+/// `ail link --print-runtime-symbols`
+///
+/// Print the names of the three unresolved symbols imported by every native
+/// object emitted by `ail compile --target native`.  Each symbol is printed
+/// on its own line (human mode) or as a JSON array (json mode).
+///
+/// No I/O beyond stdout; safe to call without a store or linker.
+pub(crate) fn cmd_print_runtime_symbols(mode: OutputMode) {
+    let symbols: Vec<&str> = RUNTIME_SYMBOLS.to_vec();
+    let human_msg = symbols.join("\n");
+    let json_response = json!({
+        "runtime_symbols": symbols,
+        "status": "ok",
+    });
+    print_response(mode, &human_msg, json_response);
+}
+
+/// Build the JSON success response for a completed runtime-stub emit.
+///
+/// Extracted so tests can assert stable field names without capturing stdout.
+pub(crate) fn build_emit_stub_result_json(
+    output_path: &Path,
+    size_bytes: usize,
+) -> serde_json::Value {
+    json!({
+        "output_path": output_path.to_string_lossy(),
+        "size_bytes":  size_bytes,
+        "symbols":     RUNTIME_SYMBOLS.to_vec(),
+        "status":      "emitted",
+    })
+}
+
+/// `ail link --emit-runtime-stub <output>`
+///
+/// Generate a deterministic static archive (`ail_runtime.a`) containing
+/// stub implementations of the three runtime symbols and write it to
+/// `output`.  The archive can then be passed to `ail link --runtime-lib
+/// <output>` to produce a self-contained linked executable.
+///
+/// No system `ar` or `cc` is required to produce the archive.
+///
+/// Errors:
+/// - Cranelift compilation failure (e.g. unsupported host ISA)
+/// - I/O failure writing `output`
+pub(crate) fn cmd_emit_runtime_stub(mode: OutputMode, output: &Path) -> Result<(), CliError> {
+    let archive_bytes = build_runtime_stub_archive().map_err(|e| {
+        let msg = format!("failed to build runtime stub archive: {e}");
+        if mode == OutputMode::Json {
+            print_error_response(json!({
+                "error":   "stub_build_failed",
+                "message": msg,
+            }));
+        }
+        CliError::Domain(msg)
+    })?;
+
+    let size = archive_bytes.len();
+    std::fs::write(output, &archive_bytes).map_err(|e| {
+        let msg = format!("failed to write {}: {e}", output.display());
+        if mode == OutputMode::Json {
+            print_error_response(json!({
+                "error":       "stub_write_failed",
+                "output_path": output.to_string_lossy(),
+                "message":     msg,
+            }));
+        }
+        CliError::Domain(msg)
+    })?;
+
+    let human_msg = format!(
+        "emitted {} ({size} bytes)\nsymbols: {}",
+        output.display(),
+        RUNTIME_SYMBOLS.join(" "),
+    );
+    let json_response = build_emit_stub_result_json(output, size);
     print_response(mode, &human_msg, json_response);
     Ok(())
 }

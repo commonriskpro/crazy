@@ -48,6 +48,7 @@ pub mod native;
 mod native_binding;
 mod native_codegen;
 mod native_lower;
+pub mod native_stub;
 mod native_types;
 pub mod optimize;
 pub mod wasm;
@@ -79,5 +80,6 @@ pub use lower::{
     lower_to_core_ir, nominal_to_core_type,
 };
 pub use native::{NativeArtifact, emit_native, emit_native_with_profile};
+pub use native_stub::{RUNTIME_SYMBOLS, build_runtime_stub_archive, build_runtime_stub_object};
 pub use optimize::optimize_bindings;
 pub use wasm::{WasmArtifact, emit_wasm, emit_wasm_with_profile};

@@ -65,7 +65,10 @@ use crate::error::CliError;
 use crate::eval_commands::cmd_eval;
 use crate::graph_query_commands::{cmd_callers, cmd_effects, cmd_impact, cmd_proofs};
 use crate::inspect_commands::cmd_inspect;
-use crate::link_commands::{SystemLinker, cmd_link};
+use crate::link_commands::{
+    SystemLinker, cmd_emit_runtime_stub, cmd_link, cmd_print_runtime_symbols,
+    validate_link_mode_flags,
+};
 use crate::output::OutputMode;
 use crate::package_commands::cmd_package;
 use crate::policy_commands::cmd_policy;
@@ -221,6 +224,11 @@ enum Commands {
     ///   host_call        — capability dispatch (ail-runtime host boundary)
     ///   __ail_malloc     — heap allocator stub (ail-runtime allocator)
     ///   ail_runtime_call — concurrency/resource/channel dispatch (Phase 9+)
+    ///
+    /// Workflow:
+    ///   ail link --emit-runtime-stub ./ail_runtime.a
+    ///   ail link --profile dev --runtime-lib ./ail_runtime.a
+    ///
     /// Pass --runtime-lib <path/to/ail_runtime.a> to bundle these into the
     /// linked executable.  Without it the linker may fail with undefined-symbol
     /// errors unless the symbols are supplied through another mechanism.
@@ -240,6 +248,19 @@ enum Commands {
         /// linker may report undefined-symbol errors.
         #[arg(long)]
         runtime_lib: Option<PathBuf>,
+        /// Generate the runtime stub archive at the given path and exit.
+        ///
+        /// Emits a deterministic static archive (`ail_runtime.a`) containing
+        /// stub implementations of the three unresolved runtime symbols.
+        /// No system `ar` or linker is required to generate it.
+        /// After generation, pass the path to --runtime-lib to produce a
+        /// self-contained linked executable.
+        #[arg(long, value_name = "OUTPUT")]
+        emit_runtime_stub: Option<PathBuf>,
+        /// Print the names of the three runtime symbols imported by native
+        /// objects and exit.  Useful for diagnostics and linker script authoring.
+        #[arg(long)]
+        print_runtime_symbols: bool,
     },
 
     /// Evaluate an inline expression without initializing a project.
@@ -585,14 +606,26 @@ pub async fn run() -> Result<(), CliError> {
             profile,
             output,
             runtime_lib,
-        } => cmd_link(
-            mode,
-            &profile,
-            output.as_deref(),
-            runtime_lib.as_deref(),
-            &store,
-            &SystemLinker,
-        ),
+            emit_runtime_stub,
+            print_runtime_symbols,
+        } => {
+            validate_link_mode_flags(print_runtime_symbols, emit_runtime_stub.is_some())?;
+            if print_runtime_symbols {
+                cmd_print_runtime_symbols(mode);
+                Ok(())
+            } else if let Some(stub_out) = emit_runtime_stub {
+                cmd_emit_runtime_stub(mode, &stub_out)
+            } else {
+                cmd_link(
+                    mode,
+                    &profile,
+                    output.as_deref(),
+                    runtime_lib.as_deref(),
+                    &store,
+                    &SystemLinker,
+                )
+            }
+        }
         Commands::Eval { expression } => cmd_eval(mode, &expression),
         Commands::Init { branch } => cmd_init(mode, &store, &branch).await,
         Commands::Status => cmd_status(mode, &store).await,
@@ -749,3 +782,7 @@ mod tests_doctor;
 #[cfg(test)]
 #[path = "tests/link.rs"]
 mod tests_link;
+
+#[cfg(test)]
+#[path = "tests/link_stub.rs"]
+mod tests_link_stub;
