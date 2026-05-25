@@ -738,3 +738,39 @@ fn parses_nested_range_check_with_le_ge() {
         }
     );
 }
+
+// ── abort() form ──────────────────────────────────────────────────────
+
+// PARSE-ABORT-1: abort("message") lowers to CoreExpr::Abort with the
+// string literal as the message.
+#[test]
+fn parses_abort_with_string_literal() {
+    assert_eq!(
+        parse_expr("abort(\"unreachable branch\")").unwrap(),
+        CoreExpr::Abort {
+            message: "unreachable branch".to_string(),
+        }
+    );
+}
+
+// PARSE-ABORT-2: abort(add(x, y)) — a non-literal, non-identifier argument
+// is a parse error; the message must be a string literal or bare identifier.
+#[test]
+fn rejects_abort_with_non_literal_expression() {
+    let err = parse_expr("abort(add(x, y))").unwrap_err();
+    assert_eq!(
+        err.message,
+        "abort expects a string literal or identifier as the message"
+    );
+}
+
+// PARSE-ABORT-3: abort() with wrong arity (zero args) is rejected.
+#[test]
+fn rejects_abort_with_zero_args() {
+    let err = parse_expr("abort()").unwrap_err();
+    assert!(
+        err.message.contains("abort"),
+        "expected arity error mentioning 'abort', got: {}",
+        err.message
+    );
+}

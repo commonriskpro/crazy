@@ -4667,3 +4667,170 @@ end
         "variant(Pending) must skip Active and Inactive arms and fall to wildcard returning I64(99)"
     );
 }
+
+// ── Wave 24D: ACL source-level E2E tests for boolean short-circuit ─────────
+//
+// Spec scenarios covered (RUNTIME-ACL-AND-1, RUNTIME-ACL-AND-2,
+//                          RUNTIME-ACL-OR-1,  RUNTIME-ACL-OR-2):
+//
+//  RUNTIME-ACL-AND-1: ACL body `and(true, false)` must atomize the `true`
+//    literal, lower to ShortCircuitAnd{left:_t0=true, right:Literal(false)},
+//    evaluate the left operand (I64 1 — truthy), evaluate the right operand
+//    (I64 0 — the boolean representation of false), and return I64(0).
+//    Proves the full pipeline for `and` when both operands are evaluated.
+//
+//  RUNTIME-ACL-AND-2: ACL body `and(false, abort("dead"))` must lower to
+//    ShortCircuitAnd{left:_t0=false, right:Abort{"dead"}}.  With left=false
+//    (I64 0 — falsy) the WASM else-branch returns I64(0) immediately; the
+//    right-hand Abort (WASM `unreachable`) is NEVER reached.  The absence of
+//    a trap proves short-circuit semantics are preserved end-to-end from ACL
+//    source through the expr_parser, lower, and WASM emit stages.
+//
+//  RUNTIME-ACL-OR-1: ACL body `or(true, abort("dead"))` must lower to
+//    ShortCircuitOr{left:_t0=true, right:Abort{"dead"}}.  With left=true
+//    (I64 1 — truthy) the WASM then-branch returns I64(1) immediately; the
+//    right-hand Abort is NEVER reached.  The absence of a trap proves
+//    short-circuit semantics for `or`.
+//
+//  RUNTIME-ACL-OR-2: ACL body `or(false, true)` must atomize the `false`
+//    literal, lower to ShortCircuitOr{left:_t0=false, right:Literal(true)},
+//    evaluate both operands (left=I64(0) falsy → evaluate right=I64(1) truthy),
+//    and return I64(1).  Proves the full pipeline for `or` when both
+//    operands are evaluated.
+//
+// Boolean representation convention (from compiler_bool_literal_function_returns_i64_boolean):
+//   true  → I64(1)    false → I64(0)
+//
+// The `abort("dead")` ACL form is handled by the `abort` case added to
+// expr_parser.rs: `abort("msg")` → CoreExpr::Abort{message} →
+// AnfExpr::Abort{message} → WASM `unreachable`.
+
+// RUNTIME-ACL-AND-1
+//
+// ACL body: and(true, false)
+//
+//   Pipeline:
+//   1. `and(true, false)` → CoreExpr::And{left:Lit(Bool(true)),
+//      right:Lit(Bool(false))}
+//   2. lower → let _t0 = Literal(Bool(true)) in
+//      ShortCircuitAnd{left:"_t0", right:Literal(Bool(false))}
+//   3. WASM emit ShortCircuitAnd: emit_condition_get("_t0") → I64(1) truthy;
+//      If-then: emit right (Literal(Bool(false)) = I64(0)); If-else: I64(0).
+//      Since left=I64(1) (truthy), then-branch fires → right evaluated = I64(0).
+//   4. Returns I64(0).
+//
+// Proves: and(true, false) evaluates both operands and returns I64(0) (false).
+#[test]
+fn acl_and_true_false_evaluates_right_returns_false() {
+    let acl = "\
+change acl_and_1 base=0
+author tester
+description and(true, false): left=true so right is evaluated; result must be I64(0)
+op create_function id=fn.main return=Int body=and(true, false)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(0),
+        "and(true, false) must evaluate right (false) and return I64(0)"
+    );
+}
+
+// RUNTIME-ACL-AND-2
+//
+// ACL body: and(false, abort("dead"))
+//
+//   Pipeline:
+//   1. `and(false, abort("dead"))` → CoreExpr::And{left:Lit(Bool(false)),
+//      right:CoreExpr::Abort{message:"dead"}}
+//   2. lower → let _t0 = Literal(Bool(false)) in
+//      ShortCircuitAnd{left:"_t0", right:AnfExpr::Abort{message:"dead"}}
+//   3. WASM emit ShortCircuitAnd: emit_condition_get("_t0") → I64(0) falsy;
+//      If-then: emit right (Abort → `unreachable`); If-else: I64Const(0).
+//      Since left=I64(0) (falsy), else-branch fires → I64(0) returned; Abort
+//      (`unreachable`) is DEAD CODE and is NEVER reached at runtime.
+//   4. Returns I64(0) without trapping.
+//
+// Diagnostic: if short-circuit were broken (right always evaluated), the Abort
+// would fire → Wasmtime trap → invoke returns Err(EncodingError) → test panics
+// at .expect("invoke must succeed") with the trap message.
+#[test]
+fn acl_and_false_left_short_circuits_abort_not_reached() {
+    let acl = r#"
+change acl_and_2 base=0
+author tester
+description and(false, abort("dead")): left=false so right (abort) must not be evaluated
+op create_function id=fn.main return=Int body=and(false, abort("dead"))
+end
+"#;
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(0),
+        "and(false, abort(\"dead\")) must short-circuit: right never evaluated; must return I64(0) without trapping"
+    );
+}
+
+// RUNTIME-ACL-OR-1
+//
+// ACL body: or(true, abort("dead"))
+//
+//   Pipeline:
+//   1. `or(true, abort("dead"))` → CoreExpr::Or{left:Lit(Bool(true)),
+//      right:CoreExpr::Abort{message:"dead"}}
+//   2. lower → let _t0 = Literal(Bool(true)) in
+//      ShortCircuitOr{left:"_t0", right:AnfExpr::Abort{message:"dead"}}
+//   3. WASM emit ShortCircuitOr: emit_condition_get("_t0") → I64(1) truthy;
+//      If-then: I64Const(1); If-else: emit right (Abort → `unreachable`).
+//      Since left=I64(1) (truthy), then-branch fires → I64(1) returned; Abort
+//      (`unreachable`) is DEAD CODE and is NEVER reached at runtime.
+//   4. Returns I64(1) without trapping.
+//
+// Diagnostic: if short-circuit were broken (right always evaluated), the Abort
+// would fire → Wasmtime trap → invoke returns Err(EncodingError) → test panics
+// at .expect("invoke must succeed") with the trap message.
+#[test]
+fn acl_or_true_left_short_circuits_abort_not_reached() {
+    let acl = r#"
+change acl_or_1 base=0
+author tester
+description or(true, abort("dead")): left=true so right (abort) must not be evaluated
+op create_function id=fn.main return=Int body=or(true, abort("dead"))
+end
+"#;
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(1),
+        "or(true, abort(\"dead\")) must short-circuit: right never evaluated; must return I64(1) without trapping"
+    );
+}
+
+// RUNTIME-ACL-OR-2
+//
+// ACL body: or(false, true)
+//
+//   Pipeline:
+//   1. `or(false, true)` → CoreExpr::Or{left:Lit(Bool(false)),
+//      right:Lit(Bool(true))}
+//   2. lower → let _t0 = Literal(Bool(false)) in
+//      ShortCircuitOr{left:"_t0", right:Literal(Bool(true))}
+//   3. WASM emit ShortCircuitOr: emit_condition_get("_t0") → I64(0) falsy;
+//      If-then: I64Const(1); If-else: emit right (Literal(Bool(true)) = I64(1)).
+//      Since left=I64(0) (falsy), else-branch fires → right evaluated = I64(1).
+//   4. Returns I64(1).
+//
+// Proves: or(false, true) evaluates both operands and returns I64(1) (true).
+#[test]
+fn acl_or_false_true_evaluates_right_returns_true() {
+    let acl = "\
+change acl_or_2 base=0
+author tester
+description or(false, true): left=false so right is evaluated; result must be I64(1)
+op create_function id=fn.main return=Int body=or(false, true)
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(1),
+        "or(false, true) must evaluate right (true) and return I64(1)"
+    );
+}

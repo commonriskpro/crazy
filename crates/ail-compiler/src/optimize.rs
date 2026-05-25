@@ -836,10 +836,10 @@ fn uses_var(expr: &AnfExpr, name: &str) -> bool {
         AnfExpr::Return(inner)
         | AnfExpr::Loop { body: inner }
         | AnfExpr::Break { value: inner }
-        | AnfExpr::ShortCircuitAnd { right: inner, .. }
-        | AnfExpr::ShortCircuitOr { right: inner, .. }
         | AnfExpr::TaskGroup { body: inner }
         | AnfExpr::Timeout { body: inner, .. } => uses_var(inner, name),
+        AnfExpr::ShortCircuitAnd { left, right } => left == name || uses_var(right, name),
+        AnfExpr::ShortCircuitOr { left, right } => left == name || uses_var(right, name),
         AnfExpr::Seq(exprs) | AnfExpr::TupleNew(exprs) | AnfExpr::ListNew(exprs) => {
             exprs.iter().any(|expr| uses_var(expr, name))
         }
@@ -1361,6 +1361,64 @@ mod tests {
                 func: "reducer".to_string(),
             },
             "body must be the Fold node with all three atom references intact"
+        );
+    }
+
+    // ── uses_var: ShortCircuitAnd / ShortCircuitOr ────────────────────────
+
+    // OPT-USESVAR-AND-1: uses_var returns true when the queried name equals
+    // the left operand atom of ShortCircuitAnd.
+    #[test]
+    fn uses_var_short_circuit_and_true_for_left_name() {
+        let expr = AnfExpr::ShortCircuitAnd {
+            left: "x".to_string(),
+            right: Box::new(AnfExpr::Var("y".to_string())),
+        };
+        assert!(
+            uses_var(&expr, "x"),
+            "uses_var must return true when name matches ShortCircuitAnd.left"
+        );
+    }
+
+    // OPT-USESVAR-AND-2: uses_var returns false when the queried name does not
+    // appear in either the left atom or the right sub-expression.
+    #[test]
+    fn uses_var_short_circuit_and_false_for_unrelated_name() {
+        let expr = AnfExpr::ShortCircuitAnd {
+            left: "x".to_string(),
+            right: Box::new(AnfExpr::Var("y".to_string())),
+        };
+        assert!(
+            !uses_var(&expr, "z"),
+            "uses_var must return false when name is absent from ShortCircuitAnd"
+        );
+    }
+
+    // OPT-USESVAR-OR-1: uses_var returns true when the queried name equals
+    // the left operand atom of ShortCircuitOr.
+    #[test]
+    fn uses_var_short_circuit_or_true_for_left_name() {
+        let expr = AnfExpr::ShortCircuitOr {
+            left: "flag".to_string(),
+            right: Box::new(AnfExpr::Var("other".to_string())),
+        };
+        assert!(
+            uses_var(&expr, "flag"),
+            "uses_var must return true when name matches ShortCircuitOr.left"
+        );
+    }
+
+    // OPT-USESVAR-OR-2: uses_var returns false when the queried name does not
+    // appear in either the left atom or the right sub-expression.
+    #[test]
+    fn uses_var_short_circuit_or_false_for_unrelated_name() {
+        let expr = AnfExpr::ShortCircuitOr {
+            left: "flag".to_string(),
+            right: Box::new(AnfExpr::Var("other".to_string())),
+        };
+        assert!(
+            !uses_var(&expr, "z"),
+            "uses_var must return false when name is absent from ShortCircuitOr"
         );
     }
 }
