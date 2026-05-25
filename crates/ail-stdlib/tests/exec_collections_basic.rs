@@ -306,3 +306,41 @@ fn set_contains_non_list_returns_type_error() {
     );
     assert_eq!(result, Err(StdlibExecError::Type { expected: "List" }));
 }
+
+// map.insert rejects a non-Map first arg
+#[test]
+fn map_insert_non_map_returns_type_error() {
+    let result = call_pure_stdlib(
+        "std.collections.map.insert",
+        &[
+            StdlibValue::Int(0),
+            StdlibValue::Text("k".to_string()),
+            StdlibValue::Int(1),
+        ],
+    );
+    assert_eq!(result, Err(StdlibExecError::Type { expected: "Map" }));
+}
+
+// map.insert rejects a non-Text key (second arg)
+#[test]
+fn map_insert_non_text_key_returns_type_error() {
+    let result = call_pure_stdlib(
+        "std.collections.map.insert",
+        &[
+            StdlibValue::Map(BTreeMap::new()),
+            StdlibValue::Int(42),
+            StdlibValue::Int(1),
+        ],
+    );
+    assert_eq!(result, Err(StdlibExecError::Type { expected: "Text" }));
+}
+
+// set.insert rejects a non-List first arg
+#[test]
+fn set_insert_non_list_returns_type_error() {
+    let result = call_pure_stdlib(
+        "std.collections.set.insert",
+        &[StdlibValue::Int(0), StdlibValue::Int(1)],
+    );
+    assert_eq!(result, Err(StdlibExecError::Type { expected: "List" }));
+}
