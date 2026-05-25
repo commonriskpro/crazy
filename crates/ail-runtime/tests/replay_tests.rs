@@ -114,8 +114,8 @@ fn seeded_random_unknown_op_returns_error() {
     assert!(result.is_err(), "unknown operation must return error");
     let err = result.unwrap_err().to_string();
     assert!(
-        err.contains("bad_op"),
-        "error must include the unknown operation name: got {err}"
+        err.contains("unknown SeededRandom operation") && err.contains("bad_op"),
+        "error must name the handler and the unknown operation: got {err}"
     );
 }
 
