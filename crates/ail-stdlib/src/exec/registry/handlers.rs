@@ -371,7 +371,9 @@ pub(super) fn text_regex(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExec
             expected: "Text, Text",
         });
     };
-    Ok(StdlibValue::Bool(value.contains(pattern)))
+    let re = regex::Regex::new(pattern)
+        .map_err(|e| StdlibExecError::Message(format!("invalid regex: {e}")))?;
+    Ok(StdlibValue::Bool(re.is_match(value)))
 }
 
 pub(super) fn text_length_graphemes_exec(

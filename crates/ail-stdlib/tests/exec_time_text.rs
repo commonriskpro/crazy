@@ -1,12 +1,14 @@
-// Tests for text.length_graphemes, time pure ops, and capability host
-// extensions (clock.monotonic, random.bytes/generate).
+// Tests for text.length_graphemes, time pure ops, text.regex semantics, and
+// capability host extensions (clock.monotonic, random.bytes/generate).
 //
 // TDD: written BEFORE T10-T12 implementations.
 // Spec: STDLIB-EXEC-TEXT-1..3, STDLIB-EXEC-TIME-1..3,
-//       STDLIB-CAP-MONO-1..2, STDLIB-CAP-RAND-1
+//       STDLIB-CAP-MONO-1..2, STDLIB-CAP-RAND-1,
+//       STDLIB-EXEC-REGEX-1..3
 
 use ail_stdlib::exec::{
-    InMemoryCapabilityHost, StdlibCapabilityDispatch, StdlibValue, call_pure_stdlib,
+    InMemoryCapabilityHost, StdlibCapabilityDispatch, StdlibExecError, StdlibValue,
+    call_pure_stdlib,
 };
 
 // ── STDLIB-EXEC-TEXT-1: length_graphemes ASCII ────────────────────────────
@@ -139,5 +141,57 @@ fn random_bytes_generate_length_16() {
     assert!(
         matches!(result, Ok(StdlibValue::Bytes(ref b)) if b.len() == 16),
         "random.bytes/generate must return Bytes of length 16"
+    );
+}
+
+// ── STDLIB-EXEC-REGEX-1: anchored pattern matches, not substring ──────────
+//
+// "^\d+$" is a valid regex that matches "12345".
+// str::contains("^\d+$") on "12345" is false — proving real regex is used.
+
+#[test]
+fn text_regex_anchored_digit_pattern_matches() {
+    let result = call_pure_stdlib(
+        "std.text.regex",
+        &[
+            StdlibValue::Text("12345".to_string()),
+            StdlibValue::Text(r"^\d+$".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(true)));
+}
+
+// ── STDLIB-EXEC-REGEX-2: dot-star is regex quantifier, not literal ────────
+//
+// "foo.*bar" matches "foobazbar" via regex.
+// str::contains("foo.*bar") on "foobazbar" is false — proving regex semantics.
+
+#[test]
+fn text_regex_dot_star_matches_where_substring_would_not() {
+    let result = call_pure_stdlib(
+        "std.text.regex",
+        &[
+            StdlibValue::Text("foobazbar".to_string()),
+            StdlibValue::Text("foo.*bar".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(true)));
+}
+
+// ── STDLIB-EXEC-REGEX-3: invalid pattern returns StdlibExecError::Message ─
+
+#[test]
+fn text_regex_invalid_pattern_yields_exec_error() {
+    let result = call_pure_stdlib(
+        "std.text.regex",
+        &[
+            StdlibValue::Text("anything".to_string()),
+            StdlibValue::Text("[".to_string()),
+        ],
+    );
+    assert!(
+        matches!(result, Err(StdlibExecError::Message(ref msg)) if msg.starts_with("invalid regex")),
+        "expected StdlibExecError::Message starting with 'invalid regex', got: {:?}",
+        result
     );
 }

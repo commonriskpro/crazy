@@ -8,6 +8,7 @@ license.workspace = true
 ail-core             = { workspace = true }
 blake3               = { workspace = true }
 ciborium             = { workspace = true }
+regex                = { workspace = true }
 serde                = { workspace = true }
 unicode-segmentation  = { workspace = true }
 unicode-normalization = { workspace = true }
