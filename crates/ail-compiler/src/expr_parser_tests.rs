@@ -678,6 +678,47 @@ fn parses_set_with_expression_elements() {
     );
 }
 
+// ── IndexGet constructor form ─────────────────────────────────────────
+
+#[test]
+fn parses_index_valid_form() {
+    // index(lst, 0) — collection is a Var, index is an integer literal.
+    assert_eq!(
+        parse_expr("index(lst, 0)").unwrap(),
+        CoreExpr::IndexGet {
+            collection: Box::new(CoreExpr::Var("lst".to_string())),
+            index: Box::new(CoreExpr::Literal(LiteralValue::Int(0))),
+        }
+    );
+}
+
+#[test]
+fn parses_index_with_expression_index() {
+    // index(lst, add(i, 1)) — index argument is an arbitrary expression.
+    assert_eq!(
+        parse_expr("index(lst, add(i, 1))").unwrap(),
+        CoreExpr::IndexGet {
+            collection: Box::new(CoreExpr::Var("lst".to_string())),
+            index: Box::new(CoreExpr::Add(
+                Box::new(CoreExpr::Var("i".to_string())),
+                Box::new(CoreExpr::Literal(LiteralValue::Int(1))),
+            )),
+        }
+    );
+}
+
+#[test]
+fn rejects_index_wrong_arity_one() {
+    let err = parse_expr("index(x)").unwrap_err();
+    assert_eq!(err.message, "index expects 2 args, got 1");
+}
+
+#[test]
+fn rejects_index_wrong_arity_three() {
+    let err = parse_expr("index(x, 0, y)").unwrap_err();
+    assert_eq!(err.message, "index expects 2 args, got 3");
+}
+
 // ── Nested expressions with new operators ────────────────────────────
 
 #[test]

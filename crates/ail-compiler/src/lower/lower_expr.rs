@@ -478,6 +478,31 @@ pub(super) fn lower_core_expr_to_anf_local(
             )
         }
 
+        // IndexGet: atomize collection and index into local let-bindings.
+        // Uses atomize_local so synthetic temporaries (e.g. the integer index
+        // literal) are emitted as inline AnfExpr::Let nodes visible to the
+        // WASM emitter.  Falling through to the `_` arm would discard those
+        // bindings, leaving the IndexGet referencing an undefined local →
+        // runtime trap.
+        CoreExpr::IndexGet { collection, index } => {
+            let (col_name, col_binding) = atomize_local(collection, fresh, source_ref);
+            let (idx_name, idx_binding) = atomize_local(index, fresh, source_ref);
+            let mut bindings = Vec::new();
+            if let Some(b) = col_binding {
+                bindings.push(b);
+            }
+            if let Some(b) = idx_binding {
+                bindings.push(b);
+            }
+            wrap_local_bindings(
+                bindings,
+                AnfExpr::IndexGet {
+                    collection: col_name,
+                    index: idx_name,
+                },
+            )
+        }
+
         // ── Fallthrough gap ───────────────────────────────────────────────
         //
         // Variants without an explicit local arm fall here.
@@ -491,7 +516,7 @@ pub(super) fn lower_core_expr_to_anf_local(
         // arm is added — sub-expression bindings would be discarded and the
         // resulting ANF would reference undefined names:
         //   EffectCall, Dispatch, TaskSpawn, ChannelSend, ChannelReceive,
-        //   Select, Timeout, ResourceUsing, Lambda, IndexGet, BoundaryCall,
+        //   Select, Timeout, ResourceUsing, Lambda, BoundaryCall,
         //   DynCall, CapabilityUse, ...
         //
         // Add an explicit arm in this function before the parser exposes any

@@ -3815,3 +3815,76 @@ fn record_new_empty_returns_non_null_pointer() {
         "empty RecordNew must return a positive I32 heap pointer; got {ptr}"
     );
 }
+
+// ── Wave 22B: ACL `index(collection, index)` form ─────────────────────────
+//
+// Spec scenarios covered (RUNTIME-ACL-INDEX-1, RUNTIME-ACL-INDEX-2):
+//
+//  RUNTIME-ACL-INDEX-1: ACL body `let(lst, list(5, 10), index(lst, 0))` must
+//    parse to CoreExpr::Let { name:"lst", value:ListNew([Lit(5),Lit(10)]),
+//    body:IndexGet{collection:Var("lst"),index:Lit(0)} }, lower to ANF,
+//    emit WASM, instantiate, and return I64(5).
+//    Proves the full pipeline from ACL source → expr_parser → IndexGet →
+//    lower_to_anf → wasm_emit → runtime execution without crash.
+//
+//  RUNTIME-ACL-INDEX-2: ACL body `let(lst, list(5, 10), index(lst, 1))` must
+//    return I64(10) — same pipeline, accessing the second element.
+//    Together with RUNTIME-ACL-INDEX-1 this proves index arithmetic:
+//    element address = ptr + 8 + index * 8.
+
+// RUNTIME-ACL-INDEX-1
+//
+// ACL body: let(lst, list(5, 10), index(lst, 0))
+//
+//   Pipeline:
+//   1. `list(5, 10)` → parse_expr → CoreExpr::ListNew([Lit(5), Lit(10)])
+//   2. `index(lst, 0)` → CoreExpr::IndexGet{collection:Var("lst"),index:Lit(0)}
+//   3. `let(lst, <list>, <index>)` → CoreExpr::Let{name:"lst",...}
+//   4. lower_to_anf → let _t0=5 in let _t1=10 in let lst=ListNew([_t0,_t1]) in
+//      let _t2=0 in IndexGet{collection:"lst", index:"_t2"}
+//   5. emit_wasm → IndexGet: addr = lst_ptr + 8 + 0*8 = lst_ptr+8 → 5
+//   6. invoke → RuntimeValue::I64(5)
+//
+// Proves: index(collection, 0) resolves to the first list element end-to-end.
+#[test]
+fn acl_index_form_first_element_returns_i64_5() {
+    let acl = "\
+change acl_index_1 base=0
+author tester
+description let(lst, list(5,10), index(lst,0)): index at 0 must return I64(5)
+op create_function id=fn.main return=Int body=let(lst, list(5, 10), index(lst, 0))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(5),
+        "let(lst, list(5,10), index(lst,0)) must return I64(5) via IndexGet at offset 8"
+    );
+}
+
+// RUNTIME-ACL-INDEX-2
+//
+// ACL body: let(lst, list(5, 10), index(lst, 1))
+//
+//   Pipeline:
+//   1..4. Same as RUNTIME-ACL-INDEX-1 up through ANF lowering.
+//   5. emit_wasm → IndexGet: addr = lst_ptr + 8 + 1*8 = lst_ptr+16 → 10
+//   6. invoke → RuntimeValue::I64(10)
+//
+// Proves: index(collection, 1) resolves to the second list element; the
+// index * 8 stride arithmetic is correct.
+#[test]
+fn acl_index_form_second_element_returns_i64_10() {
+    let acl = "\
+change acl_index_2 base=0
+author tester
+description let(lst, list(5,10), index(lst,1)): index at 1 must return I64(10)
+op create_function id=fn.main return=Int body=let(lst, list(5, 10), index(lst, 1))
+end
+";
+    assert_eq!(
+        invoke_acl_export(acl, "main"),
+        RuntimeValue::I64(10),
+        "let(lst, list(5,10), index(lst,1)) must return I64(10) via IndexGet at offset 16"
+    );
+}
