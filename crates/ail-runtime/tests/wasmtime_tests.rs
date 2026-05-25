@@ -4129,35 +4129,6 @@ end
     );
 }
 
-// ── Wave 23A: ACL source-level fold with inline lambda reducer ────────────
-//
-// Spec scenarios covered (RUNTIME-ACL-FOLD-2, RUNTIME-ACL-FOLD-3):
-//
-//  RUNTIME-ACL-FOLD-2: ACL body `fold(0, list(1,2,3), lambda(acc, x, add(acc, x)))`
-//    uses an inline, capture-free Lambda as the fold reducer.
-//    Pipeline: `lambda(acc, x, add(acc, x))` → CoreExpr::Lambda{params:["acc","x"],
-//    body:Add(Var("acc"),Var("x"))} → AnfExpr::Lambda{params:["acc","x"],
-//    captures:[], body:Call{"add",[acc,x]}}.
-//    Emitter path: params.len()==2 && captures.is_empty() → hoistable fold
-//    reducer; Lambda node emits `i64.const <table_idx>`; Fold dispatches via
-//    call_indirect(fold_reducer_type, table[table_idx]).
-//    fold(0, [1,2,3], add): acc=0 → add(0,1)=1 → add(1,2)=3 → add(3,3)=6.
-//    Returns I64(6).
-//
-//  RUNTIME-ACL-FOLD-3: ACL body
-//    `let(bias, 10, fold(0, list(1,2), lambda(acc, x, add(add(acc, x), bias))))`
-//    uses an inline Lambda that closes over `bias` from the enclosing `let`.
-//    Pipeline: `lambda(acc, x, add(add(acc, x), bias))` → CoreExpr::Lambda{...}
-//    → AnfExpr::Lambda{params:["acc","x"], captures:["bias"], body:Let{...}}.
-//    Emitter path: params.len()==2 && !captures.is_empty() → closure-hoistable
-//    reducer; Lambda node writes a closure env (env_ptr: I32) to heap, storing
-//    fn_idx at offset 0 and the captured `bias` at offset 8; Fold loads env_ptr
-//    and dispatches via call_indirect(closure_reducer_type, table[env.fn_idx]).
-//    fold(0, [1,2], reducer) with bias=10:
-//      step 1: add(add(0, 1), 10) = add(1, 10) = 11
-//      step 2: add(add(11, 2), 10) = add(13, 10) = 23
-//    Returns I64(23).
-
 // RUNTIME-ACL-FOLD-2
 //
 // ACL body: fold(0, list(1,2,3), lambda(acc, x, add(acc, x)))
