@@ -241,17 +241,26 @@ pub(crate) fn infer_expr_type(
             if then_ty == else_ty { then_ty } else { None }
         }
         AnfExpr::Match { arms, .. } => {
-            let first_ty = arms
-                .first()
-                .and_then(|arm| infer_expr_type(&arm.body, locals));
-            if arms
-                .iter()
-                .all(|arm| infer_expr_type(&arm.body, locals) == first_ty)
-            {
-                first_ty
-            } else {
-                None
+            // Infer each arm's body type, temporarily adding the payload binding
+            // variable (e.g. `x` from `"Ok(x)"`) to locals so that references to
+            // it in the body resolve as I64 rather than returning None.
+            let mut unanimous: Option<Option<ValType>> = None;
+            for arm in arms {
+                let payload = arm_payload_binding(&arm.pattern);
+                if let Some(name) = payload {
+                    locals.push((name.to_string(), ValType::I64));
+                }
+                let ty = infer_expr_type(&arm.body, locals);
+                if payload.is_some() {
+                    locals.pop();
+                }
+                match unanimous {
+                    None => unanimous = Some(ty),
+                    Some(prev) if prev != ty => return None,
+                    Some(_) => {}
+                }
             }
+            unanimous.flatten()
         }
         AnfExpr::Return(inner) => infer_expr_type(inner, locals),
         AnfExpr::ShortCircuitAnd { .. } | AnfExpr::ShortCircuitOr { .. } => Some(ValType::I64),
@@ -378,7 +387,17 @@ pub(crate) fn collect_free_vars<'a>(
         }
         AnfExpr::Match { arms, .. } => {
             for arm in arms {
+                // A single-binding constructor pattern like "Ok(x)" introduces
+                // a payload variable that is locally bound within the arm body.
+                // Add it to `bound` so it is not reported as a free variable.
+                let payload = arm_payload_binding(&arm.pattern);
+                if let Some(name) = payload {
+                    bound.push(name);
+                }
                 collect_free_vars(&arm.body, bound, out);
+                if payload.is_some() {
+                    bound.pop();
+                }
             }
         }
         // Lambda: the `captures` field explicitly names the free variables this
@@ -502,6 +521,41 @@ pub(crate) fn export_name(binding_name: &str) -> String {
             }
         })
         .collect()
+}
+
+// ── Match arm payload binding helper ──────────────────────────────────────
+
+/// Extract the payload binding name from a single-binding constructor pattern.
+///
+/// Examples:
+/// - `"Ok(x)"` → `Some("x")`
+/// - `"Some(value)"` → `Some("value")`
+/// - `"None"` → `None` (tag-only)
+/// - `"Some(_)"` → `None` (wildcard binding — not a real variable)
+/// - `"_"` → `None`
+/// - `"Ok(Some(x))"` → `None` (nested — unsupported, handled elsewhere)
+/// - `"Pair(a, b)"` → `None` (multi-binding — unsupported, handled elsewhere)
+///
+/// Used by `collect_free_vars` and `infer_expr_type` so that arm payload
+/// variables are treated as locally bound rather than free.
+fn arm_payload_binding(pattern: &str) -> Option<&str> {
+    let trimmed = pattern.trim();
+    // Must start with an uppercase letter to be a constructor pattern.
+    if !trimmed.starts_with(|ch: char| ch.is_ascii_uppercase()) {
+        return None;
+    }
+    let open = trimmed.find('(')?;
+    let inner = trimmed[open + 1..].trim();
+    let inner = inner.strip_suffix(')').unwrap_or(inner).trim();
+    // Reject unsupported shapes (nested constructors, multi-binding).
+    if inner.contains('(') || inner.contains(',') {
+        return None;
+    }
+    // Wildcard binding is not a real variable.
+    if inner == "_" {
+        return None;
+    }
+    Some(inner)
 }
 
 // ── Record/variant layout helpers ─────────────────────────────────────────
