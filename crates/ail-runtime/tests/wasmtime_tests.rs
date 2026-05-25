@@ -4687,12 +4687,15 @@ end
 //    one using `none()`, the other using `variant(None)` — must both match the
 //    `None` arm and return I64(42).
 //
-//  RUNTIME-ACL-VARIANT-COLLISION-3: well-known `None`=0 and `Some`=1 must
-//    remain stable after the user-tag-reservation fix.  The `next_variant_tag`
-//    counter starts at 2 but well-known tags bypass it; the `max` guard in
-//    `assign_tag` ensures the counter is never lowered below its current value.
-//    `none()` must still match the `None` arm (discriminant 0) and `some(42)`
-//    must still match the `Some(x)` arm (discriminant 1).
+//  RUNTIME-ACL-VARIANT-COLLISION-3: well-known `None`=0, `Ok`=0, `Some`=1,
+//    and `Err`=1 must remain stable after the user-tag-reservation fix.  The
+//    `next_variant_tag` counter starts at 2 and can only grow, so it stays at
+//    ≥2 regardless of which well-known tags are resolved; well-known tags bypass
+//    the counter entirely (via `well_known_variant_tag`).  The `max` guard in
+//    `assign_tag` is only relevant for hypothetical future well-known IDs ≥2 —
+//    it ensures user tags never alias any such ID should one be introduced.
+//    `none()` and `ok(7)` must match discriminant 0; `some(42)` and `err(5)`
+//    must match discriminant 1.
 
 // RUNTIME-ACL-VARIANT-COLLISION-1
 //
@@ -4767,31 +4770,38 @@ end
 
 // RUNTIME-ACL-VARIANT-COLLISION-3
 //
-// Two functions proving well-known discriminants are stable after the fix:
-//   fn.none_stable: match(none(),     None,    10, _, 0)  → I64(10)
-//   fn.some_stable: match(some(42),   Some(x), x,  _, 0)  → I64(42)
+// Four functions proving well-known discriminants are stable after the fix:
+//   fn.none_stable: match(none(),   None,    10, _, 0) → I64(10)
+//   fn.some_stable: match(some(42), Some(x), x,  _, 0) → I64(42)
+//   fn.ok_stable:   match(ok(7),    Ok(v),   v,  _, 0) → I64(7)
+//   fn.err_stable:  match(err(5),   Err(e),  e,  _, 0) → I64(5)
 //
-//   Pipeline for fn.none_stable:
-//     `none()` → VariantNew{tag:"None"} → assign_tag("None")=0 (well-known).
-//     Store tag 0.  Match "None" → 0==0 → fires → 10.  Returns I64(10).
+//   Pipeline for fn.none_stable / fn.ok_stable (discriminant 0):
+//     `none()` / `ok(7)` → VariantNew → assign_tag("None"/"Ok") = 0 (well-known).
+//     Store tag 0.  Match arm tag-check: 0==0 → fires.  Returns I64(10) / I64(7).
 //
-//   Pipeline for fn.some_stable:
-//     `some(42)` → VariantNew{tag:"Some", payload:42} → assign_tag("Some")=1 (well-known).
-//     Store tag 1, payload 42.  Match "Some(x)" → assign_tag("Some")=1 (cache);
-//     1==1 → fires → bind x=42 → return x.  Returns I64(42).
+//   Pipeline for fn.some_stable / fn.err_stable (discriminant 1):
+//     `some(42)` / `err(5)` → VariantNew → assign_tag("Some"/"Err") = 1 (well-known).
+//     Store tag 1, payload 42/5.  Match arm tag-check: 1==1 → fires → binds payload.
+//     Returns I64(42) / I64(5).
 //
-//   The fix sets `next_variant_tag: 2` but well-known tags bypass the counter
-//   entirely (resolved via well_known_variant_tag).  The max-guard in assign_tag
-//   prevents the counter from being lowered, so 2 stays at ≥2 even after a
-//   well-known tag is seen.  None=0 and Some=1 are unaffected.
+//   Causality: the counter stays at ≥2 because it starts at 2 and can only
+//   grow — it is never decremented.  Well-known tags bypass the counter
+//   entirely (via well_known_variant_tag), so resolving None/Ok/Some/Err
+//   never touches `next_variant_tag`.  The max-guard in assign_tag only
+//   matters for hypothetical future well-known IDs ≥2: if such an ID were
+//   introduced, the guard bumps the counter past it so user tags still cannot
+//   alias it.  None=0, Ok=0, Some=1, Err=1 are unaffected.
 #[test]
-fn acl_variant_collision_3_well_known_none_and_some_remain_stable() {
+fn acl_variant_collision_3_well_known_none_some_ok_err_remain_stable() {
     let acl = "\
 change acl_variant_collision_3 base=0
 author tester
-description well-known None=0 and Some=1 remain stable; not displaced by user-tag reservation
+description well-known None=0, Ok=0, Some=1, Err=1 remain stable; not displaced by user-tag reservation
 op create_function id=fn.none_stable return=Int body=match(none(), None, 10, _, 0)
 op create_function id=fn.some_stable return=Int body=match(some(42), Some(x), x, _, 0)
+op create_function id=fn.ok_stable return=Int body=match(ok(7), Ok(v), v, _, 0)
+op create_function id=fn.err_stable return=Int body=match(err(5), Err(e), e, _, 0)
 end
 ";
     assert_eq!(
@@ -4803,6 +4813,16 @@ end
         invoke_acl_export(acl, "some_stable"),
         RuntimeValue::I64(42),
         "some(42) must still match Some(x) arm (discriminant 1 unchanged), bind x=42, return I64(42)"
+    );
+    assert_eq!(
+        invoke_acl_export(acl, "ok_stable"),
+        RuntimeValue::I64(7),
+        "ok(7) must still match Ok(v) arm (discriminant 0 unchanged), bind v=7, return I64(7)"
+    );
+    assert_eq!(
+        invoke_acl_export(acl, "err_stable"),
+        RuntimeValue::I64(5),
+        "err(5) must still match Err(e) arm (discriminant 1 unchanged), bind e=5, return I64(5)"
     );
 }
 
