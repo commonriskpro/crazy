@@ -213,6 +213,41 @@ async fn cmd_inspect_artifact_prefers_persisted_native_over_on_demand() {
     );
 }
 
+// Scenario: cmd_inspect report surfaces verified_profile from file-backed sidecar.
+//   GIVEN a file store with a report saved under a non-hex change-id with profile "prod"
+//   WHEN cmd_inspect report is called with that change-id
+//   THEN the call succeeds (verified_profile is surfaced, not discarded with _profile)
+//
+// Uses a non-hex change-id to exercise the sidecar branch directly, avoiding the
+// pre-existing object-store collision where the changeset's CBOR bytes occupy the
+// same content-addressed slot as the expected report hash.
+#[tokio::test]
+async fn cmd_inspect_report_surfaces_verified_profile_from_sidecar() {
+    use crate::store::{file_store, init_file_layout};
+    use ail_verify::report::VerificationReport;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    std::fs::create_dir_all(ail_dir.join("reports")).expect("create reports dir");
+    let store = file_store(ail_dir);
+
+    // Save a report directly with profile "prod" under a non-hex change-id.
+    let change_id = "change.inspect_profile_test";
+    let report = VerificationReport::default();
+    store
+        .save_verification_report(change_id, "prod", &report)
+        .await
+        .expect("save report");
+
+    // inspect report by non-hex change-id — must succeed (verified_profile surfaced, not dropped).
+    let result = cmd_inspect(OutputMode::Human, "report", change_id, &store).await;
+    assert!(
+        result.is_ok(),
+        "inspect report by change-id must succeed when sidecar contains verified_profile; got: {result:?}"
+    );
+}
+
 // Scenario: inspect artifact dev.o resolves native when both WASM and native artifacts coexist.
 //   GIVEN a file store where both cmd_compile --target wasm and --target native have been run
 //   WHEN cmd_inspect artifact is called with "dev.o"

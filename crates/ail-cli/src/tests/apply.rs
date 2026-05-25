@@ -285,6 +285,72 @@ async fn cmd_apply_accepts_legacy_sidecar_for_dev_apply() {
     );
 }
 
+// Scenario PG-5: legacy sidecar (no profile field) is treated as "dev" and
+//   blocks apply when --policy is "prod" (profile mismatch).
+//   GIVEN a file store with a legacy sidecar (just hash, no profile token)
+//   WHEN cmd_apply is called with policy_profile = Some("prod") and --yes
+//   THEN Err(CliError::Domain) is returned mentioning profile mismatch
+#[tokio::test]
+async fn cmd_apply_blocks_legacy_sidecar_for_prod_apply() {
+    use crate::store::{file_store, init_file_layout};
+    use ail_change::canonical::CanonicalChangeSet;
+    use ail_storage::object::ObjectId;
+    use ail_verify::report::VerificationReport;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    init_file_layout(&ail_dir).expect("init layout");
+    let reports_dir = ail_dir.join("reports");
+    std::fs::create_dir_all(&reports_dir).expect("create reports dir");
+
+    let store = file_store(ail_dir.clone());
+
+    let canonical = CanonicalChangeSet::default();
+    let mut cbor_bytes = Vec::new();
+    ciborium::into_writer(&canonical, &mut cbor_bytes).expect("CBOR encode");
+    let change_id = ObjectId::from_bytes(&cbor_bytes).to_hex();
+    store
+        .save_changeset_payload(&change_id, &cbor_bytes)
+        .await
+        .expect("save changeset");
+
+    // Save a report object and write a legacy sidecar (hash only, no profile).
+    let report = VerificationReport::default();
+    let hash = store
+        .save_verification_report(&change_id, "dev", &report)
+        .await
+        .expect("save report");
+    // Overwrite sidecar with legacy format: just the hash, no profile token.
+    let sidecar = reports_dir.join(&change_id);
+    std::fs::write(&sidecar, format!("{}\n", hash.to_hex())).expect("write legacy sidecar");
+
+    // Apply with "prod" policy and --yes — must block: legacy → "dev" ≠ "prod".
+    let result = cmd_apply(
+        OutputMode::Human,
+        &change_id,
+        true, // --yes to bypass the prod approval gate
+        Some("prod"),
+        &store,
+    )
+    .await;
+
+    match &result {
+        Err(CliError::Domain(msg)) => {
+            assert!(
+                msg.contains("dev") && msg.contains("prod"),
+                "error must mention both profiles; got: {msg}"
+            );
+            assert!(
+                msg.contains("profile"),
+                "error must mention 'profile'; got: {msg}"
+            );
+        }
+        other => panic!(
+            "expected profile-mismatch Domain error for legacy sidecar + prod apply; got: {other:?}"
+        ),
+    }
+}
+
 // Scenario: preflight fails on module hash mismatch.
 #[test]
 fn preflight_fails_on_module_hash_mismatch() {
