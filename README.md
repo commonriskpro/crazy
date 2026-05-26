@@ -49,6 +49,9 @@ cargo clippy --all-targets -- -D warnings
 # Tests
 cargo test --workspace
 
+# Public CLI dogfood conformance
+./scripts/dogfood-conformance.sh
+
 # Release metadata preflight for local/CI validation
 ./scripts/release-preflight.sh --allow-unreleased
 ```
