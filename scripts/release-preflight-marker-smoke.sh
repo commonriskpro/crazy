@@ -110,6 +110,20 @@ assert_json_rejects_invalid_version() {
     fi
 }
 
+assert_text_passes_with_empty_warnings() {
+    local fixture="$1"
+
+    (
+        cd "$fixture"
+        VERSION=1.0.0 bash "$repo_root/scripts/release-preflight.sh"
+    ) >"$fixture/text-stdout" 2>"$fixture/text-stderr"
+
+    if ! grep -qF 'release preflight passed for v1.0.0' "$fixture/text-stdout"; then
+        printf 'text preflight did not pass cleanly for %s\n' "$fixture" >&2
+        return 1
+    fi
+}
+
 plain_prose_changelog='# Changelog
 
 ## [Unreleased]
@@ -120,6 +134,15 @@ plain_prose_changelog='# Changelog
 exact_marker_changelog='# Changelog
 
 ## [Unreleased]
+
+- [compatibility-breaking] Existing stores require migration review.
+'
+
+exact_release_changelog='# Changelog
+
+## [Unreleased]
+
+## [1.0.0] - 2026-05-26
 
 - [compatibility-breaking] Existing stores require migration review.
 '
@@ -140,6 +163,9 @@ assert_fails_for_missing_marker "$tmp_root/plain-prose"
 
 write_fixture exact-marker "$exact_marker_changelog"
 run_preflight "$tmp_root/exact-marker"
+
+write_fixture exact-release "$exact_release_changelog"
+assert_text_passes_with_empty_warnings "$tmp_root/exact-release"
 
 write_fixture outside-marker "$outside_marker_changelog"
 assert_fails_for_missing_marker "$tmp_root/outside-marker"

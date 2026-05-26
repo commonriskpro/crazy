@@ -88,17 +88,21 @@ emit_result() {
         return
     fi
 
-    local warning
-    for warning in "${warnings[@]}"; do
-        echo "warning: $warning" >&2
-    done
+    if [[ "${#warnings[@]}" -gt 0 ]]; then
+        local warning
+        for warning in "${warnings[@]}"; do
+            echo "warning: $warning" >&2
+        done
+    fi
 
     if [[ "$status" == "failed" ]]; then
         echo "error: release preflight failed" >&2
-        local failure
-        for failure in "${failures[@]}"; do
-            echo "error: $failure" >&2
-        done
+        if [[ "${#failures[@]}" -gt 0 ]]; then
+            local failure
+            for failure in "${failures[@]}"; do
+                echo "error: $failure" >&2
+            done
+        fi
     else
         echo "release preflight passed for v$VERSION"
     fi

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-26
+
 ### Fixed
 
 - **`clock.now` epoch-ms capability boundary** (Wave 23B): replaced silent-truncating
