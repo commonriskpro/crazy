@@ -476,7 +476,9 @@ pub(super) fn lower_short_circuit_and(
         LowerResult::Value(v) => v,
         _ => builder.ins().iconst(types::I64, 0),
     };
-    builder.ins().jump(merge_block, &[BlockArg::Value(right_val)]);
+    builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(right_val)]);
 
     // false branch: short-circuit → 0
     builder.switch_to_block(false_block);
@@ -527,7 +529,9 @@ pub(super) fn lower_short_circuit_or(
         LowerResult::Value(v) => v,
         _ => builder.ins().iconst(types::I64, 0),
     };
-    builder.ins().jump(merge_block, &[BlockArg::Value(right_val)]);
+    builder
+        .ins()
+        .jump(merge_block, &[BlockArg::Value(right_val)]);
 
     builder.switch_to_block(merge_block);
     builder.seal_block(merge_block);

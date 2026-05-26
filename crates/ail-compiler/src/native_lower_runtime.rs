@@ -220,7 +220,11 @@ fn infer_lambda_return_type(body: &AnfExpr, params: &[String]) -> Option<types::
         Some(ty) => Some(ty),
         None => match body {
             AnfExpr::Var(name) if params.iter().any(|param| param == name) => Some(types::I64),
+            AnfExpr::Let { body, .. } => infer_lambda_return_type(body, params),
             AnfExpr::Return(inner) => infer_lambda_return_type(inner, params),
+            AnfExpr::Seq(exprs) => exprs
+                .last()
+                .and_then(|expr| infer_lambda_return_type(expr, params)),
             _ => None,
         },
     }
