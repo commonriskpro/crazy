@@ -6,7 +6,7 @@
 // Continue, WhileLoop, If, Match, ShortCircuitAnd, ShortCircuitOr, Seq,
 // RuntimeCheck.
 
-use cranelift_codegen::ir::{InstBuilder, TrapCode, condcodes::IntCC, types};
+use cranelift_codegen::ir::{BlockArg, InstBuilder, TrapCode, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_object::ObjectModule;
 
@@ -166,7 +166,7 @@ pub(super) fn lower_break(
     };
     match super::lower_anf_expr_cranelift(value, ctx, builder, module) {
         LowerResult::Value(v) => {
-            builder.ins().jump(break_block, &[v]);
+            builder.ins().jump(break_block, &[BlockArg::Value(v)]);
         }
         LowerResult::Unit => {
             builder.ins().jump(break_block, &[]);
@@ -275,7 +275,7 @@ pub(super) fn lower_if(
     builder.seal_block(then_block);
     match super::lower_anf_expr_cranelift(then_branch, ctx, builder, module) {
         LowerResult::Value(v) => {
-            builder.ins().jump(merge_block, &[v]);
+            builder.ins().jump(merge_block, &[BlockArg::Value(v)]);
         }
         LowerResult::Unit => {
             builder.ins().jump(merge_block, &[]);
@@ -287,7 +287,7 @@ pub(super) fn lower_if(
     builder.seal_block(else_block);
     match super::lower_anf_expr_cranelift(else_branch, ctx, builder, module) {
         LowerResult::Value(v) => {
-            builder.ins().jump(merge_block, &[v]);
+            builder.ins().jump(merge_block, &[BlockArg::Value(v)]);
         }
         LowerResult::Unit => {
             builder.ins().jump(merge_block, &[]);
@@ -355,7 +355,7 @@ pub(super) fn lower_match(
             // Lower arm body and jump to merge.
             match super::lower_anf_expr_cranelift(&arm.body, ctx, builder, module) {
                 LowerResult::Value(v) => {
-                    builder.ins().jump(merge_block, &[v]);
+                    builder.ins().jump(merge_block, &[BlockArg::Value(v)]);
                     has_merge_predecessor = true;
                 }
                 LowerResult::Unit => {
@@ -395,7 +395,7 @@ pub(super) fn lower_match(
             builder.seal_block(arm_block);
             match super::lower_anf_expr_cranelift(&arm.body, ctx, builder, module) {
                 LowerResult::Value(v) => {
-                    builder.ins().jump(merge_block, &[v]);
+                    builder.ins().jump(merge_block, &[BlockArg::Value(v)]);
                     has_merge_predecessor = true;
                 }
                 LowerResult::Unit => {
@@ -420,7 +420,7 @@ pub(super) fn lower_match(
             builder.seal_block(arm_block);
             match super::lower_anf_expr_cranelift(&arm.body, ctx, builder, module) {
                 LowerResult::Value(v) => {
-                    builder.ins().jump(merge_block, &[v]);
+                    builder.ins().jump(merge_block, &[BlockArg::Value(v)]);
                     has_merge_predecessor = true;
                 }
                 LowerResult::Unit => {
@@ -476,13 +476,13 @@ pub(super) fn lower_short_circuit_and(
         LowerResult::Value(v) => v,
         _ => builder.ins().iconst(types::I64, 0),
     };
-    builder.ins().jump(merge_block, &[right_val]);
+    builder.ins().jump(merge_block, &[BlockArg::Value(right_val)]);
 
     // false branch: short-circuit → 0
     builder.switch_to_block(false_block);
     builder.seal_block(false_block);
     let zero = builder.ins().iconst(types::I64, 0);
-    builder.ins().jump(merge_block, &[zero]);
+    builder.ins().jump(merge_block, &[BlockArg::Value(zero)]);
 
     builder.switch_to_block(merge_block);
     builder.seal_block(merge_block);
@@ -518,7 +518,7 @@ pub(super) fn lower_short_circuit_or(
     builder.switch_to_block(true_block);
     builder.seal_block(true_block);
     let one = builder.ins().iconst(types::I64, 1);
-    builder.ins().jump(merge_block, &[one]);
+    builder.ins().jump(merge_block, &[BlockArg::Value(one)]);
 
     // false branch: evaluate right
     builder.switch_to_block(false_block);
@@ -527,7 +527,7 @@ pub(super) fn lower_short_circuit_or(
         LowerResult::Value(v) => v,
         _ => builder.ins().iconst(types::I64, 0),
     };
-    builder.ins().jump(merge_block, &[right_val]);
+    builder.ins().jump(merge_block, &[BlockArg::Value(right_val)]);
 
     builder.switch_to_block(merge_block);
     builder.seal_block(merge_block);
