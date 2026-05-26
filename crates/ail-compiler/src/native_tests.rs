@@ -1098,6 +1098,19 @@ fn anf_lambda_one_capture(cap_val: i64) -> AnfIr {
     })
 }
 
+fn anf_lambda_returning_param_body(body: crate::anf::AnfExpr) -> AnfIr {
+    use crate::anf::{AnfBinding, AnfExpr};
+    anf_for_binding(AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn_op".to_string(),
+        expr: AnfExpr::Lambda {
+            params: vec!["p".to_string()],
+            captures: vec![],
+            body: Box::new(body),
+        },
+    })
+}
+
 // J-1: Lambda with no captures compiles and differs from Placeholder.
 #[test]
 fn native_lambda_no_captures_differs_from_placeholder() {
@@ -1142,6 +1155,52 @@ fn native_lambda_with_capture_differs_from_no_capture() {
         with_cap.native_bytes, without_cap.native_bytes,
         "Lambda with captures must produce different bytes than lambda with no captures: \
          closure env allocation must be emitted, not silently dropped"
+    );
+}
+
+#[test]
+fn native_lambda_return_var_param_compiles() {
+    use crate::anf::AnfExpr;
+    let anf =
+        anf_lambda_returning_param_body(AnfExpr::Return(Box::new(AnfExpr::Var("p".to_string()))));
+    let result = emit_native(&anf);
+    assert!(
+        result.is_ok(),
+        "Lambda body Return(Var(param)) must infer an I64 return: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn native_lambda_let_wrapped_return_var_param_compiles() {
+    use crate::anf::AnfExpr;
+    use crate::core_ir::LiteralValue;
+    let anf = anf_lambda_returning_param_body(AnfExpr::Let {
+        name: "tmp".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+        body: Box::new(AnfExpr::Return(Box::new(AnfExpr::Var("p".to_string())))),
+    });
+    let result = emit_native(&anf);
+    assert!(
+        result.is_ok(),
+        "Lambda body Let(... Return(Var(param))) must infer an I64 return: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn native_lambda_seq_wrapped_return_var_param_compiles() {
+    use crate::anf::AnfExpr;
+    use crate::core_ir::LiteralValue;
+    let anf = anf_lambda_returning_param_body(AnfExpr::Seq(vec![
+        AnfExpr::Literal(LiteralValue::Int(1)),
+        AnfExpr::Return(Box::new(AnfExpr::Var("p".to_string()))),
+    ]));
+    let result = emit_native(&anf);
+    assert!(
+        result.is_ok(),
+        "Lambda body Seq(... Return(Var(param))) must infer an I64 return: {:?}",
+        result.err()
     );
 }
 
