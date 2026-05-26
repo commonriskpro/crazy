@@ -108,8 +108,9 @@ pub(super) fn lower_lambda(
     for _ in params {
         lambda_sig.params.push(AbiParam::new(types::I64));
     }
-    // Return type inferred from body.
-    let body_ret_ty = infer_cranelift_return_type(body);
+    // Return type inferred from body. Lambda params are always lowered as I64,
+    // so a body that directly returns one needs an explicit I64 result.
+    let body_ret_ty = infer_lambda_return_type(body, params);
     if let Some(ty) = body_ret_ty {
         lambda_sig.returns.push(AbiParam::new(ty));
     }
@@ -211,6 +212,17 @@ pub(super) fn lower_lambda(
                 LowerResult::Value(env_ptr)
             }
         }
+    }
+}
+
+fn infer_lambda_return_type(body: &AnfExpr, params: &[String]) -> Option<types::Type> {
+    match infer_cranelift_return_type(body) {
+        Some(ty) => Some(ty),
+        None => match body {
+            AnfExpr::Var(name) if params.iter().any(|param| param == name) => Some(types::I64),
+            AnfExpr::Return(inner) => infer_lambda_return_type(inner, params),
+            _ => None,
+        },
     }
 }
 
