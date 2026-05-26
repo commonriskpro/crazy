@@ -54,8 +54,8 @@ ail-stdlib   = { path = "crates/ail-stdlib" }
 ail-testkit  = { path = "crates/ail-testkit" }
 ail-verify   = { path = "crates/ail-verify" }
 wasmtime     = "45"
-wasm-encoder = "0.244"
-wasmparser   = "0.244"
+wasm-encoder = "0.248"
+wasmparser   = "0.248"
 cranelift-codegen  = { version = "= 0.132.0", default-features = false, features = ["host-arch"] }
 cranelift-frontend = "= 0.132.0"
 cranelift-module   = "= 0.132.0"
