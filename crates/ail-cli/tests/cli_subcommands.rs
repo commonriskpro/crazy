@@ -196,6 +196,86 @@ fn disk_store_persists_change_for_compile() {
 }
 
 #[test]
+fn run_text_return_prints_human_readable_result() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let acl = dir.child("hello-text.acl");
+    acl.write_str(
+        r#"change hello_text
+author cli-test
+description text return hello world
+base 0
+op create_function id=fn.hello return=Text body=let(s, "Hello, world!", s)
+end
+"#,
+    )
+    .expect("ACL fixture must be written");
+
+    let change_output = ail()
+        .args([
+            "change",
+            "--file",
+            acl.path().to_str().expect("path must be UTF-8"),
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let change_json = parse_json_output(&change_output);
+    let change_id = change_json["data"]["change_id"]
+        .as_str()
+        .or_else(|| change_json["data"]["canonical_change"]["change_id"].as_str())
+        .expect("change output must include a change_id");
+
+    ail()
+        .args(["verify", change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args(["apply", change_id, "--yes"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args(["compile", "--profile", "dev", "--target", "wasm"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    ail()
+        .args(["run", "--profile", "dev", "--target", "wasm", "fn.hello"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("result: Hello, world!"));
+
+    let run_output = ail()
+        .args([
+            "run",
+            "--profile",
+            "dev",
+            "--target",
+            "wasm",
+            "--json",
+            "fn.hello",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let run_json = parse_json_output(&run_output);
+    assert_eq!(run_json["data"]["invoke_result"], "result: Hello, world!");
+    assert_eq!(run_json["data"]["invoke_value"], "Hello, world!");
+}
+
+#[test]
 fn init_branch_writes_indirect_head_and_status_shows_branch() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
 

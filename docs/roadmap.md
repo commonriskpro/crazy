@@ -21,7 +21,7 @@ Related: [Implementation blueprint](implementation-blueprint.md), [Codebase guid
 | Milestone | User-facing outcome | Status |
 |-----------|---------------------|--------|
 | `v0.1` | Verified ACL/WASM foundation for contributors. | Released foundation. |
-| `v0.2` | Write and run hello-world programs with strings and print/log output. | Planned. |
+| `v0.2` | Write and run hello-world programs with strings and print/log output. | Started: Text-return hello world runs; print/log capability still planned. |
 | `v0.3` | Split code into modules, import local code, and use basic packages. | Planned. |
 | `v0.4` | Get useful type errors and safe match behavior before runtime. | Planned. |
 | `v0.5` | Build small programs that use stdlib I/O, JSON, time, filesystem, and HTTP capabilities. | Planned. |
@@ -52,6 +52,7 @@ Acceptance criteria:
 User-facing capabilities:
 
 - Create a minimal AIL program with string literals.
+- Return Text from a public function and see human-readable CLI output.
 - Print or log text through an explicit output capability.
 - Run a hello-world program through the CLI.
 - See stable, readable diagnostics when string or output capability use is invalid.
@@ -59,6 +60,7 @@ User-facing capabilities:
 Acceptance criteria:
 
 - A documented `hello.ail` example runs from a clean checkout.
+- `ail run` decodes Text returns from WASM ABI descriptors instead of showing packed integer pointers.
 - String literals round-trip through parse, lower, compile, and WASM execution tests.
 - `print` or `log` output is deterministic in CLI tests and denied without the required capability grant.
 - The README points new users to the hello-world path without implying production readiness.

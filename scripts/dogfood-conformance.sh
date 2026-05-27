@@ -179,6 +179,7 @@ op add_param target=fn.bool name=y type=Int
 op create_function id=fn.record return=Int body=field(record(age,30,score,add(10,5)),score)
 op create_function id=fn.variant return=Int body=match(some(42),Some(v),v,None,0)
 op create_function id=fn.loop return=Int body=loop(break(42))
+op create_function id=fn.hello return=Text body=let(s, "Hello, world!", s)
 op create_function id=fn.foreach return=Unit body=foreach(item,list(1,2,3),item)
 op create_function id=fn.add_item return=Int body=add(acc,item)
 op add_param target=fn.add_item name=acc type=Int
@@ -248,6 +249,12 @@ if [[ -n "$change_id" ]]; then
         expect_contains "ail run loop/break" "$output" '"invoke_result":"result: 42"'
     else
         record_fail "ail run loop failed: $output"
+    fi
+
+    if capture_in output "$workspace" --json run --profile dev --target wasm fn.hello; then
+        expect_contains "ail run Text hello world" "$output" '"invoke_result":"result: Hello, world!"'
+    else
+        record_fail "ail run Text hello world failed: $output"
     fi
 
     if capture_in output "$workspace" --json run --profile dev --target wasm fn.foreach; then

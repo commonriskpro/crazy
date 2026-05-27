@@ -129,6 +129,13 @@ pub enum WasmTypeDescriptor {
 /// i64 encoding mirrors the `Text` layout; the runtime decodes it via
 /// `ValueLayout::Bytes` → `StructuredValue::Bytes { ptr, len }`.
 pub fn derive_wasm_type(expr: &AnfExpr) -> WasmTypeDescriptor {
+    derive_wasm_type_with_locals(expr, &mut BTreeMap::new())
+}
+
+fn derive_wasm_type_with_locals(
+    expr: &AnfExpr,
+    locals: &mut BTreeMap<String, WasmTypeDescriptor>,
+) -> WasmTypeDescriptor {
     match expr {
         AnfExpr::RecordNew { fields } => WasmTypeDescriptor::Record {
             fields: fields.iter().map(|(f, _)| f.clone()).collect(),
@@ -136,13 +143,41 @@ pub fn derive_wasm_type(expr: &AnfExpr) -> WasmTypeDescriptor {
         AnfExpr::VariantNew { tag, .. } => WasmTypeDescriptor::Variant {
             tags: vec![tag.clone()],
         },
-        AnfExpr::TupleNew(elems) => {
-            WasmTypeDescriptor::Tuple(elems.iter().map(derive_wasm_type).collect())
-        }
+        AnfExpr::TupleNew(elems) => WasmTypeDescriptor::Tuple(
+            elems
+                .iter()
+                .map(|elem| derive_wasm_type_with_locals(elem, locals))
+                .collect(),
+        ),
         AnfExpr::ListNew(_) => {
             WasmTypeDescriptor::List(Box::new(WasmTypeDescriptor::Scalar(WasmScalarType::I64)))
         }
-        AnfExpr::Let { body, .. } => derive_wasm_type(body),
+        AnfExpr::Let { name, value, body } => {
+            let value_ty = derive_wasm_type_with_locals(value, locals);
+            let previous = locals.insert(name.clone(), value_ty);
+            let body_ty = derive_wasm_type_with_locals(body, locals);
+            match previous {
+                Some(prev) => {
+                    locals.insert(name.clone(), prev);
+                }
+                None => {
+                    locals.remove(name);
+                }
+            }
+            body_ty
+        }
+        AnfExpr::Var(name) => locals
+            .get(name)
+            .cloned()
+            .unwrap_or(WasmTypeDescriptor::Scalar(WasmScalarType::I64)),
+        AnfExpr::Return(expr) => derive_wasm_type_with_locals(expr, locals),
+        AnfExpr::Lambda { body, params, .. } => {
+            let mut scoped = locals.clone();
+            for param in params {
+                scoped.remove(param);
+            }
+            derive_wasm_type_with_locals(body, &mut scoped)
+        }
         // ── Literal arms — explicit to avoid relying on the wildcard ──────
         AnfExpr::Literal(LiteralValue::Float(_)) => WasmTypeDescriptor::Scalar(WasmScalarType::F64),
         AnfExpr::Literal(LiteralValue::Unit) => WasmTypeDescriptor::Scalar(WasmScalarType::I32),

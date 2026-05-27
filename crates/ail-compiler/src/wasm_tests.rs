@@ -804,6 +804,19 @@ fn wasm_type_let_body_propagates() {
 }
 
 #[test]
+fn wasm_type_let_bound_text_var_is_text() {
+    let expr = AnfExpr::Let {
+        name: "s".to_string(),
+        value: Box::new(AnfExpr::Literal(LiteralValue::Text(
+            "Hello, world!".to_string(),
+        ))),
+        body: Box::new(AnfExpr::Var("s".to_string())),
+    };
+
+    assert_eq!(derive_wasm_type(&expr), WasmTypeDescriptor::Text);
+}
+
+#[test]
 fn wasm_type_list_new_is_list() {
     let expr = AnfExpr::ListNew(vec![AnfExpr::Literal(LiteralValue::Int(1))]);
     let ty = derive_wasm_type(&expr);

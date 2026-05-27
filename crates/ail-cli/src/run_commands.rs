@@ -11,10 +11,12 @@
 //   parse_runtime_args          — convert positional string args to RuntimeArg
 //   derive_runtime_capability_ids — collect CapabilityIds from a SemanticGraph
 
-use ail_compiler::{emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir};
+use ail_compiler::{
+    WasmTypeDescriptor, emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir,
+};
 use ail_runtime::{
     AuditEvent, CapabilityId, CapabilityManifest, ResourceLimits, RuntimeArg, RuntimeHost,
-    RuntimeProfile, RuntimeReportStatus, blake3_hex_of,
+    RuntimeProfile, RuntimeReportStatus, RuntimeValue, StructuredValue, ValueLayout, blake3_hex_of,
 };
 use serde_json::{Value, json};
 
@@ -73,6 +75,94 @@ fn derive_runtime_capability_ids(graph: &SemanticGraph) -> Vec<CapabilityId> {
         .collect();
 
     unique.into_iter().map(CapabilityId::new).collect()
+}
+
+fn value_layout_from_wasm_descriptor(desc: &WasmTypeDescriptor) -> ValueLayout {
+    match desc {
+        WasmTypeDescriptor::Scalar(_) => ValueLayout::Scalar,
+        WasmTypeDescriptor::Text => ValueLayout::Text,
+        WasmTypeDescriptor::Bytes => ValueLayout::Bytes,
+        WasmTypeDescriptor::Record { fields } => ValueLayout::Record {
+            fields: fields.clone(),
+        },
+        WasmTypeDescriptor::Variant { tags } => ValueLayout::Variant { tags: tags.clone() },
+        WasmTypeDescriptor::Tuple(elems) => ValueLayout::Tuple(
+            elems
+                .iter()
+                .map(value_layout_from_wasm_descriptor)
+                .collect(),
+        ),
+        WasmTypeDescriptor::List(inner) => {
+            ValueLayout::List(Box::new(value_layout_from_wasm_descriptor(inner)))
+        }
+        WasmTypeDescriptor::Option(inner) => {
+            ValueLayout::Option(Box::new(value_layout_from_wasm_descriptor(inner)))
+        }
+        WasmTypeDescriptor::Result { ok, err } => ValueLayout::Result {
+            ok: Box::new(value_layout_from_wasm_descriptor(ok)),
+            err: Box::new(value_layout_from_wasm_descriptor(err)),
+        },
+        WasmTypeDescriptor::Handle => ValueLayout::Handle,
+    }
+}
+
+fn runtime_value_to_json(value: &RuntimeValue) -> Value {
+    match value {
+        RuntimeValue::I64(v) => json!(v),
+        RuntimeValue::I32(v) => json!(v),
+        RuntimeValue::F64(v) => json!(v),
+        RuntimeValue::Unit => Value::Null,
+    }
+}
+
+fn text_result_from_structured_value(
+    instance: &mut ail_runtime::RuntimeInstance,
+    value: StructuredValue,
+) -> Result<String, CliError> {
+    let StructuredValue::Text { ptr, len } = value else {
+        return Err(CliError::Domain(format!(
+            "typed Text invocation returned non-Text value: {value:?}"
+        )));
+    };
+
+    let len = usize::try_from(len)
+        .map_err(|_| CliError::Domain(format!("typed Text return has negative length: {len}")))?;
+    let bytes = instance.read_wasm_memory(ptr, len).ok_or_else(|| {
+        CliError::Domain("typed Text return points outside WASM memory".to_string())
+    })?;
+    String::from_utf8(bytes)
+        .map_err(|e| CliError::Domain(format!("typed Text return is not valid UTF-8: {e}")))
+}
+
+fn invoke_export_for_cli(
+    instance: &mut ail_runtime::RuntimeInstance,
+    export_name: &str,
+    runtime_args: &[RuntimeArg],
+    export_type: Option<&WasmTypeDescriptor>,
+) -> Result<(String, Value), String> {
+    match export_type {
+        Some(desc @ WasmTypeDescriptor::Text) => {
+            let layout = value_layout_from_wasm_descriptor(desc);
+            let typed = instance
+                .invoke_typed(export_name, runtime_args, &layout)
+                .map_err(|e| e.to_string())?;
+            let text =
+                text_result_from_structured_value(instance, typed).map_err(|e| e.to_string())?;
+            Ok((text.clone(), json!(text)))
+        }
+        Some(_) => {
+            let value = instance
+                .invoke(export_name, runtime_args)
+                .map_err(|e| e.to_string())?;
+            Ok((value.to_string(), runtime_value_to_json(&value)))
+        }
+        None => {
+            let value = instance
+                .invoke(export_name, runtime_args)
+                .map_err(|e| e.to_string())?;
+            Ok((value.to_string(), runtime_value_to_json(&value)))
+        }
+    }
 }
 
 // ── Command handler ───────────────────────────────────────────────────────
@@ -197,7 +287,9 @@ pub(crate) async fn cmd_run(
             let runtime_args = parse_runtime_args(raw_args)?;
 
             // Try to invoke the export; if it doesn't exist, fall back to preflight-only.
-            let invoke_result = instance.invoke(export_name, &runtime_args);
+            let export_type = artifact.export_types.get(export_name);
+            let invoke_result =
+                invoke_export_for_cli(&mut instance, export_name, &runtime_args, export_type);
 
             // Post-invoke: aggregate capability call statistics from the full audit
             // log (includes any CapabilityCallExecuted events produced during invoke).
@@ -232,9 +324,9 @@ pub(crate) async fn cmd_run(
                 "profile": profile,
             });
 
-            let result_display = match &invoke_result {
-                Ok(val) => format!("result: {val}"),
-                Err(e) => format!("invoke error: {e}"),
+            let (result_display, invoke_value) = match &invoke_result {
+                Ok((label, value)) => (format!("result: {label}"), value.clone()),
+                Err(e) => (format!("invoke error: {e}"), Value::Null),
             };
 
             let human_msg = format!(
@@ -248,6 +340,7 @@ pub(crate) async fn cmd_run(
                     "profile": profile,
                     "module": module_name,
                     "invoke_result": result_display,
+                    "invoke_value": invoke_value,
                     "runtime_report": {
                         "profile": profile,
                         "module": module_name,
