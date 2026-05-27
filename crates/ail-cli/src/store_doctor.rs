@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use ail_storage::error::StorageResult;
+use ail_storage::error::{StorageError, StorageResult};
 
 use crate::store_file::{
     hex_to_object_id, is_object_file_name, reachable_objects, verify_object_bytes,
@@ -63,7 +63,11 @@ pub fn doctor(ail_dir: &Path) -> StorageResult<StoreDoctorReport> {
     }
 
     let total_objects = object_ids.len() + corrupted_objects;
-    let reachable = reachable_objects(ail_dir)?;
+    let reachable = match reachable_objects(ail_dir) {
+        Ok(reachable) => reachable,
+        Err(StorageError::Codec(_)) => Default::default(),
+        Err(err) => return Err(err),
+    };
     let unreachable_objects = object_ids
         .iter()
         .filter(|id| !reachable.contains(id))
