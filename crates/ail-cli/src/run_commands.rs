@@ -14,9 +14,12 @@
 use ail_compiler::{
     WasmTypeDescriptor, emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir,
 };
+use std::sync::Arc;
+
 use ail_runtime::{
-    AuditEvent, CapabilityId, CapabilityManifest, ResourceLimits, RuntimeArg, RuntimeHost,
-    RuntimeProfile, RuntimeReportStatus, RuntimeValue, StructuredValue, ValueLayout, blake3_hex_of,
+    AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, LogHandler, ResourceLimits,
+    RuntimeArg, RuntimeHost, RuntimeProfile, RuntimeReportStatus, RuntimeValue, StructuredValue,
+    ValueLayout, blake3_hex_of,
 };
 use serde_json::{Value, json};
 
@@ -64,15 +67,23 @@ fn parse_runtime_args(args: &[String]) -> Result<Vec<RuntimeArg>, CliError> {
 /// Returns an empty `Vec` when the graph has no nodes with capability
 /// requirements — the correct result for graphs that perform no external
 /// capability calls.
-fn derive_runtime_capability_ids(graph: &SemanticGraph) -> Vec<CapabilityId> {
+fn derive_runtime_capability_ids(graph: &SemanticGraph, target: &str) -> Vec<CapabilityId> {
     use std::collections::BTreeSet;
 
-    let unique: BTreeSet<String> = graph
-        .nodes
-        .iter()
-        .filter_map(|n| n.capability_reqs.as_ref())
-        .flat_map(|reqs| reqs.caps.iter().cloned())
-        .collect();
+    let mut unique = BTreeSet::new();
+    if let Some(node) = graph.nodes.iter().find(|node| node.name == target) {
+        if let Some(reqs) = &node.capability_reqs {
+            unique.extend(reqs.caps.iter().cloned());
+        }
+    } else {
+        unique.extend(
+            graph
+                .nodes
+                .iter()
+                .filter_map(|n| n.capability_reqs.as_ref())
+                .flat_map(|reqs| reqs.caps.iter().cloned()),
+        );
+    }
 
     unique.into_iter().map(CapabilityId::new).collect()
 }
@@ -177,12 +188,14 @@ fn invoke_export_for_cli(
 ///
 /// Returns a deterministic `Domain` error when `--target native` is requested:
 /// native linked execution is not yet supported.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn cmd_run(
     mode: OutputMode,
     profile: &str,
     target: &str,
     module: Option<&str>,
     raw_args: &[String],
+    grants: &[String],
     replay: Option<&str>,
     store: &StoreHandle,
 ) -> Result<(), CliError> {
@@ -210,7 +223,7 @@ pub(crate) async fn cmd_run(
         // Derive capability IDs before the graph enters the compiler
         // pipeline — compiler functions all take `&SemanticGraph`, so this
         // shared borrow is always valid.
-        let capability_ids = derive_runtime_capability_ids(&graph);
+        let capability_ids = derive_runtime_capability_ids(&graph, module_name);
         // Use an accepted (empty/Proven) report for the e2e pipeline.
         // A full verify pass would reject the graph because the type checker
         // flags newly-materialised nodes as Unverified — expected at this stage.
@@ -233,12 +246,20 @@ pub(crate) async fn cmd_run(
         .blake3_hex()
         .map_err(|e| CliError::Domain(format!("run (manifest hash): {e}")))?;
 
+    let runtime_grants: Vec<CapabilityGrant> = grants
+        .iter()
+        .map(|grant| CapabilityGrant {
+            module: module_name.to_string(),
+            capability: CapabilityId::new(grant.clone()),
+        })
+        .collect();
+
     let runtime_profile = RuntimeProfile::new(
         profile.to_string(),
         module_hash.clone(),
         String::new(),
         manifest_hash,
-        vec![],
+        runtime_grants,
         ResourceLimits {
             max_memory_bytes: None,
             max_fuel: None,
@@ -246,7 +267,8 @@ pub(crate) async fn cmd_run(
         },
     );
 
-    let mut host = RuntimeHost::new();
+    let log_handler = Arc::new(LogHandler::new());
+    let mut host = RuntimeHost::new().with_handler(log_handler.clone());
     let result = host.validate_and_instantiate(&artifact.wasm, &manifest, &runtime_profile);
 
     match result {
@@ -328,9 +350,16 @@ pub(crate) async fn cmd_run(
                 Ok((label, value)) => (format!("result: {label}"), value.clone()),
                 Err(e) => (format!("invoke error: {e}"), Value::Null),
             };
+            let output_lines = log_handler.output();
+            let output_text = output_lines.join("\n");
+            let output_prefix = if output_text.is_empty() {
+                String::new()
+            } else {
+                format!("output:\n{output_text}\n")
+            };
 
             let human_msg = format!(
-                "PreflightPassed\n{result_display}\nprofile: {profile}\nmodule: {module_name}\naudit_events: {audit_len}\ncapability_calls: {total_capability_calls}\nruntime_checks: all ok"
+                "{output_prefix}PreflightPassed\n{result_display}\nprofile: {profile}\nmodule: {module_name}\naudit_events: {audit_len}\ncapability_calls: {total_capability_calls}\nruntime_checks: all ok"
             );
             print_response(
                 mode,
@@ -341,6 +370,7 @@ pub(crate) async fn cmd_run(
                     "module": module_name,
                     "invoke_result": result_display,
                     "invoke_value": invoke_value,
+                    "output": output_lines,
                     "runtime_report": {
                         "profile": profile,
                         "module": module_name,
@@ -384,7 +414,7 @@ mod tests {
             edges: vec![],
         };
         assert!(
-            derive_runtime_capability_ids(&graph).is_empty(),
+            derive_runtime_capability_ids(&graph, "fn_missing").is_empty(),
             "empty graph must produce empty capability IDs"
         );
     }
@@ -397,7 +427,7 @@ mod tests {
             edges: vec![],
         };
         assert!(
-            derive_runtime_capability_ids(&graph).is_empty(),
+            derive_runtime_capability_ids(&graph, "fn_a").is_empty(),
             "nodes without capability_reqs must not contribute any IDs"
         );
     }
@@ -412,7 +442,7 @@ mod tests {
             nodes: vec![node_with_caps(0, vec!["net:read", "fs:write"])],
             edges: vec![],
         };
-        let ids = derive_runtime_capability_ids(&graph);
+        let ids = derive_runtime_capability_ids(&graph, "fn_0");
         assert_eq!(
             ids.len(),
             2,
@@ -441,7 +471,7 @@ mod tests {
             ],
             edges: vec![],
         };
-        let ids = derive_runtime_capability_ids(&graph);
+        let ids = derive_runtime_capability_ids(&graph, "fn_missing");
         assert_eq!(
             ids.len(),
             2,
@@ -463,12 +493,28 @@ mod tests {
             ],
             edges: vec![],
         };
-        let ids = derive_runtime_capability_ids(&graph);
+        let ids = derive_runtime_capability_ids(&graph, "fn_missing");
         let names: Vec<&str> = ids.iter().map(CapabilityId::as_str).collect();
         assert_eq!(
             names,
             vec!["a:first", "m:middle", "z:last"],
             "capability IDs must be sorted lexicographically; got: {names:?}"
+        );
+    }
+
+    #[test]
+    fn derive_exact_target_ignores_unrelated_node_caps() {
+        let graph = SemanticGraph {
+            nodes: vec![
+                node_with_caps(0, vec!["log.write"]),
+                node_with_caps(1, vec![]),
+            ],
+            edges: vec![],
+        };
+        let ids = derive_runtime_capability_ids(&graph, "fn_1");
+        assert!(
+            ids.is_empty(),
+            "target without capability_reqs must not inherit unrelated caps; got: {ids:?}"
         );
     }
 

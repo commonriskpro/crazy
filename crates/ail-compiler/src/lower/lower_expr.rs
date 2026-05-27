@@ -152,6 +152,29 @@ pub(super) fn lower_core_expr_to_anf_local(
             }
         }
         CoreExpr::Call { func, args } => lower_core_call_to_anf(func, args, fresh, source_ref),
+        CoreExpr::EffectCall {
+            capability,
+            func,
+            args,
+        } => {
+            let mut bindings = Vec::new();
+            let mut arg_names = Vec::with_capacity(args.len());
+            for arg in args {
+                let (name, binding) = atomize_local(arg, fresh, source_ref);
+                if let Some(binding) = binding {
+                    bindings.push(binding);
+                }
+                arg_names.push(name);
+            }
+            wrap_local_bindings(
+                bindings,
+                AnfExpr::EffectCall {
+                    capability: capability.clone(),
+                    func: func.clone(),
+                    args: arg_names,
+                },
+            )
+        }
         CoreExpr::Add(left, right) => {
             lower_core_binary_to_anf("add", left, right, fresh, source_ref)
         }

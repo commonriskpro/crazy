@@ -180,6 +180,9 @@ op create_function id=fn.record return=Int body=field(record(age,30,score,add(10
 op create_function id=fn.variant return=Int body=match(some(42),Some(v),v,None,0)
 op create_function id=fn.loop return=Int body=loop(break(42))
 op create_function id=fn.hello return=Text body=let(s, "Hello, world!", s)
+op create_capability id=log.write
+op create_function id=fn.print_hello return=Int body=print("Hello, world!")
+op grant target=fn.print_hello capability=log.write
 op create_function id=fn.foreach return=Unit body=foreach(item,list(1,2,3),item)
 op create_function id=fn.add_item return=Int body=add(acc,item)
 op add_param target=fn.add_item name=acc type=Int
@@ -255,6 +258,20 @@ if [[ -n "$change_id" ]]; then
         expect_contains "ail run Text hello world" "$output" '"invoke_result":"result: Hello, world!"'
     else
         record_fail "ail run Text hello world failed: $output"
+    fi
+
+    if capture_in output "$workspace" --json run --profile dev --target wasm fn.print_hello; then
+        record_fail "ail run print without grant unexpectedly succeeded: $output"
+    elif contains "$output" "capability denied: log.write"; then
+        record_pass "ail run print denies log.write by default"
+    else
+        record_fail "ail run print without grant failed for wrong reason: $output"
+    fi
+
+    if capture_in output "$workspace" --json run --profile dev --target wasm --grant log.write fn.print_hello; then
+        expect_contains "ail run print captures public output" "$output" '"output":["Hello, world!"]'
+    else
+        record_fail "ail run print with log.write grant failed: $output"
     fi
 
     if capture_in output "$workspace" --json run --profile dev --target wasm fn.foreach; then

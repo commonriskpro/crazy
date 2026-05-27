@@ -5,7 +5,17 @@ use super::*;
 async fn cmd_run_succeeds() {
     use crate::store::memory_store;
     let store = memory_store();
-    let result = cmd_run(OutputMode::Human, "dev", "wasm", None, &[], None, &store).await;
+    let result = cmd_run(
+        OutputMode::Human,
+        "dev",
+        "wasm",
+        None,
+        &[],
+        &[],
+        None,
+        &store,
+    )
+    .await;
     assert!(result.is_ok(), "cmd_run must succeed; got: {result:?}");
 }
 
@@ -19,6 +29,7 @@ async fn cmd_run_with_module_succeeds() {
         "dev",
         "wasm",
         Some("module.checkout"),
+        &[],
         &[],
         None,
         &store,
@@ -41,6 +52,7 @@ async fn cmd_run_with_replay_succeeds() {
         "wasm",
         None,
         &[],
+        &[],
         Some("trace_123"),
         &store,
     )
@@ -59,7 +71,17 @@ async fn cmd_run_with_replay_succeeds() {
 async fn cmd_run_native_target_returns_domain_error() {
     use crate::store::memory_store;
     let store = memory_store();
-    let result = cmd_run(OutputMode::Human, "dev", "native", None, &[], None, &store).await;
+    let result = cmd_run(
+        OutputMode::Human,
+        "dev",
+        "native",
+        None,
+        &[],
+        &[],
+        None,
+        &store,
+    )
+    .await;
     match &result {
         Err(CliError::Domain(msg)) => assert!(
             msg.contains("native"),
@@ -76,7 +98,17 @@ async fn cmd_run_with_i32_arg_succeeds() {
     use crate::store::memory_store;
     let store = memory_store();
     let args = vec!["i32:0".to_string()];
-    let result = cmd_run(OutputMode::Human, "dev", "wasm", None, &args, None, &store).await;
+    let result = cmd_run(
+        OutputMode::Human,
+        "dev",
+        "wasm",
+        None,
+        &args,
+        &[],
+        None,
+        &store,
+    )
+    .await;
     assert!(
         result.is_ok(),
         "cmd_run with i32: arg must succeed; got: {result:?}"
@@ -90,7 +122,17 @@ async fn cmd_run_with_f64_arg_succeeds() {
     use crate::store::memory_store;
     let store = memory_store();
     let args = vec!["f64:0.0".to_string()];
-    let result = cmd_run(OutputMode::Human, "dev", "wasm", None, &args, None, &store).await;
+    let result = cmd_run(
+        OutputMode::Human,
+        "dev",
+        "wasm",
+        None,
+        &args,
+        &[],
+        None,
+        &store,
+    )
+    .await;
     assert!(
         result.is_ok(),
         "cmd_run with f64: arg must succeed; got: {result:?}"
@@ -106,7 +148,17 @@ async fn cmd_run_with_invalid_arg_returns_parse_error() {
     use crate::store::memory_store;
     let store = memory_store();
     let args = vec!["not_a_number".to_string()];
-    let result = cmd_run(OutputMode::Human, "dev", "wasm", None, &args, None, &store).await;
+    let result = cmd_run(
+        OutputMode::Human,
+        "dev",
+        "wasm",
+        None,
+        &args,
+        &[],
+        None,
+        &store,
+    )
+    .await;
     match &result {
         Err(CliError::ParseError(msg)) => assert!(
             msg.contains("not_a_number"),

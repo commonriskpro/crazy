@@ -7,8 +7,8 @@ use ail_compiler::{AnfBinding, AnfExpr, AnfIr, SourceMap, emit_wasm};
 use ail_core::semantic_graph::NodeRef;
 use ail_runtime::{
     AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, ClockHandler, Handler,
-    HostResult, LogHandler, ResourceLimits, RuntimeHost, RuntimeProfile, RuntimeValue,
-    blake3_hex_of,
+    HostResult, LogHandler, PreflightFailure, ResourceLimits, RuntimeError, RuntimeHost,
+    RuntimeProfile, RuntimeValue, blake3_hex_of,
 };
 
 struct CountingHandler {
@@ -83,6 +83,39 @@ fn effect_anf(capability: &str) -> AnfIr {
     }
 }
 
+fn log_write_anf() -> AnfIr {
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.main".to_string(),
+        expr: AnfExpr::Let {
+            name: "msg".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text(
+                "Hello, world!".to_string(),
+            ))),
+            body: Box::new(AnfExpr::EffectCall {
+                capability: "log.write".to_string(),
+                func: "write".to_string(),
+                args: vec!["msg".to_string()],
+            }),
+        },
+    };
+    AnfIr {
+        schema_version: ail_compiler::anf::ANF_SCHEMA_VERSION,
+        source_map: SourceMap::from_bindings(std::slice::from_ref(&binding)),
+        bindings: vec![binding],
+        stage_hashes: StageHashes {
+            graph_snapshot_hash: [0u8; 32],
+            verification_report_hash: [0u8; 32],
+            core_ir_hash: [1u8; 32],
+            anf_ir_hash: Some([2u8; 32]),
+            wasm_hash: None,
+            native_hash: None,
+            source_map_hash: None,
+            artifact_manifest_hash: None,
+        },
+    }
+}
+
 fn profile_for(wasm: &[u8], manifest: &CapabilityManifest, cap: CapabilityId) -> RuntimeProfile {
     RuntimeProfile::new(
         "effect-runtime-test".to_string(),
@@ -100,6 +133,25 @@ fn profile_for(wasm: &[u8], manifest: &CapabilityManifest, cap: CapabilityId) ->
         },
     )
     .with_handler_binding_required()
+}
+
+fn profile_with_grants(
+    wasm: &[u8],
+    manifest: &CapabilityManifest,
+    grants: Vec<CapabilityGrant>,
+) -> RuntimeProfile {
+    RuntimeProfile::new(
+        "effect-runtime-test".to_string(),
+        blake3_hex_of(wasm),
+        "a".repeat(64),
+        manifest.blake3_hex().expect("manifest hash"),
+        grants,
+        ResourceLimits {
+            max_memory_bytes: None,
+            max_fuel: None,
+            ..Default::default()
+        },
+    )
 }
 
 #[test]
@@ -152,10 +204,59 @@ fn builtin_log_and_clock_handlers_are_registered_handlers() {
     let log = LogHandler::new();
     let clock = ClockHandler::new();
 
-    assert_eq!(log.capabilities()[0].as_str(), "log");
+    assert_eq!(log.capabilities()[0].as_str(), "log.write");
     assert_eq!(clock.capabilities()[0].as_str(), "clock");
     let now = clock
         .handle(&CapabilityId::new("clock"), "now", &[])
         .expect("clock handler succeeds");
     assert_eq!(now.len(), 8);
+}
+
+#[test]
+fn log_write_granted_decodes_text_and_captures_output() {
+    let cap = CapabilityId::new("log.write");
+    let artifact = emit_wasm(&log_write_anf()).expect("log.write wasm emits");
+    let manifest = CapabilityManifest {
+        module: "effect-module".to_string(),
+        requires: vec![cap.clone()],
+    };
+    let profile = profile_with_grants(
+        &artifact.wasm,
+        &manifest,
+        vec![CapabilityGrant {
+            module: manifest.module.clone(),
+            capability: cap,
+        }],
+    );
+    let handler = Arc::new(LogHandler::new());
+
+    let mut host = RuntimeHost::new().with_handler(handler.clone());
+    let mut instance = host
+        .validate_and_instantiate(&artifact.wasm, &manifest, &profile)
+        .expect("preflight passes with log.write grant");
+
+    let result = instance.invoke("main", &[]).expect("main invokes");
+    assert_eq!(result, RuntimeValue::I64(0));
+    assert_eq!(handler.output(), vec!["Hello, world!".to_string()]);
+}
+
+#[test]
+fn log_write_without_grant_is_denied_by_default() {
+    let cap = CapabilityId::new("log.write");
+    let artifact = emit_wasm(&log_write_anf()).expect("log.write wasm emits");
+    let manifest = CapabilityManifest {
+        module: "effect-module".to_string(),
+        requires: vec![cap.clone()],
+    };
+    let profile = profile_with_grants(&artifact.wasm, &manifest, vec![]);
+
+    let mut host = RuntimeHost::new().with_handler(Arc::new(LogHandler::new()));
+    let result = host.validate_and_instantiate(&artifact.wasm, &manifest, &profile);
+
+    match result {
+        Err(RuntimeError::PreflightFailed(PreflightFailure::CapabilityDenied { denied })) => {
+            assert_eq!(denied, vec![cap]);
+        }
+        other => panic!("expected log.write CapabilityDenied, got {other:?}"),
+    }
 }

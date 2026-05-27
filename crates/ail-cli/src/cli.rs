@@ -209,6 +209,9 @@ enum Commands {
         module: Option<String>,
         /// Positional i64 arguments passed to the exported function.
         args: Vec<String>,
+        /// Grant a capability to this run invocation. Repeat for multiple grants.
+        #[arg(long = "grant")]
+        grants: Vec<String>,
         /// Replay a recorded trace by its id.
         #[arg(long)]
         replay: Option<String>,
@@ -605,6 +608,7 @@ pub async fn run() -> Result<(), CliError> {
             target,
             module,
             args,
+            grants,
             replay,
         } => {
             cmd_run(
@@ -613,6 +617,7 @@ pub async fn run() -> Result<(), CliError> {
                 &target,
                 module.as_deref(),
                 &args,
+                &grants,
                 replay.as_deref(),
                 &store,
             )

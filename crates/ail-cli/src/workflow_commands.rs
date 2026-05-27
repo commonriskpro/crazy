@@ -12,7 +12,7 @@
 // because it is used exclusively by this module.
 
 use ail_change::model::ChangeSetOutcome;
-use ail_core::semantic_graph::SemanticGraph;
+use ail_core::semantic_graph::{NodeKind, SemanticGraph};
 use ail_storage::{SnapshotEnvelope, object::ObjectId};
 use ail_verify::pipeline::{PipelineContext, VerificationPipeline};
 use ail_verify::policy::{PolicyDecision, PolicyEngine, PolicyInput, PolicyRule};
@@ -180,6 +180,12 @@ pub(crate) async fn cmd_verify(
     // entries must not trigger the prod profile gate — they indicate "text
     // unavailable", not "content is unverified".
     let any_solver = build_solver(solver_name)?;
+    let manifest_caps: Vec<String> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::Capability)
+        .map(|node| node.name.clone())
+        .collect();
     let pipeline_ctx = PipelineContext {
         graph: &graph,
         manifests: &[],
@@ -192,7 +198,7 @@ pub(crate) async fn cmd_verify(
         public_api_changes: &[],
         package_trust_metadata: &[],
         artifacts: &[],
-        manifest_caps: &[],
+        manifest_caps: &manifest_caps,
         artifact_manifest_hash: None,
     };
     // `changeset_text` is None: we hold the canonical (binary) form only.

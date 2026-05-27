@@ -733,6 +733,31 @@ fn read_memory(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) -> Option
     Some(bytes)
 }
 
+fn decode_packed_text_arg(caller: &mut Caller<'_, HostState>, arg: &[u8]) -> Option<Vec<u8>> {
+    if arg.len() != 8 {
+        return None;
+    }
+    let mut raw = [0u8; 8];
+    raw.copy_from_slice(arg);
+    let packed = i64::from_le_bytes(raw);
+    let ptr = (packed & 0xffff_ffff) as i32;
+    let len = (packed >> 32) as i32;
+    read_memory(caller, ptr, len)
+}
+
+fn handler_payload(
+    caller: &mut Caller<'_, HostState>,
+    cap: &CapabilityId,
+    operation: &str,
+    args_bytes: &[u8],
+) -> Option<Vec<u8>> {
+    if cap.as_str() == "log.write" && operation == "write" {
+        decode_packed_text_arg(caller, args_bytes)
+    } else {
+        Some(args_bytes.to_vec())
+    }
+}
+
 /// Dispatch a structured capability call.
 ///
 /// Reads cap/op/args from WASM memory, dispatches to the matching handler,
@@ -870,8 +895,19 @@ pub(crate) fn dispatch_host_call_write(
     }
     let handler_name = handler.name().to_string();
 
-    // Dispatch.
-    let result = handler.handle(&cap, &operation, &args_bytes);
+    // Dispatch. `log.write` is the narrow v0.2 Text bridge: decode the packed
+    // Text argument before handing it to the handler; all other calls keep the
+    // existing scalar bytes ABI.
+    let Some(payload) = handler_payload(caller, &cap, &operation, &args_bytes) else {
+        {
+            let state = caller.data_mut();
+            state.concurrent_calls -= 1;
+            state.call_depth -= 1;
+        }
+        audit.push(&audit_log, cap, operation, handler_name, false, None);
+        return None;
+    };
+    let result = handler.handle(&cap, &operation, &payload);
     let response = match result {
         Ok(response) => response,
         Err(err) => {
@@ -1211,7 +1247,35 @@ pub(crate) fn dispatch_host_call(
     };
 
     let handler_name = handler.name().to_string();
-    let result = match handler.handle(&cap, &operation, &args_bytes) {
+    let Some(payload) = handler_payload(caller, &cap, &operation, &args_bytes) else {
+        let state = caller.data_mut();
+        state.concurrent_calls -= 1;
+        state.call_depth -= 1;
+        state
+            .audit_log
+            .lock()
+            .expect("audit_log lock")
+            .push(AuditEvent::CapabilityCallExecuted {
+                capability: cap,
+                operation,
+                handler_name,
+                succeeded: false,
+                duration_us: start.elapsed().as_micros() as u64,
+                timestamp,
+                profile: profile_name,
+                module: Some(module_name),
+                function: None,
+                input_hash,
+                output_hash: None,
+                trace_id,
+                verification_report_hash: vr_hash,
+                trace_context: child_trace,
+                denial_category: None,
+            });
+        return Some(-1);
+    };
+
+    let result = match handler.handle(&cap, &operation, &payload) {
         Ok(bytes) => {
             if let Some(max_output_bytes) = caller.data().profile.limits().output_size_limit
                 && bytes.len() as u64 > max_output_bytes

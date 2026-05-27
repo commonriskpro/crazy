@@ -650,6 +650,53 @@ mod tests {
         (result, out)
     }
 
+    #[test]
+    fn lower_print_sugar_to_log_write_effect_call() {
+        use crate::anf::AnfExpr;
+        use crate::core_ir::{CoreIr, CoreNode, CoreNodeKind, LiteralValue, StageHashes};
+
+        let expr = crate::expr_parser::parse_expr("print(\"Hello, world!\")").unwrap();
+        let core = CoreIr {
+            nodes: vec![CoreNode {
+                source_ref: NodeRef(0),
+                kind: CoreNodeKind::Function,
+                name: "fn.main".to_string(),
+                ty: None,
+                expr: Some(expr),
+            }],
+            stage_hashes: StageHashes {
+                graph_snapshot_hash: [0u8; 32],
+                verification_report_hash: [0u8; 32],
+                core_ir_hash: [1u8; 32],
+                anf_ir_hash: None,
+                wasm_hash: None,
+                native_hash: None,
+                source_map_hash: None,
+                artifact_manifest_hash: None,
+            },
+        };
+
+        let anf = lower_to_anf(&core).expect("print sugar must lower to ANF");
+        match &anf.bindings[0].expr {
+            AnfExpr::Let { name, value, body } => {
+                assert_eq!(name, "anf_0");
+                assert_eq!(
+                    **value,
+                    AnfExpr::Literal(LiteralValue::Text("Hello, world!".to_string()))
+                );
+                assert_eq!(
+                    **body,
+                    AnfExpr::EffectCall {
+                        capability: "log.write".to_string(),
+                        func: "write".to_string(),
+                        args: vec!["anf_0".to_string()],
+                    }
+                );
+            }
+            other => panic!("expected print sugar to lower through a local let, got {other:?}"),
+        }
+    }
+
     // S1: Match — scrutinee Var is preserved as atomic name.
     #[test]
     fn lower_match_var_scrutinee_is_preserved() {

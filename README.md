@@ -22,6 +22,12 @@ Current release: [`v0.1.0`](https://github.com/commonriskpro/crazy/releases/tag/
    cargo run -p ail-cli -- status
    ```
 
+   Narrow v0.2 hello-world output is available through explicit `log.write` grants:
+
+   ```sh
+   cargo run -p ail-cli -- run --grant log.write fn.print_hello
+   ```
+
 4. Use the [codebase guide](docs/CODEBASE-GUIDE.md) as the documentation entry point.
 5. Check the [public roadmap](docs/roadmap.md), [implementation blueprint](docs/implementation-blueprint.md), [risks](docs/risks.md), and [changelog](CHANGELOG.md) before relying on any subsystem.
 

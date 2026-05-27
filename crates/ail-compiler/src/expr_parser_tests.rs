@@ -422,6 +422,20 @@ fn rejects_continue_with_arguments() {
 // ── Effect and lambda forms ──────────────────────────────────────────
 
 #[test]
+fn parses_print_as_log_write_effect_call() {
+    assert_eq!(
+        parse_expr("print(\"Hello, world!\")").unwrap(),
+        CoreExpr::EffectCall {
+            capability: "log.write".to_string(),
+            func: "write".to_string(),
+            args: vec![CoreExpr::Literal(LiteralValue::Text(
+                "Hello, world!".to_string()
+            ))],
+        }
+    );
+}
+
+#[test]
 fn parses_effect_call() {
     assert_eq!(
         parse_expr("effect_call(database.read, Cart, cartId)").unwrap(),

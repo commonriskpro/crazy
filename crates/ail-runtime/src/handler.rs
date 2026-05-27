@@ -10,6 +10,7 @@
 // `InMemoryHandler` is a test-only handler that returns a canned byte
 // response for every capability it declares.
 
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ail_package::trust::TrustLevel;
@@ -170,13 +171,22 @@ pub struct InMemoryHandler {
 
 pub struct LogHandler {
     caps: Vec<CapabilityId>,
+    output: Mutex<Vec<String>>,
 }
 
 impl LogHandler {
     pub fn new() -> Self {
         Self {
-            caps: vec![CapabilityId::new("log")],
+            caps: vec![CapabilityId::new("log.write")],
+            output: Mutex::new(Vec::new()),
         }
+    }
+
+    pub fn output(&self) -> Vec<String> {
+        self.output
+            .lock()
+            .expect("log output lock must not be poisoned")
+            .clone()
     }
 }
 
@@ -201,8 +211,18 @@ impl Handler for LogHandler {
         operation: &str,
         payload: &[u8],
     ) -> HostResult<Vec<u8>> {
-        let args = decode_i64_args(payload);
-        println!("ail log.{operation}: {args:?}");
+        if operation != "write" {
+            return Err(HostError::Custom(format!(
+                "unknown log.write operation: {operation}"
+            )));
+        }
+        let text = String::from_utf8(payload.to_vec()).map_err(|e| {
+            HostError::PayloadDecodeError(format!("log.write payload is not UTF-8: {e}"))
+        })?;
+        self.output
+            .lock()
+            .expect("log output lock must not be poisoned")
+            .push(text);
         Ok(0i64.to_le_bytes().to_vec())
     }
 }
@@ -260,17 +280,6 @@ impl Handler for ClockHandler {
             ))),
         }
     }
-}
-
-fn decode_i64_args(payload: &[u8]) -> Vec<i64> {
-    payload
-        .chunks_exact(8)
-        .map(|chunk| {
-            let mut buf = [0u8; 8];
-            buf.copy_from_slice(chunk);
-            i64::from_le_bytes(buf)
-        })
-        .collect()
 }
 
 impl InMemoryHandler {

@@ -362,6 +362,16 @@ impl Parser<'_> {
             }
             // ── Effects ──────────────────────────────────────────────────
             //
+            // `print(expr)` — public-output sugar for `log.write`.
+            "print" => {
+                let [arg] = expect_arity::<1>(func, args)?;
+                Ok(CoreExpr::EffectCall {
+                    capability: "log.write".to_string(),
+                    func: "write".to_string(),
+                    args: vec![arg],
+                })
+            }
+            //
             // `effect_call(capability, operation, arg1, arg2, ...)`
             //
             // `capability` and `operation` must be identifiers.

@@ -276,6 +276,116 @@ end
 }
 
 #[test]
+fn run_print_requires_log_write_grant_and_captures_output() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let acl = dir.child("print-hello.acl");
+    acl.write_str(
+        r#"change print_hello
+author cli-test
+description print hello world
+base 0
+op create_capability id=log.write
+op create_function id=fn.print_hello return=Int body=print("Hello, world!")
+op grant target=fn.print_hello capability=log.write
+end
+"#,
+    )
+    .expect("ACL fixture must be written");
+
+    let change_output = ail()
+        .args([
+            "change",
+            "--file",
+            acl.path().to_str().expect("path must be UTF-8"),
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let change_json = parse_json_output(&change_output);
+    let change_id = change_json["data"]["canonical_change"]["change_id"]
+        .as_str()
+        .expect("change output must include a change_id");
+
+    ail()
+        .args(["verify", change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args(["apply", change_id, "--yes"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args(["compile", "--profile", "dev", "--target", "wasm"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    ail()
+        .args([
+            "run",
+            "--profile",
+            "dev",
+            "--target",
+            "wasm",
+            "fn.print_hello",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("capability denied: log.write"));
+
+    ail()
+        .args([
+            "run",
+            "--profile",
+            "dev",
+            "--target",
+            "wasm",
+            "--grant",
+            "log.write",
+            "fn.print_hello",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("output:\nHello, world!"))
+        .stdout(predicate::str::contains("result: 0"));
+
+    let run_output = ail()
+        .args([
+            "run",
+            "--profile",
+            "dev",
+            "--target",
+            "wasm",
+            "--grant",
+            "log.write",
+            "--json",
+            "fn.print_hello",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let run_json = parse_json_output(&run_output);
+    assert_eq!(run_json["data"]["invoke_result"], "result: 0");
+    assert_eq!(
+        run_json["data"]["output"],
+        serde_json::json!(["Hello, world!"])
+    );
+}
+
+#[test]
 fn init_branch_writes_indirect_head_and_status_shows_branch() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
 
