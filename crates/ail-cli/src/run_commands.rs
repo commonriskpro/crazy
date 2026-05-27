@@ -12,7 +12,8 @@
 //   derive_runtime_capability_ids — collect CapabilityIds from a SemanticGraph
 
 use ail_compiler::{
-    WasmTypeDescriptor, emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir,
+    AnfExpr, AnfIr, WasmTypeDescriptor, emit_wasm_with_profile, lower_to_anf_with_graph,
+    lower_to_core_ir,
 };
 use std::sync::Arc;
 
@@ -57,17 +58,20 @@ fn parse_runtime_args(args: &[String]) -> Result<Vec<RuntimeArg>, CliError> {
         .collect()
 }
 
-/// Derive runtime `CapabilityId`s from a semantic graph.
+/// Derive runtime `CapabilityId`s from graph declarations and emitted effects.
 ///
-/// Walks every node and collects all capability names from
-/// `node.capability_reqs.caps`.  Results are deduplicated and sorted
-/// lexicographically so that the resulting `CapabilityManifest` is
-/// deterministic for the same graph input.
+/// Graph `capability_reqs` preserve explicit ACL grants. ANF `EffectCall`
+/// collection hardens the runtime manifest when a function body emits an effect
+/// that the graph forgot to declare, keeping missing grants in preflight instead
+/// of deferring them to invocation time.
 ///
-/// Returns an empty `Vec` when the graph has no nodes with capability
-/// requirements — the correct result for graphs that perform no external
-/// capability calls.
-fn derive_runtime_capability_ids(graph: &SemanticGraph, target: &str) -> Vec<CapabilityId> {
+/// Returns an empty `Vec` only when neither graph declarations nor target ANF
+/// effects require external capabilities.
+fn derive_runtime_capability_ids(
+    graph: &SemanticGraph,
+    anf: &AnfIr,
+    target: &str,
+) -> Vec<CapabilityId> {
     use std::collections::BTreeSet;
 
     let mut unique = BTreeSet::new();
@@ -85,7 +89,108 @@ fn derive_runtime_capability_ids(graph: &SemanticGraph, target: &str) -> Vec<Cap
         );
     }
 
+    let target_binding_exists = anf
+        .bindings
+        .iter()
+        .any(|binding| binding_matches_target(&binding.name, target));
+    for binding in &anf.bindings {
+        if !target_binding_exists || binding_matches_target(&binding.name, target) {
+            collect_effect_capability_ids(&binding.expr, &mut unique);
+        }
+    }
+
     unique.into_iter().map(CapabilityId::new).collect()
+}
+
+fn binding_matches_target(binding_name: &str, target: &str) -> bool {
+    binding_name == target
+        || binding_name.rsplit('.').next() == Some(target)
+        || target.rsplit('.').next() == Some(binding_name)
+}
+
+fn collect_effect_capability_ids(expr: &AnfExpr, unique: &mut std::collections::BTreeSet<String>) {
+    match expr {
+        AnfExpr::EffectCall { capability, .. } => {
+            unique.insert(capability.clone());
+        }
+        AnfExpr::Let { value, body, .. } => {
+            collect_effect_capability_ids(value, unique);
+            collect_effect_capability_ids(body, unique);
+        }
+        AnfExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_effect_capability_ids(then_branch, unique);
+            collect_effect_capability_ids(else_branch, unique);
+        }
+        AnfExpr::Return(value) | AnfExpr::Loop { body: value } | AnfExpr::Break { value } => {
+            collect_effect_capability_ids(value, unique);
+        }
+        AnfExpr::Seq(exprs) | AnfExpr::TupleNew(exprs) | AnfExpr::ListNew(exprs) => {
+            for expr in exprs {
+                collect_effect_capability_ids(expr, unique);
+            }
+        }
+        AnfExpr::Match { arms, .. } => {
+            for arm in arms {
+                collect_effect_capability_ids(&arm.body, unique);
+            }
+        }
+        AnfExpr::Lambda { body, .. }
+        | AnfExpr::WhileLoop { body, .. }
+        | AnfExpr::ShortCircuitAnd { right: body, .. }
+        | AnfExpr::ShortCircuitOr { right: body, .. }
+        | AnfExpr::TaskGroup { body }
+        | AnfExpr::Timeout { body, .. }
+        | AnfExpr::ForEach { body, .. } => {
+            collect_effect_capability_ids(body, unique);
+        }
+        AnfExpr::RecordNew { fields } => {
+            for (_, expr) in fields {
+                collect_effect_capability_ids(expr, unique);
+            }
+        }
+        AnfExpr::FieldUpdate { value, .. } => {
+            collect_effect_capability_ids(value, unique);
+        }
+        AnfExpr::VariantNew { payload, .. } => {
+            if let Some(payload) = payload {
+                collect_effect_capability_ids(payload, unique);
+            }
+        }
+        AnfExpr::Select { branches } => {
+            for branch in branches {
+                collect_effect_capability_ids(&branch.body, unique);
+            }
+        }
+        AnfExpr::Literal(_)
+        | AnfExpr::Var(_)
+        | AnfExpr::Call { .. }
+        | AnfExpr::FieldGet { .. }
+        | AnfExpr::Dispatch { .. }
+        | AnfExpr::TaskSpawn { .. }
+        | AnfExpr::ChannelSend { .. }
+        | AnfExpr::ChannelReceive { .. }
+        | AnfExpr::RuntimeCheck { .. }
+        | AnfExpr::ResourceAcquire { .. }
+        | AnfExpr::ResourceRelease { .. }
+        | AnfExpr::TaskAwait { .. }
+        | AnfExpr::TaskCancel { .. }
+        | AnfExpr::ChannelNew { .. }
+        | AnfExpr::CellNew { .. }
+        | AnfExpr::CellGet { .. }
+        | AnfExpr::CellSet { .. }
+        | AnfExpr::Assume { .. }
+        | AnfExpr::Abort { .. }
+        | AnfExpr::IndexGet { .. }
+        | AnfExpr::MapNew { .. }
+        | AnfExpr::SetNew { .. }
+        | AnfExpr::Fold { .. }
+        | AnfExpr::Continue
+        | AnfExpr::Placeholder => {}
+    }
 }
 
 fn value_layout_from_wasm_descriptor(desc: &WasmTypeDescriptor) -> ValueLayout {
@@ -220,10 +325,6 @@ pub(crate) async fn cmd_run(
         (artifact, vec![])
     } else {
         let graph = load_current_graph_for_cli(store).await?;
-        // Derive capability IDs before the graph enters the compiler
-        // pipeline — compiler functions all take `&SemanticGraph`, so this
-        // shared borrow is always valid.
-        let capability_ids = derive_runtime_capability_ids(&graph, module_name);
         // Use an accepted (empty/Proven) report for the e2e pipeline.
         // A full verify pass would reject the graph because the type checker
         // flags newly-materialised nodes as Unverified — expected at this stage.
@@ -232,6 +333,7 @@ pub(crate) async fn cmd_run(
             .map_err(|e| CliError::Domain(format!("Failed to lower graph to Core IR: {e}")))?;
         let anf = lower_to_anf_with_graph(&core, &graph)
             .map_err(|e| CliError::Domain(format!("Failed to lower Core IR to ANF: {e}")))?;
+        let capability_ids = derive_runtime_capability_ids(&graph, &anf, module_name);
         let artifact = emit_wasm_with_profile(&anf, profile)
             .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?;
         (artifact, capability_ids)
@@ -393,6 +495,8 @@ pub(crate) async fn cmd_run(
 
 #[cfg(test)]
 mod tests {
+    use ail_compiler::LiteralValue;
+    use ail_compiler::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, SourceMap, StageHashes};
     use ail_core::semantic_graph::{CapabilityReqs, GraphNode, NodeKind, NodeRef, SemanticGraph};
     use ail_runtime::{CapabilityId, RuntimeArg};
 
@@ -406,6 +510,38 @@ mod tests {
         n
     }
 
+    fn empty_anf() -> AnfIr {
+        AnfIr {
+            schema_version: ANF_SCHEMA_VERSION,
+            source_map: SourceMap::from_bindings(&[]),
+            bindings: vec![],
+            stage_hashes: StageHashes {
+                graph_snapshot_hash: [0u8; 32],
+                verification_report_hash: [0u8; 32],
+                core_ir_hash: [1u8; 32],
+                anf_ir_hash: Some([2u8; 32]),
+                wasm_hash: None,
+                native_hash: None,
+                source_map_hash: None,
+                artifact_manifest_hash: None,
+            },
+        }
+    }
+
+    fn anf_with_binding(name: &str, expr: AnfExpr) -> AnfIr {
+        let binding = AnfBinding {
+            source_ref: NodeRef(0),
+            name: name.to_string(),
+            expr,
+        };
+        AnfIr {
+            schema_version: ANF_SCHEMA_VERSION,
+            source_map: SourceMap::from_bindings(std::slice::from_ref(&binding)),
+            bindings: vec![binding],
+            stage_hashes: empty_anf().stage_hashes,
+        }
+    }
+
     // Scenario: empty graph → no capability IDs.
     #[test]
     fn derive_empty_graph_returns_empty() {
@@ -414,7 +550,7 @@ mod tests {
             edges: vec![],
         };
         assert!(
-            derive_runtime_capability_ids(&graph, "fn_missing").is_empty(),
+            derive_runtime_capability_ids(&graph, &empty_anf(), "fn_missing").is_empty(),
             "empty graph must produce empty capability IDs"
         );
     }
@@ -427,7 +563,7 @@ mod tests {
             edges: vec![],
         };
         assert!(
-            derive_runtime_capability_ids(&graph, "fn_a").is_empty(),
+            derive_runtime_capability_ids(&graph, &empty_anf(), "fn_a").is_empty(),
             "nodes without capability_reqs must not contribute any IDs"
         );
     }
@@ -442,7 +578,7 @@ mod tests {
             nodes: vec![node_with_caps(0, vec!["net:read", "fs:write"])],
             edges: vec![],
         };
-        let ids = derive_runtime_capability_ids(&graph, "fn_0");
+        let ids = derive_runtime_capability_ids(&graph, &empty_anf(), "fn_0");
         assert_eq!(
             ids.len(),
             2,
@@ -471,7 +607,7 @@ mod tests {
             ],
             edges: vec![],
         };
-        let ids = derive_runtime_capability_ids(&graph, "fn_missing");
+        let ids = derive_runtime_capability_ids(&graph, &empty_anf(), "fn_missing");
         assert_eq!(
             ids.len(),
             2,
@@ -493,7 +629,7 @@ mod tests {
             ],
             edges: vec![],
         };
-        let ids = derive_runtime_capability_ids(&graph, "fn_missing");
+        let ids = derive_runtime_capability_ids(&graph, &empty_anf(), "fn_missing");
         let names: Vec<&str> = ids.iter().map(CapabilityId::as_str).collect();
         assert_eq!(
             names,
@@ -511,11 +647,35 @@ mod tests {
             ],
             edges: vec![],
         };
-        let ids = derive_runtime_capability_ids(&graph, "fn_1");
+        let ids = derive_runtime_capability_ids(&graph, &empty_anf(), "fn_1");
         assert!(
             ids.is_empty(),
             "target without capability_reqs must not inherit unrelated caps; got: {ids:?}"
         );
+    }
+
+    #[test]
+    fn derive_includes_target_effect_call_without_graph_caps() {
+        let graph = SemanticGraph {
+            nodes: vec![GraphNode::new(NodeRef(0), NodeKind::Function, "fn.print")],
+            edges: vec![],
+        };
+        let anf = anf_with_binding(
+            "fn.print",
+            AnfExpr::Let {
+                name: "msg".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Text("hi".to_string()))),
+                body: Box::new(AnfExpr::EffectCall {
+                    capability: "log.write".to_string(),
+                    func: "write".to_string(),
+                    args: vec!["msg".to_string()],
+                }),
+            },
+        );
+
+        let ids = derive_runtime_capability_ids(&graph, &anf, "fn.print");
+        let names: Vec<&str> = ids.iter().map(CapabilityId::as_str).collect();
+        assert_eq!(names, vec!["log.write"]);
     }
 
     // ── parse_runtime_args ────────────────────────────────────────────────

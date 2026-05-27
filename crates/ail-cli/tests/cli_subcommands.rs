@@ -386,6 +386,74 @@ end
 }
 
 #[test]
+fn run_print_without_graph_grant_fails_preflight() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let acl = dir.child("print-without-grant.acl");
+    acl.write_str(
+        r#"change print_without_grant
+author cli-test
+description print without graph grant
+base 0
+op create_capability id=log.write
+op create_function id=fn.print_without_grant return=Int body=print("Hello, world!")
+end
+"#,
+    )
+    .expect("ACL fixture must be written");
+
+    let change_output = ail()
+        .args([
+            "change",
+            "--file",
+            acl.path().to_str().expect("path must be UTF-8"),
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let change_json = parse_json_output(&change_output);
+    let change_id = change_json["data"]["canonical_change"]["change_id"]
+        .as_str()
+        .expect("change output must include a change_id");
+
+    ail()
+        .args(["verify", change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args(["apply", change_id, "--yes"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args(["compile", "--profile", "dev", "--target", "wasm"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    ail()
+        .args([
+            "run",
+            "--profile",
+            "dev",
+            "--target",
+            "wasm",
+            "fn.print_without_grant",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("capability denied: log.write"));
+}
+
+#[test]
 fn init_branch_writes_indirect_head_and_status_shows_branch() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
 

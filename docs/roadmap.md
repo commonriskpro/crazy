@@ -21,7 +21,7 @@ Related: [Implementation blueprint](implementation-blueprint.md), [Codebase guid
 | Milestone | User-facing outcome | Status |
 |-----------|---------------------|--------|
 | `v0.1` | Verified ACL/WASM foundation for contributors. | Released foundation. |
-| `v0.2` | Write and run hello-world programs with strings and print/log output. | In progress: Text-return hello world runs; `print(...)` lowers to `log.write` and is denied without `--grant log.write`. |
+| `v0.2` | Write and run hello-world programs with strings and print/log output. | In progress: Text-return hello world runs; `print(...)` lowers to `log.write` and currently requires explicit ACL setup plus `--grant log.write`. |
 | `v0.3` | Split code into modules, import local code, and use basic packages. | Planned. |
 | `v0.4` | Get useful type errors and safe match behavior before runtime. | Planned. |
 | `v0.5` | Build small programs that use stdlib I/O, JSON, time, filesystem, and HTTP capabilities. | Planned. |
@@ -59,7 +59,7 @@ User-facing capabilities:
 
 Acceptance criteria:
 
-- A documented `hello.ail` example runs from a clean checkout.
+- A documented hello-world setup sequence runs from a clean checkout.
 - `ail run` decodes Text returns from WASM ABI descriptors instead of showing packed integer pointers.
 - String literals round-trip through parse, lower, compile, and WASM execution tests.
 - `print(...)` output is deterministic in CLI tests and denied without the required `log.write` capability grant.

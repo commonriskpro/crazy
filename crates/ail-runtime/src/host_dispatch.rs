@@ -733,7 +733,11 @@ fn read_memory(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) -> Option
     Some(bytes)
 }
 
-fn decode_packed_text_arg(caller: &mut Caller<'_, HostState>, arg: &[u8]) -> Option<Vec<u8>> {
+fn decode_packed_text_arg(
+    caller: &mut Caller<'_, HostState>,
+    arg: &[u8],
+    max_payload_bytes: Option<u64>,
+) -> Option<Vec<u8>> {
     if arg.len() != 8 {
         return None;
     }
@@ -742,6 +746,14 @@ fn decode_packed_text_arg(caller: &mut Caller<'_, HostState>, arg: &[u8]) -> Opt
     let packed = i64::from_le_bytes(raw);
     let ptr = (packed & 0xffff_ffff) as i32;
     let len = (packed >> 32) as i32;
+    if len < 0 {
+        return None;
+    }
+    if let Some(max_payload_bytes) = max_payload_bytes
+        && len as u64 > max_payload_bytes
+    {
+        return None;
+    }
     read_memory(caller, ptr, len)
 }
 
@@ -750,9 +762,12 @@ fn handler_payload(
     cap: &CapabilityId,
     operation: &str,
     args_bytes: &[u8],
+    max_payload_bytes: Option<u64>,
 ) -> Option<Vec<u8>> {
     if cap.as_str() == "log.write" && operation == "write" {
-        decode_packed_text_arg(caller, args_bytes)
+        let payload = decode_packed_text_arg(caller, args_bytes, max_payload_bytes)?;
+        std::str::from_utf8(&payload).ok()?;
+        Some(payload)
     } else {
         Some(args_bytes.to_vec())
     }
@@ -788,6 +803,11 @@ pub(crate) fn dispatch_host_call_write(
 
     let child_trace = caller.data().trace_context.as_ref().map(|ctx| ctx.child());
     let audit_log = caller.data().audit_log.clone();
+    let log_write_text_limit = if cap.as_str() == "log.write" && operation == "write" {
+        caller.data().profile.limits().payload_size_limit
+    } else {
+        None
+    };
     let audit = CapabilityAuditContext {
         start,
         timestamp,
@@ -822,7 +842,8 @@ pub(crate) fn dispatch_host_call_write(
             audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
             return None;
         }
-        if let Some(max_payload_bytes) = state.profile.limits().payload_size_limit
+        if log_write_text_limit.is_none()
+            && let Some(max_payload_bytes) = state.profile.limits().payload_size_limit
             && args_bytes.len() as u64 > max_payload_bytes
         {
             audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
@@ -898,7 +919,9 @@ pub(crate) fn dispatch_host_call_write(
     // Dispatch. `log.write` is the narrow v0.2 Text bridge: decode the packed
     // Text argument before handing it to the handler; all other calls keep the
     // existing scalar bytes ABI.
-    let Some(payload) = handler_payload(caller, &cap, &operation, &args_bytes) else {
+    let Some(payload) =
+        handler_payload(caller, &cap, &operation, &args_bytes, log_write_text_limit)
+    else {
         {
             let state = caller.data_mut();
             state.concurrent_calls -= 1;
@@ -1017,6 +1040,11 @@ pub(crate) fn dispatch_host_call(
     let profile_name = Some(caller.data().profile.name().to_string());
     let vr_hash = Some(caller.data().profile.verification_report_hash().to_string());
     let trace_id = child_trace.as_ref().map(|tc| tc.trace_id.clone());
+    let log_write_text_limit = if cap.as_str() == "log.write" && operation == "write" {
+        caller.data().profile.limits().payload_size_limit
+    } else {
+        None
+    };
 
     let handler = {
         let state = caller.data_mut();
@@ -1068,7 +1096,8 @@ pub(crate) fn dispatch_host_call(
             );
             return Some(-1);
         }
-        if let Some(max_payload_bytes) = state.profile.limits().payload_size_limit
+        if log_write_text_limit.is_none()
+            && let Some(max_payload_bytes) = state.profile.limits().payload_size_limit
             && args_bytes.len() as u64 > max_payload_bytes
         {
             state.audit_log.lock().expect("audit_log lock").push(
@@ -1247,7 +1276,9 @@ pub(crate) fn dispatch_host_call(
     };
 
     let handler_name = handler.name().to_string();
-    let Some(payload) = handler_payload(caller, &cap, &operation, &args_bytes) else {
+    let Some(payload) =
+        handler_payload(caller, &cap, &operation, &args_bytes, log_write_text_limit)
+    else {
         let state = caller.data_mut();
         state.concurrent_calls -= 1;
         state.call_depth -= 1;

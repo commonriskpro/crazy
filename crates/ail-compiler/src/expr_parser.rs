@@ -365,6 +365,9 @@ impl Parser<'_> {
             // `print(expr)` — public-output sugar for `log.write`.
             "print" => {
                 let [arg] = expect_arity::<1>(func, args)?;
+                if !matches!(arg, CoreExpr::Literal(LiteralValue::Text(_))) {
+                    return Err(ParseError::new("print expects a Text literal argument"));
+                }
                 Ok(CoreExpr::EffectCall {
                     capability: "log.write".to_string(),
                     func: "write".to_string(),

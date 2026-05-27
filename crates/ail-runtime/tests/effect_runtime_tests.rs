@@ -154,6 +154,22 @@ fn profile_with_grants(
     )
 }
 
+fn profile_with_grants_and_limits(
+    wasm: &[u8],
+    manifest: &CapabilityManifest,
+    grants: Vec<CapabilityGrant>,
+    limits: ResourceLimits,
+) -> RuntimeProfile {
+    RuntimeProfile::new(
+        "effect-runtime-test".to_string(),
+        blake3_hex_of(wasm),
+        "a".repeat(64),
+        manifest.blake3_hex().expect("manifest hash"),
+        grants,
+        limits,
+    )
+}
+
 #[test]
 fn compiled_effect_dispatches_to_registered_handler_and_audits_call() {
     let acl = r#"
@@ -238,6 +254,43 @@ fn log_write_granted_decodes_text_and_captures_output() {
     let result = instance.invoke("main", &[]).expect("main invokes");
     assert_eq!(result, RuntimeValue::I64(0));
     assert_eq!(handler.output(), vec!["Hello, world!".to_string()]);
+}
+
+#[test]
+fn log_write_payload_limit_checks_decoded_text_len_before_handler() {
+    let cap = CapabilityId::new("log.write");
+    let artifact = emit_wasm(&log_write_anf()).expect("log.write wasm emits");
+    let manifest = CapabilityManifest {
+        module: "effect-module".to_string(),
+        requires: vec![cap.clone()],
+    };
+    let profile = profile_with_grants_and_limits(
+        &artifact.wasm,
+        &manifest,
+        vec![CapabilityGrant {
+            module: manifest.module.clone(),
+            capability: cap,
+        }],
+        ResourceLimits {
+            payload_size_limit: Some(5),
+            ..Default::default()
+        },
+    );
+    let handler = Arc::new(LogHandler::new());
+
+    let mut host = RuntimeHost::new().with_handler(handler.clone());
+    let mut instance = host
+        .validate_and_instantiate(&artifact.wasm, &manifest, &profile)
+        .expect("preflight passes with log.write grant");
+
+    let result = instance
+        .invoke("main", &[])
+        .expect("host call denial returns the effect ABI failure sentinel");
+    assert_eq!(result, RuntimeValue::I64(-1));
+    assert!(
+        handler.output().is_empty(),
+        "oversized decoded payload must not reach log handler"
+    );
 }
 
 #[test]

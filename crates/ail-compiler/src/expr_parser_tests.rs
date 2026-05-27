@@ -436,6 +436,12 @@ fn parses_print_as_log_write_effect_call() {
 }
 
 #[test]
+fn rejects_print_non_text_literal() {
+    let err = parse_expr("print(42)").unwrap_err();
+    assert_eq!(err.message, "print expects a Text literal argument");
+}
+
+#[test]
 fn parses_effect_call() {
     assert_eq!(
         parse_expr("effect_call(database.read, Cart, cartId)").unwrap(),

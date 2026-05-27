@@ -22,7 +22,9 @@ Current release: [`v0.1.0`](https://github.com/commonriskpro/crazy/releases/tag/
    cargo run -p ail-cli -- status
    ```
 
-   Narrow v0.2 hello-world output is available through explicit `log.write` grants:
+   Narrow v0.2 hello-world output is available after creating a function and
+   granting its `log.write` capability in the Semantic Graph. Once that setup is
+   applied and compiled, run it with an explicit runtime grant:
 
    ```sh
    cargo run -p ail-cli -- run --grant log.write fn.print_hello
