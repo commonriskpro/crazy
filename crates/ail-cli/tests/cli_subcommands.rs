@@ -454,6 +454,86 @@ end
 }
 
 #[test]
+fn run_print_transitive_callee_requires_log_write_grant() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let acl = dir.child("transitive-print.acl");
+    acl.write_str(
+        r#"change transitive_print
+author cli-test
+description transitive print requires log write
+base 0
+op create_capability id=log.write
+op create_function id=fn.print_hello return=Int body=print("Hello from callee!")
+op grant target=fn.print_hello capability=log.write
+op create_function id=fn.main return=Int body=print_hello()
+end
+"#,
+    )
+    .expect("ACL fixture must be written");
+
+    let change_output = ail()
+        .args([
+            "change",
+            "--file",
+            acl.path().to_str().expect("path must be UTF-8"),
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let change_json = parse_json_output(&change_output);
+    let change_id = change_json["data"]["canonical_change"]["change_id"]
+        .as_str()
+        .expect("change output must include a change_id");
+
+    ail()
+        .args(["verify", change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args(["apply", change_id, "--yes"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args(["compile", "--profile", "dev", "--target", "wasm"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    ail()
+        .args(["run", "--profile", "dev", "--target", "wasm", "fn.main"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("capability denied: log.write"));
+
+    ail()
+        .args([
+            "run",
+            "--profile",
+            "dev",
+            "--target",
+            "wasm",
+            "--grant",
+            "log.write",
+            "fn.main",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("output:\nHello from callee!"))
+        .stdout(predicate::str::contains("result: 0"));
+}
+
+#[test]
 fn init_branch_writes_indirect_head_and_status_shows_branch() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
 

@@ -61,9 +61,10 @@ fn parse_runtime_args(args: &[String]) -> Result<Vec<RuntimeArg>, CliError> {
 /// Derive runtime `CapabilityId`s from graph declarations and emitted effects.
 ///
 /// Graph `capability_reqs` preserve explicit ACL grants. ANF `EffectCall`
-/// collection hardens the runtime manifest when a function body emits an effect
-/// that the graph forgot to declare, keeping missing grants in preflight instead
-/// of deferring them to invocation time.
+/// collection follows calls reachable from the selected target, hardening the
+/// runtime manifest when a function body emits an effect that the graph forgot
+/// to declare while keeping missing grants in preflight instead of deferring
+/// them to invocation time.
 ///
 /// Returns an empty `Vec` only when neither graph declarations nor target ANF
 /// effects require external capabilities.
@@ -72,7 +73,7 @@ fn derive_runtime_capability_ids(
     anf: &AnfIr,
     target: &str,
 ) -> Vec<CapabilityId> {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     let mut unique = BTreeSet::new();
     if let Some(node) = graph.nodes.iter().find(|node| node.name == target) {
@@ -89,13 +90,25 @@ fn derive_runtime_capability_ids(
         );
     }
 
+    let binding_exprs: BTreeMap<&str, &AnfExpr> = anf
+        .bindings
+        .iter()
+        .map(|binding| (binding.name.as_str(), &binding.expr))
+        .collect();
     let target_binding_exists = anf
         .bindings
         .iter()
         .any(|binding| binding_matches_target(&binding.name, target));
+    let mut visited = BTreeSet::new();
     for binding in &anf.bindings {
         if !target_binding_exists || binding_matches_target(&binding.name, target) {
-            collect_effect_capability_ids(&binding.expr, &mut unique);
+            collect_binding_capability_ids(
+                graph,
+                &binding_exprs,
+                &binding.name,
+                &mut visited,
+                &mut unique,
+            );
         }
     }
 
@@ -108,34 +121,65 @@ fn binding_matches_target(binding_name: &str, target: &str) -> bool {
         || target.rsplit('.').next() == Some(binding_name)
 }
 
-fn collect_effect_capability_ids(expr: &AnfExpr, unique: &mut std::collections::BTreeSet<String>) {
+fn collect_binding_capability_ids<'a>(
+    graph: &SemanticGraph,
+    binding_exprs: &std::collections::BTreeMap<&'a str, &'a AnfExpr>,
+    binding_name: &str,
+    visited: &mut std::collections::BTreeSet<String>,
+    unique: &mut std::collections::BTreeSet<String>,
+) {
+    if !visited.insert(binding_name.to_string()) {
+        return;
+    }
+
+    if let Some(reqs) = graph
+        .nodes
+        .iter()
+        .find(|node| binding_matches_target(&node.name, binding_name))
+        .and_then(|node| node.capability_reqs.as_ref())
+    {
+        unique.extend(reqs.caps.iter().cloned());
+    }
+
+    if let Some(expr) = binding_exprs.get(binding_name).copied() {
+        collect_effect_capability_ids(graph, expr, binding_exprs, visited, unique);
+    }
+}
+
+fn collect_effect_capability_ids<'a>(
+    graph: &SemanticGraph,
+    expr: &AnfExpr,
+    binding_exprs: &std::collections::BTreeMap<&'a str, &'a AnfExpr>,
+    visited: &mut std::collections::BTreeSet<String>,
+    unique: &mut std::collections::BTreeSet<String>,
+) {
     match expr {
         AnfExpr::EffectCall { capability, .. } => {
             unique.insert(capability.clone());
         }
         AnfExpr::Let { value, body, .. } => {
-            collect_effect_capability_ids(value, unique);
-            collect_effect_capability_ids(body, unique);
+            collect_effect_capability_ids(graph, value, binding_exprs, visited, unique);
+            collect_effect_capability_ids(graph, body, binding_exprs, visited, unique);
         }
         AnfExpr::If {
             then_branch,
             else_branch,
             ..
         } => {
-            collect_effect_capability_ids(then_branch, unique);
-            collect_effect_capability_ids(else_branch, unique);
+            collect_effect_capability_ids(graph, then_branch, binding_exprs, visited, unique);
+            collect_effect_capability_ids(graph, else_branch, binding_exprs, visited, unique);
         }
         AnfExpr::Return(value) | AnfExpr::Loop { body: value } | AnfExpr::Break { value } => {
-            collect_effect_capability_ids(value, unique);
+            collect_effect_capability_ids(graph, value, binding_exprs, visited, unique);
         }
         AnfExpr::Seq(exprs) | AnfExpr::TupleNew(exprs) | AnfExpr::ListNew(exprs) => {
             for expr in exprs {
-                collect_effect_capability_ids(expr, unique);
+                collect_effect_capability_ids(graph, expr, binding_exprs, visited, unique);
             }
         }
         AnfExpr::Match { arms, .. } => {
             for arm in arms {
-                collect_effect_capability_ids(&arm.body, unique);
+                collect_effect_capability_ids(graph, &arm.body, binding_exprs, visited, unique);
             }
         }
         AnfExpr::Lambda { body, .. }
@@ -145,29 +189,33 @@ fn collect_effect_capability_ids(expr: &AnfExpr, unique: &mut std::collections::
         | AnfExpr::TaskGroup { body }
         | AnfExpr::Timeout { body, .. }
         | AnfExpr::ForEach { body, .. } => {
-            collect_effect_capability_ids(body, unique);
+            collect_effect_capability_ids(graph, body, binding_exprs, visited, unique);
         }
         AnfExpr::RecordNew { fields } => {
             for (_, expr) in fields {
-                collect_effect_capability_ids(expr, unique);
+                collect_effect_capability_ids(graph, expr, binding_exprs, visited, unique);
             }
         }
         AnfExpr::FieldUpdate { value, .. } => {
-            collect_effect_capability_ids(value, unique);
+            collect_effect_capability_ids(graph, value, binding_exprs, visited, unique);
         }
         AnfExpr::VariantNew { payload, .. } => {
             if let Some(payload) = payload {
-                collect_effect_capability_ids(payload, unique);
+                collect_effect_capability_ids(graph, payload, binding_exprs, visited, unique);
             }
         }
         AnfExpr::Select { branches } => {
             for branch in branches {
-                collect_effect_capability_ids(&branch.body, unique);
+                collect_effect_capability_ids(graph, &branch.body, binding_exprs, visited, unique);
+            }
+        }
+        AnfExpr::Call { func, .. } => {
+            for binding_name in resolve_called_binding_names(binding_exprs, func) {
+                collect_binding_capability_ids(graph, binding_exprs, binding_name, visited, unique);
             }
         }
         AnfExpr::Literal(_)
         | AnfExpr::Var(_)
-        | AnfExpr::Call { .. }
         | AnfExpr::FieldGet { .. }
         | AnfExpr::Dispatch { .. }
         | AnfExpr::TaskSpawn { .. }
@@ -191,6 +239,21 @@ fn collect_effect_capability_ids(expr: &AnfExpr, unique: &mut std::collections::
         | AnfExpr::Continue
         | AnfExpr::Placeholder => {}
     }
+}
+
+fn resolve_called_binding_names<'a>(
+    binding_exprs: &std::collections::BTreeMap<&'a str, &'a AnfExpr>,
+    func: &str,
+) -> Vec<&'a str> {
+    if let Some((name, _)) = binding_exprs.get_key_value(func) {
+        return vec![*name];
+    }
+
+    binding_exprs
+        .keys()
+        .copied()
+        .filter(|binding_name| binding_matches_target(binding_name, func))
+        .collect()
 }
 
 fn value_layout_from_wasm_descriptor(desc: &WasmTypeDescriptor) -> ValueLayout {
@@ -529,15 +592,23 @@ mod tests {
     }
 
     fn anf_with_binding(name: &str, expr: AnfExpr) -> AnfIr {
-        let binding = AnfBinding {
-            source_ref: NodeRef(0),
-            name: name.to_string(),
-            expr,
-        };
+        anf_with_bindings(vec![(name, expr)])
+    }
+
+    fn anf_with_bindings(bindings: Vec<(&str, AnfExpr)>) -> AnfIr {
+        let bindings: Vec<AnfBinding> = bindings
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (name, expr))| AnfBinding {
+                source_ref: NodeRef(idx as u32),
+                name: name.to_string(),
+                expr,
+            })
+            .collect();
         AnfIr {
             schema_version: ANF_SCHEMA_VERSION,
-            source_map: SourceMap::from_bindings(std::slice::from_ref(&binding)),
-            bindings: vec![binding],
+            source_map: SourceMap::from_bindings(&bindings),
+            bindings,
             stage_hashes: empty_anf().stage_hashes,
         }
     }
@@ -674,6 +745,85 @@ mod tests {
         );
 
         let ids = derive_runtime_capability_ids(&graph, &anf, "fn.print");
+        let names: Vec<&str> = ids.iter().map(CapabilityId::as_str).collect();
+        assert_eq!(names, vec!["log.write"]);
+    }
+
+    #[test]
+    fn derive_includes_reachable_callee_effect_call() {
+        let graph = SemanticGraph {
+            nodes: vec![
+                GraphNode::new(NodeRef(0), NodeKind::Function, "fn.main"),
+                GraphNode::new(NodeRef(1), NodeKind::Function, "fn.print_hello"),
+                GraphNode::new(NodeRef(2), NodeKind::Function, "fn.unrelated"),
+            ],
+            edges: vec![],
+        };
+        let anf = anf_with_bindings(vec![
+            (
+                "fn.main",
+                AnfExpr::Call {
+                    func: "print_hello".to_string(),
+                    args: vec![],
+                },
+            ),
+            (
+                "fn.print_hello",
+                AnfExpr::EffectCall {
+                    capability: "log.write".to_string(),
+                    func: "write".to_string(),
+                    args: vec![],
+                },
+            ),
+            (
+                "fn.unrelated",
+                AnfExpr::EffectCall {
+                    capability: "net.read".to_string(),
+                    func: "fetch".to_string(),
+                    args: vec![],
+                },
+            ),
+        ]);
+
+        let ids = derive_runtime_capability_ids(&graph, &anf, "fn.main");
+        let names: Vec<&str> = ids.iter().map(CapabilityId::as_str).collect();
+        assert_eq!(names, vec!["log.write"]);
+    }
+
+    #[test]
+    fn derive_handles_reachable_call_cycle() {
+        let graph = SemanticGraph {
+            nodes: vec![
+                GraphNode::new(NodeRef(0), NodeKind::Function, "fn.main"),
+                GraphNode::new(NodeRef(1), NodeKind::Function, "fn.loop"),
+            ],
+            edges: vec![],
+        };
+        let anf = anf_with_bindings(vec![
+            (
+                "fn.main",
+                AnfExpr::Call {
+                    func: "loop".to_string(),
+                    args: vec![],
+                },
+            ),
+            (
+                "fn.loop",
+                AnfExpr::Seq(vec![
+                    AnfExpr::Call {
+                        func: "main".to_string(),
+                        args: vec![],
+                    },
+                    AnfExpr::EffectCall {
+                        capability: "log.write".to_string(),
+                        func: "write".to_string(),
+                        args: vec![],
+                    },
+                ]),
+            ),
+        ]);
+
+        let ids = derive_runtime_capability_ids(&graph, &anf, "fn.main");
         let names: Vec<&str> = ids.iter().map(CapabilityId::as_str).collect();
         assert_eq!(names, vec!["log.write"]);
     }
