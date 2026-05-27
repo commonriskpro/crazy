@@ -262,7 +262,9 @@ if [[ -n "$change_id" ]]; then
 
     if capture_in output "$workspace" --json run --profile dev --target wasm fn.print_hello; then
         record_fail "ail run print without grant unexpectedly succeeded: $output"
-    elif contains "$output" "capability denied: log.write"; then
+    elif contains "$output" 'function `fn.print_hello`' && \
+        contains "$output" 'capability `log.write`' && \
+        contains "$output" 'suggestion: add `--grant log.write`'; then
         record_pass "ail run print denies log.write by default"
     else
         record_fail "ail run print without grant failed for wrong reason: $output"

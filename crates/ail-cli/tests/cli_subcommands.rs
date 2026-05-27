@@ -341,7 +341,11 @@ end
         .current_dir(dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("capability denied: log.write"));
+        .stderr(predicate::str::contains("function `fn.print_hello`"))
+        .stderr(predicate::str::contains("capability `log.write`"))
+        .stderr(predicate::str::contains(
+            "suggestion: add `--grant log.write`",
+        ));
 
     ail()
         .args([
@@ -450,7 +454,13 @@ end
         .current_dir(dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("capability denied: log.write"));
+        .stderr(predicate::str::contains(
+            "function `fn.print_without_grant`",
+        ))
+        .stderr(predicate::str::contains("capability `log.write`"))
+        .stderr(predicate::str::contains(
+            "suggestion: add `--grant log.write`",
+        ));
 }
 
 #[test]
@@ -513,7 +523,11 @@ end
         .current_dir(dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("capability denied: log.write"));
+        .stderr(predicate::str::contains("function `fn.main`"))
+        .stderr(predicate::str::contains("capability `log.write`"))
+        .stderr(predicate::str::contains(
+            "suggestion: add `--grant log.write`",
+        ));
 
     ail()
         .args([

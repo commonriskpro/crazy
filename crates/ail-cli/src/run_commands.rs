@@ -18,9 +18,9 @@ use ail_compiler::{
 use std::sync::Arc;
 
 use ail_runtime::{
-    AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, LogHandler, ResourceLimits,
-    RuntimeArg, RuntimeHost, RuntimeProfile, RuntimeReportStatus, RuntimeValue, StructuredValue,
-    ValueLayout, blake3_hex_of,
+    AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, LogHandler, PreflightFailure,
+    ResourceLimits, RuntimeArg, RuntimeError, RuntimeHost, RuntimeProfile, RuntimeReportStatus,
+    RuntimeValue, StructuredValue, ValueLayout, blake3_hex_of,
 };
 use serde_json::{Value, json};
 
@@ -344,6 +344,55 @@ fn invoke_export_for_cli(
     }
 }
 
+fn format_run_preflight_error(err: &RuntimeError, module_name: &str) -> String {
+    match err {
+        RuntimeError::PreflightFailed(PreflightFailure::CapabilityDenied { denied }) => {
+            format_missing_capability_grants(denied, module_name)
+        }
+        _ => err.to_string(),
+    }
+}
+
+fn format_missing_capability_grants(denied: &[CapabilityId], module_name: &str) -> String {
+    let names: Vec<&str> = denied.iter().map(CapabilityId::as_str).collect();
+    let capability_label = if names.len() == 1 {
+        "capability"
+    } else {
+        "capabilities"
+    };
+    let pronoun = if names.len() == 1 { "it" } else { "they" };
+    let verb = if names.len() == 1 { "was" } else { "were" };
+    let formatted_names = names
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut message = format!(
+        "function `{module_name}` requires {capability_label} {formatted_names}, \
+         but {pronoun} {verb} not supplied via --grant"
+    );
+
+    if names.iter().all(|name| is_safe_cli_word(name)) {
+        let grants = names
+            .iter()
+            .map(|name| format!("--grant {name}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        message.push_str(&format!("; suggestion: add `{grants}`"));
+    }
+
+    message
+}
+
+fn is_safe_cli_word(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('-')
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-' | b'/'))
+}
+
 // ── Command handler ───────────────────────────────────────────────────────
 
 /// `ail run --target <target> --profile <name> [module] [--replay <trace-id>]`
@@ -550,7 +599,10 @@ pub(crate) async fn cmd_run(
             );
             Ok(())
         }
-        Err(e) => Err(CliError::PreflightFailed(format!("{e}"))),
+        Err(e) => Err(CliError::PreflightFailed(format_run_preflight_error(
+            &e,
+            module_name,
+        ))),
     }
 }
 
@@ -561,9 +613,9 @@ mod tests {
     use ail_compiler::LiteralValue;
     use ail_compiler::{ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, SourceMap, StageHashes};
     use ail_core::semantic_graph::{CapabilityReqs, GraphNode, NodeKind, NodeRef, SemanticGraph};
-    use ail_runtime::{CapabilityId, RuntimeArg};
+    use ail_runtime::{CapabilityId, PreflightFailure, RuntimeArg, RuntimeError};
 
-    use super::{derive_runtime_capability_ids, parse_runtime_args};
+    use super::{derive_runtime_capability_ids, format_run_preflight_error, parse_runtime_args};
 
     fn node_with_caps(id: u32, caps: Vec<&str>) -> GraphNode {
         let mut n = GraphNode::new(NodeRef(id), NodeKind::Function, format!("fn_{id}"));
@@ -826,6 +878,46 @@ mod tests {
         let ids = derive_runtime_capability_ids(&graph, &anf, "fn.main");
         let names: Vec<&str> = ids.iter().map(CapabilityId::as_str).collect();
         assert_eq!(names, vec!["log.write"]);
+    }
+
+    #[test]
+    fn capability_diagnostic_names_target_capability_and_grant() {
+        let err = RuntimeError::PreflightFailed(PreflightFailure::CapabilityDenied {
+            denied: vec![CapabilityId::new("log.write")],
+        });
+
+        let msg = format_run_preflight_error(&err, "fn.print_hello");
+
+        assert!(
+            msg.contains("function `fn.print_hello`"),
+            "diagnostic must name target function; got: {msg}"
+        );
+        assert!(
+            msg.contains("capability `log.write`"),
+            "diagnostic must name missing capability; got: {msg}"
+        );
+        assert!(
+            msg.contains("suggestion: add `--grant log.write`"),
+            "diagnostic must suggest safe grant flag; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn capability_diagnostic_omits_unsafe_grant_suggestion() {
+        let err = RuntimeError::PreflightFailed(PreflightFailure::CapabilityDenied {
+            denied: vec![CapabilityId::new("log write")],
+        });
+
+        let msg = format_run_preflight_error(&err, "fn.print_hello");
+
+        assert!(
+            msg.contains("capability `log write`"),
+            "diagnostic must still name unsafe capability text; got: {msg}"
+        );
+        assert!(
+            !msg.contains("suggestion:"),
+            "diagnostic must not suggest unsafe shell words; got: {msg}"
+        );
     }
 
     // ── parse_runtime_args ────────────────────────────────────────────────
