@@ -1,4 +1,3 @@
-
 use super::*;
 use ail_core::semantic_graph::{
     AssociatedTypeBinding, CapabilityReqs, EdgeKind, EffectRow, GenericParamDecl, GenericParamKind,
