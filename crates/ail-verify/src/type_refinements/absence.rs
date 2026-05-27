@@ -2,7 +2,10 @@ use ail_core::semantic_graph::SemanticGraph;
 
 use crate::report::{VerificationEntry, VerificationState};
 
-use crate::type_checker::{E_FLOAT_EQ_IMPLICIT, E_FLOAT_ORD_IMPLICIT, E_NULL_IN_CORE_IR, E_PARTIAL_ORD_REQUIRED, E_PATCHFIELD_EMPTY_INNER};
+use crate::type_checker::{
+    E_FLOAT_EQ_IMPLICIT, E_FLOAT_ORD_IMPLICIT, E_NULL_IN_CORE_IR, E_PARTIAL_ORD_REQUIRED,
+    E_PATCHFIELD_EMPTY_INNER,
+};
 
 use crate::type_obligations::split_generic;
 

@@ -4,7 +4,10 @@ use ail_core::semantic_graph::{NodeKind, NodeRef, SemanticGraph};
 
 use crate::report::{VerificationEntry, VerificationState};
 
-use crate::type_checker::{E_BOUNDARY_INFERENCE_MISMATCH, E_BOUNDARY_NOT_MATERIALIZED, E_FOREIGN_TYPE_NO_SCHEMA, TypeContext};
+use crate::type_checker::{
+    E_BOUNDARY_INFERENCE_MISMATCH, E_BOUNDARY_NOT_MATERIALIZED, E_FOREIGN_TYPE_NO_SCHEMA,
+    TypeContext,
+};
 
 use super::helpers::infer_expr_type;
 

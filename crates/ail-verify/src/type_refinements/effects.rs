@@ -2,7 +2,10 @@ use ail_core::semantic_graph::{EdgeKind, SemanticGraph};
 
 use crate::report::{VerificationEntry, VerificationState};
 
-use crate::type_checker::{E_CAPABILITY_NOT_PROPAGATED, E_CAPABILITY_PARAM_NOT_THREADED, E_EFFECT_NOT_PROPAGATED, E_EFFECT_PARAM_NOT_THREADED, TypeContext};
+use crate::type_checker::{
+    E_CAPABILITY_NOT_PROPAGATED, E_CAPABILITY_PARAM_NOT_THREADED, E_EFFECT_NOT_PROPAGATED,
+    E_EFFECT_PARAM_NOT_THREADED, TypeContext,
+};
 
 // ── Subpass 3c: Effects and capabilities must propagate across calls ─────
 

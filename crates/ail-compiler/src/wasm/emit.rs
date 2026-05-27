@@ -14,15 +14,26 @@ use crate::error::CompileError;
 
 use crate::hash::{hash_with_parent, stable_cbor_bytes};
 
-use crate::wasm_abi::{binding_result, binding_signatures, export_name, EffectDataLayout, AbiDescriptor, WasmTypeDescriptor, derive_wasm_type};
+use crate::wasm_abi::{
+    AbiDescriptor, EffectDataLayout, WasmTypeDescriptor, binding_result, binding_signatures,
+    derive_wasm_type, export_name,
+};
 
-use crate::wasm_artifact::{code_entry_offsets, WasmArtifact};
+use crate::wasm_artifact::{WasmArtifact, code_entry_offsets};
 
 use crate::wasm_emit::build_code_section;
 
-use crate::wasm_sections::{align_to_i64, build_data_section, build_element_section, build_export_section_with_memory, build_function_section, build_global_section, build_import_section, build_memory_section, build_table_section, build_type_section, build_type_section_with_host_call};
+use crate::wasm_sections::{
+    align_to_i64, build_data_section, build_element_section, build_export_section_with_memory,
+    build_function_section, build_global_section, build_import_section, build_memory_section,
+    build_table_section, build_type_section, build_type_section_with_host_call,
+};
 
-use super::lambdas::{anf_has_fold, collect_closure_hoistable_lambdas, collect_hoistable_lambdas, expr_contains_2param_lambda, first_unsupported_wasm_construct, has_fold_with_captured_reducer, has_fold_with_uncaptured_wrong_arity_reducer};
+use super::lambdas::{
+    anf_has_fold, collect_closure_hoistable_lambdas, collect_hoistable_lambdas,
+    expr_contains_2param_lambda, first_unsupported_wasm_construct, has_fold_with_captured_reducer,
+    has_fold_with_uncaptured_wrong_arity_reducer,
+};
 
 // ── emit_wasm ─────────────────────────────────────────────────────────────
 

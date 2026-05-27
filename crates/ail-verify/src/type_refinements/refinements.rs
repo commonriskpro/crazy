@@ -2,7 +2,10 @@ use ail_core::semantic_graph::{EdgeKind, RefinementStatus, SemanticGraph};
 
 use crate::report::{VerificationEntry, VerificationState};
 
-use crate::type_checker::{E_ASSOC_TYPE_NOT_RESOLVED, E_REFINEMENT_ERASURE, E_REFINEMENT_PROOF_UNDISCHARGED, E_REFINEMENT_RUNTIME_CHECK_MISSING, TypeContext};
+use crate::type_checker::{
+    E_ASSOC_TYPE_NOT_RESOLVED, E_REFINEMENT_ERASURE, E_REFINEMENT_PROOF_UNDISCHARGED,
+    E_REFINEMENT_RUNTIME_CHECK_MISSING, TypeContext,
+};
 
 use super::helpers::{resolve_assoc_type, split_assoc_type};
 

@@ -2,7 +2,10 @@ use ail_core::semantic_graph::{EdgeKind, GenericParamKind, SemanticGraph};
 
 use crate::report::{VerificationEntry, VerificationState};
 
-use crate::type_checker::{E_CAPABILITY_PARAM_WIDENED, E_CONST_PARAM_UNDECIDABLE, E_CONST_PARAM_VALUE_INVALID, E_EFFECT_PARAM_WIDENED, E_GENERIC_BINDING_ARITY, TypeContext};
+use crate::type_checker::{
+    E_CAPABILITY_PARAM_WIDENED, E_CONST_PARAM_UNDECIDABLE, E_CONST_PARAM_VALUE_INVALID,
+    E_EFFECT_PARAM_WIDENED, E_GENERIC_BINDING_ARITY, TypeContext,
+};
 
 use super::helpers::{is_const_param_value, is_simple_identifier};
 
