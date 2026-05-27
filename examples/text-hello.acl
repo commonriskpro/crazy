@@ -1,0 +1,6 @@
+change text_hello_example
+author examples
+description create a Text hello-world function
+base 0
+op create_function id=fn.hello return=Text body=let(s, "Hello, world!", s)
+end
