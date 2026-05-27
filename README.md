@@ -23,7 +23,7 @@ Current release: [`v0.1.0`](https://github.com/commonriskpro/crazy/releases/tag/
    ```
 
 4. Use the [codebase guide](docs/CODEBASE-GUIDE.md) as the documentation entry point.
-5. Check the [roadmap](docs/implementation-blueprint.md), [risks](docs/risks.md), and [changelog](CHANGELOG.md) before relying on any subsystem.
+5. Check the [public roadmap](docs/roadmap.md), [implementation blueprint](docs/implementation-blueprint.md), [risks](docs/risks.md), and [changelog](CHANGELOG.md) before relying on any subsystem.
 
 Requires Rust 1.95.0, pinned by `rust-toolchain.toml`.
 
@@ -67,7 +67,7 @@ Release process details live in [release policy](docs/release-policy.md). Publis
 - Ecosystem infrastructure is early: no deployed package registry federation, Sigstore/keyless signing integration, or production Context Server deployment.
 - Performance evidence is limited: deterministic compiler regression evidence exists, but large-project benchmark coverage and thresholds are still roadmap work.
 
-See the [implementation blueprint](docs/implementation-blueprint.md) for the current milestone map and next recommended milestones.
+See the [public roadmap](docs/roadmap.md) for release-facing milestones and the [implementation blueprint](docs/implementation-blueprint.md) for technical validation status.
 
 ## Documentation Map
 
@@ -86,7 +86,7 @@ Start with [docs/CODEBASE-GUIDE.md](docs/CODEBASE-GUIDE.md). It gives the readin
 | Context Server | [Context Server](docs/context-server.md) |
 | Packages/trust | [Packages](docs/packages.md) |
 | Compiler | [Compiler](docs/compiler.md) |
-| Roadmap/status | [Implementation blueprint](docs/implementation-blueprint.md) |
+| Roadmap/status | [Public roadmap](docs/roadmap.md), [Implementation blueprint](docs/implementation-blueprint.md) |
 | Risks and decisions | [Risks](docs/risks.md), [Decision log](docs/decision-log.md), [Decisions register](docs/open-questions.md) |
 
 `docs/history/ai-native-language-draft.md` is historical context, not the source of truth.

@@ -8,7 +8,7 @@ Use this as the entry point for the AIL docs. The canonical material lives in `d
 2. Read [Repository map](codebase/repository-map.md) to locate the crate or directory you need.
 3. Use [Reference map](codebase/reference-map.md) when you know the question but not the document.
 4. Use [Maintainer playbook](codebase/maintainer-playbook.md) before changing a subsystem.
-5. Use [Implementation blueprint](implementation-blueprint.md) to separate completed validation milestones from remaining product work.
+5. Use [Public roadmap](roadmap.md) for release-facing milestones and [Implementation blueprint](implementation-blueprint.md) to separate completed validation milestones from remaining product work.
 6. Use [Wave operating model](wave-operating-model.md) when planning or executing a multi-wave implementation run.
 7. Use [Contract discipline](codebase/contract-discipline.md) before adding behavior that touches JSON output, status strings, or policy gates.
 
@@ -51,7 +51,7 @@ That is still a validation-stage implementation. The docs describe a broader tar
 | Need | Start here |
 |------|------------|
 | System overview | [Architecture](architecture.md) |
-| Current roadmap and milestone status | [Implementation blueprint](implementation-blueprint.md) |
+| Current roadmap and milestone status | [Public roadmap](roadmap.md) and [Implementation blueprint](implementation-blueprint.md) |
 | Source of truth and IR | [Core IR and Semantic Graph](core-ir.md) |
 | LLM-authored changes | [AI Change Language](change-language.md) |
 | Verification model | [Verification](verification.md) |
