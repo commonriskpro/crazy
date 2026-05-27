@@ -8,7 +8,7 @@
 //  - Two different text literals produce different i64 packed values.
 
 use ail_compiler::core_ir::{LiteralValue, StageHashes};
-use ail_compiler::{AnfBinding, AnfExpr, AnfIr, SourceMap, emit_wasm};
+use ail_compiler::{AnfBinding, AnfExpr, AnfIr, SourceMap, WasmTypeDescriptor, emit_wasm};
 use ail_core::semantic_graph::NodeRef;
 use wasmparser::{Parser, Payload};
 
@@ -41,6 +41,17 @@ fn emit_text_literal_wasm(text: &str) -> Vec<u8> {
     let artifact = emit_wasm(&sealed_anf(binding)).expect("emit_wasm must succeed");
     wasmparser::validate(&artifact.wasm).expect("emitted WASM must validate");
     artifact.wasm
+}
+
+fn emit_text_expr(name: &str, expr: AnfExpr) -> ail_compiler::WasmArtifact {
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: name.to_string(),
+        expr,
+    };
+    let artifact = emit_wasm(&sealed_anf(binding)).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("emitted WASM must validate");
+    artifact
 }
 
 /// Count the number of data section entries in a WASM binary.
@@ -156,5 +167,50 @@ fn text_literal_function_is_exported() {
     assert!(
         export_names.iter().any(|n| n == "main"),
         "Text-returning function must be exported as 'main', got {export_names:?}"
+    );
+}
+
+#[test]
+fn string_len_call_exports_scalar_wasm() {
+    let artifact = emit_text_expr(
+        "fn.main",
+        AnfExpr::Let {
+            name: "text".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("hello".to_string()))),
+            body: Box::new(AnfExpr::Call {
+                func: "len".to_string(),
+                args: vec!["text".to_string()],
+            }),
+        },
+    );
+
+    assert!(
+        artifact.export_types.contains_key("main"),
+        "len(Text) must leave an exported scalar result"
+    );
+}
+
+#[test]
+fn string_concat_call_preserves_text_export_type() {
+    let artifact = emit_text_expr(
+        "fn.main",
+        AnfExpr::Let {
+            name: "left".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("he".to_string()))),
+            body: Box::new(AnfExpr::Let {
+                name: "right".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Text("llo".to_string()))),
+                body: Box::new(AnfExpr::Call {
+                    func: "concat".to_string(),
+                    args: vec!["left".to_string(), "right".to_string()],
+                }),
+            }),
+        },
+    );
+
+    assert_eq!(
+        artifact.export_types.get("main"),
+        Some(&WasmTypeDescriptor::Text),
+        "concat(Text, Text) must preserve the public Text ABI descriptor"
     );
 }

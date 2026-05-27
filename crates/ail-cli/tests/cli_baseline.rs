@@ -12,7 +12,7 @@ mod common;
 
 use common::{
     ail, compute_sample_change_id, create_sample_change, extract_change_id, parse_json_output,
-    sample_acl_path,
+    sample_acl_path, string_ops_acl_path,
 };
 use predicates::prelude::*;
 
@@ -778,4 +778,61 @@ fn e2e_change_verify_apply_compile_run() {
         audit_events, 1,
         "exactly one AuditEvent must be appended on success"
     );
+}
+
+#[test]
+fn string_ops_change_verify_apply_compile_run() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let path = string_ops_acl_path();
+    let change_output = ail()
+        .args([
+            "change",
+            "--file",
+            path.to_str().expect("path must be UTF-8"),
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let change_json = parse_json_output(&change_output);
+    let change_id = change_json["data"]["canonical_change"]["change_id"]
+        .as_str()
+        .expect("canonical_change.change_id must be a string")
+        .to_string();
+
+    ail()
+        .args(["verify", &change_id, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    ail()
+        .args(["apply", &change_id, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    ail()
+        .args(["compile", "--profile", "dev", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    ail()
+        .args(["run", "--profile", "dev", "fn.text_len"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("result: 5"));
+
+    ail()
+        .args(["run", "--profile", "dev", "fn.text_concat"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("result: hello"));
 }
