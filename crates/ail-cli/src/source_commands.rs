@@ -926,6 +926,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
     let arity = match call {
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
         | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
+        "index" => SourceArity::Exact(2),
         "not" | "len" | "print" | "Var" => SourceArity::Exact(1),
         "if" | "let" | "fold" => SourceArity::Exact(3),
         "let_typed" => SourceArity::Exact(5),
@@ -1245,6 +1246,8 @@ fn infer_source_call_type(
             validate_source_arg_types(func, args, scope, functions, &["Text", "Text"])?;
             Ok("Text".to_string())
         }
+        "list" => infer_source_list_type(args, scope, functions),
+        "index" => infer_source_index_type(args, scope, functions),
         "print" => {
             validate_source_arg_types(func, args, scope, functions, &["Text"])?;
             Ok("Int".to_string())
@@ -1281,8 +1284,44 @@ fn infer_source_call_type(
 fn is_untyped_source_builtin(func: &str) -> bool {
     matches!(
         func,
-        "Var" | "fold" | "map" | "record" | "tuple" | "list" | "set" | "match"
+        "Var" | "fold" | "map" | "record" | "tuple" | "set" | "match"
     )
+}
+
+fn infer_source_list_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let Some((first, rest)) = args.split_first() else {
+        return Ok("List<Unknown>".to_string());
+    };
+    let element_ty = infer_source_expr_type(first, scope, functions)?;
+    for arg in rest {
+        let actual = infer_source_expr_type(arg, scope, functions)?;
+        validate_source_type_match(&element_ty, &actual, "list element")?;
+    }
+    Ok(format!("List<{element_ty}>"))
+}
+
+fn infer_source_index_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let collection_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let index_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    validate_source_type_match("Int", &index_ty, "index argument 2")?;
+    if collection_ty == "Unknown" {
+        return Ok("Unknown".to_string());
+    }
+    source_list_element_type(&collection_ty)
+        .map(ToString::to_string)
+        .ok_or_else(|| {
+            CliError::ParseError(format!(
+                "type mismatch in index argument 1: expected List<Unknown>, got {collection_ty}"
+            ))
+        })
 }
 
 fn validate_source_arg_types(
@@ -1304,12 +1343,27 @@ fn validate_source_arg_types(
 }
 
 fn validate_source_type_match(expected: &str, actual: &str, context: &str) -> Result<(), CliError> {
-    if expected == actual || expected == "Unknown" || actual == "Unknown" {
+    if source_type_matches(expected, actual) {
         return Ok(());
     }
     Err(CliError::ParseError(format!(
         "type mismatch in {context}: expected {expected}, got {actual}"
     )))
+}
+
+fn source_type_matches(expected: &str, actual: &str) -> bool {
+    let expected = expected.trim();
+    let actual = actual.trim();
+    if expected == actual || expected == "Unknown" || actual == "Unknown" {
+        return true;
+    }
+    let Some(expected_inner) = source_list_element_type(expected) else {
+        return false;
+    };
+    let Some(actual_inner) = source_list_element_type(actual) else {
+        return false;
+    };
+    source_type_matches(expected_inner, actual_inner)
 }
 
 fn validate_source_type_annotation(ty: &str) -> Result<(), CliError> {
@@ -1661,6 +1715,19 @@ fn format_source_expr_node(
         );
     }
 
+    if func == "list" {
+        return (
+            format!(
+                "[{}]",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if args.len() == 2 {
         if let Some((operator, precedence)) = source_infix_operator(&func) {
             return (
@@ -1745,6 +1812,7 @@ fn split_source_args(args: &str) -> Vec<String> {
     let mut start = 0usize;
     let mut paren_depth = 0usize;
     let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
     let mut in_string = false;
     let mut prev_was_escape = false;
 
@@ -1762,7 +1830,9 @@ fn split_source_args(args: &str) -> Vec<String> {
             ')' => paren_depth = paren_depth.saturating_sub(1),
             '{' => brace_depth += 1,
             '}' => brace_depth = brace_depth.saturating_sub(1),
-            ',' if paren_depth == 0 && brace_depth == 0 => {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            ',' if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 => {
                 out.push(args[start..idx].trim().to_string());
                 start = idx + ch.len_utf8();
             }
@@ -1795,6 +1865,35 @@ fn matching_paren(s: &str, open_idx: usize) -> Option<usize> {
             '"' => in_string = true,
             '(' => depth += 1,
             ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+        prev_was_escape = false;
+    }
+    None
+}
+
+fn matching_bracket(s: &str, open_idx: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+
+    for (idx, ch) in s.char_indices().skip_while(|(idx, _)| *idx < open_idx) {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '[' => depth += 1,
+            ']' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
                     return Some(idx);
@@ -2175,6 +2274,16 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(inner) = strip_wrapping_source_parens(expr) {
         return lower_source_expr(inner, line_num);
     }
+    if let Some(items) = parse_source_list_literal(expr, line_num)? {
+        return Ok(format!(
+            "list({})",
+            items
+                .iter()
+                .map(|item| lower_source_expr(item, line_num))
+                .collect::<Result<Vec<_>, _>>()?
+                .join(", ")
+        ));
+    }
     if let Some((left, right)) = split_top_level_source_binary_str(expr, "||") {
         return Ok(format!(
             "or({}, {})",
@@ -2292,6 +2401,7 @@ fn strip_wrapping_source_parens(expr: &str) -> Option<&str> {
 fn split_top_level_source_binary_str<'a>(expr: &'a str, op: &str) -> Option<(&'a str, &'a str)> {
     let mut paren_depth = 0usize;
     let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
     let mut in_string = false;
     let mut prev_was_escape = false;
     let mut split_at = None;
@@ -2311,7 +2421,14 @@ fn split_top_level_source_binary_str<'a>(expr: &'a str, op: &str) -> Option<(&'a
             ')' => paren_depth = paren_depth.saturating_sub(1),
             '{' => brace_depth += 1,
             '}' => brace_depth = brace_depth.saturating_sub(1),
-            _ if paren_depth == 0 && brace_depth == 0 && idx > 0 && expr[idx..].starts_with(op) => {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            _ if paren_depth == 0
+                && brace_depth == 0
+                && bracket_depth == 0
+                && idx > 0
+                && expr[idx..].starts_with(op) =>
+            {
                 split_at = Some(idx);
             }
             _ => {}
@@ -2331,6 +2448,7 @@ fn split_top_level_source_binary_any<'a>(
 ) -> Option<(&'a str, char, &'a str)> {
     let mut paren_depth = 0usize;
     let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
     let mut in_string = false;
     let mut prev_was_escape = false;
     let mut split_at = None;
@@ -2350,9 +2468,12 @@ fn split_top_level_source_binary_any<'a>(
             ')' => paren_depth = paren_depth.saturating_sub(1),
             '{' => brace_depth += 1,
             '}' => brace_depth = brace_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
             _ if ops.contains(&ch)
                 && paren_depth == 0
                 && brace_depth == 0
+                && bracket_depth == 0
                 && source_binary_char_has_left_operand(expr, idx) =>
             {
                 split_at = Some((idx, ch));
@@ -2373,12 +2494,13 @@ fn source_binary_char_has_left_operand(expr: &str, idx: usize) -> bool {
         .chars()
         .rev()
         .find(|ch| !ch.is_whitespace())
-        .is_some_and(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ')' | '}' | '"'))
+        .is_some_and(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ')' | '}' | ']' | '"'))
 }
 
 fn split_top_level_source_binary(expr: &str, op: char) -> Option<(&str, &str)> {
     let mut paren_depth = 0usize;
     let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
     let mut in_string = false;
     let mut prev_was_escape = false;
     let mut split_at = None;
@@ -2398,7 +2520,14 @@ fn split_top_level_source_binary(expr: &str, op: char) -> Option<(&str, &str)> {
             ')' => paren_depth = paren_depth.saturating_sub(1),
             '{' => brace_depth += 1,
             '}' => brace_depth = brace_depth.saturating_sub(1),
-            _ if ch == op && paren_depth == 0 && brace_depth == 0 && idx > 0 => {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            _ if ch == op
+                && paren_depth == 0
+                && brace_depth == 0
+                && bracket_depth == 0
+                && idx > 0 =>
+            {
                 split_at = Some(idx);
             }
             _ => {}
@@ -2410,6 +2539,25 @@ fn split_top_level_source_binary(expr: &str, op: char) -> Option<(&str, &str)> {
     let left = expr[..idx].trim();
     let right = expr[idx + op.len_utf8()..].trim();
     (!left.is_empty() && !right.is_empty()).then_some((left, right))
+}
+
+fn parse_source_list_literal(expr: &str, line_num: usize) -> Result<Option<Vec<String>>, CliError> {
+    if !expr.starts_with('[') {
+        return Ok(None);
+    }
+    if !expr.ends_with(']') {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: list literal has unclosed `[`"
+        )));
+    }
+    if matching_bracket(expr, 0) != Some(expr.len() - 1) {
+        return Ok(None);
+    }
+    let inner = expr[1..expr.len() - 1].trim();
+    if inner.is_empty() {
+        return Ok(Some(vec![]));
+    }
+    Ok(Some(split_source_args(inner)))
 }
 
 fn lower_if_expr(rest: &str, line_num: usize) -> Result<String, CliError> {
@@ -2553,7 +2701,14 @@ fn validate_source_type_name(ty: &str, line_num: usize) -> Result<(), CliError> 
 }
 
 fn is_supported_source_type(ty: &str) -> bool {
+    let ty = ty.trim();
     matches!(ty, "Int" | "Bool" | "Text" | "Float")
+        || source_list_element_type(ty).is_some_and(is_supported_source_type)
+}
+
+fn source_list_element_type(ty: &str) -> Option<&str> {
+    let inner = ty.trim().strip_prefix("List<")?.strip_suffix('>')?.trim();
+    (!inner.is_empty()).then_some(inner)
 }
 
 fn normalize_grant_target(target: &str) -> String {

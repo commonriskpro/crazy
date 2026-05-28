@@ -546,6 +546,47 @@ fn compile_file_accepts_source_consts() {
 }
 
 #[test]
+fn compile_file_accepts_source_list_literals() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("lists.ail");
+    source
+        .write_str(
+            "fn main() -> Int {\n  let values: List<Int> = [1, 2 + 3, 5]\n  return index(values, 1)\n}\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_list_element_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_list.ail");
+    source
+        .write_str("fn main() -> List<Int> = [1, true]\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in list element: expected Int, got Bool",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_source_typed_let_mismatch() {
     use assert_fs::prelude::*;
 
@@ -852,9 +893,9 @@ fn compile_file_rejects_untyped_source_builtins() {
     use assert_fs::prelude::*;
 
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
-    let source = dir.child("bad_list.ail");
+    let source = dir.child("bad_record.ail");
     source
-        .write_str("fn main() -> Int = list(1, 2)\n")
+        .write_str("fn main() -> Int = record(\"answer\", 42)\n")
         .expect("source fixture must be written");
 
     ail()
@@ -864,7 +905,7 @@ fn compile_file_rejects_untyped_source_builtins() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "unsupported source builtin `list` has no type inference",
+            "unsupported source builtin `record` has no type inference",
         ));
 }
 
@@ -2110,6 +2151,34 @@ fn lsp_diagnose_accepts_source_consts() {
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_list_literals() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn main() -> Int {\n  let values: List<Int> = [1, 2 + 3, 5]\n  return index(values, 1)\n}\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_completion_covers_source_typed_let_annotations() {
     let completion_output = ail()
         .args(["lsp", "--complete", "let", "--json"])
@@ -2813,7 +2882,7 @@ fn lsp_diagnose_reports_untyped_source_builtins() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str("fn main() -> Int = list(1, 2)\n")
+        .write_str("fn main() -> Int = record(\"answer\", 42)\n")
         .expect("source fixture must be written");
 
     let output = ail()
@@ -2834,7 +2903,7 @@ fn lsp_diagnose_reports_untyped_source_builtins() {
         v["data"]["diagnostics"][0]["message"]
             .as_str()
             .expect("diagnostic message")
-            .contains("unsupported source builtin `list` has no type inference")
+            .contains("unsupported source builtin `record` has no type inference")
     );
 }
 
@@ -4713,7 +4782,8 @@ fn fmt_file_json_outputs_canonical_ail_source() {
 fn add_pair(x:Int,y:Int)->Int=add(x,y)\n\
 fn main()->Int{\n\
 let base:Int=answer()\n\
-return if gt(base,40){add(base,2)} else {0}\n\
+let values:List<Int>=[base,2+3]\n\
+return if gt(base,40){add(index(values,0),2)} else {0}\n\
 }\n\
 test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
         )
@@ -4739,7 +4809,8 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
     assert!(formatted.contains("fn add_pair(x: Int, y: Int) -> Int = x + y\n"));
     assert!(formatted.contains("fn main() -> Int {\n"));
     assert!(formatted.contains("  let base: Int = answer\n"));
-    assert!(formatted.contains("  return if base > 40 { base + 2 } else { 0 }\n"));
+    assert!(formatted.contains("  let values: List<Int> = [base, 2 + 3]\n"));
+    assert!(formatted.contains("  return if base > 40 { index(values, 0) + 2 } else { 0 }\n"));
     assert!(formatted.contains("test math = 10 - 2 * 3 + (8 / 4 + 7 % 4) == 9\n"));
 }
 
