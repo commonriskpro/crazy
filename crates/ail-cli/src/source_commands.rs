@@ -1669,6 +1669,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(rest) = expr.strip_prefix("if ") {
         return lower_if_expr(rest, line_num);
     }
+    if let Some(inner) = strip_wrapping_source_parens(expr) {
+        return lower_source_expr(inner, line_num);
+    }
     if let Some((left, right)) = split_top_level_source_binary_str(expr, "||") {
         return Ok(format!(
             "or({}, {})",
@@ -1732,7 +1735,23 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
             lower_source_expr(right, line_num)?
         ));
     }
+    if let Some(inner) = expr.strip_prefix('!') {
+        let inner = inner.trim();
+        if inner.is_empty() || inner.starts_with('=') {
+            return Err(CliError::ParseError(format!(
+                "line {line_num}: unary `!` requires an expression"
+            )));
+        }
+        return Ok(format!("not({})", lower_source_expr(inner, line_num)?));
+    }
     Ok(expr.to_string())
+}
+
+fn strip_wrapping_source_parens(expr: &str) -> Option<&str> {
+    if !expr.starts_with('(') || !expr.ends_with(')') {
+        return None;
+    }
+    (matching_paren(expr, 0)? == expr.len() - 1).then(|| expr[1..expr.len() - 1].trim())
 }
 
 fn split_top_level_source_binary_str<'a>(expr: &'a str, op: &str) -> Option<(&'a str, &'a str)> {
