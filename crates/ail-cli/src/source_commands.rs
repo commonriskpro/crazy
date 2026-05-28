@@ -1276,6 +1276,16 @@ fn format_source_expr_node(expr: &str, module: Option<&str>) -> (String, u8) {
         );
     }
 
+    if func == "sub" && args.len() == 2 && args[0].trim() == "0" {
+        return (
+            format!(
+                "-{}",
+                format_source_child_expr(&args[1], module, UNARY_PRECEDENCE, false)
+            ),
+            UNARY_PRECEDENCE,
+        );
+    }
+
     if args.len() == 2 {
         if let Some((operator, precedence)) = source_infix_operator(&func) {
             return (
@@ -1827,6 +1837,18 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
             lower_source_expr(right, line_num)?
         ));
     }
+    if let Some(inner) = expr.strip_prefix('-') {
+        if expr.parse::<i64>().is_ok() || is_source_float_literal(expr) {
+            return Ok(expr.to_string());
+        }
+        let inner = inner.trim();
+        if inner.is_empty() {
+            return Err(CliError::ParseError(format!(
+                "line {line_num}: unary `-` requires an expression"
+            )));
+        }
+        return Ok(format!("sub(0, {})", lower_source_expr(inner, line_num)?));
+    }
     if let Some(inner) = expr.strip_prefix('!') {
         let inner = inner.trim();
         if inner.is_empty() || inner.starts_with('=') {
@@ -2275,6 +2297,43 @@ test main_addition = eq(add(20, 22), 42);
         assert_eq!(item_count, 2);
         assert!(formatted.contains("test math = 10 - 2 * 3 + (8 / 4 + 7 % 4) == 9\n"));
         assert!(formatted.contains("test grouped = 10 - (2 + 3) == 5 && !false\n"));
+    }
+
+    #[test]
+    fn lowers_source_unary_minus() {
+        let program = parse_ail_source(
+            "fn negated(x: Int) -> Int = -x
+test grouped = -(1 + 2) == -3",
+        )
+        .expect("source must parse");
+        let acl = source_program_to_acl(&program, "source_negate".to_string());
+
+        assert!(acl.contains("op create_function id=fn.negated return=Int body=sub(0, x)"));
+        assert!(
+            acl.contains(
+                "op create_test id=test.grouped return=Bool body=eq(sub(0, add(1, 2)), -3)"
+            )
+        );
+    }
+
+    #[test]
+    fn formats_source_unary_minus() {
+        let (formatted, item_count) = format_ail_source(
+            "fn negated(x:Int)->Int=sub(0,x)
+             test grouped=eq(sub(0,add(1,2)),-3)
+",
+        )
+        .expect("source must format");
+
+        assert_eq!(item_count, 2);
+        assert!(formatted.contains(
+            "fn negated(x: Int) -> Int = -x
+"
+        ));
+        assert!(formatted.contains(
+            "test grouped = -(1 + 2) == -3
+"
+        ));
     }
 
     #[test]
