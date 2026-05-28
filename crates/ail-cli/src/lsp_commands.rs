@@ -820,6 +820,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_eq(${1:left}, ${2:right})",
     },
     AclSymbol {
+        label: "text_contains",
+        detail: "AIL source Text predicate",
+        documentation: "Returns true when the first Text contains the second Text.",
+        insert_text: "text_contains(${1:haystack}, ${2:needle})",
+    },
+    AclSymbol {
         label: "first_or",
         detail: "AIL source List helper",
         documentation: "Returns the first List element when present, otherwise returns a fallback value.",

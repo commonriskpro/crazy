@@ -238,3 +238,27 @@ fn string_eq_call_exports_scalar_wasm() {
         "text.eq(Text, Text) must leave an exported scalar result"
     );
 }
+
+#[test]
+fn string_contains_call_exports_scalar_wasm() {
+    let artifact = emit_text_expr(
+        "fn.main",
+        AnfExpr::Let {
+            name: "haystack".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("hello".to_string()))),
+            body: Box::new(AnfExpr::Let {
+                name: "needle".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Text("ell".to_string()))),
+                body: Box::new(AnfExpr::Call {
+                    func: "text.contains".to_string(),
+                    args: vec!["haystack".to_string(), "needle".to_string()],
+                }),
+            }),
+        },
+    );
+
+    assert!(
+        artifact.export_types.contains_key("main"),
+        "text.contains(Text, Text) must leave an exported scalar result"
+    );
+}

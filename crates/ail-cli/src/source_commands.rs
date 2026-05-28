@@ -941,7 +941,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
     let arity = match call {
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
         | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
-        "text.eq" | "text_eq" => SourceArity::Exact(2),
+        "text.contains" | "text_contains" | "text.eq" | "text_eq" => SourceArity::Exact(2),
         "field" | "index" | "unwrap_or" | "first_or" | "last_or" => SourceArity::Exact(2),
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
@@ -1307,6 +1307,10 @@ fn infer_source_call_type(
             Ok("Text".to_string())
         }
         "text.eq" => {
+            validate_source_arg_types(func, args, scope, functions, &["Text", "Text"])?;
+            Ok("Bool".to_string())
+        }
+        "text.contains" => {
             validate_source_arg_types(func, args, scope, functions, &["Text", "Text"])?;
             Ok("Bool".to_string())
         }
@@ -2119,6 +2123,17 @@ fn format_source_expr_node(
         return (
             format!(
                 "text_eq({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "text.contains" && args.len() == 2 {
+        return (
+            format!(
+                "text_contains({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
             ),
@@ -3023,6 +3038,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_text_eq_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_text_contains_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_first_or_expr(expr, line_num)? {
         return Ok(lowered);
     }
@@ -3303,6 +3321,28 @@ fn lower_source_text_eq_expr(expr: &str, line_num: usize) -> Result<Option<Strin
     }
     Ok(Some(format!(
         "text.eq({}, {})",
+        lower_source_expr(&args[0], line_num)?,
+        lower_source_expr(&args[1], line_num)?
+    )))
+}
+
+fn lower_source_text_contains_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "text_contains" {
+        return Ok(None);
+    }
+    if args.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: text_contains requires `text_contains(haystack, needle)`"
+        )));
+    }
+    Ok(Some(format!(
+        "text.contains({}, {})",
         lower_source_expr(&args[0], line_num)?,
         lower_source_expr(&args[1], line_num)?
     )))
@@ -4870,6 +4910,21 @@ fn same(left: Text, right: Text) -> Bool = text_eq(left, right)
     }
 
     #[test]
+    fn lowers_source_text_contains_helper() {
+        let program = parse_ail_source(
+            r#"
+fn has(haystack: Text, needle: Text) -> Bool = text_contains(haystack, needle)
+"#,
+        )
+        .expect("source text_contains must parse");
+        let acl = source_program_to_acl(&program, "source_text_contains".to_string());
+
+        assert!(acl.contains(
+            "op create_function id=fn.has return=Bool body=text.contains(haystack, needle)"
+        ));
+    }
+
+    #[test]
     fn formats_source_builtin_calls_as_infix() {
         let (formatted, item_count) = format_ail_source(
             "test math = eq(add(sub(10, mul(2, 3)), add(div(8, 4), mod(7, 4))), 9)\n\
@@ -4894,6 +4949,19 @@ fn same(left: Text, right: Text) -> Bool = text_eq(left, right)
         assert!(
             formatted.contains("fn same(left: Text, right: Text) -> Bool = text_eq(left, right)\n")
         );
+    }
+
+    #[test]
+    fn formats_source_text_contains_helper() {
+        let (formatted, item_count) = format_ail_source(
+            "fn has(haystack:Text,needle:Text)->Bool=text.contains(haystack,needle)\n",
+        )
+        .expect("source text_contains must format");
+
+        assert_eq!(item_count, 1);
+        assert!(formatted.contains(
+            "fn has(haystack: Text, needle: Text) -> Bool = text_contains(haystack, needle)\n"
+        ));
     }
 
     #[test]
