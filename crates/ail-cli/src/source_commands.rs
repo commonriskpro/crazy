@@ -1683,6 +1683,34 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
             lower_source_expr(right, line_num)?
         ));
     }
+    if let Some((left, right)) = split_top_level_source_binary_str(expr, ">=") {
+        return Ok(format!(
+            "ge({}, {})",
+            lower_source_expr(left, line_num)?,
+            lower_source_expr(right, line_num)?
+        ));
+    }
+    if let Some((left, right)) = split_top_level_source_binary_str(expr, "<=") {
+        return Ok(format!(
+            "le({}, {})",
+            lower_source_expr(left, line_num)?,
+            lower_source_expr(right, line_num)?
+        ));
+    }
+    if let Some((left, right)) = split_top_level_source_binary(expr, '>') {
+        return Ok(format!(
+            "gt({}, {})",
+            lower_source_expr(left, line_num)?,
+            lower_source_expr(right, line_num)?
+        ));
+    }
+    if let Some((left, right)) = split_top_level_source_binary(expr, '<') {
+        return Ok(format!(
+            "lt({}, {})",
+            lower_source_expr(left, line_num)?,
+            lower_source_expr(right, line_num)?
+        ));
+    }
     if let Some((left, right)) = split_top_level_source_binary(expr, '+') {
         return Ok(format!(
             "add({}, {})",
