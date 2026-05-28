@@ -658,6 +658,9 @@ fn infer_source_expr_type(
     if expr.parse::<i64>().is_ok() {
         return Ok("Int".to_string());
     }
+    if expr.parse::<f64>().is_ok() {
+        return Ok("Float".to_string());
+    }
     if let Some(ty) = scope.get(expr) {
         return Ok(ty.clone());
     }
