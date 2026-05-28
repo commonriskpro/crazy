@@ -364,6 +364,14 @@ fn check_file_validates_ail_source_without_execution() {
     assert_eq!(v["data"]["language"], "ail-source");
     assert_eq!(v["data"]["functions"], 2);
     assert_eq!(v["data"]["imports"], 1);
+    assert!(
+        v["data"]["graph_nodes"].as_u64().unwrap() >= 2,
+        "check must materialize source into a semantic graph"
+    );
+    assert!(
+        v["data"]["graph_edges"].as_u64().is_some(),
+        "check must report graph edge materialization"
+    );
 }
 
 #[test]

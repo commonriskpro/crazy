@@ -64,16 +64,19 @@ pub(crate) fn load_source_graph(path: &Path) -> Result<SemanticGraph, CliError> 
 
 pub(crate) fn cmd_check_source(mode: OutputMode, path: &Path) -> Result<(), CliError> {
     let program = load_source_program(path)?;
+    let graph = source_program_to_graph(&program, source_change_name(path))?;
     let item_count = program.imports.len()
         + program.capabilities.len()
         + program.functions.len()
         + program.tests.len()
         + program.grants.len();
     let human_msg = format!(
-        "AIL check: ok\nfile: {}\nitems: {item_count}\nfunctions: {}\ntests: {}",
+        "AIL check: ok\nfile: {}\nitems: {item_count}\nfunctions: {}\ntests: {}\ngraph_nodes: {}\ngraph_edges: {}",
         path.display(),
         program.functions.len(),
-        program.tests.len()
+        program.tests.len(),
+        graph.nodes.len(),
+        graph.edges.len()
     );
     print_response(
         mode,
@@ -87,6 +90,8 @@ pub(crate) fn cmd_check_source(mode: OutputMode, path: &Path) -> Result<(), CliE
             "functions": program.functions.len(),
             "tests": program.tests.len(),
             "grants": program.grants.len(),
+            "graph_nodes": graph.nodes.len(),
+            "graph_edges": graph.edges.len(),
         }),
     );
     Ok(())
