@@ -186,6 +186,11 @@ fn derive_wasm_type_with_locals(
             WasmTypeDescriptor::Scalar(WasmScalarType::I64)
         }
         AnfExpr::Call { func, args }
+            if matches!(func.as_str(), "text.index_of" | "text_index_of") && args.len() == 2 =>
+        {
+            WasmTypeDescriptor::Scalar(WasmScalarType::I64)
+        }
+        AnfExpr::Call { func, args }
             if matches!(
                 func.as_str(),
                 "text.starts_with" | "text_starts_with" | "text.ends_with" | "text_ends_with"
@@ -764,6 +769,12 @@ impl EffectDataLayout {
             }
             AnfExpr::Call { func, args }
                 if matches!(func.as_str(), "text.contains" | "text_contains")
+                    && args.len() == 2 =>
+            {
+                self.needs_memory = true;
+            }
+            AnfExpr::Call { func, args }
+                if matches!(func.as_str(), "text.index_of" | "text_index_of")
                     && args.len() == 2 =>
             {
                 self.needs_memory = true;

@@ -264,6 +264,30 @@ fn string_contains_call_exports_scalar_wasm() {
 }
 
 #[test]
+fn string_index_of_call_exports_scalar_wasm() {
+    let artifact = emit_text_expr(
+        "fn.main",
+        AnfExpr::Let {
+            name: "haystack".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("hello".to_string()))),
+            body: Box::new(AnfExpr::Let {
+                name: "needle".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Text("ell".to_string()))),
+                body: Box::new(AnfExpr::Call {
+                    func: "text.index_of".to_string(),
+                    args: vec!["haystack".to_string(), "needle".to_string()],
+                }),
+            }),
+        },
+    );
+
+    assert!(
+        artifact.export_types.contains_key("main"),
+        "text.index_of(Text, Text) must leave an exported scalar result"
+    );
+}
+
+#[test]
 fn string_starts_with_call_exports_scalar_wasm() {
     let artifact = emit_text_expr(
         "fn.main",

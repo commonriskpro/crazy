@@ -826,6 +826,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_contains(${1:haystack}, ${2:needle})",
     },
     AclSymbol {
+        label: "text_index_of",
+        detail: "AIL source Text search",
+        documentation: "Returns the zero-based byte index of needle inside Text, or -1 when absent.",
+        insert_text: "text_index_of(${1:haystack}, ${2:needle})",
+    },
+    AclSymbol {
         label: "text_starts_with",
         detail: "AIL source Text predicate",
         documentation: "Returns true when Text starts with the given prefix.",
