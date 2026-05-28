@@ -501,12 +501,13 @@ fn qualify_source_expr_calls(
             qualify_source_expr_calls(&args[1], module, local_functions),
             qualify_source_expr_calls(&args[2], module, local_functions),
         ]
-    } else if qualified_func == "let_typed" && args.len() == 4 && is_source_local_ident(&args[0]) {
+    } else if qualified_func == "let_typed" && args.len() == 5 && is_source_local_ident(&args[0]) {
         vec![
             args[0].clone(),
             args[1].clone(),
-            qualify_source_expr_calls(&args[2], module, local_functions),
+            args[2].clone(),
             qualify_source_expr_calls(&args[3], module, local_functions),
+            qualify_source_expr_calls(&args[4], module, local_functions),
         ]
     } else {
         args.iter()
@@ -792,7 +793,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
         "not" | "len" | "print" | "Var" => SourceArity::Exact(1),
         "if" | "let" | "fold" => SourceArity::Exact(3),
-        "let_typed" => SourceArity::Exact(4),
+        "let_typed" => SourceArity::Exact(5),
         "effect_call" => SourceArity::Min(2),
         "map" | "record" => SourceArity::Even,
         "tuple" | "list" | "set" | "match" => SourceArity::Any,
@@ -824,13 +825,14 @@ fn validate_source_expr_vars(expr: &str, scope: &BTreeSet<&str>) -> Result<(), C
             inner_scope.insert(args[0].as_str());
             return validate_source_expr_vars(&args[2], &inner_scope);
         }
-        if func == "let_typed" && args.len() == 4 {
+        if func == "let_typed" && args.len() == 5 {
             validate_source_local_expr_name(&args[0])?;
             validate_source_type_annotation(&args[1])?;
-            validate_source_expr_vars(&args[2], scope)?;
+            validate_source_let_line_marker(&args[2])?;
+            validate_source_expr_vars(&args[3], scope)?;
             let mut inner_scope = scope.clone();
             inner_scope.insert(args[0].as_str());
-            return validate_source_expr_vars(&args[3], &inner_scope);
+            return validate_source_expr_vars(&args[4], &inner_scope);
         }
         let args_to_validate: &[String] = if func == "effect_call" && args.len() >= 2 {
             &args[2..]
@@ -990,14 +992,17 @@ fn infer_source_call_type(
             inner_scope.insert(args[0].clone(), value_ty);
             infer_source_expr_type(&args[2], &mut inner_scope, functions)
         }
-        "let_typed" if args.len() == 4 => {
+        "let_typed" if args.len() == 5 => {
             validate_source_local_expr_name(&args[0])?;
             validate_source_type_annotation(&args[1])?;
-            let value_ty = infer_source_expr_type(&args[2], scope, functions)?;
-            validate_source_type_match(&args[1], &value_ty, &format!("let binding {}", args[0]))?;
+            let let_line = parse_source_let_line_marker(&args[2])?;
+            let value_ty = infer_source_expr_type(&args[3], scope, functions)
+                .map_err(|err| source_error_at_line(err, let_line))?;
+            validate_source_type_match(&args[1], &value_ty, &format!("let binding {}", args[0]))
+                .map_err(|err| source_error_at_line(err, let_line))?;
             let mut inner_scope = scope.clone();
             inner_scope.insert(args[0].clone(), args[1].clone());
-            infer_source_expr_type(&args[3], &mut inner_scope, functions)
+            infer_source_expr_type(&args[4], &mut inner_scope, functions)
         }
         "if" if args.len() == 3 => {
             let cond_ty = infer_source_expr_type(&args[0], scope, functions)?;
@@ -1118,6 +1123,15 @@ fn validate_source_type_annotation(ty: &str) -> Result<(), CliError> {
     )))
 }
 
+fn validate_source_let_line_marker(line: &str) -> Result<(), CliError> {
+    parse_source_let_line_marker(line).map(|_| ())
+}
+
+fn parse_source_let_line_marker(line: &str) -> Result<usize, CliError> {
+    line.parse::<usize>()
+        .map_err(|_| CliError::ParseError(format!("invalid typed let source line marker `{line}`")))
+}
+
 fn source_error_at_line(err: CliError, line_num: usize) -> CliError {
     match err {
         CliError::ParseError(message) if !message.contains("line ") => {
@@ -1204,12 +1218,12 @@ fn source_expr_to_acl_body(expr: &str) -> String {
     let Some((func, args)) = parse_source_call(expr) else {
         return expr.trim().to_string();
     };
-    if func == "let_typed" && args.len() == 4 && is_source_local_ident(&args[0]) {
+    if func == "let_typed" && args.len() == 5 && is_source_local_ident(&args[0]) {
         return format!(
             "let({}, {}, {})",
             args[0],
-            source_expr_to_acl_body(&args[2]),
-            source_expr_to_acl_body(&args[3])
+            source_expr_to_acl_body(&args[3]),
+            source_expr_to_acl_body(&args[4])
         );
     }
     format!(
@@ -1336,7 +1350,7 @@ fn source_let_chain(body: &str) -> (Vec<SourceLetBinding>, String) {
                 });
                 current = next.clone();
             }
-            ("let_typed", [name, ty, value, next]) if is_source_local_ident(name) => {
+            ("let_typed", [name, ty, _line, value, next]) if is_source_local_ident(name) => {
                 lets.push(SourceLetBinding {
                     name: name.clone(),
                     ty: Some(ty.clone()),
@@ -1863,7 +1877,7 @@ fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, CliError> {
         }
         let lowered_value = lower_source_expr(value, *line_num)?;
         body = if let Some(ty) = ty {
-            format!("let_typed({name}, {ty}, {lowered_value}, {body})")
+            format!("let_typed({name}, {ty}, {line_num}, {lowered_value}, {body})")
         } else {
             format!("let({name}, {lowered_value}, {body})")
         };
@@ -2547,7 +2561,7 @@ fn main() -> Int {
 
         assert_eq!(
             program.functions[0].body,
-            "let_typed(base, Int, add(20, 20), add(base, 2))"
+            "let_typed(base, Int, 3, add(20, 20), add(base, 2))"
         );
         assert!(acl.contains(
             "op create_function id=fn.main return=Int body=let(base, add(20, 20), add(base, 2))"

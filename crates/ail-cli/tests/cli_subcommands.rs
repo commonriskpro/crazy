@@ -542,7 +542,7 @@ fn compile_file_rejects_source_typed_let_mismatch() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "line 1: type mismatch in let binding base: expected Bool, got Int",
+            "line 2: type mismatch in let binding base: expected Bool, got Int",
         ));
 }
 
@@ -2112,9 +2112,9 @@ fn lsp_diagnose_reports_source_typed_let_mismatch() {
         v["data"]["diagnostics"][0]["message"]
             .as_str()
             .expect("diagnostic message")
-            .contains("line 1: type mismatch in let binding base: expected Bool, got Int")
+            .contains("line 2: type mismatch in let binding base: expected Bool, got Int")
     );
-    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 0);
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
 }
 
 #[test]
