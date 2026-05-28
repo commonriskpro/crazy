@@ -157,6 +157,62 @@ fn index_get_element_at_one() {
     );
 }
 
+// RUNTIME-INDEXGET-3
+//
+// fn.main = let lst = ListNew([5]) in let i = 1 in IndexGet(lst, i)
+//
+// Index 1 is out of bounds for a one-element list. This must trap before the
+// element load instead of reading unrelated linear memory.
+#[test]
+fn index_get_out_of_bounds_traps() {
+    let expr = AnfExpr::Let {
+        name: "lst".to_string(),
+        value: Box::new(AnfExpr::ListNew(vec![AnfExpr::Literal(LiteralValue::Int(
+            5,
+        ))])),
+        body: Box::new(AnfExpr::Let {
+            name: "i".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+            body: Box::new(AnfExpr::IndexGet {
+                collection: "lst".to_string(),
+                index: "i".to_string(),
+            }),
+        }),
+    };
+    let result = try_invoke_compiler_expr(expr, "fn.index_oob");
+    assert!(
+        matches!(result, Err(RuntimeError::EncodingError(_))),
+        "IndexGet out of bounds must trap, got {result:?}"
+    );
+}
+
+// RUNTIME-INDEXGET-4
+//
+// Negative indices are invalid. The WASM backend uses an unsigned comparison,
+// so -1 is treated as a huge unsigned value and traps before loading.
+#[test]
+fn index_get_negative_index_traps() {
+    let expr = AnfExpr::Let {
+        name: "lst".to_string(),
+        value: Box::new(AnfExpr::ListNew(vec![AnfExpr::Literal(LiteralValue::Int(
+            5,
+        ))])),
+        body: Box::new(AnfExpr::Let {
+            name: "i".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(-1))),
+            body: Box::new(AnfExpr::IndexGet {
+                collection: "lst".to_string(),
+                index: "i".to_string(),
+            }),
+        }),
+    };
+    let result = try_invoke_compiler_expr(expr, "fn.index_negative");
+    assert!(
+        matches!(result, Err(RuntimeError::EncodingError(_))),
+        "IndexGet with a negative index must trap, got {result:?}"
+    );
+}
+
 // RUNTIME-FOREACH-1
 //
 // fn.main =

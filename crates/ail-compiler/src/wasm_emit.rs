@@ -1398,6 +1398,11 @@ fn emit_anf_expr<'a>(
         // Returns: I64 element value.
         //
         // Emission sequence:
+        //   local.get index        ; [I64]
+        //   local.get collection   ; [I64, I32] list pointer
+        //   i64.load { offset: 0 } ; [I64, I64] len
+        //   i64.ge_u               ; [I32]       index >= len
+        //   if [] unreachable end  ; trap on out-of-bounds
         //   local.get collection   ; [I32] list pointer
         //   local.get index        ; [I32, I64]
         //   i64.const 8
@@ -1416,6 +1421,21 @@ fn emit_anf_expr<'a>(
                 insns.push(Instruction::Unreachable);
                 return None;
             };
+
+            // Bounds guard: trap before computing the element address when
+            // index >= len. The unsigned compare also rejects negative i64
+            // indices, which appear as very large unsigned values.
+            insns.push(Instruction::LocalGet(idx_idx));
+            if idx_ty == ValType::I32 {
+                insns.push(Instruction::I64ExtendI32U);
+            }
+            insns.push(Instruction::LocalGet(coll_idx));
+            load_i64_at(0, insns);
+            insns.push(Instruction::I64GeU);
+            insns.push(Instruction::If(BlockType::Empty));
+            insns.push(Instruction::Unreachable);
+            insns.push(Instruction::End);
+
             insns.push(Instruction::LocalGet(coll_idx));
             insns.push(Instruction::LocalGet(idx_idx));
             // Normalise index to I64 for arithmetic.

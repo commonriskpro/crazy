@@ -533,7 +533,7 @@ fn set_new_empty_validates() {
 }
 
 // Scenario: IndexGet loads an element from a list by dynamic index.
-// Expects: I64Mul + I64Add + I32WrapI64 + I32Add + I64Load sequence, WASM validates.
+// Expects: bounds guard + dynamic load sequence, WASM validates.
 #[test]
 fn index_get_emits_dynamic_load_validates() {
     use wasmparser::{Operator, Parser, Payload};
@@ -569,6 +569,9 @@ fn index_get_emits_dynamic_load_validates() {
     let mut saw_i32_wrap = false;
     let mut saw_i32_add = false;
     let mut saw_i64_load = false;
+    let mut saw_i64_ge_u = false;
+    let mut saw_guard_if = false;
+    let mut saw_unreachable = false;
     for payload in Parser::new(0).parse_all(&artifact.wasm) {
         if let Payload::CodeSectionEntry(body) = payload.unwrap() {
             let mut reader = body.get_operators_reader().unwrap();
@@ -579,6 +582,9 @@ fn index_get_emits_dynamic_load_validates() {
                     Operator::I32WrapI64 => saw_i32_wrap = true,
                     Operator::I32Add => saw_i32_add = true,
                     Operator::I64Load { .. } => saw_i64_load = true,
+                    Operator::I64GeU => saw_i64_ge_u = true,
+                    Operator::If { .. } => saw_guard_if = true,
+                    Operator::Unreachable => saw_unreachable = true,
                     _ => {}
                 }
             }
@@ -599,12 +605,22 @@ fn index_get_emits_dynamic_load_validates() {
         saw_i64_load,
         "IndexGet must emit I64Load to read the element"
     );
+    assert!(
+        saw_i64_ge_u,
+        "IndexGet must compare index >= len before loading"
+    );
+    assert!(
+        saw_guard_if && saw_unreachable,
+        "IndexGet must trap through if/unreachable when bounds fail"
+    );
 }
 
-// TRIANGULATE: IndexGet with out-of-bounds index still produces valid WASM
-// (bounds checking is runtime responsibility; the codegen is always structurally valid).
+// TRIANGULATE: IndexGet with out-of-bounds index still produces structurally
+// valid WASM, but now contains an explicit runtime trap guard.
 #[test]
 fn index_get_out_of_bounds_still_validates() {
+    use wasmparser::{Operator, Parser, Payload};
+
     // Same structure as above but with an idx that would be OOB at runtime.
     let anf = sealed_anf(vec![AnfBinding {
         source_ref: NodeRef(0),
@@ -626,6 +642,26 @@ fn index_get_out_of_bounds_still_validates() {
     }]);
     let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
     wasmparser::validate(&artifact.wasm).expect("OOB IndexGet module must still be valid WASM");
+
+    let mut saw_i64_ge_u = false;
+    let mut saw_unreachable = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                match reader.read().unwrap() {
+                    Operator::I64GeU => saw_i64_ge_u = true,
+                    Operator::Unreachable => saw_unreachable = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    assert!(
+        saw_i64_ge_u && saw_unreachable,
+        "OOB-capable IndexGet must include a bounds guard before the load"
+    );
 }
 
 // Scenario: infer_expr_type returns I32 for MapNew and SetNew (they are pointers).

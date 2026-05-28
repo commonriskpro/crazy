@@ -141,6 +141,39 @@ fn native_tuple_new_differs_from_placeholder() {
 }
 
 #[test]
+fn native_index_get_with_bounds_guard_compiles() {
+    use crate::anf::{AnfBinding, AnfExpr};
+    use crate::core_ir::LiteralValue;
+
+    let anf = anf_for_binding(AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn_op".to_string(),
+        expr: AnfExpr::Let {
+            name: "list".to_string(),
+            value: Box::new(AnfExpr::ListNew(vec![
+                AnfExpr::Literal(LiteralValue::Int(1)),
+                AnfExpr::Literal(LiteralValue::Int(2)),
+            ])),
+            body: Box::new(AnfExpr::Let {
+                name: "idx".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                body: Box::new(AnfExpr::IndexGet {
+                    collection: "list".to_string(),
+                    index: "idx".to_string(),
+                }),
+            }),
+        },
+    });
+
+    let ph = emit_native(&placeholder_anf()).unwrap();
+    let art = emit_native(&anf).unwrap();
+    assert_ne!(
+        art.native_bytes, ph.native_bytes,
+        "native IndexGet must lower to real guarded code, not a placeholder trap"
+    );
+}
+
+#[test]
 fn native_variant_two_tags_differ() {
     use crate::anf::{AnfBinding, AnfExpr};
     let make_variant = |tag: &str| {

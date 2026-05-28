@@ -295,6 +295,29 @@ pub(super) fn lower_index_get(
             return LowerResult::Terminated;
         }
     };
+
+    // Trap before computing the element address when index >= len. The
+    // unsigned comparison also traps negative i64 indices because they encode
+    // as very large unsigned values.
+    let len_val = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), col_ptr, 0);
+    let out_of_bounds = builder
+        .ins()
+        .icmp(IntCC::UnsignedGreaterThanOrEqual, idx_val, len_val);
+    let trap_block = builder.create_block();
+    let in_bounds = builder.create_block();
+    builder
+        .ins()
+        .brif(out_of_bounds, trap_block, &[], in_bounds, &[]);
+
+    builder.switch_to_block(trap_block);
+    builder.seal_block(trap_block);
+    builder.ins().trap(TrapCode::user(1).unwrap());
+
+    builder.switch_to_block(in_bounds);
+    builder.seal_block(in_bounds);
+
     // offset = 8 + idx * 8
     let eight = builder.ins().iconst(types::I64, 8);
     let idx_scaled = builder.ins().imul(idx_val, eight);
