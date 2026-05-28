@@ -252,6 +252,30 @@ fn run_file_executes_ail_source_text_concat_with_comment_markers_in_strings() {
 }
 
 #[test]
+fn run_file_executes_ail_source_text_concat_operator() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("text_concat_operator.ail");
+    source
+        .write_str("fn greeting() -> Text = \"Hello, \" ++ \"AIL\"\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.greeting",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.greeting"))
+        .stdout(predicate::str::contains("result: Hello, AIL"));
+}
+
+#[test]
 fn run_file_executes_ail_source_with_capability_grant() {
     use assert_fs::prelude::*;
 
@@ -581,6 +605,45 @@ fn compile_file_accepts_source_list_len() {
         .current_dir(dir.path())
         .assert()
         .success();
+}
+
+#[test]
+fn compile_file_accepts_source_text_concat_operator() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("text_concat_operator.ail");
+    source
+        .write_str("fn greeting(name: Text) -> Text = \"Hello, \" ++ name\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_text_concat_operator_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_text_concat_operator.ail");
+    source
+        .write_str("fn greeting(value: Int) -> Text = \"Hello, \" ++ value\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in concat argument 2: expected Text, got Int",
+        ));
 }
 
 #[test]
@@ -2962,6 +3025,32 @@ fn lsp_diagnose_accepts_source_list_len() {
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_text_concat_operator() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn greeting(name: Text) -> Text = \"Hello, \" ++ name\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_first_or_helper() {
     use assert_fs::prelude::*;
 
@@ -4309,6 +4398,14 @@ fn lsp_completion_and_hover_cover_ail_source_operators() {
                 .expect("insertText")
                 .contains("${1:left} + ${2:right}")),
         "completion must include AIL source + operator snippet; got: {items:?}"
+    );
+    assert!(
+        items.iter().any(|item| item["label"] == "++"
+            && item["insertText"]
+                .as_str()
+                .expect("insertText")
+                .contains("${1:left} ++ ${2:right}")),
+        "completion must include AIL source ++ operator snippet; got: {items:?}"
     );
 
     let hover_output = ail()

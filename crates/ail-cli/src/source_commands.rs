@@ -2443,6 +2443,7 @@ fn source_infix_operator(func: &str) -> Option<(&'static str, u8)> {
         "ge" => Some((">=", 4)),
         "lt" => Some(("<", 4)),
         "le" => Some(("<=", 4)),
+        "concat" => Some(("++", 5)),
         "add" => Some(("+", 5)),
         "sub" => Some(("-", 5)),
         "mul" => Some(("*", 6)),
@@ -3111,6 +3112,13 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some((left, right)) = split_top_level_source_binary(expr, '<') {
         return Ok(format!(
             "lt({}, {})",
+            lower_source_expr(left, line_num)?,
+            lower_source_expr(right, line_num)?
+        ));
+    }
+    if let Some((left, right)) = split_top_level_source_binary_str(expr, "++") {
+        return Ok(format!(
+            "concat({}, {})",
             lower_source_expr(left, line_num)?,
             lower_source_expr(right, line_num)?
         ));
@@ -4790,16 +4798,37 @@ fn no_text(value: Text) -> Bool = is_empty(value)
     }
 
     #[test]
+    fn lowers_source_text_concat_operator() {
+        let program = parse_ail_source(
+            r#"
+fn greeting(name: Text) -> Text = "Hello, " ++ name
+test greeting = "Hello, " ++ "AIL" == "Hello, AIL"
+"#,
+        )
+        .expect("source text concat operator must parse");
+        let acl = source_program_to_acl(&program, "source_text_concat_operator".to_string());
+
+        assert!(acl.contains(
+            r#"op create_function id=fn.greeting return=Text body=concat("Hello, ", name)"#
+        ));
+        assert!(acl.contains(
+            r#"op create_test id=test.greeting return=Bool body=eq(concat("Hello, ", "AIL"), "Hello, AIL")"#
+        ));
+    }
+
+    #[test]
     fn formats_source_builtin_calls_as_infix() {
         let (formatted, item_count) = format_ail_source(
             "test math = eq(add(sub(10, mul(2, 3)), add(div(8, 4), mod(7, 4))), 9)\n\
-             test grouped = and(eq(sub(10, add(2, 3)), 5), not(false))\n",
+             test grouped = and(eq(sub(10, add(2, 3)), 5), not(false))\n\
+             fn greeting(name: Text) -> Text = concat(\"Hello, \", name)\n",
         )
         .expect("source must format");
 
-        assert_eq!(item_count, 2);
+        assert_eq!(item_count, 3);
         assert!(formatted.contains("test math = 10 - 2 * 3 + (8 / 4 + 7 % 4) == 9\n"));
         assert!(formatted.contains("test grouped = 10 - (2 + 3) == 5 && !false\n"));
+        assert!(formatted.contains("fn greeting(name: Text) -> Text = \"Hello, \" ++ name\n"));
     }
 
     #[test]
@@ -5205,7 +5234,7 @@ fn message()->Text=concat("https://ail.local", " {ok}") // trailing comment
         assert_eq!(item_count, 1);
         assert_eq!(
             formatted,
-            "fn message() -> Text = concat(\"https://ail.local\", \" {ok}\")\n"
+            "fn message() -> Text = \"https://ail.local\" ++ \" {ok}\"\n"
         );
     }
 

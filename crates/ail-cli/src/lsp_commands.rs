@@ -682,6 +682,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "${1:left} % ${2:right}",
     },
     AclSymbol {
+        label: "++",
+        detail: "AIL source Text infix operator",
+        documentation: "Concatenates two Text expressions; equivalent to concat(left, right).",
+        insert_text: "${1:left} ++ ${2:right}",
+    },
+    AclSymbol {
         label: "==",
         detail: "AIL source equality operator",
         documentation: "Compares two expressions of the same inferred type; equivalent to eq(left, right).",
