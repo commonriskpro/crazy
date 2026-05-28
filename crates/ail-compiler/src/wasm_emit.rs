@@ -181,6 +181,13 @@ impl<'a> WasmCodegenCtx<'a> {
         idx
     }
 
+    fn bind_temp(&mut self, ty: ValType) -> u32 {
+        let idx = self.next_local;
+        self.next_local += 1;
+        self.local_types.push(ty);
+        idx
+    }
+
     fn bind_record_layout(&mut self, name: &str, fields: Vec<String>) {
         self.record_layouts.insert(name.to_string(), fields);
     }
@@ -339,6 +346,95 @@ fn emit_i64_primitive_call<'a>(
         }
         _ => return None,
     }
+    Some(ValType::I64)
+}
+
+fn emit_text_len_from_local<'a>(
+    ctx: &WasmCodegenCtx<'a>,
+    name: &str,
+    insns: &mut Vec<Instruction<'a>>,
+) {
+    emit_local_as_i64(ctx, name, insns);
+    insns.push(Instruction::I64Const(32));
+    insns.push(Instruction::I64ShrU);
+    insns.push(Instruction::I32WrapI64);
+}
+
+fn emit_text_ptr_from_local<'a>(
+    ctx: &WasmCodegenCtx<'a>,
+    name: &str,
+    insns: &mut Vec<Instruction<'a>>,
+) {
+    emit_local_as_i64(ctx, name, insns);
+    insns.push(Instruction::I32WrapI64);
+}
+
+fn emit_text_concat<'a>(
+    args: &[String],
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [left, right] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+
+    let left_len = ctx.bind_temp(ValType::I32);
+    emit_text_len_from_local(ctx, left, insns);
+    insns.push(Instruction::LocalSet(left_len));
+
+    let right_len = ctx.bind_temp(ValType::I32);
+    emit_text_len_from_local(ctx, right, insns);
+    insns.push(Instruction::LocalSet(right_len));
+
+    let left_ptr = ctx.bind_temp(ValType::I32);
+    emit_text_ptr_from_local(ctx, left, insns);
+    insns.push(Instruction::LocalSet(left_ptr));
+
+    let right_ptr = ctx.bind_temp(ValType::I32);
+    emit_text_ptr_from_local(ctx, right, insns);
+    insns.push(Instruction::LocalSet(right_ptr));
+
+    let total_len = ctx.bind_temp(ValType::I32);
+    insns.push(Instruction::LocalGet(left_len));
+    insns.push(Instruction::LocalGet(right_len));
+    insns.push(Instruction::I32Add);
+    insns.push(Instruction::LocalSet(total_len));
+
+    let out_ptr = ctx.bind_temp(ValType::I32);
+    insns.push(Instruction::GlobalGet(0));
+    insns.push(Instruction::GlobalGet(0));
+    insns.push(Instruction::LocalGet(total_len));
+    insns.push(Instruction::I32Add);
+    insns.push(Instruction::GlobalSet(0));
+    insns.push(Instruction::LocalSet(out_ptr));
+
+    insns.push(Instruction::LocalGet(out_ptr));
+    insns.push(Instruction::LocalGet(left_ptr));
+    insns.push(Instruction::LocalGet(left_len));
+    insns.push(Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
+
+    insns.push(Instruction::LocalGet(out_ptr));
+    insns.push(Instruction::LocalGet(left_len));
+    insns.push(Instruction::I32Add);
+    insns.push(Instruction::LocalGet(right_ptr));
+    insns.push(Instruction::LocalGet(right_len));
+    insns.push(Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
+
+    insns.push(Instruction::LocalGet(total_len));
+    insns.push(Instruction::I64ExtendI32U);
+    insns.push(Instruction::I64Const(32));
+    insns.push(Instruction::I64Shl);
+    insns.push(Instruction::LocalGet(out_ptr));
+    insns.push(Instruction::I64ExtendI32U);
+    insns.push(Instruction::I64Or);
+
     Some(ValType::I64)
 }
 
@@ -739,6 +835,15 @@ fn emit_anf_expr<'a>(
         // ── Function call (pure) ──────────────────────────────────────────
         // Emits args via local.get, then calls the function.
         AnfExpr::Call { func, args } => {
+            if matches!(func.as_str(), "len" | "text.len") && args.len() == 1 {
+                emit_text_len_from_local(ctx, &args[0], insns);
+                insns.push(Instruction::I64ExtendI32U);
+                return Some(ValType::I64);
+            }
+            if matches!(func.as_str(), "concat" | "text.concat") {
+                return emit_text_concat(args, ctx, insns);
+            }
+
             for arg_name in args {
                 if let Some((idx, _)) = ctx.lookup(arg_name) {
                     insns.push(Instruction::LocalGet(idx));

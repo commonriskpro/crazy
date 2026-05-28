@@ -20,6 +20,15 @@ pub fn sample_acl_path() -> std::path::PathBuf {
         .join("sample.acl")
 }
 
+pub fn string_ops_acl_path() -> std::path::PathBuf {
+    let manifest =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set during tests");
+    std::path::Path::new(&manifest)
+        .join("tests")
+        .join("fixtures")
+        .join("string_ops.acl")
+}
+
 /// Parse stdout bytes as JSON; panic with context on failure.
 pub fn parse_json_output(output: &Output) -> Value {
     let text = std::str::from_utf8(&output.stdout).expect("stdout must be UTF-8");

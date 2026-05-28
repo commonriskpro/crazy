@@ -1,0 +1,9 @@
+# string_ops.acl — narrow v0.2 Text operation fixture
+
+change string_ops_fixture
+author test-author
+description string operation fixture for CLI integration tests
+base 0
+op create_function id=fn.text_len return=Int body=len("hello")
+op create_function id=fn.text_concat return=Text body=concat("he","llo")
+end

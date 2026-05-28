@@ -782,6 +782,42 @@ fn invoke_typed_text_multibyte_len_is_byte_length() {
     );
 }
 
+#[test]
+fn string_len_body_expr_returns_byte_length() {
+    let wasm = compiler_wasm_for_body_expr("len(\"hello\")", "string_len");
+    let mut instance = instantiate(&wasm);
+
+    let value = instance
+        .invoke("string_len", &[])
+        .expect("string_len must invoke");
+
+    assert_eq!(
+        value,
+        ail_runtime::RuntimeValue::I64(5),
+        "len(Text) must return the UTF-8 byte length"
+    );
+}
+
+#[test]
+fn string_concat_body_expr_roundtrips_text_bytes() {
+    let wasm = compiler_wasm_for_body_expr("concat(\"he\",\"llo\")", "string_concat");
+    let mut instance = instantiate(&wasm);
+
+    let result = instance
+        .invoke_typed("string_concat", &[], &ValueLayout::Text)
+        .expect("string_concat must invoke as Text");
+
+    let (ptr, len) = match result {
+        StructuredValue::Text { ptr, len } => (ptr, len),
+        other => panic!("expected StructuredValue::Text, got {other:?}"),
+    };
+    let bytes = instance
+        .read_wasm_memory(ptr, len as usize)
+        .expect("concat result must point into WASM memory");
+
+    assert_eq!(bytes.as_slice(), b"hello");
+}
+
 // ── H-2a: Bytes packed encoding roundtrip ────────────────────────────────
 
 #[test]
