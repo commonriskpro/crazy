@@ -738,7 +738,10 @@ fn definition_for_token(uri: &str, text: &str, token: &str) -> Value {
 }
 
 fn definition_for_ail_source_token(uri: &str, text: &str, token: &str) -> Option<Value> {
-    let token = token.strip_prefix("fn.").unwrap_or(token);
+    let token = token
+        .strip_prefix("fn.")
+        .or_else(|| token.strip_prefix("test."))
+        .unwrap_or(token);
     if let Some(definition) = source_definition_in_text(uri, text, token) {
         return Some(definition);
     }
@@ -782,6 +785,7 @@ fn definition_for_ail_source_imports(
 
 fn source_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
     source_function_definition_in_text(uri, text, token)
+        .or_else(|| source_test_definition_in_text(uri, text, token))
         .or_else(|| source_capability_definition_in_text(uri, text, token))
 }
 
@@ -796,7 +800,7 @@ fn source_function_definition_in_text(uri: &str, text: &str, token: &str) -> Opt
             continue;
         };
         let name = rest[..name_end].trim();
-        if source_function_name_matches_token(name, module.as_deref(), token) {
+        if source_decl_name_matches_token(name, module.as_deref(), token, "fn.") {
             let leading = line.len() - trimmed.len();
             let start = leading + "fn ".len();
             return Some(json!({
@@ -811,14 +815,49 @@ fn source_function_definition_in_text(uri: &str, text: &str, token: &str) -> Opt
     None
 }
 
-fn source_function_name_matches_token(name: &str, module: Option<&str>, token: &str) -> bool {
-    if name == token || name.strip_prefix("fn.") == Some(token) {
+fn source_test_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
+    let module = source_module_from_text(text);
+    for (line_idx, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("test ") else {
+            continue;
+        };
+        let Some(name_end) = [rest.find("->"), rest.find('=')]
+            .into_iter()
+            .flatten()
+            .min()
+        else {
+            continue;
+        };
+        let name = rest[..name_end].trim();
+        if source_decl_name_matches_token(name, module.as_deref(), token, "test.") {
+            let leading = line.len() - trimmed.len();
+            let start = leading + "test ".len();
+            return Some(json!({
+                "uri": uri,
+                "range": {
+                    "start": { "line": line_idx, "character": start },
+                    "end": { "line": line_idx, "character": start + name.len() }
+                }
+            }));
+        }
+    }
+    None
+}
+
+fn source_decl_name_matches_token(
+    name: &str,
+    module: Option<&str>,
+    token: &str,
+    prefix: &str,
+) -> bool {
+    if name == token || name.strip_prefix(prefix) == Some(token) {
         return true;
     }
     let Some(module) = module else {
         return false;
     };
-    let bare_name = name.strip_prefix("fn.").unwrap_or(name);
+    let bare_name = name.strip_prefix(prefix).unwrap_or(name);
     token == format!("{module}.{bare_name}")
 }
 

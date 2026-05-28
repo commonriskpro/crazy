@@ -2599,6 +2599,43 @@ fn main() -> Int = effect_call(log.write, write, \"hi\")\n",
 }
 
 #[test]
+fn lsp_definition_resolves_ail_source_test() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("test smoke = eq(add(20, 22), 42)\nfn main() -> Int = 0\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args([
+            "lsp",
+            "--definition-token",
+            "test.smoke",
+            "--definition-file",
+        ])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["token"], "test.smoke");
+    assert_eq!(v["data"]["definition"]["range"]["start"]["line"], 0);
+    assert_eq!(v["data"]["definition"]["range"]["start"]["character"], 5);
+    assert!(
+        v["data"]["definition"]["uri"]
+            .as_str()
+            .expect("definition uri")
+            .ends_with("main.ail")
+    );
+}
+
+#[test]
 fn lsp_references_find_same_file_acl_identifier_uses() {
     use assert_fs::prelude::*;
 
