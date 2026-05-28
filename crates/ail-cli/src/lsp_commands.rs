@@ -592,6 +592,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "if ${1:condition} { ${2:then_expr} } else { ${3:else_expr} }",
     },
     AclSymbol {
+        label: "match",
+        detail: "AIL source pattern match",
+        documentation: "Destructures Option/Result values or matches literals with typed arms.",
+        insert_text: "match ${1:value} { ${2:Some(v)} => ${3:v}, ${4:None} => ${5:fallback} }",
+    },
+    AclSymbol {
         label: "+",
         detail: "AIL source Int infix operator",
         documentation: "Adds two Int expressions; equivalent to add(left, right).",

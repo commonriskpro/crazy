@@ -881,6 +881,15 @@ fn collect_source_calls(expr: &str, calls: &mut Vec<(String, usize)>) {
         return;
     };
     calls.push((func, args.len()));
+    if func == "match" {
+        if let Some(scrutinee) = args.first() {
+            collect_source_calls(scrutinee, calls);
+        }
+        for body in args.iter().skip(2).step_by(2) {
+            collect_source_calls(body, calls);
+        }
+        return;
+    }
     for arg in args {
         collect_source_calls(&arg, calls);
     }
@@ -901,6 +910,7 @@ enum SourceArity {
     Min(usize),
     Even,
     Any,
+    Match,
 }
 
 fn validate_source_call_arity(
@@ -918,6 +928,11 @@ fn validate_source_call_arity(
         SourceArity::Even if !actual.is_multiple_of(2) => Err(CliError::ParseError(format!(
             "function call `{call}` expects an even number of arguments, got {actual}"
         ))),
+        SourceArity::Match if actual < 3 || actual.is_multiple_of(2) => {
+            Err(CliError::ParseError(format!(
+                "function call `{call}` expects a scrutinee plus pattern/body pairs, got {actual} argument(s)"
+            )))
+        }
         _ => Ok(()),
     }
 }
@@ -934,7 +949,8 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "let_typed" => SourceArity::Exact(5),
         "effect_call" => SourceArity::Min(2),
         "map" | "record" => SourceArity::Even,
-        "tuple" | "list" | "set" | "match" => SourceArity::Any,
+        "tuple" | "list" | "set" => SourceArity::Any,
+        "match" => SourceArity::Match,
         _ => return None,
     };
     Some(arity)
@@ -975,6 +991,18 @@ fn validate_source_expr_vars(
             let mut inner_scope = scope.clone();
             inner_scope.insert(args[0].as_str());
             return validate_source_expr_vars(&args[4], &inner_scope, constants);
+        }
+        if func == "match" && args.len() >= 3 && args.len() % 2 == 1 {
+            validate_source_expr_vars(&args[0], scope, constants)?;
+            for pair in args[1..].chunks_exact(2) {
+                validate_source_match_pattern(&pair[0])?;
+                let mut arm_scope = scope.clone();
+                if let Some(binding) = source_match_pattern_binding(&pair[0]) {
+                    arm_scope.insert(binding);
+                }
+                validate_source_expr_vars(&pair[1], &arm_scope, constants)?;
+            }
+            return Ok(());
         }
         let args_to_validate: &[String] = if func == "effect_call" && args.len() >= 2 {
             &args[2..]
@@ -1218,6 +1246,9 @@ fn infer_source_call_type(
             validate_source_type_match(&then_ty, &else_ty, "if branches")?;
             Ok(then_ty)
         }
+        "match" if args.len() >= 3 && args.len() % 2 == 1 => {
+            infer_source_match_type(args, scope, functions)
+        }
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" => {
             validate_source_arg_types(func, args, scope, functions, &["Int", "Int"])?;
             Ok("Int".to_string())
@@ -1337,6 +1368,30 @@ fn infer_source_index_type(
                 "type mismatch in index argument 1: expected List<Unknown>, got {collection_ty}"
             ))
         })
+}
+
+fn infer_source_match_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let scrutinee_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let mut branch_ty = None;
+    for pair in args[1..].chunks_exact(2) {
+        validate_source_match_pattern(&pair[0])?;
+        validate_source_match_pattern_type(&pair[0], &scrutinee_ty)?;
+        let mut arm_scope = scope.clone();
+        if let Some((binding, ty)) = source_match_pattern_binding_type(&pair[0], &scrutinee_ty)? {
+            arm_scope.insert(binding.to_string(), ty);
+        }
+        let inferred = infer_source_expr_type(&pair[1], &mut arm_scope, functions)?;
+        if let Some(expected) = &branch_ty {
+            validate_source_type_match(expected, &inferred, "match arms")?;
+        } else {
+            branch_ty = Some(inferred);
+        }
+    }
+    Ok(branch_ty.unwrap_or_else(|| "Unknown".to_string()))
 }
 
 fn validate_source_arg_types(
@@ -1722,6 +1777,13 @@ fn format_source_expr_node(
         );
     }
 
+    if func == "match" && args.len() >= 3 && args.len() % 2 == 1 {
+        return (
+            format_source_match_expr(&args, module, constants),
+            IF_PRECEDENCE,
+        );
+    }
+
     if func == "not" && args.len() == 1 {
         return (
             format!(
@@ -1811,6 +1873,28 @@ fn source_infix_operator(func: &str) -> Option<(&'static str, u8)> {
     }
 }
 
+fn format_source_match_expr(
+    args: &[String],
+    module: Option<&str>,
+    constants: &BTreeMap<String, String>,
+) -> String {
+    let arms = args[1..]
+        .chunks_exact(2)
+        .map(|pair| {
+            format!(
+                "{} => {}",
+                pair[0].trim(),
+                format_source_expr(&pair[1], module, constants)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "match {} {{ {arms} }}",
+        format_source_expr(&args[0], module, constants)
+    )
+}
+
 fn format_source_child_expr(
     expr: &str,
     module: Option<&str>,
@@ -1851,6 +1935,7 @@ fn split_source_args(args: &str) -> Vec<String> {
     let mut paren_depth = 0usize;
     let mut brace_depth = 0usize;
     let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
     let mut in_string = false;
     let mut prev_was_escape = false;
 
@@ -1870,7 +1955,13 @@ fn split_source_args(args: &str) -> Vec<String> {
             '}' => brace_depth = brace_depth.saturating_sub(1),
             '[' => bracket_depth += 1,
             ']' => bracket_depth = bracket_depth.saturating_sub(1),
-            ',' if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 => {
+            '<' => angle_depth += 1,
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            ',' if paren_depth == 0
+                && brace_depth == 0
+                && bracket_depth == 0
+                && angle_depth == 0 =>
+            {
                 out.push(args[start..idx].trim().to_string());
                 start = idx + ch.len_utf8();
             }
@@ -2312,6 +2403,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(rest) = expr.strip_prefix("if ") {
         return lower_if_expr(rest, line_num);
     }
+    if let Some(rest) = expr.strip_prefix("match ") {
+        return lower_match_expr(rest, line_num);
+    }
     if let Some(inner) = strip_wrapping_source_parens(expr) {
         return lower_source_expr(inner, line_num);
     }
@@ -2668,6 +2762,105 @@ fn find_top_level_source_index_bracket(expr: &str) -> Option<usize> {
     candidate
 }
 
+fn lower_match_expr(rest: &str, line_num: usize) -> Result<String, CliError> {
+    let open = rest.find('{').ok_or_else(|| {
+        CliError::ParseError(format!(
+            "line {line_num}: match expression requires `match value {{ Pattern => expr, ... }}`"
+        ))
+    })?;
+    let scrutinee = rest[..open].trim();
+    if scrutinee.is_empty() {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: match expression requires a scrutinee"
+        )));
+    }
+    let close = matching_brace(rest, open).ok_or_else(|| {
+        CliError::ParseError(format!(
+            "line {line_num}: match expression has unclosed arm block"
+        ))
+    })?;
+    if !rest[close + 1..].trim().is_empty() {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: unexpected tokens after match expression"
+        )));
+    }
+    let arms = rest[open + 1..close].trim();
+    if arms.is_empty() {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: match expression requires at least one arm"
+        )));
+    }
+
+    let mut lowered = vec![lower_source_expr(scrutinee, line_num)?];
+    for arm in split_source_match_arms(arms) {
+        let (pattern, body) = split_source_match_arm(arm, line_num)?;
+        let pattern = normalize_source_match_pattern(pattern, line_num)?;
+        lowered.push(pattern);
+        lowered.push(lower_source_expr(body, line_num)?);
+    }
+    Ok(format!("match({})", lowered.join(", ")))
+}
+
+fn split_source_match_arms(arms: &str) -> Vec<String> {
+    split_source_args(arms)
+}
+
+fn split_source_match_arm<'a>(
+    arm: &'a str,
+    line_num: usize,
+) -> Result<(&'a str, &'a str), CliError> {
+    let Some(idx) = find_top_level_source_arrow(arm) else {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: match arm requires `Pattern => expression`"
+        )));
+    };
+    let pattern = arm[..idx].trim();
+    let body = arm[idx + 2..].trim();
+    if pattern.is_empty() || body.is_empty() {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: match arm pattern and body must be non-empty"
+        )));
+    }
+    Ok((pattern, body))
+}
+
+fn find_top_level_source_arrow(input: &str) -> Option<usize> {
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+
+    for (idx, ch) in input.char_indices() {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '=' if paren_depth == 0
+                && brace_depth == 0
+                && bracket_depth == 0
+                && input[idx..].starts_with("=>") =>
+            {
+                return Some(idx);
+            }
+            _ => {}
+        }
+        prev_was_escape = false;
+    }
+    None
+}
+
 fn lower_if_expr(rest: &str, line_num: usize) -> Result<String, CliError> {
     let open_then = rest.find('{').ok_or_else(|| {
         CliError::ParseError(format!(
@@ -2836,6 +3029,141 @@ fn source_result_types(ty: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((parts[0], parts[1]))
+}
+
+fn validate_source_match_pattern(pattern: &str) -> Result<(), CliError> {
+    let pattern = pattern.trim();
+    if pattern == "_" || pattern == "None" || pattern == "true" || pattern == "false" {
+        return Ok(());
+    }
+    if pattern.parse::<i64>().is_ok() {
+        return Ok(());
+    }
+    if let Some((tag, binding)) = source_constructor_pattern(pattern) {
+        validate_source_constructor_tag(tag)?;
+        if let Some(binding) = binding
+            && binding != "_"
+        {
+            validate_source_local_expr_name(binding)?;
+        }
+        return Ok(());
+    }
+    Err(CliError::ParseError(format!(
+        "unsupported source match pattern `{pattern}`"
+    )))
+}
+
+fn validate_source_constructor_tag(tag: &str) -> Result<(), CliError> {
+    if matches!(tag, "Some" | "None" | "Ok" | "Err") {
+        return Ok(());
+    }
+    Err(CliError::ParseError(format!(
+        "unsupported source match constructor `{tag}`"
+    )))
+}
+
+fn source_match_pattern_binding(pattern: &str) -> Option<&str> {
+    let (_, binding) = source_constructor_pattern(pattern)?;
+    let binding = binding?;
+    (binding != "_").then_some(binding)
+}
+
+fn source_match_pattern_binding_type<'a>(
+    pattern: &'a str,
+    scrutinee_ty: &str,
+) -> Result<Option<(&'a str, String)>, CliError> {
+    let Some(binding) = source_match_pattern_binding(pattern) else {
+        return Ok(None);
+    };
+    let Some((tag, _)) = source_constructor_pattern(pattern) else {
+        return Ok(None);
+    };
+    match tag {
+        "Some" => source_option_element_type(scrutinee_ty)
+            .map(|ty| Some((binding, ty.to_string())))
+            .ok_or_else(|| {
+                CliError::ParseError(format!(
+                    "type mismatch in match pattern `{pattern}`: expected Option<Unknown>, got {scrutinee_ty}"
+                ))
+            }),
+        "Ok" => source_result_types(scrutinee_ty)
+            .map(|(ok_ty, _)| Some((binding, ok_ty.to_string())))
+            .ok_or_else(|| {
+                CliError::ParseError(format!(
+                    "type mismatch in match pattern `{pattern}`: expected Result<Unknown,Unknown>, got {scrutinee_ty}"
+                ))
+            }),
+        "Err" => source_result_types(scrutinee_ty)
+            .map(|(_, err_ty)| Some((binding, err_ty.to_string())))
+            .ok_or_else(|| {
+                CliError::ParseError(format!(
+                    "type mismatch in match pattern `{pattern}`: expected Result<Unknown,Unknown>, got {scrutinee_ty}"
+                ))
+            }),
+        _ => Ok(None),
+    }
+}
+
+fn validate_source_match_pattern_type(pattern: &str, scrutinee_ty: &str) -> Result<(), CliError> {
+    let Some((tag, _)) = source_constructor_pattern(pattern) else {
+        return Ok(());
+    };
+    match tag {
+        "Some" | "None" if source_option_element_type(scrutinee_ty).is_some() => Ok(()),
+        "Some" | "None" => Err(CliError::ParseError(format!(
+            "type mismatch in match pattern `{pattern}`: expected Option<Unknown>, got {scrutinee_ty}"
+        ))),
+        "Ok" | "Err" if source_result_types(scrutinee_ty).is_some() => Ok(()),
+        "Ok" | "Err" => Err(CliError::ParseError(format!(
+            "type mismatch in match pattern `{pattern}`: expected Result<Unknown,Unknown>, got {scrutinee_ty}"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+fn source_constructor_pattern(pattern: &str) -> Option<(&str, Option<&str>)> {
+    let trimmed = pattern.trim();
+    let first = trimmed.chars().next()?;
+    if !first.is_ascii_uppercase() {
+        return None;
+    }
+    if let Some(open) = trimmed.find('(') {
+        let tag = trimmed[..open].trim();
+        let binding = trimmed[open + 1..].trim().strip_suffix(')')?.trim();
+        if binding.contains('(') || binding.contains(',') || binding.is_empty() {
+            return None;
+        }
+        Some((tag, Some(binding)))
+    } else {
+        Some((trimmed, None))
+    }
+}
+
+fn normalize_source_match_pattern(pattern: &str, line_num: usize) -> Result<String, CliError> {
+    let pattern = pattern.trim();
+    let normalized = if pattern == "none" || pattern == "none()" {
+        "None".to_string()
+    } else if let Some(inner) = pattern
+        .strip_prefix("some(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        format!("Some({})", inner.trim())
+    } else if let Some(inner) = pattern
+        .strip_prefix("ok(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        format!("Ok({})", inner.trim())
+    } else if let Some(inner) = pattern
+        .strip_prefix("err(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        format!("Err({})", inner.trim())
+    } else {
+        pattern.to_string()
+    };
+    validate_source_match_pattern(&normalized)
+        .map_err(|err| source_error_at_line(err, line_num))?;
+    Ok(normalized)
 }
 
 fn split_source_type_args(args: &str) -> Vec<&str> {

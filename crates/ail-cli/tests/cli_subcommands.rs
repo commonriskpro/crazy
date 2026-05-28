@@ -653,6 +653,50 @@ fn compile_file_rejects_source_option_result_type_mismatch() {
 }
 
 #[test]
+fn compile_file_accepts_source_match_expressions() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("match.ail");
+    source
+        .write_str(
+            "fn unwrap_or_zero(value: Option<Int>) -> Int = match value { Some(v) => v, None => 0 }\n\
+fn result_or_zero(value: Result<Int, Text>) -> Int = match value { Ok(v) => v, Err(e) => 0 }\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_match_arm_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_match.ail");
+    source
+        .write_str(
+            "fn main(value: Option<Int>) -> Int = match value { Some(v) => v, None => true }\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in match arms: expected Int, got Bool",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_source_typed_let_mismatch() {
     use assert_fs::prelude::*;
 
@@ -2275,6 +2319,35 @@ fn err_value() -> Result<Int, Text> = err(\"boom\")\n",
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_match_expressions() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn unwrap_or_zero(value: Option<Int>) -> Int = match value { Some(v) => v, None => 0 }\n\
+fn result_or_zero(value: Result<Int, Text>) -> Int = match value { Ok(v) => v, Err(e) => 0 }\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_completion_covers_source_typed_let_annotations() {
     let completion_output = ail()
         .args(["lsp", "--complete", "let", "--json"])
@@ -2294,6 +2367,29 @@ fn lsp_completion_covers_source_typed_let_annotations() {
                 .expect("insertText")
                 .contains("let ${1:name}: ${2:Int} = ${3:value}")),
         "completion must include typed let snippet; got: {items:?}"
+    );
+}
+
+#[test]
+fn lsp_completion_covers_source_match_expressions() {
+    let completion_output = ail()
+        .args(["lsp", "--complete", "match", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let completion = parse_json_output(&completion_output);
+    assert_eq!(completion["status"], "ok");
+    let items = completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        items.iter().any(|item| item["label"] == "match"
+            && item["insertText"]
+                .as_str()
+                .expect("insertText")
+                .contains("match ${1:value}")),
+        "completion must include match snippet; got: {items:?}"
     );
 }
 
@@ -4876,6 +4972,7 @@ fn fmt_file_json_outputs_canonical_ail_source() {
         .write_str(
             "const answer:Int=40+2\n\
 fn add_pair(x:Int,y:Int)->Int=add(x,y)\n\
+fn unwrap(value:Option<Int>)->Int=match(value,Some(v),v,None,0)\n\
 fn main()->Int{\n\
 let base:Int=answer()\n\
 let values:List<Int>=[base,2+3]\n\
@@ -4897,12 +4994,15 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["language"], "ail-source");
-    assert_eq!(v["data"]["item_count"], 4);
+    assert_eq!(v["data"]["item_count"], 5);
     let formatted = v["data"]["formatted"]
         .as_str()
         .expect("formatted must be string");
     assert!(formatted.contains("const answer: Int = 40 + 2\n"));
     assert!(formatted.contains("fn add_pair(x: Int, y: Int) -> Int = x + y\n"));
+    assert!(formatted.contains(
+        "fn unwrap(value: Option<Int>) -> Int = match value { Some(v) => v, None => 0 }\n"
+    ));
     assert!(formatted.contains("fn main() -> Int {\n"));
     assert!(formatted.contains("  let base: Int = answer\n"));
     assert!(formatted.contains("  let values: List<Int> = [base, 2 + 3]\n"));
