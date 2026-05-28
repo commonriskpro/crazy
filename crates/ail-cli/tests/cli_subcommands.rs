@@ -731,6 +731,60 @@ fn main() -> Int = 0
 }
 
 #[test]
+fn compile_file_rejects_ambiguous_source_grants() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("ambiguous_grant.ail");
+    source
+        .write_str(
+            "capability log.write
+fn smoke() -> Int = 0
+test smoke -> Int = effect_call(log.write, write, \"hi\")
+grant smoke log.write
+fn main() -> Int = 0
+",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "grant target `smoke` is ambiguous; use `fn.smoke` or `test.smoke`",
+        ));
+}
+
+#[test]
+fn compile_file_accepts_explicit_test_source_grants() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("explicit_test_grant.ail");
+    source
+        .write_str(
+            "capability log.write
+fn smoke() -> Int = 0
+test smoke -> Int = effect_call(log.write, write, \"hi\")
+grant test.smoke log.write
+fn main() -> Int = 0
+",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .args(["--profile", "dev", "--target", "wasm", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
 fn compile_file_rejects_ungranted_source_effect_call() {
     use assert_fs::prelude::*;
 
@@ -1035,6 +1089,45 @@ fn main() -> Int = 0
     assert_eq!(v["data"]["language"], "ail-source");
     assert_eq!(v["data"]["diagnostic_count"], 0);
     assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
+fn lsp_diagnose_reports_ambiguous_source_grants() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "capability log.write
+fn smoke() -> Int = 0
+test smoke -> Int = effect_call(log.write, write, \"hi\")
+grant smoke log.write
+fn main() -> Int = 0
+",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("grant target `smoke` is ambiguous; use `fn.smoke` or `test.smoke`")
+    );
 }
 
 #[test]
