@@ -2030,6 +2030,7 @@ mod tests {
 
         assert_eq!(functions.get("fn.math.add_pair"), Some(&3));
         assert_eq!(functions.get("math.add_pair"), Some(&3));
-        assert_eq!(functions.get("add_pair"), Some(&3));
+        assert_eq!(functions.get("math_add_pair"), Some(&3));
+        assert_eq!(functions.get("add_pair"), None);
     }
 }

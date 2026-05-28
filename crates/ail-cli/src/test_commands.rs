@@ -5,7 +5,9 @@
 // This is intentionally small, but it is a real vertical slice:
 // persisted graph → verification gate → Core IR → ANF → WASM → runtime invoke.
 
-use ail_compiler::{emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir};
+use ail_compiler::{
+    emit_wasm_with_profile, export_name, lower_to_anf_with_graph, lower_to_core_ir,
+};
 use ail_core::semantic_graph::{GraphNode, NodeKind};
 use ail_runtime::{
     CapabilityGrant, CapabilityManifest, ResourceLimits, RuntimeHost, RuntimeProfile, blake3_hex_of,
@@ -92,26 +94,30 @@ pub(crate) async fn cmd_test(
 
     let mut results = Vec::with_capacity(tests.len());
     for test in &tests {
-        let export_name = test.name.rsplit('.').next().unwrap_or(&test.name);
-        let export_type = artifact.export_types.get(export_name);
-        let result =
-            match invoke_export_for_cli(&mut instance, export_name, &runtime_args, export_type) {
-                Ok((label, value)) => {
-                    let passed = test_value_passed(&value);
-                    TestResult {
-                        name: test.name.clone(),
-                        export_name: export_name.to_string(),
-                        passed,
-                        detail: label,
-                    }
-                }
-                Err(err) => TestResult {
+        let export_name = export_name(&test.name);
+        let export_type = artifact.export_types.get(export_name.as_str());
+        let result = match invoke_export_for_cli(
+            &mut instance,
+            export_name.as_str(),
+            &runtime_args,
+            export_type,
+        ) {
+            Ok((label, value)) => {
+                let passed = test_value_passed(&value);
+                TestResult {
                     name: test.name.clone(),
-                    export_name: export_name.to_string(),
-                    passed: false,
-                    detail: err,
-                },
-            };
+                    export_name: export_name.clone(),
+                    passed,
+                    detail: label,
+                }
+            }
+            Err(err) => TestResult {
+                name: test.name.clone(),
+                export_name: export_name.clone(),
+                passed: false,
+                detail: err,
+            },
+        };
         results.push(result);
     }
 

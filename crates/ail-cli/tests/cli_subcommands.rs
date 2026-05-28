@@ -362,6 +362,40 @@ test main_addition = eq(add_pair(20, 22), 42)\n",
 }
 
 #[test]
+fn test_file_runs_module_qualified_ail_source_tests() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "module app\n\
+fn main() -> Int = add(20, 22)\n\
+test main_addition = eq(main(), 42)\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args([
+            "test",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["passed"], 1);
+    assert_eq!(v["data"]["failed"], 0);
+    assert_eq!(v["data"]["tests"][0]["name"], "test.app.main_addition");
+    assert_eq!(v["data"]["tests"][0]["export"], "app_main_addition");
+}
+
+#[test]
 fn check_file_validates_ail_source_without_execution() {
     use assert_fs::prelude::*;
 

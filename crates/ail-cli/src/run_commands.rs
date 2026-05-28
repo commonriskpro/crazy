@@ -531,15 +531,19 @@ pub(crate) async fn cmd_run(
             });
             let replay_info = replay.map(|r| json!({ "trace_id": r, "replayed": true }));
 
-            // Derive the WASM export name from the module target.
-            // Convention: "fn.answer" → export "answer" (last segment, sanitised).
-            let export_name = module_name.rsplit('.').next().unwrap_or(module_name);
+            // Derive the WASM export name from the same ABI helper the compiler uses,
+            // so module-qualified source names remain collision-free.
+            let export_name = export_name(module_name);
             let runtime_args = parse_runtime_args(raw_args)?;
 
             // Try to invoke the export; if it doesn't exist, fall back to preflight-only.
-            let export_type = artifact.export_types.get(export_name);
-            let invoke_result =
-                invoke_export_for_cli(&mut instance, export_name, &runtime_args, export_type);
+            let export_type = artifact.export_types.get(export_name.as_str());
+            let invoke_result = invoke_export_for_cli(
+                &mut instance,
+                export_name.as_str(),
+                &runtime_args,
+                export_type,
+            );
 
             // Post-invoke: aggregate capability call statistics from the full audit
             // log (includes any CapabilityCallExecuted events produced during invoke).

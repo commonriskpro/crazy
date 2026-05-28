@@ -558,9 +558,12 @@ pub(crate) fn binding_signatures(bindings: &[AnfBinding]) -> Vec<WasmSignature> 
 
 // ── Export naming ─────────────────────────────────────────────────────────
 
-pub(crate) fn export_name(binding_name: &str) -> String {
-    let local = binding_name.rsplit('.').next().unwrap_or(binding_name);
-    local
+pub fn export_name(binding_name: &str) -> String {
+    let logical = binding_name
+        .strip_prefix("fn.")
+        .or_else(|| binding_name.strip_prefix("test."))
+        .unwrap_or(binding_name);
+    logical
         .chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || ch == '_' {
@@ -883,3 +886,15 @@ impl EffectDataLayout {
 //
 // The arm_payload_binding function is imported from pattern_string and
 // fully tested there. No duplicate tests are kept here.
+
+#[cfg(test)]
+mod export_name_tests {
+    use super::export_name;
+
+    #[test]
+    fn export_name_preserves_module_namespace_without_legacy_prefix() {
+        assert_eq!(export_name("fn.main"), "main");
+        assert_eq!(export_name("fn.app.main"), "app_main");
+        assert_eq!(export_name("test.math.addition"), "math_addition");
+    }
+}
