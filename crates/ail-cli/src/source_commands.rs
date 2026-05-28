@@ -240,6 +240,7 @@ fn load_source_program_from_text_inner(
     combined.extend(program);
     validate_source_program_symbols(&combined)?;
     validate_source_program_grants(&combined)?;
+    validate_source_program_calls(&combined)?;
     visiting.remove(&canonical_path);
     Ok(combined)
 }
@@ -328,6 +329,89 @@ fn validate_source_program_grants(program: &SourceProgram) -> Result<(), CliErro
         }
     }
     Ok(())
+}
+
+fn validate_source_program_calls(program: &SourceProgram) -> Result<(), CliError> {
+    let functions = program
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for function in &program.functions {
+        validate_source_expr_calls(&function.body, &functions)?;
+    }
+    for test in &program.tests {
+        validate_source_expr_calls(&test.body, &functions)?;
+    }
+    Ok(())
+}
+
+fn validate_source_expr_calls(expr: &str, functions: &BTreeSet<&str>) -> Result<(), CliError> {
+    let mut calls = Vec::new();
+    collect_source_calls(expr, &mut calls);
+    for call in calls {
+        if is_known_source_builtin(&call) || source_function_exists(functions, &call) {
+            continue;
+        }
+        return Err(CliError::ParseError(format!(
+            "unknown function call `{call}` in AIL source"
+        )));
+    }
+    Ok(())
+}
+
+fn collect_source_calls(expr: &str, calls: &mut Vec<String>) {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return;
+    };
+    calls.push(func);
+    for arg in args {
+        collect_source_calls(&arg, calls);
+    }
+}
+
+fn source_function_exists(functions: &BTreeSet<&str>, call: &str) -> bool {
+    let normalized = if call.starts_with("fn.") {
+        call.to_string()
+    } else {
+        format!("fn.{call}")
+    };
+    functions.contains(normalized.as_str())
+}
+
+fn is_known_source_builtin(call: &str) -> bool {
+    matches!(
+        call,
+        "add"
+            | "sub"
+            | "mul"
+            | "div"
+            | "mod"
+            | "signed_mod"
+            | "eq"
+            | "ne"
+            | "gt"
+            | "ge"
+            | "lt"
+            | "le"
+            | "and"
+            | "or"
+            | "not"
+            | "if"
+            | "let"
+            | "len"
+            | "concat"
+            | "print"
+            | "tuple"
+            | "list"
+            | "record"
+            | "set"
+            | "map"
+            | "match"
+            | "fold"
+            | "Var"
+    )
 }
 
 fn source_program_to_graph(
