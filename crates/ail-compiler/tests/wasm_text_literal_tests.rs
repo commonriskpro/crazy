@@ -375,6 +375,38 @@ fn string_index_of_call_exports_scalar_wasm() {
 }
 
 #[test]
+fn string_byte_at_or_call_exports_scalar_wasm() {
+    let artifact = emit_text_expr(
+        "fn.main",
+        AnfExpr::Let {
+            name: "value".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("hello".to_string()))),
+            body: Box::new(AnfExpr::Let {
+                name: "index".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                body: Box::new(AnfExpr::Let {
+                    name: "fallback".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(-1))),
+                    body: Box::new(AnfExpr::Call {
+                        func: "text.byte_at_or".to_string(),
+                        args: vec![
+                            "value".to_string(),
+                            "index".to_string(),
+                            "fallback".to_string(),
+                        ],
+                    }),
+                }),
+            }),
+        },
+    );
+
+    assert!(
+        artifact.export_types.contains_key("main"),
+        "text.byte_at_or(Text, Int, Int) must leave an exported scalar result"
+    );
+}
+
+#[test]
 fn string_starts_with_call_exports_scalar_wasm() {
     let artifact = emit_text_expr(
         "fn.main",

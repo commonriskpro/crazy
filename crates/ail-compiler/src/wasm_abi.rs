@@ -207,6 +207,12 @@ fn derive_wasm_type_with_locals(
             WasmTypeDescriptor::Scalar(WasmScalarType::I64)
         }
         AnfExpr::Call { func, args }
+            if matches!(func.as_str(), "text.byte_at_or" | "text_byte_at_or")
+                && args.len() == 3 =>
+        {
+            WasmTypeDescriptor::Scalar(WasmScalarType::I64)
+        }
+        AnfExpr::Call { func, args }
             if matches!(
                 func.as_str(),
                 "text.starts_with" | "text_starts_with" | "text.ends_with" | "text_ends_with"
@@ -775,6 +781,12 @@ impl EffectDataLayout {
             }
             AnfExpr::Call { func, args }
                 if matches!(func.as_str(), "concat" | "text.concat") && args.len() == 2 =>
+            {
+                self.needs_memory = true;
+            }
+            AnfExpr::Call { func, args }
+                if matches!(func.as_str(), "text.byte_at_or" | "text_byte_at_or")
+                    && args.len() == 3 =>
             {
                 self.needs_memory = true;
             }

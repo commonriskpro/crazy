@@ -838,6 +838,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_index_of(${1:haystack}, ${2:needle})",
     },
     AclSymbol {
+        label: "text_byte_at_or",
+        detail: "AIL source Text helper",
+        documentation: "Returns the byte value at index, or fallback when the index is out of bounds.",
+        insert_text: "text_byte_at_or(${1:value}, ${2:index}, ${3:fallback})",
+    },
+    AclSymbol {
         label: "text_slice",
         detail: "AIL source Text helper",
         documentation: "Returns a safe byte slice of Text from start for length bytes.",

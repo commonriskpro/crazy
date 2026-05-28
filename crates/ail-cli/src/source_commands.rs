@@ -944,9 +944,8 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "text.contains" | "text.ends_with" | "text.index_of" | "text.starts_with"
         | "text_contains" | "text_ends_with" | "text_index_of" | "text_starts_with" | "text.eq"
         | "text_eq" => SourceArity::Exact(2),
-        "text.replace_first" | "text_replace_first" | "text.slice" | "text_slice" => {
-            SourceArity::Exact(3)
-        }
+        "text.byte_at_or" | "text_byte_at_or" | "text.replace_first" | "text_replace_first"
+        | "text.slice" | "text_slice" => SourceArity::Exact(3),
         "field" | "index" | "unwrap_or" | "first_or" | "last_or" => SourceArity::Exact(2),
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
@@ -1325,6 +1324,10 @@ fn infer_source_call_type(
         }
         "text.index_of" => {
             validate_source_arg_types(func, args, scope, functions, &["Text", "Text"])?;
+            Ok("Int".to_string())
+        }
+        "text.byte_at_or" => {
+            validate_source_arg_types(func, args, scope, functions, &["Text", "Int", "Int"])?;
             Ok("Int".to_string())
         }
         "text.slice" => {
@@ -2178,6 +2181,18 @@ fn format_source_expr_node(
                 "text_index_of({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "text.byte_at_or" && args.len() == 3 {
+        return (
+            format!(
+                "text_byte_at_or({}, {}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants),
+                format_source_expr(&args[2], module, constants)
             ),
             CALL_PRECEDENCE,
         );
@@ -3135,6 +3150,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_text_index_of_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_text_byte_at_or_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_text_slice_expr(expr, line_num)? {
         return Ok(lowered);
     }
@@ -3488,6 +3506,29 @@ fn lower_source_text_index_of_expr(
         "text.index_of({}, {})",
         lower_source_expr(&args[0], line_num)?,
         lower_source_expr(&args[1], line_num)?
+    )))
+}
+
+fn lower_source_text_byte_at_or_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "text_byte_at_or" {
+        return Ok(None);
+    }
+    if args.len() != 3 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: text_byte_at_or requires `text_byte_at_or(value, index, fallback)`"
+        )));
+    }
+    Ok(Some(format!(
+        "text.byte_at_or({}, {}, {})",
+        lower_source_expr(&args[0], line_num)?,
+        lower_source_expr(&args[1], line_num)?,
+        lower_source_expr(&args[2], line_num)?
     )))
 }
 
@@ -5163,6 +5204,21 @@ fn find(haystack: Text, needle: Text) -> Int = text_index_of(haystack, needle)
     }
 
     #[test]
+    fn lowers_source_text_byte_at_or_helper() {
+        let program = parse_ail_source(
+            r#"
+fn byte(value: Text, index: Int, fallback: Int) -> Int = text_byte_at_or(value, index, fallback)
+"#,
+        )
+        .expect("source text_byte_at_or must parse");
+        let acl = source_program_to_acl(&program, "source_text_byte_at_or".to_string());
+
+        assert!(acl.contains(
+            "op create_function id=fn.byte return=Int body=text.byte_at_or(value, index, fallback)"
+        ));
+    }
+
+    #[test]
     fn lowers_source_text_slice_helper() {
         let program = parse_ail_source(
             r#"
@@ -5271,6 +5327,19 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
         assert_eq!(item_count, 1);
         assert!(formatted.contains(
             "fn find(haystack: Text, needle: Text) -> Int = text_index_of(haystack, needle)\n"
+        ));
+    }
+
+    #[test]
+    fn formats_source_text_byte_at_or_helper() {
+        let (formatted, item_count) = format_ail_source(
+            "fn byte(value:Text,index:Int,fallback:Int)->Int=text.byte_at_or(value,index,fallback)\n",
+        )
+        .expect("source text_byte_at_or must format");
+
+        assert_eq!(item_count, 1);
+        assert!(formatted.contains(
+            "fn byte(value: Text, index: Int, fallback: Int) -> Int = text_byte_at_or(value, index, fallback)\n"
         ));
     }
 

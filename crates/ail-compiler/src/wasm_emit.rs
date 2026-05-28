@@ -589,6 +589,67 @@ fn emit_text_trim<'a>(
     Some(ValType::I64)
 }
 
+fn emit_text_byte_at_or<'a>(
+    args: &[String],
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [value, index_arg, fallback_arg] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+
+    let value_len = ctx.bind_temp(ValType::I32);
+    emit_text_len_from_local(ctx, value, insns);
+    insns.push(Instruction::LocalSet(value_len));
+
+    let value_ptr = ctx.bind_temp(ValType::I32);
+    emit_text_ptr_from_local(ctx, value, insns);
+    insns.push(Instruction::LocalSet(value_ptr));
+
+    let index_i64 = ctx.bind_temp(ValType::I64);
+    emit_local_as_i64(ctx, index_arg, insns);
+    insns.push(Instruction::LocalSet(index_i64));
+
+    let fallback = ctx.bind_temp(ValType::I64);
+    emit_local_as_i64(ctx, fallback_arg, insns);
+    insns.push(Instruction::LocalSet(fallback));
+
+    let index_i32 = ctx.bind_temp(ValType::I32);
+    let result = ctx.bind_temp(ValType::I64);
+
+    insns.push(Instruction::LocalGet(fallback));
+    insns.push(Instruction::LocalSet(result));
+
+    insns.push(Instruction::LocalGet(index_i64));
+    insns.push(Instruction::I64Const(0));
+    insns.push(Instruction::I64GeS);
+    insns.push(Instruction::If(BlockType::Empty));
+
+    insns.push(Instruction::LocalGet(index_i64));
+    insns.push(Instruction::LocalGet(value_len));
+    insns.push(Instruction::I64ExtendI32U);
+    insns.push(Instruction::I64LtS);
+    insns.push(Instruction::If(BlockType::Empty));
+
+    insns.push(Instruction::LocalGet(index_i64));
+    insns.push(Instruction::I32WrapI64);
+    insns.push(Instruction::LocalSet(index_i32));
+
+    insns.push(Instruction::LocalGet(value_ptr));
+    insns.push(Instruction::LocalGet(index_i32));
+    insns.push(Instruction::I32Add);
+    load_i32_u8_at(0, insns);
+    insns.push(Instruction::I64ExtendI32U);
+    insns.push(Instruction::LocalSet(result));
+
+    insns.push(Instruction::End);
+    insns.push(Instruction::End);
+
+    insns.push(Instruction::LocalGet(result));
+    Some(ValType::I64)
+}
+
 fn emit_text_slice<'a>(
     args: &[String],
     ctx: &mut WasmCodegenCtx<'a>,
@@ -1769,6 +1830,9 @@ fn emit_anf_expr<'a>(
             }
             if matches!(func.as_str(), "text.trim" | "text_trim") {
                 return emit_text_trim(args, ctx, insns);
+            }
+            if matches!(func.as_str(), "text.byte_at_or" | "text_byte_at_or") {
+                return emit_text_byte_at_or(args, ctx, insns);
             }
             if matches!(func.as_str(), "text.slice" | "text_slice") {
                 return emit_text_slice(args, ctx, insns);
