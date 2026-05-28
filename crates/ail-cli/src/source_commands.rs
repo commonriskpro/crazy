@@ -941,7 +941,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
     let arity = match call {
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
         | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
-        "field" | "index" | "unwrap_or" | "first_or" => SourceArity::Exact(2),
+        "field" | "index" | "unwrap_or" | "first_or" | "last_or" => SourceArity::Exact(2),
         "update" => SourceArity::Exact(3),
         "none" => SourceArity::Exact(0),
         "not" | "len" | "print" | "Var" | "is_empty" | "is_some" | "is_none" | "is_ok"
@@ -1989,6 +1989,16 @@ fn format_source_expr_node(
                 CALL_PRECEDENCE,
             );
         }
+        if let Some((list, fallback)) = source_if_as_last_or(&args) {
+            return (
+                format!(
+                    "last_or({}, {})",
+                    format_source_expr(&list, module, constants),
+                    format_source_expr(&fallback, module, constants)
+                ),
+                CALL_PRECEDENCE,
+            );
+        }
         return (
             format!(
                 "if {} {{ {} }} else {{ {} }}",
@@ -2206,6 +2216,34 @@ fn source_if_as_first_or(args: &[String]) -> Option<(String, String)> {
         || index_args[0].trim() != list
         || index_args[1].trim() != "0"
     {
+        return None;
+    }
+    Some((list.to_string(), args[2].trim().to_string()))
+}
+
+fn source_if_as_last_or(args: &[String]) -> Option<(String, String)> {
+    if args.len() != 3 {
+        return None;
+    }
+    let (cond_func, cond_args) = parse_source_call(&args[0])?;
+    if cond_func != "gt" || cond_args.len() != 2 || cond_args[1].trim() != "0" {
+        return None;
+    }
+    let (len_func, len_args) = parse_source_call(&cond_args[0])?;
+    if len_func != "len" || len_args.len() != 1 {
+        return None;
+    }
+    let list = len_args[0].trim();
+    let (index_func, index_args) = parse_source_call(&args[1])?;
+    if index_func != "index" || index_args.len() != 2 || index_args[0].trim() != list {
+        return None;
+    }
+    let (sub_func, sub_args) = parse_source_call(&index_args[1])?;
+    if sub_func != "sub" || sub_args.len() != 2 || sub_args[1].trim() != "1" {
+        return None;
+    }
+    let (idx_len_func, idx_len_args) = parse_source_call(&sub_args[0])?;
+    if idx_len_func != "len" || idx_len_args.len() != 1 || idx_len_args[0].trim() != list {
         return None;
     }
     Some((list.to_string(), args[2].trim().to_string()))
@@ -2898,6 +2936,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_first_or_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_last_or_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {
         if let Some(base) = literal.base {
             let mut lowered = lower_source_expr(&base, line_num)?;
@@ -3163,6 +3204,25 @@ fn lower_source_first_or_expr(expr: &str, line_num: usize) -> Result<Option<Stri
     let list = lower_source_expr(&args[0], line_num)?;
     Ok(Some(format!(
         "if(gt(len({list}), 0), index({list}, 0), {})",
+        lower_source_expr(&args[1], line_num)?
+    )))
+}
+
+fn lower_source_last_or_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "last_or" {
+        return Ok(None);
+    }
+    if args.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: last_or requires `last_or(list, fallback)`"
+        )));
+    }
+    let list = lower_source_expr(&args[0], line_num)?;
+    Ok(Some(format!(
+        "if(gt(len({list}), 0), index({list}, sub(len({list}), 1)), {})",
         lower_source_expr(&args[1], line_num)?
     )))
 }
@@ -4577,6 +4637,21 @@ fn first(values: List<Int>) -> Int = first_or(values, 0)
     }
 
     #[test]
+    fn lowers_source_last_or_helper() {
+        let program = parse_ail_source(
+            r#"
+fn last(values: List<Int>) -> Int = last_or(values, 0)
+"#,
+        )
+        .expect("source last_or must parse");
+        let acl = source_program_to_acl(&program, "source_last_or".to_string());
+
+        assert!(acl.contains(
+            "op create_function id=fn.last return=Int body=if(gt(len(values), 0), index(values, sub(len(values), 1)), 0)"
+        ));
+    }
+
+    #[test]
     fn lowers_source_is_empty_helper() {
         let program = parse_ail_source(
             r#"
@@ -4782,6 +4857,19 @@ fn first(values:List<Int>)->Int=if(gt(len(values),0),index(values,0),0)
 
         assert_eq!(item_count, 1);
         assert!(formatted.contains("fn first(values: List<Int>) -> Int = first_or(values, 0)\n"));
+    }
+
+    #[test]
+    fn formats_source_last_or_helper() {
+        let (formatted, item_count) = format_ail_source(
+            r#"
+fn last(values:List<Int>)->Int=if(gt(len(values),0),index(values,sub(len(values),1)),0)
+"#,
+        )
+        .expect("source last_or must format");
+
+        assert_eq!(item_count, 1);
+        assert!(formatted.contains("fn last(values: List<Int>) -> Int = last_or(values, 0)\n"));
     }
 
     #[test]
