@@ -3005,13 +3005,24 @@ fn validate_source_type_name(ty: &str, line_num: usize) -> Result<(), CliError> 
 }
 
 fn is_supported_source_type(ty: &str) -> bool {
-    let ty = ty.trim();
-    matches!(ty, "Int" | "Bool" | "Text" | "Float")
+    let ty = normalize_source_type_name(ty);
+    let ty = ty.as_str();
+    source_primitive_type_alias(ty).is_some()
         || source_list_element_type(ty).is_some_and(is_supported_source_type)
         || source_option_element_type(ty).is_some_and(is_supported_source_type)
         || source_result_types(ty).is_some_and(|(ok_ty, err_ty)| {
             is_supported_source_type(ok_ty) && is_supported_source_type(err_ty)
         })
+}
+
+fn source_primitive_type_alias(ty: &str) -> Option<&'static str> {
+    match ty.trim() {
+        "Int" | "int" | "i32" | "i64" => Some("Int"),
+        "Bool" | "bool" => Some("Bool"),
+        "Text" | "String" | "str" => Some("Text"),
+        "Float" | "float" | "f64" => Some("Float"),
+        _ => None,
+    }
 }
 
 fn source_list_element_type(ty: &str) -> Option<&str> {
@@ -3287,7 +3298,31 @@ fn split_source_param_list(params: &str) -> Vec<&str> {
 }
 
 fn normalize_source_type_name(ty: &str) -> String {
-    ty.chars().filter(|ch| !ch.is_whitespace()).collect()
+    let compact = ty
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    normalize_source_type_aliases(&compact)
+}
+
+fn normalize_source_type_aliases(ty: &str) -> String {
+    if let Some(alias) = source_primitive_type_alias(ty) {
+        return alias.to_string();
+    }
+    if let Some(inner) = source_list_element_type(ty) {
+        return format!("List<{}>", normalize_source_type_aliases(inner));
+    }
+    if let Some(inner) = source_option_element_type(ty) {
+        return format!("Option<{}>", normalize_source_type_aliases(inner));
+    }
+    if let Some((ok_ty, err_ty)) = source_result_types(ty) {
+        return format!(
+            "Result<{},{}>",
+            normalize_source_type_aliases(ok_ty),
+            normalize_source_type_aliases(err_ty)
+        );
+    }
+    ty.to_string()
 }
 
 fn split_source_top_level_commas(input: &str) -> Vec<&str> {

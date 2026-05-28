@@ -632,6 +632,29 @@ fn err_value() -> Result<Int, Text> = err(\"boom\")\n",
 }
 
 #[test]
+fn compile_file_accepts_source_type_aliases() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("type_aliases.ail");
+    source
+        .write_str(
+            "fn text_len(value: String) -> int = len(value)\n\
+fn first(values: List<i64>) -> i64 = values[0]\n\
+fn maybe(flag: bool) -> Option<i32> = if flag { some(42) } else { none() }\n\
+fn result() -> Result<i64, String> = ok(42)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
 fn compile_file_rejects_source_option_result_type_mismatch() {
     use assert_fs::prelude::*;
 
@@ -2364,6 +2387,37 @@ fn lsp_diagnose_accepts_source_option_result_constructors() {
             "fn maybe(flag: Bool) -> Option<Int> = if flag { some(42) } else { none() }\n\
 fn ok_value() -> Result<Int, Text> = ok(42)\n\
 fn err_value() -> Result<Int, Text> = err(\"boom\")\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
+fn lsp_diagnose_accepts_source_type_aliases() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn text_len(value: String) -> int = len(value)\n\
+fn first(values: List<i64>) -> i64 = values[0]\n\
+fn maybe(flag: bool) -> Option<i32> = if flag { some(42) } else { none() }\n\
+fn result() -> Result<i64, String> = ok(42)\n",
         )
         .expect("source fixture must be written");
 
@@ -5101,6 +5155,7 @@ fn fmt_file_json_outputs_canonical_ail_source() {
         .write_str(
             "const answer:Int=40+2\n\
 fn add_pair(x:Int,y:Int)->Int=add(x,y)\n\
+fn text_len(value:String)->int=len(value)\n\
 fn unwrap(value:Option<Int>)->Int=match(value,Some(v),v,None,0)\n\
 fn main()->Int{\n\
 let base:Int=answer()\n\
@@ -5123,12 +5178,13 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["language"], "ail-source");
-    assert_eq!(v["data"]["item_count"], 5);
+    assert_eq!(v["data"]["item_count"], 6);
     let formatted = v["data"]["formatted"]
         .as_str()
         .expect("formatted must be string");
     assert!(formatted.contains("const answer: Int = 40 + 2\n"));
     assert!(formatted.contains("fn add_pair(x: Int, y: Int) -> Int = x + y\n"));
+    assert!(formatted.contains("fn text_len(value: Text) -> Int = len(value)\n"));
     assert!(formatted.contains(
         "fn unwrap(value: Option<Int>) -> Int = match value { Some(v) => v, None => 0 }\n"
     ));
