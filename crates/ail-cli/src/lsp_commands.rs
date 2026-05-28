@@ -748,6 +748,24 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "map(${1:key}, ${2:value})",
     },
     AclSymbol {
+        label: "record",
+        detail: "AIL source Record builtin",
+        documentation: "Constructs a typed Record<field:Type,...> from field/value pairs.",
+        insert_text: "record(${1:field}, ${2:value})",
+    },
+    AclSymbol {
+        label: "field",
+        detail: "AIL source Record field access",
+        documentation: "Reads a field from a typed Record<field:Type,...> value.",
+        insert_text: "field(${1:record}, ${2:field})",
+    },
+    AclSymbol {
+        label: "update",
+        detail: "AIL source Record field update",
+        documentation: "Returns a record with one typed field updated.",
+        insert_text: "update(${1:record}, ${2:field}, ${3:value})",
+    },
+    AclSymbol {
         label: "effect_call",
         detail: "AIL source capability call",
         documentation: "Calls an external capability operation after the source item has an explicit grant.",

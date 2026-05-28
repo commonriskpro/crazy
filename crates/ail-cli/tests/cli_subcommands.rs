@@ -623,6 +623,28 @@ fn compile_file_accepts_source_tuple_collections() {
 }
 
 #[test]
+fn compile_file_accepts_source_record_field_access_and_update() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("record.ail");
+    source
+        .write_str(
+            "fn person() -> Record<age: Int, name: Text> = record(age, 42, name, \"Ada\")\n\
+fn age() -> Int = field(person(), age)\n\
+fn older() -> Record<age: Int, name: Text> = update(person(), age, 43)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
 fn compile_file_rejects_source_list_element_type_mismatch() {
     use assert_fs::prelude::*;
 
@@ -707,6 +729,52 @@ fn compile_file_rejects_source_tuple_item_type_mismatch() {
 }
 
 #[test]
+fn compile_file_rejects_source_record_field_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_record.ail");
+    source
+        .write_str(
+            "fn person() -> Record<age: Int, name: Text> = record(age, true, name, \"Ada\")\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in fn.person: expected Record<age:Int,name:Text>, got Record<age:Bool,name:Text>",
+        ));
+}
+
+#[test]
+fn compile_file_rejects_source_unknown_record_field() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_field.ail");
+    source
+        .write_str(
+            "fn main() -> Int {\n  let p: Record<age: Int> = record(age, 42)\n  return field(p, name)\n}\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unknown record field `name` for Record<age:Int>",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_source_index_type_mismatch() {
     use assert_fs::prelude::*;
 
@@ -785,6 +853,7 @@ fn first(values: List<i64>) -> i64 = values[0]\n\
 fn ids() -> Set<i64> = set(1, 2)\n\
 fn labels() -> Map<String, int> = map(\"one\", 1)\n\
 fn pair() -> Tuple<i64, String> = tuple(42, \"answer\")\n\
+fn person() -> Record<age: i64, name: String> = record(age, 42, name, \"Ada\")\n\
 fn maybe(flag: bool) -> Option<i32> = if flag { some(42) } else { none() }\n\
 fn result() -> Result<i64, String> = ok(42)\n",
         )
@@ -1235,9 +1304,9 @@ fn compile_file_rejects_untyped_source_builtins() {
     use assert_fs::prelude::*;
 
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
-    let source = dir.child("bad_record.ail");
+    let source = dir.child("bad_fold.ail");
     source
-        .write_str("fn main() -> Int = record(\"answer\", 42)\n")
+        .write_str("fn main() -> Int = fold(0, [1], 0)\n")
         .expect("source fixture must be written");
 
     ail()
@@ -1247,7 +1316,7 @@ fn compile_file_rejects_untyped_source_builtins() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "unsupported source builtin `record` has no type inference",
+            "unsupported source builtin `fold` has no type inference",
         ));
 }
 
@@ -2602,6 +2671,35 @@ fn lsp_diagnose_accepts_source_tuple_collections() {
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_record_field_access() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn person() -> Record<age: Int, name: Text> = record(age, 42, name, \"Ada\")\n\
+fn age() -> Int = field(person(), age)\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_option_result_constructors() {
     use assert_fs::prelude::*;
 
@@ -3482,7 +3580,7 @@ fn lsp_diagnose_reports_untyped_source_builtins() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str("fn main() -> Int = record(\"answer\", 42)\n")
+        .write_str("fn main() -> Int = fold(0, [1], 0)\n")
         .expect("source fixture must be written");
 
     let output = ail()
@@ -3503,7 +3601,7 @@ fn lsp_diagnose_reports_untyped_source_builtins() {
         v["data"]["diagnostics"][0]["message"]
             .as_str()
             .expect("diagnostic message")
-            .contains("unsupported source builtin `record` has no type inference")
+            .contains("unsupported source builtin `fold` has no type inference")
     );
 }
 
@@ -3827,6 +3925,23 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .iter()
             .any(|item| item["label"] == "tuple" && item["detail"] == "AIL source Tuple builtin"),
         "completion must include AIL source tuple builtin; got: {tuple_items:?}"
+    );
+
+    let record_completion_output = ail()
+        .args(["lsp", "--complete", "rec", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let record_completion = parse_json_output(&record_completion_output);
+    let record_items = record_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        record_items
+            .iter()
+            .any(|item| item["label"] == "record" && item["detail"] == "AIL source Record builtin"),
+        "completion must include AIL source record builtin; got: {record_items:?}"
     );
 }
 
@@ -5434,6 +5549,7 @@ fn count(values:List<Int>)->Int=len(values)\n\
 fn ids()->Set<i64>=set(1,add(2,3))\n\
 fn labels()->Map<String,int>=map(\"one\",1,\"two\",2)\n\
 fn pair()->Tuple<i64,String>=tuple(42,\"answer\")\n\
+fn person()->Record<age:i64,name:String>=record(age,42,name,\"Ada\")\n\
 fn unwrap(value:Option<Int>)->Int=match(value,Some(v),v,None,0)\n\
 fn main()->Int{\n\
 let base:Int=answer()\n\
@@ -5456,7 +5572,7 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["language"], "ail-source");
-    assert_eq!(v["data"]["item_count"], 10);
+    assert_eq!(v["data"]["item_count"], 11);
     let formatted = v["data"]["formatted"]
         .as_str()
         .expect("formatted must be string");
@@ -5467,6 +5583,11 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
     assert!(formatted.contains("fn ids() -> Set<Int> = set(1, 2 + 3)\n"));
     assert!(formatted.contains("fn labels() -> Map<Text,Int> = map(\"one\", 1, \"two\", 2)\n"));
     assert!(formatted.contains("fn pair() -> Tuple<Int,Text> = tuple(42, \"answer\")\n"));
+    assert!(
+        formatted.contains(
+            "fn person() -> Record<age:Int,name:Text> = record(age, 42, name, \"Ada\")\n"
+        )
+    );
     assert!(formatted.contains(
         "fn unwrap(value: Option<Int>) -> Int = match value { Some(v) => v, None => 0 }\n"
     ));

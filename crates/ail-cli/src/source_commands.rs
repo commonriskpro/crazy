@@ -941,7 +941,8 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
     let arity = match call {
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
         | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
-        "index" => SourceArity::Exact(2),
+        "field" | "index" => SourceArity::Exact(2),
+        "update" => SourceArity::Exact(3),
         "none" => SourceArity::Exact(0),
         "not" | "len" | "print" | "Var" => SourceArity::Exact(1),
         "some" | "ok" | "err" => SourceArity::Exact(1),
@@ -1002,6 +1003,24 @@ fn validate_source_expr_vars(
                 }
                 validate_source_expr_vars(&pair[1], &arm_scope, constants)?;
             }
+            return Ok(());
+        }
+        if func == "record" && args.len().is_multiple_of(2) {
+            for pair in args.chunks_exact(2) {
+                validate_source_local_expr_name(&pair[0])?;
+                validate_source_expr_vars(&pair[1], scope, constants)?;
+            }
+            return Ok(());
+        }
+        if func == "field" && args.len() == 2 {
+            validate_source_expr_vars(&args[0], scope, constants)?;
+            validate_source_local_expr_name(&args[1])?;
+            return Ok(());
+        }
+        if func == "update" && args.len() == 3 {
+            validate_source_expr_vars(&args[0], scope, constants)?;
+            validate_source_local_expr_name(&args[1])?;
+            validate_source_expr_vars(&args[2], scope, constants)?;
             return Ok(());
         }
         let args_to_validate: &[String] = if func == "effect_call" && args.len() >= 2 {
@@ -1288,6 +1307,9 @@ fn infer_source_call_type(
         "tuple" => infer_source_tuple_type(args, scope, functions),
         "set" => infer_source_set_type(args, scope, functions),
         "map" => infer_source_map_type(args, scope, functions),
+        "record" => infer_source_record_type(args, scope, functions),
+        "field" => infer_source_field_type(args, scope, functions),
+        "update" => infer_source_update_type(args, scope, functions),
         "index" => infer_source_index_type(args, scope, functions),
         "none" => Ok("Option<Unknown>".to_string()),
         "some" => {
@@ -1336,7 +1358,7 @@ fn infer_source_call_type(
 }
 
 fn is_untyped_source_builtin(func: &str) -> bool {
-    matches!(func, "Var" | "fold" | "record" | "match")
+    matches!(func, "Var" | "fold" | "match")
 }
 
 fn infer_source_list_type(
@@ -1407,6 +1429,75 @@ fn infer_source_map_type(
         validate_source_type_match(&first_value_ty, &value_ty, "map value")?;
     }
     Ok(format!("Map<{first_key_ty},{first_value_ty}>"))
+}
+
+fn infer_source_record_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let mut seen = BTreeSet::new();
+    let mut fields = Vec::new();
+    for pair in args.chunks_exact(2) {
+        let field = pair[0].trim();
+        validate_source_local_expr_name(field)?;
+        if !seen.insert(field.to_string()) {
+            return Err(CliError::ParseError(format!(
+                "duplicate record field `{field}`"
+            )));
+        }
+        let value_ty = infer_source_expr_type(&pair[1], scope, functions)?;
+        fields.push(format!("{field}:{value_ty}"));
+    }
+    Ok(format!("Record<{}>", fields.join(",")))
+}
+
+fn infer_source_field_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let record_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let field = args[1].trim();
+    validate_source_local_expr_name(field)?;
+    if record_ty == "Unknown" {
+        return Ok("Unknown".to_string());
+    }
+    let fields = source_record_fields(&record_ty).ok_or_else(|| {
+        CliError::ParseError(format!(
+            "type mismatch in field argument 1: expected Record<...>, got {record_ty}"
+        ))
+    })?;
+    fields
+        .into_iter()
+        .find_map(|(name, ty)| (name == field).then_some(ty.to_string()))
+        .ok_or_else(|| {
+            CliError::ParseError(format!("unknown record field `{field}` for {record_ty}"))
+        })
+}
+
+fn infer_source_update_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let record_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let field = args[1].trim();
+    validate_source_local_expr_name(field)?;
+    let fields = source_record_fields(&record_ty).ok_or_else(|| {
+        CliError::ParseError(format!(
+            "type mismatch in update argument 1: expected Record<...>, got {record_ty}"
+        ))
+    })?;
+    let expected_ty = fields
+        .into_iter()
+        .find_map(|(name, ty)| (name == field).then_some(ty.to_string()))
+        .ok_or_else(|| {
+            CliError::ParseError(format!("unknown record field `{field}` for {record_ty}"))
+        })?;
+    let value_ty = infer_source_expr_type(&args[2], scope, functions)?;
+    validate_source_type_match(&expected_ty, &value_ty, &format!("update field {field}"))?;
+    Ok(record_ty)
 }
 
 fn infer_source_index_type(
@@ -1513,6 +1604,17 @@ fn source_type_matches(expected: &str, actual: &str) -> bool {
     {
         return source_type_matches(expected_key, actual_key)
             && source_type_matches(expected_value, actual_value);
+    }
+    if let (Some(expected_fields), Some(actual_fields)) =
+        (source_record_fields(expected), source_record_fields(actual))
+    {
+        return expected_fields.len() == actual_fields.len()
+            && expected_fields.iter().all(|(expected_name, expected_ty)| {
+                actual_fields
+                    .iter()
+                    .find(|(actual_name, _)| actual_name == expected_name)
+                    .is_some_and(|(_, actual_ty)| source_type_matches(expected_ty, actual_ty))
+            });
     }
     if let (Some(expected_inner), Some(actual_inner)) = (
         source_option_element_type(expected),
@@ -1651,6 +1753,35 @@ fn source_expr_to_acl_body(expr: &str, constants: &BTreeMap<String, String>) -> 
             args[0],
             source_expr_to_acl_body(&args[3], constants),
             source_expr_to_acl_body(&args[4], constants)
+        );
+    }
+    if func == "record" && args.len().is_multiple_of(2) {
+        let fields = args
+            .chunks_exact(2)
+            .map(|pair| {
+                format!(
+                    "{}, {}",
+                    pair[0].trim(),
+                    source_expr_to_acl_body(&pair[1], constants)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!("record({fields})");
+    }
+    if func == "field" && args.len() == 2 {
+        return format!(
+            "field({}, {})",
+            source_expr_to_acl_body(&args[0], constants),
+            args[1].trim()
+        );
+    }
+    if func == "update" && args.len() == 3 {
+        return format!(
+            "update({}, {}, {})",
+            source_expr_to_acl_body(&args[0], constants),
+            args[1].trim(),
+            source_expr_to_acl_body(&args[2], constants)
         );
     }
     format!(
@@ -3094,6 +3225,11 @@ fn is_supported_source_type(ty: &str) -> bool {
         || source_map_types(ty).is_some_and(|(key_ty, value_ty)| {
             is_supported_source_type(key_ty) && is_supported_source_type(value_ty)
         })
+        || source_record_fields(ty).is_some_and(|fields| {
+            fields.into_iter().all(|(field, field_ty)| {
+                is_source_ident(field) && is_supported_source_type(field_ty)
+            })
+        })
         || source_option_element_type(ty).is_some_and(is_supported_source_type)
         || source_result_types(ty).is_some_and(|(ok_ty, err_ty)| {
             is_supported_source_type(ok_ty) && is_supported_source_type(err_ty)
@@ -3132,6 +3268,26 @@ fn source_map_types(ty: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((parts[0], parts[1]))
+}
+
+fn source_record_fields(ty: &str) -> Option<Vec<(&str, &str)>> {
+    let inner = ty.trim().strip_prefix("Record<")?.strip_suffix('>')?.trim();
+    let mut seen = BTreeSet::new();
+    let mut fields = Vec::new();
+    for part in split_source_type_args(inner) {
+        let (field, field_ty) = part.split_once(':')?;
+        let field = field.trim();
+        let field_ty = field_ty.trim();
+        if field.is_empty()
+            || field_ty.is_empty()
+            || !is_source_ident(field)
+            || !seen.insert(field.to_string())
+        {
+            return None;
+        }
+        fields.push((field, field_ty));
+    }
+    Some(fields)
 }
 
 fn source_option_element_type(ty: &str) -> Option<&str> {
@@ -3436,6 +3592,18 @@ fn normalize_source_type_aliases(ty: &str) -> String {
             normalize_source_type_aliases(value_ty)
         );
     }
+    if let Some(fields) = source_record_fields(ty) {
+        return format!(
+            "Record<{}>",
+            fields
+                .iter()
+                .map(|(field, field_ty)| {
+                    format!("{field}:{}", normalize_source_type_aliases(field_ty))
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+    }
     if let Some(inner) = source_option_element_type(ty) {
         return format!("Option<{}>", normalize_source_type_aliases(inner));
     }
@@ -3666,6 +3834,33 @@ fn pair() -> Tuple<Int, Text> = tuple(42, "answer")
     }
 
     #[test]
+    fn lowers_source_record_field_access_and_update() {
+        let program = parse_ail_source(
+            r#"
+fn person() -> Record<age: Int, name: Text> = record(age, 42, name, "Ada")
+fn age() -> Int = field(person(), age)
+fn older() -> Record<age: Int, name: Text> = update(person(), age, 43)
+"#,
+        )
+        .expect("source record must parse");
+        let acl = source_program_to_acl(&program, "source_record".to_string());
+
+        assert_eq!(
+            program.functions[0].return_type,
+            "Record<age:Int,name:Text>"
+        );
+        assert!(acl.contains(
+            r#"op create_function id=fn.person return=Record<age:Int,name:Text> body=record(age, 42, name, "Ada")"#
+        ));
+        assert!(acl.contains("op create_function id=fn.age return=Int body=field(person(), age)"));
+        assert!(
+            acl.contains(
+                "op create_function id=fn.older return=Record<age:Int,name:Text> body=update(person(), age, 43)"
+            )
+        );
+    }
+
+    #[test]
     fn lowers_source_infix_arithmetic_with_precedence() {
         let program = parse_ail_source("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9")
             .expect("source must parse");
@@ -3749,6 +3944,23 @@ fn labels()->Map<String,int>=map("one",1,"two",2)
 
         assert_eq!(item_count, 1);
         assert!(formatted.contains("fn pair() -> Tuple<Int,Text> = tuple(42, \"answer\")\n"));
+    }
+
+    #[test]
+    fn formats_source_record_types() {
+        let (formatted, item_count) = format_ail_source(
+            r#"
+fn person()->Record<age:i64,name:String>=record(age,42,name,"Ada")
+fn age()->Int=field(person(),age)
+"#,
+        )
+        .expect("source record must format");
+
+        assert_eq!(item_count, 2);
+        assert!(formatted.contains(
+            "fn person() -> Record<age:Int,name:Text> = record(age, 42, name, \"Ada\")\n"
+        ));
+        assert!(formatted.contains("fn age() -> Int = field(person(), age)\n"));
     }
 
     #[test]
