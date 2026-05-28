@@ -689,6 +689,11 @@ fn validate_source_expr_vars(expr: &str, scope: &BTreeSet<&str>) -> Result<(), C
     if is_source_literal(expr) {
         return Ok(());
     }
+    if is_malformed_source_string(expr) {
+        return Err(CliError::ParseError(format!(
+            "malformed string literal `{expr}`"
+        )));
+    }
     if let Some((func, args)) = parse_source_call(expr) {
         if func == "let" && args.len() == 3 && is_source_ident(&args[0]) {
             validate_source_expr_vars(&args[1], scope)?;
@@ -723,9 +728,37 @@ fn is_source_literal(expr: &str) -> bool {
     let expr = expr.trim();
     expr == "true"
         || expr == "false"
-        || expr.starts_with('"')
+        || is_source_string_literal(expr)
         || expr.parse::<i64>().is_ok()
         || expr.parse::<f64>().is_ok()
+}
+
+fn is_malformed_source_string(expr: &str) -> bool {
+    expr.trim().starts_with('"') && !is_source_string_literal(expr)
+}
+
+fn is_source_string_literal(expr: &str) -> bool {
+    let expr = expr.trim();
+    if expr.len() < 2 || !expr.starts_with('"') || !expr.ends_with('"') {
+        return false;
+    }
+
+    let mut prev_was_escape = false;
+    for ch in expr[1..expr.len() - 1].chars() {
+        if prev_was_escape {
+            prev_was_escape = false;
+            continue;
+        }
+        if ch == '\\' {
+            prev_was_escape = true;
+            continue;
+        }
+        if ch == '"' {
+            return false;
+        }
+    }
+
+    !prev_was_escape
 }
 
 fn validate_source_program_types(program: &SourceProgram) -> Result<(), CliError> {
@@ -761,8 +794,13 @@ fn infer_source_expr_type(
     if expr == "true" || expr == "false" {
         return Ok("Bool".to_string());
     }
-    if expr.starts_with('"') {
+    if is_source_string_literal(expr) {
         return Ok("Text".to_string());
+    }
+    if is_malformed_source_string(expr) {
+        return Err(CliError::ParseError(format!(
+            "malformed string literal `{expr}`"
+        )));
     }
     if expr.parse::<i64>().is_ok() {
         return Ok("Int".to_string());
