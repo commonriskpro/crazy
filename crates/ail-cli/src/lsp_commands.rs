@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
-use crate::source_commands::parse_ail_source;
+use crate::source_commands::{load_source_program, parse_ail_source};
 
 // ── Command handlers ─────────────────────────────────────────────────────
 
@@ -57,7 +57,11 @@ pub(crate) fn cmd_lsp(
 fn cmd_lsp_diagnose(mode: OutputMode, path: PathBuf) -> Result<(), CliError> {
     let text = std::fs::read_to_string(&path)?;
     let uri = format!("file://{}", path.display());
-    let diagnostics = diagnostics_for_document(&uri, &text);
+    let diagnostics = if is_ail_source_uri(&uri) {
+        diagnostics_for_ail_source_path(&path, &text)
+    } else {
+        diagnostics_for_acl_text(&uri, &text)
+    };
     let diagnostic_count = diagnostics.len();
     let failed = diagnostics
         .iter()
@@ -383,6 +387,23 @@ fn diagnostics_for_ail_source_text(_uri: &str, text: &str) -> Vec<Value> {
                 "ail-source-parser",
             )]
         }
+    }
+}
+
+fn diagnostics_for_ail_source_path(path: &std::path::Path, text: &str) -> Vec<Value> {
+    let syntax_diagnostics =
+        diagnostics_for_ail_source_text(&format!("file://{}", path.display()), text);
+    if !syntax_diagnostics.is_empty() {
+        return syntax_diagnostics;
+    }
+
+    match load_source_program(path) {
+        Ok(_) => vec![],
+        Err(err) => vec![diagnostic(
+            line_from_error(&err.to_string()),
+            err.to_string(),
+            "ail-source-import",
+        )],
     }
 }
 

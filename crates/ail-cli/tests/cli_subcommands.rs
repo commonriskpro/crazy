@@ -416,6 +416,73 @@ fn lsp_diagnose_reports_ail_source_parse_errors() {
 }
 
 #[test]
+fn lsp_diagnose_reports_ail_source_missing_imports() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("use \"./missing.ail\"\nfn main() -> Int = 0\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(v["data"]["diagnostics"][0]["source"], "ail-source-import");
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("failed to resolve AIL source")
+    );
+}
+
+#[test]
+fn lsp_diagnose_reports_ail_source_cyclic_imports() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let main = dir.child("main.ail");
+    main.write_str("use \"./dep.ail\"\nfn main() -> Int = dep()\n")
+        .expect("main fixture must be written");
+    let dep = dir.child("dep.ail");
+    dep.write_str("use \"./main.ail\"\nfn dep() -> Int = 42\n")
+        .expect("dep fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(main.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(v["data"]["diagnostics"][0]["source"], "ail-source-import");
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("cyclic AIL source import detected")
+    );
+}
+
+#[test]
 fn lsp_completion_and_hover_cover_acl_test_authoring() {
     let completion_output = ail()
         .args(["lsp", "--complete", "create_test", "--json"])

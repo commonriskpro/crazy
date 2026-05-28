@@ -169,7 +169,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
     })
 }
 
-fn load_source_program(path: &Path) -> Result<SourceProgram, CliError> {
+pub(crate) fn load_source_program(path: &Path) -> Result<SourceProgram, CliError> {
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();
     load_source_program_inner(path, &mut visiting, &mut visited)
