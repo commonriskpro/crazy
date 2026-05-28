@@ -2720,6 +2720,43 @@ fn lsp_references_resolve_ail_source_imported_function_uses() {
     assert_eq!(refs[2]["range"]["start"]["line"], 1);
 }
 
+#[test]
+fn lsp_references_resolve_ail_source_prefixed_test_uses() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "test smoke = eq(add(20, 22), 42)\ngrant test.smoke log.write\nfn main() -> Int = 0\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args([
+            "lsp",
+            "--references-token",
+            "test.smoke",
+            "--references-file",
+        ])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+    let refs = v["data"]["references"]
+        .as_array()
+        .expect("references must be an array");
+
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["token"], "test.smoke");
+    assert_eq!(v["data"]["reference_count"], 2);
+    assert_eq!(refs[0]["range"]["start"]["line"], 0);
+    assert_eq!(refs[1]["range"]["start"]["line"], 1);
+}
+
 /// Spec scenario: file-backed store persists between CLI invocations.
 ///   GIVEN `ail init` has created an on-disk store
 ///   WHEN `ail change` writes a snapshot and `ail compile` runs later

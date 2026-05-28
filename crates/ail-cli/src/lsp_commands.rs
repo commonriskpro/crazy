@@ -932,7 +932,10 @@ fn references_for_token(uri: &str, text: &str, token: &str) -> Vec<Value> {
 }
 
 fn references_for_ail_source_token(uri: &str, text: &str, token: &str) -> Vec<Value> {
-    let token = token.strip_prefix("fn.").unwrap_or(token);
+    let token = token
+        .strip_prefix("fn.")
+        .or_else(|| token.strip_prefix("test."))
+        .unwrap_or(token);
     let mut refs = source_references_in_text(uri, text, token);
     let Some(root_path) = file_path_from_uri(uri) else {
         return refs;
