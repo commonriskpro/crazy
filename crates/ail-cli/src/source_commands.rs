@@ -1774,6 +1774,11 @@ fn validate_source_name(name: &str, line_num: usize) -> Result<(), CliError> {
             "line {line_num}: declaration name `{name}` contains unsupported characters"
         )));
     }
+    if name.split('.').any(str::is_empty) {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: declaration name `{name}` contains an empty path segment"
+        )));
+    }
     Ok(())
 }
 
