@@ -285,6 +285,32 @@ grant print_hello log.write
 }
 
 #[test]
+fn run_file_executes_ail_source_imports_relative_files() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let math = dir.child("math.ail");
+    math.write_str("fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
+        .expect("imported source fixture must be written");
+    let main = dir.child("main.ail");
+    main.write_str("use \"./math.ail\"\nfn main() -> Int = add_pair(20, 22)\n")
+        .expect("main source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            main.path().to_str().expect("path must be UTF-8"),
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("source:"))
+        .stdout(predicate::str::contains("module: fn.main"))
+        .stdout(predicate::str::contains("result: 42"));
+}
+
+#[test]
 fn test_file_runs_ail_source_tests_without_acl_authoring() {
     use assert_fs::prelude::*;
 

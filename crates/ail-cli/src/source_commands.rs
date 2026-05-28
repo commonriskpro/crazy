@@ -7,7 +7,8 @@
 // The current frontend lowers that source into the existing semantic graph
 // pipeline so the compiler/runtime path stays real end-to-end.
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 use ail_change::canonical::canonicalize_parsed;
 use ail_change::model::{ChangeSetOutcome, SnapshotId};
@@ -17,8 +18,9 @@ use ail_core::semantic_graph::SemanticGraph;
 use crate::cli_helpers::SimpleSnapshotBridge;
 use crate::error::CliError;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SourceProgram {
+    imports: Vec<String>,
     capabilities: Vec<String>,
     functions: Vec<SourceFunction>,
     tests: Vec<SourceTest>,
@@ -54,10 +56,7 @@ struct SourceGrant {
 
 /// Load a `.ail` source file and lower it to a semantic graph.
 pub(crate) fn load_source_graph(path: &Path) -> Result<SemanticGraph, CliError> {
-    let src = std::fs::read_to_string(path).map_err(|e| {
-        CliError::Domain(format!("failed to read AIL source {}: {e}", path.display()))
-    })?;
-    let program = parse_ail_source(&src)?;
+    let program = load_source_program(path)?;
     source_program_to_graph(&program, source_change_name(path))
 }
 
@@ -66,6 +65,9 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
     let program = parse_ail_source(src)?;
     let mut out = String::new();
 
+    for import in &program.imports {
+        render_source_import(&mut out, import);
+    }
     for capability in &program.capabilities {
         render_source_capability(&mut out, capability);
     }
@@ -81,7 +83,8 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
 
     Ok((
         out,
-        program.capabilities.len()
+        program.imports.len()
+            + program.capabilities.len()
             + program.functions.len()
             + program.tests.len()
             + program.grants.len(),
@@ -93,6 +96,7 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
 /// Supported initial syntax:
 ///
 /// ```text
+/// use "./math.ail"
 /// capability log.write
 /// fn main() -> Int = add(20, 22)
 /// grant main log.write
@@ -104,6 +108,7 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
 /// test main_addition = eq(add(20, 22), 42)
 /// ```
 pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
+    let mut imports = Vec::new();
     let mut capabilities = Vec::new();
     let mut functions = Vec::new();
     let mut tests = Vec::new();
@@ -118,7 +123,9 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
     while idx < statements.len() {
         let (line_num, statement) = &statements[idx];
 
-        if let Some(rest) = statement.strip_prefix("capability ") {
+        if let Some(rest) = statement.strip_prefix("use ") {
+            imports.push(parse_source_import(rest, *line_num)?);
+        } else if let Some(rest) = statement.strip_prefix("capability ") {
             capabilities.push(parse_source_capability(rest, *line_num)?);
         } else if let Some(rest) = statement.strip_prefix("fn ") {
             if rest.trim_end().ends_with('{') {
@@ -136,24 +143,98 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
             grants.push(parse_source_grant(rest, *line_num)?);
         } else {
             return Err(CliError::ParseError(format!(
-                "line {line_num}: expected `capability`, `fn`, `test`, or `grant`, got `{statement}`"
+                "line {line_num}: expected `use`, `capability`, `fn`, `test`, or `grant`, got `{statement}`"
             )));
         }
         idx += 1;
     }
 
-    if capabilities.is_empty() && functions.is_empty() && tests.is_empty() && grants.is_empty() {
+    if imports.is_empty()
+        && capabilities.is_empty()
+        && functions.is_empty()
+        && tests.is_empty()
+        && grants.is_empty()
+    {
         return Err(CliError::ParseError(
             "AIL source file has no declarations".to_string(),
         ));
     }
 
     Ok(SourceProgram {
+        imports,
         capabilities,
         functions,
         tests,
         grants,
     })
+}
+
+fn load_source_program(path: &Path) -> Result<SourceProgram, CliError> {
+    let mut visiting = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    load_source_program_inner(path, &mut visiting, &mut visited)
+}
+
+fn load_source_program_inner(
+    path: &Path,
+    visiting: &mut BTreeSet<PathBuf>,
+    visited: &mut BTreeSet<PathBuf>,
+) -> Result<SourceProgram, CliError> {
+    let canonical_path = std::fs::canonicalize(path).map_err(|e| {
+        CliError::Domain(format!(
+            "failed to resolve AIL source {}: {e}",
+            path.display()
+        ))
+    })?;
+    if visiting.contains(&canonical_path) {
+        return Err(CliError::ParseError(format!(
+            "cyclic AIL source import detected at {}",
+            canonical_path.display()
+        )));
+    }
+    if !visited.insert(canonical_path.clone()) {
+        return Ok(SourceProgram::default());
+    }
+
+    visiting.insert(canonical_path.clone());
+    let src = std::fs::read_to_string(&canonical_path).map_err(|e| {
+        CliError::Domain(format!(
+            "failed to read AIL source {}: {e}",
+            canonical_path.display()
+        ))
+    })?;
+    let program = parse_ail_source(&src)?;
+    let mut combined = SourceProgram::default();
+    for import in &program.imports {
+        let import_path = resolve_source_import(&canonical_path, import);
+        let imported = load_source_program_inner(&import_path, visiting, visited)?;
+        combined.extend(imported);
+    }
+    combined.extend(program);
+    visiting.remove(&canonical_path);
+    Ok(combined)
+}
+
+fn resolve_source_import(source_path: &Path, import: &str) -> PathBuf {
+    let import_path = Path::new(import);
+    if import_path.is_absolute() {
+        import_path.to_path_buf()
+    } else {
+        source_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(import_path)
+    }
+}
+
+impl SourceProgram {
+    fn extend(&mut self, other: SourceProgram) {
+        self.imports.extend(other.imports);
+        self.capabilities.extend(other.capabilities);
+        self.functions.extend(other.functions);
+        self.tests.extend(other.tests);
+        self.grants.extend(other.grants);
+    }
 }
 
 fn source_program_to_graph(
@@ -223,6 +304,10 @@ base 0\n"
     }
     acl.push_str("end\n");
     acl
+}
+
+fn render_source_import(out: &mut String, import: &str) {
+    out.push_str(&format!("use \"{import}\"\n"));
 }
 
 fn render_source_capability(out: &mut String, capability: &str) {
@@ -447,6 +532,21 @@ fn strip_source_comment(line: &str) -> &str {
     }
 
     line
+}
+
+fn parse_source_import(rest: &str, line_num: usize) -> Result<String, CliError> {
+    let import = rest.trim();
+    let Some(import) = import.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: import declaration requires `use \"relative/path.ail\"`"
+        )));
+    };
+    if import.is_empty() || import.contains('\0') || Path::new(import).is_absolute() {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: import path must be a non-empty relative path"
+        )));
+    }
+    Ok(import.to_string())
 }
 
 fn parse_source_capability(rest: &str, line_num: usize) -> Result<String, CliError> {
@@ -942,6 +1042,26 @@ grant print_hello log.write
             r#"op create_function id=fn.print_hello return=Int body=print("Hello from source!")"#
         ));
         assert!(acl.contains("op grant target=fn.print_hello capability=log.write"));
+    }
+
+    #[test]
+    fn parses_and_formats_relative_source_imports() {
+        let src = r#"
+use "./math.ail"
+fn main() -> Int = add_pair(20, 22)
+"#;
+        let program = parse_ail_source(src).expect("source imports must parse");
+        let acl = source_program_to_acl(&program, "source_import".to_string());
+        let (formatted, item_count) = format_ail_source(src).expect("source must format");
+
+        assert_eq!(program.imports, vec!["./math.ail".to_string()]);
+        assert!(!acl.contains("use"));
+        assert!(acl.contains("op create_function id=fn.main return=Int body=add_pair(20, 22)"));
+        assert_eq!(item_count, 2);
+        assert_eq!(
+            formatted,
+            "use \"./math.ail\"\nfn main() -> Int = add_pair(20, 22)\n"
+        );
     }
 
     #[test]
