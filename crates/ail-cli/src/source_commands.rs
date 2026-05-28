@@ -1376,6 +1376,7 @@ fn infer_source_match_type(
     functions: &BTreeMap<&str, SourceCallable>,
 ) -> Result<String, CliError> {
     let scrutinee_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    validate_source_match_reachable(&args[1..])?;
     validate_source_match_exhaustive(&args[1..], &scrutinee_ty)?;
     let mut branch_ty = None;
     for pair in args[1..].chunks_exact(2) {
@@ -3122,6 +3123,30 @@ fn validate_source_match_pattern_type(pattern: &str, scrutinee_ty: &str) -> Resu
     }
 }
 
+fn validate_source_match_reachable(arms: &[String]) -> Result<(), CliError> {
+    let mut seen = BTreeSet::new();
+    let mut saw_wildcard = false;
+
+    for pattern in arms.iter().step_by(2).map(String::as_str) {
+        let normalized = source_match_pattern_key(pattern);
+        if saw_wildcard {
+            return Err(CliError::ParseError(format!(
+                "unreachable match arm `{pattern}` after wildcard `_`"
+            )));
+        }
+        if normalized == "_" {
+            saw_wildcard = true;
+            continue;
+        }
+        if !seen.insert(normalized.clone()) {
+            return Err(CliError::ParseError(format!(
+                "duplicate match arm pattern `{normalized}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_source_match_exhaustive(arms: &[String], scrutinee_ty: &str) -> Result<(), CliError> {
     let patterns = arms.iter().step_by(2).map(String::as_str);
     if patterns.clone().any(|pattern| pattern.trim() == "_") {
@@ -3170,6 +3195,12 @@ fn validate_source_match_exhaustive(arms: &[String], scrutinee_ty: &str) -> Resu
     }
 
     Ok(())
+}
+
+fn source_match_pattern_key(pattern: &str) -> String {
+    source_pattern_tag(pattern)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| pattern.trim().to_string())
 }
 
 fn source_pattern_tag(pattern: &str) -> Option<&str> {
