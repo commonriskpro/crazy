@@ -941,7 +941,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
     let arity = match call {
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
         | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
-        "field" | "index" => SourceArity::Exact(2),
+        "field" | "index" | "unwrap_or" => SourceArity::Exact(2),
         "update" => SourceArity::Exact(3),
         "none" => SourceArity::Exact(0),
         "not" | "len" | "print" | "Var" => SourceArity::Exact(1),
@@ -1990,6 +1990,16 @@ fn format_source_expr_node(
     }
 
     if func == "match" && args.len() >= 3 && args.len() % 2 == 1 {
+        if let Some((value, fallback)) = source_match_as_unwrap_or(&args) {
+            return (
+                format!(
+                    "unwrap_or({}, {})",
+                    format_source_expr(&value, module, constants),
+                    format_source_expr(&fallback, module, constants)
+                ),
+                CALL_PRECEDENCE,
+            );
+        }
         return (
             format_source_match_expr(&args, module, constants),
             IF_PRECEDENCE,
@@ -2133,6 +2143,32 @@ fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn source_match_as_unwrap_or(args: &[String]) -> Option<(String, String)> {
+    if args.len() != 5 {
+        return None;
+    }
+    let scrutinee = args[0].trim().to_string();
+    let arms = args[1..]
+        .chunks_exact(2)
+        .map(|pair| (pair[0].trim(), pair[1].trim()))
+        .collect::<Vec<_>>();
+
+    let mut success = None;
+    let mut fallback = None;
+    for (pattern, body) in arms {
+        match source_constructor_pattern(pattern) {
+            Some(("Some", Some(binding))) if body == binding => success = Some(()),
+            Some(("None", None)) => fallback = Some(body.to_string()),
+            _ => return None,
+        }
+    }
+    if success.is_some() {
+        Some((scrutinee, fallback?))
+    } else {
+        None
+    }
 }
 
 fn collect_source_update_literal(expr: &str) -> Option<(String, Vec<(String, String)>)> {
@@ -2708,6 +2744,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_constructor_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_unwrap_or_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {
         if let Some(base) = literal.base {
             let mut lowered = lower_source_expr(&base, line_num)?;
@@ -2891,6 +2930,25 @@ fn lower_source_constructor_expr(expr: &str, line_num: usize) -> Result<Option<S
     Ok(Some(format!(
         "{lowered_func}({})",
         lower_source_expr(&args[0], line_num)?
+    )))
+}
+
+fn lower_source_unwrap_or_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "unwrap_or" {
+        return Ok(None);
+    }
+    if args.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: unwrap_or requires `unwrap_or(value, fallback)`"
+        )));
+    }
+    Ok(Some(format!(
+        "match({}, Some(__ail_unwrap), __ail_unwrap, None, {})",
+        lower_source_expr(&args[0], line_num)?,
+        lower_source_expr(&args[1], line_num)?
     )))
 }
 
@@ -4217,6 +4275,21 @@ fn err_value() -> Result<Int, Text> = Err("boom")
     }
 
     #[test]
+    fn lowers_source_unwrap_or_helper() {
+        let program = parse_ail_source(
+            r#"
+fn value(input: Option<Int>) -> Int = unwrap_or(input, 0)
+"#,
+        )
+        .expect("source unwrap_or must parse");
+        let acl = source_program_to_acl(&program, "source_unwrap_or".to_string());
+
+        assert!(acl.contains(
+            "op create_function id=fn.value return=Int body=match(input, Some(__ail_unwrap), __ail_unwrap, None, 0)"
+        ));
+    }
+
+    #[test]
     fn lowers_source_infix_arithmetic_with_precedence() {
         let program = parse_ail_source("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9")
             .expect("source must parse");
@@ -4345,6 +4418,19 @@ fn err_value()->Result<Int,Text>=err("boom")
         ));
         assert!(formatted.contains("fn ok_value() -> Result<Int,Text> = Ok(42)\n"));
         assert!(formatted.contains("fn err_value() -> Result<Int,Text> = Err(\"boom\")\n"));
+    }
+
+    #[test]
+    fn formats_source_unwrap_or_helper() {
+        let (formatted, item_count) = format_ail_source(
+            r#"
+fn value(input:Option<Int>)->Int=match(input,Some(v),v,None,0)
+"#,
+        )
+        .expect("source unwrap_or must format");
+
+        assert_eq!(item_count, 1);
+        assert!(formatted.contains("fn value(input: Option<Int>) -> Int = unwrap_or(input, 0)\n"));
     }
 
     #[test]

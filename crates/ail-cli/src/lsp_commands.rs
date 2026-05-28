@@ -622,6 +622,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "Err(${1:error})",
     },
     AclSymbol {
+        label: "unwrap_or",
+        detail: "AIL source Option helper",
+        documentation: "Returns the value inside Some(value), or a fallback when the Option is None.",
+        insert_text: "unwrap_or(${1:option}, ${2:fallback})",
+    },
+    AclSymbol {
         label: "+",
         detail: "AIL source Int infix operator",
         documentation: "Adds two Int expressions; equivalent to add(left, right).",

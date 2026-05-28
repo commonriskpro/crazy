@@ -974,6 +974,45 @@ fn result_or_zero(value: Result<Int, Text>) -> Int = match value { Ok(v) => v, E
 }
 
 #[test]
+fn compile_file_accepts_source_unwrap_or_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("unwrap_or.ail");
+    source
+        .write_str("fn value(input: Option<Int>) -> Int = unwrap_or(input, 0)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_unwrap_or_fallback_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_unwrap_or.ail");
+    source
+        .write_str("fn value(input: Option<Int>) -> Int = unwrap_or(input, true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in match arms: expected Int, got Bool",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_source_match_arm_type_mismatch() {
     use assert_fs::prelude::*;
 
@@ -2855,6 +2894,32 @@ fn result_or_zero(value: Result<Int, Text>) -> Int = match value { Ok(v) => v, E
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_unwrap_or_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn value(input: Option<Int>) -> Int = unwrap_or(input, 0)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_reports_non_exhaustive_source_match() {
     use assert_fs::prelude::*;
 
@@ -4091,6 +4156,23 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .expect("hover markdown")
             .contains("Result<T,E> error"),
         "hover must explain source Result constructor; got: {result_hover}"
+    );
+
+    let unwrap_or_completion_output = ail()
+        .args(["lsp", "--complete", "unwrap", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let unwrap_or_completion = parse_json_output(&unwrap_or_completion_output);
+    let unwrap_or_items = unwrap_or_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        unwrap_or_items.iter().any(
+            |item| item["label"] == "unwrap_or" && item["detail"] == "AIL source Option helper"
+        ),
+        "completion must include AIL source unwrap_or helper; got: {unwrap_or_items:?}"
     );
 }
 
@@ -5736,9 +5818,7 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
         formatted
             .contains("fn person() -> Record<age:Int,name:Text> = { age: 42, name: \"Ada\" }\n")
     );
-    assert!(formatted.contains(
-        "fn unwrap(value: Option<Int>) -> Int = match value { Some(v) => v, None => 0 }\n"
-    ));
+    assert!(formatted.contains("fn unwrap(value: Option<Int>) -> Int = unwrap_or(value, 0)\n"));
     assert!(formatted.contains("fn main() -> Int {\n"));
     assert!(formatted.contains("  let base: Int = answer\n"));
     assert!(formatted.contains("  let values: List<Int> = [base, 2 + 3]\n"));
