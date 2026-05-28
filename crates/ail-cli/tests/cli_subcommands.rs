@@ -871,6 +871,27 @@ fn compile_file_rejects_unsupported_source_return_type() {
 }
 
 #[test]
+fn compile_file_rejects_whitespace_source_imports() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_whitespace_import.ail");
+    source
+        .write_str("use \"./my lib.ail\"\nfn main() -> Int = 0\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "import path `./my lib.ail` must not contain whitespace",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_empty_segment_source_imports() {
     use assert_fs::prelude::*;
 
@@ -1069,6 +1090,39 @@ fn lsp_diagnose_reports_ail_source_parse_errors() {
             .as_str()
             .expect("diagnostic message")
             .contains("function parameters must use `name: Type`")
+    );
+}
+
+#[test]
+fn lsp_diagnose_reports_whitespace_source_imports() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("use \"./my lib.ail\"\nfn main() -> Int = 0\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(v["data"]["diagnostics"][0]["source"], "ail-source-parser");
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("import path `./my lib.ail` must not contain whitespace")
     );
 }
 
