@@ -944,7 +944,9 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "field" | "index" | "unwrap_or" => SourceArity::Exact(2),
         "update" => SourceArity::Exact(3),
         "none" => SourceArity::Exact(0),
-        "not" | "len" | "print" | "Var" | "is_some" | "is_none" => SourceArity::Exact(1),
+        "not" | "len" | "print" | "Var" | "is_some" | "is_none" | "is_ok" | "is_err" => {
+            SourceArity::Exact(1)
+        }
         "some" | "ok" | "err" => SourceArity::Exact(1),
         "if" | "let" | "fold" => SourceArity::Exact(3),
         "let_typed" => SourceArity::Exact(5),
@@ -1999,6 +2001,15 @@ fn format_source_expr_node(
                 CALL_PRECEDENCE,
             );
         }
+        if let Some((helper, value)) = source_match_as_result_predicate(&args) {
+            return (
+                format!(
+                    "{helper}({})",
+                    format_source_expr(&value, module, constants)
+                ),
+                CALL_PRECEDENCE,
+            );
+        }
         if let Some((value, fallback)) = source_match_as_unwrap_or(&args) {
             return (
                 format!(
@@ -2177,6 +2188,33 @@ fn source_match_as_option_predicate(args: &[String]) -> Option<(&'static str, St
     match (some_body?, none_body?) {
         ("true", "false") => Some(("is_some", scrutinee)),
         ("false", "true") => Some(("is_none", scrutinee)),
+        _ => None,
+    }
+}
+
+fn source_match_as_result_predicate(args: &[String]) -> Option<(&'static str, String)> {
+    if args.len() != 5 {
+        return None;
+    }
+    let scrutinee = args[0].trim().to_string();
+    let arms = args[1..]
+        .chunks_exact(2)
+        .map(|pair| (pair[0].trim(), pair[1].trim()))
+        .collect::<Vec<_>>();
+
+    let mut ok_body = None;
+    let mut err_body = None;
+    for (pattern, body) in arms {
+        match source_constructor_pattern(pattern) {
+            Some(("Ok", Some("_"))) => ok_body = Some(body),
+            Some(("Err", Some("_"))) => err_body = Some(body),
+            _ => return None,
+        }
+    }
+
+    match (ok_body?, err_body?) {
+        ("true", "false") => Some(("is_ok", scrutinee)),
+        ("false", "true") => Some(("is_err", scrutinee)),
         _ => None,
     }
 }
@@ -2786,6 +2824,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_option_predicate_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_result_predicate_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {
         if let Some(base) = literal.base {
             let mut lowered = lower_source_expr(&base, line_num)?;
@@ -2991,6 +3032,29 @@ fn lower_source_option_predicate_expr(
     }
     Ok(Some(format!(
         "match({}, Some(_), {some_body}, None, {none_body})",
+        lower_source_expr(&args[0], line_num)?
+    )))
+}
+
+fn lower_source_result_predicate_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    let (ok_body, err_body) = match func.as_str() {
+        "is_ok" => ("true", "false"),
+        "is_err" => ("false", "true"),
+        _ => return Ok(None),
+    };
+    if args.len() != 1 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: {func} requires `{func}(result)`"
+        )));
+    }
+    Ok(Some(format!(
+        "match({}, Ok(_), {ok_body}, Err(_), {err_body})",
         lower_source_expr(&args[0], line_num)?
     )))
 }
@@ -4371,6 +4435,25 @@ fn missing(input: Option<Int>) -> Bool = is_none(input)
     }
 
     #[test]
+    fn lowers_source_result_predicate_helpers() {
+        let program = parse_ail_source(
+            r#"
+fn succeeded(input: Result<Int, Text>) -> Bool = is_ok(input)
+fn failed(input: Result<Int, Text>) -> Bool = is_err(input)
+"#,
+        )
+        .expect("source result predicates must parse");
+        let acl = source_program_to_acl(&program, "source_result_predicates".to_string());
+
+        assert!(acl.contains(
+            "op create_function id=fn.succeeded return=Bool body=match(input, Ok(_), true, Err(_), false)"
+        ));
+        assert!(acl.contains(
+            "op create_function id=fn.failed return=Bool body=match(input, Ok(_), false, Err(_), true)"
+        ));
+    }
+
+    #[test]
     fn lowers_source_infix_arithmetic_with_precedence() {
         let program = parse_ail_source("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9")
             .expect("source must parse");
@@ -4527,6 +4610,23 @@ fn missing(input:Option<Int>)->Bool=match(input,Some(_),false,None,true)
         assert_eq!(item_count, 2);
         assert!(formatted.contains("fn has_value(input: Option<Int>) -> Bool = is_some(input)\n"));
         assert!(formatted.contains("fn missing(input: Option<Int>) -> Bool = is_none(input)\n"));
+    }
+
+    #[test]
+    fn formats_source_result_predicate_helpers() {
+        let (formatted, item_count) = format_ail_source(
+            r#"
+fn succeeded(input:Result<Int,Text>)->Bool=match(input,Ok(_),true,Err(_),false)
+fn failed(input:Result<Int,Text>)->Bool=match(input,Ok(_),false,Err(_),true)
+"#,
+        )
+        .expect("source result predicates must format");
+
+        assert_eq!(item_count, 2);
+        assert!(
+            formatted.contains("fn succeeded(input: Result<Int,Text>) -> Bool = is_ok(input)\n")
+        );
+        assert!(formatted.contains("fn failed(input: Result<Int,Text>) -> Bool = is_err(input)\n"));
     }
 
     #[test]

@@ -640,6 +640,18 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "is_none(${1:option})",
     },
     AclSymbol {
+        label: "is_ok",
+        detail: "AIL source Result predicate",
+        documentation: "Returns true when a Result value is Ok(_), false when it is Err(_).",
+        insert_text: "is_ok(${1:result})",
+    },
+    AclSymbol {
+        label: "is_err",
+        detail: "AIL source Result predicate",
+        documentation: "Returns true when a Result value is Err(_), false when it is Ok(_).",
+        insert_text: "is_err(${1:result})",
+    },
+    AclSymbol {
         label: "+",
         detail: "AIL source Int infix operator",
         documentation: "Adds two Int expressions; equivalent to add(left, right).",
