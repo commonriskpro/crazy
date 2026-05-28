@@ -942,6 +942,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
         | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
         "field" | "index" | "unwrap_or" | "first_or" | "last_or" => SourceArity::Exact(2),
+        "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
         "none" => SourceArity::Exact(0),
         "not" | "len" | "print" | "Var" | "is_empty" | "is_some" | "is_none" | "is_ok"
@@ -1999,6 +2000,17 @@ fn format_source_expr_node(
                 CALL_PRECEDENCE,
             );
         }
+        if let Some((list, index, fallback)) = source_if_as_get_or(&args) {
+            return (
+                format!(
+                    "get_or({}, {}, {})",
+                    format_source_expr(&list, module, constants),
+                    format_source_expr(&index, module, constants),
+                    format_source_expr(&fallback, module, constants)
+                ),
+                CALL_PRECEDENCE,
+            );
+        }
         return (
             format!(
                 "if {} {{ {} }} else {{ {} }}",
@@ -2247,6 +2259,64 @@ fn source_if_as_last_or(args: &[String]) -> Option<(String, String)> {
         return None;
     }
     Some((list.to_string(), args[2].trim().to_string()))
+}
+
+fn source_if_as_get_or(args: &[String]) -> Option<(String, String, String)> {
+    if args.len() != 3 {
+        return None;
+    }
+    let (then_func, then_args) = parse_source_call(&args[1])?;
+    if then_func != "index" || then_args.len() != 2 {
+        return None;
+    }
+    let list = then_args[0].trim();
+    let index = then_args[1].trim();
+    let (cond_list, cond_index) = source_get_or_guard_parts(&args[0])?;
+    if cond_list.trim() != list || cond_index.trim() != index {
+        return None;
+    }
+    Some((
+        list.to_string(),
+        index.to_string(),
+        args[2].trim().to_string(),
+    ))
+}
+
+fn source_get_or_guard_parts(cond: &str) -> Option<(String, String)> {
+    let (func, args) = parse_source_call(cond)?;
+    if func != "and" || args.len() != 2 {
+        return None;
+    }
+    let ge = source_get_or_ge_zero(&args[0]).or_else(|| source_get_or_ge_zero(&args[1]))?;
+    let (lt_index, lt_list) =
+        source_get_or_lt_len(&args[0]).or_else(|| source_get_or_lt_len(&args[1]))?;
+    if ge.trim() == lt_index.trim() {
+        Some((lt_list, ge))
+    } else {
+        None
+    }
+}
+
+fn source_get_or_ge_zero(expr: &str) -> Option<String> {
+    let (func, args) = parse_source_call(expr)?;
+    if func == "ge" && args.len() == 2 && args[1].trim() == "0" {
+        Some(args[0].trim().to_string())
+    } else {
+        None
+    }
+}
+
+fn source_get_or_lt_len(expr: &str) -> Option<(String, String)> {
+    let (func, args) = parse_source_call(expr)?;
+    if func != "lt" || args.len() != 2 {
+        return None;
+    }
+    let (len_func, len_args) = parse_source_call(&args[1])?;
+    if len_func == "len" && len_args.len() == 1 {
+        Some((args[0].trim().to_string(), len_args[0].trim().to_string()))
+    } else {
+        None
+    }
 }
 
 fn source_eq_as_is_empty(args: &[String]) -> Option<String> {
@@ -2939,6 +3009,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_last_or_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_get_or_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {
         if let Some(base) = literal.base {
             let mut lowered = lower_source_expr(&base, line_num)?;
@@ -3224,6 +3297,26 @@ fn lower_source_last_or_expr(expr: &str, line_num: usize) -> Result<Option<Strin
     Ok(Some(format!(
         "if(gt(len({list}), 0), index({list}, sub(len({list}), 1)), {})",
         lower_source_expr(&args[1], line_num)?
+    )))
+}
+
+fn lower_source_get_or_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "get_or" {
+        return Ok(None);
+    }
+    if args.len() != 3 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: get_or requires `get_or(list, index, fallback)`"
+        )));
+    }
+    let list = lower_source_expr(&args[0], line_num)?;
+    let index = lower_source_expr(&args[1], line_num)?;
+    Ok(Some(format!(
+        "if(and(ge({index}, 0), lt({index}, len({list}))), index({list}, {index}), {})",
+        lower_source_expr(&args[2], line_num)?
     )))
 }
 
@@ -4652,6 +4745,21 @@ fn last(values: List<Int>) -> Int = last_or(values, 0)
     }
 
     #[test]
+    fn lowers_source_get_or_helper() {
+        let program = parse_ail_source(
+            r#"
+fn item(values: List<Int>, idx: Int) -> Int = get_or(values, idx, 0)
+"#,
+        )
+        .expect("source get_or must parse");
+        let acl = source_program_to_acl(&program, "source_get_or".to_string());
+
+        assert!(acl.contains(
+            "op create_function id=fn.item return=Int body=if(and(ge(idx, 0), lt(idx, len(values))), index(values, idx), 0)"
+        ));
+    }
+
+    #[test]
     fn lowers_source_is_empty_helper() {
         let program = parse_ail_source(
             r#"
@@ -4870,6 +4978,22 @@ fn last(values:List<Int>)->Int=if(gt(len(values),0),index(values,sub(len(values)
 
         assert_eq!(item_count, 1);
         assert!(formatted.contains("fn last(values: List<Int>) -> Int = last_or(values, 0)\n"));
+    }
+
+    #[test]
+    fn formats_source_get_or_helper() {
+        let (formatted, item_count) = format_ail_source(
+            r#"
+fn item(values:List<Int>,idx:Int)->Int=if(and(ge(idx,0),lt(idx,len(values))),index(values,idx),0)
+"#,
+        )
+        .expect("source get_or must format");
+
+        assert_eq!(item_count, 1);
+        assert!(
+            formatted
+                .contains("fn item(values: List<Int>, idx: Int) -> Int = get_or(values, idx, 0)\n")
+        );
     }
 
     #[test]

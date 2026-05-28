@@ -820,6 +820,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "last_or(${1:list}, ${2:fallback})",
     },
     AclSymbol {
+        label: "get_or",
+        detail: "AIL source List helper",
+        documentation: "Returns the List element at an in-bounds index, otherwise returns a fallback value.",
+        insert_text: "get_or(${1:list}, ${2:index}, ${3:fallback})",
+    },
+    AclSymbol {
         label: "set",
         detail: "AIL source Set builtin",
         documentation: "Constructs a typed Set<T> from same-typed values.",
