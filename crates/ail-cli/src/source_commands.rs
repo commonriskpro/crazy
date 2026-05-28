@@ -944,6 +944,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "text.contains" | "text.ends_with" | "text.index_of" | "text.starts_with"
         | "text_contains" | "text_ends_with" | "text_index_of" | "text_starts_with" | "text.eq"
         | "text_eq" => SourceArity::Exact(2),
+        "text.parse_int_or" | "text_parse_int_or" => SourceArity::Exact(2),
         "text.byte_at_or" | "text_byte_at_or" | "text.replace_first" | "text_replace_first"
         | "text.slice" | "text_slice" => SourceArity::Exact(3),
         "field" | "index" | "unwrap_or" | "first_or" | "last_or" => SourceArity::Exact(2),
@@ -1324,6 +1325,10 @@ fn infer_source_call_type(
         }
         "text.index_of" => {
             validate_source_arg_types(func, args, scope, functions, &["Text", "Text"])?;
+            Ok("Int".to_string())
+        }
+        "text.parse_int_or" => {
+            validate_source_arg_types(func, args, scope, functions, &["Text", "Int"])?;
             Ok("Int".to_string())
         }
         "text.byte_at_or" => {
@@ -2179,6 +2184,17 @@ fn format_source_expr_node(
         return (
             format!(
                 "text_index_of({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "text.parse_int_or" && args.len() == 2 {
+        return (
+            format!(
+                "text_parse_int_or({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
             ),
@@ -3150,6 +3166,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_text_index_of_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_text_parse_int_or_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_text_byte_at_or_expr(expr, line_num)? {
         return Ok(lowered);
     }
@@ -3504,6 +3523,28 @@ fn lower_source_text_index_of_expr(
     }
     Ok(Some(format!(
         "text.index_of({}, {})",
+        lower_source_expr(&args[0], line_num)?,
+        lower_source_expr(&args[1], line_num)?
+    )))
+}
+
+fn lower_source_text_parse_int_or_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "text_parse_int_or" {
+        return Ok(None);
+    }
+    if args.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: text_parse_int_or requires `text_parse_int_or(value, fallback)`"
+        )));
+    }
+    Ok(Some(format!(
+        "text.parse_int_or({}, {})",
         lower_source_expr(&args[0], line_num)?,
         lower_source_expr(&args[1], line_num)?
     )))
@@ -5219,6 +5260,21 @@ fn byte(value: Text, index: Int, fallback: Int) -> Int = text_byte_at_or(value, 
     }
 
     #[test]
+    fn lowers_source_text_parse_int_or_helper() {
+        let program = parse_ail_source(
+            r#"
+fn parsed(value: Text, fallback: Int) -> Int = text_parse_int_or(value, fallback)
+"#,
+        )
+        .expect("source text_parse_int_or must parse");
+        let acl = source_program_to_acl(&program, "source_text_parse_int_or".to_string());
+
+        assert!(acl.contains(
+            "op create_function id=fn.parsed return=Int body=text.parse_int_or(value, fallback)"
+        ));
+    }
+
+    #[test]
     fn lowers_source_text_slice_helper() {
         let program = parse_ail_source(
             r#"
@@ -5340,6 +5396,19 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
         assert_eq!(item_count, 1);
         assert!(formatted.contains(
             "fn byte(value: Text, index: Int, fallback: Int) -> Int = text_byte_at_or(value, index, fallback)\n"
+        ));
+    }
+
+    #[test]
+    fn formats_source_text_parse_int_or_helper() {
+        let (formatted, item_count) = format_ail_source(
+            "fn parsed(value:Text,fallback:Int)->Int=text.parse_int_or(value,fallback)\n",
+        )
+        .expect("source text_parse_int_or must format");
+
+        assert_eq!(item_count, 1);
+        assert!(formatted.contains(
+            "fn parsed(value: Text, fallback: Int) -> Int = text_parse_int_or(value, fallback)\n"
         ));
     }
 

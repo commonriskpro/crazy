@@ -838,6 +838,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_index_of(${1:haystack}, ${2:needle})",
     },
     AclSymbol {
+        label: "text_parse_int_or",
+        detail: "AIL source Text parser",
+        documentation: "Parses an ASCII decimal Int from Text, or returns fallback when invalid.",
+        insert_text: "text_parse_int_or(${1:value}, ${2:fallback})",
+    },
+    AclSymbol {
         label: "text_byte_at_or",
         detail: "AIL source Text helper",
         documentation: "Returns the byte value at index, or fallback when the index is out of bounds.",

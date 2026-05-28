@@ -407,6 +407,30 @@ fn string_byte_at_or_call_exports_scalar_wasm() {
 }
 
 #[test]
+fn string_parse_int_or_call_exports_scalar_wasm() {
+    let artifact = emit_text_expr(
+        "fn.main",
+        AnfExpr::Let {
+            name: "value".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("-42".to_string()))),
+            body: Box::new(AnfExpr::Let {
+                name: "fallback".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                body: Box::new(AnfExpr::Call {
+                    func: "text.parse_int_or".to_string(),
+                    args: vec!["value".to_string(), "fallback".to_string()],
+                }),
+            }),
+        },
+    );
+
+    assert!(
+        artifact.export_types.contains_key("main"),
+        "text.parse_int_or(Text, Int) must leave an exported scalar result"
+    );
+}
+
+#[test]
 fn string_starts_with_call_exports_scalar_wasm() {
     let artifact = emit_text_expr(
         "fn.main",
