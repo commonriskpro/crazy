@@ -705,6 +705,32 @@ fn compile_file_rejects_duplicate_source_parameters() {
 }
 
 #[test]
+fn compile_file_accepts_module_test_capability_grants() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("module_test_grant.ail");
+    source
+        .write_str(
+            "module app
+capability log.write
+test smoke -> Int = effect_call(log.write, write, \"hi\")
+grant smoke log.write
+fn main() -> Int = 0
+",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .args(["--profile", "dev", "--target", "wasm", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
 fn compile_file_rejects_ungranted_source_effect_call() {
     use assert_fs::prelude::*;
 
@@ -976,6 +1002,39 @@ fn lsp_diagnose_reports_ail_source_unknown_grant_capability() {
             .expect("diagnostic message")
             .contains("grant capability `log.write` is not declared")
     );
+}
+
+#[test]
+fn lsp_diagnose_accepts_module_test_capability_grants() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "module app
+capability log.write
+test smoke -> Int = effect_call(log.write, write, \"hi\")
+grant smoke log.write
+fn main() -> Int = 0
+",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
 }
 
 #[test]

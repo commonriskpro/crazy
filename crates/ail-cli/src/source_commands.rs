@@ -239,6 +239,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
         grants,
     };
     qualify_source_program_module(&mut program);
+    resolve_source_program_grants(&mut program)?;
     validate_source_program_symbols(&program)?;
     Ok(program)
 }
@@ -312,6 +313,7 @@ fn load_source_program_from_text_inner(
     }
     combined.extend(program);
     combined.module = root_module;
+    resolve_source_program_grants(&mut combined)?;
     validate_source_program_symbols(&combined)?;
     validate_source_program_grants(&combined)?;
     validate_source_program_calls(&combined)?;
@@ -362,9 +364,93 @@ fn qualify_source_program_module(program: &mut SourceProgram) {
         test.name = qualify_source_name(&test.name, "test.", &module);
         test.body = qualify_source_expr_calls(&test.body, &module, &local_functions);
     }
+}
+
+fn resolve_source_program_grants(program: &mut SourceProgram) -> Result<(), CliError> {
+    let functions = program
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let tests = program
+        .tests
+        .iter()
+        .map(|test| test.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let module = program.module.as_deref();
+
     for grant in &mut program.grants {
-        grant.target = qualify_source_name(&grant.target, "fn.", &module);
+        grant.target = resolve_source_grant_target(&grant.target, module, &functions, &tests)?;
     }
+    Ok(())
+}
+
+fn resolve_source_grant_target(
+    target: &str,
+    module: Option<&str>,
+    functions: &BTreeSet<&str>,
+    tests: &BTreeSet<&str>,
+) -> Result<String, CliError> {
+    let mut matches = BTreeSet::new();
+    let mut add_candidate = |candidate: String, declared: &BTreeSet<&str>| {
+        if declared.contains(candidate.as_str()) {
+            matches.insert(candidate);
+        }
+    };
+
+    if target.starts_with("fn.") {
+        if functions.contains(target) {
+            return Ok(target.to_string());
+        }
+        add_candidate(
+            qualify_source_name_for_module(target, "fn.", module),
+            functions,
+        );
+    } else if target.starts_with("test.") {
+        if tests.contains(target) {
+            return Ok(target.to_string());
+        }
+        add_candidate(
+            qualify_source_name_for_module(target, "test.", module),
+            tests,
+        );
+    } else {
+        add_candidate(
+            qualify_source_name_for_module(&normalize_function_name(target), "fn.", module),
+            functions,
+        );
+        add_candidate(
+            qualify_source_name_for_module(&normalize_test_name(target), "test.", module),
+            tests,
+        );
+    }
+
+    match matches.len() {
+        0 => Ok(default_source_grant_target(target, module)),
+        1 => Ok(matches
+            .into_iter()
+            .next()
+            .expect("single grant target match")),
+        _ => Err(CliError::ParseError(format!(
+            "grant target `{target}` is ambiguous; use `fn.{target}` or `test.{target}`"
+        ))),
+    }
+}
+
+fn default_source_grant_target(target: &str, module: Option<&str>) -> String {
+    if target.starts_with("fn.") {
+        qualify_source_name_for_module(target, "fn.", module)
+    } else if target.starts_with("test.") {
+        qualify_source_name_for_module(target, "test.", module)
+    } else {
+        qualify_source_name_for_module(&normalize_function_name(target), "fn.", module)
+    }
+}
+
+fn qualify_source_name_for_module(name: &str, prefix: &str, module: Option<&str>) -> String {
+    module
+        .map(|module| qualify_source_name(name, prefix, module))
+        .unwrap_or_else(|| name.to_string())
 }
 
 fn unqualified_source_name(name: &str, prefix: &str) -> Option<String> {
@@ -1119,10 +1205,12 @@ fn render_source_test(out: &mut String, test: &SourceTest, module: Option<&str>)
 }
 
 fn render_source_grant(out: &mut String, grant: &SourceGrant, module: Option<&str>) {
-    let target = render_source_decl_name(
-        grant.target.strip_prefix("fn.").unwrap_or(&grant.target),
-        module,
-    );
+    let raw_target = grant
+        .target
+        .strip_prefix("fn.")
+        .or_else(|| grant.target.strip_prefix("test."))
+        .unwrap_or(&grant.target);
+    let target = render_source_decl_name(raw_target, module);
     out.push_str(&format!("grant {target} {}\n", grant.capability));
 }
 
@@ -1669,11 +1757,7 @@ fn validate_source_type_name(ty: &str, line_num: usize) -> Result<(), CliError> 
 }
 
 fn normalize_grant_target(target: &str) -> String {
-    if target.contains('.') {
-        target.to_string()
-    } else {
-        normalize_function_name(target)
-    }
+    target.to_string()
 }
 
 fn validate_source_name(name: &str, line_num: usize) -> Result<(), CliError> {
