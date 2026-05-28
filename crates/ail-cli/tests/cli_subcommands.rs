@@ -880,6 +880,48 @@ fn compile_file_accepts_source_first_or_helper() {
 }
 
 #[test]
+fn compile_file_accepts_source_is_empty_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("is_empty.ail");
+    source
+        .write_str(
+            "fn no_items(values: List<Int>) -> Bool = is_empty(values)\n\
+             fn no_text(value: Text) -> Bool = is_empty(value)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_is_empty_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_is_empty.ail");
+    source
+        .write_str("fn empty(flag: Bool) -> Bool = is_empty(flag)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in len argument 1: expected Text or List<Unknown>, got Bool",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_source_first_or_fallback_mismatch() {
     use assert_fs::prelude::*;
 
@@ -2868,6 +2910,35 @@ fn lsp_diagnose_accepts_source_first_or_helper() {
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_is_empty_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn no_items(values: List<Int>) -> Bool = is_empty(values)\n\
+             fn no_text(value: Text) -> Bool = is_empty(value)\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_set_and_map_collections() {
     use assert_fs::prelude::*;
 
@@ -4282,6 +4353,24 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .iter()
             .any(|item| item["label"] == "first_or" && item["detail"] == "AIL source List helper"),
         "completion must include AIL source first_or helper; got: {first_or_items:?}"
+    );
+
+    let is_empty_completion_output = ail()
+        .args(["lsp", "--complete", "is_empty", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let is_empty_completion = parse_json_output(&is_empty_completion_output);
+    let is_empty_items = is_empty_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        is_empty_items
+            .iter()
+            .any(|item| item["label"] == "is_empty"
+                && item["detail"] == "AIL source sized predicate"),
+        "completion must include AIL source is_empty helper; got: {is_empty_items:?}"
     );
 
     let map_completion_output = ail()

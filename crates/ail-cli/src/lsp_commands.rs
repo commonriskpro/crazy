@@ -802,6 +802,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "len(${1:value})",
     },
     AclSymbol {
+        label: "is_empty",
+        detail: "AIL source sized predicate",
+        documentation: "Returns true when a Text or List value has length 0.",
+        insert_text: "is_empty(${1:value})",
+    },
+    AclSymbol {
         label: "first_or",
         detail: "AIL source List helper",
         documentation: "Returns the first List element when present, otherwise returns a fallback value.",

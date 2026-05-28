@@ -944,9 +944,8 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "field" | "index" | "unwrap_or" | "first_or" => SourceArity::Exact(2),
         "update" => SourceArity::Exact(3),
         "none" => SourceArity::Exact(0),
-        "not" | "len" | "print" | "Var" | "is_some" | "is_none" | "is_ok" | "is_err" => {
-            SourceArity::Exact(1)
-        }
+        "not" | "len" | "print" | "Var" | "is_empty" | "is_some" | "is_none" | "is_ok"
+        | "is_err" => SourceArity::Exact(1),
         "some" | "ok" | "err" => SourceArity::Exact(1),
         "if" | "let" | "fold" => SourceArity::Exact(3),
         "let_typed" => SourceArity::Exact(5),
@@ -2076,6 +2075,19 @@ fn format_source_expr_node(
         );
     }
 
+    if func == "eq"
+        && args.len() == 2
+        && let Some(value) = source_eq_as_is_empty(&args)
+    {
+        return (
+            format!(
+                "is_empty({})",
+                format_source_expr(&value, module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "list" {
         return (
             format!(
@@ -2197,6 +2209,25 @@ fn source_if_as_first_or(args: &[String]) -> Option<(String, String)> {
         return None;
     }
     Some((list.to_string(), args[2].trim().to_string()))
+}
+
+fn source_eq_as_is_empty(args: &[String]) -> Option<String> {
+    if args.len() != 2 {
+        return None;
+    }
+    source_len_zero_arg(&args[0], &args[1]).or_else(|| source_len_zero_arg(&args[1], &args[0]))
+}
+
+fn source_len_zero_arg(len_expr: &str, zero_expr: &str) -> Option<String> {
+    if zero_expr.trim() != "0" {
+        return None;
+    }
+    let (func, args) = parse_source_call(len_expr.trim())?;
+    if func == "len" && args.len() == 1 {
+        Some(args[0].trim().to_string())
+    } else {
+        None
+    }
 }
 
 fn source_match_as_option_predicate(args: &[String]) -> Option<(&'static str, String)> {
@@ -2861,6 +2892,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_result_predicate_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_is_empty_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_first_or_expr(expr, line_num)? {
         return Ok(lowered);
     }
@@ -3092,6 +3126,24 @@ fn lower_source_result_predicate_expr(
     }
     Ok(Some(format!(
         "match({}, Ok(_), {ok_body}, Err(_), {err_body})",
+        lower_source_expr(&args[0], line_num)?
+    )))
+}
+
+fn lower_source_is_empty_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "is_empty" {
+        return Ok(None);
+    }
+    if args.len() != 1 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: is_empty requires `is_empty(value)`"
+        )));
+    }
+    Ok(Some(format!(
+        "eq(len({}), 0)",
         lower_source_expr(&args[0], line_num)?
     )))
 }
@@ -4525,6 +4577,25 @@ fn first(values: List<Int>) -> Int = first_or(values, 0)
     }
 
     #[test]
+    fn lowers_source_is_empty_helper() {
+        let program = parse_ail_source(
+            r#"
+fn no_items(values: List<Int>) -> Bool = is_empty(values)
+fn no_text(value: Text) -> Bool = is_empty(value)
+"#,
+        )
+        .expect("source is_empty must parse");
+        let acl = source_program_to_acl(&program, "source_is_empty".to_string());
+
+        assert!(
+            acl.contains("op create_function id=fn.no_items return=Bool body=eq(len(values), 0)")
+        );
+        assert!(
+            acl.contains("op create_function id=fn.no_text return=Bool body=eq(len(value), 0)")
+        );
+    }
+
+    #[test]
     fn lowers_source_infix_arithmetic_with_precedence() {
         let program = parse_ail_source("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9")
             .expect("source must parse");
@@ -4711,6 +4782,21 @@ fn first(values:List<Int>)->Int=if(gt(len(values),0),index(values,0),0)
 
         assert_eq!(item_count, 1);
         assert!(formatted.contains("fn first(values: List<Int>) -> Int = first_or(values, 0)\n"));
+    }
+
+    #[test]
+    fn formats_source_is_empty_helper() {
+        let (formatted, item_count) = format_ail_source(
+            r#"
+fn no_items(values:List<Int>)->Bool=eq(len(values),0)
+fn no_text(value:Text)->Bool=eq(0,len(value))
+"#,
+        )
+        .expect("source is_empty must format");
+
+        assert_eq!(item_count, 2);
+        assert!(formatted.contains("fn no_items(values: List<Int>) -> Bool = is_empty(values)\n"));
+        assert!(formatted.contains("fn no_text(value: Text) -> Bool = is_empty(value)\n"));
     }
 
     #[test]
