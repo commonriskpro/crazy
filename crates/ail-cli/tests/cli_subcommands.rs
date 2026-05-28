@@ -285,6 +285,30 @@ grant print_hello log.write
 }
 
 #[test]
+fn run_file_uses_source_module_main_entry_by_default() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("module app\nfn main() -> Int = add(20, 22)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("source:"))
+        .stdout(predicate::str::contains("module: fn.app.main"))
+        .stdout(predicate::str::contains("result: 42"));
+}
+
+#[test]
 fn run_file_executes_ail_source_imports_relative_files() {
     use assert_fs::prelude::*;
 
@@ -364,6 +388,7 @@ fn check_file_validates_ail_source_without_execution() {
     assert_eq!(v["data"]["language"], "ail-source");
     assert_eq!(v["data"]["functions"], 2);
     assert_eq!(v["data"]["imports"], 1);
+    assert_eq!(v["data"]["default_entry"], "fn.main");
     assert!(
         v["data"]["graph_nodes"].as_u64().unwrap() >= 2,
         "check must materialize source into a semantic graph"

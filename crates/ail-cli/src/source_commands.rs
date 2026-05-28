@@ -57,14 +57,29 @@ struct SourceGrant {
     capability: String,
 }
 
+pub(crate) struct LoadedSourceGraph {
+    pub(crate) graph: SemanticGraph,
+    pub(crate) default_entry: String,
+}
+
 /// Load a `.ail` source file and lower it to a semantic graph.
 pub(crate) fn load_source_graph(path: &Path) -> Result<SemanticGraph, CliError> {
+    Ok(load_source_graph_with_entry(path)?.graph)
+}
+
+pub(crate) fn load_source_graph_with_entry(path: &Path) -> Result<LoadedSourceGraph, CliError> {
     let program = load_source_program(path)?;
-    source_program_to_graph(&program, source_change_name(path))
+    let default_entry = source_default_entry(&program);
+    let graph = source_program_to_graph(&program, source_change_name(path))?;
+    Ok(LoadedSourceGraph {
+        graph,
+        default_entry,
+    })
 }
 
 pub(crate) fn cmd_check_source(mode: OutputMode, path: &Path) -> Result<(), CliError> {
     let program = load_source_program(path)?;
+    let default_entry = source_default_entry(&program);
     let graph = source_program_to_graph(&program, source_change_name(path))?;
     let item_count = program.imports.len()
         + program.capabilities.len()
@@ -72,10 +87,11 @@ pub(crate) fn cmd_check_source(mode: OutputMode, path: &Path) -> Result<(), CliE
         + program.tests.len()
         + program.grants.len();
     let human_msg = format!(
-        "AIL check: ok\nfile: {}\nitems: {item_count}\nfunctions: {}\ntests: {}\ngraph_nodes: {}\ngraph_edges: {}",
+        "AIL check: ok\nfile: {}\nitems: {item_count}\nfunctions: {}\ntests: {}\ndefault_entry: {}\ngraph_nodes: {}\ngraph_edges: {}",
         path.display(),
         program.functions.len(),
         program.tests.len(),
+        default_entry,
         graph.nodes.len(),
         graph.edges.len()
     );
@@ -86,6 +102,8 @@ pub(crate) fn cmd_check_source(mode: OutputMode, path: &Path) -> Result<(), CliE
             "language": "ail-source",
             "file": path.display().to_string(),
             "item_count": item_count,
+            "module": program.module.as_deref(),
+            "default_entry": default_entry,
             "imports": program.imports.len(),
             "capabilities": program.capabilities.len(),
             "functions": program.functions.len(),
@@ -285,6 +303,7 @@ fn load_source_program_from_text_inner(
 
     visiting.insert(canonical_path.clone());
     let program = parse_ail_source(src)?;
+    let root_module = program.module.clone();
     let mut combined = SourceProgram::default();
     for import in &program.imports {
         let import_path = resolve_source_import(&canonical_path, import);
@@ -292,6 +311,7 @@ fn load_source_program_from_text_inner(
         combined.extend(imported);
     }
     combined.extend(program);
+    combined.module = root_module;
     validate_source_program_symbols(&combined)?;
     validate_source_program_grants(&combined)?;
     validate_source_program_calls(&combined)?;
@@ -1456,6 +1476,14 @@ fn normalize_test_name(name: &str) -> String {
     } else {
         format!("test.{name}")
     }
+}
+
+fn source_default_entry(program: &SourceProgram) -> String {
+    program
+        .module
+        .as_deref()
+        .map(|module| format!("fn.{module}.main"))
+        .unwrap_or_else(|| "fn.main".to_string())
 }
 
 fn source_change_name(path: &Path) -> String {

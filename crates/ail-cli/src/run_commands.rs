@@ -31,7 +31,7 @@ use crate::cli::load_current_graph_for_cli;
 use crate::compile_commands::accepted_compile_report;
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
-use crate::source_commands::load_source_graph;
+use crate::source_commands::load_source_graph_with_entry;
 use crate::store::StoreHandle;
 use std::path::Path;
 
@@ -427,12 +427,14 @@ pub(crate) async fn cmd_run(
         ));
     }
 
-    let source_graph = source_file.map(load_source_graph).transpose()?;
-    let module_name = module.unwrap_or(if source_graph.is_some() {
-        "fn.main"
+    let source_graph = source_file.map(load_source_graph_with_entry).transpose()?;
+    let module_name = if let Some(module) = module {
+        module
+    } else if let Some(source) = source_graph.as_ref() {
+        source.default_entry.as_str()
     } else {
         "(default)"
-    });
+    };
 
     // Built-in targets have no associated semantic graph, so their runtime
     // capability requirements are empty by definition.  Project graph targets
@@ -444,8 +446,8 @@ pub(crate) async fn cmd_run(
             .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?;
         (artifact, vec![])
     } else {
-        let graph = if let Some(graph) = source_graph.as_ref() {
-            graph.clone()
+        let graph = if let Some(source) = source_graph.as_ref() {
+            source.graph.clone()
         } else {
             load_current_graph_for_cli(store).await?
         };
