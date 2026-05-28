@@ -490,23 +490,59 @@ fn validate_source_program_effect_calls(program: &SourceProgram) -> Result<(), C
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
+    let grants = source_grants_by_target(program);
 
     for function in &program.functions {
-        validate_source_expr_effect_calls(&function.body, &capabilities)?;
+        validate_source_item_effect_grants(&function.name, &function.body, &capabilities, &grants)?;
     }
     for test in &program.tests {
-        validate_source_expr_effect_calls(&test.body, &capabilities)?;
+        validate_source_item_effect_grants(&test.name, &test.body, &capabilities, &grants)?;
     }
     Ok(())
 }
 
-fn validate_source_expr_effect_calls(
+fn source_grants_by_target(program: &SourceProgram) -> BTreeMap<&str, BTreeSet<&str>> {
+    let mut grants = BTreeMap::<&str, BTreeSet<&str>>::new();
+    for grant in &program.grants {
+        grants
+            .entry(grant.target.as_str())
+            .or_default()
+            .insert(grant.capability.as_str());
+    }
+    grants
+}
+
+fn validate_source_item_effect_grants(
+    target: &str,
+    body: &str,
+    capabilities: &BTreeSet<&str>,
+    grants: &BTreeMap<&str, BTreeSet<&str>>,
+) -> Result<(), CliError> {
+    let mut direct_effects = BTreeSet::new();
+    collect_source_direct_effect_capabilities(body, capabilities, &mut direct_effects)?;
+    let granted = grants.get(target);
+    for capability in direct_effects {
+        if !granted.is_some_and(|caps| caps.contains(capability.as_str())) {
+            return Err(CliError::ParseError(format!(
+                "source item `{target}` uses capability `{capability}` without a grant"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn collect_source_direct_effect_capabilities(
     expr: &str,
     capabilities: &BTreeSet<&str>,
+    out: &mut BTreeSet<String>,
 ) -> Result<(), CliError> {
     let Some((func, args)) = parse_source_call(expr) else {
         return Ok(());
     };
+    if func == "print" {
+        validate_declared_source_effect_capability("log.write", capabilities, "print")?;
+        out.insert("log.write".to_string());
+    }
     if func == "effect_call" && args.len() >= 2 {
         let capability = args[0].as_str();
         let operation = args[1].as_str();
@@ -515,16 +551,30 @@ fn validate_source_expr_effect_calls(
                 "effect_call capability and operation must be identifiers".to_string(),
             ));
         }
-        if !capabilities.contains(capability) {
-            return Err(CliError::ParseError(format!(
-                "effect_call capability `{capability}` is not declared"
-            )));
+        validate_declared_source_effect_capability(capability, capabilities, "effect_call")?;
+        out.insert(capability.to_string());
+        for arg in &args[2..] {
+            collect_source_direct_effect_capabilities(arg, capabilities, out)?;
         }
+        return Ok(());
     }
     for arg in args {
-        validate_source_expr_effect_calls(&arg, capabilities)?;
+        collect_source_direct_effect_capabilities(&arg, capabilities, out)?;
     }
     Ok(())
+}
+
+fn validate_declared_source_effect_capability(
+    capability: &str,
+    capabilities: &BTreeSet<&str>,
+    context: &str,
+) -> Result<(), CliError> {
+    if capabilities.contains(capability) {
+        return Ok(());
+    }
+    Err(CliError::ParseError(format!(
+        "{context} capability `{capability}` is not declared"
+    )))
 }
 
 fn validate_source_program_calls(program: &SourceProgram) -> Result<(), CliError> {
