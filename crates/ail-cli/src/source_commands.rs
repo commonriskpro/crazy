@@ -602,12 +602,17 @@ fn validate_source_expr_vars(expr: &str, scope: &BTreeSet<&str>) -> Result<(), C
         }
         return Ok(());
     }
-    if is_source_ident(expr) && !scope.contains(expr) {
+    if is_source_ident(expr) {
+        if scope.contains(expr) {
+            return Ok(());
+        }
         return Err(CliError::ParseError(format!(
             "unknown variable `{expr}` in AIL source"
         )));
     }
-    Ok(())
+    Err(CliError::ParseError(format!(
+        "unsupported source expression `{expr}`"
+    )))
 }
 
 fn is_source_literal(expr: &str) -> bool {
@@ -665,7 +670,9 @@ fn infer_source_expr_type(
         return Ok(ty.clone());
     }
     let Some((func, args)) = parse_source_call(expr) else {
-        return Ok("Unknown".to_string());
+        return Err(CliError::ParseError(format!(
+            "unsupported source expression `{expr}`"
+        )));
     };
     infer_source_call_type(&func, &args, scope, functions)
 }
