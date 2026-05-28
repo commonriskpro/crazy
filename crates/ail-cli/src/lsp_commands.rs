@@ -6,7 +6,7 @@
 // initialize the server and receive parser/op-schema diagnostics for ACL text
 // plus parser diagnostics for the validation-stage `.ail` source surface.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
 
@@ -607,6 +607,12 @@ fn definition_for_token(uri: &str, text: &str, token: &str) -> Value {
         return Value::Null;
     }
 
+    if is_ail_source_uri(uri)
+        && let Some(definition) = definition_for_ail_source_token(uri, text, token)
+    {
+        return definition;
+    }
+
     for (line_idx, line) in text.lines().enumerate() {
         let needle = format!("id={token}");
         if let Some(start) = line.find(&needle).map(|idx| idx + "id=".len()) {
@@ -620,6 +626,100 @@ fn definition_for_token(uri: &str, text: &str, token: &str) -> Value {
         }
     }
     Value::Null
+}
+
+fn definition_for_ail_source_token(uri: &str, text: &str, token: &str) -> Option<Value> {
+    let token = token.strip_prefix("fn.").unwrap_or(token);
+    if let Some(definition) = source_function_definition_in_text(uri, text, token) {
+        return Some(definition);
+    }
+
+    let root_path = file_path_from_uri(uri)?;
+    let canonical_root = std::fs::canonicalize(&root_path).ok()?;
+    let mut visited = BTreeSet::new();
+    visited.insert(canonical_root.clone());
+    definition_for_ail_source_imports(&canonical_root, text, token, &mut visited)
+}
+
+fn definition_for_ail_source_imports(
+    source_path: &std::path::Path,
+    text: &str,
+    token: &str,
+    visited: &mut BTreeSet<PathBuf>,
+) -> Option<Value> {
+    for import in source_imports_from_text(text) {
+        let path = resolve_lsp_source_import(source_path, &import);
+        let Ok(canonical) = std::fs::canonicalize(&path) else {
+            continue;
+        };
+        if !visited.insert(canonical.clone()) {
+            continue;
+        }
+        let Ok(imported_text) = std::fs::read_to_string(&canonical) else {
+            continue;
+        };
+        let imported_uri = format!("file://{}", canonical.display());
+        if let Some(definition) =
+            source_function_definition_in_text(&imported_uri, &imported_text, token)
+        {
+            return Some(definition);
+        }
+        if let Some(definition) =
+            definition_for_ail_source_imports(&canonical, &imported_text, token, visited)
+        {
+            return Some(definition);
+        }
+    }
+    None
+}
+
+fn source_function_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
+    for (line_idx, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("fn ") else {
+            continue;
+        };
+        let Some(name_end) = rest.find('(') else {
+            continue;
+        };
+        let name = rest[..name_end].trim();
+        if name == token || name.strip_prefix("fn.") == Some(token) {
+            let leading = line.len() - trimmed.len();
+            let start = leading + "fn ".len();
+            return Some(json!({
+                "uri": uri,
+                "range": {
+                    "start": { "line": line_idx, "character": start },
+                    "end": { "line": line_idx, "character": start + name.len() }
+                }
+            }));
+        }
+    }
+    None
+}
+
+fn source_imports_from_text(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let rest = trimmed.strip_prefix("use ")?;
+            rest.trim()
+                .strip_prefix('"')
+                .and_then(|value| value.split_once('"').map(|(import, _)| import.to_string()))
+        })
+        .collect()
+}
+
+fn resolve_lsp_source_import(source_path: &std::path::Path, import: &str) -> PathBuf {
+    let import_path = std::path::Path::new(import);
+    if import_path.is_absolute() {
+        import_path.to_path_buf()
+    } else {
+        source_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(import_path)
+    }
 }
 
 fn references_for_token(uri: &str, text: &str, token: &str) -> Vec<Value> {

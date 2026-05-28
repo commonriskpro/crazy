@@ -595,6 +595,40 @@ end
 }
 
 #[test]
+fn lsp_definition_resolves_ail_source_imported_function() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let math = dir.child("math.ail");
+    math.write_str("fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
+        .expect("imported source fixture must be written");
+    let main = dir.child("main.ail");
+    main.write_str("use \"./math.ail\"\nfn main() -> Int = add_pair(20, 22)\n")
+        .expect("main source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--definition-token", "add_pair", "--definition-file"])
+        .arg(main.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["token"], "add_pair");
+    assert_eq!(v["data"]["definition"]["range"]["start"]["line"], 0);
+    assert_eq!(v["data"]["definition"]["range"]["start"]["character"], 3);
+    assert!(
+        v["data"]["definition"]["uri"]
+            .as_str()
+            .expect("definition uri")
+            .ends_with("math.ail")
+    );
+}
+
+#[test]
 fn lsp_references_find_same_file_acl_identifier_uses() {
     use assert_fs::prelude::*;
 
