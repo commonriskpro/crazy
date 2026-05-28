@@ -315,6 +315,7 @@ fn load_source_program_from_text_inner(
     validate_source_program_symbols(&combined)?;
     validate_source_program_grants(&combined)?;
     validate_source_program_calls(&combined)?;
+    validate_source_program_effect_calls(&combined)?;
     validate_source_program_types(&combined)?;
     visiting.remove(&canonical_path);
     Ok(combined)
@@ -483,6 +484,49 @@ fn validate_source_program_grants(program: &SourceProgram) -> Result<(), CliErro
     Ok(())
 }
 
+fn validate_source_program_effect_calls(program: &SourceProgram) -> Result<(), CliError> {
+    let capabilities = program
+        .capabilities
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+
+    for function in &program.functions {
+        validate_source_expr_effect_calls(&function.body, &capabilities)?;
+    }
+    for test in &program.tests {
+        validate_source_expr_effect_calls(&test.body, &capabilities)?;
+    }
+    Ok(())
+}
+
+fn validate_source_expr_effect_calls(
+    expr: &str,
+    capabilities: &BTreeSet<&str>,
+) -> Result<(), CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(());
+    };
+    if func == "effect_call" && args.len() >= 2 {
+        let capability = args[0].as_str();
+        let operation = args[1].as_str();
+        if !is_source_ident(capability) || !is_source_ident(operation) {
+            return Err(CliError::ParseError(
+                "effect_call capability and operation must be identifiers".to_string(),
+            ));
+        }
+        if !capabilities.contains(capability) {
+            return Err(CliError::ParseError(format!(
+                "effect_call capability `{capability}` is not declared"
+            )));
+        }
+    }
+    for arg in args {
+        validate_source_expr_effect_calls(&arg, capabilities)?;
+    }
+    Ok(())
+}
+
 fn validate_source_program_calls(program: &SourceProgram) -> Result<(), CliError> {
     let functions = program
         .functions
@@ -552,6 +596,7 @@ fn source_function_arity(functions: &BTreeMap<&str, usize>, call: &str) -> Optio
 #[derive(Debug, Clone, Copy)]
 enum SourceArity {
     Exact(usize),
+    Min(usize),
     Even,
     Any,
 }
@@ -564,6 +609,9 @@ fn validate_source_call_arity(
     match arity {
         SourceArity::Exact(expected) if actual != expected => Err(CliError::ParseError(format!(
             "function call `{call}` expects {expected} argument(s), got {actual}"
+        ))),
+        SourceArity::Min(expected) if actual < expected => Err(CliError::ParseError(format!(
+            "function call `{call}` expects at least {expected} argument(s), got {actual}"
         ))),
         SourceArity::Even if !actual.is_multiple_of(2) => Err(CliError::ParseError(format!(
             "function call `{call}` expects an even number of arguments, got {actual}"
@@ -578,6 +626,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
         "not" | "len" | "print" | "Var" => SourceArity::Exact(1),
         "if" | "let" | "fold" => SourceArity::Exact(3),
+        "effect_call" => SourceArity::Min(2),
         "map" | "record" => SourceArity::Even,
         "tuple" | "list" | "set" | "match" => SourceArity::Any,
         _ => return None,
@@ -597,7 +646,12 @@ fn validate_source_expr_vars(expr: &str, scope: &BTreeSet<&str>) -> Result<(), C
             inner_scope.insert(args[0].as_str());
             return validate_source_expr_vars(&args[2], &inner_scope);
         }
-        for arg in &args {
+        let args_to_validate: &[String] = if func == "effect_call" && args.len() >= 2 {
+            &args[2..]
+        } else {
+            &args
+        };
+        for arg in args_to_validate {
             validate_source_expr_vars(arg, scope)?;
         }
         return Ok(());
@@ -730,6 +784,12 @@ fn infer_source_call_type(
         }
         "print" => {
             validate_source_arg_types(func, args, scope, functions, &["Text"])?;
+            Ok("Int".to_string())
+        }
+        "effect_call" => {
+            for arg in &args[2..] {
+                infer_source_expr_type(arg, scope, functions)?;
+            }
             Ok("Int".to_string())
         }
         _ => {

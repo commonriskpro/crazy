@@ -285,6 +285,38 @@ grant print_hello log.write
 }
 
 #[test]
+fn run_file_executes_explicit_ail_source_effect_call() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("effect.ail");
+    source
+        .write_str(
+            r#"capability log.write
+fn emit() -> Int = effect_call(log.write, write, "Hello from effect_call!")
+grant emit log.write
+"#,
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--grant",
+            "log.write",
+            "fn.emit",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.emit"))
+        .stdout(predicate::str::contains("output:\nHello from effect_call!"))
+        .stdout(predicate::str::contains("result: 0"));
+}
+
+#[test]
 fn run_file_uses_source_module_main_entry_by_default() {
     use assert_fs::prelude::*;
 
@@ -798,6 +830,38 @@ fn lsp_diagnose_reports_ail_source_unknown_grant_capability() {
             .as_str()
             .expect("diagnostic message")
             .contains("grant capability `log.write` is not declared")
+    );
+}
+
+#[test]
+fn lsp_diagnose_reports_ail_source_unknown_effect_call_capability() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int = effect_call(log.write, write, \"hi\")\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("effect_call capability `log.write` is not declared")
     );
 }
 
