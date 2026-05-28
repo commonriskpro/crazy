@@ -562,6 +562,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "fn ${1:name}(${2:x}: ${3:Int}) -> ${4:Int} = ${5:add(x, 1)}",
     },
     AclSymbol {
+        label: "const",
+        detail: "AIL source constant",
+        documentation: "Declares a typed top-level source constant, lowered as a zero-argument semantic function.",
+        insert_text: "const ${1:name}: ${2:Int} = ${3:42}",
+    },
+    AclSymbol {
         label: "test",
         detail: "AIL source test",
         documentation: "Declares an executable source test that `ail test --file` can discover and run.",
@@ -885,6 +891,7 @@ fn definition_for_ail_source_imports(
 
 fn source_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
     source_function_definition_in_text(uri, text, token)
+        .or_else(|| source_const_definition_in_text(uri, text, token))
         .or_else(|| source_test_definition_in_text(uri, text, token))
         .or_else(|| source_capability_definition_in_text(uri, text, token))
 }
@@ -903,6 +910,32 @@ fn source_function_definition_in_text(uri: &str, text: &str, token: &str) -> Opt
         if source_decl_name_matches_token(name, module.as_deref(), token, "fn.") {
             let leading = line.len() - trimmed.len();
             let start = leading + "fn ".len();
+            return Some(json!({
+                "uri": uri,
+                "range": {
+                    "start": { "line": line_idx, "character": start },
+                    "end": { "line": line_idx, "character": start + name.len() }
+                }
+            }));
+        }
+    }
+    None
+}
+
+fn source_const_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
+    let module = source_module_from_text(text);
+    for (line_idx, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("const ") else {
+            continue;
+        };
+        let Some(name_end) = rest.find(':') else {
+            continue;
+        };
+        let name = rest[..name_end].trim();
+        if source_decl_name_matches_token(name, module.as_deref(), token, "fn.") {
+            let leading = line.len() - trimmed.len();
+            let start = leading + "const ".len();
             return Some(json!({
                 "uri": uri,
                 "range": {

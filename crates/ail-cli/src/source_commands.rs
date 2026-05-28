@@ -25,9 +25,18 @@ pub(crate) struct SourceProgram {
     module: Option<String>,
     imports: Vec<String>,
     capabilities: Vec<String>,
+    constants: Vec<SourceConst>,
     functions: Vec<SourceFunction>,
     tests: Vec<SourceTest>,
     grants: Vec<SourceGrant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceConst {
+    name: String,
+    return_type: String,
+    body: String,
+    line_num: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +68,12 @@ struct SourceGrant {
     capability: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceCallable {
+    param_types: Vec<String>,
+    return_type: String,
+}
+
 pub(crate) struct LoadedSourceGraph {
     pub(crate) graph: SemanticGraph,
     pub(crate) default_entry: String,
@@ -85,6 +100,7 @@ pub(crate) fn cmd_check_source(mode: OutputMode, path: &Path) -> Result<(), CliE
     let graph = source_program_to_graph(&program, source_change_name(path))?;
     let item_count = program.imports.len()
         + program.capabilities.len()
+        + program.constants.len()
         + program.functions.len()
         + program.tests.len()
         + program.grants.len();
@@ -132,6 +148,9 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
     for capability in &program.capabilities {
         render_source_capability(&mut out, capability);
     }
+    for constant in &program.constants {
+        render_source_const(&mut out, constant, program.module.as_deref());
+    }
     for function in &program.functions {
         render_source_function(&mut out, function, program.module.as_deref());
     }
@@ -147,6 +166,7 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
         usize::from(program.module.is_some())
             + program.imports.len()
             + program.capabilities.len()
+            + program.constants.len()
             + program.functions.len()
             + program.tests.len()
             + program.grants.len(),
@@ -174,6 +194,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
     let mut module = None;
     let mut imports = Vec::new();
     let mut capabilities = Vec::new();
+    let mut constants = Vec::new();
     let mut functions = Vec::new();
     let mut tests = Vec::new();
     let mut grants = Vec::new();
@@ -198,6 +219,8 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
             imports.push(parse_source_import(rest, *line_num)?);
         } else if let Some(rest) = statement.strip_prefix("capability ") {
             capabilities.push(parse_source_capability(rest, *line_num)?);
+        } else if let Some(rest) = statement.strip_prefix("const ") {
+            constants.push(parse_source_const(rest, *line_num)?);
         } else if let Some(rest) = statement.strip_prefix("fn ") {
             if rest.trim_end().ends_with('{') {
                 let header = rest.trim_end().trim_end_matches('{').trim();
@@ -214,7 +237,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
             grants.push(parse_source_grant(rest, *line_num)?);
         } else {
             return Err(CliError::ParseError(format!(
-                "line {line_num}: expected `module`, `use`, `capability`, `fn`, `test`, or `grant`, got `{statement}`"
+                "line {line_num}: expected `module`, `use`, `capability`, `const`, `fn`, `test`, or `grant`, got `{statement}`"
             )));
         }
         idx += 1;
@@ -222,6 +245,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
 
     if imports.is_empty()
         && capabilities.is_empty()
+        && constants.is_empty()
         && module.is_none()
         && functions.is_empty()
         && tests.is_empty()
@@ -236,6 +260,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
         module,
         imports,
         capabilities,
+        constants,
         functions,
         tests,
         grants,
@@ -341,6 +366,7 @@ impl SourceProgram {
     fn extend(&mut self, other: SourceProgram) {
         self.imports.extend(other.imports);
         self.capabilities.extend(other.capabilities);
+        self.constants.extend(other.constants);
         self.functions.extend(other.functions);
         self.tests.extend(other.tests);
         self.grants.extend(other.grants);
@@ -356,8 +382,18 @@ fn qualify_source_program_module(program: &mut SourceProgram) {
         .functions
         .iter()
         .filter_map(|function| unqualified_source_name(&function.name, "fn."))
+        .chain(
+            program
+                .constants
+                .iter()
+                .filter_map(|constant| unqualified_source_name(&constant.name, "fn.")),
+        )
         .collect::<BTreeSet<_>>();
 
+    for constant in &mut program.constants {
+        constant.name = qualify_source_name(&constant.name, "fn.", &module);
+        constant.body = qualify_source_expr_calls(&constant.body, &module, &local_functions);
+    }
     for function in &mut program.functions {
         function.name = qualify_source_name(&function.name, "fn.", &module);
         function.body = qualify_source_expr_calls(&function.body, &module, &local_functions);
@@ -526,6 +562,31 @@ fn validate_source_program_symbols(program: &SourceProgram) -> Result<(), CliErr
     }
     if let Some(name) = duplicate_name(
         program
+            .constants
+            .iter()
+            .map(|constant| constant.name.as_str()),
+    ) {
+        return Err(CliError::ParseError(format!(
+            "duplicate const declaration `{name}`"
+        )));
+    }
+    let function_names = program
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect::<BTreeSet<_>>();
+    if let Some(name) = program
+        .constants
+        .iter()
+        .map(|constant| constant.name.as_str())
+        .find(|name| function_names.contains(name))
+    {
+        return Err(CliError::ParseError(format!(
+            "duplicate function or const declaration `{name}`"
+        )));
+    }
+    if let Some(name) = duplicate_name(
+        program
             .functions
             .iter()
             .map(|function| function.name.as_str()),
@@ -538,6 +599,14 @@ fn validate_source_program_symbols(program: &SourceProgram) -> Result<(), CliErr
         return Err(CliError::ParseError(format!(
             "duplicate test declaration `{name}`"
         )));
+    }
+    for constant in &program.constants {
+        if let Some(builtin) = source_function_builtin_shadow(&constant.name) {
+            return Err(CliError::ParseError(format!(
+                "const declaration `{}` shadows builtin `{builtin}`",
+                constant.name
+            )));
+        }
     }
     for function in &program.functions {
         if let Some(builtin) = source_function_builtin_shadow(&function.name) {
@@ -603,6 +672,10 @@ fn validate_source_program_effect_calls(program: &SourceProgram) -> Result<(), C
         .collect::<BTreeSet<_>>();
     let grants = source_grants_by_target(program);
 
+    for constant in &program.constants {
+        validate_source_const_effect_free(&constant.name, &constant.body, &capabilities)
+            .map_err(|err| source_error_at_line(err, constant.line_num))?;
+    }
     for function in &program.functions {
         validate_source_item_effect_grants(&function.name, &function.body, &capabilities, &grants)
             .map_err(|err| source_error_at_line(err, function.line_num))?;
@@ -610,6 +683,21 @@ fn validate_source_program_effect_calls(program: &SourceProgram) -> Result<(), C
     for test in &program.tests {
         validate_source_item_effect_grants(&test.name, &test.body, &capabilities, &grants)
             .map_err(|err| source_error_at_line(err, test.line_num))?;
+    }
+    Ok(())
+}
+
+fn validate_source_const_effect_free(
+    target: &str,
+    body: &str,
+    capabilities: &BTreeSet<&str>,
+) -> Result<(), CliError> {
+    let mut direct_effects = BTreeSet::new();
+    collect_source_direct_effect_capabilities(body, capabilities, &mut direct_effects)?;
+    if let Some(capability) = direct_effects.into_iter().next() {
+        return Err(CliError::ParseError(format!(
+            "source const `{target}` uses capability `{capability}`; const declarations must be effect-free"
+        )));
     }
     Ok(())
 }
@@ -695,8 +783,20 @@ fn validate_source_program_calls(program: &SourceProgram) -> Result<(), CliError
         .functions
         .iter()
         .map(|function| (function.name.as_str(), function.params.len()))
+        .chain(
+            program
+                .constants
+                .iter()
+                .map(|constant| (constant.name.as_str(), 0usize)),
+        )
         .collect::<BTreeMap<_, _>>();
 
+    for constant in &program.constants {
+        validate_source_expr_calls(&constant.body, &functions)
+            .map_err(|err| source_error_at_line(err, constant.line_num))?;
+        validate_source_expr_vars(&constant.body, &BTreeSet::new())
+            .map_err(|err| source_error_at_line(err, constant.line_num))?;
+    }
     for function in &program.functions {
         validate_source_expr_calls(&function.body, &functions)
             .map_err(|err| source_error_at_line(err, function.line_num))?;
@@ -912,12 +1012,15 @@ fn is_source_string_literal(expr: &str) -> bool {
 }
 
 fn validate_source_program_types(program: &SourceProgram) -> Result<(), CliError> {
-    let functions = program
-        .functions
-        .iter()
-        .map(|function| (function.name.as_str(), function))
-        .collect::<BTreeMap<_, _>>();
+    let functions = source_callable_types(program);
 
+    for constant in &program.constants {
+        let mut scope = BTreeMap::new();
+        let inferred = infer_source_expr_type(&constant.body, &mut scope, &functions)
+            .map_err(|err| source_error_at_line(err, constant.line_num))?;
+        validate_source_type_match(&constant.return_type, &inferred, &constant.name)
+            .map_err(|err| source_error_at_line(err, constant.line_num))?;
+    }
     for function in &program.functions {
         let mut scope = function
             .params
@@ -939,10 +1042,39 @@ fn validate_source_program_types(program: &SourceProgram) -> Result<(), CliError
     Ok(())
 }
 
+fn source_callable_types(program: &SourceProgram) -> BTreeMap<&str, SourceCallable> {
+    program
+        .constants
+        .iter()
+        .map(|constant| {
+            (
+                constant.name.as_str(),
+                SourceCallable {
+                    param_types: vec![],
+                    return_type: constant.return_type.clone(),
+                },
+            )
+        })
+        .chain(program.functions.iter().map(|function| {
+            (
+                function.name.as_str(),
+                SourceCallable {
+                    param_types: function
+                        .params
+                        .iter()
+                        .map(|param| param.ty.clone())
+                        .collect(),
+                    return_type: function.return_type.clone(),
+                },
+            )
+        }))
+        .collect()
+}
+
 fn infer_source_expr_type(
     expr: &str,
     scope: &mut BTreeMap<String, String>,
-    functions: &BTreeMap<&str, &SourceFunction>,
+    functions: &BTreeMap<&str, SourceCallable>,
 ) -> Result<String, CliError> {
     let expr = expr.trim();
     if expr == "true" || expr == "false" {
@@ -982,7 +1114,7 @@ fn infer_source_call_type(
     func: &str,
     args: &[String],
     scope: &mut BTreeMap<String, String>,
-    functions: &BTreeMap<&str, &SourceFunction>,
+    functions: &BTreeMap<&str, SourceCallable>,
 ) -> Result<String, CliError> {
     match func {
         "let" if args.len() == 3 => {
@@ -1068,9 +1200,9 @@ fn infer_source_call_type(
             };
             if let Some(function) = functions.get(normalized.as_str()) {
                 let expected = function
-                    .params
+                    .param_types
                     .iter()
-                    .map(|param| param.ty.as_str())
+                    .map(String::as_str)
                     .collect::<Vec<_>>();
                 validate_source_arg_types(func, args, scope, functions, &expected)?;
                 return Ok(function.return_type.clone());
@@ -1091,7 +1223,7 @@ fn validate_source_arg_types(
     call: &str,
     args: &[String],
     scope: &mut BTreeMap<String, String>,
-    functions: &BTreeMap<&str, &SourceFunction>,
+    functions: &BTreeMap<&str, SourceCallable>,
     expected: &[&str],
 ) -> Result<(), CliError> {
     for (idx, expected_ty) in expected.iter().enumerate() {
@@ -1182,6 +1314,14 @@ base 0\n"
     for capability in &program.capabilities {
         acl.push_str(&format!("op create_capability id={capability}\n"));
     }
+    for constant in &program.constants {
+        acl.push_str(&format!(
+            "op create_function id={} return={} body={}\n",
+            constant.name,
+            constant.return_type,
+            source_expr_to_acl_body(&constant.body)
+        ));
+    }
     for function in &program.functions {
         acl.push_str(&format!(
             "op create_function id={} return={} body={}\n",
@@ -1246,6 +1386,18 @@ fn render_source_module(out: &mut String, module: &str) {
 
 fn render_source_capability(out: &mut String, capability: &str) {
     out.push_str(&format!("capability {capability}\n"));
+}
+
+fn render_source_const(out: &mut String, constant: &SourceConst, module: Option<&str>) {
+    let name = render_source_decl_name(
+        constant.name.strip_prefix("fn.").unwrap_or(&constant.name),
+        module,
+    );
+    out.push_str(&format!(
+        "const {name}: {} = {}\n",
+        constant.return_type,
+        format_source_expr(&constant.body, module)
+    ));
 }
 
 fn render_source_function(out: &mut String, function: &SourceFunction, module: Option<&str>) {
@@ -1683,6 +1835,35 @@ fn parse_source_capability(rest: &str, line_num: usize) -> Result<String, CliErr
     let capability = rest.trim();
     validate_source_name(capability, line_num)?;
     Ok(capability.to_string())
+}
+
+fn parse_source_const(rest: &str, line_num: usize) -> Result<SourceConst, CliError> {
+    let (head, body) = rest.split_once('=').ok_or_else(|| {
+        CliError::ParseError(format!(
+            "line {line_num}: const declaration requires `= body`"
+        ))
+    })?;
+    let (name, return_type) = head.split_once(':').ok_or_else(|| {
+        CliError::ParseError(format!(
+            "line {line_num}: const declaration requires `name: Type`"
+        ))
+    })?;
+    let name = name.trim();
+    let return_type = return_type.trim();
+    let body = body.trim();
+    validate_source_name(name, line_num)?;
+    validate_source_type_name(return_type, line_num)?;
+    if body.is_empty() {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: const body must be non-empty"
+        )));
+    }
+    Ok(SourceConst {
+        name: normalize_function_name(name),
+        return_type: return_type.to_string(),
+        body: lower_source_expr(body, line_num)?,
+        line_num,
+    })
 }
 
 fn parse_source_function(rest: &str, line_num: usize) -> Result<SourceFunction, CliError> {
@@ -2418,6 +2599,20 @@ test main_addition = eq(add(20, 22), 42);
 
         assert!(acl.contains("op create_function id=fn.main return=Int body=add(20, 22)"));
         assert!(acl.contains("op create_test id=test.add return=Bool body=eq(add(20, 22), 42)"));
+    }
+
+    #[test]
+    fn lowers_source_consts_to_zero_arg_functions() {
+        let program = parse_ail_source(
+            "const answer: Int = 40 + 2\nfn main() -> Int = answer()\ntest answer = answer() == 42",
+        )
+        .expect("source must parse");
+        let acl = source_program_to_acl(&program, "source_const".to_string());
+
+        assert_eq!(program.constants[0].name, "fn.answer");
+        assert!(acl.contains("op create_function id=fn.answer return=Int body=add(40, 2)"));
+        assert!(acl.contains("op create_function id=fn.main return=Int body=answer()"));
+        assert!(acl.contains("op create_test id=test.answer return=Bool body=eq(answer(), 42)"));
     }
 
     #[test]

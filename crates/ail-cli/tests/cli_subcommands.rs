@@ -526,6 +526,24 @@ fn compile_file_accepts_source_typed_let_annotations() {
 }
 
 #[test]
+fn compile_file_accepts_source_consts() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("consts.ail");
+    source
+        .write_str("const answer: Int = 40 + 2\nfn main() -> Int = answer()\ntest answer = answer() == 42\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
 fn compile_file_rejects_source_typed_let_mismatch() {
     use assert_fs::prelude::*;
 
@@ -2062,6 +2080,32 @@ fn lsp_diagnose_accepts_source_typed_let_annotations() {
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_consts() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("const answer: Int = 40 + 2\nfn main() -> Int = answer()\ntest answer = answer() == 42\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_completion_covers_source_typed_let_annotations() {
     let completion_output = ail()
         .args(["lsp", "--complete", "let", "--json"])
@@ -2081,6 +2125,29 @@ fn lsp_completion_covers_source_typed_let_annotations() {
                 .expect("insertText")
                 .contains("let ${1:name}: ${2:Int} = ${3:value}")),
         "completion must include typed let snippet; got: {items:?}"
+    );
+}
+
+#[test]
+fn lsp_completion_covers_source_consts() {
+    let completion_output = ail()
+        .args(["lsp", "--complete", "const", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let completion = parse_json_output(&completion_output);
+    assert_eq!(completion["status"], "ok");
+    let items = completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        items.iter().any(|item| item["label"] == "const"
+            && item["insertText"]
+                .as_str()
+                .expect("insertText")
+                .contains("const ${1:name}: ${2:Int} = ${3:42}")),
+        "completion must include const snippet; got: {items:?}"
     );
 }
 
@@ -3157,6 +3224,32 @@ fn main() -> Int = effect_call(log.write, write, \"hi\")\n",
             .expect("definition uri")
             .ends_with("main.ail")
     );
+}
+
+#[test]
+fn lsp_definition_resolves_ail_source_const() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("const answer: Int = 42\nfn main() -> Int = answer()\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--definition-token", "answer", "--definition-file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["token"], "answer");
+    assert_eq!(v["data"]["definition"]["range"]["start"]["line"], 0);
+    assert_eq!(v["data"]["definition"]["range"]["start"]["character"], 6);
 }
 
 #[test]
@@ -4612,7 +4705,8 @@ fn fmt_file_json_outputs_canonical_ail_source() {
     let source = dir.child("main.ail");
     source
         .write_str(
-            "fn add_pair(x:Int,y:Int)->Int=add(x,y)\n\
+            "const answer:Int=40+2\n\
+fn add_pair(x:Int,y:Int)->Int=add(x,y)\n\
 fn main()->Int{\n\
 let base:Int=add(20,20)\n\
 return if gt(base,40){add(base,2)} else {0}\n\
@@ -4633,10 +4727,11 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["language"], "ail-source");
-    assert_eq!(v["data"]["item_count"], 3);
+    assert_eq!(v["data"]["item_count"], 4);
     let formatted = v["data"]["formatted"]
         .as_str()
         .expect("formatted must be string");
+    assert!(formatted.contains("const answer: Int = 40 + 2\n"));
     assert!(formatted.contains("fn add_pair(x: Int, y: Int) -> Int = x + y\n"));
     assert!(formatted.contains("fn main() -> Int {\n"));
     assert!(formatted.contains("  let base: Int = 20 + 20\n"));
