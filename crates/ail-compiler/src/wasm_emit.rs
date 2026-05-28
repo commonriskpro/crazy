@@ -674,8 +674,11 @@ fn emit_text_parse_int_or<'a>(
 
     let idx = ctx.bind_temp(ValType::I32);
     let byte = ctx.bind_temp(ValType::I32);
+    let digit = ctx.bind_temp(ValType::I64);
     let parsed = ctx.bind_temp(ValType::I64);
     let sign = ctx.bind_temp(ValType::I64);
+    let max_last_digit = ctx.bind_temp(ValType::I64);
+    let overflow = ctx.bind_temp(ValType::I64);
     let valid = ctx.bind_temp(ValType::I64);
     let saw_digit = ctx.bind_temp(ValType::I64);
     let result = ctx.bind_temp(ValType::I64);
@@ -688,6 +691,8 @@ fn emit_text_parse_int_or<'a>(
     insns.push(Instruction::LocalSet(parsed));
     insns.push(Instruction::I64Const(1));
     insns.push(Instruction::LocalSet(sign));
+    insns.push(Instruction::I64Const(7));
+    insns.push(Instruction::LocalSet(max_last_digit));
     insns.push(Instruction::I64Const(1));
     insns.push(Instruction::LocalSet(valid));
     insns.push(Instruction::I64Const(0));
@@ -718,6 +723,14 @@ fn emit_text_parse_int_or<'a>(
     insns.push(Instruction::I32Const(1));
     insns.push(Instruction::LocalSet(idx));
     insns.push(Instruction::End);
+    insns.push(Instruction::End);
+
+    insns.push(Instruction::LocalGet(sign));
+    insns.push(Instruction::I64Const(-1));
+    insns.push(Instruction::I64Eq);
+    insns.push(Instruction::If(BlockType::Empty));
+    insns.push(Instruction::I64Const(8));
+    insns.push(Instruction::LocalSet(max_last_digit));
     insns.push(Instruction::End);
 
     insns.push(Instruction::LocalGet(idx));
@@ -757,13 +770,49 @@ fn emit_text_parse_int_or<'a>(
     insns.push(Instruction::Br(2));
     insns.push(Instruction::End);
 
-    insns.push(Instruction::LocalGet(parsed));
-    insns.push(Instruction::I64Const(10));
-    insns.push(Instruction::I64Mul);
     insns.push(Instruction::LocalGet(byte));
     insns.push(Instruction::I32Const(48));
     insns.push(Instruction::I32Sub);
     insns.push(Instruction::I64ExtendI32U);
+    insns.push(Instruction::LocalSet(digit));
+
+    insns.push(Instruction::I64Const(0));
+    insns.push(Instruction::LocalSet(overflow));
+
+    insns.push(Instruction::LocalGet(parsed));
+    insns.push(Instruction::I64Const(922337203685477580));
+    insns.push(Instruction::I64GtS);
+    insns.push(Instruction::If(BlockType::Empty));
+    insns.push(Instruction::I64Const(1));
+    insns.push(Instruction::LocalSet(overflow));
+    insns.push(Instruction::End);
+
+    insns.push(Instruction::LocalGet(parsed));
+    insns.push(Instruction::I64Const(922337203685477580));
+    insns.push(Instruction::I64Eq);
+    insns.push(Instruction::If(BlockType::Empty));
+    insns.push(Instruction::LocalGet(digit));
+    insns.push(Instruction::LocalGet(max_last_digit));
+    insns.push(Instruction::I64GtS);
+    insns.push(Instruction::If(BlockType::Empty));
+    insns.push(Instruction::I64Const(1));
+    insns.push(Instruction::LocalSet(overflow));
+    insns.push(Instruction::End);
+    insns.push(Instruction::End);
+
+    insns.push(Instruction::LocalGet(overflow));
+    insns.push(Instruction::I64Const(0));
+    insns.push(Instruction::I64Ne);
+    insns.push(Instruction::If(BlockType::Empty));
+    insns.push(Instruction::I64Const(0));
+    insns.push(Instruction::LocalSet(valid));
+    insns.push(Instruction::Br(2));
+    insns.push(Instruction::End);
+
+    insns.push(Instruction::LocalGet(parsed));
+    insns.push(Instruction::I64Const(10));
+    insns.push(Instruction::I64Mul);
+    insns.push(Instruction::LocalGet(digit));
     insns.push(Instruction::I64Add);
     insns.push(Instruction::LocalSet(parsed));
 

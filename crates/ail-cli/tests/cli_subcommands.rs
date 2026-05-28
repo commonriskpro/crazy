@@ -372,6 +372,30 @@ fn run_file_executes_ail_source_text_parse_int_or_helper() {
 }
 
 #[test]
+fn run_file_executes_ail_source_text_parse_int_or_overflow_fallback() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("text_parse_int_or_overflow.ail");
+    source
+        .write_str("fn parsed() -> Int = text_parse_int_or(\"9223372036854775808\", -1)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.parsed",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.parsed"))
+        .stdout(predicate::str::contains("result: -1"));
+}
+
+#[test]
 fn run_file_executes_ail_source_text_contains_helper() {
     use assert_fs::prelude::*;
 
