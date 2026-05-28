@@ -1013,6 +1013,48 @@ fn compile_file_rejects_source_unwrap_or_fallback_mismatch() {
 }
 
 #[test]
+fn compile_file_accepts_source_option_predicate_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("option_predicates.ail");
+    source
+        .write_str(
+            "fn has_value(input: Option<Int>) -> Bool = is_some(input)\n\
+fn missing(input: Option<Int>) -> Bool = is_none(input)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_option_predicate_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_option_predicate.ail");
+    source
+        .write_str("fn has_value(input: Result<Int, Text>) -> Bool = is_some(input)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in match pattern `Some(_)`: expected Option<Unknown>",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_source_match_arm_type_mismatch() {
     use assert_fs::prelude::*;
 
@@ -2920,6 +2962,35 @@ fn lsp_diagnose_accepts_source_unwrap_or_helper() {
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_option_predicate_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn has_value(input: Option<Int>) -> Bool = is_some(input)\n\
+fn missing(input: Option<Int>) -> Bool = is_none(input)\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_reports_non_exhaustive_source_match() {
     use assert_fs::prelude::*;
 
@@ -4173,6 +4244,28 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             |item| item["label"] == "unwrap_or" && item["detail"] == "AIL source Option helper"
         ),
         "completion must include AIL source unwrap_or helper; got: {unwrap_or_items:?}"
+    );
+
+    let option_predicate_completion_output = ail()
+        .args(["lsp", "--complete", "is_", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let option_predicate_completion = parse_json_output(&option_predicate_completion_output);
+    let option_predicate_items = option_predicate_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        option_predicate_items
+            .iter()
+            .any(|item| item["label"] == "is_some"
+                && item["detail"] == "AIL source Option predicate")
+            && option_predicate_items
+                .iter()
+                .any(|item| item["label"] == "is_none"
+                    && item["detail"] == "AIL source Option predicate"),
+        "completion must include AIL source Option predicates; got: {option_predicate_items:?}"
     );
 }
 

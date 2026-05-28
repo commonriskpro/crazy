@@ -944,7 +944,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "field" | "index" | "unwrap_or" => SourceArity::Exact(2),
         "update" => SourceArity::Exact(3),
         "none" => SourceArity::Exact(0),
-        "not" | "len" | "print" | "Var" => SourceArity::Exact(1),
+        "not" | "len" | "print" | "Var" | "is_some" | "is_none" => SourceArity::Exact(1),
         "some" | "ok" | "err" => SourceArity::Exact(1),
         "if" | "let" | "fold" => SourceArity::Exact(3),
         "let_typed" => SourceArity::Exact(5),
@@ -1990,6 +1990,15 @@ fn format_source_expr_node(
     }
 
     if func == "match" && args.len() >= 3 && args.len() % 2 == 1 {
+        if let Some((helper, value)) = source_match_as_option_predicate(&args) {
+            return (
+                format!(
+                    "{helper}({})",
+                    format_source_expr(&value, module, constants)
+                ),
+                CALL_PRECEDENCE,
+            );
+        }
         if let Some((value, fallback)) = source_match_as_unwrap_or(&args) {
             return (
                 format!(
@@ -2143,6 +2152,33 @@ fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn source_match_as_option_predicate(args: &[String]) -> Option<(&'static str, String)> {
+    if args.len() != 5 {
+        return None;
+    }
+    let scrutinee = args[0].trim().to_string();
+    let arms = args[1..]
+        .chunks_exact(2)
+        .map(|pair| (pair[0].trim(), pair[1].trim()))
+        .collect::<Vec<_>>();
+
+    let mut some_body = None;
+    let mut none_body = None;
+    for (pattern, body) in arms {
+        match source_constructor_pattern(pattern) {
+            Some(("Some", Some("_"))) => some_body = Some(body),
+            Some(("None", None)) => none_body = Some(body),
+            _ => return None,
+        }
+    }
+
+    match (some_body?, none_body?) {
+        ("true", "false") => Some(("is_some", scrutinee)),
+        ("false", "true") => Some(("is_none", scrutinee)),
+        _ => None,
+    }
 }
 
 fn source_match_as_unwrap_or(args: &[String]) -> Option<(String, String)> {
@@ -2747,6 +2783,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_unwrap_or_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_option_predicate_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {
         if let Some(base) = literal.base {
             let mut lowered = lower_source_expr(&base, line_num)?;
@@ -2929,6 +2968,29 @@ fn lower_source_constructor_expr(expr: &str, line_num: usize) -> Result<Option<S
     }
     Ok(Some(format!(
         "{lowered_func}({})",
+        lower_source_expr(&args[0], line_num)?
+    )))
+}
+
+fn lower_source_option_predicate_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    let (some_body, none_body) = match func.as_str() {
+        "is_some" => ("true", "false"),
+        "is_none" => ("false", "true"),
+        _ => return Ok(None),
+    };
+    if args.len() != 1 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: {func} requires `{func}(option)`"
+        )));
+    }
+    Ok(Some(format!(
+        "match({}, Some(_), {some_body}, None, {none_body})",
         lower_source_expr(&args[0], line_num)?
     )))
 }
@@ -4290,6 +4352,25 @@ fn value(input: Option<Int>) -> Int = unwrap_or(input, 0)
     }
 
     #[test]
+    fn lowers_source_option_predicate_helpers() {
+        let program = parse_ail_source(
+            r#"
+fn has_value(input: Option<Int>) -> Bool = is_some(input)
+fn missing(input: Option<Int>) -> Bool = is_none(input)
+"#,
+        )
+        .expect("source option predicates must parse");
+        let acl = source_program_to_acl(&program, "source_option_predicates".to_string());
+
+        assert!(acl.contains(
+            "op create_function id=fn.has_value return=Bool body=match(input, Some(_), true, None, false)"
+        ));
+        assert!(acl.contains(
+            "op create_function id=fn.missing return=Bool body=match(input, Some(_), false, None, true)"
+        ));
+    }
+
+    #[test]
     fn lowers_source_infix_arithmetic_with_precedence() {
         let program = parse_ail_source("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9")
             .expect("source must parse");
@@ -4431,6 +4512,21 @@ fn value(input:Option<Int>)->Int=match(input,Some(v),v,None,0)
 
         assert_eq!(item_count, 1);
         assert!(formatted.contains("fn value(input: Option<Int>) -> Int = unwrap_or(input, 0)\n"));
+    }
+
+    #[test]
+    fn formats_source_option_predicate_helpers() {
+        let (formatted, item_count) = format_ail_source(
+            r#"
+fn has_value(input:Option<Int>)->Bool=match(input,Some(_),true,None,false)
+fn missing(input:Option<Int>)->Bool=match(input,Some(_),false,None,true)
+"#,
+        )
+        .expect("source option predicates must format");
+
+        assert_eq!(item_count, 2);
+        assert!(formatted.contains("fn has_value(input: Option<Int>) -> Bool = is_some(input)\n"));
+        assert!(formatted.contains("fn missing(input: Option<Int>) -> Bool = is_none(input)\n"));
     }
 
     #[test]

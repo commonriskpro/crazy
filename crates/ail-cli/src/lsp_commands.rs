@@ -628,6 +628,18 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "unwrap_or(${1:option}, ${2:fallback})",
     },
     AclSymbol {
+        label: "is_some",
+        detail: "AIL source Option predicate",
+        documentation: "Returns true when an Option value is Some(_), false when it is None.",
+        insert_text: "is_some(${1:option})",
+    },
+    AclSymbol {
+        label: "is_none",
+        detail: "AIL source Option predicate",
+        documentation: "Returns true when an Option value is None, false when it is Some(_).",
+        insert_text: "is_none(${1:option})",
+    },
+    AclSymbol {
         label: "+",
         detail: "AIL source Int infix operator",
         documentation: "Adds two Int expressions; equivalent to add(left, right).",
