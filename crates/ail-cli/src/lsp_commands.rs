@@ -674,6 +674,7 @@ fn definition_for_ail_source_imports(
 }
 
 fn source_function_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
+    let module = source_module_from_text(text);
     for (line_idx, line) in text.lines().enumerate() {
         let trimmed = line.trim_start();
         let Some(rest) = trimmed.strip_prefix("fn ") else {
@@ -683,7 +684,7 @@ fn source_function_definition_in_text(uri: &str, text: &str, token: &str) -> Opt
             continue;
         };
         let name = rest[..name_end].trim();
-        if name == token || name.strip_prefix("fn.") == Some(token) {
+        if source_function_name_matches_token(name, module.as_deref(), token) {
             let leading = line.len() - trimmed.len();
             let start = leading + "fn ".len();
             return Some(json!({
@@ -696,6 +697,28 @@ fn source_function_definition_in_text(uri: &str, text: &str, token: &str) -> Opt
         }
     }
     None
+}
+
+fn source_function_name_matches_token(name: &str, module: Option<&str>, token: &str) -> bool {
+    if name == token || name.strip_prefix("fn.") == Some(token) {
+        return true;
+    }
+    let Some(module) = module else {
+        return false;
+    };
+    let bare_name = name.strip_prefix("fn.").unwrap_or(name);
+    token == format!("{module}.{bare_name}")
+}
+
+fn source_module_from_text(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let trimmed = line.trim();
+        trimmed
+            .strip_prefix("module ")
+            .map(str::trim)
+            .filter(|module| !module.is_empty())
+            .map(ToString::to_string)
+    })
 }
 
 fn source_imports_from_text(text: &str) -> Vec<String> {
@@ -737,7 +760,7 @@ fn references_for_token(uri: &str, text: &str, token: &str) -> Vec<Value> {
 
 fn references_for_ail_source_token(uri: &str, text: &str, token: &str) -> Vec<Value> {
     let token = token.strip_prefix("fn.").unwrap_or(token);
-    let mut refs = references_in_text(uri, text, token);
+    let mut refs = source_references_in_text(uri, text, token);
     let Some(root_path) = file_path_from_uri(uri) else {
         return refs;
     };
@@ -769,9 +792,30 @@ fn collect_ail_source_import_references(
             continue;
         };
         let imported_uri = format!("file://{}", canonical.display());
-        refs.extend(references_in_text(&imported_uri, &imported_text, token));
+        refs.extend(source_references_in_text(
+            &imported_uri,
+            &imported_text,
+            token,
+        ));
         collect_ail_source_import_references(&canonical, &imported_text, token, visited, refs);
     }
+}
+
+fn source_references_in_text(uri: &str, text: &str, token: &str) -> Vec<Value> {
+    source_reference_tokens_for_text(text, token)
+        .into_iter()
+        .flat_map(|needle| references_in_text(uri, text, &needle))
+        .collect()
+}
+
+fn source_reference_tokens_for_text(text: &str, token: &str) -> Vec<String> {
+    let mut tokens = vec![token.to_string()];
+    if let Some((module, local)) = token.split_once('.')
+        && source_module_from_text(text).as_deref() == Some(module)
+    {
+        tokens.push(local.to_string());
+    }
+    tokens
 }
 
 fn references_in_text(uri: &str, text: &str, token: &str) -> Vec<Value> {

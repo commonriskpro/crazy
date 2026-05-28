@@ -1088,14 +1088,19 @@ fn lsp_definition_resolves_ail_source_imported_function() {
 
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let math = dir.child("math.ail");
-    math.write_str("fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
+    math.write_str("module math\nfn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
         .expect("imported source fixture must be written");
     let main = dir.child("main.ail");
-    main.write_str("use \"./math.ail\"\nfn main() -> Int = add_pair(20, 22)\n")
+    main.write_str("use \"./math.ail\"\nfn main() -> Int = math.add_pair(20, 22)\n")
         .expect("main source fixture must be written");
 
     let output = ail()
-        .args(["lsp", "--definition-token", "add_pair", "--definition-file"])
+        .args([
+            "lsp",
+            "--definition-token",
+            "math.add_pair",
+            "--definition-file",
+        ])
         .arg(main.path())
         .arg("--json")
         .assert()
@@ -1105,8 +1110,8 @@ fn lsp_definition_resolves_ail_source_imported_function() {
     let v = parse_json_output(&output);
 
     assert_eq!(v["status"], "ok");
-    assert_eq!(v["data"]["token"], "add_pair");
-    assert_eq!(v["data"]["definition"]["range"]["start"]["line"], 0);
+    assert_eq!(v["data"]["token"], "math.add_pair");
+    assert_eq!(v["data"]["definition"]["range"]["start"]["line"], 1);
     assert_eq!(v["data"]["definition"]["range"]["start"]["character"], 3);
     assert!(
         v["data"]["definition"]["uri"]
@@ -1161,16 +1166,21 @@ fn lsp_references_resolve_ail_source_imported_function_uses() {
 
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let math = dir.child("math.ail");
-    math.write_str("fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
+    math.write_str("module math\nfn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
         .expect("imported source fixture must be written");
     let main = dir.child("main.ail");
     main.write_str(
-        "use \"./math.ail\"\nfn main() -> Int = add_pair(20, 22)\ntest add = eq(add_pair(1, 2), 3)\n",
+        "use \"./math.ail\"\nfn main() -> Int = math.add_pair(20, 22)\ntest add = eq(math.add_pair(1, 2), 3)\n",
     )
     .expect("main source fixture must be written");
 
     let output = ail()
-        .args(["lsp", "--references-token", "add_pair", "--references-file"])
+        .args([
+            "lsp",
+            "--references-token",
+            "math.add_pair",
+            "--references-file",
+        ])
         .arg(main.path())
         .arg("--json")
         .assert()
@@ -1183,7 +1193,7 @@ fn lsp_references_resolve_ail_source_imported_function_uses() {
         .expect("references must be an array");
 
     assert_eq!(v["status"], "ok");
-    assert_eq!(v["data"]["token"], "add_pair");
+    assert_eq!(v["data"]["token"], "math.add_pair");
     assert_eq!(v["data"]["reference_count"], 3);
     assert_eq!(refs[0]["range"]["start"]["line"], 1);
     assert_eq!(refs[1]["range"]["start"]["line"], 2);
@@ -1193,7 +1203,7 @@ fn lsp_references_resolve_ail_source_imported_function_uses() {
             .expect("definition reference uri")
             .ends_with("math.ail")
     );
-    assert_eq!(refs[2]["range"]["start"]["line"], 0);
+    assert_eq!(refs[2]["range"]["start"]["line"], 1);
 }
 
 /// Spec scenario: file-backed store persists between CLI invocations.
