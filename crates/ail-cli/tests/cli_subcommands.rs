@@ -665,6 +665,27 @@ fn compile_file_rejects_untyped_source_builtins() {
 }
 
 #[test]
+fn compile_file_rejects_source_functions_that_shadow_builtins() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("shadow_builtin.ail");
+    source
+        .write_str("fn add(x: Int) -> Int = x\nfn main() -> Int = add(1)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "function declaration `fn.add` shadows builtin `add`",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_duplicate_source_parameters() {
     use assert_fs::prelude::*;
 
@@ -1306,6 +1327,38 @@ fn lsp_diagnose_reports_unsupported_source_parameter_type() {
             .as_str()
             .expect("diagnostic message")
             .contains("unsupported source type `Mystery`")
+    );
+}
+
+#[test]
+fn lsp_diagnose_reports_source_functions_that_shadow_builtins() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn add(x: Int) -> Int = x\nfn main() -> Int = add(1)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("function declaration `fn.add` shadows builtin `add`")
     );
 }
 

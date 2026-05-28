@@ -441,7 +441,20 @@ fn validate_source_program_symbols(program: &SourceProgram) -> Result<(), CliErr
             "duplicate test declaration `{name}`"
         )));
     }
+    for function in &program.functions {
+        if let Some(builtin) = source_function_builtin_shadow(&function.name) {
+            return Err(CliError::ParseError(format!(
+                "function declaration `{}` shadows builtin `{builtin}`",
+                function.name
+            )));
+        }
+    }
     Ok(())
+}
+
+fn source_function_builtin_shadow(name: &str) -> Option<&str> {
+    let bare = name.strip_prefix("fn.")?.rsplit('.').next()?;
+    known_source_builtin_arity(bare).map(|_| bare)
 }
 
 fn duplicate_name<'a>(names: impl Iterator<Item = &'a str>) -> Option<String> {
