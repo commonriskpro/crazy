@@ -869,9 +869,9 @@ fn compile_file_accepts_source_option_result_constructors() {
     let source = dir.child("option_result.ail");
     source
         .write_str(
-            "fn maybe(flag: Bool) -> Option<Int> = if flag { some(42) } else { none() }\n\
-fn ok_value() -> Result<Int, Text> = ok(42)\n\
-fn err_value() -> Result<Int, Text> = err(\"boom\")\n",
+            "fn maybe(flag: Bool) -> Option<Int> = if flag { Some(42) } else { None }\n\
+fn ok_value() -> Result<Int, Text> = Ok(42)\n\
+fn err_value() -> Result<Int, Text> = Err(\"boom\")\n",
         )
         .expect("source fixture must be written");
 
@@ -897,8 +897,8 @@ fn ids() -> Set<i64> = set(1, 2)\n\
 fn labels() -> Map<String, int> = map(\"one\", 1)\n\
 fn pair() -> Tuple<i64, String> = tuple(42, \"answer\")\n\
 fn person() -> Record<age: i64, name: String> = record(age, 42, name, \"Ada\")\n\
-fn maybe(flag: bool) -> Option<i32> = if flag { some(42) } else { none() }\n\
-fn result() -> Result<i64, String> = ok(42)\n",
+fn maybe(flag: bool) -> Option<i32> = if flag { Some(42) } else { None }\n\
+fn result() -> Result<i64, String> = Ok(42)\n",
         )
         .expect("source fixture must be written");
 
@@ -917,7 +917,7 @@ fn compile_file_rejects_source_option_result_type_mismatch() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("bad_option.ail");
     source
-        .write_str("fn main() -> Option<Int> = some(true)\n")
+        .write_str("fn main() -> Option<Int> = Some(true)\n")
         .expect("source fixture must be written");
 
     ail()
@@ -928,6 +928,27 @@ fn compile_file_rejects_source_option_result_type_mismatch() {
         .failure()
         .stderr(predicate::str::contains(
             "type mismatch in fn.main: expected Option<Int>, got Option<Bool>",
+        ));
+}
+
+#[test]
+fn compile_file_rejects_malformed_source_constructor() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_constructor.ail");
+    source
+        .write_str("fn main() -> Option<Int> = Some()\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "source constructor `Some` requires exactly one value",
         ));
 }
 
@@ -2751,9 +2772,9 @@ fn lsp_diagnose_accepts_source_option_result_constructors() {
     let source = dir.child("main.ail");
     source
         .write_str(
-            "fn maybe(flag: Bool) -> Option<Int> = if flag { some(42) } else { none() }\n\
-fn ok_value() -> Result<Int, Text> = ok(42)\n\
-fn err_value() -> Result<Int, Text> = err(\"boom\")\n",
+            "fn maybe(flag: Bool) -> Option<Int> = if flag { Some(42) } else { None }\n\
+fn ok_value() -> Result<Int, Text> = Ok(42)\n\
+fn err_value() -> Result<Int, Text> = Err(\"boom\")\n",
         )
         .expect("source fixture must be written");
 
@@ -2783,8 +2804,8 @@ fn lsp_diagnose_accepts_source_type_aliases() {
         .write_str(
             "fn text_len(value: String) -> int = len(value)\n\
 fn first(values: List<i64>) -> i64 = values[0]\n\
-fn maybe(flag: bool) -> Option<i32> = if flag { some(42) } else { none() }\n\
-fn result() -> Result<i64, String> = ok(42)\n",
+fn maybe(flag: bool) -> Option<i32> = if flag { Some(42) } else { None }\n\
+fn result() -> Result<i64, String> = Ok(42)\n",
         )
         .expect("source fixture must be written");
 
@@ -4038,6 +4059,38 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .iter()
             .any(|item| item["label"] == "record" && item["detail"] == "AIL source Record builtin"),
         "completion must include AIL source record builtin; got: {record_items:?}"
+    );
+
+    let option_completion_output = ail()
+        .args(["lsp", "--complete", "Som", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let option_completion = parse_json_output(&option_completion_output);
+    let option_items = option_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        option_items.iter().any(
+            |item| item["label"] == "Some" && item["detail"] == "AIL source Option constructor"
+        ),
+        "completion must include AIL source Option constructor; got: {option_items:?}"
+    );
+
+    let result_hover_output = ail()
+        .args(["lsp", "--hover-token", "Err", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let result_hover = parse_json_output(&result_hover_output);
+    assert!(
+        result_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("Result<T,E> error"),
+        "hover must explain source Result constructor; got: {result_hover}"
     );
 }
 

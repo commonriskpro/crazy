@@ -1996,6 +1996,26 @@ fn format_source_expr_node(
         );
     }
 
+    if func == "none" && args.is_empty() {
+        return ("None".to_string(), CALL_PRECEDENCE);
+    }
+
+    if matches!(func.as_str(), "some" | "ok" | "err") && args.len() == 1 {
+        let constructor = match func.as_str() {
+            "some" => "Some",
+            "ok" => "Ok",
+            "err" => "Err",
+            _ => unreachable!("checked source constructor"),
+        };
+        return (
+            format!(
+                "{constructor}({})",
+                format_source_expr(&args[0], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "not" && args.len() == 1 {
         return (
             format!(
@@ -2685,6 +2705,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(inner) = strip_wrapping_source_parens(expr) {
         return lower_source_expr(inner, line_num);
     }
+    if let Some(lowered) = lower_source_constructor_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {
         if let Some(base) = literal.base {
             let mut lowered = lower_source_expr(&base, line_num)?;
@@ -2837,6 +2860,38 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
         return Ok(format!("not({})", lower_source_expr(inner, line_num)?));
     }
     Ok(expr.to_string())
+}
+
+fn lower_source_constructor_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {
+    if expr == "None" || expr == "None()" {
+        return Ok(Some("none()".to_string()));
+    }
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func == "None" {
+        if args.is_empty() {
+            return Ok(Some("none()".to_string()));
+        }
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: source constructor `None` requires no values"
+        )));
+    }
+    let lowered_func = match func.as_str() {
+        "Some" => "some",
+        "Ok" => "ok",
+        "Err" => "err",
+        _ => return Ok(None),
+    };
+    if args.len() != 1 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: source constructor `{func}` requires exactly one value"
+        )));
+    }
+    Ok(Some(format!(
+        "{lowered_func}({})",
+        lower_source_expr(&args[0], line_num)?
+    )))
 }
 
 fn strip_wrapping_source_parens(expr: &str) -> Option<&str> {
@@ -4139,6 +4194,29 @@ fn older_renamed() -> Record<age: Int, name: Text> = { ...person(), age: 43, nam
     }
 
     #[test]
+    fn lowers_source_option_result_constructors() {
+        let program = parse_ail_source(
+            r#"
+fn maybe(flag: Bool) -> Option<Int> = if flag { Some(42) } else { None }
+fn ok_value() -> Result<Int, Text> = Ok(42)
+fn err_value() -> Result<Int, Text> = Err("boom")
+"#,
+        )
+        .expect("source constructors must parse");
+        let acl = source_program_to_acl(&program, "source_constructors".to_string());
+
+        assert!(acl.contains(
+            "op create_function id=fn.maybe return=Option<Int> body=if(flag, some(42), none())"
+        ));
+        assert!(
+            acl.contains("op create_function id=fn.ok_value return=Result<Int,Text> body=ok(42)")
+        );
+        assert!(acl.contains(
+            r#"op create_function id=fn.err_value return=Result<Int,Text> body=err("boom")"#
+        ));
+    }
+
+    #[test]
     fn lowers_source_infix_arithmetic_with_precedence() {
         let program = parse_ail_source("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9")
             .expect("source must parse");
@@ -4248,6 +4326,25 @@ fn older()->Record<age:Int,name:Text>=update(person(),age,43)
             formatted
                 .contains("fn older() -> Record<age:Int,name:Text> = { ...person(), age: 43 }\n")
         );
+    }
+
+    #[test]
+    fn formats_source_option_result_constructors() {
+        let (formatted, item_count) = format_ail_source(
+            r#"
+fn maybe(flag:Bool)->Option<Int>=if flag { some(42) } else { none() }
+fn ok_value()->Result<Int,Text>=ok(42)
+fn err_value()->Result<Int,Text>=err("boom")
+"#,
+        )
+        .expect("source constructors must format");
+
+        assert_eq!(item_count, 3);
+        assert!(formatted.contains(
+            "fn maybe(flag: Bool) -> Option<Int> = if flag { Some(42) } else { None }\n"
+        ));
+        assert!(formatted.contains("fn ok_value() -> Result<Int,Text> = Ok(42)\n"));
+        assert!(formatted.contains("fn err_value() -> Result<Int,Text> = Err(\"boom\")\n"));
     }
 
     #[test]

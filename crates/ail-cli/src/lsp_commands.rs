@@ -598,6 +598,30 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "match ${1:value} { ${2:Some(v)} => ${3:v}, ${4:None} => ${5:fallback} }",
     },
     AclSymbol {
+        label: "Some",
+        detail: "AIL source Option constructor",
+        documentation: "Constructs an Option<T> value containing a payload.",
+        insert_text: "Some(${1:value})",
+    },
+    AclSymbol {
+        label: "None",
+        detail: "AIL source Option constructor",
+        documentation: "Constructs an empty Option<T> value.",
+        insert_text: "None",
+    },
+    AclSymbol {
+        label: "Ok",
+        detail: "AIL source Result constructor",
+        documentation: "Constructs a Result<T,E> success value.",
+        insert_text: "Ok(${1:value})",
+    },
+    AclSymbol {
+        label: "Err",
+        detail: "AIL source Result constructor",
+        documentation: "Constructs a Result<T,E> error value.",
+        insert_text: "Err(${1:error})",
+    },
+    AclSymbol {
         label: "+",
         detail: "AIL source Int infix operator",
         documentation: "Adds two Int expressions; equivalent to add(left, right).",
