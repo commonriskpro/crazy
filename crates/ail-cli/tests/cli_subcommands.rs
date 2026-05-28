@@ -584,6 +584,27 @@ fn compile_file_accepts_source_list_len() {
 }
 
 #[test]
+fn compile_file_accepts_source_set_and_map_collections() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("set_map.ail");
+    source
+        .write_str(
+            "fn ids() -> Set<Int> = set(1, 2 + 3)\n\
+fn labels() -> Map<Text, Int> = map(\"one\", 1, \"two\", 2)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
 fn compile_file_rejects_source_list_element_type_mismatch() {
     use assert_fs::prelude::*;
 
@@ -601,6 +622,48 @@ fn compile_file_rejects_source_list_element_type_mismatch() {
         .failure()
         .stderr(predicate::str::contains(
             "type mismatch in list element: expected Int, got Bool",
+        ));
+}
+
+#[test]
+fn compile_file_rejects_source_set_element_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_set.ail");
+    source
+        .write_str("fn ids() -> Set<Int> = set(1, true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in set element: expected Int, got Bool",
+        ));
+}
+
+#[test]
+fn compile_file_rejects_source_map_value_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_map.ail");
+    source
+        .write_str("fn labels() -> Map<Text, Int> = map(\"one\", 1, \"two\", true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in map value: expected Int, got Bool",
         ));
 }
 
@@ -680,6 +743,8 @@ fn compile_file_accepts_source_type_aliases() {
         .write_str(
             "fn text_len(value: String) -> int = len(value)\n\
 fn first(values: List<i64>) -> i64 = values[0]\n\
+fn ids() -> Set<i64> = set(1, 2)\n\
+fn labels() -> Map<String, int> = map(\"one\", 1)\n\
 fn maybe(flag: bool) -> Option<i32> = if flag { some(42) } else { none() }\n\
 fn result() -> Result<i64, String> = ok(42)\n",
         )
@@ -2442,6 +2507,35 @@ fn lsp_diagnose_accepts_source_list_len() {
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_set_and_map_collections() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn ids() -> Set<Int> = set(1, 2 + 3)\n\
+fn labels() -> Map<Text, Int> = map(\"one\", 1, \"two\", 2)\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_option_result_constructors() {
     use assert_fs::prelude::*;
 
@@ -3618,6 +3712,38 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .expect("hover markdown")
             .contains("explicit grant"),
         "hover must explain effect_call grants; got: {hover}"
+    );
+
+    let map_completion_output = ail()
+        .args(["lsp", "--complete", "ma", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let map_completion = parse_json_output(&map_completion_output);
+    let map_items = map_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        map_items
+            .iter()
+            .any(|item| item["label"] == "map" && item["detail"] == "AIL source Map builtin"),
+        "completion must include AIL source map builtin; got: {map_items:?}"
+    );
+
+    let set_hover_output = ail()
+        .args(["lsp", "--hover-token", "set", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let set_hover = parse_json_output(&set_hover_output);
+    assert!(
+        set_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("Set<T>"),
+        "hover must explain source Set builtin; got: {set_hover}"
     );
 }
 
@@ -5222,6 +5348,8 @@ fn fmt_file_json_outputs_canonical_ail_source() {
 fn add_pair(x:Int,y:Int)->Int=add(x,y)\n\
 fn text_len(value:String)->int=len(value)\n\
 fn count(values:List<Int>)->Int=len(values)\n\
+fn ids()->Set<i64>=set(1,add(2,3))\n\
+fn labels()->Map<String,int>=map(\"one\",1,\"two\",2)\n\
 fn unwrap(value:Option<Int>)->Int=match(value,Some(v),v,None,0)\n\
 fn main()->Int{\n\
 let base:Int=answer()\n\
@@ -5244,7 +5372,7 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["language"], "ail-source");
-    assert_eq!(v["data"]["item_count"], 7);
+    assert_eq!(v["data"]["item_count"], 9);
     let formatted = v["data"]["formatted"]
         .as_str()
         .expect("formatted must be string");
@@ -5252,6 +5380,8 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
     assert!(formatted.contains("fn add_pair(x: Int, y: Int) -> Int = x + y\n"));
     assert!(formatted.contains("fn text_len(value: Text) -> Int = len(value)\n"));
     assert!(formatted.contains("fn count(values: List<Int>) -> Int = len(values)\n"));
+    assert!(formatted.contains("fn ids() -> Set<Int> = set(1, 2 + 3)\n"));
+    assert!(formatted.contains("fn labels() -> Map<Text,Int> = map(\"one\", 1, \"two\", 2)\n"));
     assert!(formatted.contains(
         "fn unwrap(value: Option<Int>) -> Int = match value { Some(v) => v, None => 0 }\n"
     ));

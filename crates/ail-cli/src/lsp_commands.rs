@@ -725,9 +725,21 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
     },
     AclSymbol {
         label: "len",
-        detail: "AIL source Text builtin",
-        documentation: "Returns the Int length of a Text value.",
-        insert_text: "len(${1:text})",
+        detail: "AIL source sized builtin",
+        documentation: "Returns the Int length of a Text or List value.",
+        insert_text: "len(${1:value})",
+    },
+    AclSymbol {
+        label: "set",
+        detail: "AIL source Set builtin",
+        documentation: "Constructs a typed Set<T> from same-typed values.",
+        insert_text: "set(${1:value})",
+    },
+    AclSymbol {
+        label: "map",
+        detail: "AIL source Map builtin",
+        documentation: "Constructs a typed Map<K,V> from key/value argument pairs.",
+        insert_text: "map(${1:key}, ${2:value})",
     },
     AclSymbol {
         label: "effect_call",

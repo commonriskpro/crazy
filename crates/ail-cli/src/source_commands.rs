@@ -1285,6 +1285,8 @@ fn infer_source_call_type(
             Ok("Text".to_string())
         }
         "list" => infer_source_list_type(args, scope, functions),
+        "set" => infer_source_set_type(args, scope, functions),
+        "map" => infer_source_map_type(args, scope, functions),
         "index" => infer_source_index_type(args, scope, functions),
         "none" => Ok("Option<Unknown>".to_string()),
         "some" => {
@@ -1333,10 +1335,7 @@ fn infer_source_call_type(
 }
 
 fn is_untyped_source_builtin(func: &str) -> bool {
-    matches!(
-        func,
-        "Var" | "fold" | "map" | "record" | "tuple" | "set" | "match"
-    )
+    matches!(func, "Var" | "fold" | "record" | "tuple" | "match")
 }
 
 fn infer_source_list_type(
@@ -1353,6 +1352,48 @@ fn infer_source_list_type(
         validate_source_type_match(&element_ty, &actual, "list element")?;
     }
     Ok(format!("List<{element_ty}>"))
+}
+
+fn infer_source_set_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let Some((first, rest)) = args.split_first() else {
+        return Ok("Set<Unknown>".to_string());
+    };
+    let element_ty = infer_source_expr_type(first, scope, functions)?;
+    for arg in rest {
+        let actual = infer_source_expr_type(arg, scope, functions)?;
+        validate_source_type_match(&element_ty, &actual, "set element")?;
+    }
+    Ok(format!("Set<{element_ty}>"))
+}
+
+fn infer_source_map_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    if args.is_empty() {
+        return Ok("Map<Unknown,Unknown>".to_string());
+    }
+    if !args.len().is_multiple_of(2) {
+        return Err(CliError::ParseError(format!(
+            "function call `map` expects an even number of arguments, got {}",
+            args.len()
+        )));
+    }
+
+    let first_key_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let first_value_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    for pair in args[2..].chunks_exact(2) {
+        let key_ty = infer_source_expr_type(&pair[0], scope, functions)?;
+        validate_source_type_match(&first_key_ty, &key_ty, "map key")?;
+        let value_ty = infer_source_expr_type(&pair[1], scope, functions)?;
+        validate_source_type_match(&first_value_ty, &value_ty, "map value")?;
+    }
+    Ok(format!("Map<{first_key_ty},{first_value_ty}>"))
 }
 
 fn infer_source_index_type(
@@ -1439,6 +1480,18 @@ fn source_type_matches(expected: &str, actual: &str) -> bool {
         source_list_element_type(actual),
     ) {
         return source_type_matches(expected_inner, actual_inner);
+    }
+    if let (Some(expected_inner), Some(actual_inner)) = (
+        source_set_element_type(expected),
+        source_set_element_type(actual),
+    ) {
+        return source_type_matches(expected_inner, actual_inner);
+    }
+    if let (Some((expected_key, expected_value)), Some((actual_key, actual_value))) =
+        (source_map_types(expected), source_map_types(actual))
+    {
+        return source_type_matches(expected_key, actual_key)
+            && source_type_matches(expected_value, actual_value);
     }
     if let (Some(expected_inner), Some(actual_inner)) = (
         source_option_element_type(expected),
@@ -3014,6 +3067,10 @@ fn is_supported_source_type(ty: &str) -> bool {
     let ty = ty.as_str();
     source_primitive_type_alias(ty).is_some()
         || source_list_element_type(ty).is_some_and(is_supported_source_type)
+        || source_set_element_type(ty).is_some_and(is_supported_source_type)
+        || source_map_types(ty).is_some_and(|(key_ty, value_ty)| {
+            is_supported_source_type(key_ty) && is_supported_source_type(value_ty)
+        })
         || source_option_element_type(ty).is_some_and(is_supported_source_type)
         || source_result_types(ty).is_some_and(|(ok_ty, err_ty)| {
             is_supported_source_type(ok_ty) && is_supported_source_type(err_ty)
@@ -3033,6 +3090,20 @@ fn source_primitive_type_alias(ty: &str) -> Option<&'static str> {
 fn source_list_element_type(ty: &str) -> Option<&str> {
     let inner = ty.trim().strip_prefix("List<")?.strip_suffix('>')?.trim();
     (!inner.is_empty()).then_some(inner)
+}
+
+fn source_set_element_type(ty: &str) -> Option<&str> {
+    let inner = ty.trim().strip_prefix("Set<")?.strip_suffix('>')?.trim();
+    (!inner.is_empty()).then_some(inner)
+}
+
+fn source_map_types(ty: &str) -> Option<(&str, &str)> {
+    let inner = ty.trim().strip_prefix("Map<")?.strip_suffix('>')?.trim();
+    let parts = split_source_type_args(inner);
+    if parts.len() != 2 {
+        return None;
+    }
+    Some((parts[0], parts[1]))
 }
 
 fn source_option_element_type(ty: &str) -> Option<&str> {
@@ -3317,6 +3388,16 @@ fn normalize_source_type_aliases(ty: &str) -> String {
     if let Some(inner) = source_list_element_type(ty) {
         return format!("List<{}>", normalize_source_type_aliases(inner));
     }
+    if let Some(inner) = source_set_element_type(ty) {
+        return format!("Set<{}>", normalize_source_type_aliases(inner));
+    }
+    if let Some((key_ty, value_ty)) = source_map_types(ty) {
+        return format!(
+            "Map<{},{}>",
+            normalize_source_type_aliases(key_ty),
+            normalize_source_type_aliases(value_ty)
+        );
+    }
     if let Some(inner) = source_option_element_type(ty) {
         return format!("Option<{}>", normalize_source_type_aliases(inner));
     }
@@ -3510,6 +3591,27 @@ test main_addition = eq(add(20, 22), 42);
     }
 
     #[test]
+    fn lowers_source_set_and_map_collections() {
+        let program = parse_ail_source(
+            r#"
+fn ids() -> Set<Int> = set(1, 2 + 3)
+fn labels() -> Map<Text, Int> = map("one", 1, "two", 2)
+"#,
+        )
+        .expect("source set/map must parse");
+        let acl = source_program_to_acl(&program, "source_collections".to_string());
+
+        assert_eq!(program.functions[0].return_type, "Set<Int>");
+        assert_eq!(program.functions[1].return_type, "Map<Text,Int>");
+        assert!(
+            acl.contains("op create_function id=fn.ids return=Set<Int> body=set(1, add(2, 3))")
+        );
+        assert!(acl.contains(
+            r#"op create_function id=fn.labels return=Map<Text,Int> body=map("one", 1, "two", 2)"#
+        ));
+    }
+
+    #[test]
     fn lowers_source_infix_arithmetic_with_precedence() {
         let program = parse_ail_source("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9")
             .expect("source must parse");
@@ -3568,6 +3670,21 @@ test grouped = -(1 + 2) == -3",
             "test grouped = -(1 + 2) == -3
 "
         ));
+    }
+
+    #[test]
+    fn formats_source_set_and_map_types() {
+        let (formatted, item_count) = format_ail_source(
+            r#"
+fn ids()->Set<i64>=set(1,add(2,3))
+fn labels()->Map<String,int>=map("one",1,"two",2)
+"#,
+        )
+        .expect("source set/map must format");
+
+        assert_eq!(item_count, 2);
+        assert!(formatted.contains("fn ids() -> Set<Int> = set(1, 2 + 3)\n"));
+        assert!(formatted.contains("fn labels() -> Map<Text,Int> = map(\"one\", 1, \"two\", 2)\n"));
     }
 
     #[test]
