@@ -1728,9 +1728,27 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
             lower_source_expr(right, line_num)?
         ));
     }
-    if let Some((left, right)) = split_top_level_source_binary(expr, '+') {
+    if let Some((left, op, right)) = split_top_level_source_binary_any(expr, &['+']) {
+        let func = match op {
+            '+' => "add",
+            _ => unreachable!("unsupported additive operator"),
+        };
         return Ok(format!(
-            "add({}, {})",
+            "{}({}, {})",
+            func,
+            lower_source_expr(left, line_num)?,
+            lower_source_expr(right, line_num)?
+        ));
+    }
+    if let Some((left, op, right)) = split_top_level_source_binary_any(expr, &['*', '/']) {
+        let func = match op {
+            '*' => "mul",
+            '/' => "div",
+            _ => unreachable!("unsupported multiplicative operator"),
+        };
+        return Ok(format!(
+            "{}({}, {})",
+            func,
             lower_source_expr(left, line_num)?,
             lower_source_expr(right, line_num)?
         ));
@@ -1788,6 +1806,45 @@ fn split_top_level_source_binary_str<'a>(expr: &'a str, op: &str) -> Option<(&'a
     let left = expr[..idx].trim();
     let right = expr[idx + op.len()..].trim();
     (!left.is_empty() && !right.is_empty()).then_some((left, right))
+}
+
+fn split_top_level_source_binary_any<'a>(
+    expr: &'a str,
+    ops: &[char],
+) -> Option<(&'a str, char, &'a str)> {
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+    let mut split_at = None;
+
+    for (idx, ch) in expr.char_indices() {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            _ if ops.contains(&ch) && paren_depth == 0 && brace_depth == 0 && idx > 0 => {
+                split_at = Some((idx, ch));
+            }
+            _ => {}
+        }
+        prev_was_escape = false;
+    }
+
+    let (idx, op) = split_at?;
+    let left = expr[..idx].trim();
+    let right = expr[idx + op.len_utf8()..].trim();
+    (!left.is_empty() && !right.is_empty()).then_some((left, op, right))
 }
 
 fn split_top_level_source_binary(expr: &str, op: char) -> Option<(&str, &str)> {
@@ -2108,6 +2165,17 @@ test main_addition = eq(add(20, 22), 42);
 
         assert!(acl.contains("op create_function id=fn.main return=Int body=add(20, 22)"));
         assert!(acl.contains("op create_test id=test.add return=Bool body=eq(add(20, 22), 42)"));
+    }
+
+    #[test]
+    fn lowers_source_infix_multiplication_and_division_with_precedence() {
+        let program =
+            parse_ail_source("test math = 2 * 3 + 8 / 4 == 8").expect("source must parse");
+        let acl = source_program_to_acl(&program, "source_math".to_string());
+
+        assert!(acl.contains(
+            "op create_test id=test.math return=Bool body=eq(add(mul(2, 3), div(8, 4)), 8)"
+        ));
     }
 
     #[test]
