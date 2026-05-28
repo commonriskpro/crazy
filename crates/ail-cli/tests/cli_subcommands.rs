@@ -252,6 +252,39 @@ fn run_file_executes_ail_source_text_concat_with_comment_markers_in_strings() {
 }
 
 #[test]
+fn run_file_executes_ail_source_with_capability_grant() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("print.ail");
+    source
+        .write_str(
+            r#"capability log.write
+fn print_hello() -> Int = print("Hello from source!")
+grant print_hello log.write
+"#,
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--grant",
+            "log.write",
+            "fn.print_hello",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("source:"))
+        .stdout(predicate::str::contains("module: fn.print_hello"))
+        .stdout(predicate::str::contains("output:\nHello from source!"))
+        .stdout(predicate::str::contains("result: 0"));
+}
+
+#[test]
 fn test_file_runs_ail_source_tests_without_acl_authoring() {
     use assert_fs::prelude::*;
 

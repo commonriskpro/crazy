@@ -19,8 +19,10 @@ use crate::error::CliError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SourceProgram {
+    capabilities: Vec<String>,
     functions: Vec<SourceFunction>,
     tests: Vec<SourceTest>,
+    grants: Vec<SourceGrant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +46,12 @@ struct SourceTest {
     body: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceGrant {
+    target: String,
+    capability: String,
+}
+
 /// Load a `.ail` source file and lower it to a semantic graph.
 pub(crate) fn load_source_graph(path: &Path) -> Result<SemanticGraph, CliError> {
     let src = std::fs::read_to_string(path).map_err(|e| {
@@ -58,14 +66,26 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
     let program = parse_ail_source(src)?;
     let mut out = String::new();
 
+    for capability in &program.capabilities {
+        render_source_capability(&mut out, capability);
+    }
     for function in &program.functions {
         render_source_function(&mut out, function);
     }
     for test in &program.tests {
         render_source_test(&mut out, test);
     }
+    for grant in &program.grants {
+        render_source_grant(&mut out, grant);
+    }
 
-    Ok((out, program.functions.len() + program.tests.len()))
+    Ok((
+        out,
+        program.capabilities.len()
+            + program.functions.len()
+            + program.tests.len()
+            + program.grants.len(),
+    ))
 }
 
 /// Parse a minimal `.ail` source file.
@@ -73,7 +93,9 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
 /// Supported initial syntax:
 ///
 /// ```text
+/// capability log.write
 /// fn main() -> Int = add(20, 22)
+/// grant main log.write
 /// fn add_pair(x: Int, y: Int) -> Int = add(x, y)
 /// fn with_local() -> Int {
 ///   let base = add(20, 20)
@@ -82,8 +104,10 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
 /// test main_addition = eq(add(20, 22), 42)
 /// ```
 pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
+    let mut capabilities = Vec::new();
     let mut functions = Vec::new();
     let mut tests = Vec::new();
+    let mut grants = Vec::new();
     let statements = src
         .lines()
         .enumerate()
@@ -94,7 +118,9 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
     while idx < statements.len() {
         let (line_num, statement) = &statements[idx];
 
-        if let Some(rest) = statement.strip_prefix("fn ") {
+        if let Some(rest) = statement.strip_prefix("capability ") {
+            capabilities.push(parse_source_capability(rest, *line_num)?);
+        } else if let Some(rest) = statement.strip_prefix("fn ") {
             if rest.trim_end().ends_with('{') {
                 let header = rest.trim_end().trim_end_matches('{').trim();
                 let (body_lines, next_idx) = collect_braced_body(&statements, idx + 1, *line_num)?;
@@ -106,21 +132,28 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
             functions.push(parse_source_function(rest, *line_num)?);
         } else if let Some(rest) = statement.strip_prefix("test ") {
             tests.push(parse_source_test(rest, *line_num)?);
+        } else if let Some(rest) = statement.strip_prefix("grant ") {
+            grants.push(parse_source_grant(rest, *line_num)?);
         } else {
             return Err(CliError::ParseError(format!(
-                "line {line_num}: expected `fn` or `test`, got `{statement}`"
+                "line {line_num}: expected `capability`, `fn`, `test`, or `grant`, got `{statement}`"
             )));
         }
         idx += 1;
     }
 
-    if functions.is_empty() && tests.is_empty() {
+    if capabilities.is_empty() && functions.is_empty() && tests.is_empty() && grants.is_empty() {
         return Err(CliError::ParseError(
-            "AIL source file has no `fn` or `test` declarations".to_string(),
+            "AIL source file has no declarations".to_string(),
         ));
     }
 
-    Ok(SourceProgram { functions, tests })
+    Ok(SourceProgram {
+        capabilities,
+        functions,
+        tests,
+        grants,
+    })
 }
 
 fn source_program_to_graph(
@@ -161,6 +194,9 @@ description AIL source file\n\
 base 0\n"
     );
 
+    for capability in &program.capabilities {
+        acl.push_str(&format!("op create_capability id={capability}\n"));
+    }
     for function in &program.functions {
         acl.push_str(&format!(
             "op create_function id={} return={} body={}\n",
@@ -179,8 +215,18 @@ base 0\n"
             test.name, test.return_type, test.body
         ));
     }
+    for grant in &program.grants {
+        acl.push_str(&format!(
+            "op grant target={} capability={}\n",
+            grant.target, grant.capability
+        ));
+    }
     acl.push_str("end\n");
     acl
+}
+
+fn render_source_capability(out: &mut String, capability: &str) {
+    out.push_str(&format!("capability {capability}\n"));
 }
 
 fn render_source_function(out: &mut String, function: &SourceFunction) {
@@ -224,6 +270,11 @@ fn render_source_test(out: &mut String, test: &SourceTest) {
             format_source_expr(&test.body)
         ));
     }
+}
+
+fn render_source_grant(out: &mut String, grant: &SourceGrant) {
+    let target = grant.target.strip_prefix("fn.").unwrap_or(&grant.target);
+    out.push_str(&format!("grant {target} {}\n", grant.capability));
 }
 
 fn source_let_chain(body: &str) -> (Vec<(String, String)>, String) {
@@ -396,6 +447,12 @@ fn strip_source_comment(line: &str) -> &str {
     }
 
     line
+}
+
+fn parse_source_capability(rest: &str, line_num: usize) -> Result<String, CliError> {
+    let capability = rest.trim();
+    validate_source_name(capability, line_num)?;
+    Ok(capability.to_string())
 }
 
 fn parse_source_function(rest: &str, line_num: usize) -> Result<SourceFunction, CliError> {
@@ -697,6 +754,29 @@ fn parse_source_test(rest: &str, line_num: usize) -> Result<SourceTest, CliError
     })
 }
 
+fn parse_source_grant(rest: &str, line_num: usize) -> Result<SourceGrant, CliError> {
+    let parts = rest.split_whitespace().collect::<Vec<_>>();
+    if parts.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: grant declaration requires `grant target capability`"
+        )));
+    }
+    let target = normalize_grant_target(parts[0]);
+    let capability = parts[1].to_string();
+    validate_source_name(&target, line_num)?;
+    validate_source_name(&capability, line_num)?;
+
+    Ok(SourceGrant { target, capability })
+}
+
+fn normalize_grant_target(target: &str) -> String {
+    if target.contains('.') {
+        target.to_string()
+    } else {
+        normalize_function_name(target)
+    }
+}
+
 fn validate_source_name(name: &str, line_num: usize) -> Result<(), CliError> {
     if name.is_empty() {
         return Err(CliError::ParseError(format!(
@@ -846,6 +926,25 @@ test clamp = eq(clamp_positive(-5), 0)
     }
 
     #[test]
+    fn lowers_source_capabilities_and_grants_to_acl_ops() {
+        let program = parse_ail_source(
+            r#"
+capability log.write
+fn print_hello() -> Int = print("Hello from source!")
+grant print_hello log.write
+"#,
+        )
+        .expect("source capability program must parse");
+        let acl = source_program_to_acl(&program, "source_capability".to_string());
+
+        assert!(acl.contains("op create_capability id=log.write"));
+        assert!(acl.contains(
+            r#"op create_function id=fn.print_hello return=Int body=print("Hello from source!")"#
+        ));
+        assert!(acl.contains("op grant target=fn.print_hello capability=log.write"));
+    }
+
+    #[test]
     fn preserves_string_literals_with_comment_markers_and_braces() {
         let program = parse_ail_source(
             r#"
@@ -875,6 +974,22 @@ fn message()->Text=concat("https://ail.local", " {ok}") // trailing comment
         assert_eq!(
             formatted,
             "fn message() -> Text = concat(\"https://ail.local\", \" {ok}\")\n"
+        );
+    }
+
+    #[test]
+    fn formats_source_capabilities_and_grants() {
+        let src = r#"
+grant fn.print_hello log.write
+fn print_hello()->Int=print("Hello")
+capability log.write
+"#;
+        let (formatted, item_count) = format_ail_source(src).expect("source must format");
+
+        assert_eq!(item_count, 3);
+        assert_eq!(
+            formatted,
+            "capability log.write\nfn print_hello() -> Int = print(\"Hello\")\ngrant print_hello log.write\n"
         );
     }
 
