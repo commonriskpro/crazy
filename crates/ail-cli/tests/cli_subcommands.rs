@@ -504,7 +504,7 @@ fn check_file_rejects_invalid_ail_source_without_execution() {
         .arg(source.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("unknown variable `x`"));
+        .stderr(predicate::str::contains("line 1: unknown variable `x`"));
 }
 
 #[test]
@@ -990,7 +990,7 @@ fn compile_file_rejects_ungranted_source_effect_call() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "source item `fn.main` uses capability `log.write` without a grant",
+            "line 2: source item `fn.main` uses capability `log.write` without a grant",
         ));
 }
 
@@ -1767,8 +1767,9 @@ fn lsp_diagnose_reports_ungranted_source_effect_call() {
         v["data"]["diagnostics"][0]["message"]
             .as_str()
             .expect("diagnostic message")
-            .contains("source item `fn.main` uses capability `log.write` without a grant")
+            .contains("line 2: source item `fn.main` uses capability `log.write` without a grant")
     );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
 }
 
 #[test]
@@ -1778,7 +1779,7 @@ fn lsp_diagnose_reports_ail_source_unknown_effect_call_capability() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str("fn main() -> Int = effect_call(log.write, write, \"hi\")\n")
+        .write_str("fn ok() -> Int = 0\nfn main() -> Int = effect_call(log.write, write, \"hi\")\n")
         .expect("source fixture must be written");
 
     let output = ail()
@@ -1799,8 +1800,9 @@ fn lsp_diagnose_reports_ail_source_unknown_effect_call_capability() {
         v["data"]["diagnostics"][0]["message"]
             .as_str()
             .expect("diagnostic message")
-            .contains("effect_call capability `log.write` is not declared")
+            .contains("line 2: effect_call capability `log.write` is not declared")
     );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
 }
 
 #[test]
@@ -1842,7 +1844,7 @@ fn lsp_diagnose_reports_ail_source_unknown_function_calls() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str("fn main() -> Int = typo_add(20, 22)\n")
+        .write_str("fn ok() -> Int = 0\nfn main() -> Int = typo_add(20, 22)\n")
         .expect("source fixture must be written");
 
     let output = ail()
@@ -1863,8 +1865,9 @@ fn lsp_diagnose_reports_ail_source_unknown_function_calls() {
         v["data"]["diagnostics"][0]["message"]
             .as_str()
             .expect("diagnostic message")
-            .contains("unknown function call `typo_add`")
+            .contains("line 2: unknown function call `typo_add`")
     );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
 }
 
 #[test]
@@ -1874,7 +1877,7 @@ fn lsp_diagnose_reports_ail_source_builtin_call_arity_errors() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str("fn main() -> Int = add(20)\n")
+        .write_str("fn ok() -> Int = 0\nfn main() -> Int = add(20)\n")
         .expect("source fixture must be written");
 
     let output = ail()
@@ -1895,8 +1898,9 @@ fn lsp_diagnose_reports_ail_source_builtin_call_arity_errors() {
         v["data"]["diagnostics"][0]["message"]
             .as_str()
             .expect("diagnostic message")
-            .contains("function call `add` expects 2 argument(s), got 1")
+            .contains("line 2: function call `add` expects 2 argument(s), got 1")
     );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
 }
 
 #[test]
@@ -1938,7 +1942,7 @@ fn lsp_diagnose_reports_ail_source_unknown_variables() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str("fn main() -> Int = add(x, 1)\n")
+        .write_str("fn ok() -> Int = 0\nfn main() -> Int = add(x, 1)\n")
         .expect("source fixture must be written");
 
     let output = ail()
@@ -1959,8 +1963,9 @@ fn lsp_diagnose_reports_ail_source_unknown_variables() {
         v["data"]["diagnostics"][0]["message"]
             .as_str()
             .expect("diagnostic message")
-            .contains("unknown variable `x`")
+            .contains("line 2: unknown variable `x`")
     );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
 }
 
 #[test]

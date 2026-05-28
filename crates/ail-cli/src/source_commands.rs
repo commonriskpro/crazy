@@ -594,10 +594,12 @@ fn validate_source_program_effect_calls(program: &SourceProgram) -> Result<(), C
     let grants = source_grants_by_target(program);
 
     for function in &program.functions {
-        validate_source_item_effect_grants(&function.name, &function.body, &capabilities, &grants)?;
+        validate_source_item_effect_grants(&function.name, &function.body, &capabilities, &grants)
+            .map_err(|err| source_error_at_line(err, function.line_num))?;
     }
     for test in &program.tests {
-        validate_source_item_effect_grants(&test.name, &test.body, &capabilities, &grants)?;
+        validate_source_item_effect_grants(&test.name, &test.body, &capabilities, &grants)
+            .map_err(|err| source_error_at_line(err, test.line_num))?;
     }
     Ok(())
 }
@@ -686,7 +688,8 @@ fn validate_source_program_calls(program: &SourceProgram) -> Result<(), CliError
         .collect::<BTreeMap<_, _>>();
 
     for function in &program.functions {
-        validate_source_expr_calls(&function.body, &functions)?;
+        validate_source_expr_calls(&function.body, &functions)
+            .map_err(|err| source_error_at_line(err, function.line_num))?;
         validate_source_expr_vars(
             &function.body,
             &function
@@ -694,11 +697,14 @@ fn validate_source_program_calls(program: &SourceProgram) -> Result<(), CliError
                 .iter()
                 .map(|param| param.name.as_str())
                 .collect::<BTreeSet<_>>(),
-        )?;
+        )
+        .map_err(|err| source_error_at_line(err, function.line_num))?;
     }
     for test in &program.tests {
-        validate_source_expr_calls(&test.body, &functions)?;
-        validate_source_expr_vars(&test.body, &BTreeSet::new())?;
+        validate_source_expr_calls(&test.body, &functions)
+            .map_err(|err| source_error_at_line(err, test.line_num))?;
+        validate_source_expr_vars(&test.body, &BTreeSet::new())
+            .map_err(|err| source_error_at_line(err, test.line_num))?;
     }
     Ok(())
 }
