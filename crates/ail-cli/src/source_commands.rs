@@ -492,18 +492,27 @@ fn qualify_source_expr_calls(
         func
     };
 
-    let rewritten_args =
-        if qualified_func == "let" && args.len() == 3 && is_source_local_ident(&args[0]) {
-            vec![
-                args[0].clone(),
-                qualify_source_expr_calls(&args[1], module, local_functions),
-                qualify_source_expr_calls(&args[2], module, local_functions),
-            ]
-        } else {
-            args.iter()
-                .map(|arg| qualify_source_expr_calls(arg, module, local_functions))
-                .collect::<Vec<_>>()
-        };
+    let rewritten_args = if qualified_func == "let"
+        && args.len() == 3
+        && is_source_local_ident(&args[0])
+    {
+        vec![
+            args[0].clone(),
+            qualify_source_expr_calls(&args[1], module, local_functions),
+            qualify_source_expr_calls(&args[2], module, local_functions),
+        ]
+    } else if qualified_func == "let_typed" && args.len() == 4 && is_source_local_ident(&args[0]) {
+        vec![
+            args[0].clone(),
+            args[1].clone(),
+            qualify_source_expr_calls(&args[2], module, local_functions),
+            qualify_source_expr_calls(&args[3], module, local_functions),
+        ]
+    } else {
+        args.iter()
+            .map(|arg| qualify_source_expr_calls(arg, module, local_functions))
+            .collect::<Vec<_>>()
+    };
 
     format!("{}({})", qualified_func, rewritten_args.join(", "))
 }
@@ -783,6 +792,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
         "not" | "len" | "print" | "Var" => SourceArity::Exact(1),
         "if" | "let" | "fold" => SourceArity::Exact(3),
+        "let_typed" => SourceArity::Exact(4),
         "effect_call" => SourceArity::Min(2),
         "map" | "record" => SourceArity::Even,
         "tuple" | "list" | "set" | "match" => SourceArity::Any,
@@ -813,6 +823,14 @@ fn validate_source_expr_vars(expr: &str, scope: &BTreeSet<&str>) -> Result<(), C
             let mut inner_scope = scope.clone();
             inner_scope.insert(args[0].as_str());
             return validate_source_expr_vars(&args[2], &inner_scope);
+        }
+        if func == "let_typed" && args.len() == 4 {
+            validate_source_local_expr_name(&args[0])?;
+            validate_source_type_annotation(&args[1])?;
+            validate_source_expr_vars(&args[2], scope)?;
+            let mut inner_scope = scope.clone();
+            inner_scope.insert(args[0].as_str());
+            return validate_source_expr_vars(&args[3], &inner_scope);
         }
         let args_to_validate: &[String] = if func == "effect_call" && args.len() >= 2 {
             &args[2..]
@@ -972,6 +990,15 @@ fn infer_source_call_type(
             inner_scope.insert(args[0].clone(), value_ty);
             infer_source_expr_type(&args[2], &mut inner_scope, functions)
         }
+        "let_typed" if args.len() == 4 => {
+            validate_source_local_expr_name(&args[0])?;
+            validate_source_type_annotation(&args[1])?;
+            let value_ty = infer_source_expr_type(&args[2], scope, functions)?;
+            validate_source_type_match(&args[1], &value_ty, &format!("let binding {}", args[0]))?;
+            let mut inner_scope = scope.clone();
+            inner_scope.insert(args[0].clone(), args[1].clone());
+            infer_source_expr_type(&args[3], &mut inner_scope, functions)
+        }
         "if" if args.len() == 3 => {
             let cond_ty = infer_source_expr_type(&args[0], scope, functions)?;
             validate_source_type_match("Bool", &cond_ty, "if condition")?;
@@ -1082,6 +1109,15 @@ fn validate_source_type_match(expected: &str, actual: &str, context: &str) -> Re
     )))
 }
 
+fn validate_source_type_annotation(ty: &str) -> Result<(), CliError> {
+    if is_supported_source_type(ty) {
+        return Ok(());
+    }
+    Err(CliError::ParseError(format!(
+        "unsupported source type annotation `{ty}`"
+    )))
+}
+
 fn source_error_at_line(err: CliError, line_num: usize) -> CliError {
     match err {
         CliError::ParseError(message) if !message.contains("line ") => {
@@ -1135,7 +1171,9 @@ base 0\n"
     for function in &program.functions {
         acl.push_str(&format!(
             "op create_function id={} return={} body={}\n",
-            function.name, function.return_type, function.body
+            function.name,
+            function.return_type,
+            source_expr_to_acl_body(&function.body)
         ));
         for param in &function.params {
             acl.push_str(&format!(
@@ -1147,7 +1185,9 @@ base 0\n"
     for test in &program.tests {
         acl.push_str(&format!(
             "op create_test id={} return={} body={}\n",
-            test.name, test.return_type, test.body
+            test.name,
+            test.return_type,
+            source_expr_to_acl_body(&test.body)
         ));
     }
     for grant in &program.grants {
@@ -1158,6 +1198,28 @@ base 0\n"
     }
     acl.push_str("end\n");
     acl
+}
+
+fn source_expr_to_acl_body(expr: &str) -> String {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return expr.trim().to_string();
+    };
+    if func == "let_typed" && args.len() == 4 && is_source_local_ident(&args[0]) {
+        return format!(
+            "let({}, {}, {})",
+            args[0],
+            source_expr_to_acl_body(&args[2]),
+            source_expr_to_acl_body(&args[3])
+        );
+    }
+    format!(
+        "{}({})",
+        func,
+        args.iter()
+            .map(|arg| source_expr_to_acl_body(arg))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn render_source_import(out: &mut String, import: &str) {
@@ -1195,10 +1257,17 @@ fn render_source_function(out: &mut String, function: &SourceFunction, module: O
     }
 
     out.push_str(&format!("{signature} {{\n"));
-    for (name, value) in lets {
+    for binding in lets {
+        let annotation = binding
+            .ty
+            .as_ref()
+            .map(|ty| format!(": {ty}"))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "  let {name} = {}\n",
-            format_source_expr(&value, module)
+            "  let {}{} = {}\n",
+            binding.name,
+            annotation,
+            format_source_expr(&binding.value, module)
         ));
     }
     out.push_str(&format!(
@@ -1248,15 +1317,35 @@ fn format_source_call_name(func: &str, module: Option<&str>) -> String {
     render_source_decl_name(func, module)
 }
 
-fn source_let_chain(body: &str) -> (Vec<(String, String)>, String) {
+struct SourceLetBinding {
+    name: String,
+    ty: Option<String>,
+    value: String,
+}
+
+fn source_let_chain(body: &str) -> (Vec<SourceLetBinding>, String) {
     let mut lets = Vec::new();
     let mut current = body.trim().to_string();
     while let Some((func, args)) = parse_source_call(&current) {
-        if func != "let" || args.len() != 3 || !is_source_local_ident(&args[0]) {
-            break;
+        match (func.as_str(), args.as_slice()) {
+            ("let", [name, value, next]) if is_source_local_ident(name) => {
+                lets.push(SourceLetBinding {
+                    name: name.clone(),
+                    ty: None,
+                    value: value.clone(),
+                });
+                current = next.clone();
+            }
+            ("let_typed", [name, ty, value, next]) if is_source_local_ident(name) => {
+                lets.push(SourceLetBinding {
+                    name: name.clone(),
+                    ty: Some(ty.clone()),
+                    value: value.clone(),
+                });
+                current = next.clone();
+            }
+            _ => break,
         }
-        lets.push((args[0].clone(), args[1].clone()));
-        current = args[2].clone();
     }
     (lets, current)
 }
@@ -1746,23 +1835,38 @@ fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, CliError> {
                 "line {line_num}: only `let name = expression` statements may precede the final expression"
             )));
         };
-        let (name, value) = rest.split_once('=').ok_or_else(|| {
+        let (binding, value) = rest.split_once('=').ok_or_else(|| {
             CliError::ParseError(format!(
                 "line {line_num}: let statement requires `let name = expression`"
             ))
         })?;
-        let name = name.trim();
+        let binding = binding.trim();
         let value = value.trim();
+        let (name, ty) = if let Some((name, ty)) = binding.split_once(':') {
+            let name = name.trim();
+            let ty = ty.trim();
+            if ty.is_empty() {
+                return Err(CliError::ParseError(format!(
+                    "line {line_num}: typed let statement requires a type annotation"
+                )));
+            }
+            validate_source_type_name(ty, *line_num)?;
+            (name, Some(ty))
+        } else {
+            (binding, None)
+        };
         validate_source_local_name(name, *line_num)?;
         if value.is_empty() {
             return Err(CliError::ParseError(format!(
                 "line {line_num}: let statement requires a value expression"
             )));
         }
-        body = format!(
-            "let({name}, {}, {body})",
-            lower_source_expr(value, *line_num)?
-        );
+        let lowered_value = lower_source_expr(value, *line_num)?;
+        body = if let Some(ty) = ty {
+            format!("let_typed({name}, {ty}, {lowered_value}, {body})")
+        } else {
+            format!("let({name}, {lowered_value}, {body})")
+        };
     }
 
     Ok(body)
@@ -2145,12 +2249,16 @@ fn parse_source_grant(rest: &str, line_num: usize) -> Result<SourceGrant, CliErr
 }
 
 fn validate_source_type_name(ty: &str, line_num: usize) -> Result<(), CliError> {
-    match ty {
-        "Int" | "Bool" | "Text" | "Float" => Ok(()),
-        _ => Err(CliError::ParseError(format!(
-            "line {line_num}: unsupported source type `{ty}`"
-        ))),
+    if is_supported_source_type(ty) {
+        return Ok(());
     }
+    Err(CliError::ParseError(format!(
+        "line {line_num}: unsupported source type `{ty}`"
+    )))
+}
+
+fn is_supported_source_type(ty: &str) -> bool {
+    matches!(ty, "Int" | "Bool" | "Text" | "Float")
 }
 
 fn normalize_grant_target(target: &str) -> String {
@@ -2422,6 +2530,28 @@ test main_addition=eq(main(),42)
         assert!(acl.contains("op create_function id=fn.add_pair return=Int body=add(x, y)"));
         assert!(acl.contains("op add_param target=fn.add_pair name=x type=Int"));
         assert!(acl.contains("op add_param target=fn.add_pair name=y type=Int"));
+    }
+
+    #[test]
+    fn lowers_source_typed_let_annotations() {
+        let program = parse_ail_source(
+            r#"
+fn main() -> Int {
+  let base: Int = 20 + 20
+  return base + 2
+}
+"#,
+        )
+        .expect("source must parse");
+        let acl = source_program_to_acl(&program, "source_typed_let".to_string());
+
+        assert_eq!(
+            program.functions[0].body,
+            "let_typed(base, Int, add(20, 20), add(base, 2))"
+        );
+        assert!(acl.contains(
+            "op create_function id=fn.main return=Int body=let(base, add(20, 20), add(base, 2))"
+        ));
     }
 
     #[test]

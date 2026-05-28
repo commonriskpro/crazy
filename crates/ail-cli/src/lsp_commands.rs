@@ -576,8 +576,8 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
     AclSymbol {
         label: "let",
         detail: "AIL source local binding",
-        documentation: "Introduces a simple local binding inside a block-bodied source function.",
-        insert_text: "let ${1:name} = ${2:value}",
+        documentation: "Introduces a local binding inside a block-bodied source function, with an optional type annotation.",
+        insert_text: "let ${1:name}: ${2:Int} = ${3:value}",
     },
     AclSymbol {
         label: "if",

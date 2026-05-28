@@ -508,6 +508,45 @@ fn check_file_rejects_invalid_ail_source_without_execution() {
 }
 
 #[test]
+fn compile_file_accepts_source_typed_let_annotations() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("typed_let.ail");
+    source
+        .write_str("fn main() -> Int {\n  let base: Int = 20 + 20\n  return base + 2\n}\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_typed_let_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_typed_let.ail");
+    source
+        .write_str("fn main() -> Int {\n  let base: Bool = 20 + 20\n  return 0\n}\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "line 1: type mismatch in let binding base: expected Bool, got Int",
+        ));
+}
+
+#[test]
 fn compile_file_compiles_ail_source_without_acl_authoring() {
     use assert_fs::prelude::*;
 
@@ -1994,6 +2033,88 @@ fn lsp_diagnose_accepts_ail_source_params_and_let_variables() {
     assert_eq!(v["data"]["language"], "ail-source");
     assert_eq!(v["data"]["diagnostic_count"], 0);
     assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
+fn lsp_diagnose_accepts_source_typed_let_annotations() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int {\n  let base: Int = 20 + 20\n  return base + 2\n}\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
+fn lsp_completion_covers_source_typed_let_annotations() {
+    let completion_output = ail()
+        .args(["lsp", "--complete", "let", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let completion = parse_json_output(&completion_output);
+    assert_eq!(completion["status"], "ok");
+    let items = completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        items.iter().any(|item| item["label"] == "let"
+            && item["insertText"]
+                .as_str()
+                .expect("insertText")
+                .contains("let ${1:name}: ${2:Int} = ${3:value}")),
+        "completion must include typed let snippet; got: {items:?}"
+    );
+}
+
+#[test]
+fn lsp_diagnose_reports_source_typed_let_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int {\n  let base: Bool = 20 + 20\n  return 0\n}\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("line 1: type mismatch in let binding base: expected Bool, got Int")
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 0);
 }
 
 #[test]
@@ -4493,7 +4614,7 @@ fn fmt_file_json_outputs_canonical_ail_source() {
         .write_str(
             "fn add_pair(x:Int,y:Int)->Int=add(x,y)\n\
 fn main()->Int{\n\
-let base=add(20,20)\n\
+let base:Int=add(20,20)\n\
 return if gt(base,40){add(base,2)} else {0}\n\
 }\n\
 test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
@@ -4518,7 +4639,7 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
         .expect("formatted must be string");
     assert!(formatted.contains("fn add_pair(x: Int, y: Int) -> Int = x + y\n"));
     assert!(formatted.contains("fn main() -> Int {\n"));
-    assert!(formatted.contains("  let base = 20 + 20\n"));
+    assert!(formatted.contains("  let base: Int = 20 + 20\n"));
     assert!(formatted.contains("  return if base > 40 { base + 2 } else { 0 }\n"));
     assert!(formatted.contains("test math = 10 - 2 * 3 + (8 / 4 + 7 % 4) == 9\n"));
 }
