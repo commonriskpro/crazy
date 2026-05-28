@@ -1440,6 +1440,11 @@ fn parse_source_import(rest: &str, line_num: usize) -> Result<String, CliError> 
             "line {line_num}: import path `{import}` must not contain `..`"
         )));
     }
+    if !import.starts_with("./") {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: local import path `{import}` must start with `./`"
+        )));
+    }
     if Path::new(import).extension().and_then(|ext| ext.to_str()) != Some("ail") {
         return Err(CliError::ParseError(format!(
             "line {line_num}: import path `{import}` must end with `.ail`"
