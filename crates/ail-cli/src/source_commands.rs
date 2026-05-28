@@ -239,6 +239,7 @@ fn load_source_program_from_text_inner(
     }
     combined.extend(program);
     validate_source_program_symbols(&combined)?;
+    validate_source_program_grants(&combined)?;
     visiting.remove(&canonical_path);
     Ok(combined)
 }
@@ -297,6 +298,36 @@ fn duplicate_name<'a>(names: impl Iterator<Item = &'a str>) -> Option<String> {
         }
     }
     None
+}
+
+fn validate_source_program_grants(program: &SourceProgram) -> Result<(), CliError> {
+    let capabilities = program
+        .capabilities
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let grant_targets = program
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .chain(program.tests.iter().map(|test| test.name.as_str()))
+        .collect::<BTreeSet<_>>();
+
+    for grant in &program.grants {
+        if !grant_targets.contains(grant.target.as_str()) {
+            return Err(CliError::ParseError(format!(
+                "grant target `{}` is not declared as a function or test",
+                grant.target
+            )));
+        }
+        if !capabilities.contains(grant.capability.as_str()) {
+            return Err(CliError::ParseError(format!(
+                "grant capability `{}` is not declared",
+                grant.capability
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn source_program_to_graph(
