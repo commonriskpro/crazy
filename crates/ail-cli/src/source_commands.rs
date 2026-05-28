@@ -7,7 +7,7 @@
 // The current frontend lowers that source into the existing semantic graph
 // pipeline so the compiler/runtime path stays real end-to-end.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use ail_change::canonical::canonicalize_parsed;
@@ -335,8 +335,8 @@ fn validate_source_program_calls(program: &SourceProgram) -> Result<(), CliError
     let functions = program
         .functions
         .iter()
-        .map(|function| function.name.as_str())
-        .collect::<BTreeSet<_>>();
+        .map(|function| (function.name.as_str(), function.params.len()))
+        .collect::<BTreeMap<_, _>>();
 
     for function in &program.functions {
         validate_source_expr_calls(&function.body, &functions)?;
@@ -347,11 +347,19 @@ fn validate_source_program_calls(program: &SourceProgram) -> Result<(), CliError
     Ok(())
 }
 
-fn validate_source_expr_calls(expr: &str, functions: &BTreeSet<&str>) -> Result<(), CliError> {
+fn validate_source_expr_calls(
+    expr: &str,
+    functions: &BTreeMap<&str, usize>,
+) -> Result<(), CliError> {
     let mut calls = Vec::new();
     collect_source_calls(expr, &mut calls);
-    for call in calls {
-        if is_known_source_builtin(&call) || source_function_exists(functions, &call) {
+    for (call, argc) in calls {
+        if let Some(arity) = known_source_builtin_arity(&call) {
+            validate_source_call_arity(&call, argc, arity)?;
+            continue;
+        }
+        if let Some(expected) = source_function_arity(functions, &call) {
+            validate_source_call_arity(&call, argc, SourceArity::Exact(expected))?;
             continue;
         }
         return Err(CliError::ParseError(format!(
@@ -361,57 +369,59 @@ fn validate_source_expr_calls(expr: &str, functions: &BTreeSet<&str>) -> Result<
     Ok(())
 }
 
-fn collect_source_calls(expr: &str, calls: &mut Vec<String>) {
+fn collect_source_calls(expr: &str, calls: &mut Vec<(String, usize)>) {
     let Some((func, args)) = parse_source_call(expr) else {
         return;
     };
-    calls.push(func);
+    calls.push((func, args.len()));
     for arg in args {
         collect_source_calls(&arg, calls);
     }
 }
 
-fn source_function_exists(functions: &BTreeSet<&str>, call: &str) -> bool {
+fn source_function_arity(functions: &BTreeMap<&str, usize>, call: &str) -> Option<usize> {
     let normalized = if call.starts_with("fn.") {
         call.to_string()
     } else {
         format!("fn.{call}")
     };
-    functions.contains(normalized.as_str())
+    functions.get(normalized.as_str()).copied()
 }
 
-fn is_known_source_builtin(call: &str) -> bool {
-    matches!(
-        call,
-        "add"
-            | "sub"
-            | "mul"
-            | "div"
-            | "mod"
-            | "signed_mod"
-            | "eq"
-            | "ne"
-            | "gt"
-            | "ge"
-            | "lt"
-            | "le"
-            | "and"
-            | "or"
-            | "not"
-            | "if"
-            | "let"
-            | "len"
-            | "concat"
-            | "print"
-            | "tuple"
-            | "list"
-            | "record"
-            | "set"
-            | "map"
-            | "match"
-            | "fold"
-            | "Var"
-    )
+#[derive(Debug, Clone, Copy)]
+enum SourceArity {
+    Exact(usize),
+    Even,
+    Any,
+}
+
+fn validate_source_call_arity(
+    call: &str,
+    actual: usize,
+    arity: SourceArity,
+) -> Result<(), CliError> {
+    match arity {
+        SourceArity::Exact(expected) if actual != expected => Err(CliError::ParseError(format!(
+            "function call `{call}` expects {expected} argument(s), got {actual}"
+        ))),
+        SourceArity::Even if !actual.is_multiple_of(2) => Err(CliError::ParseError(format!(
+            "function call `{call}` expects an even number of arguments, got {actual}"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
+    let arity = match call {
+        "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
+        | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
+        "not" | "len" | "print" | "Var" => SourceArity::Exact(1),
+        "if" | "let" | "fold" => SourceArity::Exact(3),
+        "map" | "record" => SourceArity::Even,
+        "tuple" | "list" | "set" | "match" => SourceArity::Any,
+        _ => return None,
+    };
+    Some(arity)
 }
 
 fn source_program_to_graph(
