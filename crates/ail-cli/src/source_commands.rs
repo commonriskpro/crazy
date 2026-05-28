@@ -944,6 +944,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "text.contains" | "text.ends_with" | "text.index_of" | "text.starts_with"
         | "text_contains" | "text_ends_with" | "text_index_of" | "text_starts_with" | "text.eq"
         | "text_eq" => SourceArity::Exact(2),
+        "text.slice" | "text_slice" => SourceArity::Exact(3),
         "field" | "index" | "unwrap_or" | "first_or" | "last_or" => SourceArity::Exact(2),
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
@@ -1319,6 +1320,10 @@ fn infer_source_call_type(
         "text.index_of" => {
             validate_source_arg_types(func, args, scope, functions, &["Text", "Text"])?;
             Ok("Int".to_string())
+        }
+        "text.slice" => {
+            validate_source_arg_types(func, args, scope, functions, &["Text", "Int", "Int"])?;
+            Ok("Text".to_string())
         }
         "list" => infer_source_list_type(args, scope, functions),
         "tuple" => infer_source_tuple_type(args, scope, functions),
@@ -2153,6 +2158,18 @@ fn format_source_expr_node(
                 "text_index_of({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "text.slice" && args.len() == 3 {
+        return (
+            format!(
+                "text_slice({}, {}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants),
+                format_source_expr(&args[2], module, constants)
             ),
             CALL_PRECEDENCE,
         );
@@ -3083,6 +3100,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_text_index_of_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_text_slice_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_text_boundary_expr(expr, line_num)? {
         return Ok(lowered);
     }
@@ -3412,6 +3432,26 @@ fn lower_source_text_index_of_expr(
         "text.index_of({}, {})",
         lower_source_expr(&args[0], line_num)?,
         lower_source_expr(&args[1], line_num)?
+    )))
+}
+
+fn lower_source_text_slice_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "text_slice" {
+        return Ok(None);
+    }
+    if args.len() != 3 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: text_slice requires `text_slice(value, start, length)`"
+        )));
+    }
+    Ok(Some(format!(
+        "text.slice({}, {}, {})",
+        lower_source_expr(&args[0], line_num)?,
+        lower_source_expr(&args[1], line_num)?,
+        lower_source_expr(&args[2], line_num)?
     )))
 }
 
@@ -5031,6 +5071,21 @@ fn find(haystack: Text, needle: Text) -> Int = text_index_of(haystack, needle)
     }
 
     #[test]
+    fn lowers_source_text_slice_helper() {
+        let program = parse_ail_source(
+            r#"
+fn piece(value: Text, start: Int, length: Int) -> Text = text_slice(value, start, length)
+"#,
+        )
+        .expect("source text_slice must parse");
+        let acl = source_program_to_acl(&program, "source_text_slice".to_string());
+
+        assert!(acl.contains(
+            "op create_function id=fn.piece return=Text body=text.slice(value, start, length)"
+        ));
+    }
+
+    #[test]
     fn lowers_source_text_boundary_helpers() {
         let program = parse_ail_source(
             r#"
@@ -5099,6 +5154,19 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
         assert_eq!(item_count, 1);
         assert!(formatted.contains(
             "fn find(haystack: Text, needle: Text) -> Int = text_index_of(haystack, needle)\n"
+        ));
+    }
+
+    #[test]
+    fn formats_source_text_slice_helper() {
+        let (formatted, item_count) = format_ail_source(
+            "fn piece(value:Text,start:Int,length:Int)->Text=text.slice(value,start,length)\n",
+        )
+        .expect("source text_slice must format");
+
+        assert_eq!(item_count, 1);
+        assert!(formatted.contains(
+            "fn piece(value: Text, start: Int, length: Int) -> Text = text_slice(value, start, length)\n"
         ));
     }
 

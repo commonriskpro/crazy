@@ -348,6 +348,30 @@ fn run_file_executes_ail_source_text_index_of_helper() {
 }
 
 #[test]
+fn run_file_executes_ail_source_text_slice_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("text_slice.ail");
+    source
+        .write_str("fn piece() -> Text = text_slice(\"Hello, \" ++ \"AIL\", 7, 3)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.piece",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.piece"))
+        .stdout(predicate::str::contains("result: AIL"));
+}
+
+#[test]
 fn run_file_executes_ail_source_text_boundary_helpers() {
     use assert_fs::prelude::*;
 
@@ -862,6 +886,47 @@ fn compile_file_rejects_source_text_index_of_helper_type_mismatch() {
         .failure()
         .stderr(predicate::str::contains(
             "type mismatch in text.index_of argument 2: expected Text, got Int",
+        ));
+}
+
+#[test]
+fn compile_file_accepts_source_text_slice_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("text_slice.ail");
+    source
+        .write_str(
+            "fn piece(value: Text, start: Int, length: Int) -> Text = text_slice(value, start, length)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_text_slice_helper_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_text_slice.ail");
+    source
+        .write_str("fn piece(length: Text) -> Text = text_slice(\"Hello\", 0, length)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in text.slice argument 3: expected Int, got Text",
         ));
 }
 
@@ -3397,6 +3462,34 @@ fn lsp_diagnose_accepts_source_text_index_of_helper() {
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_text_slice_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn piece(value: Text, start: Int, length: Int) -> Text = text_slice(value, start, length)\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_text_boundary_helpers() {
     use assert_fs::prelude::*;
 
@@ -5059,6 +5152,24 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .any(|item| item["label"] == "text_index_of"
                 && item["detail"] == "AIL source Text search"),
         "completion must include AIL source text_index_of helper; got: {text_index_of_items:?}"
+    );
+
+    let text_slice_completion_output = ail()
+        .args(["lsp", "--complete", "text_slice", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let text_slice_completion = parse_json_output(&text_slice_completion_output);
+    let text_slice_items = text_slice_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        text_slice_items
+            .iter()
+            .any(|item| item["label"] == "text_slice"
+                && item["detail"] == "AIL source Text helper"),
+        "completion must include AIL source text_slice helper; got: {text_slice_items:?}"
     );
 
     let text_starts_with_completion_output = ail()

@@ -216,6 +216,39 @@ fn string_concat_call_preserves_text_export_type() {
 }
 
 #[test]
+fn string_slice_call_preserves_text_export_type() {
+    let artifact = emit_text_expr(
+        "fn.main",
+        AnfExpr::Let {
+            name: "value".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("hello".to_string()))),
+            body: Box::new(AnfExpr::Let {
+                name: "start".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                body: Box::new(AnfExpr::Let {
+                    name: "length".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(3))),
+                    body: Box::new(AnfExpr::Call {
+                        func: "text.slice".to_string(),
+                        args: vec![
+                            "value".to_string(),
+                            "start".to_string(),
+                            "length".to_string(),
+                        ],
+                    }),
+                }),
+            }),
+        },
+    );
+
+    assert_eq!(
+        artifact.export_types.get("main"),
+        Some(&WasmTypeDescriptor::Text),
+        "text.slice(Text, Int, Int) must preserve the public Text ABI descriptor"
+    );
+}
+
+#[test]
 fn string_eq_call_exports_scalar_wasm() {
     let artifact = emit_text_expr(
         "fn.main",

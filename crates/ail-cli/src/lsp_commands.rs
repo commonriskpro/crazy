@@ -832,6 +832,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_index_of(${1:haystack}, ${2:needle})",
     },
     AclSymbol {
+        label: "text_slice",
+        detail: "AIL source Text helper",
+        documentation: "Returns a safe byte slice of Text from start for length bytes.",
+        insert_text: "text_slice(${1:value}, ${2:start}, ${3:length})",
+    },
+    AclSymbol {
         label: "text_starts_with",
         detail: "AIL source Text predicate",
         documentation: "Returns true when Text starts with the given prefix.",
