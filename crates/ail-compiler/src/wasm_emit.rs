@@ -31,6 +31,9 @@ fn function_index(bindings: &[AnfBinding], function_offset: u32) -> BTreeMap<Str
     let mut functions = BTreeMap::new();
     for (idx, binding) in bindings.iter().enumerate() {
         functions.insert(binding.name.clone(), function_offset + idx as u32);
+        if let Some(source_name) = binding.name.strip_prefix("fn.") {
+            functions.insert(source_name.to_string(), function_offset + idx as u32);
+        }
         functions.insert(export_name(&binding.name), function_offset + idx as u32);
     }
     functions
@@ -2004,4 +2007,29 @@ pub(crate) fn build_code_section(
     }
 
     Ok(Some(codes))
+}
+
+#[cfg(test)]
+mod tests {
+    use ail_core::semantic_graph::NodeRef;
+
+    use crate::anf::{AnfBinding, AnfExpr};
+    use crate::core_ir::LiteralValue;
+
+    use super::function_index;
+
+    #[test]
+    fn function_index_resolves_source_module_qualified_calls() {
+        let bindings = vec![AnfBinding {
+            source_ref: NodeRef(0),
+            name: "fn.math.add_pair".to_string(),
+            expr: AnfExpr::Literal(LiteralValue::Int(0)),
+        }];
+
+        let functions = function_index(&bindings, 3);
+
+        assert_eq!(functions.get("fn.math.add_pair"), Some(&3));
+        assert_eq!(functions.get("math.add_pair"), Some(&3));
+        assert_eq!(functions.get("add_pair"), Some(&3));
+    }
 }

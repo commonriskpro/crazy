@@ -22,6 +22,7 @@ use crate::output::{OutputMode, print_response};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SourceProgram {
+    module: Option<String>,
     imports: Vec<String>,
     capabilities: Vec<String>,
     functions: Vec<SourceFunction>,
@@ -102,6 +103,9 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
     let program = parse_ail_source(src)?;
     let mut out = String::new();
 
+    if let Some(module) = &program.module {
+        render_source_module(&mut out, module);
+    }
     for import in &program.imports {
         render_source_import(&mut out, import);
     }
@@ -109,18 +113,19 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
         render_source_capability(&mut out, capability);
     }
     for function in &program.functions {
-        render_source_function(&mut out, function);
+        render_source_function(&mut out, function, program.module.as_deref());
     }
     for test in &program.tests {
-        render_source_test(&mut out, test);
+        render_source_test(&mut out, test, program.module.as_deref());
     }
     for grant in &program.grants {
-        render_source_grant(&mut out, grant);
+        render_source_grant(&mut out, grant, program.module.as_deref());
     }
 
     Ok((
         out,
-        program.imports.len()
+        usize::from(program.module.is_some())
+            + program.imports.len()
             + program.capabilities.len()
             + program.functions.len()
             + program.tests.len()
@@ -133,6 +138,7 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
 /// Supported initial syntax:
 ///
 /// ```text
+/// module app
 /// use "./math.ail"
 /// capability log.write
 /// fn main() -> Int = add(20, 22)
@@ -145,6 +151,7 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
 /// test main_addition = eq(add(20, 22), 42)
 /// ```
 pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
+    let mut module = None;
     let mut imports = Vec::new();
     let mut capabilities = Vec::new();
     let mut functions = Vec::new();
@@ -160,7 +167,14 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
     while idx < statements.len() {
         let (line_num, statement) = &statements[idx];
 
-        if let Some(rest) = statement.strip_prefix("use ") {
+        if let Some(rest) = statement.strip_prefix("module ") {
+            if module.is_some() {
+                return Err(CliError::ParseError(format!(
+                    "line {line_num}: module declaration may appear only once"
+                )));
+            }
+            module = Some(parse_source_module(rest, *line_num)?);
+        } else if let Some(rest) = statement.strip_prefix("use ") {
             imports.push(parse_source_import(rest, *line_num)?);
         } else if let Some(rest) = statement.strip_prefix("capability ") {
             capabilities.push(parse_source_capability(rest, *line_num)?);
@@ -180,7 +194,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
             grants.push(parse_source_grant(rest, *line_num)?);
         } else {
             return Err(CliError::ParseError(format!(
-                "line {line_num}: expected `use`, `capability`, `fn`, `test`, or `grant`, got `{statement}`"
+                "line {line_num}: expected `module`, `use`, `capability`, `fn`, `test`, or `grant`, got `{statement}`"
             )));
         }
         idx += 1;
@@ -188,6 +202,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
 
     if imports.is_empty()
         && capabilities.is_empty()
+        && module.is_none()
         && functions.is_empty()
         && tests.is_empty()
         && grants.is_empty()
@@ -197,13 +212,15 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
         ));
     }
 
-    let program = SourceProgram {
+    let mut program = SourceProgram {
+        module,
         imports,
         capabilities,
         functions,
         tests,
         grants,
     };
+    qualify_source_program_module(&mut program);
     validate_source_program_symbols(&program)?;
     Ok(program)
 }
@@ -303,6 +320,83 @@ impl SourceProgram {
         self.tests.extend(other.tests);
         self.grants.extend(other.grants);
     }
+}
+
+fn qualify_source_program_module(program: &mut SourceProgram) {
+    let Some(module) = program.module.clone() else {
+        return;
+    };
+
+    let local_functions = program
+        .functions
+        .iter()
+        .filter_map(|function| unqualified_source_name(&function.name, "fn."))
+        .collect::<BTreeSet<_>>();
+
+    for function in &mut program.functions {
+        function.name = qualify_source_name(&function.name, "fn.", &module);
+        function.body = qualify_source_expr_calls(&function.body, &module, &local_functions);
+    }
+    for test in &mut program.tests {
+        test.name = qualify_source_name(&test.name, "test.", &module);
+        test.body = qualify_source_expr_calls(&test.body, &module, &local_functions);
+    }
+    for grant in &mut program.grants {
+        grant.target = qualify_source_name(&grant.target, "fn.", &module);
+    }
+}
+
+fn unqualified_source_name(name: &str, prefix: &str) -> Option<String> {
+    let bare = name.strip_prefix(prefix)?;
+    if bare.contains('.') {
+        None
+    } else {
+        Some(bare.to_string())
+    }
+}
+
+fn qualify_source_name(name: &str, prefix: &str, module: &str) -> String {
+    let Some(bare) = name.strip_prefix(prefix) else {
+        return name.to_string();
+    };
+    if bare.contains('.') {
+        name.to_string()
+    } else {
+        format!("{prefix}{module}.{bare}")
+    }
+}
+
+fn qualify_source_expr_calls(
+    expr: &str,
+    module: &str,
+    local_functions: &BTreeSet<String>,
+) -> String {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return expr.trim().to_string();
+    };
+    let qualified_func = if !func.contains('.')
+        && known_source_builtin_arity(&func).is_none()
+        && local_functions.contains(&func)
+    {
+        format!("{module}.{func}")
+    } else {
+        func
+    };
+
+    let rewritten_args = if qualified_func == "let" && args.len() == 3 && is_source_ident(&args[0])
+    {
+        vec![
+            args[0].clone(),
+            qualify_source_expr_calls(&args[1], module, local_functions),
+            qualify_source_expr_calls(&args[2], module, local_functions),
+        ]
+    } else {
+        args.iter()
+            .map(|arg| qualify_source_expr_calls(arg, module, local_functions))
+            .collect::<Vec<_>>()
+    };
+
+    format!("{}({})", qualified_func, rewritten_args.join(", "))
 }
 
 fn validate_source_program_symbols(program: &SourceProgram) -> Result<(), CliError> {
@@ -728,12 +822,19 @@ fn render_source_import(out: &mut String, import: &str) {
     out.push_str(&format!("use \"{import}\"\n"));
 }
 
+fn render_source_module(out: &mut String, module: &str) {
+    out.push_str(&format!("module {module}\n"));
+}
+
 fn render_source_capability(out: &mut String, capability: &str) {
     out.push_str(&format!("capability {capability}\n"));
 }
 
-fn render_source_function(out: &mut String, function: &SourceFunction) {
-    let name = function.name.strip_prefix("fn.").unwrap_or(&function.name);
+fn render_source_function(out: &mut String, function: &SourceFunction, module: Option<&str>) {
+    let name = render_source_decl_name(
+        function.name.strip_prefix("fn.").unwrap_or(&function.name),
+        module,
+    );
     let params = function
         .params
         .iter()
@@ -746,38 +847,61 @@ fn render_source_function(out: &mut String, function: &SourceFunction) {
     if lets.is_empty() {
         out.push_str(&format!(
             "{signature} = {}\n",
-            format_source_expr(&function.body)
+            format_source_expr(&function.body, module)
         ));
         return;
     }
 
     out.push_str(&format!("{signature} {{\n"));
     for (name, value) in lets {
-        out.push_str(&format!("  let {name} = {}\n", format_source_expr(&value)));
+        out.push_str(&format!(
+            "  let {name} = {}\n",
+            format_source_expr(&value, module)
+        ));
     }
-    out.push_str(&format!("  return {}\n", format_source_expr(&final_expr)));
+    out.push_str(&format!(
+        "  return {}\n",
+        format_source_expr(&final_expr, module)
+    ));
     out.push_str("}\n");
 }
 
-fn render_source_test(out: &mut String, test: &SourceTest) {
-    let name = test.name.strip_prefix("test.").unwrap_or(&test.name);
+fn render_source_test(out: &mut String, test: &SourceTest, module: Option<&str>) {
+    let name = render_source_decl_name(
+        test.name.strip_prefix("test.").unwrap_or(&test.name),
+        module,
+    );
     if test.return_type == "Bool" {
         out.push_str(&format!(
             "test {name} = {}\n",
-            format_source_expr(&test.body)
+            format_source_expr(&test.body, module)
         ));
     } else {
         out.push_str(&format!(
             "test {name} -> {} = {}\n",
             test.return_type,
-            format_source_expr(&test.body)
+            format_source_expr(&test.body, module)
         ));
     }
 }
 
-fn render_source_grant(out: &mut String, grant: &SourceGrant) {
-    let target = grant.target.strip_prefix("fn.").unwrap_or(&grant.target);
+fn render_source_grant(out: &mut String, grant: &SourceGrant, module: Option<&str>) {
+    let target = render_source_decl_name(
+        grant.target.strip_prefix("fn.").unwrap_or(&grant.target),
+        module,
+    );
     out.push_str(&format!("grant {target} {}\n", grant.capability));
+}
+
+fn render_source_decl_name(name: &str, module: Option<&str>) -> String {
+    module
+        .and_then(|module| name.strip_prefix(&format!("{module}.")))
+        .unwrap_or(name)
+        .to_string()
+}
+
+fn format_source_call_name(func: &str, module: Option<&str>) -> String {
+    render_source_decl_name(func, module)
 }
 
 fn source_let_chain(body: &str) -> (Vec<(String, String)>, String) {
@@ -793,7 +917,7 @@ fn source_let_chain(body: &str) -> (Vec<(String, String)>, String) {
     (lets, current)
 }
 
-fn format_source_expr(expr: &str) -> String {
+fn format_source_expr(expr: &str, module: Option<&str>) -> String {
     let expr = expr.trim();
     let Some((func, args)) = parse_source_call(expr) else {
         return expr.to_string();
@@ -802,17 +926,17 @@ fn format_source_expr(expr: &str) -> String {
     if func == "if" && args.len() == 3 {
         return format!(
             "if {} {{ {} }} else {{ {} }}",
-            format_source_expr(&args[0]),
-            format_source_expr(&args[1]),
-            format_source_expr(&args[2])
+            format_source_expr(&args[0], module),
+            format_source_expr(&args[1], module),
+            format_source_expr(&args[2], module)
         );
     }
 
     format!(
         "{}({})",
-        func,
+        format_source_call_name(&func, module),
         args.iter()
-            .map(|arg| format_source_expr(arg))
+            .map(|arg| format_source_expr(arg, module))
             .collect::<Vec<_>>()
             .join(", ")
     )
@@ -950,6 +1074,12 @@ fn strip_source_comment(line: &str) -> &str {
     }
 
     line
+}
+
+fn parse_source_module(rest: &str, line_num: usize) -> Result<String, CliError> {
+    let module = rest.trim();
+    validate_source_name(module, line_num)?;
+    Ok(module.to_string())
 }
 
 fn parse_source_import(rest: &str, line_num: usize) -> Result<String, CliError> {
@@ -1407,6 +1537,44 @@ fn main() -> Int = 2
             err.to_string()
                 .contains("duplicate function declaration `fn.main`")
         );
+    }
+
+    #[test]
+    fn qualifies_source_module_declarations_and_local_calls() {
+        let program = parse_ail_source(
+            r#"
+module math
+fn add_pair(x: Int, y: Int) -> Int = add(x, y)
+fn main() -> Int = add_pair(20, 22)
+test main_addition = eq(main(), 42)
+"#,
+        )
+        .expect("source module must parse");
+        let acl = source_program_to_acl(&program, "source_module".to_string());
+        let (formatted, item_count) = format_ail_source(
+            r#"
+module math
+fn add_pair(x:Int,y:Int)->Int=add(x,y)
+fn main()->Int=add_pair(20,22)
+test main_addition=eq(main(),42)
+"#,
+        )
+        .expect("source module must format");
+
+        assert_eq!(program.module.as_deref(), Some("math"));
+        assert!(acl.contains("op create_function id=fn.math.add_pair return=Int body=add(x, y)"));
+        assert!(
+            acl.contains(
+                "op create_function id=fn.math.main return=Int body=math.add_pair(20, 22)"
+            )
+        );
+        assert!(acl.contains(
+            "op create_test id=test.math.main_addition return=Bool body=eq(math.main(), 42)"
+        ));
+        assert_eq!(item_count, 4);
+        assert!(formatted.contains("module math\n"));
+        assert!(formatted.contains("fn main() -> Int = add_pair(20, 22)\n"));
+        assert!(formatted.contains("test main_addition = eq(main(), 42)\n"));
     }
 
     #[test]
