@@ -352,6 +352,79 @@ fn emit_i64_primitive_call<'a>(
     Some(ValType::I64)
 }
 
+fn emit_int_min<'a>(
+    args: &[String],
+    ctx: &WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [left, right] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+
+    emit_local_as_i64(ctx, left, insns);
+    emit_local_as_i64(ctx, right, insns);
+    insns.push(Instruction::I64LeS);
+    insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+    emit_local_as_i64(ctx, left, insns);
+    insns.push(Instruction::Else);
+    emit_local_as_i64(ctx, right, insns);
+    insns.push(Instruction::End);
+
+    Some(ValType::I64)
+}
+
+fn emit_int_max<'a>(
+    args: &[String],
+    ctx: &WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [left, right] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+
+    emit_local_as_i64(ctx, left, insns);
+    emit_local_as_i64(ctx, right, insns);
+    insns.push(Instruction::I64GeS);
+    insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+    emit_local_as_i64(ctx, left, insns);
+    insns.push(Instruction::Else);
+    emit_local_as_i64(ctx, right, insns);
+    insns.push(Instruction::End);
+
+    Some(ValType::I64)
+}
+
+fn emit_int_clamp<'a>(
+    args: &[String],
+    ctx: &WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [value, low, high] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+
+    emit_local_as_i64(ctx, value, insns);
+    emit_local_as_i64(ctx, low, insns);
+    insns.push(Instruction::I64LtS);
+    insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+    emit_local_as_i64(ctx, low, insns);
+    insns.push(Instruction::Else);
+    emit_local_as_i64(ctx, value, insns);
+    emit_local_as_i64(ctx, high, insns);
+    insns.push(Instruction::I64GtS);
+    insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+    emit_local_as_i64(ctx, high, insns);
+    insns.push(Instruction::Else);
+    emit_local_as_i64(ctx, value, insns);
+    insns.push(Instruction::End);
+    insns.push(Instruction::End);
+
+    Some(ValType::I64)
+}
+
 fn emit_text_len_from_local<'a>(
     ctx: &WasmCodegenCtx<'a>,
     name: &str,
@@ -2022,6 +2095,15 @@ fn emit_anf_expr<'a>(
                 emit_text_len_from_local(ctx, &args[0], insns);
                 insns.push(Instruction::I64ExtendI32U);
                 return Some(ValType::I64);
+            }
+            if matches!(func.as_str(), "int.min" | "int_min") {
+                return emit_int_min(args, ctx, insns);
+            }
+            if matches!(func.as_str(), "int.max" | "int_max") {
+                return emit_int_max(args, ctx, insns);
+            }
+            if matches!(func.as_str(), "int.clamp" | "int_clamp") {
+                return emit_int_clamp(args, ctx, insns);
             }
             if matches!(func.as_str(), "concat" | "text.concat") {
                 return emit_text_concat(args, ctx, insns);

@@ -55,6 +55,47 @@ pub(super) fn lower_call(
                 }
             }
         }
+        // ── Int bounds helpers → I64 ────────────────────────────
+        "int.min" | "int_min" | "int.max" | "int_max" if args.len() == 2 => {
+            let lhs = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            let rhs = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
+            match (lhs, rhs) {
+                (Some(l), Some(r)) => {
+                    let cc = if matches!(func, "int.min" | "int_min") {
+                        IntCC::SignedLessThanOrEqual
+                    } else {
+                        IntCC::SignedGreaterThanOrEqual
+                    };
+                    let keep_left = builder.ins().icmp(cc, l, r);
+                    LowerResult::Value(builder.ins().select(keep_left, l, r))
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
+        "int.clamp" | "int_clamp" if args.len() == 3 => {
+            let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            let low = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
+            let high = ctx.lookup(args[2].as_str()).map(|(v, _)| v);
+            match (value, low, high) {
+                (Some(value), Some(low), Some(high)) => {
+                    let below_low = builder.ins().icmp(IntCC::SignedLessThan, value, low);
+                    let low_or_value = builder.ins().select(below_low, low, value);
+                    let above_high =
+                        builder
+                            .ins()
+                            .icmp(IntCC::SignedGreaterThan, low_or_value, high);
+                    LowerResult::Value(builder.ins().select(above_high, high, low_or_value))
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
+
         // ── binary comparisons → I8 ────────────────────────────
         "i64.eq" | "==" | "eq" | "i64.ne" | "!=" | "ne" | "i64.lt_s" | "<" | "lt" | "i64.le_s"
         | "<=" | "le" | "i64.gt_s" | ">" | "gt" | "i64.ge_s" | ">=" | "ge"

@@ -186,6 +186,17 @@ fn fold_call(
         ("i64.div_s" | "/" | "div", [a, b]) => Some(LiteralValue::Int(a / b)),
         ("i64.rem_s" | "%" | "mod", [_, 0]) => None,
         ("i64.rem_s" | "%" | "mod", [a, b]) => Some(LiteralValue::Int(a % b)),
+        ("int.min" | "int_min", [a, b]) => Some(LiteralValue::Int((*a).min(*b))),
+        ("int.max" | "int_max", [a, b]) => Some(LiteralValue::Int((*a).max(*b))),
+        ("int.clamp" | "int_clamp", [value, low, high]) => {
+            Some(LiteralValue::Int(if value < low {
+                *low
+            } else if value > high {
+                *high
+            } else {
+                *value
+            }))
+        }
         ("i64.eq" | "==" | "eq", [a, b]) => Some(LiteralValue::Bool(a == b)),
         ("i64.ne" | "!=" | "ne", [a, b]) => Some(LiteralValue::Bool(a != b)),
         ("i64.lt_s" | "<" | "lt", [a, b]) => Some(LiteralValue::Bool(a < b)),

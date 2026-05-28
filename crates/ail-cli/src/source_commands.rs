@@ -940,13 +940,15 @@ fn validate_source_call_arity(
 fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
     let arity = match call {
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
-        | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
+        | "le" | "and" | "or" | "concat" | "int.min" | "int.max" | "int_min" | "int_max" => {
+            SourceArity::Exact(2)
+        }
         "text.contains" | "text.ends_with" | "text.index_of" | "text.starts_with"
         | "text_contains" | "text_ends_with" | "text_index_of" | "text_starts_with" | "text.eq"
         | "text_eq" => SourceArity::Exact(2),
         "text.parse_int_or" | "text_parse_int_or" => SourceArity::Exact(2),
         "text.byte_at_or" | "text_byte_at_or" | "text.replace_first" | "text_replace_first"
-        | "text.slice" | "text_slice" => SourceArity::Exact(3),
+        | "text.slice" | "text_slice" | "int.clamp" | "int_clamp" => SourceArity::Exact(3),
         "field" | "index" | "unwrap_or" | "first_or" | "last_or" => SourceArity::Exact(2),
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
@@ -1276,8 +1278,12 @@ fn infer_source_call_type(
         "match" if args.len() >= 3 && args.len() % 2 == 1 => {
             infer_source_match_type(args, scope, functions)
         }
-        "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" => {
+        "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "int.min" | "int.max" => {
             validate_source_arg_types(func, args, scope, functions, &["Int", "Int"])?;
+            Ok("Int".to_string())
+        }
+        "int.clamp" => {
+            validate_source_arg_types(func, args, scope, functions, &["Int", "Int", "Int"])?;
             Ok("Int".to_string())
         }
         "gt" | "ge" | "lt" | "le" => {
@@ -2143,6 +2149,34 @@ fn format_source_expr_node(
             format!(
                 "is_empty({})",
                 format_source_expr(&value, module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if matches!(func.as_str(), "int.min" | "int.max") && args.len() == 2 {
+        let helper = if func == "int.min" {
+            "int_min"
+        } else {
+            "int_max"
+        };
+        return (
+            format!(
+                "{helper}({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "int.clamp" && args.len() == 3 {
+        return (
+            format!(
+                "int_clamp({}, {}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants),
+                format_source_expr(&args[2], module, constants)
             ),
             CALL_PRECEDENCE,
         );
@@ -3154,6 +3188,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_is_empty_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_int_bounds_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_text_eq_expr(expr, line_num)? {
         return Ok(lowered);
     }
@@ -3444,6 +3481,31 @@ fn lower_source_is_empty_expr(expr: &str, line_num: usize) -> Result<Option<Stri
     Ok(Some(format!(
         "eq(len({}), 0)",
         lower_source_expr(&args[0], line_num)?
+    )))
+}
+
+fn lower_source_int_bounds_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    let (lowered_func, expected) = match func.as_str() {
+        "int_min" => ("int.min", "int_min(left, right)"),
+        "int_max" => ("int.max", "int_max(left, right)"),
+        "int_clamp" => ("int.clamp", "int_clamp(value, low, high)"),
+        _ => return Ok(None),
+    };
+    let expected_len = if func == "int_clamp" { 3 } else { 2 };
+    if args.len() != expected_len {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: {func} requires `{expected}`"
+        )));
+    }
+    Ok(Some(format!(
+        "{lowered_func}({})",
+        args.iter()
+            .map(|arg| lower_source_expr(arg, line_num))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(", ")
     )))
 }
 
@@ -5202,6 +5264,25 @@ fn same(left: Text, right: Text) -> Bool = text_eq(left, right)
     }
 
     #[test]
+    fn lowers_source_int_bounds_helpers() {
+        let program = parse_ail_source(
+            r#"
+fn low(left: Int, right: Int) -> Int = int_min(left, right)
+fn high(left: Int, right: Int) -> Int = int_max(left, right)
+fn bounded(value: Int, low: Int, high: Int) -> Int = int_clamp(value, low, high)
+"#,
+        )
+        .expect("source int bounds helpers must parse");
+        let acl = source_program_to_acl(&program, "source_int_bounds".to_string());
+
+        assert!(acl.contains("op create_function id=fn.low return=Int body=int.min(left, right)"));
+        assert!(acl.contains("op create_function id=fn.high return=Int body=int.max(left, right)"));
+        assert!(acl.contains(
+            "op create_function id=fn.bounded return=Int body=int.clamp(value, low, high)"
+        ));
+    }
+
+    #[test]
     fn lowers_source_text_trim_helper() {
         let program = parse_ail_source(
             r#"
@@ -5336,6 +5417,25 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
         assert!(formatted.contains("test math = 10 - 2 * 3 + (8 / 4 + 7 % 4) == 9\n"));
         assert!(formatted.contains("test grouped = 10 - (2 + 3) == 5 && !false\n"));
         assert!(formatted.contains("fn greeting(name: Text) -> Text = \"Hello, \" ++ name\n"));
+    }
+
+    #[test]
+    fn formats_source_int_bounds_helpers() {
+        let (formatted, item_count) = format_ail_source(
+            "fn low(left:Int,right:Int)->Int=int.min(left,right)\nfn high(left:Int,right:Int)->Int=int.max(left,right)\nfn bounded(value:Int,low:Int,high:Int)->Int=int.clamp(value,low,high)\n",
+        )
+        .expect("source int bounds helpers must format");
+
+        assert_eq!(item_count, 3);
+        assert!(
+            formatted.contains("fn low(left: Int, right: Int) -> Int = int_min(left, right)\n")
+        );
+        assert!(
+            formatted.contains("fn high(left: Int, right: Int) -> Int = int_max(left, right)\n")
+        );
+        assert!(formatted.contains(
+            "fn bounded(value: Int, low: Int, high: Int) -> Int = int_clamp(value, low, high)\n"
+        ));
     }
 
     #[test]

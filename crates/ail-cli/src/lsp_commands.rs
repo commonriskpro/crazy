@@ -796,6 +796,24 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "gt(${1:left}, ${2:right})",
     },
     AclSymbol {
+        label: "int_min",
+        detail: "AIL source Int bounds helper",
+        documentation: "Returns the smaller of two Int values.",
+        insert_text: "int_min(${1:left}, ${2:right})",
+    },
+    AclSymbol {
+        label: "int_max",
+        detail: "AIL source Int bounds helper",
+        documentation: "Returns the larger of two Int values.",
+        insert_text: "int_max(${1:left}, ${2:right})",
+    },
+    AclSymbol {
+        label: "int_clamp",
+        detail: "AIL source Int bounds helper",
+        documentation: "Constrains an Int value to an inclusive low/high range.",
+        insert_text: "int_clamp(${1:value}, ${2:low}, ${3:high})",
+    },
+    AclSymbol {
         label: "concat",
         detail: "AIL source Text builtin",
         documentation: "Concatenates two Text values and returns Text.",

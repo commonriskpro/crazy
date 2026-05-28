@@ -185,7 +185,9 @@ pub(crate) fn infer_cranelift_return_type(
             | "i64.and" | "and"
             | "i64.or" | "or"
             | "i64.neg" | "neg" | "negate"
-            => Some(types::I64),
+            | "int.min" | "int_min"
+            | "int.max" | "int_max"
+            | "int.clamp" | "int_clamp" => Some(types::I64),
             "i64.eq" | "==" | "eq"
             | "i64.ne" | "!=" | "ne"
             | "i64.lt_s" | "<" | "lt"

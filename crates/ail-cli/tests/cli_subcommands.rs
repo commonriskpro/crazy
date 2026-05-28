@@ -348,6 +348,32 @@ fn run_file_executes_ail_source_text_byte_at_or_helper() {
 }
 
 #[test]
+fn run_file_executes_ail_source_int_bounds_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("int_bounds.ail");
+    source
+        .write_str(
+            "fn bounded() -> Int = int_min(10, -2) + int_max(10, -2) + int_clamp(42, 0, 10)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.bounded",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.bounded"))
+        .stdout(predicate::str::contains("result: 18"));
+}
+
+#[test]
 fn run_file_executes_ail_source_text_parse_int_or_helper() {
     use assert_fs::prelude::*;
 
@@ -1006,6 +1032,47 @@ fn compile_file_rejects_source_text_byte_at_or_helper_type_mismatch() {
         .failure()
         .stderr(predicate::str::contains(
             "type mismatch in text.byte_at_or argument 2: expected Int, got Text",
+        ));
+}
+
+#[test]
+fn compile_file_accepts_source_int_bounds_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("int_bounds.ail");
+    source
+        .write_str(
+            "fn bounded(value: Int, low: Int, high: Int) -> Int = int_clamp(int_min(value, high), low, high)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_int_bounds_helper_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_int_bounds.ail");
+    source
+        .write_str("fn bounded(value: Text) -> Int = int_min(value, 10)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in int.min argument 1: expected Int, got Text",
         ));
 }
 
@@ -3746,6 +3813,34 @@ fn lsp_diagnose_accepts_source_text_byte_at_or_helper() {
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_int_bounds_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn bounded(value: Int, low: Int, high: Int) -> Int = int_clamp(int_min(value, high), low, high)\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_text_parse_int_or_helper() {
     use assert_fs::prelude::*;
 
@@ -5529,6 +5624,24 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .iter()
             .any(|item| item["label"] == "text_trim" && item["detail"] == "AIL source Text helper"),
         "completion must include AIL source text_trim helper; got: {text_trim_items:?}"
+    );
+
+    let int_clamp_completion_output = ail()
+        .args(["lsp", "--complete", "int_clamp", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let int_clamp_completion = parse_json_output(&int_clamp_completion_output);
+    let int_clamp_items = int_clamp_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        int_clamp_items
+            .iter()
+            .any(|item| item["label"] == "int_clamp"
+                && item["detail"] == "AIL source Int bounds helper"),
+        "completion must include AIL source int_clamp helper; got: {int_clamp_items:?}"
     );
 
     let text_contains_completion_output = ail()
