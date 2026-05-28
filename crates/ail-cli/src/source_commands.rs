@@ -1215,6 +1215,7 @@ fn parse_source_params(params: &str, line_num: usize) -> Result<Vec<SourceParam>
         return Ok(vec![]);
     }
 
+    let mut seen = BTreeSet::new();
     params
         .split(',')
         .map(|raw| {
@@ -1227,6 +1228,11 @@ fn parse_source_params(params: &str, line_num: usize) -> Result<Vec<SourceParam>
             let name = name.trim();
             let ty = ty.trim();
             validate_source_name(name, line_num)?;
+            if !seen.insert(name.to_string()) {
+                return Err(CliError::ParseError(format!(
+                    "line {line_num}: duplicate parameter `{name}`"
+                )));
+            }
             if ty.is_empty() {
                 return Err(CliError::ParseError(format!(
                     "line {line_num}: parameter `{name}` requires a type"
