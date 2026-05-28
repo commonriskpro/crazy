@@ -927,7 +927,9 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
         | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
         "index" => SourceArity::Exact(2),
+        "none" => SourceArity::Exact(0),
         "not" | "len" | "print" | "Var" => SourceArity::Exact(1),
+        "some" | "ok" | "err" => SourceArity::Exact(1),
         "if" | "let" | "fold" => SourceArity::Exact(3),
         "let_typed" => SourceArity::Exact(5),
         "effect_call" => SourceArity::Min(2),
@@ -1248,6 +1250,19 @@ fn infer_source_call_type(
         }
         "list" => infer_source_list_type(args, scope, functions),
         "index" => infer_source_index_type(args, scope, functions),
+        "none" => Ok("Option<Unknown>".to_string()),
+        "some" => {
+            let payload_ty = infer_source_expr_type(&args[0], scope, functions)?;
+            Ok(format!("Option<{payload_ty}>"))
+        }
+        "ok" => {
+            let payload_ty = infer_source_expr_type(&args[0], scope, functions)?;
+            Ok(format!("Result<{payload_ty},Unknown>"))
+        }
+        "err" => {
+            let payload_ty = infer_source_expr_type(&args[0], scope, functions)?;
+            Ok(format!("Result<Unknown,{payload_ty}>"))
+        }
         "print" => {
             validate_source_arg_types(func, args, scope, functions, &["Text"])?;
             Ok("Int".to_string())
@@ -1357,13 +1372,25 @@ fn source_type_matches(expected: &str, actual: &str) -> bool {
     if expected == actual || expected == "Unknown" || actual == "Unknown" {
         return true;
     }
-    let Some(expected_inner) = source_list_element_type(expected) else {
-        return false;
-    };
-    let Some(actual_inner) = source_list_element_type(actual) else {
-        return false;
-    };
-    source_type_matches(expected_inner, actual_inner)
+    if let (Some(expected_inner), Some(actual_inner)) = (
+        source_list_element_type(expected),
+        source_list_element_type(actual),
+    ) {
+        return source_type_matches(expected_inner, actual_inner);
+    }
+    if let (Some(expected_inner), Some(actual_inner)) = (
+        source_option_element_type(expected),
+        source_option_element_type(actual),
+    ) {
+        return source_type_matches(expected_inner, actual_inner);
+    }
+    if let (Some((expected_ok, expected_err)), Some((actual_ok, actual_err))) =
+        (source_result_types(expected), source_result_types(actual))
+    {
+        return source_type_matches(expected_ok, actual_ok)
+            && source_type_matches(expected_err, actual_err);
+    }
+    false
 }
 
 fn validate_source_type_annotation(ty: &str) -> Result<(), CliError> {
@@ -2063,6 +2090,7 @@ fn parse_source_const(rest: &str, line_num: usize) -> Result<SourceConst, CliErr
     let body = body.trim();
     validate_source_name(name, line_num)?;
     validate_source_type_name(return_type, line_num)?;
+    let return_type = normalize_source_type_name(return_type);
     if body.is_empty() {
         return Err(CliError::ParseError(format!(
             "line {line_num}: const body must be non-empty"
@@ -2070,7 +2098,7 @@ fn parse_source_const(rest: &str, line_num: usize) -> Result<SourceConst, CliErr
     }
     Ok(SourceConst {
         name: normalize_function_name(name),
-        return_type: return_type.to_string(),
+        return_type,
         body: lower_source_expr(body, line_num)?,
         line_num,
     })
@@ -2144,11 +2172,12 @@ fn build_source_function(
         )));
     }
     validate_source_type_name(return_type, line_num)?;
+    let return_type = normalize_source_type_name(return_type);
 
     Ok(SourceFunction {
         name,
         params,
-        return_type: return_type.to_string(),
+        return_type,
         body: lower_source_expr(body, line_num)?,
         line_num,
     })
@@ -2161,8 +2190,8 @@ fn parse_source_params(params: &str, line_num: usize) -> Result<Vec<SourceParam>
     }
 
     let mut seen = BTreeSet::new();
-    params
-        .split(',')
+    split_source_param_list(params)
+        .into_iter()
         .map(|raw| {
             let param = raw.trim();
             let (name, ty) = param.split_once(':').ok_or_else(|| {
@@ -2184,9 +2213,10 @@ fn parse_source_params(params: &str, line_num: usize) -> Result<Vec<SourceParam>
                 )));
             }
             validate_source_type_name(ty, line_num)?;
+            let ty = normalize_source_type_name(ty);
             Ok(SourceParam {
                 name: name.to_string(),
-                ty: ty.to_string(),
+                ty,
             })
         })
         .collect()
@@ -2256,7 +2286,7 @@ fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, CliError> {
                 )));
             }
             validate_source_type_name(ty, *line_num)?;
-            (name, Some(ty))
+            (name, Some(normalize_source_type_name(ty)))
         } else {
             (binding, None)
         };
@@ -2267,7 +2297,7 @@ fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, CliError> {
             )));
         }
         let lowered_value = lower_source_expr(value, *line_num)?;
-        body = if let Some(ty) = ty {
+        body = if let Some(ty) = ty.as_deref() {
             format!("let_typed({name}, {ty}, {line_num}, {lowered_value}, {body})")
         } else {
             format!("let({name}, {lowered_value}, {body})")
@@ -2745,10 +2775,11 @@ fn parse_source_test(rest: &str, line_num: usize) -> Result<SourceTest, CliError
         )));
     }
     validate_source_type_name(return_type, line_num)?;
+    let return_type = normalize_source_type_name(return_type);
 
     Ok(SourceTest {
         name: normalize_test_name(raw_name),
-        return_type: return_type.to_string(),
+        return_type,
         body: lower_source_expr(body, line_num)?,
         line_num,
     })
@@ -2782,11 +2813,84 @@ fn is_supported_source_type(ty: &str) -> bool {
     let ty = ty.trim();
     matches!(ty, "Int" | "Bool" | "Text" | "Float")
         || source_list_element_type(ty).is_some_and(is_supported_source_type)
+        || source_option_element_type(ty).is_some_and(is_supported_source_type)
+        || source_result_types(ty).is_some_and(|(ok_ty, err_ty)| {
+            is_supported_source_type(ok_ty) && is_supported_source_type(err_ty)
+        })
 }
 
 fn source_list_element_type(ty: &str) -> Option<&str> {
     let inner = ty.trim().strip_prefix("List<")?.strip_suffix('>')?.trim();
     (!inner.is_empty()).then_some(inner)
+}
+
+fn source_option_element_type(ty: &str) -> Option<&str> {
+    let inner = ty.trim().strip_prefix("Option<")?.strip_suffix('>')?.trim();
+    (!inner.is_empty()).then_some(inner)
+}
+
+fn source_result_types(ty: &str) -> Option<(&str, &str)> {
+    let inner = ty.trim().strip_prefix("Result<")?.strip_suffix('>')?.trim();
+    let parts = split_source_type_args(inner);
+    if parts.len() != 2 {
+        return None;
+    }
+    Some((parts[0], parts[1]))
+}
+
+fn split_source_type_args(args: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut angle_depth = 0usize;
+
+    for (idx, ch) in args.char_indices() {
+        match ch {
+            '<' => angle_depth += 1,
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            ',' if angle_depth == 0 => {
+                let part = args[start..idx].trim();
+                if !part.is_empty() {
+                    out.push(part);
+                }
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    let tail = args[start..].trim();
+    if !tail.is_empty() {
+        out.push(tail);
+    }
+    out
+}
+
+fn split_source_param_list(params: &str) -> Vec<&str> {
+    split_source_top_level_commas(params)
+}
+
+fn normalize_source_type_name(ty: &str) -> String {
+    ty.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
+fn split_source_top_level_commas(input: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut angle_depth = 0usize;
+
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '<' => angle_depth += 1,
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            ',' if angle_depth == 0 => {
+                out.push(input[start..idx].trim());
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(input[start..].trim());
+    out.into_iter().filter(|part| !part.is_empty()).collect()
 }
 
 fn normalize_grant_target(target: &str) -> String {

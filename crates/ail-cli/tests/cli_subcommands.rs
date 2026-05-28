@@ -610,6 +610,49 @@ fn compile_file_rejects_source_index_type_mismatch() {
 }
 
 #[test]
+fn compile_file_accepts_source_option_result_constructors() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("option_result.ail");
+    source
+        .write_str(
+            "fn maybe(flag: Bool) -> Option<Int> = if flag { some(42) } else { none() }\n\
+fn ok_value() -> Result<Int, Text> = ok(42)\n\
+fn err_value() -> Result<Int, Text> = err(\"boom\")\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_option_result_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_option.ail");
+    source
+        .write_str("fn main() -> Option<Int> = some(true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in fn.main: expected Option<Int>, got Option<Bool>",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_source_typed_let_mismatch() {
     use assert_fs::prelude::*;
 
@@ -2182,6 +2225,36 @@ fn lsp_diagnose_accepts_source_list_literals() {
     source
         .write_str(
             "fn main() -> Int {\n  let values: List<Int> = [1, 2 + 3, 5]\n  return values[1]\n}\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
+fn lsp_diagnose_accepts_source_option_result_constructors() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn maybe(flag: Bool) -> Option<Int> = if flag { some(42) } else { none() }\n\
+fn ok_value() -> Result<Int, Text> = ok(42)\n\
+fn err_value() -> Result<Int, Text> = err(\"boom\")\n",
         )
         .expect("source fixture must be written");
 
