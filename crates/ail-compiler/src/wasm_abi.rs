@@ -176,6 +176,11 @@ fn derive_wasm_type_with_locals(
             WasmTypeDescriptor::Text
         }
         AnfExpr::Call { func, args }
+            if matches!(func.as_str(), "text.trim" | "text_trim") && args.len() == 1 =>
+        {
+            WasmTypeDescriptor::Text
+        }
+        AnfExpr::Call { func, args }
             if matches!(func.as_str(), "text.slice" | "text_slice") && args.len() == 3 =>
         {
             WasmTypeDescriptor::Text
@@ -770,6 +775,11 @@ impl EffectDataLayout {
             }
             AnfExpr::Call { func, args }
                 if matches!(func.as_str(), "concat" | "text.concat") && args.len() == 2 =>
+            {
+                self.needs_memory = true;
+            }
+            AnfExpr::Call { func, args }
+                if matches!(func.as_str(), "text.trim" | "text_trim") && args.len() == 1 =>
             {
                 self.needs_memory = true;
             }

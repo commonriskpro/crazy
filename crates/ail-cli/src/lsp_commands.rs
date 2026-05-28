@@ -820,6 +820,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_eq(${1:left}, ${2:right})",
     },
     AclSymbol {
+        label: "text_trim",
+        detail: "AIL source Text helper",
+        documentation: "Returns Text with leading and trailing ASCII whitespace removed.",
+        insert_text: "text_trim(${1:value})",
+    },
+    AclSymbol {
         label: "text_contains",
         detail: "AIL source Text predicate",
         documentation: "Returns true when the first Text contains the second Text.",

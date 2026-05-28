@@ -951,8 +951,8 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
         "none" => SourceArity::Exact(0),
-        "not" | "len" | "print" | "Var" | "is_empty" | "is_some" | "is_none" | "is_ok"
-        | "is_err" => SourceArity::Exact(1),
+        "not" | "len" | "print" | "text.trim" | "text_trim" | "Var" | "is_empty" | "is_some"
+        | "is_none" | "is_ok" | "is_err" => SourceArity::Exact(1),
         "some" | "ok" | "err" => SourceArity::Exact(1),
         "if" | "let" | "fold" => SourceArity::Exact(3),
         "let_typed" => SourceArity::Exact(5),
@@ -1309,6 +1309,10 @@ fn infer_source_call_type(
         }
         "concat" => {
             validate_source_arg_types(func, args, scope, functions, &["Text", "Text"])?;
+            Ok("Text".to_string())
+        }
+        "text.trim" => {
+            validate_source_arg_types(func, args, scope, functions, &["Text"])?;
             Ok("Text".to_string())
         }
         "text.eq" => {
@@ -2142,6 +2146,16 @@ fn format_source_expr_node(
                 "text_eq({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "text.trim" && args.len() == 1 {
+        return (
+            format!(
+                "text_trim({})",
+                format_source_expr(&args[0], module, constants)
             ),
             CALL_PRECEDENCE,
         );
@@ -3112,6 +3126,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_text_eq_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_text_trim_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_text_contains_expr(expr, line_num)? {
         return Ok(lowered);
     }
@@ -3409,6 +3426,24 @@ fn lower_source_text_eq_expr(expr: &str, line_num: usize) -> Result<Option<Strin
         "text.eq({}, {})",
         lower_source_expr(&args[0], line_num)?,
         lower_source_expr(&args[1], line_num)?
+    )))
+}
+
+fn lower_source_text_trim_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "text_trim" {
+        return Ok(None);
+    }
+    if args.len() != 1 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: text_trim requires `text_trim(value)`"
+        )));
+    }
+    Ok(Some(format!(
+        "text.trim({})",
+        lower_source_expr(&args[0], line_num)?
     )))
 }
 
@@ -5085,6 +5120,19 @@ fn same(left: Text, right: Text) -> Bool = text_eq(left, right)
     }
 
     #[test]
+    fn lowers_source_text_trim_helper() {
+        let program = parse_ail_source(
+            r#"
+fn cleaned(value: Text) -> Text = text_trim(value)
+"#,
+        )
+        .expect("source text_trim must parse");
+        let acl = source_program_to_acl(&program, "source_text_trim".to_string());
+
+        assert!(acl.contains("op create_function id=fn.cleaned return=Text body=text.trim(value)"));
+    }
+
+    #[test]
     fn lowers_source_text_contains_helper() {
         let program = parse_ail_source(
             r#"
@@ -5188,6 +5236,16 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
         assert!(
             formatted.contains("fn same(left: Text, right: Text) -> Bool = text_eq(left, right)\n")
         );
+    }
+
+    #[test]
+    fn formats_source_text_trim_helper() {
+        let (formatted, item_count) =
+            format_ail_source("fn cleaned(value:Text)->Text=text.trim(value)\n")
+                .expect("source text_trim must format");
+
+        assert_eq!(item_count, 1);
+        assert!(formatted.contains("fn cleaned(value: Text) -> Text = text_trim(value)\n"));
     }
 
     #[test]

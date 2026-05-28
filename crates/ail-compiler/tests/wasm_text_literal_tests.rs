@@ -216,6 +216,27 @@ fn string_concat_call_preserves_text_export_type() {
 }
 
 #[test]
+fn string_trim_call_preserves_text_export_type() {
+    let artifact = emit_text_expr(
+        "fn.main",
+        AnfExpr::Let {
+            name: "value".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text(" hello ".to_string()))),
+            body: Box::new(AnfExpr::Call {
+                func: "text.trim".to_string(),
+                args: vec!["value".to_string()],
+            }),
+        },
+    );
+
+    assert_eq!(
+        artifact.export_types.get("main"),
+        Some(&WasmTypeDescriptor::Text),
+        "text.trim(Text) must preserve the public Text ABI descriptor"
+    );
+}
+
+#[test]
 fn string_slice_call_preserves_text_export_type() {
     let artifact = emit_text_expr(
         "fn.main",
