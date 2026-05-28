@@ -249,6 +249,39 @@ fn string_slice_call_preserves_text_export_type() {
 }
 
 #[test]
+fn string_replace_first_call_preserves_text_export_type() {
+    let artifact = emit_text_expr(
+        "fn.main",
+        AnfExpr::Let {
+            name: "value".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("hello".to_string()))),
+            body: Box::new(AnfExpr::Let {
+                name: "needle".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Text("ell".to_string()))),
+                body: Box::new(AnfExpr::Let {
+                    name: "replacement".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Text("ipp".to_string()))),
+                    body: Box::new(AnfExpr::Call {
+                        func: "text.replace_first".to_string(),
+                        args: vec![
+                            "value".to_string(),
+                            "needle".to_string(),
+                            "replacement".to_string(),
+                        ],
+                    }),
+                }),
+            }),
+        },
+    );
+
+    assert_eq!(
+        artifact.export_types.get("main"),
+        Some(&WasmTypeDescriptor::Text),
+        "text.replace_first(Text, Text, Text) must preserve the public Text ABI descriptor"
+    );
+}
+
+#[test]
 fn string_eq_call_exports_scalar_wasm() {
     let artifact = emit_text_expr(
         "fn.main",

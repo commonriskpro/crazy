@@ -181,6 +181,12 @@ fn derive_wasm_type_with_locals(
             WasmTypeDescriptor::Text
         }
         AnfExpr::Call { func, args }
+            if matches!(func.as_str(), "text.replace_first" | "text_replace_first")
+                && args.len() == 3 =>
+        {
+            WasmTypeDescriptor::Text
+        }
+        AnfExpr::Call { func, args }
             if matches!(func.as_str(), "text.eq" | "text_eq") && args.len() == 2 =>
         {
             WasmTypeDescriptor::Scalar(WasmScalarType::I64)
@@ -769,6 +775,12 @@ impl EffectDataLayout {
             }
             AnfExpr::Call { func, args }
                 if matches!(func.as_str(), "text.slice" | "text_slice") && args.len() == 3 =>
+            {
+                self.needs_memory = true;
+            }
+            AnfExpr::Call { func, args }
+                if matches!(func.as_str(), "text.replace_first" | "text_replace_first")
+                    && args.len() == 3 =>
             {
                 self.needs_memory = true;
             }

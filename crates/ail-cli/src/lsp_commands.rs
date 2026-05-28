@@ -838,6 +838,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_slice(${1:value}, ${2:start}, ${3:length})",
     },
     AclSymbol {
+        label: "text_replace_first",
+        detail: "AIL source Text helper",
+        documentation: "Replaces the first occurrence of needle in Text, or returns the original Text when absent.",
+        insert_text: "text_replace_first(${1:value}, ${2:needle}, ${3:replacement})",
+    },
+    AclSymbol {
         label: "text_starts_with",
         detail: "AIL source Text predicate",
         documentation: "Returns true when Text starts with the given prefix.",
