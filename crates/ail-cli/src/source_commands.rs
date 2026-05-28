@@ -941,7 +941,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
     let arity = match call {
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
         | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
-        "field" | "index" | "unwrap_or" => SourceArity::Exact(2),
+        "field" | "index" | "unwrap_or" | "first_or" => SourceArity::Exact(2),
         "update" => SourceArity::Exact(3),
         "none" => SourceArity::Exact(0),
         "not" | "len" | "print" | "Var" | "is_some" | "is_none" | "is_ok" | "is_err" => {
@@ -1980,6 +1980,16 @@ fn format_source_expr_node(
     }
 
     if func == "if" && args.len() == 3 {
+        if let Some((list, fallback)) = source_if_as_first_or(&args) {
+            return (
+                format!(
+                    "first_or({}, {})",
+                    format_source_expr(&list, module, constants),
+                    format_source_expr(&fallback, module, constants)
+                ),
+                CALL_PRECEDENCE,
+            );
+        }
         return (
             format!(
                 "if {} {{ {} }} else {{ {} }}",
@@ -2163,6 +2173,30 @@ fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn source_if_as_first_or(args: &[String]) -> Option<(String, String)> {
+    if args.len() != 3 {
+        return None;
+    }
+    let (cond_func, cond_args) = parse_source_call(&args[0])?;
+    if cond_func != "gt" || cond_args.len() != 2 || cond_args[1].trim() != "0" {
+        return None;
+    }
+    let (len_func, len_args) = parse_source_call(&cond_args[0])?;
+    if len_func != "len" || len_args.len() != 1 {
+        return None;
+    }
+    let list = len_args[0].trim();
+    let (index_func, index_args) = parse_source_call(&args[1])?;
+    if index_func != "index"
+        || index_args.len() != 2
+        || index_args[0].trim() != list
+        || index_args[1].trim() != "0"
+    {
+        return None;
+    }
+    Some((list.to_string(), args[2].trim().to_string()))
 }
 
 fn source_match_as_option_predicate(args: &[String]) -> Option<(&'static str, String)> {
@@ -2827,6 +2861,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_result_predicate_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_first_or_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {
         if let Some(base) = literal.base {
             let mut lowered = lower_source_expr(&base, line_num)?;
@@ -3056,6 +3093,25 @@ fn lower_source_result_predicate_expr(
     Ok(Some(format!(
         "match({}, Ok(_), {ok_body}, Err(_), {err_body})",
         lower_source_expr(&args[0], line_num)?
+    )))
+}
+
+fn lower_source_first_or_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "first_or" {
+        return Ok(None);
+    }
+    if args.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: first_or requires `first_or(list, fallback)`"
+        )));
+    }
+    let list = lower_source_expr(&args[0], line_num)?;
+    Ok(Some(format!(
+        "if(gt(len({list}), 0), index({list}, 0), {})",
+        lower_source_expr(&args[1], line_num)?
     )))
 }
 
@@ -4454,6 +4510,21 @@ fn failed(input: Result<Int, Text>) -> Bool = is_err(input)
     }
 
     #[test]
+    fn lowers_source_first_or_helper() {
+        let program = parse_ail_source(
+            r#"
+fn first(values: List<Int>) -> Int = first_or(values, 0)
+"#,
+        )
+        .expect("source first_or must parse");
+        let acl = source_program_to_acl(&program, "source_first_or".to_string());
+
+        assert!(acl.contains(
+            "op create_function id=fn.first return=Int body=if(gt(len(values), 0), index(values, 0), 0)"
+        ));
+    }
+
+    #[test]
     fn lowers_source_infix_arithmetic_with_precedence() {
         let program = parse_ail_source("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9")
             .expect("source must parse");
@@ -4627,6 +4698,19 @@ fn failed(input:Result<Int,Text>)->Bool=match(input,Ok(_),false,Err(_),true)
             formatted.contains("fn succeeded(input: Result<Int,Text>) -> Bool = is_ok(input)\n")
         );
         assert!(formatted.contains("fn failed(input: Result<Int,Text>) -> Bool = is_err(input)\n"));
+    }
+
+    #[test]
+    fn formats_source_first_or_helper() {
+        let (formatted, item_count) = format_ail_source(
+            r#"
+fn first(values:List<Int>)->Int=if(gt(len(values),0),index(values,0),0)
+"#,
+        )
+        .expect("source first_or must format");
+
+        assert_eq!(item_count, 1);
+        assert!(formatted.contains("fn first(values: List<Int>) -> Int = first_or(values, 0)\n"));
     }
 
     #[test]

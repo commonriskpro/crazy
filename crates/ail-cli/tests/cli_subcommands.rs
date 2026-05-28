@@ -862,6 +862,45 @@ fn compile_file_rejects_source_len_type_mismatch() {
 }
 
 #[test]
+fn compile_file_accepts_source_first_or_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("first_or.ail");
+    source
+        .write_str("fn first(values: List<Int>) -> Int = first_or(values, 0)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_first_or_fallback_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_first_or.ail");
+    source
+        .write_str("fn first(values: List<Int>) -> Int = first_or(values, true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in if branches: expected Int, got Bool",
+        ));
+}
+
+#[test]
 fn compile_file_accepts_source_option_result_constructors() {
     use assert_fs::prelude::*;
 
@@ -2803,6 +2842,32 @@ fn lsp_diagnose_accepts_source_list_len() {
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_first_or_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn first(values: List<Int>) -> Int = first_or(values, 0)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_set_and_map_collections() {
     use assert_fs::prelude::*;
 
@@ -4200,6 +4265,23 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .expect("hover markdown")
             .contains("explicit grant"),
         "hover must explain effect_call grants; got: {hover}"
+    );
+
+    let first_or_completion_output = ail()
+        .args(["lsp", "--complete", "first", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let first_or_completion = parse_json_output(&first_or_completion_output);
+    let first_or_items = first_or_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        first_or_items
+            .iter()
+            .any(|item| item["label"] == "first_or" && item["detail"] == "AIL source List helper"),
+        "completion must include AIL source first_or helper; got: {first_or_items:?}"
     );
 
     let map_completion_output = ail()

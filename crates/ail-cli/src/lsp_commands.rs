@@ -802,6 +802,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "len(${1:value})",
     },
     AclSymbol {
+        label: "first_or",
+        detail: "AIL source List helper",
+        documentation: "Returns the first List element when present, otherwise returns a fallback value.",
+        insert_text: "first_or(${1:list}, ${2:fallback})",
+    },
+    AclSymbol {
         label: "set",
         detail: "AIL source Set builtin",
         documentation: "Constructs a typed Set<T> from same-typed values.",
