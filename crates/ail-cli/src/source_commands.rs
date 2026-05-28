@@ -880,6 +880,14 @@ fn infer_source_call_type(
             }
             Ok("Int".to_string())
         }
+        unsupported if is_untyped_source_builtin(unsupported) => {
+            for arg in args {
+                infer_source_expr_type(arg, scope, functions)?;
+            }
+            Err(CliError::ParseError(format!(
+                "unsupported source builtin `{unsupported}` has no type inference"
+            )))
+        }
         _ => {
             let normalized = if func.starts_with("fn.") {
                 func.to_string()
@@ -898,6 +906,13 @@ fn infer_source_call_type(
             Ok("Unknown".to_string())
         }
     }
+}
+
+fn is_untyped_source_builtin(func: &str) -> bool {
+    matches!(
+        func,
+        "Var" | "fold" | "map" | "record" | "tuple" | "list" | "set" | "match"
+    )
 }
 
 fn validate_source_arg_types(

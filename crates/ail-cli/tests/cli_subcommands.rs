@@ -604,6 +604,27 @@ fn compile_file_rejects_malformed_source_string_literals() {
 }
 
 #[test]
+fn compile_file_rejects_untyped_source_builtins() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_list.ail");
+    source
+        .write_str("fn main() -> Int = list(1, 2)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unsupported source builtin `list` has no type inference",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_duplicate_source_parameters() {
     use assert_fs::prelude::*;
 
@@ -1341,6 +1362,38 @@ fn lsp_diagnose_reports_malformed_source_string_literals() {
             .as_str()
             .expect("diagnostic message")
             .contains("malformed string literal")
+    );
+}
+
+#[test]
+fn lsp_diagnose_reports_untyped_source_builtins() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int = list(1, 2)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("unsupported source builtin `list` has no type inference")
     );
 }
 
