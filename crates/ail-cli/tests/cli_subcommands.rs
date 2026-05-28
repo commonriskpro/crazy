@@ -158,7 +158,7 @@ fn run_file_executes_ail_source_function_with_typed_params() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("math.ail");
     source
-        .write_str("fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
+        .write_str("fn add_pair(x: Int, y: Int) -> Int = x + y\n")
         .expect("source fixture must be written");
 
     ail()
@@ -184,7 +184,7 @@ fn run_file_executes_ail_source_block_with_let_statement() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("block.ail");
     source
-        .write_str("fn main() -> Int {\n  let base = add(20, 20)\n  return add(base, 2)\n}\n")
+        .write_str("fn main() -> Int {\n  let base = 20 + 20\n  return add(base, 2)\n}\n")
         .expect("source fixture must be written");
 
     ail()
@@ -370,7 +370,7 @@ fn run_file_executes_ail_source_imports_relative_files() {
 
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let math = dir.child("math.ail");
-    math.write_str("module math\nfn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
+    math.write_str("module math\nfn add_pair(x: Int, y: Int) -> Int = x + y\n")
         .expect("imported source fixture must be written");
     let main = dir.child("main.ail");
     main.write_str("use \"./math.ail\"\nfn main() -> Int = math.add_pair(20, 22)\n")
@@ -399,7 +399,7 @@ fn test_file_runs_ail_source_tests_without_acl_authoring() {
     source
         .write_str(
             "fn main() -> Int = add(20, 22)\n\
-fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n\
+fn add_pair(x: Int, y: Int) -> Int = x + y\n\
 test main_addition = eq(add_pair(20, 22), 42)\n",
         )
         .expect("source fixture must be written");
@@ -457,7 +457,7 @@ fn check_file_validates_ail_source_without_execution() {
 
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let math = dir.child("math.ail");
-    math.write_str("module math\nfn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
+    math.write_str("module math\nfn add_pair(x: Int, y: Int) -> Int = x + y\n")
         .expect("imported source fixture must be written");
     let source = dir.child("main.ail");
     source
@@ -513,7 +513,7 @@ fn compile_file_compiles_ail_source_without_acl_authoring() {
 
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let math = dir.child("math.ail");
-    math.write_str("fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
+    math.write_str("fn add_pair(x: Int, y: Int) -> Int = x + y\n")
         .expect("imported source fixture must be written");
     let source = dir.child("main.ail");
     source
@@ -609,7 +609,7 @@ fn compile_file_accepts_source_infix_arithmetic_precedence() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("infix_arithmetic.ail");
     source
-        .write_str("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9\nfn main() -> Int = 0\n")
+        .write_str("test math = 10 - 2 * 3 + (8 / 4 + 7 % 4) == 9\nfn main() -> Int = 0\n")
         .expect("source fixture must be written");
 
     ail()
@@ -1883,9 +1883,7 @@ fn lsp_diagnose_reports_ail_source_user_call_arity_errors() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str(
-            "fn add_pair(x: Int, y: Int) -> Int = add(x, y)\nfn main() -> Int = add_pair(20)\n",
-        )
+        .write_str("fn add_pair(x: Int, y: Int) -> Int = x + y\nfn main() -> Int = add_pair(20)\n")
         .expect("source fixture must be written");
 
     let output = ail()
@@ -2323,7 +2321,7 @@ fn lsp_diagnose_accepts_source_infix_arithmetic_precedence() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9\nfn main() -> Int = 0\n")
+        .write_str("test math = 10 - 2 * 3 + (8 / 4 + 7 % 4) == 9\nfn main() -> Int = 0\n")
         .expect("source fixture must be written");
 
     let output = ail()
@@ -2816,7 +2814,7 @@ fn lsp_definition_resolves_ail_source_imported_function() {
 
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let math = dir.child("math.ail");
-    math.write_str("module math\nfn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
+    math.write_str("module math\nfn add_pair(x: Int, y: Int) -> Int = x + y\n")
         .expect("imported source fixture must be written");
     let main = dir.child("main.ail");
     main.write_str("use \"./math.ail\"\nfn main() -> Int = math.add_pair(20, 22)\n")
@@ -2972,7 +2970,7 @@ fn lsp_references_resolve_ail_source_imported_function_uses() {
 
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let math = dir.child("math.ail");
-    math.write_str("module math\nfn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
+    math.write_str("module math\nfn add_pair(x: Int, y: Int) -> Int = x + y\n")
         .expect("imported source fixture must be written");
     let main = dir.child("main.ail");
     main.write_str(
@@ -4347,7 +4345,8 @@ fn fmt_file_json_outputs_canonical_ail_source() {
 fn main()->Int{\n\
 let base=add(20,20)\n\
 return if gt(base,40){add(base,2)} else {0}\n\
-}\n",
+}\n\
+test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
         )
         .expect("write source");
 
@@ -4363,14 +4362,15 @@ return if gt(base,40){add(base,2)} else {0}\n\
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["language"], "ail-source");
-    assert_eq!(v["data"]["item_count"], 2);
+    assert_eq!(v["data"]["item_count"], 3);
     let formatted = v["data"]["formatted"]
         .as_str()
         .expect("formatted must be string");
-    assert!(formatted.contains("fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n"));
+    assert!(formatted.contains("fn add_pair(x: Int, y: Int) -> Int = x + y\n"));
     assert!(formatted.contains("fn main() -> Int {\n"));
-    assert!(formatted.contains("  let base = add(20, 20)\n"));
-    assert!(formatted.contains("  return if gt(base, 40) { add(base, 2) } else { 0 }\n"));
+    assert!(formatted.contains("  let base = 20 + 20\n"));
+    assert!(formatted.contains("  return if base > 40 { base + 2 } else { 0 }\n"));
+    assert!(formatted.contains("test math = 10 - 2 * 3 + (8 / 4 + 7 % 4) == 9\n"));
 }
 
 #[test]
@@ -4424,7 +4424,7 @@ fn fmt_stdin_json_detects_ail_source() {
     assert_eq!(v["data"]["item_count"], 1);
     assert_eq!(
         v["data"]["formatted"].as_str().expect("formatted string"),
-        "fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n"
+        "fn add_pair(x: Int, y: Int) -> Int = x + y\n"
     );
 }
 

@@ -1241,28 +1241,100 @@ fn source_let_chain(body: &str) -> (Vec<(String, String)>, String) {
 }
 
 fn format_source_expr(expr: &str, module: Option<&str>) -> String {
+    format_source_expr_node(expr, module).0
+}
+
+fn format_source_expr_node(expr: &str, module: Option<&str>) -> (String, u8) {
+    const IF_PRECEDENCE: u8 = 0;
+    const UNARY_PRECEDENCE: u8 = 7;
+    const CALL_PRECEDENCE: u8 = 8;
+
     let expr = expr.trim();
     let Some((func, args)) = parse_source_call(expr) else {
-        return expr.to_string();
+        return (expr.to_string(), CALL_PRECEDENCE);
     };
 
     if func == "if" && args.len() == 3 {
-        return format!(
-            "if {} {{ {} }} else {{ {} }}",
-            format_source_expr(&args[0], module),
-            format_source_expr(&args[1], module),
-            format_source_expr(&args[2], module)
+        return (
+            format!(
+                "if {} {{ {} }} else {{ {} }}",
+                format_source_expr(&args[0], module),
+                format_source_expr(&args[1], module),
+                format_source_expr(&args[2], module)
+            ),
+            IF_PRECEDENCE,
         );
     }
 
-    format!(
-        "{}({})",
-        format_source_call_name(&func, module),
-        args.iter()
-            .map(|arg| format_source_expr(arg, module))
-            .collect::<Vec<_>>()
-            .join(", ")
+    if func == "not" && args.len() == 1 {
+        return (
+            format!(
+                "!{}",
+                format_source_child_expr(&args[0], module, UNARY_PRECEDENCE, false)
+            ),
+            UNARY_PRECEDENCE,
+        );
+    }
+
+    if args.len() == 2 {
+        if let Some((operator, precedence)) = source_infix_operator(&func) {
+            return (
+                format!(
+                    "{} {operator} {}",
+                    format_source_child_expr(&args[0], module, precedence, false),
+                    format_source_child_expr(&args[1], module, precedence, true)
+                ),
+                precedence,
+            );
+        }
+    }
+
+    (
+        format!(
+            "{}({})",
+            format_source_call_name(&func, module),
+            args.iter()
+                .map(|arg| format_source_expr(arg, module))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        CALL_PRECEDENCE,
     )
+}
+
+fn source_infix_operator(func: &str) -> Option<(&'static str, u8)> {
+    match func {
+        "or" => Some(("||", 1)),
+        "and" => Some(("&&", 2)),
+        "eq" => Some(("==", 3)),
+        "ne" => Some(("!=", 3)),
+        "gt" => Some((">", 4)),
+        "ge" => Some((">=", 4)),
+        "lt" => Some(("<", 4)),
+        "le" => Some(("<=", 4)),
+        "add" => Some(("+", 5)),
+        "sub" => Some(("-", 5)),
+        "mul" => Some(("*", 6)),
+        "div" => Some(("/", 6)),
+        "mod" => Some(("%", 6)),
+        _ => None,
+    }
+}
+
+fn format_source_child_expr(
+    expr: &str,
+    module: Option<&str>,
+    parent_precedence: u8,
+    parenthesize_equal_precedence: bool,
+) -> String {
+    let (formatted, precedence) = format_source_expr_node(expr, module);
+    if precedence < parent_precedence
+        || (parenthesize_equal_precedence && precedence == parent_precedence)
+    {
+        format!("({formatted})")
+    } else {
+        formatted
+    }
 }
 
 fn parse_source_call(expr: &str) -> Option<(String, Vec<String>)> {
@@ -2188,8 +2260,21 @@ test main_addition = eq(add(20, 22), 42);
         let acl = source_program_to_acl(&program, "source_math".to_string());
 
         assert!(acl.contains(
-            "op create_test id=test.math return=Bool body=eq(add(sub(10, mul(2, 3)), add(div(8, 4), mod(7, 4))), 9)"
+            "op create_test id=test.math return=Bool body=eq(add(add(sub(10, mul(2, 3)), div(8, 4)), mod(7, 4)), 9)"
         ));
+    }
+
+    #[test]
+    fn formats_source_builtin_calls_as_infix() {
+        let (formatted, item_count) = format_ail_source(
+            "test math = eq(add(sub(10, mul(2, 3)), add(div(8, 4), mod(7, 4))), 9)\n\
+             test grouped = and(eq(sub(10, add(2, 3)), 5), not(false))\n",
+        )
+        .expect("source must format");
+
+        assert_eq!(item_count, 2);
+        assert!(formatted.contains("test math = 10 - 2 * 3 + (8 / 4 + 7 % 4) == 9\n"));
+        assert!(formatted.contains("test grouped = 10 - (2 + 3) == 5 && !false\n"));
     }
 
     #[test]
@@ -2243,7 +2328,7 @@ test main_addition=eq(main(),42)
         assert_eq!(item_count, 4);
         assert!(formatted.contains("module math\n"));
         assert!(formatted.contains("fn main() -> Int = add_pair(20, 22)\n"));
-        assert!(formatted.contains("test main_addition = eq(main(), 42)\n"));
+        assert!(formatted.contains("test main_addition = main() == 42\n"));
     }
 
     #[test]
@@ -2397,10 +2482,10 @@ test addition=eq(add_pair(20,22),42)
         let (formatted, item_count) = format_ail_source(src).expect("source must format");
 
         assert_eq!(item_count, 3);
-        assert!(formatted.contains("fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n"));
+        assert!(formatted.contains("fn add_pair(x: Int, y: Int) -> Int = x + y\n"));
         assert!(formatted.contains("fn main() -> Int {\n"));
-        assert!(formatted.contains("  let base = add(20, 20)\n"));
-        assert!(formatted.contains("  return if gt(base, 40) { add(base, 2) } else { 0 }\n"));
-        assert!(formatted.contains("test addition = eq(add_pair(20, 22), 42)\n"));
+        assert!(formatted.contains("  let base = 20 + 20\n"));
+        assert!(formatted.contains("  return if base > 40 { base + 2 } else { 0 }\n"));
+        assert!(formatted.contains("test addition = add_pair(20, 22) == 42\n"));
     }
 }
