@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
-use crate::source_commands::{load_source_program, parse_ail_source};
+use crate::source_commands::{load_source_program_from_text, parse_ail_source};
 
 // ── Command handlers ─────────────────────────────────────────────────────
 
@@ -252,7 +252,7 @@ impl LspSession {
                     "capabilities": {
                         "textDocumentSync": 1,
                         "diagnosticProvider": {
-                            "interFileDependencies": false,
+                            "interFileDependencies": true,
                             "workspaceDiagnostics": false
                         },
                         "completionProvider": {
@@ -361,6 +361,9 @@ fn lsp_response(request: &Value, result: Value) -> Value {
 
 fn diagnostics_for_document(uri: &str, text: &str) -> Vec<Value> {
     if is_ail_source_uri(uri) {
+        if let Some(path) = file_path_from_uri(uri) {
+            return diagnostics_for_ail_source_document_path(&path, text);
+        }
         return diagnostics_for_ail_source_text(uri, text);
     }
     diagnostics_for_acl_text(uri, text)
@@ -391,13 +394,17 @@ fn diagnostics_for_ail_source_text(_uri: &str, text: &str) -> Vec<Value> {
 }
 
 fn diagnostics_for_ail_source_path(path: &std::path::Path, text: &str) -> Vec<Value> {
+    diagnostics_for_ail_source_document_path(path, text)
+}
+
+fn diagnostics_for_ail_source_document_path(path: &std::path::Path, text: &str) -> Vec<Value> {
     let syntax_diagnostics =
         diagnostics_for_ail_source_text(&format!("file://{}", path.display()), text);
     if !syntax_diagnostics.is_empty() {
         return syntax_diagnostics;
     }
 
-    match load_source_program(path) {
+    match load_source_program_from_text(path, text) {
         Ok(_) => vec![],
         Err(err) => vec![diagnostic(
             line_from_error(&err.to_string()),
@@ -405,6 +412,10 @@ fn diagnostics_for_ail_source_path(path: &std::path::Path, text: &str) -> Vec<Va
             "ail-source-import",
         )],
     }
+}
+
+fn file_path_from_uri(uri: &str) -> Option<PathBuf> {
+    uri.strip_prefix("file://").map(PathBuf::from)
 }
 
 fn is_ail_source_uri(uri: &str) -> bool {

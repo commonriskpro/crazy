@@ -483,6 +483,41 @@ fn lsp_diagnose_reports_ail_source_cyclic_imports() {
 }
 
 #[test]
+fn lsp_stdio_publish_diagnostics_reports_ail_source_missing_imports() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int = 0\n")
+        .expect("source fixture must be written so file URI can resolve");
+    let text = "use \"./missing.ail\"\nfn main() -> Int = 0\n";
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": format!("file://{}", source.path().display()),
+                "languageId": "ail",
+                "version": 1,
+                "text": text,
+            }
+        }
+    })
+    .to_string();
+    let input = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+
+    ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("textDocument/publishDiagnostics"))
+        .stdout(predicate::str::contains("ail-source-import"))
+        .stdout(predicate::str::contains("failed to resolve AIL source"));
+}
+
+#[test]
 fn lsp_completion_and_hover_cover_acl_test_authoring() {
     let completion_output = ail()
         .args(["lsp", "--complete", "create_test", "--json"])

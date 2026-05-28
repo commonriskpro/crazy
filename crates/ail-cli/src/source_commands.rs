@@ -175,6 +175,21 @@ pub(crate) fn load_source_program(path: &Path) -> Result<SourceProgram, CliError
     load_source_program_inner(path, &mut visiting, &mut visited)
 }
 
+pub(crate) fn load_source_program_from_text(
+    path: &Path,
+    src: &str,
+) -> Result<SourceProgram, CliError> {
+    let canonical_path = std::fs::canonicalize(path).map_err(|e| {
+        CliError::Domain(format!(
+            "failed to resolve AIL source {}: {e}",
+            path.display()
+        ))
+    })?;
+    let mut visiting = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    load_source_program_from_text_inner(&canonical_path, src, &mut visiting, &mut visited)
+}
+
 fn load_source_program_inner(
     path: &Path,
     visiting: &mut BTreeSet<PathBuf>,
@@ -186,6 +201,22 @@ fn load_source_program_inner(
             path.display()
         ))
     })?;
+    let src = std::fs::read_to_string(&canonical_path).map_err(|e| {
+        CliError::Domain(format!(
+            "failed to read AIL source {}: {e}",
+            canonical_path.display()
+        ))
+    })?;
+    load_source_program_from_text_inner(&canonical_path, &src, visiting, visited)
+}
+
+fn load_source_program_from_text_inner(
+    canonical_path: &Path,
+    src: &str,
+    visiting: &mut BTreeSet<PathBuf>,
+    visited: &mut BTreeSet<PathBuf>,
+) -> Result<SourceProgram, CliError> {
+    let canonical_path = canonical_path.to_path_buf();
     if visiting.contains(&canonical_path) {
         return Err(CliError::ParseError(format!(
             "cyclic AIL source import detected at {}",
@@ -197,13 +228,7 @@ fn load_source_program_inner(
     }
 
     visiting.insert(canonical_path.clone());
-    let src = std::fs::read_to_string(&canonical_path).map_err(|e| {
-        CliError::Domain(format!(
-            "failed to read AIL source {}: {e}",
-            canonical_path.display()
-        ))
-    })?;
-    let program = parse_ail_source(&src)?;
+    let program = parse_ail_source(src)?;
     let mut combined = SourceProgram::default();
     for import in &program.imports {
         let import_path = resolve_source_import(&canonical_path, import);
