@@ -3920,6 +3920,27 @@ fn fmt_ail_source_write_makes_check_pass() {
         .success();
 }
 
+#[test]
+fn fmt_stdin_json_detects_ail_source() {
+    let output = ail()
+        .arg("fmt")
+        .arg("--json")
+        .write_stdin("// source file\nfn add_pair(x:Int,y:Int)->Int=add(x,y)\n")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["item_count"], 1);
+    assert_eq!(
+        v["data"]["formatted"].as_str().expect("formatted string"),
+        "fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n"
+    );
+}
+
 // ── ail link integration tests ─────────────────────────────────────────────
 
 /// Spec scenario: ail link --help exits 0 and mentions native/linker.

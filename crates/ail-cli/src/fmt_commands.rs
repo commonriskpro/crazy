@@ -150,7 +150,9 @@ pub(crate) fn format_acl_source(src: &str) -> Result<FmtOutcome, CliError> {
 }
 
 fn format_for_path(src: &str, path: Option<&Path>) -> Result<FmtOutcome, CliError> {
-    if path.is_some_and(|path| path.extension().and_then(|ext| ext.to_str()) == Some("ail")) {
+    if path.is_some_and(|path| path.extension().and_then(|ext| ext.to_str()) == Some("ail"))
+        || (path.is_none() && looks_like_ail_source(src))
+    {
         let (formatted, item_count) = format_ail_source(src)?;
         let changed = normalize_trailing_newline(src) != formatted;
         return Ok(FmtOutcome {
@@ -163,6 +165,23 @@ fn format_for_path(src: &str, path: Option<&Path>) -> Result<FmtOutcome, CliErro
     }
 
     format_acl_source(src)
+}
+
+fn looks_like_ail_source(src: &str) -> bool {
+    let Some(line) = src
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with("//"))
+    else {
+        return false;
+    };
+
+    line.starts_with("module ")
+        || line.starts_with("use ")
+        || line.starts_with("capability ")
+        || line.starts_with("fn ")
+        || line.starts_with("test ")
+        || line.starts_with("grant ")
 }
 
 // ── cmd_fmt ───────────────────────────────────────────────────────────────
@@ -405,6 +424,19 @@ mod tests {
         assert_eq!(out.language, "ail-source");
         assert_eq!(out.item_count, 1);
         assert_eq!(out.op_count, 0);
+        assert_eq!(
+            out.formatted,
+            "fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n"
+        );
+    }
+
+    #[test]
+    fn fmt_stdin_detects_ail_source_surface() {
+        let src = "// source file\nfn add_pair(x:Int,y:Int)->Int=add(x,y)\n";
+        let out = format_for_path(src, None).expect("stdin source fmt must parse");
+
+        assert_eq!(out.language, "ail-source");
+        assert_eq!(out.item_count, 1);
         assert_eq!(
             out.formatted,
             "fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n"
