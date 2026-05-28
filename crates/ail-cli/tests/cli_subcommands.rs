@@ -226,6 +226,32 @@ fn run_file_executes_ail_source_if_else_expression() {
 }
 
 #[test]
+fn run_file_executes_ail_source_text_concat_with_comment_markers_in_strings() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("text.ail");
+    source
+        .write_str(
+            "fn greeting() -> Text = concat(\"Hello, //\", \" world!\") // trailing comment\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.greeting",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.greeting"))
+        .stdout(predicate::str::contains("result: Hello, // world!"));
+}
+
+#[test]
 fn test_file_runs_ail_source_tests_without_acl_authoring() {
     use assert_fs::prelude::*;
 

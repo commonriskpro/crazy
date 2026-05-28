@@ -360,13 +360,42 @@ fn normalize_source_line(raw_line: &str) -> Option<String> {
     if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
         return None;
     }
-    let without_comment = trimmed.split_once("//").map_or(trimmed, |(head, _)| head);
+    let without_comment = strip_source_comment(trimmed);
     let statement = without_comment.trim().trim_end_matches(';').trim();
     if statement.is_empty() {
         None
     } else {
         Some(statement.to_string())
     }
+}
+
+fn strip_source_comment(line: &str) -> &str {
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+    let mut chars = line.char_indices().peekable();
+
+    while let Some((idx, ch)) = chars.next() {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+
+        match ch {
+            '"' => {
+                in_string = true;
+                prev_was_escape = false;
+            }
+            '/' if chars.peek().is_some_and(|(_, next)| *next == '/') => return &line[..idx],
+            _ => {
+                prev_was_escape = false;
+            }
+        }
+    }
+
+    line
 }
 
 fn parse_source_function(rest: &str, line_num: usize) -> Result<SourceFunction, CliError> {
@@ -613,8 +642,20 @@ fn lower_if_expr(rest: &str, line_num: usize) -> Result<String, CliError> {
 
 fn matching_brace(s: &str, open_idx: usize) -> Option<usize> {
     let mut depth = 0usize;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+
     for (idx, ch) in s.char_indices().skip_while(|(idx, _)| *idx < open_idx) {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+
         match ch {
+            '"' => in_string = true,
             '{' => depth += 1,
             '}' => {
                 depth = depth.saturating_sub(1);
@@ -624,6 +665,7 @@ fn matching_brace(s: &str, open_idx: usize) -> Option<usize> {
             }
             _ => {}
         }
+        prev_was_escape = false;
     }
     None
 }
@@ -800,6 +842,39 @@ test clamp = eq(clamp_positive(-5), 0)
         ));
         assert!(
             acl.contains("op create_test id=test.clamp return=Bool body=eq(clamp_positive(-5), 0)")
+        );
+    }
+
+    #[test]
+    fn preserves_string_literals_with_comment_markers_and_braces() {
+        let program = parse_ail_source(
+            r#"
+fn message() -> Text = concat("Hello, //", " {world}")
+fn choose(flag: Bool) -> Text = if flag { "left } brace" } else { "right // slash" }
+"#,
+        )
+        .expect("source string literals must parse");
+        let acl = source_program_to_acl(&program, "source_strings".to_string());
+
+        assert!(acl.contains(
+            r#"op create_function id=fn.message return=Text body=concat("Hello, //", " {world}")"#
+        ));
+        assert!(acl.contains(
+            r#"op create_function id=fn.choose return=Text body=if(flag, "left } brace", "right // slash")"#
+        ));
+    }
+
+    #[test]
+    fn formats_source_strings_without_treating_slashes_as_comments() {
+        let src = r#"
+fn message()->Text=concat("https://ail.local", " {ok}") // trailing comment
+"#;
+        let (formatted, item_count) = format_ail_source(src).expect("source must format");
+
+        assert_eq!(item_count, 1);
+        assert_eq!(
+            formatted,
+            "fn message() -> Text = concat(\"https://ail.local\", \" {ok}\")\n"
         );
     }
 
