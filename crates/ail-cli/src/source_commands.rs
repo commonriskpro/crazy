@@ -1310,6 +1310,7 @@ fn build_source_function(
             "line {line_num}: function return type and body must be non-empty"
         )));
     }
+    validate_source_type_name(return_type, line_num)?;
 
     Ok(SourceFunction {
         name,
@@ -1348,6 +1349,7 @@ fn parse_source_params(params: &str, line_num: usize) -> Result<Vec<SourceParam>
                     "line {line_num}: parameter `{name}` requires a type"
                 )));
             }
+            validate_source_type_name(ty, line_num)?;
             Ok(SourceParam {
                 name: name.to_string(),
                 ty: ty.to_string(),
@@ -1540,6 +1542,7 @@ fn parse_source_test(rest: &str, line_num: usize) -> Result<SourceTest, CliError
             "line {line_num}: test return type and body must be non-empty"
         )));
     }
+    validate_source_type_name(return_type, line_num)?;
 
     Ok(SourceTest {
         name: normalize_test_name(raw_name),
@@ -1561,6 +1564,15 @@ fn parse_source_grant(rest: &str, line_num: usize) -> Result<SourceGrant, CliErr
     validate_source_name(&capability, line_num)?;
 
     Ok(SourceGrant { target, capability })
+}
+
+fn validate_source_type_name(ty: &str, line_num: usize) -> Result<(), CliError> {
+    match ty {
+        "Int" | "Bool" | "Text" | "Float" => Ok(()),
+        _ => Err(CliError::ParseError(format!(
+            "line {line_num}: unsupported source type `{ty}`"
+        ))),
+    }
 }
 
 fn normalize_grant_target(target: &str) -> String {
