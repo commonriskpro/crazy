@@ -1669,7 +1669,50 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(rest) = expr.strip_prefix("if ") {
         return lower_if_expr(rest, line_num);
     }
+    if let Some((left, right)) = split_top_level_source_binary(expr, '+') {
+        return Ok(format!(
+            "add({}, {})",
+            lower_source_expr(left, line_num)?,
+            lower_source_expr(right, line_num)?
+        ));
+    }
     Ok(expr.to_string())
+}
+
+fn split_top_level_source_binary(expr: &str, op: char) -> Option<(&str, &str)> {
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+    let mut split_at = None;
+
+    for (idx, ch) in expr.char_indices() {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            _ if ch == op && paren_depth == 0 && brace_depth == 0 && idx > 0 => {
+                split_at = Some(idx);
+            }
+            _ => {}
+        }
+        prev_was_escape = false;
+    }
+
+    let idx = split_at?;
+    let left = expr[..idx].trim();
+    let right = expr[idx + op.len_utf8()..].trim();
+    (!left.is_empty() && !right.is_empty()).then_some((left, right))
 }
 
 fn lower_if_expr(rest: &str, line_num: usize) -> Result<String, CliError> {
