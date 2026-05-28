@@ -2078,6 +2078,17 @@ fn format_source_expr_node(
         );
     }
 
+    if let Some((base, fields)) = collect_source_update_literal(expr) {
+        let mut parts = vec![format!(
+            "...{}",
+            format_source_expr(&base, module, constants)
+        )];
+        parts.extend(fields.iter().map(|(field, value)| {
+            format!("{field}: {}", format_source_expr(value, module, constants))
+        }));
+        return (format!("{{ {} }}", parts.join(", ")), CALL_PRECEDENCE);
+    }
+
     if args.len() == 2 {
         if let Some((operator, precedence)) = source_infix_operator(&func) {
             return (
@@ -2102,6 +2113,21 @@ fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn collect_source_update_literal(expr: &str) -> Option<(String, Vec<(String, String)>)> {
+    let (func, args) = parse_source_call(expr)?;
+    if func != "update" || args.len() != 3 || !is_source_local_ident(&args[1]) {
+        return None;
+    }
+    let field = args[1].trim().to_string();
+    let value = args[2].trim().to_string();
+    if let Some((base, mut fields)) = collect_source_update_literal(&args[0]) {
+        fields.push((field, value));
+        Some((base, fields))
+    } else {
+        Some((args[0].trim().to_string(), vec![(field, value)]))
+    }
 }
 
 fn source_infix_operator(func: &str) -> Option<(&'static str, u8)> {
@@ -2659,10 +2685,21 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(inner) = strip_wrapping_source_parens(expr) {
         return lower_source_expr(inner, line_num);
     }
-    if let Some(fields) = parse_source_record_literal(expr, line_num)? {
+    if let Some(literal) = parse_source_record_literal(expr, line_num)? {
+        if let Some(base) = literal.base {
+            let mut lowered = lower_source_expr(&base, line_num)?;
+            for (field, value) in literal.fields {
+                lowered = format!(
+                    "update({lowered}, {field}, {})",
+                    lower_source_expr(&value, line_num)?
+                );
+            }
+            return Ok(lowered);
+        }
         return Ok(format!(
             "record({})",
-            fields
+            literal
+                .fields
                 .iter()
                 .map(|(field, value)| {
                     lower_source_expr(value, line_num)
@@ -2971,10 +3008,15 @@ fn parse_source_list_literal(expr: &str, line_num: usize) -> Result<Option<Vec<S
     Ok(Some(split_source_args(inner)))
 }
 
+struct SourceRecordLiteral {
+    base: Option<String>,
+    fields: Vec<(String, String)>,
+}
+
 fn parse_source_record_literal(
     expr: &str,
     line_num: usize,
-) -> Result<Option<Vec<(String, String)>>, CliError> {
+) -> Result<Option<SourceRecordLiteral>, CliError> {
     if !expr.starts_with('{') {
         return Ok(None);
     }
@@ -2989,29 +3031,49 @@ fn parse_source_record_literal(
     }
     let inner = expr[1..expr.len() - 1].trim();
     if inner.is_empty() {
-        return Ok(Some(vec![]));
+        return Ok(Some(SourceRecordLiteral {
+            base: None,
+            fields: vec![],
+        }));
     }
 
-    split_source_args(inner)
-        .into_iter()
-        .map(|field_expr| {
-            let colon = find_top_level_source_colon(&field_expr).ok_or_else(|| {
-                CliError::ParseError(format!(
-                    "line {line_num}: record literal field requires `name: expression`"
-                ))
-            })?;
-            let field = field_expr[..colon].trim();
-            let value = field_expr[colon + ':'.len_utf8()..].trim();
-            if field.is_empty() || value.is_empty() {
+    let mut base = None;
+    let mut fields = Vec::new();
+    for (entry_idx, field_expr) in split_source_args(inner).into_iter().enumerate() {
+        let entry = field_expr.trim();
+        if let Some(spread) = entry.strip_prefix("...") {
+            if entry_idx != 0 || base.is_some() {
                 return Err(CliError::ParseError(format!(
-                    "line {line_num}: record literal field and value must be non-empty"
+                    "line {line_num}: record update spread must appear first"
                 )));
             }
-            validate_source_local_name(field, line_num)?;
-            Ok((field.to_string(), value.to_string()))
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(Some)
+            let spread = spread.trim();
+            if spread.is_empty() {
+                return Err(CliError::ParseError(format!(
+                    "line {line_num}: record update spread requires a base expression"
+                )));
+            }
+            base = Some(spread.to_string());
+            continue;
+        }
+
+        let colon = find_top_level_source_colon(entry).ok_or_else(|| {
+            CliError::ParseError(format!(
+                "line {line_num}: record literal field requires `name: expression`"
+            ))
+        })?;
+        let field = entry[..colon].trim();
+        let value = entry[colon + ':'.len_utf8()..].trim();
+        if field.is_empty() || value.is_empty() {
+            return Err(CliError::ParseError(format!(
+                "line {line_num}: record literal field and value must be non-empty"
+            )));
+        }
+        validate_source_local_name(field, line_num)?;
+        fields.push((field.to_string(), value.to_string()));
+    }
+
+    Ok(Some(SourceRecordLiteral { base, fields }))
 }
 
 fn find_top_level_source_colon(expr: &str) -> Option<usize> {
@@ -4048,7 +4110,8 @@ fn pair() -> Tuple<Int, Text> = tuple(42, "answer")
 fn person() -> Record<age: Int, name: Text> = { age: 42, name: "Ada" }
 fn age() -> Int = field(person(), age)
 fn age_dot() -> Int = person().age
-fn older() -> Record<age: Int, name: Text> = update(person(), age, 43)
+fn older() -> Record<age: Int, name: Text> = { ...person(), age: 43 }
+fn older_renamed() -> Record<age: Int, name: Text> = { ...person(), age: 43, name: "Grace" }
 "#,
         )
         .expect("source record must parse");
@@ -4070,6 +4133,9 @@ fn older() -> Record<age: Int, name: Text> = update(person(), age, 43)
                 "op create_function id=fn.older return=Record<age:Int,name:Text> body=update(person(), age, 43)"
             )
         );
+        assert!(acl.contains(
+            r#"op create_function id=fn.older_renamed return=Record<age:Int,name:Text> body=update(update(person(), age, 43), name, "Grace")"#
+        ));
     }
 
     #[test]
@@ -4165,11 +4231,12 @@ fn labels()->Map<String,int>=map("one",1,"two",2)
 fn person()->Record<age:i64,name:String>=record(age,42,name,"Ada")
 fn age()->Int=field(person(),age)
 fn age_dot()->Int=person().age
+fn older()->Record<age:Int,name:Text>=update(person(),age,43)
 "#,
         )
         .expect("source record must format");
 
-        assert_eq!(item_count, 3);
+        assert_eq!(item_count, 4);
         assert!(
             formatted.contains(
                 "fn person() -> Record<age:Int,name:Text> = { age: 42, name: \"Ada\" }\n"
@@ -4177,6 +4244,10 @@ fn age_dot()->Int=person().age
         );
         assert!(formatted.contains("fn age() -> Int = person().age\n"));
         assert!(formatted.contains("fn age_dot() -> Int = person().age\n"));
+        assert!(
+            formatted
+                .contains("fn older() -> Record<age:Int,name:Text> = { ...person(), age: 43 }\n")
+        );
     }
 
     #[test]

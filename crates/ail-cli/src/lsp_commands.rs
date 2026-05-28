@@ -694,6 +694,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "{ ${1:field}: ${2:value} }",
     },
     AclSymbol {
+        label: "...",
+        detail: "AIL source Record update spread",
+        documentation: "Copies a Record base inside a literal and updates typed fields; equivalent to update(record, field, value).",
+        insert_text: "{ ...${1:record}, ${2:field}: ${3:value} }",
+    },
+    AclSymbol {
         label: "add",
         detail: "AIL source Int builtin",
         documentation: "Adds two Int values and returns an Int.",

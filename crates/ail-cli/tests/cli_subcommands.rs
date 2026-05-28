@@ -632,7 +632,7 @@ fn compile_file_accepts_source_record_field_access_and_update() {
         .write_str(
             "fn person() -> Record<age: Int, name: Text> = { age: 42, name: \"Ada\" }\n\
 fn age() -> Int = person().age\n\
-fn older() -> Record<age: Int, name: Text> = update(person(), age, 43)\n",
+fn older() -> Record<age: Int, name: Text> = { ...person(), age: 43 }\n",
         )
         .expect("source fixture must be written");
 
@@ -767,6 +767,30 @@ fn compile_file_rejects_malformed_source_record_literal() {
         .failure()
         .stderr(predicate::str::contains(
             "record literal field requires `name: expression`",
+        ));
+}
+
+#[test]
+fn compile_file_rejects_record_update_spread_after_fields() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_record_update.ail");
+    source
+        .write_str(
+            "fn person() -> Record<age: Int> = { age: 42 }\n\
+fn older() -> Record<age: Int> = { age: 43, ...person() }\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "record update spread must appear first",
         ));
 }
 
@@ -2698,7 +2722,8 @@ fn lsp_diagnose_accepts_source_record_field_access() {
     source
         .write_str(
             "fn person() -> Record<age: Int, name: Text> = { age: 42, name: \"Ada\" }\n\
-fn age() -> Int = person().age\n",
+fn age() -> Int = person().age\n\
+fn older() -> Record<age: Int, name: Text> = { ...person(), age: 43 }\n",
         )
         .expect("source fixture must be written");
 
@@ -3840,6 +3865,24 @@ fn lsp_completion_and_hover_cover_ail_source_operators() {
             .iter()
             .any(|item| item["label"] == "{" && item["detail"] == "AIL source Record literal"),
         "completion must include AIL source record literal; got: {record_literal_items:?}"
+    );
+
+    let record_update_completion_output = ail()
+        .args(["lsp", "--complete", "...", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let record_update_completion = parse_json_output(&record_update_completion_output);
+    let record_update_items = record_update_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        record_update_items
+            .iter()
+            .any(|item| item["label"] == "..."
+                && item["detail"] == "AIL source Record update spread"),
+        "completion must include AIL source record update spread; got: {record_update_items:?}"
     );
 }
 
