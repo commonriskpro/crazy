@@ -384,6 +384,60 @@ fn check_file_rejects_invalid_ail_source_without_execution() {
         .stderr(predicate::str::contains("unknown variable `x`"));
 }
 
+#[test]
+fn compile_file_compiles_ail_source_without_acl_authoring() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let math = dir.child("math.ail");
+    math.write_str("fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
+        .expect("imported source fixture must be written");
+    let source = dir.child("main.ail");
+    source
+        .write_str("use \"./math.ail\"\nfn main() -> Int = add_pair(20, 22)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .args(["--profile", "dev", "--target", "wasm", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["target"], "wasm");
+    assert!(v["data"]["wasm_hash"].is_string());
+    assert!(
+        v["data"]["source_file"]
+            .as_str()
+            .expect("source_file must be present")
+            .ends_with("main.ail")
+    );
+}
+
+#[test]
+fn compile_file_rejects_invalid_ail_source_before_lowering() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad.ail");
+    source
+        .write_str("fn main() -> Int = add(\"one\", 1)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("type mismatch in add argument 1"));
+}
+
 /// Spec scenario: lsp diagnose emits parser/schema diagnostics.
 ///   GIVEN an ACL file whose create_function op is missing id
 ///   WHEN `ail lsp --diagnose <file> --json` runs

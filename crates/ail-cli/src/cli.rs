@@ -14,7 +14,7 @@
 // | change   [text] [--file] | Create a draft ChangeSet from text/file/stdin         |
 // | verify   <change-id>     | Run Checker on the named ChangeSet (--profile)        |
 // | apply    <change-id>     | Apply ChangeSet with full pre-apply gate display      |
-// | compile  --target --profile  lower → ANF → emit_wasm                      |
+// | compile  [--file .ail] --target --profile  lower → ANF → emit_wasm        |
 // | link     --profile [--output]    link native object → executable           |
 // | run      --profile [--file .ail] [module] preflight + runtime report      |
 // | test     [--file .ail] [filter]  Discover and run graph/source tests      |
@@ -203,6 +203,9 @@ enum Commands {
         /// Compilation target (e.g. `wasm`, `native`).
         #[arg(long, default_value = "wasm")]
         target: String,
+        /// Compile a `.ail` source file directly instead of loading the current graph.
+        #[arg(long, short)]
+        file: Option<PathBuf>,
     },
 
     /// Run preflight validation and emit a runtime report.
@@ -729,7 +732,11 @@ pub async fn run() -> Result<(), CliError> {
             yes,
             policy,
         } => cmd_apply(mode, &change_id, yes, policy.as_deref(), &store).await,
-        Commands::Compile { profile, target } => cmd_compile(mode, &profile, &target, &store).await,
+        Commands::Compile {
+            profile,
+            target,
+            file,
+        } => cmd_compile(mode, &profile, &target, file.as_deref(), &store).await,
         Commands::Run {
             profile,
             target,

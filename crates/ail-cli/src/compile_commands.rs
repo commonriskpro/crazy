@@ -28,6 +28,7 @@ use serde_json::{Value, json};
 use crate::cli::{bytes_to_hex, load_current_graph_for_cli};
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
+use crate::source_commands::load_source_graph;
 use crate::store::StoreHandle;
 use crate::store_artifacts::{NativeArtifactBytes, WasmArtifactBytes};
 
@@ -148,9 +149,14 @@ pub(crate) async fn cmd_compile(
     mode: OutputMode,
     profile: &str,
     target: &str,
+    source_file: Option<&std::path::Path>,
     store: &StoreHandle,
 ) -> Result<(), CliError> {
-    let graph = load_current_graph_for_cli(store).await?;
+    let graph = if let Some(path) = source_file {
+        load_source_graph(path)?
+    } else {
+        load_current_graph_for_cli(store).await?
+    };
 
     // ── Verification gate ─────────────────────────────────────────────────
     // Run the real checker and reject graphs with Failed/Unsafe entries
@@ -236,6 +242,7 @@ pub(crate) async fn cmd_compile(
             json!({
                 "profile": profile,
                 "target": target,
+                "source_file": source_file.map(|path| path.display().to_string()),
                 "object_format": object_format,
                 "native_bytes": native_size,
                 "native_hash": native_hash,
@@ -310,6 +317,7 @@ pub(crate) async fn cmd_compile(
         json!({
             "profile": profile,
             "target": target,
+            "source_file": source_file.map(|path| path.display().to_string()),
             "wasm_bytes": wasm_size,
             "wasm_hash": wasm_hash,
             "capabilities_manifest": capabilities_manifest,
