@@ -585,6 +585,60 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         documentation: "Evaluates a typed conditional expression with explicit then and else branches.",
         insert_text: "if ${1:condition} { ${2:then_expr} } else { ${3:else_expr} }",
     },
+    AclSymbol {
+        label: "add",
+        detail: "AIL source Int builtin",
+        documentation: "Adds two Int values and returns an Int.",
+        insert_text: "add(${1:left}, ${2:right})",
+    },
+    AclSymbol {
+        label: "sub",
+        detail: "AIL source Int builtin",
+        documentation: "Subtracts the second Int from the first and returns an Int.",
+        insert_text: "sub(${1:left}, ${2:right})",
+    },
+    AclSymbol {
+        label: "mul",
+        detail: "AIL source Int builtin",
+        documentation: "Multiplies two Int values and returns an Int.",
+        insert_text: "mul(${1:left}, ${2:right})",
+    },
+    AclSymbol {
+        label: "div",
+        detail: "AIL source Int builtin",
+        documentation: "Divides the first Int by the second and returns an Int.",
+        insert_text: "div(${1:left}, ${2:right})",
+    },
+    AclSymbol {
+        label: "eq",
+        detail: "AIL source comparison builtin",
+        documentation: "Compares two values of the same inferred type and returns Bool.",
+        insert_text: "eq(${1:left}, ${2:right})",
+    },
+    AclSymbol {
+        label: "gt",
+        detail: "AIL source Int comparison builtin",
+        documentation: "Returns Bool after checking whether the first Int is greater than the second.",
+        insert_text: "gt(${1:left}, ${2:right})",
+    },
+    AclSymbol {
+        label: "concat",
+        detail: "AIL source Text builtin",
+        documentation: "Concatenates two Text values and returns Text.",
+        insert_text: "concat(${1:left}, ${2:right})",
+    },
+    AclSymbol {
+        label: "len",
+        detail: "AIL source Text builtin",
+        documentation: "Returns the Int length of a Text value.",
+        insert_text: "len(${1:text})",
+    },
+    AclSymbol {
+        label: "effect_call",
+        detail: "AIL source capability call",
+        documentation: "Calls an external capability operation after the source item has an explicit grant.",
+        insert_text: "effect_call(${1:log.write}, ${2:write}, ${3:\"message\"})",
+    },
 ];
 
 fn completion_items(prefix: &str) -> Vec<Value> {

@@ -2442,6 +2442,45 @@ fn lsp_completion_and_hover_cover_ail_source_authoring() {
 }
 
 #[test]
+fn lsp_completion_and_hover_cover_ail_source_builtins() {
+    let completion_output = ail()
+        .args(["lsp", "--complete", "effect", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let completion = parse_json_output(&completion_output);
+    assert_eq!(completion["status"], "ok");
+    let items = completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        items.iter().any(|item| item["label"] == "effect_call"
+            && item["insertText"]
+                .as_str()
+                .expect("insertText")
+                .contains("effect_call(${1:log.write}")),
+        "completion must include AIL source effect_call snippet; got: {items:?}"
+    );
+
+    let hover_output = ail()
+        .args(["lsp", "--hover-token", "effect_call", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let hover = parse_json_output(&hover_output);
+    assert_eq!(hover["status"], "ok");
+    assert!(
+        hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("explicit grant"),
+        "hover must explain effect_call grants; got: {hover}"
+    );
+}
+
+#[test]
 fn lsp_definition_resolves_acl_target_to_id_location() {
     use assert_fs::prelude::*;
 
