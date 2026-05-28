@@ -1412,6 +1412,11 @@ fn parse_source_import(rest: &str, line_num: usize) -> Result<String, CliError> 
             "line {line_num}: import path must be a non-empty relative path"
         )));
     }
+    if Path::new(import).extension().and_then(|ext| ext.to_str()) != Some("ail") {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: import path `{import}` must end with `.ail`"
+        )));
+    }
     Ok(import.to_string())
 }
 
