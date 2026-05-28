@@ -606,6 +606,25 @@ fn compile_file_rejects_unsupported_source_expression_syntax() {
 }
 
 #[test]
+fn compile_file_rejects_unsupported_source_string_escapes() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_escape.ail");
+    source
+        .write_str("fn main() -> Text = \"bad \\q escape\"\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("malformed string literal"));
+}
+
+#[test]
 fn compile_file_rejects_malformed_source_string_literals() {
     use assert_fs::prelude::*;
 
@@ -1383,6 +1402,38 @@ fn lsp_diagnose_reports_unsupported_source_expression_syntax() {
             .as_str()
             .expect("diagnostic message")
             .contains("unsupported source expression `1 + 2`")
+    );
+}
+
+#[test]
+fn lsp_diagnose_reports_unsupported_source_string_escapes() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Text = \"bad \\q escape\"\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("malformed string literal")
     );
 }
 

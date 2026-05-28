@@ -765,6 +765,9 @@ fn is_source_string_literal(expr: &str) -> bool {
     let mut prev_was_escape = false;
     for ch in expr[1..expr.len() - 1].chars() {
         if prev_was_escape {
+            if !matches!(ch, '"' | '\\') {
+                return false;
+            }
             prev_was_escape = false;
             continue;
         }
