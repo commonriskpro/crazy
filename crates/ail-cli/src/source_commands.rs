@@ -36,6 +36,7 @@ struct SourceFunction {
     params: Vec<SourceParam>,
     return_type: String,
     body: String,
+    line_num: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +50,7 @@ struct SourceTest {
     name: String,
     return_type: String,
     body: String,
+    line_num: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -896,13 +898,17 @@ fn validate_source_program_types(program: &SourceProgram) -> Result<(), CliError
             .iter()
             .map(|param| (param.name.clone(), param.ty.clone()))
             .collect::<BTreeMap<_, _>>();
-        let inferred = infer_source_expr_type(&function.body, &mut scope, &functions)?;
-        validate_source_type_match(&function.return_type, &inferred, &function.name)?;
+        let inferred = infer_source_expr_type(&function.body, &mut scope, &functions)
+            .map_err(|err| source_error_at_line(err, function.line_num))?;
+        validate_source_type_match(&function.return_type, &inferred, &function.name)
+            .map_err(|err| source_error_at_line(err, function.line_num))?;
     }
     for test in &program.tests {
         let mut scope = BTreeMap::new();
-        let inferred = infer_source_expr_type(&test.body, &mut scope, &functions)?;
-        validate_source_type_match(&test.return_type, &inferred, &test.name)?;
+        let inferred = infer_source_expr_type(&test.body, &mut scope, &functions)
+            .map_err(|err| source_error_at_line(err, test.line_num))?;
+        validate_source_type_match(&test.return_type, &inferred, &test.name)
+            .map_err(|err| source_error_at_line(err, test.line_num))?;
     }
     Ok(())
 }
@@ -1068,6 +1074,15 @@ fn validate_source_type_match(expected: &str, actual: &str, context: &str) -> Re
     Err(CliError::ParseError(format!(
         "type mismatch in {context}: expected {expected}, got {actual}"
     )))
+}
+
+fn source_error_at_line(err: CliError, line_num: usize) -> CliError {
+    match err {
+        CliError::ParseError(message) if !message.contains("line ") => {
+            CliError::ParseError(format!("line {line_num}: {message}"))
+        }
+        other => other,
+    }
 }
 
 fn source_program_to_graph(
@@ -1635,6 +1650,7 @@ fn build_source_function(
         params,
         return_type: return_type.to_string(),
         body: lower_source_expr(body, line_num)?,
+        line_num,
     })
 }
 
@@ -2103,6 +2119,7 @@ fn parse_source_test(rest: &str, line_num: usize) -> Result<SourceTest, CliError
         name: normalize_test_name(raw_name),
         return_type: return_type.to_string(),
         body: lower_source_expr(body, line_num)?,
+        line_num,
     })
 }
 

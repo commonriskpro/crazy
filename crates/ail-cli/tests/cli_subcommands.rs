@@ -559,7 +559,7 @@ fn compile_file_rejects_float_literal_return_type_mismatch() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "type mismatch in fn.main: expected Int, got Float",
+            "line 1: type mismatch in fn.main: expected Int, got Float",
         ));
 }
 
@@ -1998,7 +1998,7 @@ fn lsp_diagnose_reports_ail_source_return_type_mismatch() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str("fn main() -> Int = true\n")
+        .write_str("fn ok() -> Int = 0\nfn main() -> Int = true\n")
         .expect("source fixture must be written");
 
     let output = ail()
@@ -2019,8 +2019,9 @@ fn lsp_diagnose_reports_ail_source_return_type_mismatch() {
         v["data"]["diagnostics"][0]["message"]
             .as_str()
             .expect("diagnostic message")
-            .contains("type mismatch in fn.main: expected Int, got Bool")
+            .contains("line 2: type mismatch in fn.main: expected Int, got Bool")
     );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
 }
 
 #[test]
@@ -2647,7 +2648,7 @@ fn lsp_diagnose_reports_ail_source_builtin_argument_type_mismatch() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str("fn main() -> Int = add(\"one\", 1)\n")
+        .write_str("fn ok() -> Int = 0\nfn main() -> Int = add(\"one\", 1)\n")
         .expect("source fixture must be written");
 
     let output = ail()
@@ -2668,8 +2669,9 @@ fn lsp_diagnose_reports_ail_source_builtin_argument_type_mismatch() {
         v["data"]["diagnostics"][0]["message"]
             .as_str()
             .expect("diagnostic message")
-            .contains("type mismatch in add argument 1: expected Int, got Text")
+            .contains("line 2: type mismatch in add argument 1: expected Int, got Text")
     );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
 }
 
 #[test]
