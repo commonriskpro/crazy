@@ -137,6 +137,7 @@ pub(crate) fn cmd_check_source(mode: OutputMode, path: &Path) -> Result<(), CliE
 /// Format a supported `.ail` source file into stable canonical source text.
 pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> {
     let program = parse_ail_source(src)?;
+    let constants = source_constant_names(&program);
     let mut out = String::new();
 
     if let Some(module) = &program.module {
@@ -149,13 +150,13 @@ pub(crate) fn format_ail_source(src: &str) -> Result<(String, usize), CliError> 
         render_source_capability(&mut out, capability);
     }
     for constant in &program.constants {
-        render_source_const(&mut out, constant, program.module.as_deref());
+        render_source_const(&mut out, constant, program.module.as_deref(), &constants);
     }
     for function in &program.functions {
-        render_source_function(&mut out, function, program.module.as_deref());
+        render_source_function(&mut out, function, program.module.as_deref(), &constants);
     }
     for test in &program.tests {
-        render_source_test(&mut out, test, program.module.as_deref());
+        render_source_test(&mut out, test, program.module.as_deref(), &constants);
     }
     for grant in &program.grants {
         render_source_grant(&mut out, grant, program.module.as_deref());
@@ -1457,7 +1458,12 @@ fn render_source_capability(out: &mut String, capability: &str) {
     out.push_str(&format!("capability {capability}\n"));
 }
 
-fn render_source_const(out: &mut String, constant: &SourceConst, module: Option<&str>) {
+fn render_source_const(
+    out: &mut String,
+    constant: &SourceConst,
+    module: Option<&str>,
+    constants: &BTreeMap<String, String>,
+) {
     let name = render_source_decl_name(
         constant.name.strip_prefix("fn.").unwrap_or(&constant.name),
         module,
@@ -1465,11 +1471,16 @@ fn render_source_const(out: &mut String, constant: &SourceConst, module: Option<
     out.push_str(&format!(
         "const {name}: {} = {}\n",
         constant.return_type,
-        format_source_expr(&constant.body, module)
+        format_source_expr(&constant.body, module, constants)
     ));
 }
 
-fn render_source_function(out: &mut String, function: &SourceFunction, module: Option<&str>) {
+fn render_source_function(
+    out: &mut String,
+    function: &SourceFunction,
+    module: Option<&str>,
+    constants: &BTreeMap<String, String>,
+) {
     let name = render_source_decl_name(
         function.name.strip_prefix("fn.").unwrap_or(&function.name),
         module,
@@ -1486,7 +1497,7 @@ fn render_source_function(out: &mut String, function: &SourceFunction, module: O
     if lets.is_empty() {
         out.push_str(&format!(
             "{signature} = {}\n",
-            format_source_expr(&function.body, module)
+            format_source_expr(&function.body, module, constants)
         ));
         return;
     }
@@ -1502,17 +1513,22 @@ fn render_source_function(out: &mut String, function: &SourceFunction, module: O
             "  let {}{} = {}\n",
             binding.name,
             annotation,
-            format_source_expr(&binding.value, module)
+            format_source_expr(&binding.value, module, constants)
         ));
     }
     out.push_str(&format!(
         "  return {}\n",
-        format_source_expr(&final_expr, module)
+        format_source_expr(&final_expr, module, constants)
     ));
     out.push_str("}\n");
 }
 
-fn render_source_test(out: &mut String, test: &SourceTest, module: Option<&str>) {
+fn render_source_test(
+    out: &mut String,
+    test: &SourceTest,
+    module: Option<&str>,
+    constants: &BTreeMap<String, String>,
+) {
     let name = render_source_decl_name(
         test.name.strip_prefix("test.").unwrap_or(&test.name),
         module,
@@ -1520,13 +1536,13 @@ fn render_source_test(out: &mut String, test: &SourceTest, module: Option<&str>)
     if test.return_type == "Bool" {
         out.push_str(&format!(
             "test {name} = {}\n",
-            format_source_expr(&test.body, module)
+            format_source_expr(&test.body, module, constants)
         ));
     } else {
         out.push_str(&format!(
             "test {name} -> {} = {}\n",
             test.return_type,
-            format_source_expr(&test.body, module)
+            format_source_expr(&test.body, module, constants)
         ));
     }
 }
@@ -1585,11 +1601,19 @@ fn source_let_chain(body: &str) -> (Vec<SourceLetBinding>, String) {
     (lets, current)
 }
 
-fn format_source_expr(expr: &str, module: Option<&str>) -> String {
-    format_source_expr_node(expr, module).0
+fn format_source_expr(
+    expr: &str,
+    module: Option<&str>,
+    constants: &BTreeMap<String, String>,
+) -> String {
+    format_source_expr_node(expr, module, constants).0
 }
 
-fn format_source_expr_node(expr: &str, module: Option<&str>) -> (String, u8) {
+fn format_source_expr_node(
+    expr: &str,
+    module: Option<&str>,
+    constants: &BTreeMap<String, String>,
+) -> (String, u8) {
     const IF_PRECEDENCE: u8 = 0;
     const UNARY_PRECEDENCE: u8 = 7;
     const CALL_PRECEDENCE: u8 = 8;
@@ -1599,13 +1623,19 @@ fn format_source_expr_node(expr: &str, module: Option<&str>) -> (String, u8) {
         return (expr.to_string(), CALL_PRECEDENCE);
     };
 
+    if args.is_empty()
+        && let Some(target) = source_const_reference_target(&func, constants)
+    {
+        return (render_source_decl_name(&target, module), CALL_PRECEDENCE);
+    }
+
     if func == "if" && args.len() == 3 {
         return (
             format!(
                 "if {} {{ {} }} else {{ {} }}",
-                format_source_expr(&args[0], module),
-                format_source_expr(&args[1], module),
-                format_source_expr(&args[2], module)
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants),
+                format_source_expr(&args[2], module, constants)
             ),
             IF_PRECEDENCE,
         );
@@ -1615,7 +1645,7 @@ fn format_source_expr_node(expr: &str, module: Option<&str>) -> (String, u8) {
         return (
             format!(
                 "!{}",
-                format_source_child_expr(&args[0], module, UNARY_PRECEDENCE, false)
+                format_source_child_expr(&args[0], module, constants, UNARY_PRECEDENCE, false)
             ),
             UNARY_PRECEDENCE,
         );
@@ -1625,7 +1655,7 @@ fn format_source_expr_node(expr: &str, module: Option<&str>) -> (String, u8) {
         return (
             format!(
                 "-{}",
-                format_source_child_expr(&args[1], module, UNARY_PRECEDENCE, false)
+                format_source_child_expr(&args[1], module, constants, UNARY_PRECEDENCE, false)
             ),
             UNARY_PRECEDENCE,
         );
@@ -1636,8 +1666,8 @@ fn format_source_expr_node(expr: &str, module: Option<&str>) -> (String, u8) {
             return (
                 format!(
                     "{} {operator} {}",
-                    format_source_child_expr(&args[0], module, precedence, false),
-                    format_source_child_expr(&args[1], module, precedence, true)
+                    format_source_child_expr(&args[0], module, constants, precedence, false),
+                    format_source_child_expr(&args[1], module, constants, precedence, true)
                 ),
                 precedence,
             );
@@ -1649,7 +1679,7 @@ fn format_source_expr_node(expr: &str, module: Option<&str>) -> (String, u8) {
             "{}({})",
             format_source_call_name(&func, module),
             args.iter()
-                .map(|arg| format_source_expr(arg, module))
+                .map(|arg| format_source_expr(arg, module, constants))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -1679,10 +1709,11 @@ fn source_infix_operator(func: &str) -> Option<(&'static str, u8)> {
 fn format_source_child_expr(
     expr: &str,
     module: Option<&str>,
+    constants: &BTreeMap<String, String>,
     parent_precedence: u8,
     parenthesize_equal_precedence: bool,
 ) -> String {
-    let (formatted, precedence) = format_source_expr_node(expr, module);
+    let (formatted, precedence) = format_source_expr_node(expr, module, constants);
     if precedence < parent_precedence
         || (parenthesize_equal_precedence && precedence == parent_precedence)
     {

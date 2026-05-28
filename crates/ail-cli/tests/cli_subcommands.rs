@@ -4712,7 +4712,7 @@ fn fmt_file_json_outputs_canonical_ail_source() {
             "const answer:Int=40+2\n\
 fn add_pair(x:Int,y:Int)->Int=add(x,y)\n\
 fn main()->Int{\n\
-let base:Int=add(20,20)\n\
+let base:Int=answer()\n\
 return if gt(base,40){add(base,2)} else {0}\n\
 }\n\
 test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
@@ -4738,7 +4738,7 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
     assert!(formatted.contains("const answer: Int = 40 + 2\n"));
     assert!(formatted.contains("fn add_pair(x: Int, y: Int) -> Int = x + y\n"));
     assert!(formatted.contains("fn main() -> Int {\n"));
-    assert!(formatted.contains("  let base: Int = 20 + 20\n"));
+    assert!(formatted.contains("  let base: Int = answer\n"));
     assert!(formatted.contains("  return if base > 40 { base + 2 } else { 0 }\n"));
     assert!(formatted.contains("test math = 10 - 2 * 3 + (8 / 4 + 7 % 4) == 9\n"));
 }
