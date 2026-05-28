@@ -682,6 +682,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "!${1:expr}",
     },
     AclSymbol {
+        label: ".",
+        detail: "AIL source Record field operator",
+        documentation: "Reads a field from a typed Record value; equivalent to field(record, name).",
+        insert_text: "${1:record}.${2:field}",
+    },
+    AclSymbol {
         label: "add",
         detail: "AIL source Int builtin",
         documentation: "Adds two Int values and returns an Int.",

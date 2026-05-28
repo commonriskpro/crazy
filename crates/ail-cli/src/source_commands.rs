@@ -2040,6 +2040,17 @@ fn format_source_expr_node(
         );
     }
 
+    if func == "field" && args.len() == 2 {
+        return (
+            format!(
+                "{}.{}",
+                format_source_child_expr(&args[0], module, constants, CALL_PRECEDENCE, false),
+                args[1].trim()
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if args.len() == 2 {
         if let Some((operator, precedence)) = source_infix_operator(&func) {
             return (
@@ -2638,6 +2649,12 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
             lower_source_expr(index, line_num)?
         ));
     }
+    if let Some((record, field)) = parse_source_dot_field_expr(expr, line_num)? {
+        return Ok(format!(
+            "field({}, {field})",
+            lower_source_expr(record, line_num)?
+        ));
+    }
     if let Some((left, right)) = split_top_level_source_binary_str(expr, "||") {
         return Ok(format!(
             "or({}, {})",
@@ -2936,6 +2953,73 @@ fn parse_source_index_expr<'a>(
         )));
     }
     Ok(Some((collection, index)))
+}
+
+fn parse_source_dot_field_expr<'a>(
+    expr: &'a str,
+    line_num: usize,
+) -> Result<Option<(&'a str, &'a str)>, CliError> {
+    let Some(dot) = find_top_level_source_dot(expr) else {
+        return Ok(None);
+    };
+    let record = expr[..dot].trim();
+    let field = expr[dot + 1..].trim();
+    if record.is_empty() || field.is_empty() {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: field access requires `record.field`"
+        )));
+    }
+    if !is_source_local_ident(field) {
+        return Ok(None);
+    }
+    Ok(Some((record, field)))
+}
+
+fn find_top_level_source_dot(expr: &str) -> Option<usize> {
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+    let mut candidate = None;
+
+    for (idx, ch) in expr.char_indices() {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '.' if paren_depth == 0
+                && brace_depth == 0
+                && bracket_depth == 0
+                && source_dot_has_record_operand(expr, idx) =>
+            {
+                candidate = Some(idx);
+            }
+            _ => {}
+        }
+        prev_was_escape = false;
+    }
+
+    candidate
+}
+
+fn source_dot_has_record_operand(expr: &str, idx: usize) -> bool {
+    expr[..idx]
+        .chars()
+        .rev()
+        .find(|ch| !ch.is_whitespace())
+        .is_some_and(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ')' | ']' | '"'))
 }
 
 fn find_top_level_source_index_bracket(expr: &str) -> Option<usize> {
@@ -3839,6 +3923,7 @@ fn pair() -> Tuple<Int, Text> = tuple(42, "answer")
             r#"
 fn person() -> Record<age: Int, name: Text> = record(age, 42, name, "Ada")
 fn age() -> Int = field(person(), age)
+fn age_dot() -> Int = person().age
 fn older() -> Record<age: Int, name: Text> = update(person(), age, 43)
 "#,
         )
@@ -3853,6 +3938,9 @@ fn older() -> Record<age: Int, name: Text> = update(person(), age, 43)
             r#"op create_function id=fn.person return=Record<age:Int,name:Text> body=record(age, 42, name, "Ada")"#
         ));
         assert!(acl.contains("op create_function id=fn.age return=Int body=field(person(), age)"));
+        assert!(
+            acl.contains("op create_function id=fn.age_dot return=Int body=field(person(), age)")
+        );
         assert!(
             acl.contains(
                 "op create_function id=fn.older return=Record<age:Int,name:Text> body=update(person(), age, 43)"
@@ -3952,15 +4040,17 @@ fn labels()->Map<String,int>=map("one",1,"two",2)
             r#"
 fn person()->Record<age:i64,name:String>=record(age,42,name,"Ada")
 fn age()->Int=field(person(),age)
+fn age_dot()->Int=person().age
 "#,
         )
         .expect("source record must format");
 
-        assert_eq!(item_count, 2);
+        assert_eq!(item_count, 3);
         assert!(formatted.contains(
             "fn person() -> Record<age:Int,name:Text> = record(age, 42, name, \"Ada\")\n"
         ));
-        assert!(formatted.contains("fn age() -> Int = field(person(), age)\n"));
+        assert!(formatted.contains("fn age() -> Int = person().age\n"));
+        assert!(formatted.contains("fn age_dot() -> Int = person().age\n"));
     }
 
     #[test]

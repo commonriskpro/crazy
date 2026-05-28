@@ -631,7 +631,7 @@ fn compile_file_accepts_source_record_field_access_and_update() {
     source
         .write_str(
             "fn person() -> Record<age: Int, name: Text> = record(age, 42, name, \"Ada\")\n\
-fn age() -> Int = field(person(), age)\n\
+fn age() -> Int = person().age\n\
 fn older() -> Record<age: Int, name: Text> = update(person(), age, 43)\n",
         )
         .expect("source fixture must be written");
@@ -759,7 +759,7 @@ fn compile_file_rejects_source_unknown_record_field() {
     let source = dir.child("bad_field.ail");
     source
         .write_str(
-            "fn main() -> Int {\n  let p: Record<age: Int> = record(age, 42)\n  return field(p, name)\n}\n",
+            "fn main() -> Int {\n  let p: Record<age: Int> = record(age, 42)\n  return p.name\n}\n",
         )
         .expect("source fixture must be written");
 
@@ -2679,7 +2679,7 @@ fn lsp_diagnose_accepts_source_record_field_access() {
     source
         .write_str(
             "fn person() -> Record<age: Int, name: Text> = record(age, 42, name, \"Ada\")\n\
-fn age() -> Int = field(person(), age)\n",
+fn age() -> Int = person().age\n",
         )
         .expect("source fixture must be written");
 
@@ -3787,6 +3787,23 @@ fn lsp_completion_and_hover_cover_ail_source_operators() {
             .expect("hover markdown")
             .contains("logical and"),
         "hover must explain AIL source && operator; got: {hover}"
+    );
+
+    let dot_completion_output = ail()
+        .args(["lsp", "--complete", ".", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dot_completion = parse_json_output(&dot_completion_output);
+    let dot_items = dot_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        dot_items.iter().any(
+            |item| item["label"] == "." && item["detail"] == "AIL source Record field operator"
+        ),
+        "completion must include AIL source record dot operator; got: {dot_items:?}"
     );
 }
 
