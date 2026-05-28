@@ -728,6 +728,53 @@ fn references_for_token(uri: &str, text: &str, token: &str) -> Vec<Value> {
         return vec![];
     }
 
+    if is_ail_source_uri(uri) {
+        return references_for_ail_source_token(uri, text, token);
+    }
+
+    references_in_text(uri, text, token)
+}
+
+fn references_for_ail_source_token(uri: &str, text: &str, token: &str) -> Vec<Value> {
+    let token = token.strip_prefix("fn.").unwrap_or(token);
+    let mut refs = references_in_text(uri, text, token);
+    let Some(root_path) = file_path_from_uri(uri) else {
+        return refs;
+    };
+    let Ok(canonical_root) = std::fs::canonicalize(&root_path) else {
+        return refs;
+    };
+    let mut visited = BTreeSet::new();
+    visited.insert(canonical_root.clone());
+    collect_ail_source_import_references(&canonical_root, text, token, &mut visited, &mut refs);
+    refs
+}
+
+fn collect_ail_source_import_references(
+    source_path: &std::path::Path,
+    text: &str,
+    token: &str,
+    visited: &mut BTreeSet<PathBuf>,
+    refs: &mut Vec<Value>,
+) {
+    for import in source_imports_from_text(text) {
+        let path = resolve_lsp_source_import(source_path, &import);
+        let Ok(canonical) = std::fs::canonicalize(&path) else {
+            continue;
+        };
+        if !visited.insert(canonical.clone()) {
+            continue;
+        }
+        let Ok(imported_text) = std::fs::read_to_string(&canonical) else {
+            continue;
+        };
+        let imported_uri = format!("file://{}", canonical.display());
+        refs.extend(references_in_text(&imported_uri, &imported_text, token));
+        collect_ail_source_import_references(&canonical, &imported_text, token, visited, refs);
+    }
+}
+
+fn references_in_text(uri: &str, text: &str, token: &str) -> Vec<Value> {
     text.lines()
         .enumerate()
         .flat_map(|(line_idx, line)| token_ranges_in_line(uri, line_idx, line, token))
