@@ -1728,9 +1728,10 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
             lower_source_expr(right, line_num)?
         ));
     }
-    if let Some((left, op, right)) = split_top_level_source_binary_any(expr, &['+']) {
+    if let Some((left, op, right)) = split_top_level_source_binary_any(expr, &['+', '-']) {
         let func = match op {
             '+' => "add",
+            '-' => "sub",
             _ => unreachable!("unsupported additive operator"),
         };
         return Ok(format!(
@@ -1740,10 +1741,11 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
             lower_source_expr(right, line_num)?
         ));
     }
-    if let Some((left, op, right)) = split_top_level_source_binary_any(expr, &['*', '/']) {
+    if let Some((left, op, right)) = split_top_level_source_binary_any(expr, &['*', '/', '%']) {
         let func = match op {
             '*' => "mul",
             '/' => "div",
+            '%' => "mod",
             _ => unreachable!("unsupported multiplicative operator"),
         };
         return Ok(format!(
@@ -1833,7 +1835,11 @@ fn split_top_level_source_binary_any<'a>(
             ')' => paren_depth = paren_depth.saturating_sub(1),
             '{' => brace_depth += 1,
             '}' => brace_depth = brace_depth.saturating_sub(1),
-            _ if ops.contains(&ch) && paren_depth == 0 && brace_depth == 0 && idx > 0 => {
+            _ if ops.contains(&ch)
+                && paren_depth == 0
+                && brace_depth == 0
+                && source_binary_char_has_left_operand(expr, idx) =>
+            {
                 split_at = Some((idx, ch));
             }
             _ => {}
@@ -1845,6 +1851,14 @@ fn split_top_level_source_binary_any<'a>(
     let left = expr[..idx].trim();
     let right = expr[idx + op.len_utf8()..].trim();
     (!left.is_empty() && !right.is_empty()).then_some((left, op, right))
+}
+
+fn source_binary_char_has_left_operand(expr: &str, idx: usize) -> bool {
+    expr[..idx]
+        .chars()
+        .rev()
+        .find(|ch| !ch.is_whitespace())
+        .is_some_and(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ')' | '}' | '"'))
 }
 
 fn split_top_level_source_binary(expr: &str, op: char) -> Option<(&str, &str)> {
@@ -2168,13 +2182,13 @@ test main_addition = eq(add(20, 22), 42);
     }
 
     #[test]
-    fn lowers_source_infix_multiplication_and_division_with_precedence() {
-        let program =
-            parse_ail_source("test math = 2 * 3 + 8 / 4 == 8").expect("source must parse");
+    fn lowers_source_infix_arithmetic_with_precedence() {
+        let program = parse_ail_source("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9")
+            .expect("source must parse");
         let acl = source_program_to_acl(&program, "source_math".to_string());
 
         assert!(acl.contains(
-            "op create_test id=test.math return=Bool body=eq(add(mul(2, 3), div(8, 4)), 8)"
+            "op create_test id=test.math return=Bool body=eq(add(sub(10, mul(2, 3)), add(div(8, 4), mod(7, 4))), 9)"
         ));
     }
 

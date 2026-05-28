@@ -603,13 +603,13 @@ fn compile_file_accepts_source_infix_addition() {
 }
 
 #[test]
-fn compile_file_accepts_source_infix_multiplication_and_division() {
+fn compile_file_accepts_source_infix_arithmetic_precedence() {
     use assert_fs::prelude::*;
 
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
-    let source = dir.child("infix_mul_div.ail");
+    let source = dir.child("infix_arithmetic.ail");
     source
-        .write_str("test math = 2 * 3 + 8 / 4 == 8\nfn main() -> Int = 0\n")
+        .write_str("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9\nfn main() -> Int = 0\n")
         .expect("source fixture must be written");
 
     ail()
@@ -2317,13 +2317,13 @@ fn lsp_diagnose_accepts_source_infix_addition() {
 }
 
 #[test]
-fn lsp_diagnose_accepts_source_infix_multiplication_and_division() {
+fn lsp_diagnose_accepts_source_infix_arithmetic_precedence() {
     use assert_fs::prelude::*;
 
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str("test math = 2 * 3 + 8 / 4 == 8\nfn main() -> Int = 0\n")
+        .write_str("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9\nfn main() -> Int = 0\n")
         .expect("source fixture must be written");
 
     let output = ail()
