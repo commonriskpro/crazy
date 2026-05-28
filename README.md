@@ -32,6 +32,13 @@ Current release: [`v0.1.0`](https://github.com/commonriskpro/crazy/releases/tag/
    cargo run -p ail-cli -- run --grant log.write fn.print_hello
    ```
 
+   Clean-checkout examples for the current public `Text` and `print`/`log.write`
+   slices live in [examples/](examples/). They can be checked with:
+
+   ```sh
+   ./scripts/examples-smoke.sh
+   ```
+
 5. Use the [codebase guide](docs/CODEBASE-GUIDE.md) as the documentation entry point.
 6. Check the [public roadmap](docs/roadmap.md), [implementation blueprint](docs/implementation-blueprint.md), [risks](docs/risks.md), and [changelog](CHANGELOG.md) before relying on any subsystem.
 

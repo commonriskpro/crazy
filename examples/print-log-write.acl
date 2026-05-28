@@ -1,0 +1,8 @@
+change print_log_write_example
+author examples
+description create a print function with an explicit log.write capability grant
+base 0
+op create_capability id=log.write
+op create_function id=fn.print_hello return=Int body=print("Hello, world!")
+op grant target=fn.print_hello capability=log.write
+end
