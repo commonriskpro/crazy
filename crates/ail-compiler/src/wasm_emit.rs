@@ -454,6 +454,92 @@ fn emit_text_concat<'a>(
     Some(ValType::I64)
 }
 
+fn load_i32_u8_at<'a>(offset: u64, insns: &mut Vec<Instruction<'a>>) {
+    insns.push(Instruction::I32Load8U(wasm_encoder::MemArg {
+        offset,
+        align: 0,
+        memory_index: 0,
+    }));
+}
+
+fn emit_text_eq<'a>(
+    args: &[String],
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [left, right] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+
+    let left_len = ctx.bind_temp(ValType::I32);
+    emit_text_len_from_local(ctx, left, insns);
+    insns.push(Instruction::LocalSet(left_len));
+
+    let right_len = ctx.bind_temp(ValType::I32);
+    emit_text_len_from_local(ctx, right, insns);
+    insns.push(Instruction::LocalSet(right_len));
+
+    let left_ptr = ctx.bind_temp(ValType::I32);
+    emit_text_ptr_from_local(ctx, left, insns);
+    insns.push(Instruction::LocalSet(left_ptr));
+
+    let right_ptr = ctx.bind_temp(ValType::I32);
+    emit_text_ptr_from_local(ctx, right, insns);
+    insns.push(Instruction::LocalSet(right_ptr));
+
+    let idx = ctx.bind_temp(ValType::I32);
+    let result = ctx.bind_temp(ValType::I64);
+    insns.push(Instruction::I64Const(0));
+    insns.push(Instruction::LocalSet(result));
+
+    insns.push(Instruction::LocalGet(left_len));
+    insns.push(Instruction::LocalGet(right_len));
+    insns.push(Instruction::I32Eq);
+    insns.push(Instruction::If(BlockType::Empty));
+
+    insns.push(Instruction::I64Const(1));
+    insns.push(Instruction::LocalSet(result));
+    insns.push(Instruction::I32Const(0));
+    insns.push(Instruction::LocalSet(idx));
+
+    insns.push(Instruction::Block(BlockType::Empty));
+    insns.push(Instruction::Loop(BlockType::Empty));
+
+    insns.push(Instruction::LocalGet(idx));
+    insns.push(Instruction::LocalGet(left_len));
+    insns.push(Instruction::I32GeU);
+    insns.push(Instruction::BrIf(1));
+
+    insns.push(Instruction::LocalGet(left_ptr));
+    insns.push(Instruction::LocalGet(idx));
+    insns.push(Instruction::I32Add);
+    load_i32_u8_at(0, insns);
+    insns.push(Instruction::LocalGet(right_ptr));
+    insns.push(Instruction::LocalGet(idx));
+    insns.push(Instruction::I32Add);
+    load_i32_u8_at(0, insns);
+    insns.push(Instruction::I32Ne);
+    insns.push(Instruction::If(BlockType::Empty));
+    insns.push(Instruction::I64Const(0));
+    insns.push(Instruction::LocalSet(result));
+    insns.push(Instruction::Br(2));
+    insns.push(Instruction::End);
+
+    insns.push(Instruction::LocalGet(idx));
+    insns.push(Instruction::I32Const(1));
+    insns.push(Instruction::I32Add);
+    insns.push(Instruction::LocalSet(idx));
+    insns.push(Instruction::Br(0));
+
+    insns.push(Instruction::End);
+    insns.push(Instruction::End);
+    insns.push(Instruction::End);
+
+    insns.push(Instruction::LocalGet(result));
+    Some(ValType::I64)
+}
+
 /// Load a local variable as an I64, zero-extending I32 values.
 /// Emits `Unreachable` if the name is not in scope, matching `emit_local_get`.
 fn emit_local_as_i64<'a>(ctx: &WasmCodegenCtx<'a>, name: &str, insns: &mut Vec<Instruction<'a>>) {
@@ -861,6 +947,9 @@ fn emit_anf_expr<'a>(
             }
             if matches!(func.as_str(), "concat" | "text.concat") {
                 return emit_text_concat(args, ctx, insns);
+            }
+            if matches!(func.as_str(), "text.eq" | "text_eq") {
+                return emit_text_eq(args, ctx, insns);
             }
 
             for arg_name in args {

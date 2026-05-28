@@ -814,6 +814,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "is_empty(${1:value})",
     },
     AclSymbol {
+        label: "text_eq",
+        detail: "AIL source Text predicate",
+        documentation: "Compares two Text values by content.",
+        insert_text: "text_eq(${1:left}, ${2:right})",
+    },
+    AclSymbol {
         label: "first_or",
         detail: "AIL source List helper",
         documentation: "Returns the first List element when present, otherwise returns a fallback value.",

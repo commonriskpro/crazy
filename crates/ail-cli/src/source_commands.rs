@@ -941,6 +941,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
     let arity = match call {
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
         | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
+        "text.eq" | "text_eq" => SourceArity::Exact(2),
         "field" | "index" | "unwrap_or" | "first_or" | "last_or" => SourceArity::Exact(2),
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
@@ -1304,6 +1305,10 @@ fn infer_source_call_type(
         "concat" => {
             validate_source_arg_types(func, args, scope, functions, &["Text", "Text"])?;
             Ok("Text".to_string())
+        }
+        "text.eq" => {
+            validate_source_arg_types(func, args, scope, functions, &["Text", "Text"])?;
+            Ok("Bool".to_string())
         }
         "list" => infer_source_list_type(args, scope, functions),
         "tuple" => infer_source_tuple_type(args, scope, functions),
@@ -2105,6 +2110,17 @@ fn format_source_expr_node(
             format!(
                 "is_empty({})",
                 format_source_expr(&value, module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "text.eq" && args.len() == 2 {
+        return (
+            format!(
+                "text_eq({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
             ),
             CALL_PRECEDENCE,
         );
@@ -3004,6 +3020,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_is_empty_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_text_eq_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_first_or_expr(expr, line_num)? {
         return Ok(lowered);
     }
@@ -3267,6 +3286,25 @@ fn lower_source_is_empty_expr(expr: &str, line_num: usize) -> Result<Option<Stri
     Ok(Some(format!(
         "eq(len({}), 0)",
         lower_source_expr(&args[0], line_num)?
+    )))
+}
+
+fn lower_source_text_eq_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "text_eq" {
+        return Ok(None);
+    }
+    if args.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: text_eq requires `text_eq(left, right)`"
+        )));
+    }
+    Ok(Some(format!(
+        "text.eq({}, {})",
+        lower_source_expr(&args[0], line_num)?,
+        lower_source_expr(&args[1], line_num)?
     )))
 }
 
@@ -4817,6 +4855,21 @@ test greeting = "Hello, " ++ "AIL" == "Hello, AIL"
     }
 
     #[test]
+    fn lowers_source_text_eq_helper() {
+        let program = parse_ail_source(
+            r#"
+fn same(left: Text, right: Text) -> Bool = text_eq(left, right)
+"#,
+        )
+        .expect("source text_eq must parse");
+        let acl = source_program_to_acl(&program, "source_text_eq".to_string());
+
+        assert!(
+            acl.contains("op create_function id=fn.same return=Bool body=text.eq(left, right)")
+        );
+    }
+
+    #[test]
     fn formats_source_builtin_calls_as_infix() {
         let (formatted, item_count) = format_ail_source(
             "test math = eq(add(sub(10, mul(2, 3)), add(div(8, 4), mod(7, 4))), 9)\n\
@@ -4829,6 +4882,18 @@ test greeting = "Hello, " ++ "AIL" == "Hello, AIL"
         assert!(formatted.contains("test math = 10 - 2 * 3 + (8 / 4 + 7 % 4) == 9\n"));
         assert!(formatted.contains("test grouped = 10 - (2 + 3) == 5 && !false\n"));
         assert!(formatted.contains("fn greeting(name: Text) -> Text = \"Hello, \" ++ name\n"));
+    }
+
+    #[test]
+    fn formats_source_text_eq_helper() {
+        let (formatted, item_count) =
+            format_ail_source("fn same(left:Text,right:Text)->Bool=text.eq(left,right)\n")
+                .expect("source text_eq must format");
+
+        assert_eq!(item_count, 1);
+        assert!(
+            formatted.contains("fn same(left: Text, right: Text) -> Bool = text_eq(left, right)\n")
+        );
     }
 
     #[test]

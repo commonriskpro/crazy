@@ -175,6 +175,11 @@ fn derive_wasm_type_with_locals(
         {
             WasmTypeDescriptor::Text
         }
+        AnfExpr::Call { func, args }
+            if matches!(func.as_str(), "text.eq" | "text_eq") && args.len() == 2 =>
+        {
+            WasmTypeDescriptor::Scalar(WasmScalarType::I64)
+        }
         AnfExpr::Return(expr) => derive_wasm_type_with_locals(expr, locals),
         AnfExpr::Lambda { body, params, .. } => {
             let mut scoped = locals.clone();
@@ -736,6 +741,11 @@ impl EffectDataLayout {
             }
             AnfExpr::Call { func, args }
                 if matches!(func.as_str(), "concat" | "text.concat") && args.len() == 2 =>
+            {
+                self.needs_memory = true;
+            }
+            AnfExpr::Call { func, args }
+                if matches!(func.as_str(), "text.eq" | "text_eq") && args.len() == 2 =>
             {
                 self.needs_memory = true;
             }

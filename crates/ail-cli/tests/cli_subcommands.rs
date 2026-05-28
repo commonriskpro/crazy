@@ -276,6 +276,30 @@ fn run_file_executes_ail_source_text_concat_operator() {
 }
 
 #[test]
+fn run_file_executes_ail_source_text_eq_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("text_eq.ail");
+    source
+        .write_str("fn same() -> Bool = text_eq(\"Hello, \" ++ \"AIL\", \"Hello, AIL\")\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.same",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.same"))
+        .stdout(predicate::str::contains("result: 1"));
+}
+
+#[test]
 fn run_file_executes_ail_source_with_capability_grant() {
     use assert_fs::prelude::*;
 
@@ -643,6 +667,45 @@ fn compile_file_rejects_source_text_concat_operator_type_mismatch() {
         .failure()
         .stderr(predicate::str::contains(
             "type mismatch in concat argument 2: expected Text, got Int",
+        ));
+}
+
+#[test]
+fn compile_file_accepts_source_text_eq_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("text_eq.ail");
+    source
+        .write_str("fn same(left: Text, right: Text) -> Bool = text_eq(left, right)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_text_eq_helper_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_text_eq.ail");
+    source
+        .write_str("fn same(value: Int) -> Bool = text_eq(\"Hello\", value)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in text.eq argument 2: expected Text, got Int",
         ));
 }
 
@@ -3051,6 +3114,32 @@ fn lsp_diagnose_accepts_source_text_concat_operator() {
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_text_eq_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn same(left: Text, right: Text) -> Bool = text_eq(left, right)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_first_or_helper() {
     use assert_fs::prelude::*;
 
@@ -4632,6 +4721,22 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .any(|item| item["label"] == "is_empty"
                 && item["detail"] == "AIL source sized predicate"),
         "completion must include AIL source is_empty helper; got: {is_empty_items:?}"
+    );
+
+    let text_eq_completion_output = ail()
+        .args(["lsp", "--complete", "text_eq", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let text_eq_completion = parse_json_output(&text_eq_completion_output);
+    let text_eq_items = text_eq_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        text_eq_items.iter().any(|item| item["label"] == "text_eq"
+            && item["detail"] == "AIL source Text predicate"),
+        "completion must include AIL source text_eq helper; got: {text_eq_items:?}"
     );
 
     let map_completion_output = ail()

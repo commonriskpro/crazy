@@ -214,3 +214,27 @@ fn string_concat_call_preserves_text_export_type() {
         "concat(Text, Text) must preserve the public Text ABI descriptor"
     );
 }
+
+#[test]
+fn string_eq_call_exports_scalar_wasm() {
+    let artifact = emit_text_expr(
+        "fn.main",
+        AnfExpr::Let {
+            name: "left".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("hello".to_string()))),
+            body: Box::new(AnfExpr::Let {
+                name: "right".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Text("hello".to_string()))),
+                body: Box::new(AnfExpr::Call {
+                    func: "text.eq".to_string(),
+                    args: vec!["left".to_string(), "right".to_string()],
+                }),
+            }),
+        },
+    );
+
+    assert!(
+        artifact.export_types.contains_key("main"),
+        "text.eq(Text, Text) must leave an exported scalar result"
+    );
+}
