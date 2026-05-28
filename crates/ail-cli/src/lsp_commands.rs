@@ -739,7 +739,7 @@ fn definition_for_token(uri: &str, text: &str, token: &str) -> Value {
 
 fn definition_for_ail_source_token(uri: &str, text: &str, token: &str) -> Option<Value> {
     let token = token.strip_prefix("fn.").unwrap_or(token);
-    if let Some(definition) = source_function_definition_in_text(uri, text, token) {
+    if let Some(definition) = source_definition_in_text(uri, text, token) {
         return Some(definition);
     }
 
@@ -768,9 +768,7 @@ fn definition_for_ail_source_imports(
             continue;
         };
         let imported_uri = format!("file://{}", canonical.display());
-        if let Some(definition) =
-            source_function_definition_in_text(&imported_uri, &imported_text, token)
-        {
+        if let Some(definition) = source_definition_in_text(&imported_uri, &imported_text, token) {
             return Some(definition);
         }
         if let Some(definition) =
@@ -780,6 +778,11 @@ fn definition_for_ail_source_imports(
         }
     }
     None
+}
+
+fn source_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
+    source_function_definition_in_text(uri, text, token)
+        .or_else(|| source_capability_definition_in_text(uri, text, token))
 }
 
 fn source_function_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
@@ -817,6 +820,28 @@ fn source_function_name_matches_token(name: &str, module: Option<&str>, token: &
     };
     let bare_name = name.strip_prefix("fn.").unwrap_or(name);
     token == format!("{module}.{bare_name}")
+}
+
+fn source_capability_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
+    for (line_idx, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("capability ") else {
+            continue;
+        };
+        let name = rest.split_whitespace().next().unwrap_or_default();
+        if name == token {
+            let leading = line.len() - trimmed.len();
+            let start = leading + "capability ".len();
+            return Some(json!({
+                "uri": uri,
+                "range": {
+                    "start": { "line": line_idx, "character": start },
+                    "end": { "line": line_idx, "character": start + name.len() }
+                }
+            }));
+        }
+    }
+    None
 }
 
 fn source_module_from_text(text: &str) -> Option<String> {
