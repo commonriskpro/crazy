@@ -309,6 +309,30 @@ fn run_file_uses_source_module_main_entry_by_default() {
 }
 
 #[test]
+fn run_file_rejects_missing_source_entrypoint() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("lib.ail");
+    source
+        .write_str("module app\nfn helper() -> Int = 42\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "source entrypoint `fn.app.main` was not exported as `app_main`",
+        ));
+}
+
+#[test]
 fn run_file_executes_ail_source_imports_relative_files() {
     use assert_fs::prelude::*;
 

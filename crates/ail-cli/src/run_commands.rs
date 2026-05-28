@@ -536,8 +536,13 @@ pub(crate) async fn cmd_run(
             let export_name = export_name(module_name);
             let runtime_args = parse_runtime_args(raw_args)?;
 
-            // Try to invoke the export; if it doesn't exist, fall back to preflight-only.
             let export_type = artifact.export_types.get(export_name.as_str());
+            if source_file.is_some() && export_type.is_none() {
+                return Err(CliError::Domain(format!(
+                    "source entrypoint `{module_name}` was not exported as `{}`",
+                    export_name
+                )));
+            }
             let invoke_result = invoke_export_for_cli(
                 &mut instance,
                 export_name.as_str(),
