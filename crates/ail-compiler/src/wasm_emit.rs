@@ -363,6 +363,19 @@ fn emit_text_len_from_local<'a>(
     insns.push(Instruction::I32WrapI64);
 }
 
+fn emit_list_len_from_local<'a>(
+    ctx: &WasmCodegenCtx<'a>,
+    name: &str,
+    insns: &mut Vec<Instruction<'a>>,
+) -> bool {
+    let Some((idx, ValType::I32)) = ctx.lookup(name) else {
+        return false;
+    };
+    insns.push(Instruction::LocalGet(idx));
+    load_i64_at(0, insns);
+    true
+}
+
 fn emit_text_ptr_from_local<'a>(
     ctx: &WasmCodegenCtx<'a>,
     name: &str,
@@ -839,6 +852,9 @@ fn emit_anf_expr<'a>(
         // Emits args via local.get, then calls the function.
         AnfExpr::Call { func, args } => {
             if matches!(func.as_str(), "len" | "text.len") && args.len() == 1 {
+                if emit_list_len_from_local(ctx, &args[0], insns) {
+                    return Some(ValType::I64);
+                }
                 emit_text_len_from_local(ctx, &args[0], insns);
                 insns.push(Instruction::I64ExtendI32U);
                 return Some(ValType::I64);

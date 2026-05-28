@@ -566,6 +566,24 @@ fn compile_file_accepts_source_list_literals() {
 }
 
 #[test]
+fn compile_file_accepts_source_list_len() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("list_len.ail");
+    source
+        .write_str("fn main() -> Int = len([1, 2 + 3, 5])\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
 fn compile_file_rejects_source_list_element_type_mismatch() {
     use assert_fs::prelude::*;
 
@@ -606,6 +624,27 @@ fn compile_file_rejects_source_index_type_mismatch() {
         .failure()
         .stderr(predicate::str::contains(
             "type mismatch in index argument 2: expected Int, got Bool",
+        ));
+}
+
+#[test]
+fn compile_file_rejects_source_len_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_len.ail");
+    source
+        .write_str("fn main() -> Int = len(true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in len argument 1: expected Text or List<Unknown>, got Bool",
         ));
 }
 
@@ -2358,6 +2397,32 @@ fn lsp_diagnose_accepts_source_list_literals() {
         .write_str(
             "fn main() -> Int {\n  let values: List<Int> = [1, 2 + 3, 5]\n  return values[1]\n}\n",
         )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
+fn lsp_diagnose_accepts_source_list_len() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int = len([1, 2 + 3, 5])\n")
         .expect("source fixture must be written");
 
     let output = ail()
@@ -5156,6 +5221,7 @@ fn fmt_file_json_outputs_canonical_ail_source() {
             "const answer:Int=40+2\n\
 fn add_pair(x:Int,y:Int)->Int=add(x,y)\n\
 fn text_len(value:String)->int=len(value)\n\
+fn count(values:List<Int>)->Int=len(values)\n\
 fn unwrap(value:Option<Int>)->Int=match(value,Some(v),v,None,0)\n\
 fn main()->Int{\n\
 let base:Int=answer()\n\
@@ -5178,13 +5244,14 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["language"], "ail-source");
-    assert_eq!(v["data"]["item_count"], 6);
+    assert_eq!(v["data"]["item_count"], 7);
     let formatted = v["data"]["formatted"]
         .as_str()
         .expect("formatted must be string");
     assert!(formatted.contains("const answer: Int = 40 + 2\n"));
     assert!(formatted.contains("fn add_pair(x: Int, y: Int) -> Int = x + y\n"));
     assert!(formatted.contains("fn text_len(value: Text) -> Int = len(value)\n"));
+    assert!(formatted.contains("fn count(values: List<Int>) -> Int = len(values)\n"));
     assert!(formatted.contains(
         "fn unwrap(value: Option<Int>) -> Int = match value { Some(v) => v, None => 0 }\n"
     ));

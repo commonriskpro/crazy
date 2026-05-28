@@ -1272,7 +1272,12 @@ fn infer_source_call_type(
             Ok("Bool".to_string())
         }
         "len" => {
-            validate_source_arg_types(func, args, scope, functions, &["Text"])?;
+            let arg_ty = infer_source_expr_type(&args[0], scope, functions)?;
+            if arg_ty != "Text" && source_list_element_type(&arg_ty).is_none() {
+                return Err(CliError::ParseError(format!(
+                    "type mismatch in len argument 1: expected Text or List<Unknown>, got {arg_ty}"
+                )));
+            }
             Ok("Int".to_string())
         }
         "concat" => {
