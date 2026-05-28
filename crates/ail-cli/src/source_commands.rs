@@ -340,9 +340,18 @@ fn validate_source_program_calls(program: &SourceProgram) -> Result<(), CliError
 
     for function in &program.functions {
         validate_source_expr_calls(&function.body, &functions)?;
+        validate_source_expr_vars(
+            &function.body,
+            &function
+                .params
+                .iter()
+                .map(|param| param.name.as_str())
+                .collect::<BTreeSet<_>>(),
+        )?;
     }
     for test in &program.tests {
         validate_source_expr_calls(&test.body, &functions)?;
+        validate_source_expr_vars(&test.body, &BTreeSet::new())?;
     }
     Ok(())
 }
@@ -422,6 +431,40 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         _ => return None,
     };
     Some(arity)
+}
+
+fn validate_source_expr_vars(expr: &str, scope: &BTreeSet<&str>) -> Result<(), CliError> {
+    let expr = expr.trim();
+    if is_source_literal(expr) {
+        return Ok(());
+    }
+    if let Some((func, args)) = parse_source_call(expr) {
+        if func == "let" && args.len() == 3 && is_source_ident(&args[0]) {
+            validate_source_expr_vars(&args[1], scope)?;
+            let mut inner_scope = scope.clone();
+            inner_scope.insert(args[0].as_str());
+            return validate_source_expr_vars(&args[2], &inner_scope);
+        }
+        for arg in &args {
+            validate_source_expr_vars(arg, scope)?;
+        }
+        return Ok(());
+    }
+    if is_source_ident(expr) && !scope.contains(expr) {
+        return Err(CliError::ParseError(format!(
+            "unknown variable `{expr}` in AIL source"
+        )));
+    }
+    Ok(())
+}
+
+fn is_source_literal(expr: &str) -> bool {
+    let expr = expr.trim();
+    expr == "true"
+        || expr == "false"
+        || expr.starts_with('"')
+        || expr.parse::<i64>().is_ok()
+        || expr.parse::<f64>().is_ok()
 }
 
 fn source_program_to_graph(
