@@ -1376,6 +1376,7 @@ fn infer_source_match_type(
     functions: &BTreeMap<&str, SourceCallable>,
 ) -> Result<String, CliError> {
     let scrutinee_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    validate_source_match_exhaustive(&args[1..], &scrutinee_ty)?;
     let mut branch_ty = None;
     for pair in args[1..].chunks_exact(2) {
         validate_source_match_pattern(&pair[0])?;
@@ -3119,6 +3120,63 @@ fn validate_source_match_pattern_type(pattern: &str, scrutinee_ty: &str) -> Resu
         ))),
         _ => Ok(()),
     }
+}
+
+fn validate_source_match_exhaustive(arms: &[String], scrutinee_ty: &str) -> Result<(), CliError> {
+    let patterns = arms.iter().step_by(2).map(String::as_str);
+    if patterns.clone().any(|pattern| pattern.trim() == "_") {
+        return Ok(());
+    }
+
+    if source_option_element_type(scrutinee_ty).is_some() {
+        let has_some = patterns
+            .clone()
+            .any(|pattern| source_pattern_tag(pattern) == Some("Some"));
+        let has_none = patterns
+            .clone()
+            .any(|pattern| source_pattern_tag(pattern) == Some("None"));
+        if has_some && has_none {
+            return Ok(());
+        }
+        return Err(CliError::ParseError(format!(
+            "non-exhaustive match for {scrutinee_ty}: expected Some and None arms or `_`"
+        )));
+    }
+
+    if source_result_types(scrutinee_ty).is_some() {
+        let has_ok = patterns
+            .clone()
+            .any(|pattern| source_pattern_tag(pattern) == Some("Ok"));
+        let has_err = patterns
+            .clone()
+            .any(|pattern| source_pattern_tag(pattern) == Some("Err"));
+        if has_ok && has_err {
+            return Ok(());
+        }
+        return Err(CliError::ParseError(format!(
+            "non-exhaustive match for {scrutinee_ty}: expected Ok and Err arms or `_`"
+        )));
+    }
+
+    if scrutinee_ty == "Bool" {
+        let has_true = patterns.clone().any(|pattern| pattern.trim() == "true");
+        let has_false = patterns.clone().any(|pattern| pattern.trim() == "false");
+        if has_true && has_false {
+            return Ok(());
+        }
+        return Err(CliError::ParseError(
+            "non-exhaustive match for Bool: expected true and false arms or `_`".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn source_pattern_tag(pattern: &str) -> Option<&str> {
+    if pattern.trim() == "None" {
+        return Some("None");
+    }
+    source_constructor_pattern(pattern).map(|(tag, _)| tag)
 }
 
 fn source_constructor_pattern(pattern: &str) -> Option<(&str, Option<&str>)> {

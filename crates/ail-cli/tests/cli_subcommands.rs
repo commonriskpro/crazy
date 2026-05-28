@@ -697,6 +697,27 @@ fn compile_file_rejects_source_match_arm_type_mismatch() {
 }
 
 #[test]
+fn compile_file_rejects_non_exhaustive_source_match() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_match_exhaustive.ail");
+    source
+        .write_str("fn main(value: Option<Int>) -> Int = match value { Some(v) => v }\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "non-exhaustive match for Option<Int>: expected Some and None arms or `_`",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_source_typed_let_mismatch() {
     use assert_fs::prelude::*;
 
@@ -2345,6 +2366,38 @@ fn result_or_zero(value: Result<Int, Text>) -> Int = match value { Ok(v) => v, E
     assert_eq!(v["data"]["language"], "ail-source");
     assert_eq!(v["data"]["diagnostic_count"], 0);
     assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
+fn lsp_diagnose_reports_non_exhaustive_source_match() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main(value: Option<Int>) -> Int = match value { Some(v) => v }\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("non-exhaustive match for Option<Int>")
+    );
 }
 
 #[test]
