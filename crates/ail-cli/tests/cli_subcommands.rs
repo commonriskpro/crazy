@@ -532,7 +532,9 @@ fn compile_file_accepts_source_consts() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("consts.ail");
     source
-        .write_str("const answer: Int = 40 + 2\nfn main() -> Int = answer()\ntest answer = answer() == 42\n")
+        .write_str(
+            "const answer: Int = 40 + 2\nfn main() -> Int = answer\ntest answer = answer == 42\n",
+        )
         .expect("source fixture must be written");
 
     ail()
@@ -2086,7 +2088,9 @@ fn lsp_diagnose_accepts_source_consts() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str("const answer: Int = 40 + 2\nfn main() -> Int = answer()\ntest answer = answer() == 42\n")
+        .write_str(
+            "const answer: Int = 40 + 2\nfn main() -> Int = answer\ntest answer = answer == 42\n",
+        )
         .expect("source fixture must be written");
 
     let output = ail()
@@ -3233,7 +3237,7 @@ fn lsp_definition_resolves_ail_source_const() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str("const answer: Int = 42\nfn main() -> Int = answer()\n")
+        .write_str("const answer: Int = 42\nfn main() -> Int = answer\n")
         .expect("source fixture must be written");
 
     let output = ail()

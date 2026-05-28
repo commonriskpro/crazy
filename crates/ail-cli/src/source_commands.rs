@@ -791,10 +791,12 @@ fn validate_source_program_calls(program: &SourceProgram) -> Result<(), CliError
         )
         .collect::<BTreeMap<_, _>>();
 
+    let constants = source_constant_names(program);
+
     for constant in &program.constants {
         validate_source_expr_calls(&constant.body, &functions)
             .map_err(|err| source_error_at_line(err, constant.line_num))?;
-        validate_source_expr_vars(&constant.body, &BTreeSet::new())
+        validate_source_expr_vars(&constant.body, &BTreeSet::new(), &constants)
             .map_err(|err| source_error_at_line(err, constant.line_num))?;
     }
     for function in &program.functions {
@@ -807,16 +809,48 @@ fn validate_source_program_calls(program: &SourceProgram) -> Result<(), CliError
                 .iter()
                 .map(|param| param.name.as_str())
                 .collect::<BTreeSet<_>>(),
+            &constants,
         )
         .map_err(|err| source_error_at_line(err, function.line_num))?;
     }
     for test in &program.tests {
         validate_source_expr_calls(&test.body, &functions)
             .map_err(|err| source_error_at_line(err, test.line_num))?;
-        validate_source_expr_vars(&test.body, &BTreeSet::new())
+        validate_source_expr_vars(&test.body, &BTreeSet::new(), &constants)
             .map_err(|err| source_error_at_line(err, test.line_num))?;
     }
     Ok(())
+}
+
+fn source_constant_names(program: &SourceProgram) -> BTreeMap<String, String> {
+    program
+        .constants
+        .iter()
+        .flat_map(|constant| source_const_reference_names(&constant.name))
+        .collect()
+}
+
+fn source_const_reference_names(name: &str) -> Vec<(String, String)> {
+    let bare = name.strip_prefix("fn.").unwrap_or(name);
+    let target = bare.to_string();
+    let mut names = vec![
+        (bare.to_string(), target.clone()),
+        (name.to_string(), target.clone()),
+    ];
+    if let Some((_, local)) = bare.split_once('.') {
+        names.push((local.to_string(), target));
+    }
+    names
+}
+
+fn source_const_reference_target(
+    name: &str,
+    constants: &BTreeMap<String, String>,
+) -> Option<String> {
+    constants
+        .get(name)
+        .cloned()
+        .or_else(|| constants.get(&format!("fn.{name}")).cloned())
 }
 
 fn validate_source_expr_calls(
@@ -902,7 +936,11 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
     Some(arity)
 }
 
-fn validate_source_expr_vars(expr: &str, scope: &BTreeSet<&str>) -> Result<(), CliError> {
+fn validate_source_expr_vars(
+    expr: &str,
+    scope: &BTreeSet<&str>,
+    constants: &BTreeMap<String, String>,
+) -> Result<(), CliError> {
     let expr = expr.trim();
     if is_source_literal(expr) {
         return Ok(());
@@ -920,19 +958,19 @@ fn validate_source_expr_vars(expr: &str, scope: &BTreeSet<&str>) -> Result<(), C
     if let Some((func, args)) = parse_source_call(expr) {
         if func == "let" && args.len() == 3 {
             validate_source_local_expr_name(&args[0])?;
-            validate_source_expr_vars(&args[1], scope)?;
+            validate_source_expr_vars(&args[1], scope, constants)?;
             let mut inner_scope = scope.clone();
             inner_scope.insert(args[0].as_str());
-            return validate_source_expr_vars(&args[2], &inner_scope);
+            return validate_source_expr_vars(&args[2], &inner_scope, constants);
         }
         if func == "let_typed" && args.len() == 5 {
             validate_source_local_expr_name(&args[0])?;
             validate_source_type_annotation(&args[1])?;
             validate_source_let_line_marker(&args[2])?;
-            validate_source_expr_vars(&args[3], scope)?;
+            validate_source_expr_vars(&args[3], scope, constants)?;
             let mut inner_scope = scope.clone();
             inner_scope.insert(args[0].as_str());
-            return validate_source_expr_vars(&args[4], &inner_scope);
+            return validate_source_expr_vars(&args[4], &inner_scope, constants);
         }
         let args_to_validate: &[String] = if func == "effect_call" && args.len() >= 2 {
             &args[2..]
@@ -940,12 +978,12 @@ fn validate_source_expr_vars(expr: &str, scope: &BTreeSet<&str>) -> Result<(), C
             &args
         };
         for arg in args_to_validate {
-            validate_source_expr_vars(arg, scope)?;
+            validate_source_expr_vars(arg, scope, constants)?;
         }
         return Ok(());
     }
     if is_source_ident(expr) {
-        if scope.contains(expr) {
+        if scope.contains(expr) || source_const_reference_target(expr, constants).is_some() {
             return Ok(());
         }
         return Err(CliError::ParseError(format!(
@@ -1071,6 +1109,33 @@ fn source_callable_types(program: &SourceProgram) -> BTreeMap<&str, SourceCallab
         .collect()
 }
 
+fn source_callable_for_reference<'a>(
+    functions: &'a BTreeMap<&str, SourceCallable>,
+    name: &str,
+) -> Option<&'a SourceCallable> {
+    if let Some(callable) = functions.get(name) {
+        return Some(callable);
+    }
+    let normalized = format!("fn.{name}");
+    if let Some(callable) = functions.get(normalized.as_str()) {
+        return Some(callable);
+    }
+    if name.contains('.') {
+        return None;
+    }
+    let mut matches = functions
+        .iter()
+        .filter(|(candidate, _)| {
+            candidate
+                .strip_prefix("fn.")
+                .and_then(|bare| bare.rsplit('.').next())
+                == Some(name)
+        })
+        .map(|(_, callable)| callable);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
 fn infer_source_expr_type(
     expr: &str,
     scope: &mut BTreeMap<String, String>,
@@ -1101,6 +1166,11 @@ fn infer_source_expr_type(
     }
     if let Some(ty) = scope.get(expr) {
         return Ok(ty.clone());
+    }
+    if let Some(constant) = source_callable_for_reference(functions, expr)
+        && constant.param_types.is_empty()
+    {
+        return Ok(constant.return_type.clone());
     }
     let Some((func, args)) = parse_source_call(expr) else {
         return Err(CliError::ParseError(format!(
@@ -1193,12 +1263,7 @@ fn infer_source_call_type(
             )))
         }
         _ => {
-            let normalized = if func.starts_with("fn.") {
-                func.to_string()
-            } else {
-                format!("fn.{func}")
-            };
-            if let Some(function) = functions.get(normalized.as_str()) {
+            if let Some(function) = source_callable_for_reference(functions, func) {
                 let expected = function
                     .param_types
                     .iter()
@@ -1304,6 +1369,7 @@ fn source_program_to_graph(
 }
 
 fn source_program_to_acl(program: &SourceProgram, change_name: String) -> String {
+    let constants = source_constant_names(program);
     let mut acl = format!(
         "change {change_name}\n\
 author ail-source\n\
@@ -1319,7 +1385,7 @@ base 0\n"
             "op create_function id={} return={} body={}\n",
             constant.name,
             constant.return_type,
-            source_expr_to_acl_body(&constant.body)
+            source_expr_to_acl_body(&constant.body, &constants)
         ));
     }
     for function in &program.functions {
@@ -1327,7 +1393,7 @@ base 0\n"
             "op create_function id={} return={} body={}\n",
             function.name,
             function.return_type,
-            source_expr_to_acl_body(&function.body)
+            source_expr_to_acl_body(&function.body, &constants)
         ));
         for param in &function.params {
             acl.push_str(&format!(
@@ -1341,7 +1407,7 @@ base 0\n"
             "op create_test id={} return={} body={}\n",
             test.name,
             test.return_type,
-            source_expr_to_acl_body(&test.body)
+            source_expr_to_acl_body(&test.body, &constants)
         ));
     }
     for grant in &program.grants {
@@ -1354,23 +1420,26 @@ base 0\n"
     acl
 }
 
-fn source_expr_to_acl_body(expr: &str) -> String {
+fn source_expr_to_acl_body(expr: &str, constants: &BTreeMap<String, String>) -> String {
+    let expr = expr.trim();
     let Some((func, args)) = parse_source_call(expr) else {
-        return expr.trim().to_string();
+        return source_const_reference_target(expr, constants)
+            .map(|constant| format!("{constant}()"))
+            .unwrap_or_else(|| expr.to_string());
     };
     if func == "let_typed" && args.len() == 5 && is_source_local_ident(&args[0]) {
         return format!(
             "let({}, {}, {})",
             args[0],
-            source_expr_to_acl_body(&args[3]),
-            source_expr_to_acl_body(&args[4])
+            source_expr_to_acl_body(&args[3], constants),
+            source_expr_to_acl_body(&args[4], constants)
         );
     }
     format!(
         "{}({})",
         func,
         args.iter()
-            .map(|arg| source_expr_to_acl_body(arg))
+            .map(|arg| source_expr_to_acl_body(arg, constants))
             .collect::<Vec<_>>()
             .join(", ")
     )
@@ -2604,7 +2673,7 @@ test main_addition = eq(add(20, 22), 42);
     #[test]
     fn lowers_source_consts_to_zero_arg_functions() {
         let program = parse_ail_source(
-            "const answer: Int = 40 + 2\nfn main() -> Int = answer()\ntest answer = answer() == 42",
+            "const answer: Int = 40 + 2\nfn main() -> Int = answer\ntest answer = answer == 42",
         )
         .expect("source must parse");
         let acl = source_program_to_acl(&program, "source_const".to_string());
