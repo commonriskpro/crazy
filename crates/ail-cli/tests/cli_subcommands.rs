@@ -705,6 +705,48 @@ fn compile_file_rejects_duplicate_source_parameters() {
 }
 
 #[test]
+fn compile_file_rejects_dotted_source_parameter_names() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("dotted_param.ail");
+    source
+        .write_str("fn main(x.y: Int) -> Int = x.y\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "local binding name `x.y` must not contain `.`",
+        ));
+}
+
+#[test]
+fn compile_file_rejects_dotted_source_let_names() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("dotted_let.ail");
+    source
+        .write_str("fn main() -> Int {\n  let x.y = 1\n  return x.y\n}\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "local binding name `x.y` must not contain `.`",
+        ));
+}
+
+#[test]
 fn compile_file_accepts_module_test_capability_grants() {
     use assert_fs::prelude::*;
 
@@ -2027,6 +2069,70 @@ fn lsp_diagnose_reports_duplicate_source_parameters() {
             .as_str()
             .expect("diagnostic message")
             .contains("duplicate parameter `x`")
+    );
+}
+
+#[test]
+fn lsp_diagnose_reports_dotted_source_parameter_names() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main(x.y: Int) -> Int = x.y\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("local binding name `x.y` must not contain `.`")
+    );
+}
+
+#[test]
+fn lsp_diagnose_reports_dotted_source_let_names() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int {\n  let x.y = 1\n  return x.y\n}\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("local binding name `x.y` must not contain `.`")
     );
 }
 

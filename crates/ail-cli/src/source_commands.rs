@@ -490,18 +490,18 @@ fn qualify_source_expr_calls(
         func
     };
 
-    let rewritten_args = if qualified_func == "let" && args.len() == 3 && is_source_ident(&args[0])
-    {
-        vec![
-            args[0].clone(),
-            qualify_source_expr_calls(&args[1], module, local_functions),
-            qualify_source_expr_calls(&args[2], module, local_functions),
-        ]
-    } else {
-        args.iter()
-            .map(|arg| qualify_source_expr_calls(arg, module, local_functions))
-            .collect::<Vec<_>>()
-    };
+    let rewritten_args =
+        if qualified_func == "let" && args.len() == 3 && is_source_local_ident(&args[0]) {
+            vec![
+                args[0].clone(),
+                qualify_source_expr_calls(&args[1], module, local_functions),
+                qualify_source_expr_calls(&args[2], module, local_functions),
+            ]
+        } else {
+            args.iter()
+                .map(|arg| qualify_source_expr_calls(arg, module, local_functions))
+                .collect::<Vec<_>>()
+        };
 
     format!("{}({})", qualified_func, rewritten_args.join(", "))
 }
@@ -799,7 +799,8 @@ fn validate_source_expr_vars(expr: &str, scope: &BTreeSet<&str>) -> Result<(), C
         )));
     }
     if let Some((func, args)) = parse_source_call(expr) {
-        if func == "let" && args.len() == 3 && is_source_ident(&args[0]) {
+        if func == "let" && args.len() == 3 {
+            validate_source_local_expr_name(&args[0])?;
             validate_source_expr_vars(&args[1], scope)?;
             let mut inner_scope = scope.clone();
             inner_scope.insert(args[0].as_str());
@@ -952,7 +953,8 @@ fn infer_source_call_type(
     functions: &BTreeMap<&str, &SourceFunction>,
 ) -> Result<String, CliError> {
     match func {
-        "let" if args.len() == 3 && is_source_ident(&args[0]) => {
+        "let" if args.len() == 3 => {
+            validate_source_local_expr_name(&args[0])?;
             let value_ty = infer_source_expr_type(&args[1], scope, functions)?;
             let mut inner_scope = scope.clone();
             inner_scope.insert(args[0].clone(), value_ty);
@@ -1229,7 +1231,7 @@ fn source_let_chain(body: &str) -> (Vec<(String, String)>, String) {
     let mut lets = Vec::new();
     let mut current = body.trim().to_string();
     while let Some((func, args)) = parse_source_call(&current) {
-        if func != "let" || args.len() != 3 || !is_source_ident(&args[0]) {
+        if func != "let" || args.len() != 3 || !is_source_local_ident(&args[0]) {
             break;
         }
         lets.push((args[0].clone(), args[1].clone()));
@@ -1349,6 +1351,24 @@ fn matching_paren(s: &str, open_idx: usize) -> Option<usize> {
 
 fn is_source_ident(name: &str) -> bool {
     !name.is_empty() && is_valid_source_name_chars(name) && source_name_segments_are_valid(name)
+}
+
+fn is_source_local_ident(name: &str) -> bool {
+    is_source_ident(name) && !name.contains('.')
+}
+
+fn validate_source_local_expr_name(name: &str) -> Result<(), CliError> {
+    if !is_source_ident(name) {
+        return Err(CliError::ParseError(format!(
+            "local binding name `{name}` is not a valid identifier"
+        )));
+    }
+    if name.contains('.') {
+        return Err(CliError::ParseError(format!(
+            "local binding name `{name}` must not contain `.`"
+        )));
+    }
+    Ok(())
 }
 
 fn normalize_source_line(raw_line: &str) -> Option<String> {
@@ -1554,7 +1574,7 @@ fn parse_source_params(params: &str, line_num: usize) -> Result<Vec<SourceParam>
             })?;
             let name = name.trim();
             let ty = ty.trim();
-            validate_source_name(name, line_num)?;
+            validate_source_local_name(name, line_num)?;
             if !seen.insert(name.to_string()) {
                 return Err(CliError::ParseError(format!(
                     "line {line_num}: duplicate parameter `{name}`"
@@ -1629,7 +1649,7 @@ fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, CliError> {
         })?;
         let name = name.trim();
         let value = value.trim();
-        validate_source_name(name, *line_num)?;
+        validate_source_local_name(name, *line_num)?;
         if value.is_empty() {
             return Err(CliError::ParseError(format!(
                 "line {line_num}: let statement requires a value expression"
@@ -1793,6 +1813,16 @@ fn validate_source_type_name(ty: &str, line_num: usize) -> Result<(), CliError> 
 
 fn normalize_grant_target(target: &str) -> String {
     target.to_string()
+}
+
+fn validate_source_local_name(name: &str, line_num: usize) -> Result<(), CliError> {
+    validate_source_name(name, line_num)?;
+    if name.contains('.') {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: local binding name `{name}` must not contain `.`"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_source_name(name: &str, line_num: usize) -> Result<(), CliError> {
