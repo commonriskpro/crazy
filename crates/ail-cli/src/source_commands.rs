@@ -1348,10 +1348,7 @@ fn matching_paren(s: &str, open_idx: usize) -> Option<usize> {
 }
 
 fn is_source_ident(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+    !name.is_empty() && is_valid_source_name_chars(name) && source_name_segments_are_valid(name)
 }
 
 fn normalize_source_line(raw_line: &str) -> Option<String> {
@@ -1766,10 +1763,7 @@ fn validate_source_name(name: &str, line_num: usize) -> Result<(), CliError> {
             "line {line_num}: declaration name cannot be empty"
         )));
     }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
-    {
+    if !is_valid_source_name_chars(name) {
         return Err(CliError::ParseError(format!(
             "line {line_num}: declaration name `{name}` contains unsupported characters"
         )));
@@ -1779,7 +1773,30 @@ fn validate_source_name(name: &str, line_num: usize) -> Result<(), CliError> {
             "line {line_num}: declaration name `{name}` contains an empty path segment"
         )));
     }
+    if let Some(segment) = first_invalid_source_name_segment(name) {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: declaration name `{name}` segment `{segment}` must start with a letter or `_`"
+        )));
+    }
     Ok(())
+}
+
+fn is_valid_source_name_chars(name: &str) -> bool {
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
+fn source_name_segments_are_valid(name: &str) -> bool {
+    !name.split('.').any(str::is_empty) && first_invalid_source_name_segment(name).is_none()
+}
+
+fn first_invalid_source_name_segment(name: &str) -> Option<&str> {
+    name.split('.').find(|segment| {
+        !segment
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+    })
 }
 
 fn normalize_function_name(name: &str) -> String {
