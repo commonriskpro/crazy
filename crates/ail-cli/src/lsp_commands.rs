@@ -932,10 +932,6 @@ fn references_for_token(uri: &str, text: &str, token: &str) -> Vec<Value> {
 }
 
 fn references_for_ail_source_token(uri: &str, text: &str, token: &str) -> Vec<Value> {
-    let token = token
-        .strip_prefix("fn.")
-        .or_else(|| token.strip_prefix("test."))
-        .unwrap_or(token);
     let mut refs = source_references_in_text(uri, text, token);
     let Some(root_path) = file_path_from_uri(uri) else {
         return refs;
@@ -985,12 +981,28 @@ fn source_references_in_text(uri: &str, text: &str, token: &str) -> Vec<Value> {
 }
 
 fn source_reference_tokens_for_text(text: &str, token: &str) -> Vec<String> {
-    let mut tokens = vec![token.to_string()];
-    if let Some((module, local)) = token.split_once('.')
+    let mut tokens = Vec::new();
+    let mut push_token = |token: &str| {
+        if !tokens.iter().any(|existing| existing == token) {
+            tokens.push(token.to_string());
+        }
+    };
+
+    if let Some(local) = token
+        .strip_prefix("fn.")
+        .or_else(|| token.strip_prefix("test."))
+    {
+        push_token(local);
+        push_token(token);
+    } else if let Some((module, local)) = token.split_once('.')
         && source_module_from_text(text).as_deref() == Some(module)
     {
-        tokens.push(local.to_string());
+        push_token(token);
+        push_token(local);
+    } else {
+        push_token(token);
     }
+
     tokens
 }
 

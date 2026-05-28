@@ -2754,7 +2754,9 @@ fn lsp_references_resolve_ail_source_prefixed_test_uses() {
     assert_eq!(v["data"]["token"], "test.smoke");
     assert_eq!(v["data"]["reference_count"], 2);
     assert_eq!(refs[0]["range"]["start"]["line"], 0);
+    assert_eq!(refs[0]["range"]["start"]["character"], 5);
     assert_eq!(refs[1]["range"]["start"]["line"], 1);
+    assert_eq!(refs[1]["range"]["start"]["character"], 6);
 }
 
 /// Spec scenario: file-backed store persists between CLI invocations.
