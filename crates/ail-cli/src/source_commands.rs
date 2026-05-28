@@ -694,6 +694,11 @@ fn validate_source_expr_vars(expr: &str, scope: &BTreeSet<&str>) -> Result<(), C
             "malformed string literal `{expr}`"
         )));
     }
+    if is_unsupported_source_numeric_literal(expr) {
+        return Err(CliError::ParseError(format!(
+            "unsupported source numeric literal `{expr}`"
+        )));
+    }
     if let Some((func, args)) = parse_source_call(expr) {
         if func == "let" && args.len() == 3 && is_source_ident(&args[0]) {
             validate_source_expr_vars(&args[1], scope)?;
@@ -730,7 +735,21 @@ fn is_source_literal(expr: &str) -> bool {
         || expr == "false"
         || is_source_string_literal(expr)
         || expr.parse::<i64>().is_ok()
-        || expr.parse::<f64>().is_ok()
+        || is_source_float_literal(expr)
+}
+
+fn is_unsupported_source_numeric_literal(expr: &str) -> bool {
+    expr.trim()
+        .parse::<f64>()
+        .map(|value| !value.is_finite())
+        .unwrap_or(false)
+}
+
+fn is_source_float_literal(expr: &str) -> bool {
+    expr.trim()
+        .parse::<f64>()
+        .map(f64::is_finite)
+        .unwrap_or(false)
 }
 
 fn is_malformed_source_string(expr: &str) -> bool {
@@ -802,10 +821,15 @@ fn infer_source_expr_type(
             "malformed string literal `{expr}`"
         )));
     }
+    if is_unsupported_source_numeric_literal(expr) {
+        return Err(CliError::ParseError(format!(
+            "unsupported source numeric literal `{expr}`"
+        )));
+    }
     if expr.parse::<i64>().is_ok() {
         return Ok("Int".to_string());
     }
-    if expr.parse::<f64>().is_ok() {
+    if is_source_float_literal(expr) {
         return Ok("Float".to_string());
     }
     if let Some(ty) = scope.get(expr) {

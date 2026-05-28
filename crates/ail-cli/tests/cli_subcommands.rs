@@ -564,6 +564,27 @@ fn compile_file_rejects_float_literal_return_type_mismatch() {
 }
 
 #[test]
+fn compile_file_rejects_non_finite_source_numeric_literals() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_float.ail");
+    source
+        .write_str("fn main() -> Float = NaN\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unsupported source numeric literal `NaN`",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_unsupported_source_expression_syntax() {
     use assert_fs::prelude::*;
 
@@ -1298,6 +1319,38 @@ fn lsp_diagnose_reports_duplicate_source_parameters() {
             .as_str()
             .expect("diagnostic message")
             .contains("duplicate parameter `x`")
+    );
+}
+
+#[test]
+fn lsp_diagnose_reports_non_finite_source_numeric_literals() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Float = NaN\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("unsupported source numeric literal `NaN`")
     );
 }
 
