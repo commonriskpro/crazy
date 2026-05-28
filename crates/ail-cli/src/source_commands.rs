@@ -1728,6 +1728,17 @@ fn format_source_expr_node(
         );
     }
 
+    if func == "index" && args.len() == 2 {
+        return (
+            format!(
+                "{}[{}]",
+                format_source_child_expr(&args[0], module, constants, CALL_PRECEDENCE, false),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if args.len() == 2 {
         if let Some((operator, precedence)) = source_infix_operator(&func) {
             return (
@@ -2284,6 +2295,13 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
                 .join(", ")
         ));
     }
+    if let Some((collection, index)) = parse_source_index_expr(expr, line_num)? {
+        return Ok(format!(
+            "index({}, {})",
+            lower_source_expr(collection, line_num)?,
+            lower_source_expr(index, line_num)?
+        ));
+    }
     if let Some((left, right)) = split_top_level_source_binary_str(expr, "||") {
         return Ok(format!(
             "or({}, {})",
@@ -2558,6 +2576,66 @@ fn parse_source_list_literal(expr: &str, line_num: usize) -> Result<Option<Vec<S
         return Ok(Some(vec![]));
     }
     Ok(Some(split_source_args(inner)))
+}
+
+fn parse_source_index_expr<'a>(
+    expr: &'a str,
+    line_num: usize,
+) -> Result<Option<(&'a str, &'a str)>, CliError> {
+    if !expr.ends_with(']') || expr.starts_with('[') {
+        return Ok(None);
+    }
+    let open = find_top_level_source_index_bracket(expr);
+    let Some(open) = open else {
+        return Ok(None);
+    };
+    if matching_bracket(expr, open) != Some(expr.len() - 1) {
+        return Ok(None);
+    }
+    let collection = expr[..open].trim();
+    let index = expr[open + 1..expr.len() - 1].trim();
+    if collection.is_empty() || index.is_empty() {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: index expression requires `collection[index]`"
+        )));
+    }
+    Ok(Some((collection, index)))
+}
+
+fn find_top_level_source_index_bracket(expr: &str) -> Option<usize> {
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+    let mut candidate = None;
+
+    for (idx, ch) in expr.char_indices() {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '[' if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 => {
+                candidate = Some(idx);
+                bracket_depth += 1;
+            }
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            _ => {}
+        }
+        prev_was_escape = false;
+    }
+
+    candidate
 }
 
 fn lower_if_expr(rest: &str, line_num: usize) -> Result<String, CliError> {
