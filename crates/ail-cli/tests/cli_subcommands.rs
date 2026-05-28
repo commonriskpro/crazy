@@ -647,6 +647,27 @@ fn main() -> Int = 0\n",
 }
 
 #[test]
+fn compile_file_accepts_source_infix_boolean_logic() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("infix_logic.ail");
+    source
+        .write_str(
+            "test combined = 3 > 2 && 2 < 3 || false\n\
+fn main() -> Int = 0\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
 fn compile_file_rejects_unsupported_source_expression_syntax() {
     use assert_fs::prelude::*;
 
@@ -2296,6 +2317,35 @@ fn lsp_diagnose_accepts_source_infix_ordering() {
 test ge_case = 3 >= 3\n\
 test lt_case = 2 < 3\n\
 test le_case = 2 <= 2\n\
+fn main() -> Int = 0\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
+fn lsp_diagnose_accepts_source_infix_boolean_logic() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "test combined = 3 > 2 && 2 < 3 || false\n\
 fn main() -> Int = 0\n",
         )
         .expect("source fixture must be written");

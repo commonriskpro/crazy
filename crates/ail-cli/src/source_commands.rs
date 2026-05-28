@@ -1669,6 +1669,20 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(rest) = expr.strip_prefix("if ") {
         return lower_if_expr(rest, line_num);
     }
+    if let Some((left, right)) = split_top_level_source_binary_str(expr, "||") {
+        return Ok(format!(
+            "or({}, {})",
+            lower_source_expr(left, line_num)?,
+            lower_source_expr(right, line_num)?
+        ));
+    }
+    if let Some((left, right)) = split_top_level_source_binary_str(expr, "&&") {
+        return Ok(format!(
+            "and({}, {})",
+            lower_source_expr(left, line_num)?,
+            lower_source_expr(right, line_num)?
+        ));
+    }
     if let Some((left, right)) = split_top_level_source_binary_str(expr, "==") {
         return Ok(format!(
             "eq({}, {})",
