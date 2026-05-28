@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Maturity: Validation milestone
+
+### Added
+
+- **Maturity model and release gate**: added `docs/maturity-model.md` to define
+  Rust-comparable maturity gates, linked it from roadmap/status docs, added a
+  contributing guide, PR template maturity-gate prompt, PR validation workflow,
+  and `scripts/pr-validation-smoke.sh` for approved issue/type-label/commit
+  discipline plus maturity-gate and verification evidence plus
+  template/validator anti-drift checks; added
+  `scripts/release-metadata-gate-smoke.sh` with a compatibility wrapper for the
+  older smoke name, made release preflight require the maturity model plus
+  exactly-one active changelog maturity-stage metadata, release-policy
+  documentation, `[Unreleased]`-first local preflight selection, and PR
+  governance files, added
+  `scripts/tag-release-gate-smoke.sh`, and wired release script syntax checks,
+  PR governance smoke, release metadata smoke, and tag-path gate ordering into
+  CI and tag creation before maintainers can publish maturity or
+  production-readiness claims; added `docs/getting-started.md` to document the
+  current verified CLI happy path without overstating production readiness, plus
+  `scripts/docs-onboarding-smoke.sh` to keep that tutorial tied to CLI evidence; added `docs/troubleshooting.md` and `scripts/docs-troubleshooting-smoke.sh` to document current CLI diagnostics and keep repair guidance tied to source/test evidence; added `docs/language-reference.md` and `scripts/docs-language-reference-smoke.sh` to document the implemented ACL/expression surface without overstating language maturity; added `docs/compatibility.md` and `scripts/docs-compatibility-smoke.sh` to define the current compatibility surface matrix and deprecation process for v0.x validation releases, and extended PR validation/template checks so every PR classifies compatibility surface, impact, and evidence before review; added `docs/stdlib-reference.md` and `scripts/docs-stdlib-reference-smoke.sh` to document the implemented stdlib registry, descriptors, and capability names without overstating stdlib stability; added `docs/package-reference.md` and `scripts/docs-package-reference-smoke.sh` to document package/trust primitives and keep ecosystem docs tied to `ail-package` evidence; expanded `docs/performance.md` and added `scripts/docs-performance-smoke.sh` so performance maturity claims stay tied to deterministic compiler regression evidence, compiler benchmarks, storage benchmarks, and perf preflight wiring; added `docs/security.md` and `scripts/docs-security-smoke.sh` so security/runtime-hardening claims stay tied to runtime capability gates, handler trust, secret audit behavior, context redaction, package signing/advisories, resolver conflicts, and maturity-gate evidence; added `docs/tooling-reference.md` and `scripts/docs-tooling-reference-smoke.sh` so tooling UX claims stay tied to current `ail-cli` command families, JSON `schema_version`, diagnostic/repair behavior, package/remote/link command evidence, and explicit formatter/LSP/`ail test` gaps; implemented validation-stage `ail fmt` for ACL ChangeSet files/stdin with canonical parser-backed output, `--check`, `--write`, and `--json` support plus CLI source tests.
+
 ## [0.1.0] - 2026-05-26
+
+Maturity: Validation milestone
 
 ### Fixed
 

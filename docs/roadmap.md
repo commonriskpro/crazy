@@ -4,7 +4,7 @@ AIL is currently a `v0.1` validation-stage language toolchain, not a production-
 
 The roadmap below describes how AIL can grow from that foundation into a language with practical usability in the direction of Rust, Python, and JavaScript: clear errors, useful standard libraries, package workflows, strong tooling, and predictable execution. It is a plan, not a guarantee of release dates.
 
-Related: [Implementation blueprint](implementation-blueprint.md), [Codebase guide](CODEBASE-GUIDE.md), [Risks](risks.md), [Release policy](release-policy.md).
+Related: [Maturity model](maturity-model.md), [Implementation blueprint](implementation-blueprint.md), [Security and runtime hardening](security.md), [Tooling reference](tooling-reference.md), [Codebase guide](CODEBASE-GUIDE.md), [Risks](risks.md), [Release policy](release-policy.md).
 
 ## Status Snapshot
 
@@ -129,7 +129,7 @@ Acceptance criteria:
 User-facing capabilities:
 
 - Install or build the CLI with a documented path.
-- Create a project, run it, test it, format it, and package it.
+- Create a project, run it, test it, format it, and package it; see the current [tooling reference](tooling-reference.md) for validation-stage evidence and gaps.
 - Use editor support through an LSP for diagnostics, go-to-definition, hover, and basic completions.
 - Rely on a documented package story for manifests, lockfiles, verification, signing, and compatibility.
 - Read concise language, stdlib, tooling, and migration documentation.
@@ -157,7 +157,7 @@ Acceptance criteria:
 - The gap between target design and implemented subset can mislead users if docs do not keep status labels visible.
 - WASM ABI and runtime capability design must stay stable enough for packages without freezing too early.
 - Type checking, match exhaustiveness, and verification profiles can become too complex unless diagnostics remain practical.
-- Package trust and registry work can become a security liability if signing, advisories, and reproducible builds are treated as optional polish.
+- Package trust and registry work can become a security liability if signing, advisories, reproducible builds, and the [security hardening checklist](security.md) are treated as optional polish.
 - Performance evidence is still limited; large-project graph, compiler, runtime, and context workloads need real benchmarks before `v1.0` claims.
 
 ## Release Discipline

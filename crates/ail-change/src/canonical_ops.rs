@@ -37,6 +37,10 @@ pub(super) fn materialize_payload(
             .get("id")
             .map(|id| OpPayload::CreateNode(Box::new(function_node(idx, id, args))))
             .unwrap_or(OpPayload::Noop),
+        (ChangeSetOp::Create, "create_test") => args
+            .get("id")
+            .map(|id| OpPayload::CreateNode(Box::new(test_node(idx, id, args))))
+            .unwrap_or(OpPayload::Noop),
         (ChangeSetOp::Create, "create_capability") => args
             .get("id")
             .map(|id| OpPayload::CreateNode(Box::new(capability_node(idx, id))))
@@ -338,6 +342,17 @@ fn function_node(idx: usize, id: &str, args: &OpArgs) -> GraphNode {
             predicate,
         }]);
     }
+    node
+}
+
+fn test_node(idx: usize, id: &str, args: &OpArgs) -> GraphNode {
+    let mut node = GraphNode::new(NodeRef(idx as u32), NodeKind::Test, id);
+    node.return_type = Some(
+        args.get("return")
+            .cloned()
+            .unwrap_or_else(|| "Bool".to_string()),
+    );
+    node.body_expr = args.get("body").cloned();
     node
 }
 

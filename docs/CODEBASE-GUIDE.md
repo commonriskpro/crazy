@@ -5,12 +5,18 @@ Use this as the entry point for the AIL docs. The canonical material lives in `d
 ## Quick path
 
 1. Read [Mental model](codebase/mental-model.md) to understand what AIL is and is not.
-2. Read [Repository map](codebase/repository-map.md) to locate the crate or directory you need.
-3. Use [Reference map](codebase/reference-map.md) when you know the question but not the document.
-4. Use [Maintainer playbook](codebase/maintainer-playbook.md) before changing a subsystem.
-5. Use [Public roadmap](roadmap.md) for release-facing milestones and [Implementation blueprint](implementation-blueprint.md) to separate completed validation milestones from remaining product work.
-6. Use [Wave operating model](wave-operating-model.md) when planning or executing a multi-wave implementation run.
-7. Use [Contract discipline](codebase/contract-discipline.md) before adding behavior that touches JSON output, status strings, or policy gates.
+2. Try [Getting started](getting-started.md) for the current validation-stage CLI walkthrough; use [Troubleshooting](troubleshooting.md) when a CLI gate rejects the flow.
+3. Use [Language reference](language-reference.md) when you need the currently implemented ACL/expression surface.
+4. Read [Repository map](codebase/repository-map.md) to locate the crate or directory you need.
+5. Use [Reference map](codebase/reference-map.md) when you know the question but not the document.
+6. Use [Contributing guide](../CONTRIBUTING.md) and [Maintainer playbook](codebase/maintainer-playbook.md) before changing a subsystem.
+7. Use [Compatibility policy](compatibility.md) before changing persisted data, ACL syntax, CLI JSON, capability names, ABI, packages, or public APIs.
+8. Use [Public roadmap](roadmap.md) for release-facing milestones, [Maturity model](maturity-model.md) for the Rust-comparable product bar, and [Implementation blueprint](implementation-blueprint.md) to separate completed validation milestones from remaining product work.
+9. Use [Wave operating model](wave-operating-model.md) when planning or executing a multi-wave implementation run.
+10. Use [Security and runtime hardening](security.md) before changing runtime gates, package trust, context redaction, or secret handling.
+11. Use [Tooling reference](tooling-reference.md) before changing CLI command shape, JSON output, diagnostics, package commands, or remote commands.
+12. Use [Performance validation](performance.md) before changing compiler/cache/index/storage hot paths.
+13. Use [Contract discipline](codebase/contract-discipline.md) before adding behavior that touches JSON output, status strings, or policy gates.
 
 ## Change map
 
@@ -27,7 +33,7 @@ Do not start by reading everything. Use this table to find the files that matter
 | Remote bundle integrity | [Remote](remote.md) | `ail-remote/src/{bundle.rs, identity.rs, signing.rs}` |
 | Release preflight | [Release policy](release-policy.md) | `scripts/{release-preflight.sh, tag-release.sh}` |
 | Storage CAS / snapshots | [Storage](storage.md) | `ail-storage/src/{object.rs, graph.rs, migration.rs}` |
-| CLI output / exit codes | [Tooling](tooling.md) | `ail-cli/src/{output.rs, cli.rs}` |
+| CLI output / exit codes | [Tooling reference](tooling-reference.md), [Tooling](tooling.md) | `ail-cli/src/{output.rs, cli.rs}` |
 | ChangeSet / ACL | [AI Change Language](change-language.md) | `ail-change/src/{parser.rs, canonical.rs, apply.rs, op_schema.rs}` |
 
 ## Status legend
@@ -51,17 +57,21 @@ That is still a validation-stage implementation. The docs describe a broader tar
 | Need | Start here |
 |------|------------|
 | System overview | [Architecture](architecture.md) |
-| Current roadmap and milestone status | [Public roadmap](roadmap.md) and [Implementation blueprint](implementation-blueprint.md) |
+| First CLI walkthrough and CLI repair guide | [Getting started](getting-started.md), [Troubleshooting](troubleshooting.md) |
+| Current roadmap and milestone status | [Public roadmap](roadmap.md), [Maturity model](maturity-model.md), and [Implementation blueprint](implementation-blueprint.md) |
 | Source of truth and IR | [Core IR and Semantic Graph](core-ir.md) |
-| LLM-authored changes | [AI Change Language](change-language.md) |
+| Language surface and LLM-authored changes | [Language reference](language-reference.md), [AI Change Language](change-language.md) |
 | Verification model | [Verification](verification.md) |
-| Runtime capability model | [Runtime](runtime.md) |
+| Runtime capability model | [Runtime](runtime.md), [Security and runtime hardening](security.md) |
 | Storage and snapshots | [Storage](storage.md) |
 | Context slices | [Context Server](context-server.md) |
-| Packages and trust | [Packages](packages.md) |
+| Packages and trust | [Package reference](package-reference.md), [Package/trust model](packages.md), [Security and runtime hardening](security.md) |
 | Compiler pipeline | [Compiler](compiler.md) |
-| Standard library | [Standard library](stdlib.md) |
-| Tooling and CLI workflow | [Tooling](tooling.md) |
+| Standard library | [Stdlib reference](stdlib-reference.md), [Standard library shape](stdlib.md) |
+| Tooling and CLI workflow | [Tooling reference](tooling-reference.md), [Tooling](tooling.md) |
+| Compatibility and release discipline | [Compatibility policy](compatibility.md), [Release policy](release-policy.md), [Migration guide](migration-guide.md) |
+| Security and runtime hardening | [Security and runtime hardening](security.md) |
+| Performance validation | [Performance validation](performance.md) |
 | Risks and validation gaps | [Risks](risks.md) and [Decisions register](open-questions.md) |
 
 ## Historical context

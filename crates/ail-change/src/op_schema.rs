@@ -76,6 +76,11 @@ static OP_SCHEMAS: &[OpSchemaEntry] = &[
         verb_prefix: "create_function",
         required: &["id"],
     },
+    // create_test: requires id; body is optional so pending tests can be declared.
+    OpSchemaEntry {
+        verb_prefix: "create_test",
+        required: &["id"],
+    },
     // create_type: requires id
     OpSchemaEntry {
         verb_prefix: "create_type",

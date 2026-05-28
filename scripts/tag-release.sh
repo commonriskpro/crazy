@@ -38,7 +38,40 @@ if ! git diff --quiet || ! git diff --staged --quiet; then
     exit 1
 fi
 
-# -- Release metadata preflight ------------------------------------------------
+# -- Documentation and release metadata gates ----------------------------------
+
+echo "==> Running onboarding docs smoke ..."
+./scripts/docs-onboarding-smoke.sh
+
+echo "==> Running troubleshooting docs smoke ..."
+./scripts/docs-troubleshooting-smoke.sh
+
+echo "==> Running language reference docs smoke ..."
+./scripts/docs-language-reference-smoke.sh
+
+echo "==> Running compatibility docs smoke ..."
+./scripts/docs-compatibility-smoke.sh
+
+echo "==> Running stdlib reference docs smoke ..."
+./scripts/docs-stdlib-reference-smoke.sh
+
+echo "==> Running package reference docs smoke ..."
+./scripts/docs-package-reference-smoke.sh
+
+echo "==> Running performance docs smoke ..."
+./scripts/docs-performance-smoke.sh
+
+echo "==> Running security docs smoke ..."
+./scripts/docs-security-smoke.sh
+
+echo "==> Running tooling reference docs smoke ..."
+./scripts/docs-tooling-reference-smoke.sh
+
+echo "==> Running release metadata gate smoke ..."
+./scripts/release-metadata-gate-smoke.sh
+
+echo "==> Running PR governance smoke ..."
+./scripts/pr-validation-smoke.sh
 
 echo "==> Running release metadata preflight ..."
 ./scripts/release-preflight.sh

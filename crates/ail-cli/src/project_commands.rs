@@ -7,6 +7,7 @@
 // Commands:
 //   cmd_change  — create a draft ChangeSet (or apply immediately with --apply)
 //   cmd_init    — initialise .ail/ directory structure and genesis snapshot
+//   cmd_new     — create a new project directory with .ail/ and starter ACL
 //   cmd_status  — show current snapshot, branch, pending changes, system state
 
 use std::path::PathBuf;
@@ -293,6 +294,151 @@ pub(crate) async fn cmd_init(
         }),
     );
     Ok(())
+}
+
+// ── cmd_new ───────────────────────────────────────────────────────────────
+
+/// `ail new <path>` — create a new project directory with a local .ail store.
+///
+/// This is intentionally file-backed even when `--database-url` is configured:
+/// project creation is a filesystem scaffold operation, while database-backed
+/// storage remains an opt-in runtime/storage mode for commands inside a project.
+pub(crate) async fn cmd_new(
+    mode: OutputMode,
+    path: PathBuf,
+    branch: &str,
+    force: bool,
+) -> Result<(), CliError> {
+    if path.exists() && !force && path.read_dir()?.next().is_some() {
+        return Err(CliError::Domain(format!(
+            "refusing to create project in non-empty directory: {}",
+            path.display()
+        )));
+    }
+
+    std::fs::create_dir_all(&path)?;
+    let ctx = ProjectContext::new(path.clone());
+    init_file_layout_with_branch(&ctx.ail_dir, branch)?;
+
+    for kind in [
+        ArtifactKind::Change,
+        ArtifactKind::Snapshot,
+        ArtifactKind::Report,
+        ArtifactKind::Wasm,
+        ArtifactKind::Native,
+    ] {
+        let subdir = ctx
+            .artifact_name(kind, ".init")
+            .parent()
+            .expect("artifact paths must include a subdirectory")
+            .to_path_buf();
+        std::fs::create_dir_all(&subdir)?;
+    }
+
+    let project_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(".");
+    let config_path = ctx.ail_dir.join("project.toml");
+    if !config_path.exists() {
+        let config_content = format!(
+            "name = \"{project_name}\"\ncreated_at = {}\nbranch = \"{branch}\"\npolicy = \"default\"\n",
+            unix_ms_now()
+        );
+        std::fs::write(&config_path, config_content)?;
+    }
+
+    let profiles_path = ctx.ail_dir.join("runtime_profiles.toml");
+    if !profiles_path.exists() {
+        let profiles_content = "[profiles]\ndev = { max_memory_bytes = \"unlimited\", max_fuel = \"unlimited\" }\nprod = { max_memory_bytes = \"128mb\", max_fuel = \"1000000\" }\n";
+        std::fs::write(&profiles_path, profiles_content)?;
+    }
+
+    let stdlib_path = ctx.ail_dir.join("stdlib.toml");
+    if !stdlib_path.exists() {
+        std::fs::write(&stdlib_path, "version = \"0\"\n")?;
+    }
+
+    let lock_path = ctx.ail_dir.join("package.lock");
+    if !lock_path.exists() {
+        std::fs::write(&lock_path, "{}\n")?;
+    }
+
+    let index_path = ctx.ail_dir.join("context_index.json");
+    if !index_path.exists() {
+        std::fs::write(&index_path, "{\"nodes\":[],\"edges\":[]}\n")?;
+    }
+
+    let source_path = path.join("main.ail");
+    if !source_path.exists() {
+        std::fs::write(&source_path, starter_source())?;
+    }
+
+    let sample_path = path.join("main.acl");
+    if !sample_path.exists() {
+        std::fs::write(&sample_path, starter_acl(project_name))?;
+    }
+
+    let disk_store = file_store(ctx.ail_dir.clone());
+    let existing = disk_store.list_snapshots().await?;
+    let genesis_id = if existing.is_empty() {
+        let graph_root_hash = disk_store
+            .save_graph(&SemanticGraph {
+                nodes: vec![],
+                edges: vec![],
+            })
+            .await?;
+        let genesis = SnapshotEnvelope {
+            id: ObjectId::from_bytes(b"genesis"),
+            graph_root_hash,
+            parent_id: None,
+            applied_change_id: None,
+            created_at: unix_ms_now(),
+            verification_report_hash: None,
+            ..Default::default()
+        };
+        disk_store.save_snapshot(&genesis).await?
+    } else {
+        existing[0].id
+    };
+
+    let genesis_hex = genesis_id.to_hex();
+    let human_msg = format!(
+        "created project at {}\ngenesis snapshot: {genesis_hex}\nbranch: {branch}\nstarter: {}",
+        path.display(),
+        source_path.display()
+    );
+    print_response(
+        mode,
+        &human_msg,
+        json!({
+            "created": true,
+            "path": path,
+            "ail_dir": ctx.ail_dir,
+            "branch": branch,
+            "genesis_snapshot_id": genesis_hex,
+            "starter_source": source_path,
+            "starter_acl": sample_path,
+        }),
+    );
+    Ok(())
+}
+
+fn starter_source() -> &'static str {
+    "fn main() -> Int = add(20, 22)\n\
+test main_addition = eq(add(20, 22), 42)\n"
+}
+
+fn starter_acl(project_name: &str) -> String {
+    format!(
+        "change {project_name}_hello\n\
+author ail\n\
+description starter AIL program\n\
+base 0\n\
+op create_function id=fn.main return=Int body=add(20, 22)\n\
+op create_test id=test.main_addition body=eq(add(20, 22), 42)\n\
+end\n"
+    )
 }
 
 // ── cmd_status ────────────────────────────────────────────────────────────

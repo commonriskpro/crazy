@@ -16,7 +16,10 @@
 // | apply    <change-id>     | Apply ChangeSet with full pre-apply gate display      |
 // | compile  --target --profile  lower → ANF → emit_wasm                      |
 // | link     --profile [--output]    link native object → executable           |
-// | run      --profile [module] [--replay] preflight + runtime report         |
+// | run      --profile [--file .ail] [module] preflight + runtime report      |
+// | test     [--file .ail] [filter]  Discover and run graph/source tests      |
+// | new      <path>              Create project scaffold with starter .ail/ACL |
+// | lsp      --stdio|--diagnose  Editor diagnostics through LSP-shaped IO     |
 // | init                     | Create .ail/ dirs, genesis snapshot, baseline state   |
 // | status                   | Snapshot/branch/pending/verify/indexes/runtime/pkg    |
 // | inspect  <type> <id>     | Inspect node/snapshot/report/artifact/capability      |
@@ -29,6 +32,7 @@
 // | reject   <change-id>     | Immutable rejection record                            |
 // | policy   check|explain|set Policy management                                    |
 // | package  add|verify|…    | Package management with trust/capabilities/advisories |
+// | fmt      [--file]       | Format ACL ChangeSet text into canonical form         |
 // | doctor                   | Integrity checks: graph/index/schema/artifacts/…      |
 //
 // # Exit codes
@@ -54,7 +58,7 @@ use clap::{Parser, Subcommand};
 
 pub(crate) use crate::cli_helpers::*;
 pub(crate) use crate::graph_loading::*;
-pub(crate) use crate::project_commands::{cmd_change, cmd_init, cmd_status};
+pub(crate) use crate::project_commands::{cmd_change, cmd_init, cmd_new, cmd_status};
 
 use crate::approval_commands::{cmd_approve, cmd_reject};
 use crate::branch_commands::{cmd_diff, cmd_merge, cmd_rebase, cmd_refactor, cmd_rollback};
@@ -63,18 +67,21 @@ use crate::context_commands::cmd_context;
 use crate::diagnostic_commands::{cmd_doctor, cmd_gc};
 use crate::error::CliError;
 use crate::eval_commands::cmd_eval;
+use crate::fmt_commands::cmd_fmt;
 use crate::graph_query_commands::{cmd_callers, cmd_effects, cmd_impact, cmd_proofs};
 use crate::inspect_commands::cmd_inspect;
 use crate::link_commands::{
     RUNTIME_STUB_SUBDIR, SystemLinker, cmd_emit_runtime_stub, cmd_link, cmd_print_runtime_symbols,
     ensure_runtime_stub_at, validate_link_mode_flags,
 };
+use crate::lsp_commands::cmd_lsp;
 use crate::output::OutputMode;
 use crate::package_commands::cmd_package;
 use crate::policy_commands::cmd_policy;
 use crate::remote_commands::cmd_remote;
 use crate::run_commands::cmd_run;
 use crate::store::build_store;
+use crate::test_commands::cmd_test;
 use crate::workflow_commands::{cmd_apply, cmd_verify};
 
 // ── Cli ───────────────────────────────────────────────────────────────────
@@ -205,6 +212,9 @@ enum Commands {
         /// native linked execution is not yet supported.
         #[arg(long, default_value = "wasm")]
         target: String,
+        /// Run a `.ail` source file directly instead of loading the current graph.
+        #[arg(long, short)]
+        file: Option<PathBuf>,
         /// Module target to run (e.g. `module.checkout`).
         module: Option<String>,
         /// Positional i64 arguments passed to the exported function.
@@ -215,6 +225,30 @@ enum Commands {
         /// Replay a recorded trace by its id.
         #[arg(long)]
         replay: Option<String>,
+    },
+
+    /// Discover and run test targets from the current graph.
+    ///
+    /// Tests are graph nodes with `NodeKind::Test`, names like `test.*`, or
+    /// function names like `fn.test_*`. Each test passes when its return value
+    /// is truthy, `ok`/`pass`, or unit.
+    Test {
+        /// Runtime profile name (e.g. `dev`, `test`).
+        #[arg(long, default_value = "test")]
+        profile: String,
+        /// Execution target. `native` returns an explicit unsupported error.
+        #[arg(long, default_value = "wasm")]
+        target: String,
+        /// Run tests from a `.ail` source file directly instead of loading the current graph.
+        #[arg(long, short)]
+        file: Option<PathBuf>,
+        /// Optional substring filter for test names.
+        filter: Option<String>,
+        /// Positional arguments passed to every selected test export.
+        args: Vec<String>,
+        /// Grant a capability to this test invocation. Repeat for multiple grants.
+        #[arg(long = "grant")]
+        grants: Vec<String>,
     },
 
     /// Link a compiled native object file into an executable.
@@ -282,10 +316,63 @@ enum Commands {
         ensure_runtime_stub: bool,
     },
 
+    /// Format an ACL ChangeSet document.
+    Fmt {
+        /// Path to an ACL file. When omitted, reads from stdin and writes to stdout.
+        #[arg(long, short)]
+        file: Option<PathBuf>,
+        /// Check whether the input is already canonical; exits non-zero if formatting would change it.
+        #[arg(long)]
+        check: bool,
+        /// Rewrite --file in place. Requires --file.
+        #[arg(long)]
+        write: bool,
+    },
+
     /// Evaluate an inline expression without initializing a project.
     Eval {
         /// Expression to evaluate (e.g. `add(20, 22)`, `mul(6, 7)`, or `42`).
         expression: String,
+    },
+
+    /// Create a new AIL project directory with .ail/ metadata and starter ACL.
+    New {
+        /// Project directory to create.
+        path: PathBuf,
+        /// Initial branch name.
+        #[arg(long, default_value = "main")]
+        branch: String,
+        /// Allow creating inside a non-empty directory.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Run the validation-stage AIL language server or emit LSP diagnostics.
+    Lsp {
+        /// Run JSON-RPC Language Server Protocol over stdin/stdout.
+        #[arg(long)]
+        stdio: bool,
+        /// Diagnose one ACL file and print LSP-shaped diagnostics.
+        #[arg(long)]
+        diagnose: Option<PathBuf>,
+        /// Emit LSP completion items matching this prefix.
+        #[arg(long)]
+        complete: Option<String>,
+        /// Emit LSP hover information for one ACL token.
+        #[arg(long = "hover-token")]
+        hover_token: Option<String>,
+        /// Emit go-to-definition location for one ACL identifier token.
+        #[arg(long = "definition-token")]
+        definition_token: Option<String>,
+        /// ACL file used by --definition-token.
+        #[arg(long = "definition-file")]
+        definition_file: Option<PathBuf>,
+        /// Emit same-file references for one ACL identifier token.
+        #[arg(long = "references-token")]
+        references_token: Option<String>,
+        /// ACL file used by --references-token.
+        #[arg(long = "references-file")]
+        references_file: Option<PathBuf>,
     },
 
     /// Initialize the project: create .ail/ directories and genesis snapshot.
@@ -551,8 +638,8 @@ pub async fn run() -> Result<(), CliError> {
         let _ = err.print();
         if kind == ErrorKind::InvalidSubcommand {
             eprintln!(
-                "Available subcommands: context, change, verify, apply, compile, run, link, \
-                 eval, init, status, inspect, diff, rollback, rebase, merge, refactor, \
+                "Available subcommands: context, change, verify, apply, compile, run, test, link, \
+                 fmt, eval, new, lsp, init, status, inspect, diff, rollback, rebase, merge, refactor, \
                  approve, reject, policy, package, remote, doctor, gc"
             );
             std::process::exit(2);
@@ -566,9 +653,40 @@ pub async fn run() -> Result<(), CliError> {
         OutputMode::Human
     };
 
+    let command = match cli.command {
+        Commands::New {
+            path,
+            branch,
+            force,
+        } => return cmd_new(mode, path, &branch, force).await,
+        Commands::Lsp {
+            stdio,
+            diagnose,
+            complete,
+            hover_token,
+            definition_token,
+            definition_file,
+            references_token,
+            references_file,
+        } => {
+            return cmd_lsp(
+                mode,
+                stdio,
+                diagnose,
+                complete,
+                hover_token,
+                definition_token,
+                definition_file,
+                references_token,
+                references_file,
+            );
+        }
+        other => other,
+    };
+
     let store = build_store(cli.database_url.as_deref()).await?;
 
-    match cli.command {
+    match command {
         Commands::Context { args } => cmd_context(mode, &args, &store).await,
         Commands::Impact { target } => cmd_impact(mode, &target, &store).await,
         Commands::Callers { target } => cmd_callers(mode, &target, &store).await,
@@ -606,6 +724,7 @@ pub async fn run() -> Result<(), CliError> {
         Commands::Run {
             profile,
             target,
+            file,
             module,
             args,
             grants,
@@ -615,10 +734,31 @@ pub async fn run() -> Result<(), CliError> {
                 mode,
                 &profile,
                 &target,
+                file.as_deref(),
                 module.as_deref(),
                 &args,
                 &grants,
                 replay.as_deref(),
+                &store,
+            )
+            .await
+        }
+        Commands::Test {
+            profile,
+            target,
+            file,
+            filter,
+            args,
+            grants,
+        } => {
+            cmd_test(
+                mode,
+                &profile,
+                &target,
+                file.as_deref(),
+                filter.as_deref(),
+                &args,
+                &grants,
                 &store,
             )
             .await
@@ -664,6 +804,7 @@ pub async fn run() -> Result<(), CliError> {
                 )
             }
         }
+        Commands::Fmt { file, check, write } => cmd_fmt(mode, file, check, write),
         Commands::Eval { expression } => cmd_eval(mode, &expression),
         Commands::Init { branch } => cmd_init(mode, &store, &branch).await,
         Commands::Status => cmd_status(mode, &store).await,
@@ -703,6 +844,8 @@ pub async fn run() -> Result<(), CliError> {
         Commands::Remote { cmd } => cmd_remote(mode, cmd, &store).await,
         Commands::Doctor => cmd_doctor(mode, &store).await,
         Commands::Gc => cmd_gc(mode, &store),
+        Commands::New { .. } => unreachable!("handled before store initialization"),
+        Commands::Lsp { .. } => unreachable!("handled before store initialization"),
     }
 }
 
@@ -724,6 +867,7 @@ pub async fn run() -> Result<(), CliError> {
 
 // cmd_compile → crate::compile_commands
 // cmd_run     → crate::run_commands
+// cmd_fmt     → crate::fmt_commands
 
 // current_graph_for_cli, load_current_graph_for_cli,
 // load_current_graph_with_snapshot_id_for_cli, snapshot_id_from_parent_chain

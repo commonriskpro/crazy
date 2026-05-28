@@ -17,6 +17,7 @@ Use these checklists before changing an AIL subsystem. The goal is to keep targe
 - Add or update tests in the crate that owns the behavior.
 - Update `Implementation Status` notes when implementation scope changes.
 - Update [Implementation blueprint](../implementation-blueprint.md) if the change advances a validation milestone.
+- Check [Maturity model](../maturity-model.md) and name the maturity gate the change advances; if no gate improves, treat the work as polish, research, or distraction.
 - Update [Risks](../risks.md) or [Decisions register](../open-questions.md) if the change closes or creates validation work.
 
 ## Core IR / graph
@@ -52,7 +53,7 @@ Use these checklists before changing an AIL subsystem. The goal is to keep targe
 
 ## Runtime / capabilities
 
-- Check `docs/runtime.md` and `crates/ail-runtime/src/`.
+- Check `docs/runtime.md`, `docs/security.md`, and `crates/ail-runtime/src/`.
 - Preserve deny-by-default capability behavior.
 - Keep grants, handlers, schema checks, audit, replay, and rollback semantics explicit.
 - Add tests for denied capability, missing grant, schema failure, audit output, and profile-bound execution.
@@ -76,7 +77,7 @@ Use these checklists before changing an AIL subsystem. The goal is to keep targe
 
 ## Packages
 
-- Check `docs/packages.md` and `crates/ail-package/src/`.
+- Check `docs/packages.md`, `docs/package-reference.md`, `docs/security.md`, and `crates/ail-package/src/`.
 - Preserve the rule that import does not grant capabilities.
 - Keep trust level, signing, lockfile, advisory, yanking, and compatibility behavior explicit.
 - Add resolver, policy, trust gate, signing, or registry tests for changed behavior.
@@ -91,7 +92,7 @@ Use these checklists before changing an AIL subsystem. The goal is to keep targe
 
 ## CLI / tooling
 
-- Check `docs/tooling.md` and `crates/ail-cli/src/`.
+- Check `docs/tooling-reference.md`, `docs/tooling.md`, `docs/troubleshooting.md`, and `crates/ail-cli/src/`.
 - Keep human output and `--json` machine output aligned.
 - Make local persistence behavior explicit: memory fallback, file `.ail/`, or Postgres.
 - Add CLI tests for command behavior, exit codes, and JSON shape.
@@ -99,6 +100,7 @@ Use these checklists before changing an AIL subsystem. The goal is to keep targe
 
 ## Docs
 
+- Use [Maturity model](../maturity-model.md) and [Security and runtime hardening](../security.md) for production-readiness, security, or Rust-comparable claims; do not invent stronger claim language in local docs.
 - New guides must distinguish target design, implemented subset, and historical context where relevant.
 - Prefer short entry points and maps over another giant document.
 - Keep links relative and update references when moving files.

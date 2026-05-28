@@ -4,7 +4,7 @@
 
 This is the living implementation roadmap for AIL. It preserves the full product direction while separating completed validation evidence from the remaining production work.
 
-Related: [Codebase guide](CODEBASE-GUIDE.md), [Architecture](architecture.md), [Decision log](decision-log.md), [Risks](risks.md), [Decisions register](open-questions.md), [Wave operating model](wave-operating-model.md).
+Related: [Codebase guide](CODEBASE-GUIDE.md), [Maturity model](maturity-model.md), [Security and runtime hardening](security.md), [Tooling reference](tooling-reference.md), [Architecture](architecture.md), [Decision log](decision-log.md), [Risks](risks.md), [Decisions register](open-questions.md), [Wave operating model](wave-operating-model.md).
 
 ## Status taxonomy
 
@@ -37,13 +37,13 @@ The product only becomes AI-native when graph, ChangeSet, verifier, compiler, ru
 | Area | Current status | Evidence | Remaining production gap |
 |------|----------------|----------|--------------------------|
 | Design baseline | Completed validation milestone | `docs/architecture.md`, `docs/decision-log.md`, `docs/open-questions.md` | Keep docs aligned as implementation narrows or expands scope. |
-| Workspace and CLI | Implemented subset | `Cargo.toml`, `crates/ail-cli/src/cli.rs` | Durable workflows, UX polish, and command-depth parity with target tooling. |
+| Workspace and CLI | Implemented subset | `Cargo.toml`, `crates/ail-cli/src/cli.rs`, [tooling reference](tooling-reference.md) | Durable workflows, UX polish, general-source formatter beyond ACL-only `ail fmt`, richer `ail test` project workflows, LSP parity, long-term JSON schemas, and command-depth parity with target tooling. |
 | Storage and snapshots | Implemented subset | `crates/ail-storage/src/lib.rs`, storage tests | Production scale, operational backups, retention defaults, migration runbooks. |
 | Semantic Graph / Core IR | Implemented subset | `crates/ail-core/src/semantic_graph.rs`, roundtrip tests | Full Core IR semantics and executable language coverage. |
 | ChangeSets / ACL | Implemented subset | `crates/ail-change/src/parser.rs`, `canonical.rs`, `apply.rs` | Full operation surface, richer repair loop, compatibility/migration discipline. |
 | Verification | Implemented subset | `crates/ail-verify/src/lib.rs`, pipeline/checker tests | Prod/critical profile rigor, solver limits, translation validation, policy UX. |
 | Compiler | Implemented subset | `crates/ail-compiler/src/lib.rs`, lowering/WASM/native tests | Full executable surface, backend parity, large-project performance evidence. |
-| Runtime | Implemented subset | `crates/ail-runtime/src/lib.rs`, runtime tests | Rich typed WASM ABI, memory/resource model, hardened isolation, operational limits. |
+| Runtime | Implemented subset | `crates/ail-runtime/src/lib.rs`, runtime tests, [security and runtime hardening](security.md) | Rich typed WASM ABI, memory/resource model, enforced in-flight revocation, external vaults, hardened isolation, operational limits. |
 | Context Server | Implemented subset | `crates/ail-context/src/lib.rs`, `transport.rs`, `http_transport.rs` | TLS, distributed auth, distributed freshness, redaction operations. |
 | Stdlib | Implemented subset | `crates/ail-stdlib/src/lib.rs`, module tests | Compatibility policy, official packages/adapters, verified contracts. |
 | Packages | Implemented subset | `crates/ail-package/src/lib.rs`, `http_registry.rs`, `signing.rs` | Federation, deployed registry server, keyless/Sigstore signing, reproducible-build proof end-to-end. |
@@ -108,15 +108,15 @@ The following gaps are confirmed absent or only stub-level. Do not claim coverag
 
 ## Next recommended milestones
 
-| Milestone | Goal | Success evidence |
-|-----------|------|------------------|
-| Executable language surface | Expand parsed/lowered/executed expressions toward the documented Core IR subset. | Parser/lowering/codegen/runtime tests for records, variants, `Result`/`Option`, pattern matching, resource/concurrency stubs or explicit rejections. |
-| WASM ABI and memory model | Define and implement typed value layout across compiler and runtime. | ABI spec, memory access tests, schema/value roundtrips, host-call compatibility tests. |
-| Production verification profile | Make `prod` acceptance meaningful and hard to misread. | Policy tests proving unverified/unsafe/assumed handling, translation-validation hooks, report fixtures. |
-| Runtime hardening | Strengthen isolation, limits, audit, rollback, replay, and capability dispatch under failure. | Negative runtime tests, fuzz coverage, audit snapshots, limit/revocation tests. |
-| AI-native tooling loop | Turn context -> ChangeSet -> verify -> apply -> repair into a durable workflow. | CLI integration tests with persisted `.ail/` state and machine-readable diagnostics. |
-| Ecosystem path | Clarify package registry, official packages, signing, advisories, and compatibility. | Registry workflow tests, signed package fixtures, release/compatibility docs. |
-| Performance validation | Prove graph, storage, context, compiler, and runtime behavior at realistic sizes. | Benchmarks, regression thresholds, large-graph fixtures, documented bottlenecks; see [Performance validation](performance.md). |
+| Milestone | Primary maturity gates | Goal | Success evidence |
+|-----------|------------------------|------|------------------|
+| Executable language surface | Language surface, documentation | Expand parsed/lowered/executed expressions toward the documented Core IR subset. | Parser/lowering/codegen/runtime tests for records, variants, `Result`/`Option`, pattern matching, resource/concurrency stubs or explicit rejections. |
+| WASM ABI and memory model | Runtime safety, language surface, verification | Define and implement typed value layout across compiler and runtime. | ABI spec, memory access tests, schema/value roundtrips, host-call compatibility tests. |
+| Production verification profile | Verification, compatibility, AI-native workflow | Make `prod` acceptance meaningful and hard to misread. | Policy tests proving unverified/unsafe/assumed handling, translation-validation hooks, report fixtures. |
+| Runtime hardening | Runtime safety, verification, performance | Strengthen isolation, limits, audit, rollback, replay, secret handling, package/context security, and capability dispatch under failure. | Negative runtime tests, fuzz coverage, audit snapshots, limit/revocation tests, and [security hardening](security.md) drift checks. |
+| AI-native tooling loop | AI-native workflow, tooling UX, documentation | Turn context -> ChangeSet -> verify -> apply -> repair into a durable workflow. | CLI integration tests with persisted `.ail/` state and machine-readable diagnostics. |
+| Ecosystem path | Package ecosystem, standard library, compatibility | Clarify package registry, official packages, signing, advisories, and compatibility. | Registry workflow tests, signed package fixtures, release/compatibility docs. |
+| Performance validation | Performance, runtime safety, tooling UX | Prove graph, storage, context, compiler, and runtime behavior at realistic sizes. | Benchmarks, regression thresholds, large-graph fixtures, documented bottlenecks; see [Performance validation](performance.md). |
 
 ## Parallel implementation wave
 

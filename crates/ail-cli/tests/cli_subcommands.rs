@@ -80,6 +80,372 @@ fn init_json_output_has_genesis_id() {
     );
 }
 
+/// Spec scenario: new creates a project scaffold.
+///   GIVEN an empty parent directory
+///   WHEN `ail new myapp --json` runs
+///   THEN myapp has .ail metadata, starter .ail source, starter ACL, and JSON scaffold fields
+#[test]
+fn new_creates_project_scaffold_with_starter_source_and_acl() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let output = ail()
+        .args(["new", "myapp", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let project = dir.child("myapp");
+    project.child(".ail/HEAD").assert(predicate::path::exists());
+    project
+        .child(".ail/store/objects")
+        .assert(predicate::path::is_dir());
+    project.child("main.ail").assert(predicate::path::exists());
+    project.child("main.acl").assert(predicate::path::exists());
+
+    let source = std::fs::read_to_string(project.path().join("main.ail"))
+        .expect("starter source must be readable");
+    assert!(source.contains("fn main() -> Int"));
+    assert!(source.contains("test main_addition"));
+
+    let acl = std::fs::read_to_string(project.path().join("main.acl"))
+        .expect("starter ACL must be readable");
+    assert!(acl.contains("op create_function id=fn.main"));
+    assert!(acl.contains("op create_test id=test.main_addition"));
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["created"], true);
+    assert_eq!(v["data"]["branch"], "main");
+    assert!(v["data"]["genesis_snapshot_id"].is_string());
+    assert!(v["data"]["starter_source"].is_string());
+    assert!(v["data"]["starter_acl"].is_string());
+}
+
+#[test]
+fn run_file_executes_ail_source_main_without_acl_authoring() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn main() -> Int = add(20, 22)\n\
+test main_addition = eq(add(20, 22), 42)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("source:"))
+        .stdout(predicate::str::contains("module: fn.main"))
+        .stdout(predicate::str::contains("result: 42"));
+}
+
+#[test]
+fn run_file_executes_ail_source_function_with_typed_params() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("math.ail");
+    source
+        .write_str("fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.add_pair",
+            "20",
+            "22",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.add_pair"))
+        .stdout(predicate::str::contains("result: 42"));
+}
+
+#[test]
+fn run_file_executes_ail_source_block_with_let_statement() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("block.ail");
+    source
+        .write_str("fn main() -> Int {\n  let base = add(20, 20)\n  return add(base, 2)\n}\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.main"))
+        .stdout(predicate::str::contains("result: 42"));
+}
+
+#[test]
+fn run_file_executes_ail_source_if_else_expression() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("control.ail");
+    source
+        .write_str("fn clamp_positive(x: Int) -> Int {\n  if gt(x, 0) { x } else { 0 }\n}\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.clamp_positive",
+            "-5",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.clamp_positive"))
+        .stdout(predicate::str::contains("result: 0"));
+}
+
+#[test]
+fn test_file_runs_ail_source_tests_without_acl_authoring() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn main() -> Int = add(20, 22)\n\
+fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n\
+test main_addition = eq(add_pair(20, 22), 42)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "test",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PASS test.main_addition"))
+        .stdout(predicate::str::contains("test result: 1 passed; 0 failed"));
+}
+
+/// Spec scenario: lsp diagnose emits parser/schema diagnostics.
+///   GIVEN an ACL file whose create_function op is missing id
+///   WHEN `ail lsp --diagnose <file> --json` runs
+///   THEN JSON contains an LSP-shaped diagnostic with source ail-acl-schema
+#[test]
+fn lsp_diagnose_reports_acl_schema_errors() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let acl = dir.child("bad.acl");
+    acl.write_str(
+        r#"change bad
+author cli-test
+description bad ACL
+base 0
+op create_function return=Int
+end
+"#,
+    )
+    .expect("ACL fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(acl.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(v["data"]["diagnostics"][0]["source"], "ail-acl-schema");
+    assert_eq!(v["data"]["diagnostics"][0]["severity"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("requires argument 'id'")
+    );
+}
+
+#[test]
+fn lsp_diagnose_reports_ail_source_parse_errors() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad.ail");
+    source
+        .write_str("fn broken(x Int) -> Int = x\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(v["data"]["diagnostics"][0]["source"], "ail-source-parser");
+    assert_eq!(v["data"]["diagnostics"][0]["severity"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("function parameters must use `name: Type`")
+    );
+}
+
+#[test]
+fn lsp_completion_and_hover_cover_acl_test_authoring() {
+    let completion_output = ail()
+        .args(["lsp", "--complete", "create_test", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let completion = parse_json_output(&completion_output);
+    assert_eq!(completion["status"], "ok");
+    let items = completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        items.iter().any(|item| item["label"] == "op create_test"
+            && item["insertText"]
+                .as_str()
+                .expect("insertText")
+                .contains("op create_test id=test.")),
+        "completion must include create_test snippet; got: {items:?}"
+    );
+
+    let hover_output = ail()
+        .args(["lsp", "--hover-token", "create_test", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let hover = parse_json_output(&hover_output);
+    assert_eq!(hover["status"], "ok");
+    assert!(
+        hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("ail test"),
+        "hover must explain create_test integration with ail test; got: {hover}"
+    );
+}
+
+#[test]
+fn lsp_definition_resolves_acl_target_to_id_location() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let acl = dir.child("defs.acl");
+    acl.write_str(
+        r#"change defs
+author cli-test
+description definition lookup
+base 0
+op create_function id=fn.main return=Int body=add(20, 22)
+op grant target=fn.main capability=log.write
+end
+"#,
+    )
+    .expect("ACL fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--definition-token", "fn.main", "--definition-file"])
+        .arg(acl.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["token"], "fn.main");
+    assert_eq!(v["data"]["definition"]["range"]["start"]["line"], 4);
+    assert!(
+        v["data"]["definition"]["uri"]
+            .as_str()
+            .expect("definition uri")
+            .ends_with("defs.acl")
+    );
+}
+
+#[test]
+fn lsp_references_find_same_file_acl_identifier_uses() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let acl = dir.child("refs.acl");
+    acl.write_str(
+        r#"change refs
+author cli-test
+description reference lookup
+base 0
+op create_function id=fn.main return=Int body=add(20, 22)
+op grant target=fn.main capability=log.write
+op set_body target=fn.main body=add(1, 2)
+end
+"#,
+    )
+    .expect("ACL fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--references-token", "fn.main", "--references-file"])
+        .arg(acl.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["token"], "fn.main");
+    assert_eq!(v["data"]["reference_count"], 3);
+    let refs = v["data"]["references"]
+        .as_array()
+        .expect("references must be an array");
+    assert_eq!(refs[0]["range"]["start"]["line"], 4);
+    assert_eq!(refs[1]["range"]["start"]["line"], 5);
+    assert_eq!(refs[2]["range"]["start"]["line"], 6);
+}
+
 /// Spec scenario: file-backed store persists between CLI invocations.
 ///   GIVEN `ail init` has created an on-disk store
 ///   WHEN `ail change` writes a snapshot and `ail compile` runs later
@@ -531,6 +897,77 @@ end
         .success()
         .stdout(predicate::str::contains("output:\nHello from callee!"))
         .stdout(predicate::str::contains("result: 0"));
+}
+
+#[test]
+fn test_command_runs_graph_test_nodes() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let acl = dir.child("test-runner.acl");
+    acl.write_str(
+        r#"change test_runner
+author cli-test
+description add user-facing test runner target
+base 0
+op create_test id=test.addition body=eq(add(20, 22), 42)
+end
+"#,
+    )
+    .expect("ACL fixture must be written");
+
+    let change_output = ail()
+        .args([
+            "change",
+            "--file",
+            acl.path().to_str().expect("path must be UTF-8"),
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let change_json = parse_json_output(&change_output);
+    let change_id = change_json["data"]["canonical_change"]["change_id"]
+        .as_str()
+        .expect("change output must include a change_id");
+
+    ail()
+        .args(["verify", change_id])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args(["apply", change_id, "--yes"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    ail()
+        .args(["test"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PASS test.addition"))
+        .stdout(predicate::str::contains("test result: 1 passed; 0 failed"));
+
+    let test_output = ail()
+        .args(["test", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let test_json = parse_json_output(&test_output);
+    assert_eq!(test_json["status"], "ok");
+    assert_eq!(test_json["data"]["total"], 1);
+    assert_eq!(test_json["data"]["passed"], 1);
+    assert_eq!(test_json["data"]["failed"], 0);
+    assert_eq!(test_json["data"]["tests"][0]["name"], "test.addition");
+    assert_eq!(test_json["data"]["tests"][0]["status"], "passed");
 }
 
 #[test]
@@ -1194,14 +1631,161 @@ fn unknown_subcommand_lists_all_commands_including_new() {
 
     let err_text = std::str::from_utf8(&stderr.stderr).expect("stderr must be UTF-8");
     for cmd in &[
-        "rollback", "rebase", "merge", "refactor", "approve", "reject", "policy", "package",
-        "doctor",
+        "rollback", "rebase", "merge", "refactor", "approve", "reject", "policy", "package", "fmt",
+        "test", "new", "lsp", "doctor",
     ] {
         assert!(
             err_text.contains(cmd),
             "error message must list '{cmd}'; got:\n{err_text}"
         );
     }
+}
+
+// ── ail fmt integration tests ─────────────────────────────────────────────
+
+/// Spec scenario: ail fmt formats ACL into canonical command text.
+///   GIVEN an ACL file with out-of-order ops and non-canonical function id
+///   WHEN `ail fmt --file <path> --json` runs
+///   THEN JSON includes formatted ACL with phase ordering and materialized defaults
+#[test]
+fn fmt_file_json_outputs_canonical_acl() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let acl = dir.child("change.acl");
+    acl.write_str(
+        "change x\nbase 0\nauthor Ana\nop verify\nop create_function id=Fn.CartTotal return=I64\nend\n",
+    )
+    .expect("write acl");
+
+    let output = ail()
+        .args(["fmt", "--file"])
+        .arg(acl.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    let formatted = v["data"]["formatted"]
+        .as_str()
+        .expect("formatted must be string");
+    assert!(
+        formatted.contains("op create_function id=fn.cart_total return=I64 visibility=private"),
+        "fmt must normalize id and materialize default visibility; got:\n{formatted}"
+    );
+    assert!(
+        formatted.find("op create_function").unwrap() < formatted.find("op verify").unwrap(),
+        "fmt must phase-order create before verify; got:\n{formatted}"
+    );
+    assert_eq!(v["data"]["changed"], true);
+}
+
+/// Spec scenario: ail fmt --write rewrites the file so --check passes.
+#[test]
+fn fmt_write_makes_check_pass() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let acl = dir.child("change.acl");
+    acl.write_str("change x\nbase 0\nauthor Ana\nop verify\nend\n")
+        .expect("write acl");
+
+    ail()
+        .args(["fmt", "--file"])
+        .arg(acl.path())
+        .arg("--check")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("fmt check failed"));
+
+    ail()
+        .args(["fmt", "--file"])
+        .arg(acl.path())
+        .arg("--write")
+        .assert()
+        .success();
+
+    ail()
+        .args(["fmt", "--file"])
+        .arg(acl.path())
+        .arg("--check")
+        .assert()
+        .success();
+}
+
+#[test]
+fn fmt_file_json_outputs_canonical_ail_source() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn add_pair(x:Int,y:Int)->Int=add(x,y)\n\
+fn main()->Int{\n\
+let base=add(20,20)\n\
+return if gt(base,40){add(base,2)} else {0}\n\
+}\n",
+        )
+        .expect("write source");
+
+    let output = ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["item_count"], 2);
+    let formatted = v["data"]["formatted"]
+        .as_str()
+        .expect("formatted must be string");
+    assert!(formatted.contains("fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n"));
+    assert!(formatted.contains("fn main() -> Int {\n"));
+    assert!(formatted.contains("  let base = add(20, 20)\n"));
+    assert!(formatted.contains("  return if gt(base, 40) { add(base, 2) } else { 0 }\n"));
+}
+
+#[test]
+fn fmt_ail_source_write_makes_check_pass() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn add_pair(x:Int,y:Int)->Int=add(x,y)\n")
+        .expect("write source");
+
+    ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--check")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("fmt check failed"));
+
+    ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--write")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("items: 1"));
+
+    ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--check")
+        .assert()
+        .success();
 }
 
 // ── ail link integration tests ─────────────────────────────────────────────

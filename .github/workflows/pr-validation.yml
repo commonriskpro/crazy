@@ -1,0 +1,25 @@
+name: PR Validation
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled, ready_for_review]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout validation scripts from base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Validate issue link, approval, type label, and commits
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/pr-validation.py

@@ -5,6 +5,33 @@
 This document describes the versioning contract, tagging procedure, signing policy, and
 lockstep versioning rationale for the AIL workspace.
 
+## Release Readiness Quick Path
+
+Use this path before creating a release branch or tag:
+
+```sh
+./scripts/docs-onboarding-smoke.sh
+./scripts/docs-troubleshooting-smoke.sh
+./scripts/docs-language-reference-smoke.sh
+./scripts/docs-compatibility-smoke.sh
+./scripts/docs-stdlib-reference-smoke.sh
+./scripts/docs-package-reference-smoke.sh
+./scripts/docs-performance-smoke.sh
+./scripts/docs-security-smoke.sh
+./scripts/docs-tooling-reference-smoke.sh
+./scripts/tag-release-gate-smoke.sh
+./scripts/release-metadata-gate-smoke.sh
+./scripts/release-preflight.sh --allow-unreleased
+```
+
+Then prepare `CHANGELOG.md`, confirm maturity claims against
+[Maturity model](maturity-model.md), and run the tagging procedure below.
+Release readiness also assumes the PR governance gate is present:
+`scripts/pr-validation.py` must continue enforcing approved linked issues, one
+`type:*` label, valid maturity gate evidence, compatibility classification
+evidence, PR verification evidence, conventional commit subjects, and no AI
+attribution trailers.
+
 ## Semver Contract
 
 All crates in this workspace follow [Semantic Versioning 2.0.0](https://semver.org/).
@@ -57,14 +84,29 @@ The script performs these steps:
 
 1. **Validates** that `VERSION` is set and matches `MAJOR.MINOR.PATCH`.
 2. **Checks** that the working tree is clean (no staged or unstaged changes).
-3. **Runs** `scripts/release-preflight.sh` to verify release metadata:
+3. **Runs** `scripts/docs-onboarding-smoke.sh` and
+   `scripts/docs-troubleshooting-smoke.sh`, and
+   `scripts/docs-language-reference-smoke.sh`, and
+   `scripts/docs-compatibility-smoke.sh`, and
+   `scripts/docs-stdlib-reference-smoke.sh`, and
+   `scripts/docs-package-reference-smoke.sh`, `scripts/docs-performance-smoke.sh`, and
+   `scripts/docs-security-smoke.sh`, and `scripts/docs-tooling-reference-smoke.sh`
+   to keep user-facing CLI, language, compatibility, stdlib, package,
+   performance, security, and tooling docs tied to implemented evidence.
+4. **Runs** `scripts/release-metadata-gate-smoke.sh` to prove release
+   metadata gate checks still fail for missing compatibility and maturity
+   evidence.
+5. **Runs** `scripts/pr-validation-smoke.sh` to prove PR governance checks
+   still reject missing approval, label, maturity, compatibility,
+   verification, and commit evidence before release publication.
+6. **Runs** `scripts/release-preflight.sh` to verify release metadata:
    `VERSION` must match `workspace.package.version`, workspace crates must use
    `version.workspace = true`, `CHANGELOG.md` must contain a release heading for
-   `VERSION`, and migration compatibility metadata must match the implemented
-   storage migration target.
-4. **Runs** `cargo test --workspace` — all tests must pass.
-5. **Runs** `cargo deny check` — no license violations, no known advisories.
-6. **Creates** an annotated tag `v$VERSION` with a standard message.
+   `VERSION`, maturity-claim policy docs must be present, and migration
+   compatibility metadata must match the implemented storage migration target.
+7. **Runs** `cargo test --workspace` — all tests must pass.
+8. **Runs** `cargo deny check` — no license violations, no known advisories.
+9. **Creates** an annotated tag `v$VERSION` with a standard message.
 
 After the script exits cleanly, push the tag:
 
@@ -112,6 +154,33 @@ Before running that command, update both release gates for pre-release semver:
 - The changelog must use the matching heading, for example
   `## [0.2.0-rc.1] - YYYY-MM-DD`.
 
+## Maturity Claims
+
+Release notes must declare exactly one maturity stage using one exact `Maturity:`
+line and must not imply production readiness, Rust-comparable maturity, or
+general-purpose language completeness unless the claim is backed by the gates in
+[Maturity model](maturity-model.md). The preflight verifies the line is present
+and valid; maintainers still review whether the evidence is strong enough for
+that stage.
+
+Before publishing a release, maintainers must classify the release using the
+maturity ladder in `docs/maturity-model.md`:
+
+| Claim level | Required release evidence |
+|-------------|---------------------------|
+| Validation milestone | End-to-end tests or fixtures prove the advertised slice, and limitations are visible in release notes. |
+| Usable preview | A documented user workflow works from a clean checkout, with known limitations called out. |
+| Real language experience | Project lifecycle, tooling, docs, stdlib, and package basics work together with integration evidence. |
+| Production-ready | Compatibility, security, operational hardening, performance, migration, and ecosystem evidence exist for the documented scope. |
+
+If evidence is incomplete, the release must use the lower claim level. Be strict
+here: maturity language is a promise to users, not motivation for contributors.
+Declare the stage in the active changelog section:
+
+```md
+Maturity: Validation milestone
+```
+
 ## Changelog Maintenance
 
 Update `CHANGELOG.md` with every PR that adds a user-visible change. Use the
@@ -126,7 +195,10 @@ VERSION=$(awk '/^\[workspace\.package\]$/ { p = 1; next } /^\[/ { p = 0 } p && /
 ```
 
 `--allow-unreleased` keeps metadata checks active while allowing the changelog to
-remain under `[Unreleased]` until the actual release branch is prepared.
+remain under `[Unreleased]` until the actual release branch is prepared. When
+`VERSION` is omitted with `--allow-unreleased`, preflight validates the active
+`[Unreleased]` section even if a historical heading exists for the current
+workspace version.
 
 ## Release Preflight Metadata
 
@@ -136,6 +208,32 @@ or push anything.
 
 The preflight checks:
 
+- `docs/maturity-model.md` exists and `docs/release-policy.md` documents the
+  maturity claim gate so release-readiness discipline cannot silently disappear.
+- `docs/getting-started.md`, `docs/troubleshooting.md`,
+  `docs/language-reference.md`, `docs/compatibility.md`,
+  `docs/stdlib-reference.md`, `scripts/docs-onboarding-smoke.sh`,
+  `scripts/docs-troubleshooting-smoke.sh`,
+  `scripts/docs-language-reference-smoke.sh`,
+  `scripts/docs-compatibility-smoke.sh`, and
+  `scripts/docs-stdlib-reference-smoke.sh`, and
+  `scripts/docs-package-reference-smoke.sh`,
+  `scripts/docs-performance-smoke.sh`, `scripts/docs-security-smoke.sh`, and
+  `scripts/docs-tooling-reference-smoke.sh` exist so validation-stage onboarding,
+  CLI repair guidance, language-surface docs, tooling reference, compatibility
+  policy, stdlib reference, package reference, performance validation, and
+  security/runtime hardening stay tied to evidence
+  instead of drifting into aspirational docs.
+- Contribution governance files exist and stay wired: `CONTRIBUTING.md`, the PR
+  template, `.github/workflows/pr-validation.yml`, `scripts/pr-validation.py`,
+  `scripts/pr-validation-smoke.sh`, `scripts/tag-release.sh`, and
+  `scripts/tag-release-gate-smoke.sh`. These protect the approved-issue,
+  one-`type:*`-label, maturity-gate/evidence, compatibility classification,
+  verification-evidence, conventional-commit, and no-AI-attribution requirements from silently
+  becoming checklist-only again or disappearing from the actual tag path. The
+  smoke also guards drift between the PR template's type labels and
+  `scripts/pr-validation.py`, plus drift between maturity gates in
+  `docs/maturity-model.md` and PR validation.
 - `VERSION` matches `workspace.package.version`; with `--allow-unreleased`, an
   omitted `VERSION` defaults to the workspace version for local/CI validation.
   The preflight currently accepts stable `MAJOR.MINOR.PATCH` versions only; RC
@@ -143,6 +241,9 @@ The preflight checks:
 - All releasable crates under `crates/*` use `version.workspace = true`.
 - `CHANGELOG.md` has either `## [VERSION] - YYYY-MM-DD` or, only with
   `--allow-unreleased`, an active `## [Unreleased]` section.
+- The active changelog section declares exactly one release maturity stage:
+  `Maturity: Validation milestone`, `Maturity: Usable preview`,
+  `Maturity: Real language experience`, or `Maturity: Production-ready`.
 - `docs/migration-guide.md` has release metadata in this form:
 
   ```md
@@ -171,6 +272,13 @@ For machine-readable preflight output, run:
 
 ```sh
 ./scripts/release-preflight.sh --allow-unreleased --json
+```
+
+To smoke-test the release metadata gates themselves, including the exact
+`[compatibility-breaking]` marker and maturity-claim policy checks, run:
+
+```sh
+./scripts/release-metadata-gate-smoke.sh
 ```
 
 Use `[compatibility-breaking]` only for release notes that require downstream

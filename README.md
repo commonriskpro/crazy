@@ -7,19 +7,21 @@ Current release: [`v0.1.0`](https://github.com/commonriskpro/crazy/releases/tag/
 ## Quick Path
 
 1. Read the [mental model](docs/codebase/mental-model.md) to understand what AIL is and is not.
-2. Build and test the workspace:
+2. Try the validation-stage [getting started tutorial](docs/getting-started.md).
+3. Build and test the workspace:
 
    ```sh
    cargo build --workspace
    cargo test --workspace
    ```
 
-3. Inspect the CLI surface:
+4. Inspect the CLI surface:
 
    ```sh
    cargo run -p ail-cli -- --help
    cargo run -p ail-cli -- init
    cargo run -p ail-cli -- status
+   cargo run -p ail-cli -- fmt --file crates/ail-cli/tests/fixtures/sample.acl --check
    ```
 
    Narrow v0.2 hello-world output is available after creating a function and
@@ -30,8 +32,8 @@ Current release: [`v0.1.0`](https://github.com/commonriskpro/crazy/releases/tag/
    cargo run -p ail-cli -- run --grant log.write fn.print_hello
    ```
 
-4. Use the [codebase guide](docs/CODEBASE-GUIDE.md) as the documentation entry point.
-5. Check the [public roadmap](docs/roadmap.md), [implementation blueprint](docs/implementation-blueprint.md), [risks](docs/risks.md), and [changelog](CHANGELOG.md) before relying on any subsystem.
+5. Use the [codebase guide](docs/CODEBASE-GUIDE.md) as the documentation entry point.
+6. Check the [public roadmap](docs/roadmap.md), [implementation blueprint](docs/implementation-blueprint.md), [risks](docs/risks.md), and [changelog](CHANGELOG.md) before relying on any subsystem.
 
 Requires Rust 1.95.0, pinned by `rust-toolchain.toml`.
 
@@ -60,6 +62,20 @@ cargo test --workspace
 # Public CLI dogfood conformance
 ./scripts/dogfood-conformance.sh
 
+# PR governance and release gate smokes, including maturity-claim policy checks
+./scripts/docs-onboarding-smoke.sh
+./scripts/docs-troubleshooting-smoke.sh
+./scripts/docs-language-reference-smoke.sh
+./scripts/docs-compatibility-smoke.sh
+./scripts/docs-stdlib-reference-smoke.sh
+./scripts/docs-package-reference-smoke.sh
+./scripts/docs-performance-smoke.sh
+./scripts/docs-security-smoke.sh
+./scripts/docs-tooling-reference-smoke.sh
+./scripts/pr-validation-smoke.sh
+./scripts/tag-release-gate-smoke.sh
+./scripts/release-metadata-gate-smoke.sh
+
 # Release metadata preflight for local/CI validation
 ./scripts/release-preflight.sh --allow-unreleased
 ```
@@ -71,11 +87,11 @@ Release process details live in [release policy](docs/release-policy.md). Publis
 - Not production-ready: implemented milestones prove architecture slices, not operational safety for production programs.
 - Language coverage is incomplete: the docs describe a broader target design than the executable surface currently supports.
 - Verification is not final: production/critical profile rigor, translation validation, and policy UX still need hardening.
-- Runtime and ABI are still maturing: rich typed WASM ABI, hardened isolation, full async/channel runtime, and external secret providers remain gaps.
+- Runtime and ABI are still maturing: rich typed WASM ABI, hardened isolation, full async/channel runtime, external secret providers, and production security operations remain gaps.
 - Ecosystem infrastructure is early: no deployed package registry federation, Sigstore/keyless signing integration, or production Context Server deployment.
 - Performance evidence is limited: deterministic compiler regression evidence exists, but large-project benchmark coverage and thresholds are still roadmap work.
 
-See the [public roadmap](docs/roadmap.md) for release-facing milestones and the [implementation blueprint](docs/implementation-blueprint.md) for technical validation status.
+See the [public roadmap](docs/roadmap.md) for release-facing milestones, the [maturity model](docs/maturity-model.md) for production-grade gates, and the [implementation blueprint](docs/implementation-blueprint.md) for technical validation status.
 
 ## Documentation Map
 
@@ -84,17 +100,23 @@ Start with [docs/CODEBASE-GUIDE.md](docs/CODEBASE-GUIDE.md). It gives the readin
 | Need | Start here |
 |---|---|
 | What AIL is and is not | [Mental model](docs/codebase/mental-model.md) |
+| First CLI walkthrough | [Getting started](docs/getting-started.md), [Troubleshooting](docs/troubleshooting.md), [Tooling reference](docs/tooling-reference.md) |
 | Repository layout | [Repository map](docs/codebase/repository-map.md) |
 | Architecture | [Architecture](docs/architecture.md) |
 | Semantic Graph and Core IR | [Core IR](docs/core-ir.md) |
-| AI Change Language | [Change language](docs/change-language.md) |
+| Language surface and AI Change Language | [Language reference](docs/language-reference.md), [Change language](docs/change-language.md) |
 | Verification | [Verification](docs/verification.md) |
-| Runtime/capabilities | [Runtime](docs/runtime.md) |
+| Runtime/capabilities | [Runtime](docs/runtime.md), [Security and runtime hardening](docs/security.md) |
 | Storage/versioning | [Storage](docs/storage.md) |
 | Context Server | [Context Server](docs/context-server.md) |
-| Packages/trust | [Packages](docs/packages.md) |
+| Packages/trust | [Package reference](docs/package-reference.md), [Package/trust model](docs/packages.md) |
 | Compiler | [Compiler](docs/compiler.md) |
-| Roadmap/status | [Public roadmap](docs/roadmap.md), [Implementation blueprint](docs/implementation-blueprint.md) |
+| Roadmap/status | [Public roadmap](docs/roadmap.md), [Maturity model](docs/maturity-model.md), [Implementation blueprint](docs/implementation-blueprint.md) |
+| Security and runtime hardening | [Security and runtime hardening](docs/security.md) |
+| Tooling UX | [Tooling reference](docs/tooling-reference.md), [Tooling design](docs/tooling.md) |
+| Performance validation | [Performance validation](docs/performance.md) |
+| Contributing | [Contributing guide](CONTRIBUTING.md), [Maintainer playbook](docs/codebase/maintainer-playbook.md) |
+| Compatibility and releases | [Compatibility policy](docs/compatibility.md), [Release policy](docs/release-policy.md), [Migration guide](docs/migration-guide.md) |
 | Risks and decisions | [Risks](docs/risks.md), [Decision log](docs/decision-log.md), [Decisions register](docs/open-questions.md) |
 
 `docs/history/ai-native-language-draft.md` is historical context, not the source of truth.

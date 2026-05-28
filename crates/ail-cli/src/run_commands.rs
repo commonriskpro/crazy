@@ -31,11 +31,13 @@ use crate::cli::load_current_graph_for_cli;
 use crate::compile_commands::accepted_compile_report;
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
+use crate::source_commands::load_source_graph;
 use crate::store::StoreHandle;
+use std::path::Path;
 
 // ── Private helpers ───────────────────────────────────────────────────────
 
-fn parse_runtime_args(args: &[String]) -> Result<Vec<RuntimeArg>, CliError> {
+pub(crate) fn parse_runtime_args(args: &[String]) -> Result<Vec<RuntimeArg>, CliError> {
     args.iter()
         .map(|arg| {
             if let Some(rest) = arg.strip_prefix("i32:") {
@@ -68,7 +70,7 @@ fn parse_runtime_args(args: &[String]) -> Result<Vec<RuntimeArg>, CliError> {
 ///
 /// Returns an empty `Vec` only when neither graph declarations nor target ANF
 /// effects require external capabilities.
-fn derive_runtime_capability_ids(
+pub(crate) fn derive_runtime_capability_ids(
     graph: &SemanticGraph,
     anf: &AnfIr,
     target: &str,
@@ -313,7 +315,7 @@ fn text_result_from_structured_value(
         .map_err(|e| CliError::Domain(format!("typed Text return is not valid UTF-8: {e}")))
 }
 
-fn invoke_export_for_cli(
+pub(crate) fn invoke_export_for_cli(
     instance: &mut ail_runtime::RuntimeInstance,
     export_name: &str,
     runtime_args: &[RuntimeArg],
@@ -361,6 +363,7 @@ pub(crate) async fn cmd_run(
     mode: OutputMode,
     profile: &str,
     target: &str,
+    source_file: Option<&Path>,
     module: Option<&str>,
     raw_args: &[String],
     grants: &[String],
@@ -375,7 +378,12 @@ pub(crate) async fn cmd_run(
         ));
     }
 
-    let module_name = module.unwrap_or("(default)");
+    let source_graph = source_file.map(load_source_graph).transpose()?;
+    let module_name = module.unwrap_or(if source_graph.is_some() {
+        "fn.main"
+    } else {
+        "(default)"
+    });
 
     // Built-in targets have no associated semantic graph, so their runtime
     // capability requirements are empty by definition.  Project graph targets
@@ -387,7 +395,11 @@ pub(crate) async fn cmd_run(
             .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?;
         (artifact, vec![])
     } else {
-        let graph = load_current_graph_for_cli(store).await?;
+        let graph = if let Some(graph) = source_graph.as_ref() {
+            graph.clone()
+        } else {
+            load_current_graph_for_cli(store).await?
+        };
         // Use an accepted (empty/Proven) report for the e2e pipeline.
         // A full verify pass would reject the graph because the type checker
         // flags newly-materialised nodes as Unverified — expected at this stage.
@@ -523,8 +535,11 @@ pub(crate) async fn cmd_run(
                 format!("output:\n{output_text}\n")
             };
 
+            let source_prefix = source_file
+                .map(|path| format!("source: {}\n", path.display()))
+                .unwrap_or_default();
             let human_msg = format!(
-                "{output_prefix}PreflightPassed\n{result_display}\nprofile: {profile}\nmodule: {module_name}\naudit_events: {audit_len}\ncapability_calls: {total_capability_calls}\nruntime_checks: all ok"
+                "{source_prefix}{output_prefix}PreflightPassed\n{result_display}\nprofile: {profile}\nmodule: {module_name}\naudit_events: {audit_len}\ncapability_calls: {total_capability_calls}\nruntime_checks: all ok"
             );
             print_response(
                 mode,
@@ -533,6 +548,7 @@ pub(crate) async fn cmd_run(
                     "outcome": "PreflightPassed",
                     "profile": profile,
                     "module": module_name,
+                    "source_file": source_file.map(|path| path.display().to_string()),
                     "invoke_result": result_display,
                     "invoke_value": invoke_value,
                     "output": output_lines,

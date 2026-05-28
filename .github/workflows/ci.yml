@@ -41,11 +41,63 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-target-
 
+      - name: Check process scripts syntax
+        run: |
+          bash -n \
+            scripts/release-preflight.sh \
+            scripts/release-metadata-gate-smoke.sh \
+            scripts/release-preflight-marker-smoke.sh \
+            scripts/docs-onboarding-smoke.sh \
+            scripts/docs-troubleshooting-smoke.sh \
+            scripts/docs-language-reference-smoke.sh \
+            scripts/docs-compatibility-smoke.sh \
+            scripts/docs-stdlib-reference-smoke.sh \
+            scripts/docs-package-reference-smoke.sh \
+            scripts/docs-performance-smoke.sh \
+            scripts/docs-security-smoke.sh \
+            scripts/docs-tooling-reference-smoke.sh \
+            scripts/pr-validation-smoke.sh \
+            scripts/tag-release-gate-smoke.sh \
+            scripts/tag-release.sh
+          python3 -m py_compile scripts/pr-validation.py
+
       - name: Check formatting
         run: cargo fmt --check
 
+      - name: Check PR metadata validation
+        run: ./scripts/pr-validation-smoke.sh
+
+      - name: Check onboarding docs
+        run: ./scripts/docs-onboarding-smoke.sh
+
+      - name: Check troubleshooting docs
+        run: ./scripts/docs-troubleshooting-smoke.sh
+
+      - name: Check language reference docs
+        run: ./scripts/docs-language-reference-smoke.sh
+
+      - name: Check compatibility docs
+        run: ./scripts/docs-compatibility-smoke.sh
+
+      - name: Check stdlib reference docs
+        run: ./scripts/docs-stdlib-reference-smoke.sh
+
+      - name: Check package reference docs
+        run: ./scripts/docs-package-reference-smoke.sh
+
+      - name: Check performance docs
+        run: ./scripts/docs-performance-smoke.sh
+
+      - name: Check security docs
+        run: ./scripts/docs-security-smoke.sh
+
+      - name: Check tooling reference docs
+        run: ./scripts/docs-tooling-reference-smoke.sh
+
       - name: Check release metadata
         run: |
+          ./scripts/tag-release-gate-smoke.sh
+          ./scripts/release-metadata-gate-smoke.sh
           VERSION="$(awk '/^\[workspace\.package\]$/ { p = 1; next } /^\[/ { p = 0 } p && /^version/ { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)"
           export VERSION
           ./scripts/release-preflight.sh --allow-unreleased
