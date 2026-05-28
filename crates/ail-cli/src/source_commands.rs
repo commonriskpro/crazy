@@ -160,13 +160,15 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
         ));
     }
 
-    Ok(SourceProgram {
+    let program = SourceProgram {
         imports,
         capabilities,
         functions,
         tests,
         grants,
-    })
+    };
+    validate_source_program_symbols(&program)?;
+    Ok(program)
 }
 
 pub(crate) fn load_source_program(path: &Path) -> Result<SourceProgram, CliError> {
@@ -236,6 +238,7 @@ fn load_source_program_from_text_inner(
         combined.extend(imported);
     }
     combined.extend(program);
+    validate_source_program_symbols(&combined)?;
     visiting.remove(&canonical_path);
     Ok(combined)
 }
@@ -260,6 +263,40 @@ impl SourceProgram {
         self.tests.extend(other.tests);
         self.grants.extend(other.grants);
     }
+}
+
+fn validate_source_program_symbols(program: &SourceProgram) -> Result<(), CliError> {
+    if let Some(name) = duplicate_name(program.capabilities.iter().map(String::as_str)) {
+        return Err(CliError::ParseError(format!(
+            "duplicate capability declaration `{name}`"
+        )));
+    }
+    if let Some(name) = duplicate_name(
+        program
+            .functions
+            .iter()
+            .map(|function| function.name.as_str()),
+    ) {
+        return Err(CliError::ParseError(format!(
+            "duplicate function declaration `{name}`"
+        )));
+    }
+    if let Some(name) = duplicate_name(program.tests.iter().map(|test| test.name.as_str())) {
+        return Err(CliError::ParseError(format!(
+            "duplicate test declaration `{name}`"
+        )));
+    }
+    Ok(())
+}
+
+fn duplicate_name<'a>(names: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut seen = BTreeSet::new();
+    for name in names {
+        if !seen.insert(name) {
+            return Some(name.to_string());
+        }
+    }
+    None
 }
 
 fn source_program_to_graph(
@@ -998,6 +1035,22 @@ test main_addition = eq(add(20, 22), 42);
 
         assert!(acl.contains("op create_function id=fn.main return=Int body=add(20, 22)"));
         assert!(acl.contains("op create_test id=test.add return=Bool body=eq(add(20, 22), 42)"));
+    }
+
+    #[test]
+    fn rejects_duplicate_source_function_declarations() {
+        let err = parse_ail_source(
+            r#"
+fn main() -> Int = 1
+fn main() -> Int = 2
+"#,
+        )
+        .expect_err("duplicate source functions must be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("duplicate function declaration `fn.main`")
+        );
     }
 
     #[test]

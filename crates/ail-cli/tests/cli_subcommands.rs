@@ -483,6 +483,40 @@ fn lsp_diagnose_reports_ail_source_cyclic_imports() {
 }
 
 #[test]
+fn lsp_diagnose_reports_ail_source_duplicate_imported_functions() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let dep = dir.child("dep.ail");
+    dep.write_str("fn helper() -> Int = 1\n")
+        .expect("dep fixture must be written");
+    let main = dir.child("main.ail");
+    main.write_str("use \"./dep.ail\"\nfn helper() -> Int = 2\n")
+        .expect("main fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(main.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("duplicate function declaration `fn.helper`")
+    );
+}
+
+#[test]
 fn lsp_stdio_publish_diagnostics_reports_ail_source_missing_imports() {
     use assert_fs::prelude::*;
 
