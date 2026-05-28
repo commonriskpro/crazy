@@ -586,6 +586,90 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "if ${1:condition} { ${2:then_expr} } else { ${3:else_expr} }",
     },
     AclSymbol {
+        label: "+",
+        detail: "AIL source Int infix operator",
+        documentation: "Adds two Int expressions; equivalent to add(left, right).",
+        insert_text: "${1:left} + ${2:right}",
+    },
+    AclSymbol {
+        label: "-",
+        detail: "AIL source Int operator",
+        documentation: "Subtracts two Int expressions, or negates one expression when used as unary minus.",
+        insert_text: "${1:left} - ${2:right}",
+    },
+    AclSymbol {
+        label: "*",
+        detail: "AIL source Int infix operator",
+        documentation: "Multiplies two Int expressions; equivalent to mul(left, right).",
+        insert_text: "${1:left} * ${2:right}",
+    },
+    AclSymbol {
+        label: "/",
+        detail: "AIL source Int infix operator",
+        documentation: "Divides two Int expressions; equivalent to div(left, right).",
+        insert_text: "${1:left} / ${2:right}",
+    },
+    AclSymbol {
+        label: "%",
+        detail: "AIL source Int infix operator",
+        documentation: "Computes the Int remainder; equivalent to mod(left, right).",
+        insert_text: "${1:left} % ${2:right}",
+    },
+    AclSymbol {
+        label: "==",
+        detail: "AIL source equality operator",
+        documentation: "Compares two expressions of the same inferred type; equivalent to eq(left, right).",
+        insert_text: "${1:left} == ${2:right}",
+    },
+    AclSymbol {
+        label: "!=",
+        detail: "AIL source inequality operator",
+        documentation: "Compares two expressions of the same inferred type; equivalent to ne(left, right).",
+        insert_text: "${1:left} != ${2:right}",
+    },
+    AclSymbol {
+        label: ">",
+        detail: "AIL source Int comparison operator",
+        documentation: "Checks whether the left Int is greater than the right Int; equivalent to gt(left, right).",
+        insert_text: "${1:left} > ${2:right}",
+    },
+    AclSymbol {
+        label: ">=",
+        detail: "AIL source Int comparison operator",
+        documentation: "Checks whether the left Int is greater than or equal to the right Int; equivalent to ge(left, right).",
+        insert_text: "${1:left} >= ${2:right}",
+    },
+    AclSymbol {
+        label: "<",
+        detail: "AIL source Int comparison operator",
+        documentation: "Checks whether the left Int is less than the right Int; equivalent to lt(left, right).",
+        insert_text: "${1:left} < ${2:right}",
+    },
+    AclSymbol {
+        label: "<=",
+        detail: "AIL source Int comparison operator",
+        documentation: "Checks whether the left Int is less than or equal to the right Int; equivalent to le(left, right).",
+        insert_text: "${1:left} <= ${2:right}",
+    },
+    AclSymbol {
+        label: "&&",
+        detail: "AIL source Bool infix operator",
+        documentation: "Combines two Bool expressions with logical and; equivalent to and(left, right).",
+        insert_text: "${1:left} && ${2:right}",
+    },
+    AclSymbol {
+        label: "||",
+        detail: "AIL source Bool infix operator",
+        documentation: "Combines two Bool expressions with logical or; equivalent to or(left, right).",
+        insert_text: "${1:left} || ${2:right}",
+    },
+    AclSymbol {
+        label: "!",
+        detail: "AIL source Bool unary operator",
+        documentation: "Negates a Bool expression; equivalent to not(expr).",
+        insert_text: "!${1:expr}",
+    },
+    AclSymbol {
         label: "add",
         detail: "AIL source Int builtin",
         documentation: "Adds two Int values and returns an Int.",
@@ -696,6 +780,9 @@ fn token_at_position(text: &str, line: usize, character: usize) -> Option<String
         .get(character)
         .map(|(idx, _)| *idx)
         .unwrap_or(line_text.len());
+    if let Some(operator) = source_operator_token_at_position(line_text, byte_pos) {
+        return Some(operator.to_string());
+    }
     let start = line_text[..byte_pos]
         .char_indices()
         .rev()
@@ -708,6 +795,19 @@ fn token_at_position(text: &str, line: usize, character: usize) -> Option<String
         .map(|(idx, _)| byte_pos + idx)
         .unwrap_or(line_text.len());
     (start < end).then(|| line_text[start..end].to_string())
+}
+
+fn source_operator_token_at_position(line: &str, byte_pos: usize) -> Option<&'static str> {
+    const OPERATORS: &[&str] = &[
+        "&&", "||", "==", "!=", ">=", "<=", "+", "-", "*", "/", "%", "!", ">", "<",
+    ];
+
+    OPERATORS.iter().copied().find(|operator| {
+        line.match_indices(operator).any(|(start, _)| {
+            let end = start + operator.len();
+            byte_pos >= start && byte_pos <= end
+        })
+    })
 }
 
 fn definition_for_token(uri: &str, text: &str, token: &str) -> Value {

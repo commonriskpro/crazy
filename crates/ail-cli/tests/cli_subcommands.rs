@@ -2786,6 +2786,95 @@ fn lsp_completion_and_hover_cover_ail_source_authoring() {
 }
 
 #[test]
+fn lsp_completion_and_hover_cover_ail_source_operators() {
+    let completion_output = ail()
+        .args(["lsp", "--complete", "+", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let completion = parse_json_output(&completion_output);
+    assert_eq!(completion["status"], "ok");
+    let items = completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        items.iter().any(|item| item["label"] == "+"
+            && item["insertText"]
+                .as_str()
+                .expect("insertText")
+                .contains("${1:left} + ${2:right}")),
+        "completion must include AIL source + operator snippet; got: {items:?}"
+    );
+
+    let hover_output = ail()
+        .args(["lsp", "--hover-token", "&&", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let hover = parse_json_output(&hover_output);
+    assert_eq!(hover["status"], "ok");
+    assert!(
+        hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("logical and"),
+        "hover must explain AIL source && operator; got: {hover}"
+    );
+}
+
+#[test]
+fn lsp_stdio_hover_reports_source_operator_metadata() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int = 1+2\n")
+        .expect("source fixture must be written so file URI can resolve");
+    let uri = format!("file://{}", source.path().display());
+    let open = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "ail",
+                "version": 1,
+                "text": "fn main() -> Int = 1+2\n",
+            }
+        }
+    })
+    .to_string();
+    let hover = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": format!("file://{}", source.path().display()) },
+            "position": { "line": 0, "character": 20 }
+        }
+    })
+    .to_string();
+    let input = format!(
+        "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+        open.len(),
+        open,
+        hover.len(),
+        hover
+    );
+
+    ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("textDocument/publishDiagnostics"))
+        .stdout(predicate::str::contains("Adds two Int expressions"));
+}
+
+#[test]
 fn lsp_completion_and_hover_cover_ail_source_builtins() {
     let completion_output = ail()
         .args(["lsp", "--complete", "effect", "--json"])
