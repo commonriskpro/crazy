@@ -1417,6 +1417,11 @@ fn parse_source_import(rest: &str, line_num: usize) -> Result<String, CliError> 
             "line {line_num}: import path `{import}` must use `/` separators"
         )));
     }
+    if import.contains(':') {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: import path `{import}` must not contain `:`"
+        )));
+    }
     if Path::new(import)
         .components()
         .any(|component| matches!(component, Component::ParentDir))
