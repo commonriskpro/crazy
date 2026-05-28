@@ -241,6 +241,7 @@ fn load_source_program_from_text_inner(
     validate_source_program_symbols(&combined)?;
     validate_source_program_grants(&combined)?;
     validate_source_program_calls(&combined)?;
+    validate_source_program_types(&combined)?;
     visiting.remove(&canonical_path);
     Ok(combined)
 }
@@ -465,6 +466,156 @@ fn is_source_literal(expr: &str) -> bool {
         || expr.starts_with('"')
         || expr.parse::<i64>().is_ok()
         || expr.parse::<f64>().is_ok()
+}
+
+fn validate_source_program_types(program: &SourceProgram) -> Result<(), CliError> {
+    let functions = program
+        .functions
+        .iter()
+        .map(|function| (function.name.as_str(), function))
+        .collect::<BTreeMap<_, _>>();
+
+    for function in &program.functions {
+        let mut scope = function
+            .params
+            .iter()
+            .map(|param| (param.name.clone(), param.ty.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let inferred = infer_source_expr_type(&function.body, &mut scope, &functions)?;
+        validate_source_type_match(&function.return_type, &inferred, &function.name)?;
+    }
+    for test in &program.tests {
+        let mut scope = BTreeMap::new();
+        let inferred = infer_source_expr_type(&test.body, &mut scope, &functions)?;
+        validate_source_type_match(&test.return_type, &inferred, &test.name)?;
+    }
+    Ok(())
+}
+
+fn infer_source_expr_type(
+    expr: &str,
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, &SourceFunction>,
+) -> Result<String, CliError> {
+    let expr = expr.trim();
+    if expr == "true" || expr == "false" {
+        return Ok("Bool".to_string());
+    }
+    if expr.starts_with('"') {
+        return Ok("Text".to_string());
+    }
+    if expr.parse::<i64>().is_ok() {
+        return Ok("Int".to_string());
+    }
+    if let Some(ty) = scope.get(expr) {
+        return Ok(ty.clone());
+    }
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok("Unknown".to_string());
+    };
+    infer_source_call_type(&func, &args, scope, functions)
+}
+
+fn infer_source_call_type(
+    func: &str,
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, &SourceFunction>,
+) -> Result<String, CliError> {
+    match func {
+        "let" if args.len() == 3 && is_source_ident(&args[0]) => {
+            let value_ty = infer_source_expr_type(&args[1], scope, functions)?;
+            let mut inner_scope = scope.clone();
+            inner_scope.insert(args[0].clone(), value_ty);
+            infer_source_expr_type(&args[2], &mut inner_scope, functions)
+        }
+        "if" if args.len() == 3 => {
+            let cond_ty = infer_source_expr_type(&args[0], scope, functions)?;
+            validate_source_type_match("Bool", &cond_ty, "if condition")?;
+            let then_ty = infer_source_expr_type(&args[1], scope, functions)?;
+            let else_ty = infer_source_expr_type(&args[2], scope, functions)?;
+            validate_source_type_match(&then_ty, &else_ty, "if branches")?;
+            Ok(then_ty)
+        }
+        "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" => {
+            validate_source_arg_types(func, args, scope, functions, &["Int", "Int"])?;
+            Ok("Int".to_string())
+        }
+        "gt" | "ge" | "lt" | "le" => {
+            validate_source_arg_types(func, args, scope, functions, &["Int", "Int"])?;
+            Ok("Bool".to_string())
+        }
+        "and" | "or" => {
+            validate_source_arg_types(func, args, scope, functions, &["Bool", "Bool"])?;
+            Ok("Bool".to_string())
+        }
+        "not" => {
+            validate_source_arg_types(func, args, scope, functions, &["Bool"])?;
+            Ok("Bool".to_string())
+        }
+        "eq" | "ne" => {
+            let left = infer_source_expr_type(&args[0], scope, functions)?;
+            let right = infer_source_expr_type(&args[1], scope, functions)?;
+            validate_source_type_match(&left, &right, func)?;
+            Ok("Bool".to_string())
+        }
+        "len" => {
+            validate_source_arg_types(func, args, scope, functions, &["Text"])?;
+            Ok("Int".to_string())
+        }
+        "concat" => {
+            validate_source_arg_types(func, args, scope, functions, &["Text", "Text"])?;
+            Ok("Text".to_string())
+        }
+        "print" => {
+            validate_source_arg_types(func, args, scope, functions, &["Text"])?;
+            Ok("Int".to_string())
+        }
+        _ => {
+            let normalized = if func.starts_with("fn.") {
+                func.to_string()
+            } else {
+                format!("fn.{func}")
+            };
+            if let Some(function) = functions.get(normalized.as_str()) {
+                let expected = function
+                    .params
+                    .iter()
+                    .map(|param| param.ty.as_str())
+                    .collect::<Vec<_>>();
+                validate_source_arg_types(func, args, scope, functions, &expected)?;
+                return Ok(function.return_type.clone());
+            }
+            Ok("Unknown".to_string())
+        }
+    }
+}
+
+fn validate_source_arg_types(
+    call: &str,
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, &SourceFunction>,
+    expected: &[&str],
+) -> Result<(), CliError> {
+    for (idx, expected_ty) in expected.iter().enumerate() {
+        let actual = infer_source_expr_type(&args[idx], scope, functions)?;
+        validate_source_type_match(
+            expected_ty,
+            &actual,
+            &format!("{call} argument {}", idx + 1),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_source_type_match(expected: &str, actual: &str, context: &str) -> Result<(), CliError> {
+    if expected == actual || expected == "Unknown" || actual == "Unknown" {
+        return Ok(());
+    }
+    Err(CliError::ParseError(format!(
+        "type mismatch in {context}: expected {expected}, got {actual}"
+    )))
 }
 
 fn source_program_to_graph(
