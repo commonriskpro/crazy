@@ -18,6 +18,7 @@
 // | link     --profile [--output]    link native object → executable           |
 // | run      --profile [--file .ail] [module] preflight + runtime report      |
 // | test     [--file .ail] [filter]  Discover and run graph/source tests      |
+// | check    --file .ail        Validate source program without executing     |
 // | new      <path>              Create project scaffold with starter .ail/ACL |
 // | lsp      --stdio|--diagnose  Editor diagnostics through LSP-shaped IO     |
 // | init                     | Create .ail/ dirs, genesis snapshot, baseline state   |
@@ -80,6 +81,7 @@ use crate::package_commands::cmd_package;
 use crate::policy_commands::cmd_policy;
 use crate::remote_commands::cmd_remote;
 use crate::run_commands::cmd_run;
+use crate::source_commands::cmd_check_source;
 use crate::store::build_store;
 use crate::test_commands::cmd_test;
 use crate::workflow_commands::{cmd_apply, cmd_verify};
@@ -249,6 +251,13 @@ enum Commands {
         /// Grant a capability to this test invocation. Repeat for multiple grants.
         #[arg(long = "grant")]
         grants: Vec<String>,
+    },
+
+    /// Validate a `.ail` source program without compiling or executing it.
+    Check {
+        /// Source file to validate, including relative imports.
+        #[arg(long, short)]
+        file: PathBuf,
     },
 
     /// Link a compiled native object file into an executable.
@@ -763,6 +772,7 @@ pub async fn run() -> Result<(), CliError> {
             )
             .await
         }
+        Commands::Check { file } => cmd_check_source(mode, &file),
         Commands::Link {
             profile,
             output,

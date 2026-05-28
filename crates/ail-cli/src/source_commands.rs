@@ -14,9 +14,11 @@ use ail_change::canonical::canonicalize_parsed;
 use ail_change::model::{ChangeSetOutcome, SnapshotId};
 use ail_change::parser::parse_changeset;
 use ail_core::semantic_graph::SemanticGraph;
+use serde_json::json;
 
 use crate::cli_helpers::SimpleSnapshotBridge;
 use crate::error::CliError;
+use crate::output::{OutputMode, print_response};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SourceProgram {
@@ -58,6 +60,36 @@ struct SourceGrant {
 pub(crate) fn load_source_graph(path: &Path) -> Result<SemanticGraph, CliError> {
     let program = load_source_program(path)?;
     source_program_to_graph(&program, source_change_name(path))
+}
+
+pub(crate) fn cmd_check_source(mode: OutputMode, path: &Path) -> Result<(), CliError> {
+    let program = load_source_program(path)?;
+    let item_count = program.imports.len()
+        + program.capabilities.len()
+        + program.functions.len()
+        + program.tests.len()
+        + program.grants.len();
+    let human_msg = format!(
+        "AIL check: ok\nfile: {}\nitems: {item_count}\nfunctions: {}\ntests: {}",
+        path.display(),
+        program.functions.len(),
+        program.tests.len()
+    );
+    print_response(
+        mode,
+        &human_msg,
+        json!({
+            "language": "ail-source",
+            "file": path.display().to_string(),
+            "item_count": item_count,
+            "imports": program.imports.len(),
+            "capabilities": program.capabilities.len(),
+            "functions": program.functions.len(),
+            "tests": program.tests.len(),
+            "grants": program.grants.len(),
+        }),
+    );
+    Ok(())
 }
 
 /// Format a supported `.ail` source file into stable canonical source text.
