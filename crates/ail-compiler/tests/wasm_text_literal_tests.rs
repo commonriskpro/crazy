@@ -262,3 +262,51 @@ fn string_contains_call_exports_scalar_wasm() {
         "text.contains(Text, Text) must leave an exported scalar result"
     );
 }
+
+#[test]
+fn string_starts_with_call_exports_scalar_wasm() {
+    let artifact = emit_text_expr(
+        "fn.main",
+        AnfExpr::Let {
+            name: "haystack".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("hello".to_string()))),
+            body: Box::new(AnfExpr::Let {
+                name: "prefix".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Text("he".to_string()))),
+                body: Box::new(AnfExpr::Call {
+                    func: "text.starts_with".to_string(),
+                    args: vec!["haystack".to_string(), "prefix".to_string()],
+                }),
+            }),
+        },
+    );
+
+    assert!(
+        artifact.export_types.contains_key("main"),
+        "text.starts_with(Text, Text) must leave an exported scalar result"
+    );
+}
+
+#[test]
+fn string_ends_with_call_exports_scalar_wasm() {
+    let artifact = emit_text_expr(
+        "fn.main",
+        AnfExpr::Let {
+            name: "haystack".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("hello".to_string()))),
+            body: Box::new(AnfExpr::Let {
+                name: "suffix".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Text("lo".to_string()))),
+                body: Box::new(AnfExpr::Call {
+                    func: "text.ends_with".to_string(),
+                    args: vec!["haystack".to_string(), "suffix".to_string()],
+                }),
+            }),
+        },
+    );
+
+    assert!(
+        artifact.export_types.contains_key("main"),
+        "text.ends_with(Text, Text) must leave an exported scalar result"
+    );
+}

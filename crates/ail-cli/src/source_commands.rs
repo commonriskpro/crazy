@@ -941,7 +941,8 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
     let arity = match call {
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
         | "le" | "and" | "or" | "concat" => SourceArity::Exact(2),
-        "text.contains" | "text_contains" | "text.eq" | "text_eq" => SourceArity::Exact(2),
+        "text.contains" | "text.ends_with" | "text.starts_with" | "text_contains"
+        | "text_ends_with" | "text_starts_with" | "text.eq" | "text_eq" => SourceArity::Exact(2),
         "field" | "index" | "unwrap_or" | "first_or" | "last_or" => SourceArity::Exact(2),
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
@@ -1310,7 +1311,7 @@ fn infer_source_call_type(
             validate_source_arg_types(func, args, scope, functions, &["Text", "Text"])?;
             Ok("Bool".to_string())
         }
-        "text.contains" => {
+        "text.contains" | "text.ends_with" | "text.starts_with" => {
             validate_source_arg_types(func, args, scope, functions, &["Text", "Text"])?;
             Ok("Bool".to_string())
         }
@@ -2134,6 +2135,28 @@ fn format_source_expr_node(
         return (
             format!(
                 "text_contains({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "text.starts_with" && args.len() == 2 {
+        return (
+            format!(
+                "text_starts_with({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "text.ends_with" && args.len() == 2 {
+        return (
+            format!(
+                "text_ends_with({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
             ),
@@ -3041,6 +3064,9 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(lowered) = lower_source_text_contains_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_text_boundary_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_first_or_expr(expr, line_num)? {
         return Ok(lowered);
     }
@@ -3343,6 +3369,30 @@ fn lower_source_text_contains_expr(
     }
     Ok(Some(format!(
         "text.contains({}, {})",
+        lower_source_expr(&args[0], line_num)?,
+        lower_source_expr(&args[1], line_num)?
+    )))
+}
+
+fn lower_source_text_boundary_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    let (lowered_func, expected) = match func.as_str() {
+        "text_starts_with" => ("text.starts_with", "text_starts_with(haystack, prefix)"),
+        "text_ends_with" => ("text.ends_with", "text_ends_with(haystack, suffix)"),
+        _ => return Ok(None),
+    };
+    if args.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: {func} requires `{expected}`"
+        )));
+    }
+    Ok(Some(format!(
+        "{lowered_func}({}, {})",
         lower_source_expr(&args[0], line_num)?,
         lower_source_expr(&args[1], line_num)?
     )))
@@ -4925,6 +4975,25 @@ fn has(haystack: Text, needle: Text) -> Bool = text_contains(haystack, needle)
     }
 
     #[test]
+    fn lowers_source_text_boundary_helpers() {
+        let program = parse_ail_source(
+            r#"
+fn prefixed(haystack: Text, prefix: Text) -> Bool = text_starts_with(haystack, prefix)
+fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suffix)
+"#,
+        )
+        .expect("source text boundary helpers must parse");
+        let acl = source_program_to_acl(&program, "source_text_boundary".to_string());
+
+        assert!(acl.contains(
+            "op create_function id=fn.prefixed return=Bool body=text.starts_with(haystack, prefix)"
+        ));
+        assert!(acl.contains(
+            "op create_function id=fn.suffixed return=Bool body=text.ends_with(haystack, suffix)"
+        ));
+    }
+
+    #[test]
     fn formats_source_builtin_calls_as_infix() {
         let (formatted, item_count) = format_ail_source(
             "test math = eq(add(sub(10, mul(2, 3)), add(div(8, 4), mod(7, 4))), 9)\n\
@@ -4961,6 +5030,23 @@ fn has(haystack: Text, needle: Text) -> Bool = text_contains(haystack, needle)
         assert_eq!(item_count, 1);
         assert!(formatted.contains(
             "fn has(haystack: Text, needle: Text) -> Bool = text_contains(haystack, needle)\n"
+        ));
+    }
+
+    #[test]
+    fn formats_source_text_boundary_helpers() {
+        let (formatted, item_count) = format_ail_source(
+            "fn prefixed(haystack:Text,prefix:Text)->Bool=text.starts_with(haystack,prefix)\n\
+             fn suffixed(haystack:Text,suffix:Text)->Bool=text.ends_with(haystack,suffix)\n",
+        )
+        .expect("source text boundary helpers must format");
+
+        assert_eq!(item_count, 2);
+        assert!(formatted.contains(
+            "fn prefixed(haystack: Text, prefix: Text) -> Bool = text_starts_with(haystack, prefix)\n"
+        ));
+        assert!(formatted.contains(
+            "fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suffix)\n"
         ));
     }
 

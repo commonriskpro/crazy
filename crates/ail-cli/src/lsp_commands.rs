@@ -826,6 +826,18 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_contains(${1:haystack}, ${2:needle})",
     },
     AclSymbol {
+        label: "text_starts_with",
+        detail: "AIL source Text predicate",
+        documentation: "Returns true when Text starts with the given prefix.",
+        insert_text: "text_starts_with(${1:haystack}, ${2:prefix})",
+    },
+    AclSymbol {
+        label: "text_ends_with",
+        detail: "AIL source Text predicate",
+        documentation: "Returns true when Text ends with the given suffix.",
+        insert_text: "text_ends_with(${1:haystack}, ${2:suffix})",
+    },
+    AclSymbol {
         label: "first_or",
         detail: "AIL source List helper",
         documentation: "Returns the first List element when present, otherwise returns a fallback value.",

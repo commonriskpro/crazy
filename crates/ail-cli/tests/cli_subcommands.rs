@@ -324,6 +324,32 @@ fn run_file_executes_ail_source_text_contains_helper() {
 }
 
 #[test]
+fn run_file_executes_ail_source_text_boundary_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("text_boundary.ail");
+    source
+        .write_str(
+            "fn ok() -> Bool = text_starts_with(\"Hello, \" ++ \"AIL\", \"Hell\") && text_ends_with(\"Hello, \" ++ \"AIL\", \"AIL\")\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.ok",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.ok"))
+        .stdout(predicate::str::contains("result: 1"));
+}
+
+#[test]
 fn run_file_executes_ail_source_with_capability_grant() {
     use assert_fs::prelude::*;
 
@@ -771,6 +797,51 @@ fn compile_file_rejects_source_text_contains_helper_type_mismatch() {
         .failure()
         .stderr(predicate::str::contains(
             "type mismatch in text.contains argument 2: expected Text, got Int",
+        ));
+}
+
+#[test]
+fn compile_file_accepts_source_text_boundary_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("text_boundary.ail");
+    source
+        .write_str(
+            "fn prefixed(haystack: Text, prefix: Text) -> Bool = text_starts_with(haystack, prefix)\n\
+             fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suffix)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_text_boundary_helper_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_text_boundary.ail");
+    source
+        .write_str(
+            "fn prefixed(value: Int) -> Bool = text_starts_with(\"Hello\", value)\n\
+             fn suffixed(value: Int) -> Bool = text_ends_with(\"Hello\", value)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in text.starts_with argument 2: expected Text, got Int",
         ));
 }
 
@@ -3233,6 +3304,35 @@ fn lsp_diagnose_accepts_source_text_contains_helper() {
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_text_boundary_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn prefixed(haystack: Text, prefix: Text) -> Bool = text_starts_with(haystack, prefix)\n\
+             fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suffix)\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_first_or_helper() {
     use assert_fs::prelude::*;
 
@@ -4848,6 +4948,42 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .any(|item| item["label"] == "text_contains"
                 && item["detail"] == "AIL source Text predicate"),
         "completion must include AIL source text_contains helper; got: {text_contains_items:?}"
+    );
+
+    let text_starts_with_completion_output = ail()
+        .args(["lsp", "--complete", "text_starts_with", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let text_starts_with_completion = parse_json_output(&text_starts_with_completion_output);
+    let text_starts_with_items = text_starts_with_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        text_starts_with_items
+            .iter()
+            .any(|item| item["label"] == "text_starts_with"
+                && item["detail"] == "AIL source Text predicate"),
+        "completion must include AIL source text_starts_with helper; got: {text_starts_with_items:?}"
+    );
+
+    let text_ends_with_completion_output = ail()
+        .args(["lsp", "--complete", "text_ends_with", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let text_ends_with_completion = parse_json_output(&text_ends_with_completion_output);
+    let text_ends_with_items = text_ends_with_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        text_ends_with_items
+            .iter()
+            .any(|item| item["label"] == "text_ends_with"
+                && item["detail"] == "AIL source Text predicate"),
+        "completion must include AIL source text_ends_with helper; got: {text_ends_with_items:?}"
     );
 
     let map_completion_output = ail()
