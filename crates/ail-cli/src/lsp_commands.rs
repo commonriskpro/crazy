@@ -536,10 +536,62 @@ const ACL_SYMBOLS: &[AclSymbol] = &[
     },
 ];
 
+const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
+    AclSymbol {
+        label: "module",
+        detail: "AIL source module",
+        documentation: "Declares the source module namespace for functions, tests, and grants.",
+        insert_text: "module ${1:name}",
+    },
+    AclSymbol {
+        label: "use",
+        detail: "AIL source import",
+        documentation: "Imports another local .ail source file with an explicit relative path.",
+        insert_text: "use \"./${1:file}.ail\"",
+    },
+    AclSymbol {
+        label: "capability",
+        detail: "AIL source capability",
+        documentation: "Declares an external capability such as log.write before granting it to source items.",
+        insert_text: "capability ${1:log.write}",
+    },
+    AclSymbol {
+        label: "fn",
+        detail: "AIL source function",
+        documentation: "Declares a typed AIL source function that lowers into the semantic graph.",
+        insert_text: "fn ${1:name}(${2:x}: ${3:Int}) -> ${4:Int} = ${5:add(x, 1)}",
+    },
+    AclSymbol {
+        label: "test",
+        detail: "AIL source test",
+        documentation: "Declares an executable source test that `ail test --file` can discover and run.",
+        insert_text: "test ${1:name} = ${2:eq(add(20, 22), 42)}",
+    },
+    AclSymbol {
+        label: "grant",
+        detail: "AIL source capability grant",
+        documentation: "Grants a declared capability to a source function or test before effect calls are allowed.",
+        insert_text: "grant ${1:main} ${2:log.write}",
+    },
+    AclSymbol {
+        label: "let",
+        detail: "AIL source local binding",
+        documentation: "Introduces a simple local binding inside a block-bodied source function.",
+        insert_text: "let ${1:name} = ${2:value}",
+    },
+    AclSymbol {
+        label: "if",
+        detail: "AIL source conditional",
+        documentation: "Evaluates a typed conditional expression with explicit then and else branches.",
+        insert_text: "if ${1:condition} { ${2:then_expr} } else { ${3:else_expr} }",
+    },
+];
+
 fn completion_items(prefix: &str) -> Vec<Value> {
     let prefix = prefix.trim().to_ascii_lowercase();
     ACL_SYMBOLS
         .iter()
+        .chain(AIL_SOURCE_SYMBOLS.iter())
         .filter(|symbol| {
             prefix.is_empty() || symbol.label.to_ascii_lowercase().contains(prefix.as_str())
         })
@@ -561,14 +613,17 @@ fn completion_items(prefix: &str) -> Vec<Value> {
 
 fn hover_for_token(token: &str) -> Value {
     let normalized = token.trim();
-    let symbol = ACL_SYMBOLS.iter().find(|symbol| {
-        symbol.label == normalized
-            || symbol
-                .label
-                .split_whitespace()
-                .last()
-                .is_some_and(|last| last == normalized)
-    });
+    let symbol = ACL_SYMBOLS
+        .iter()
+        .chain(AIL_SOURCE_SYMBOLS.iter())
+        .find(|symbol| {
+            symbol.label == normalized
+                || symbol
+                    .label
+                    .split_whitespace()
+                    .last()
+                    .is_some_and(|last| last == normalized)
+        });
     match symbol {
         Some(symbol) => json!({
             "contents": {
