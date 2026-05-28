@@ -688,6 +688,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "${1:record}.${2:field}",
     },
     AclSymbol {
+        label: "{",
+        detail: "AIL source Record literal",
+        documentation: "Constructs a typed Record<field:Type,...> value with ergonomic field syntax.",
+        insert_text: "{ ${1:field}: ${2:value} }",
+    },
+    AclSymbol {
         label: "add",
         detail: "AIL source Int builtin",
         documentation: "Adds two Int values and returns an Int.",

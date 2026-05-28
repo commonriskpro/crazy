@@ -630,7 +630,7 @@ fn compile_file_accepts_source_record_field_access_and_update() {
     let source = dir.child("record.ail");
     source
         .write_str(
-            "fn person() -> Record<age: Int, name: Text> = record(age, 42, name, \"Ada\")\n\
+            "fn person() -> Record<age: Int, name: Text> = { age: 42, name: \"Ada\" }\n\
 fn age() -> Int = person().age\n\
 fn older() -> Record<age: Int, name: Text> = update(person(), age, 43)\n",
         )
@@ -735,9 +735,7 @@ fn compile_file_rejects_source_record_field_type_mismatch() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("bad_record.ail");
     source
-        .write_str(
-            "fn person() -> Record<age: Int, name: Text> = record(age, true, name, \"Ada\")\n",
-        )
+        .write_str("fn person() -> Record<age: Int, name: Text> = { age: true, name: \"Ada\" }\n")
         .expect("source fixture must be written");
 
     ail()
@@ -752,6 +750,27 @@ fn compile_file_rejects_source_record_field_type_mismatch() {
 }
 
 #[test]
+fn compile_file_rejects_malformed_source_record_literal() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_record_literal.ail");
+    source
+        .write_str("fn person() -> Record<age: Int> = { age 42 }\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "record literal field requires `name: expression`",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_source_unknown_record_field() {
     use assert_fs::prelude::*;
 
@@ -759,7 +778,7 @@ fn compile_file_rejects_source_unknown_record_field() {
     let source = dir.child("bad_field.ail");
     source
         .write_str(
-            "fn main() -> Int {\n  let p: Record<age: Int> = record(age, 42)\n  return p.name\n}\n",
+            "fn main() -> Int {\n  let p: Record<age: Int> = { age: 42 }\n  return p.name\n}\n",
         )
         .expect("source fixture must be written");
 
@@ -2678,7 +2697,7 @@ fn lsp_diagnose_accepts_source_record_field_access() {
     let source = dir.child("main.ail");
     source
         .write_str(
-            "fn person() -> Record<age: Int, name: Text> = record(age, 42, name, \"Ada\")\n\
+            "fn person() -> Record<age: Int, name: Text> = { age: 42, name: \"Ada\" }\n\
 fn age() -> Int = person().age\n",
         )
         .expect("source fixture must be written");
@@ -3804,6 +3823,23 @@ fn lsp_completion_and_hover_cover_ail_source_operators() {
             |item| item["label"] == "." && item["detail"] == "AIL source Record field operator"
         ),
         "completion must include AIL source record dot operator; got: {dot_items:?}"
+    );
+
+    let record_literal_completion_output = ail()
+        .args(["lsp", "--complete", "{", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let record_literal_completion = parse_json_output(&record_literal_completion_output);
+    let record_literal_items = record_literal_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        record_literal_items
+            .iter()
+            .any(|item| item["label"] == "{" && item["detail"] == "AIL source Record literal"),
+        "completion must include AIL source record literal; got: {record_literal_items:?}"
     );
 }
 
@@ -5601,9 +5637,8 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
     assert!(formatted.contains("fn labels() -> Map<Text,Int> = map(\"one\", 1, \"two\", 2)\n"));
     assert!(formatted.contains("fn pair() -> Tuple<Int,Text> = tuple(42, \"answer\")\n"));
     assert!(
-        formatted.contains(
-            "fn person() -> Record<age:Int,name:Text> = record(age, 42, name, \"Ada\")\n"
-        )
+        formatted
+            .contains("fn person() -> Record<age:Int,name:Text> = { age: 42, name: \"Ada\" }\n")
     );
     assert!(formatted.contains(
         "fn unwrap(value: Option<Int>) -> Int = match value { Some(v) => v, None => 0 }\n"

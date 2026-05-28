@@ -2029,6 +2029,33 @@ fn format_source_expr_node(
         );
     }
 
+    if func == "record"
+        && args.len().is_multiple_of(2)
+        && args
+            .chunks_exact(2)
+            .all(|pair| is_source_local_ident(&pair[0]))
+    {
+        let fields = args
+            .chunks_exact(2)
+            .map(|pair| {
+                format!(
+                    "{}: {}",
+                    pair[0].trim(),
+                    format_source_expr(&pair[1], module, constants)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return (
+            if fields.is_empty() {
+                "{}".to_string()
+            } else {
+                format!("{{ {fields} }}")
+            },
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "index" && args.len() == 2 {
         return (
             format!(
@@ -2632,6 +2659,19 @@ fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     if let Some(inner) = strip_wrapping_source_parens(expr) {
         return lower_source_expr(inner, line_num);
     }
+    if let Some(fields) = parse_source_record_literal(expr, line_num)? {
+        return Ok(format!(
+            "record({})",
+            fields
+                .iter()
+                .map(|(field, value)| {
+                    lower_source_expr(value, line_num)
+                        .map(|lowered_value| format!("{field}, {lowered_value}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join(", ")
+        ));
+    }
     if let Some(items) = parse_source_list_literal(expr, line_num)? {
         return Ok(format!(
             "list({})",
@@ -2931,6 +2971,90 @@ fn parse_source_list_literal(expr: &str, line_num: usize) -> Result<Option<Vec<S
     Ok(Some(split_source_args(inner)))
 }
 
+fn parse_source_record_literal(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<Vec<(String, String)>>, CliError> {
+    if !expr.starts_with('{') {
+        return Ok(None);
+    }
+    let close = matching_brace(expr, 0);
+    if close.is_none() {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: record literal has unclosed `{{`"
+        )));
+    }
+    if close != Some(expr.len() - 1) {
+        return Ok(None);
+    }
+    let inner = expr[1..expr.len() - 1].trim();
+    if inner.is_empty() {
+        return Ok(Some(vec![]));
+    }
+
+    split_source_args(inner)
+        .into_iter()
+        .map(|field_expr| {
+            let colon = find_top_level_source_colon(&field_expr).ok_or_else(|| {
+                CliError::ParseError(format!(
+                    "line {line_num}: record literal field requires `name: expression`"
+                ))
+            })?;
+            let field = field_expr[..colon].trim();
+            let value = field_expr[colon + ':'.len_utf8()..].trim();
+            if field.is_empty() || value.is_empty() {
+                return Err(CliError::ParseError(format!(
+                    "line {line_num}: record literal field and value must be non-empty"
+                )));
+            }
+            validate_source_local_name(field, line_num)?;
+            Ok((field.to_string(), value.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+fn find_top_level_source_colon(expr: &str) -> Option<usize> {
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+
+    for (idx, ch) in expr.char_indices() {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '<' => angle_depth += 1,
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            ':' if paren_depth == 0
+                && brace_depth == 0
+                && bracket_depth == 0
+                && angle_depth == 0 =>
+            {
+                return Some(idx);
+            }
+            _ => {}
+        }
+        prev_was_escape = false;
+    }
+
+    None
+}
+
 fn parse_source_index_expr<'a>(
     expr: &'a str,
     line_num: usize,
@@ -3019,7 +3143,7 @@ fn source_dot_has_record_operand(expr: &str, idx: usize) -> bool {
         .chars()
         .rev()
         .find(|ch| !ch.is_whitespace())
-        .is_some_and(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ')' | ']' | '"'))
+        .is_some_and(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ')' | '}' | ']' | '"'))
 }
 
 fn find_top_level_source_index_bracket(expr: &str) -> Option<usize> {
@@ -3921,7 +4045,7 @@ fn pair() -> Tuple<Int, Text> = tuple(42, "answer")
     fn lowers_source_record_field_access_and_update() {
         let program = parse_ail_source(
             r#"
-fn person() -> Record<age: Int, name: Text> = record(age, 42, name, "Ada")
+fn person() -> Record<age: Int, name: Text> = { age: 42, name: "Ada" }
 fn age() -> Int = field(person(), age)
 fn age_dot() -> Int = person().age
 fn older() -> Record<age: Int, name: Text> = update(person(), age, 43)
@@ -4046,9 +4170,11 @@ fn age_dot()->Int=person().age
         .expect("source record must format");
 
         assert_eq!(item_count, 3);
-        assert!(formatted.contains(
-            "fn person() -> Record<age:Int,name:Text> = record(age, 42, name, \"Ada\")\n"
-        ));
+        assert!(
+            formatted.contains(
+                "fn person() -> Record<age:Int,name:Text> = { age: 42, name: \"Ada\" }\n"
+            )
+        );
         assert!(formatted.contains("fn age() -> Int = person().age\n"));
         assert!(formatted.contains("fn age_dot() -> Int = person().age\n"));
     }
