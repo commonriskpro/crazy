@@ -8,7 +8,7 @@
 // pipeline so the compiler/runtime path stays real end-to-end.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use ail_change::canonical::canonicalize_parsed;
 use ail_change::model::{ChangeSetOutcome, SnapshotId};
@@ -1410,6 +1410,14 @@ fn parse_source_import(rest: &str, line_num: usize) -> Result<String, CliError> 
     if import.is_empty() || import.contains('\0') || Path::new(import).is_absolute() {
         return Err(CliError::ParseError(format!(
             "line {line_num}: import path must be a non-empty relative path"
+        )));
+    }
+    if Path::new(import)
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: import path `{import}` must not contain `..`"
         )));
     }
     if Path::new(import).extension().and_then(|ext| ext.to_str()) != Some("ail") {
