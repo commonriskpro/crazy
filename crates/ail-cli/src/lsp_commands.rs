@@ -736,6 +736,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "set(${1:value})",
     },
     AclSymbol {
+        label: "tuple",
+        detail: "AIL source Tuple builtin",
+        documentation: "Constructs a typed Tuple<T...> from positional values.",
+        insert_text: "tuple(${1:first}, ${2:second})",
+    },
+    AclSymbol {
         label: "map",
         detail: "AIL source Map builtin",
         documentation: "Constructs a typed Map<K,V> from key/value argument pairs.",

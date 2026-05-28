@@ -605,6 +605,24 @@ fn labels() -> Map<Text, Int> = map(\"one\", 1, \"two\", 2)\n",
 }
 
 #[test]
+fn compile_file_accepts_source_tuple_collections() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("tuple.ail");
+    source
+        .write_str("fn pair() -> Tuple<Int, Text> = tuple(42, \"answer\")\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
 fn compile_file_rejects_source_list_element_type_mismatch() {
     use assert_fs::prelude::*;
 
@@ -664,6 +682,27 @@ fn compile_file_rejects_source_map_value_type_mismatch() {
         .failure()
         .stderr(predicate::str::contains(
             "type mismatch in map value: expected Int, got Bool",
+        ));
+}
+
+#[test]
+fn compile_file_rejects_source_tuple_item_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_tuple.ail");
+    source
+        .write_str("fn pair() -> Tuple<Int, Text> = tuple(42, true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in fn.pair: expected Tuple<Int,Text>, got Tuple<Int,Bool>",
         ));
 }
 
@@ -745,6 +784,7 @@ fn compile_file_accepts_source_type_aliases() {
 fn first(values: List<i64>) -> i64 = values[0]\n\
 fn ids() -> Set<i64> = set(1, 2)\n\
 fn labels() -> Map<String, int> = map(\"one\", 1)\n\
+fn pair() -> Tuple<i64, String> = tuple(42, \"answer\")\n\
 fn maybe(flag: bool) -> Option<i32> = if flag { some(42) } else { none() }\n\
 fn result() -> Result<i64, String> = ok(42)\n",
         )
@@ -2536,6 +2576,32 @@ fn labels() -> Map<Text, Int> = map(\"one\", 1, \"two\", 2)\n",
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_tuple_collections() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn pair() -> Tuple<Int, Text> = tuple(42, \"answer\")\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_option_result_constructors() {
     use assert_fs::prelude::*;
 
@@ -3744,6 +3810,23 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .expect("hover markdown")
             .contains("Set<T>"),
         "hover must explain source Set builtin; got: {set_hover}"
+    );
+
+    let tuple_completion_output = ail()
+        .args(["lsp", "--complete", "tu", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let tuple_completion = parse_json_output(&tuple_completion_output);
+    let tuple_items = tuple_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        tuple_items
+            .iter()
+            .any(|item| item["label"] == "tuple" && item["detail"] == "AIL source Tuple builtin"),
+        "completion must include AIL source tuple builtin; got: {tuple_items:?}"
     );
 }
 
@@ -5350,6 +5433,7 @@ fn text_len(value:String)->int=len(value)\n\
 fn count(values:List<Int>)->Int=len(values)\n\
 fn ids()->Set<i64>=set(1,add(2,3))\n\
 fn labels()->Map<String,int>=map(\"one\",1,\"two\",2)\n\
+fn pair()->Tuple<i64,String>=tuple(42,\"answer\")\n\
 fn unwrap(value:Option<Int>)->Int=match(value,Some(v),v,None,0)\n\
 fn main()->Int{\n\
 let base:Int=answer()\n\
@@ -5372,7 +5456,7 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["language"], "ail-source");
-    assert_eq!(v["data"]["item_count"], 9);
+    assert_eq!(v["data"]["item_count"], 10);
     let formatted = v["data"]["formatted"]
         .as_str()
         .expect("formatted must be string");
@@ -5382,6 +5466,7 @@ test math=eq(add(sub(10,mul(2,3)),add(div(8,4),mod(7,4))),9)\n",
     assert!(formatted.contains("fn count(values: List<Int>) -> Int = len(values)\n"));
     assert!(formatted.contains("fn ids() -> Set<Int> = set(1, 2 + 3)\n"));
     assert!(formatted.contains("fn labels() -> Map<Text,Int> = map(\"one\", 1, \"two\", 2)\n"));
+    assert!(formatted.contains("fn pair() -> Tuple<Int,Text> = tuple(42, \"answer\")\n"));
     assert!(formatted.contains(
         "fn unwrap(value: Option<Int>) -> Int = match value { Some(v) => v, None => 0 }\n"
     ));

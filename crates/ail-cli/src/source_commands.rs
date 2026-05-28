@@ -1285,6 +1285,7 @@ fn infer_source_call_type(
             Ok("Text".to_string())
         }
         "list" => infer_source_list_type(args, scope, functions),
+        "tuple" => infer_source_tuple_type(args, scope, functions),
         "set" => infer_source_set_type(args, scope, functions),
         "map" => infer_source_map_type(args, scope, functions),
         "index" => infer_source_index_type(args, scope, functions),
@@ -1335,7 +1336,7 @@ fn infer_source_call_type(
 }
 
 fn is_untyped_source_builtin(func: &str) -> bool {
-    matches!(func, "Var" | "fold" | "record" | "tuple" | "match")
+    matches!(func, "Var" | "fold" | "record" | "match")
 }
 
 fn infer_source_list_type(
@@ -1352,6 +1353,18 @@ fn infer_source_list_type(
         validate_source_type_match(&element_ty, &actual, "list element")?;
     }
     Ok(format!("List<{element_ty}>"))
+}
+
+fn infer_source_tuple_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let element_types = args
+        .iter()
+        .map(|arg| infer_source_expr_type(arg, scope, functions))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(format!("Tuple<{}>", element_types.join(",")))
 }
 
 fn infer_source_set_type(
@@ -1480,6 +1493,14 @@ fn source_type_matches(expected: &str, actual: &str) -> bool {
         source_list_element_type(actual),
     ) {
         return source_type_matches(expected_inner, actual_inner);
+    }
+    if let (Some(expected_items), Some(actual_items)) =
+        (source_tuple_types(expected), source_tuple_types(actual))
+    {
+        return expected_items.len() == actual_items.len()
+            && expected_items.iter().zip(actual_items.iter()).all(
+                |(expected_item, actual_item)| source_type_matches(expected_item, actual_item),
+            );
     }
     if let (Some(expected_inner), Some(actual_inner)) = (
         source_set_element_type(expected),
@@ -3067,6 +3088,8 @@ fn is_supported_source_type(ty: &str) -> bool {
     let ty = ty.as_str();
     source_primitive_type_alias(ty).is_some()
         || source_list_element_type(ty).is_some_and(is_supported_source_type)
+        || source_tuple_types(ty)
+            .is_some_and(|items| items.into_iter().all(is_supported_source_type))
         || source_set_element_type(ty).is_some_and(is_supported_source_type)
         || source_map_types(ty).is_some_and(|(key_ty, value_ty)| {
             is_supported_source_type(key_ty) && is_supported_source_type(value_ty)
@@ -3090,6 +3113,11 @@ fn source_primitive_type_alias(ty: &str) -> Option<&'static str> {
 fn source_list_element_type(ty: &str) -> Option<&str> {
     let inner = ty.trim().strip_prefix("List<")?.strip_suffix('>')?.trim();
     (!inner.is_empty()).then_some(inner)
+}
+
+fn source_tuple_types(ty: &str) -> Option<Vec<&str>> {
+    let inner = ty.trim().strip_prefix("Tuple<")?.strip_suffix('>')?.trim();
+    Some(split_source_type_args(inner))
 }
 
 fn source_set_element_type(ty: &str) -> Option<&str> {
@@ -3388,6 +3416,16 @@ fn normalize_source_type_aliases(ty: &str) -> String {
     if let Some(inner) = source_list_element_type(ty) {
         return format!("List<{}>", normalize_source_type_aliases(inner));
     }
+    if let Some(items) = source_tuple_types(ty) {
+        return format!(
+            "Tuple<{}>",
+            items
+                .iter()
+                .map(|item| normalize_source_type_aliases(item))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+    }
     if let Some(inner) = source_set_element_type(ty) {
         return format!("Set<{}>", normalize_source_type_aliases(inner));
     }
@@ -3612,6 +3650,22 @@ fn labels() -> Map<Text, Int> = map("one", 1, "two", 2)
     }
 
     #[test]
+    fn lowers_source_tuple_collections() {
+        let program = parse_ail_source(
+            r#"
+fn pair() -> Tuple<Int, Text> = tuple(42, "answer")
+"#,
+        )
+        .expect("source tuple must parse");
+        let acl = source_program_to_acl(&program, "source_tuple".to_string());
+
+        assert_eq!(program.functions[0].return_type, "Tuple<Int,Text>");
+        assert!(acl.contains(
+            r#"op create_function id=fn.pair return=Tuple<Int,Text> body=tuple(42, "answer")"#
+        ));
+    }
+
+    #[test]
     fn lowers_source_infix_arithmetic_with_precedence() {
         let program = parse_ail_source("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9")
             .expect("source must parse");
@@ -3685,6 +3739,16 @@ fn labels()->Map<String,int>=map("one",1,"two",2)
         assert_eq!(item_count, 2);
         assert!(formatted.contains("fn ids() -> Set<Int> = set(1, 2 + 3)\n"));
         assert!(formatted.contains("fn labels() -> Map<Text,Int> = map(\"one\", 1, \"two\", 2)\n"));
+    }
+
+    #[test]
+    fn formats_source_tuple_types() {
+        let (formatted, item_count) =
+            format_ail_source(r#"fn pair()->Tuple<i64,String>=tuple(42,"answer")"#)
+                .expect("source tuple must format");
+
+        assert_eq!(item_count, 1);
+        assert!(formatted.contains("fn pair() -> Tuple<Int,Text> = tuple(42, \"answer\")\n"));
     }
 
     #[test]
