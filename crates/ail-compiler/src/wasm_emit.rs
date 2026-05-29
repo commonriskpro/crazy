@@ -425,6 +425,37 @@ fn emit_int_clamp<'a>(
     Some(ValType::I64)
 }
 
+fn emit_int_abs_or<'a>(
+    args: &[String],
+    ctx: &WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [value, fallback] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+
+    emit_local_as_i64(ctx, value, insns);
+    insns.push(Instruction::I64Const(i64::MIN));
+    insns.push(Instruction::I64Eq);
+    insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+    emit_local_as_i64(ctx, fallback, insns);
+    insns.push(Instruction::Else);
+    emit_local_as_i64(ctx, value, insns);
+    insns.push(Instruction::I64Const(0));
+    insns.push(Instruction::I64LtS);
+    insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+    insns.push(Instruction::I64Const(0));
+    emit_local_as_i64(ctx, value, insns);
+    insns.push(Instruction::I64Sub);
+    insns.push(Instruction::Else);
+    emit_local_as_i64(ctx, value, insns);
+    insns.push(Instruction::End);
+    insns.push(Instruction::End);
+
+    Some(ValType::I64)
+}
+
 fn emit_text_len_from_local<'a>(
     ctx: &WasmCodegenCtx<'a>,
     name: &str,
@@ -2104,6 +2135,9 @@ fn emit_anf_expr<'a>(
             }
             if matches!(func.as_str(), "int.clamp" | "int_clamp") {
                 return emit_int_clamp(args, ctx, insns);
+            }
+            if matches!(func.as_str(), "int.abs_or" | "int_abs_or") {
+                return emit_int_abs_or(args, ctx, insns);
             }
             if matches!(func.as_str(), "concat" | "text.concat") {
                 return emit_text_concat(args, ctx, insns);

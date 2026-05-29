@@ -95,6 +95,25 @@ pub(super) fn lower_call(
                 }
             }
         }
+        "int.abs_or" | "int_abs_or" if args.len() == 2 => {
+            let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            let fallback = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
+            match (value, fallback) {
+                (Some(value), Some(fallback)) => {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let min_value = builder.ins().iconst(types::I64, i64::MIN);
+                    let is_min = builder.ins().icmp(IntCC::Equal, value, min_value);
+                    let is_negative = builder.ins().icmp(IntCC::SignedLessThan, value, zero);
+                    let negated = builder.ins().isub(zero, value);
+                    let abs_or_value = builder.ins().select(is_negative, negated, value);
+                    LowerResult::Value(builder.ins().select(is_min, fallback, abs_or_value))
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
 
         // ── binary comparisons → I8 ────────────────────────────
         "i64.eq" | "==" | "eq" | "i64.ne" | "!=" | "ne" | "i64.lt_s" | "<" | "lt" | "i64.le_s"

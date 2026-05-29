@@ -58,6 +58,8 @@ fn operator_names(wasm: &[u8]) -> Vec<&'static str> {
                     Operator::I64GeS => names.push("i64.ge_s"),
                     Operator::I64LtS => names.push("i64.lt_s"),
                     Operator::I64GtS => names.push("i64.gt_s"),
+                    Operator::I64Eq => names.push("i64.eq"),
+                    Operator::I64Sub => names.push("i64.sub"),
                     Operator::If { .. } => names.push("if"),
                     _ => {}
                 }
@@ -113,5 +115,28 @@ fn wasm_emits_int_clamp_as_two_signed_bound_branches() {
     assert!(
         ops.iter().filter(|name| **name == "if").count() >= 2,
         "int.clamp must select from low/high/value with nested branches: {ops:?}"
+    );
+}
+
+#[test]
+fn wasm_emits_int_abs_or_as_overflow_safe_signed_branch() {
+    let wasm = emit_call_wasm("int.abs_or", &["value", "fallback"], &[-7, 99]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.eq"),
+        "int.abs_or must check the minimum Int overflow case: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i64.lt_s"),
+        "int.abs_or must check whether value is negative: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i64.sub"),
+        "int.abs_or must negate negative values with subtraction: {ops:?}"
+    );
+    assert!(
+        ops.iter().filter(|name| **name == "if").count() >= 2,
+        "int.abs_or must select fallback/value/negated value with nested branches: {ops:?}"
     );
 }

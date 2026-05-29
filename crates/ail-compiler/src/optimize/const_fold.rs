@@ -188,6 +188,9 @@ fn fold_call(
         ("i64.rem_s" | "%" | "mod", [a, b]) => Some(LiteralValue::Int(a % b)),
         ("int.min" | "int_min", [a, b]) => Some(LiteralValue::Int((*a).min(*b))),
         ("int.max" | "int_max", [a, b]) => Some(LiteralValue::Int((*a).max(*b))),
+        ("int.abs_or" | "int_abs_or", [value, fallback]) => {
+            Some(LiteralValue::Int(value.checked_abs().unwrap_or(*fallback)))
+        }
         ("int.clamp" | "int_clamp", [value, low, high]) => {
             Some(LiteralValue::Int(if value < low {
                 *low

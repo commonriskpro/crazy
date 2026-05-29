@@ -355,7 +355,7 @@ fn run_file_executes_ail_source_int_bounds_helpers() {
     let source = dir.child("int_bounds.ail");
     source
         .write_str(
-            "fn bounded() -> Int = int_min(10, -2) + int_max(10, -2) + int_clamp(42, 0, 10)\n",
+            "fn bounded() -> Int = int_min(10, -2) + int_max(10, -2) + int_clamp(42, 0, 10) + int_abs_or(-7, 0) + int_abs_or(-9223372036854775808, 99)\n",
         )
         .expect("source fixture must be written");
 
@@ -370,7 +370,7 @@ fn run_file_executes_ail_source_int_bounds_helpers() {
         .assert()
         .success()
         .stdout(predicate::str::contains("module: fn.bounded"))
-        .stdout(predicate::str::contains("result: 18"));
+        .stdout(predicate::str::contains("result: 124"));
 }
 
 #[test]
@@ -1043,7 +1043,7 @@ fn compile_file_accepts_source_int_bounds_helpers() {
     let source = dir.child("int_bounds.ail");
     source
         .write_str(
-            "fn bounded(value: Int, low: Int, high: Int) -> Int = int_clamp(int_min(value, high), low, high)\n",
+            "fn bounded(value: Int, low: Int, high: Int) -> Int = int_abs_or(int_clamp(int_min(value, high), low, high), 0)\n",
         )
         .expect("source fixture must be written");
 
@@ -1062,7 +1062,7 @@ fn compile_file_rejects_source_int_bounds_helper_type_mismatch() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("bad_int_bounds.ail");
     source
-        .write_str("fn bounded(value: Text) -> Int = int_min(value, 10)\n")
+        .write_str("fn bounded(value: Int, fallback: Text) -> Int = int_abs_or(value, fallback)\n")
         .expect("source fixture must be written");
 
     ail()
@@ -1072,7 +1072,7 @@ fn compile_file_rejects_source_int_bounds_helper_type_mismatch() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "type mismatch in int.min argument 1: expected Int, got Text",
+            "type mismatch in int.abs_or argument 2: expected Int, got Text",
         ));
 }
 
@@ -3820,7 +3820,7 @@ fn lsp_diagnose_accepts_source_int_bounds_helpers() {
     let source = dir.child("main.ail");
     source
         .write_str(
-            "fn bounded(value: Int, low: Int, high: Int) -> Int = int_clamp(int_min(value, high), low, high)\n",
+            "fn bounded(value: Int, low: Int, high: Int) -> Int = int_abs_or(int_clamp(int_min(value, high), low, high), 0)\n",
         )
         .expect("source fixture must be written");
 
@@ -5642,6 +5642,24 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .any(|item| item["label"] == "int_clamp"
                 && item["detail"] == "AIL source Int bounds helper"),
         "completion must include AIL source int_clamp helper; got: {int_clamp_items:?}"
+    );
+
+    let int_abs_or_completion_output = ail()
+        .args(["lsp", "--complete", "int_abs_or", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let int_abs_or_completion = parse_json_output(&int_abs_or_completion_output);
+    let int_abs_or_items = int_abs_or_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        int_abs_or_items
+            .iter()
+            .any(|item| item["label"] == "int_abs_or"
+                && item["detail"] == "AIL source Int safety helper"),
+        "completion must include AIL source int_abs_or helper; got: {int_abs_or_items:?}"
     );
 
     let text_contains_completion_output = ail()

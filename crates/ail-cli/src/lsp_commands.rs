@@ -814,6 +814,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "int_clamp(${1:value}, ${2:low}, ${3:high})",
     },
     AclSymbol {
+        label: "int_abs_or",
+        detail: "AIL source Int safety helper",
+        documentation: "Returns the absolute value of an Int, or fallback for the minimum Int overflow case.",
+        insert_text: "int_abs_or(${1:value}, ${2:fallback})",
+    },
+    AclSymbol {
         label: "concat",
         detail: "AIL source Text builtin",
         documentation: "Concatenates two Text values and returns Text.",
