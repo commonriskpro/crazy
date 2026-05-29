@@ -674,6 +674,24 @@ fn emit_int_shift_left<'a>(
     Some(ValType::I64)
 }
 
+fn emit_int_shift_right<'a>(
+    args: &[String],
+    ctx: &WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [value, amount] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+
+    emit_local_as_i64(ctx, value, insns);
+    emit_local_as_i64(ctx, amount, insns);
+    insns.push(Instruction::I32WrapI64);
+    insns.push(Instruction::I64ShrS);
+
+    Some(ValType::I64)
+}
+
 fn emit_int_wrapping_add<'a>(
     args: &[String],
     ctx: &WasmCodegenCtx<'a>,
@@ -2719,6 +2737,9 @@ fn emit_anf_expr<'a>(
             }
             if matches!(func.as_str(), "int.shift_left" | "int_shift_left") {
                 return emit_int_shift_left(args, ctx, insns);
+            }
+            if matches!(func.as_str(), "int.shift_right" | "int_shift_right") {
+                return emit_int_shift_right(args, ctx, insns);
             }
             if matches!(func.as_str(), "int.add_or" | "int_add_or") {
                 return emit_int_add_or(args, ctx, insns);

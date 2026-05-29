@@ -922,6 +922,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "int_shift_left(${1:value}, ${2:amount})",
     },
     AclSymbol {
+        label: "int_shift_right",
+        detail: "AIL source Int bit shift helper",
+        documentation: "Shifts an Int value right by the given Int amount using arithmetic signed semantics and wrapping shift-count semantics.",
+        insert_text: "int_shift_right(${1:value}, ${2:amount})",
+    },
+    AclSymbol {
         label: "int_div_or",
         detail: "AIL source Int safety helper",
         documentation: "Divides two Int values, or returns fallback on divide-by-zero or signed overflow.",

@@ -264,6 +264,25 @@ fn wasm_emits_int_shift_left_as_wrapping_shl() {
 }
 
 #[test]
+fn wasm_emits_int_shift_right_as_wrapping_signed_shr() {
+    let wasm = emit_call_wasm("int.shift_right", &["value", "amount"], &[-8, 1]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.shr_s"),
+        "int.shift_right must emit signed right shift: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i32.wrap_i64"),
+        "int.shift_right must wrap the Int shift amount to i32 for wasm: {ops:?}"
+    );
+    assert!(
+        !ops.contains(&"if"),
+        "int.shift_right must not emit branches: {ops:?}"
+    );
+}
+
+#[test]
 fn wasm_emits_int_wrapping_add_as_plain_add() {
     let wasm = emit_call_wasm("int.wrapping_add", &["left", "right"], &[40, 2]);
     let ops = operator_names(&wasm);
