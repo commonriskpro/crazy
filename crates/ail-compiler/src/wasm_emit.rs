@@ -685,6 +685,23 @@ fn emit_int_wrapping_sub<'a>(
     Some(ValType::I64)
 }
 
+fn emit_int_wrapping_mul<'a>(
+    args: &[String],
+    ctx: &WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [left, right] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+
+    emit_local_as_i64(ctx, left, insns);
+    emit_local_as_i64(ctx, right, insns);
+    insns.push(Instruction::I64Mul);
+
+    Some(ValType::I64)
+}
+
 fn emit_int_saturating_neg<'a>(
     args: &[String],
     ctx: &WasmCodegenCtx<'a>,
@@ -2653,6 +2670,9 @@ fn emit_anf_expr<'a>(
             }
             if matches!(func.as_str(), "int.wrapping_sub" | "int_wrapping_sub") {
                 return emit_int_wrapping_sub(args, ctx, insns);
+            }
+            if matches!(func.as_str(), "int.wrapping_mul" | "int_wrapping_mul") {
+                return emit_int_wrapping_mul(args, ctx, insns);
             }
             if matches!(func.as_str(), "int.add_or" | "int_add_or") {
                 return emit_int_add_or(args, ctx, insns);

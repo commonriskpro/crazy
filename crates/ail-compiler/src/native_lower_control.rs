@@ -155,6 +155,17 @@ pub(super) fn lower_call(
                 }
             }
         }
+        "int.wrapping_mul" | "int_wrapping_mul" if args.len() == 2 => {
+            let left = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            let right = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
+            match (left, right) {
+                (Some(left), Some(right)) => LowerResult::Value(builder.ins().imul(left, right)),
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
         "int.saturating_neg" | "int_saturating_neg" if args.len() == 1 => {
             let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
             match value {

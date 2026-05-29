@@ -215,6 +215,21 @@ fn wasm_emits_int_wrapping_sub_as_plain_sub() {
 }
 
 #[test]
+fn wasm_emits_int_wrapping_mul_as_plain_mul() {
+    let wasm = emit_call_wasm("int.wrapping_mul", &["left", "right"], &[6, 7]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.mul"),
+        "int.wrapping_mul must emit plain wrapping multiplication: {ops:?}"
+    );
+    assert!(
+        !ops.contains(&"if"),
+        "int.wrapping_mul must not emit overflow branches: {ops:?}"
+    );
+}
+
+#[test]
 fn wasm_emits_int_add_or_as_overflow_safe_signed_branch() {
     let wasm = emit_call_wasm("int.add_or", &["left", "right", "fallback"], &[40, 2, -1]);
     let ops = operator_names(&wasm);
