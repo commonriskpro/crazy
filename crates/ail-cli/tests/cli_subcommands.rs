@@ -355,7 +355,7 @@ fn run_file_executes_ail_source_int_bounds_helpers() {
     let source = dir.child("int_bounds.ail");
     source
         .write_str(
-            "fn bounded() -> Int = int_min(10, -2) + int_max(10, -2) + int_clamp(42, 0, 10) + int_abs_or(-7, 0) + int_abs_or(-9223372036854775808, 99) + int_neg_or(-5, 0) + int_neg_or(-9223372036854775808, 17) + int_add_or(40, 2, -1) + int_add_or(9223372036854775807, 1, 19) + int_sub_or(50, 8, -1) + int_sub_or(-9223372036854775808, 1, 23) + int_mul_or(6, 7, -1) + int_mul_or(9223372036854775807, 2, 29) + int_mul_or(-9223372036854775808, -1, 31) + int_saturating_add(40, 2) + int_saturating_sub(50, 8) + int_saturating_sub(-40, -2) + int_saturating_mul(6, 7) + int_saturating_mul(-6, 7) + int_saturating_neg(-5) + int_saturating_neg(5) + int_saturating_neg(-9223372036854775808) + int_saturating_neg(9223372036854775807) + int_wrapping_add(40, 2) + int_wrapping_add(9223372036854775807, 1) + int_wrapping_add(-9223372036854775808, -1) + int_wrapping_sub(50, 8) + int_wrapping_sub(-40, -2) + int_wrapping_mul(6, 7) + int_wrapping_mul(9223372036854775807, 2) + int_wrapping_neg(-5) + int_wrapping_neg(5) + int_bit_and(6, 3) + int_bit_and(-1, 42) + int_bit_or(4, 1) + int_bit_or(8, 3) + int_bit_xor(6, 3) + int_bit_xor(-1, 42) + int_bit_not(0) + int_bit_not(-1) + int_shift_left(1, 3) + int_shift_left(-1, 1) + int_shift_right(16, 1) + int_shift_right(-8, 1) + int_div_or(21, 3, -1) + int_div_or(1, 0, 5) + int_div_or(-9223372036854775808, -1, 11) + int_rem_or(22, 5, -1) + int_rem_or(1, 0, 6) + int_rem_or(-9223372036854775808, -1, 13)\n",
+            "fn bounded() -> Int = int_min(10, -2) + int_max(10, -2) + int_clamp(42, 0, 10) + int_abs_or(-7, 0) + int_abs_or(-9223372036854775808, 99) + int_neg_or(-5, 0) + int_neg_or(-9223372036854775808, 17) + int_add_or(40, 2, -1) + int_add_or(9223372036854775807, 1, 19) + int_sub_or(50, 8, -1) + int_sub_or(-9223372036854775808, 1, 23) + int_mul_or(6, 7, -1) + int_mul_or(9223372036854775807, 2, 29) + int_mul_or(-9223372036854775808, -1, 31) + int_saturating_add(40, 2) + int_saturating_sub(50, 8) + int_saturating_sub(-40, -2) + int_saturating_mul(6, 7) + int_saturating_mul(-6, 7) + int_saturating_neg(-5) + int_saturating_neg(5) + int_saturating_neg(-9223372036854775808) + int_saturating_neg(9223372036854775807) + int_wrapping_add(40, 2) + int_wrapping_add(9223372036854775807, 1) + int_wrapping_add(-9223372036854775808, -1) + int_wrapping_sub(50, 8) + int_wrapping_sub(-40, -2) + int_wrapping_mul(6, 7) + int_wrapping_mul(9223372036854775807, 2) + int_wrapping_neg(-5) + int_wrapping_neg(5) + int_bit_and(6, 3) + int_bit_and(-1, 42) + int_bit_or(4, 1) + int_bit_or(8, 3) + int_bit_xor(6, 3) + int_bit_xor(-1, 42) + int_bit_not(0) + int_bit_not(-1) + int_shift_left(1, 3) + int_shift_left(-1, 1) + int_shift_right(16, 1) + int_shift_right(-8, 1) + int_shift_right_unsigned(16, 1) + int_div_or(21, 3, -1) + int_div_or(1, 0, 5) + int_div_or(-9223372036854775808, -1, 11) + int_rem_or(22, 5, -1) + int_rem_or(1, 0, 6) + int_rem_or(-9223372036854775808, -1, 13)\n",
         )
         .expect("source fixture must be written");
 
@@ -370,7 +370,7 @@ fn run_file_executes_ail_source_int_bounds_helpers() {
         .assert()
         .success()
         .stdout(predicate::str::contains("module: fn.bounded"))
-        .stdout(predicate::str::contains("result: 576"));
+        .stdout(predicate::str::contains("result: 584"));
 }
 
 #[test]
@@ -1043,7 +1043,7 @@ fn compile_file_accepts_source_int_bounds_helpers() {
     let source = dir.child("int_bounds.ail");
     source
         .write_str(
-            "fn bounded(value: Int, low: Int, high: Int, fallback: Int) -> Int = int_min(value, high) + int_max(value, low) + int_clamp(value, low, high) + int_abs_or(value, 0) + int_neg_or(value, fallback) + int_add_or(value, 1, fallback) + int_sub_or(value, 1, fallback) + int_mul_or(value, 1, fallback) + int_saturating_add(value, 1) + int_saturating_sub(value, 1) + int_saturating_mul(value, 1) + int_saturating_neg(value) + int_wrapping_add(value, 1) + int_wrapping_sub(value, 1) + int_wrapping_mul(value, 1) + int_wrapping_neg(value) + int_bit_and(value, high) + int_bit_or(value, low) + int_bit_xor(value, high) + int_bit_not(value) + int_shift_left(value, 1) + int_shift_right(value, 1) + int_div_or(value, 1, fallback) + int_rem_or(value, 1, fallback)\n",
+            "fn bounded(value: Int, low: Int, high: Int, fallback: Int) -> Int = int_min(value, high) + int_max(value, low) + int_clamp(value, low, high) + int_abs_or(value, 0) + int_neg_or(value, fallback) + int_add_or(value, 1, fallback) + int_sub_or(value, 1, fallback) + int_mul_or(value, 1, fallback) + int_saturating_add(value, 1) + int_saturating_sub(value, 1) + int_saturating_mul(value, 1) + int_saturating_neg(value) + int_wrapping_add(value, 1) + int_wrapping_sub(value, 1) + int_wrapping_mul(value, 1) + int_wrapping_neg(value) + int_bit_and(value, high) + int_bit_or(value, low) + int_bit_xor(value, high) + int_bit_not(value) + int_shift_left(value, 1) + int_shift_right(value, 1) + int_shift_right_unsigned(value, 1) + int_div_or(value, 1, fallback) + int_rem_or(value, 1, fallback)\n",
         )
         .expect("source fixture must be written");
 
@@ -1074,7 +1074,7 @@ fn compile_file_rejects_source_int_bounds_helper_type_mismatch() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "type mismatch in int.shift_right argument 2: expected Int, got Text",
+            "type mismatch in int.shift_right_unsigned argument 2: expected Int, got Text",
         ));
 }
 
@@ -3822,7 +3822,7 @@ fn lsp_diagnose_accepts_source_int_bounds_helpers() {
     let source = dir.child("main.ail");
     source
         .write_str(
-            "fn bounded(value: Int, low: Int, high: Int) -> Int = int_min(value, high) + int_max(value, low) + int_clamp(value, low, high) + int_abs_or(value, 0) + int_neg_or(value, 0) + int_add_or(value, 1, 0) + int_sub_or(value, 1, 0) + int_mul_or(value, 1, 0) + int_saturating_add(value, 1) + int_saturating_sub(value, 1) + int_saturating_mul(value, 1) + int_saturating_neg(value) + int_wrapping_add(value, 1) + int_wrapping_sub(value, 1) + int_wrapping_mul(value, 1) + int_wrapping_neg(value) + int_bit_and(value, high) + int_bit_or(value, low) + int_bit_xor(value, high) + int_bit_not(value) + int_shift_left(value, 1) + int_shift_right(value, 1) + int_div_or(value, 1, 0) + int_rem_or(value, 1, 0)\n",
+            "fn bounded(value: Int, low: Int, high: Int) -> Int = int_min(value, high) + int_max(value, low) + int_clamp(value, low, high) + int_abs_or(value, 0) + int_neg_or(value, 0) + int_add_or(value, 1, 0) + int_sub_or(value, 1, 0) + int_mul_or(value, 1, 0) + int_saturating_add(value, 1) + int_saturating_sub(value, 1) + int_saturating_mul(value, 1) + int_saturating_neg(value) + int_wrapping_add(value, 1) + int_wrapping_sub(value, 1) + int_wrapping_mul(value, 1) + int_wrapping_neg(value) + int_bit_and(value, high) + int_bit_or(value, low) + int_bit_xor(value, high) + int_bit_not(value) + int_shift_left(value, 1) + int_shift_right(value, 1) + int_shift_right_unsigned(value, 1) + int_div_or(value, 1, 0) + int_rem_or(value, 1, 0)\n",
         )
         .expect("source fixture must be written");
 
@@ -5986,6 +5986,25 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .any(|item| item["label"] == "int_shift_right"
                 && item["detail"] == "AIL source Int bit shift helper"),
         "completion must include AIL source int_shift_right helper; got: {int_shift_right_items:?}"
+    );
+
+    let int_shift_right_unsigned_completion_output = ail()
+        .args(["lsp", "--complete", "int_shift_right_unsigned", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let int_shift_right_unsigned_completion =
+        parse_json_output(&int_shift_right_unsigned_completion_output);
+    let int_shift_right_unsigned_items = int_shift_right_unsigned_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        int_shift_right_unsigned_items
+            .iter()
+            .any(|item| item["label"] == "int_shift_right_unsigned"
+                && item["detail"] == "AIL source Int bit shift helper"),
+        "completion must include AIL source int_shift_right_unsigned helper; got: {int_shift_right_unsigned_items:?}"
     );
 
     let int_div_or_completion_output = ail()

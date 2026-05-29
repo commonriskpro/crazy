@@ -200,6 +200,9 @@ fn fold_call(
         ("int.shift_right" | "int_shift_right", [value, amount]) => {
             Some(LiteralValue::Int(value.wrapping_shr(*amount as u32)))
         }
+        ("int.shift_right_unsigned" | "int_shift_right_unsigned", [value, amount]) => Some(
+            LiteralValue::Int(((*value as u64).wrapping_shr(*amount as u32)) as i64),
+        ),
         ("int.min" | "int_min", [a, b]) => Some(LiteralValue::Int((*a).min(*b))),
         ("int.max" | "int_max", [a, b]) => Some(LiteralValue::Int((*a).max(*b))),
         ("int.abs_or" | "int_abs_or", [value, fallback]) => {

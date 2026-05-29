@@ -939,16 +939,53 @@ fn validate_source_call_arity(
 
 fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
     let arity = match call {
-        "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
-        | "le" | "and" | "or" | "concat" | "int.min" | "int.max" | "int.abs_or" | "int.neg_or"
-        | "int.saturating_add" | "int.saturating_sub" | "int.saturating_mul"
-        | "int.wrapping_add" | "int.wrapping_sub" | "int.wrapping_mul" | "int_min" | "int_max"
-        | "int_abs_or" | "int_neg_or" | "int_saturating_add" | "int_saturating_sub"
-        | "int_saturating_mul" | "int_wrapping_add" | "int_wrapping_sub" | "int_wrapping_mul"
-        | "int.bit_and" | "int.bit_or" | "int.bit_xor" | "int.shift_left" | "int.shift_right"
-        | "int_bit_and" | "int_bit_or" | "int_bit_xor" | "int_shift_left" | "int_shift_right" => {
-            SourceArity::Exact(2)
-        }
+        "add"
+        | "sub"
+        | "mul"
+        | "div"
+        | "mod"
+        | "signed_mod"
+        | "eq"
+        | "ne"
+        | "gt"
+        | "ge"
+        | "lt"
+        | "le"
+        | "and"
+        | "or"
+        | "concat"
+        | "int.min"
+        | "int.max"
+        | "int.abs_or"
+        | "int.neg_or"
+        | "int.saturating_add"
+        | "int.saturating_sub"
+        | "int.saturating_mul"
+        | "int.wrapping_add"
+        | "int.wrapping_sub"
+        | "int.wrapping_mul"
+        | "int_min"
+        | "int_max"
+        | "int_abs_or"
+        | "int_neg_or"
+        | "int_saturating_add"
+        | "int_saturating_sub"
+        | "int_saturating_mul"
+        | "int_wrapping_add"
+        | "int_wrapping_sub"
+        | "int_wrapping_mul"
+        | "int.bit_and"
+        | "int.bit_or"
+        | "int.bit_xor"
+        | "int.shift_left"
+        | "int.shift_right"
+        | "int.shift_right_unsigned"
+        | "int_bit_and"
+        | "int_bit_or"
+        | "int_bit_xor"
+        | "int_shift_left"
+        | "int_shift_right"
+        | "int_shift_right_unsigned" => SourceArity::Exact(2),
         "int.saturating_neg" | "int.wrapping_neg" | "int.bit_not" | "int_saturating_neg"
         | "int_wrapping_neg" | "int_bit_not" => SourceArity::Exact(1),
         "text.contains" | "text.ends_with" | "text.index_of" | "text.starts_with"
@@ -1288,10 +1325,28 @@ fn infer_source_call_type(
         "match" if args.len() >= 3 && args.len() % 2 == 1 => {
             infer_source_match_type(args, scope, functions)
         }
-        "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "int.min" | "int.max"
-        | "int.abs_or" | "int.neg_or" | "int.saturating_add" | "int.saturating_sub"
-        | "int.saturating_mul" | "int.wrapping_add" | "int.wrapping_sub" | "int.wrapping_mul"
-        | "int.bit_and" | "int.bit_or" | "int.bit_xor" | "int.shift_left" | "int.shift_right" => {
+        "add"
+        | "sub"
+        | "mul"
+        | "div"
+        | "mod"
+        | "signed_mod"
+        | "int.min"
+        | "int.max"
+        | "int.abs_or"
+        | "int.neg_or"
+        | "int.saturating_add"
+        | "int.saturating_sub"
+        | "int.saturating_mul"
+        | "int.wrapping_add"
+        | "int.wrapping_sub"
+        | "int.wrapping_mul"
+        | "int.bit_and"
+        | "int.bit_or"
+        | "int.bit_xor"
+        | "int.shift_left"
+        | "int.shift_right"
+        | "int.shift_right_unsigned" => {
             validate_source_arg_types(func, args, scope, functions, &["Int", "Int"])?;
             Ok("Int".to_string())
         }
@@ -2323,6 +2378,17 @@ fn format_source_expr_node(
         return (
             format!(
                 "int_shift_right({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "int.shift_right_unsigned" && args.len() == 2 {
+        return (
+            format!(
+                "int_shift_right_unsigned({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
             ),
@@ -3758,6 +3824,10 @@ fn lower_source_int_bounds_expr(expr: &str, line_num: usize) -> Result<Option<St
         "int_bit_not" => ("int.bit_not", "int_bit_not(value)"),
         "int_shift_left" => ("int.shift_left", "int_shift_left(value, amount)"),
         "int_shift_right" => ("int.shift_right", "int_shift_right(value, amount)"),
+        "int_shift_right_unsigned" => (
+            "int.shift_right_unsigned",
+            "int_shift_right_unsigned(value, amount)",
+        ),
         "int_saturating_neg" => ("int.saturating_neg", "int_saturating_neg(value)"),
         "int_abs_or" => ("int.abs_or", "int_abs_or(value, fallback)"),
         "int_neg_or" => ("int.neg_or", "int_neg_or(value, fallback)"),
@@ -5572,6 +5642,7 @@ fn toggled(left: Int, right: Int) -> Int = int_bit_xor(left, right)
 fn inverted(value: Int) -> Int = int_bit_not(value)
 fn shifted_left(value: Int, amount: Int) -> Int = int_shift_left(value, amount)
 fn shifted_right(value: Int, amount: Int) -> Int = int_shift_right(value, amount)
+fn shifted_right_unsigned(value: Int, amount: Int) -> Int = int_shift_right_unsigned(value, amount)
 fn quotient(value: Int, divisor: Int, fallback: Int) -> Int = int_div_or(value, divisor, fallback)
 fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value, divisor, fallback)
 "#,
@@ -5646,6 +5717,9 @@ fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value,
         ));
         assert!(acl.contains(
             "op create_function id=fn.shifted_right return=Int body=int.shift_right(value, amount)"
+        ));
+        assert!(acl.contains(
+            "op create_function id=fn.shifted_right_unsigned return=Int body=int.shift_right_unsigned(value, amount)"
         ));
         assert!(acl.contains(
             "op create_function id=fn.quotient return=Int body=int.div_or(value, divisor, fallback)"
@@ -5795,11 +5869,11 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
     #[test]
     fn formats_source_int_bounds_helpers() {
         let (formatted, item_count) = format_ail_source(
-            "fn low(left:Int,right:Int)->Int=int.min(left,right)\nfn high(left:Int,right:Int)->Int=int.max(left,right)\nfn bounded(value:Int,low:Int,high:Int)->Int=int.clamp(value,low,high)\nfn magnitude(value:Int,fallback:Int)->Int=int.abs_or(value,fallback)\nfn negated(value:Int,fallback:Int)->Int=int.neg_or(value,fallback)\nfn summed(left:Int,right:Int,fallback:Int)->Int=int.add_or(left,right,fallback)\nfn difference(left:Int,right:Int,fallback:Int)->Int=int.sub_or(left,right,fallback)\nfn product(left:Int,right:Int,fallback:Int)->Int=int.mul_or(left,right,fallback)\nfn saturated(left:Int,right:Int)->Int=int.saturating_add(left,right)\nfn saturated_difference(left:Int,right:Int)->Int=int.saturating_sub(left,right)\nfn saturated_product(left:Int,right:Int)->Int=int.saturating_mul(left,right)\nfn saturated_negated(value:Int)->Int=int.saturating_neg(value)\nfn wrapped_sum(left:Int,right:Int)->Int=int.wrapping_add(left,right)\nfn wrapped_difference(left:Int,right:Int)->Int=int.wrapping_sub(left,right)\nfn wrapped_product(left:Int,right:Int)->Int=int.wrapping_mul(left,right)\nfn wrapped_negated(value:Int)->Int=int.wrapping_neg(value)\nfn quotient(value:Int,divisor:Int,fallback:Int)->Int=int.div_or(value,divisor,fallback)\nfn remainder(value:Int,divisor:Int,fallback:Int)->Int=int.rem_or(value,divisor,fallback)\n",
+            "fn low(left:Int,right:Int)->Int=int.min(left,right)\nfn high(left:Int,right:Int)->Int=int.max(left,right)\nfn bounded(value:Int,low:Int,high:Int)->Int=int.clamp(value,low,high)\nfn magnitude(value:Int,fallback:Int)->Int=int.abs_or(value,fallback)\nfn negated(value:Int,fallback:Int)->Int=int.neg_or(value,fallback)\nfn summed(left:Int,right:Int,fallback:Int)->Int=int.add_or(left,right,fallback)\nfn difference(left:Int,right:Int,fallback:Int)->Int=int.sub_or(left,right,fallback)\nfn product(left:Int,right:Int,fallback:Int)->Int=int.mul_or(left,right,fallback)\nfn saturated(left:Int,right:Int)->Int=int.saturating_add(left,right)\nfn saturated_difference(left:Int,right:Int)->Int=int.saturating_sub(left,right)\nfn saturated_product(left:Int,right:Int)->Int=int.saturating_mul(left,right)\nfn saturated_negated(value:Int)->Int=int.saturating_neg(value)\nfn wrapped_sum(left:Int,right:Int)->Int=int.wrapping_add(left,right)\nfn wrapped_difference(left:Int,right:Int)->Int=int.wrapping_sub(left,right)\nfn wrapped_product(left:Int,right:Int)->Int=int.wrapping_mul(left,right)\nfn wrapped_negated(value:Int)->Int=int.wrapping_neg(value)\nfn masked(left:Int,right:Int)->Int=int.bit_and(left,right)\nfn flagged(left:Int,right:Int)->Int=int.bit_or(left,right)\nfn toggled(left:Int,right:Int)->Int=int.bit_xor(left,right)\nfn inverted(value:Int)->Int=int.bit_not(value)\nfn shifted_left(value:Int,amount:Int)->Int=int.shift_left(value,amount)\nfn shifted_right(value:Int,amount:Int)->Int=int.shift_right(value,amount)\nfn shifted_right_unsigned(value:Int,amount:Int)->Int=int.shift_right_unsigned(value,amount)\nfn quotient(value:Int,divisor:Int,fallback:Int)->Int=int.div_or(value,divisor,fallback)\nfn remainder(value:Int,divisor:Int,fallback:Int)->Int=int.rem_or(value,divisor,fallback)\n",
         )
         .expect("source int bounds helpers must format");
 
-        assert_eq!(item_count, 24);
+        assert_eq!(item_count, 25);
         assert!(
             formatted.contains("fn low(left: Int, right: Int) -> Int = int_min(left, right)\n")
         );
@@ -5849,6 +5923,28 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
         assert!(
             formatted.contains("fn wrapped_negated(value: Int) -> Int = int_wrapping_neg(value)\n")
         );
+        assert!(
+            formatted
+                .contains("fn masked(left: Int, right: Int) -> Int = int_bit_and(left, right)\n")
+        );
+        assert!(
+            formatted
+                .contains("fn flagged(left: Int, right: Int) -> Int = int_bit_or(left, right)\n")
+        );
+        assert!(
+            formatted
+                .contains("fn toggled(left: Int, right: Int) -> Int = int_bit_xor(left, right)\n")
+        );
+        assert!(formatted.contains("fn inverted(value: Int) -> Int = int_bit_not(value)\n"));
+        assert!(formatted.contains(
+            "fn shifted_left(value: Int, amount: Int) -> Int = int_shift_left(value, amount)\n"
+        ));
+        assert!(formatted.contains(
+            "fn shifted_right(value: Int, amount: Int) -> Int = int_shift_right(value, amount)\n"
+        ));
+        assert!(formatted.contains(
+            "fn shifted_right_unsigned(value: Int, amount: Int) -> Int = int_shift_right_unsigned(value, amount)\n"
+        ));
         assert!(formatted.contains(
             "fn quotient(value: Int, divisor: Int, fallback: Int) -> Int = int_div_or(value, divisor, fallback)\n"
         ));
