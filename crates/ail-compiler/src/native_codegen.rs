@@ -189,7 +189,8 @@ pub(crate) fn infer_cranelift_return_type(
             | "int.max" | "int_max"
             | "int.clamp" | "int_clamp"
             | "int.abs_or" | "int_abs_or"
-            | "int.div_or" | "int_div_or" => Some(types::I64),
+            | "int.div_or" | "int_div_or"
+            | "int.rem_or" | "int_rem_or" => Some(types::I64),
             "i64.eq" | "==" | "eq"
             | "i64.ne" | "!=" | "ne"
             | "i64.lt_s" | "<" | "lt"

@@ -61,6 +61,7 @@ fn operator_names(wasm: &[u8]) -> Vec<&'static str> {
                     Operator::I64Eq => names.push("i64.eq"),
                     Operator::I64Sub => names.push("i64.sub"),
                     Operator::I64DivS => names.push("i64.div_s"),
+                    Operator::I64RemS => names.push("i64.rem_s"),
                     Operator::I32And => names.push("i32.and"),
                     Operator::If { .. } => names.push("if"),
                     _ => {}
@@ -167,5 +168,32 @@ fn wasm_emits_int_div_or_as_trap_safe_signed_branch() {
     assert!(
         ops.iter().filter(|name| **name == "if").count() >= 2,
         "int.div_or must branch around unsafe division paths: {ops:?}"
+    );
+}
+
+#[test]
+fn wasm_emits_int_rem_or_as_trap_safe_signed_branch() {
+    let wasm = emit_call_wasm(
+        "int.rem_or",
+        &["value", "divisor", "fallback"],
+        &[22, 5, -1],
+    );
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.eq"),
+        "int.rem_or must check zero divisor and signed overflow guards: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i32.and"),
+        "int.rem_or must combine the i64::MIN / -1 overflow guard: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i64.rem_s"),
+        "int.rem_or must still emit signed remainder on the safe path: {ops:?}"
+    );
+    assert!(
+        ops.iter().filter(|name| **name == "if").count() >= 2,
+        "int.rem_or must branch around unsafe remainder paths: {ops:?}"
     );
 }

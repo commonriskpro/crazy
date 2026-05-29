@@ -826,6 +826,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "int_div_or(${1:value}, ${2:divisor}, ${3:fallback})",
     },
     AclSymbol {
+        label: "int_rem_or",
+        detail: "AIL source Int safety helper",
+        documentation: "Computes Int remainder, or returns fallback on divide-by-zero or signed overflow.",
+        insert_text: "int_rem_or(${1:value}, ${2:divisor}, ${3:fallback})",
+    },
+    AclSymbol {
         label: "concat",
         detail: "AIL source Text builtin",
         documentation: "Concatenates two Text values and returns Text.",

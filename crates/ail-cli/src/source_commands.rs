@@ -947,9 +947,8 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         | "text_eq" => SourceArity::Exact(2),
         "text.parse_int_or" | "text_parse_int_or" => SourceArity::Exact(2),
         "text.byte_at_or" | "text_byte_at_or" | "text.replace_first" | "text_replace_first"
-        | "text.slice" | "text_slice" | "int.clamp" | "int.div_or" | "int_clamp" | "int_div_or" => {
-            SourceArity::Exact(3)
-        }
+        | "text.slice" | "text_slice" | "int.clamp" | "int.div_or" | "int.rem_or" | "int_clamp"
+        | "int_div_or" | "int_rem_or" => SourceArity::Exact(3),
         "field" | "index" | "unwrap_or" | "first_or" | "last_or" => SourceArity::Exact(2),
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
@@ -1284,7 +1283,7 @@ fn infer_source_call_type(
             validate_source_arg_types(func, args, scope, functions, &["Int", "Int"])?;
             Ok("Int".to_string())
         }
-        "int.clamp" | "int.div_or" => {
+        "int.clamp" | "int.div_or" | "int.rem_or" => {
             validate_source_arg_types(func, args, scope, functions, &["Int", "Int", "Int"])?;
             Ok("Int".to_string())
         }
@@ -2199,6 +2198,18 @@ fn format_source_expr_node(
         return (
             format!(
                 "int_div_or({}, {}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants),
+                format_source_expr(&args[2], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "int.rem_or" && args.len() == 3 {
+        return (
+            format!(
+                "int_rem_or({}, {}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants),
                 format_source_expr(&args[2], module, constants)
@@ -3519,9 +3530,10 @@ fn lower_source_int_bounds_expr(expr: &str, line_num: usize) -> Result<Option<St
         "int_clamp" => ("int.clamp", "int_clamp(value, low, high)"),
         "int_abs_or" => ("int.abs_or", "int_abs_or(value, fallback)"),
         "int_div_or" => ("int.div_or", "int_div_or(value, divisor, fallback)"),
+        "int_rem_or" => ("int.rem_or", "int_rem_or(value, divisor, fallback)"),
         _ => return Ok(None),
     };
-    let expected_len = if matches!(func.as_str(), "int_clamp" | "int_div_or") {
+    let expected_len = if matches!(func.as_str(), "int_clamp" | "int_div_or" | "int_rem_or") {
         3
     } else {
         2
@@ -5303,6 +5315,7 @@ fn high(left: Int, right: Int) -> Int = int_max(left, right)
 fn bounded(value: Int, low: Int, high: Int) -> Int = int_clamp(value, low, high)
 fn magnitude(value: Int, fallback: Int) -> Int = int_abs_or(value, fallback)
 fn quotient(value: Int, divisor: Int, fallback: Int) -> Int = int_div_or(value, divisor, fallback)
+fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value, divisor, fallback)
 "#,
         )
         .expect("source int bounds helpers must parse");
@@ -5318,6 +5331,9 @@ fn quotient(value: Int, divisor: Int, fallback: Int) -> Int = int_div_or(value, 
         ));
         assert!(acl.contains(
             "op create_function id=fn.quotient return=Int body=int.div_or(value, divisor, fallback)"
+        ));
+        assert!(acl.contains(
+            "op create_function id=fn.remainder return=Int body=int.rem_or(value, divisor, fallback)"
         ));
     }
 
@@ -5461,11 +5477,11 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
     #[test]
     fn formats_source_int_bounds_helpers() {
         let (formatted, item_count) = format_ail_source(
-            "fn low(left:Int,right:Int)->Int=int.min(left,right)\nfn high(left:Int,right:Int)->Int=int.max(left,right)\nfn bounded(value:Int,low:Int,high:Int)->Int=int.clamp(value,low,high)\nfn magnitude(value:Int,fallback:Int)->Int=int.abs_or(value,fallback)\n",
+            "fn low(left:Int,right:Int)->Int=int.min(left,right)\nfn high(left:Int,right:Int)->Int=int.max(left,right)\nfn bounded(value:Int,low:Int,high:Int)->Int=int.clamp(value,low,high)\nfn magnitude(value:Int,fallback:Int)->Int=int.abs_or(value,fallback)\nfn quotient(value:Int,divisor:Int,fallback:Int)->Int=int.div_or(value,divisor,fallback)\nfn remainder(value:Int,divisor:Int,fallback:Int)->Int=int.rem_or(value,divisor,fallback)\n",
         )
         .expect("source int bounds helpers must format");
 
-        assert_eq!(item_count, 5);
+        assert_eq!(item_count, 6);
         assert!(
             formatted.contains("fn low(left: Int, right: Int) -> Int = int_min(left, right)\n")
         );
@@ -5477,6 +5493,12 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
         ));
         assert!(formatted.contains(
             "fn magnitude(value: Int, fallback: Int) -> Int = int_abs_or(value, fallback)\n"
+        ));
+        assert!(formatted.contains(
+            "fn quotient(value: Int, divisor: Int, fallback: Int) -> Int = int_div_or(value, divisor, fallback)\n"
+        ));
+        assert!(formatted.contains(
+            "fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value, divisor, fallback)\n"
         ));
     }
 
