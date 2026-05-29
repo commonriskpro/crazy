@@ -179,6 +179,21 @@ pub(super) fn lower_call(
                 }
             }
         }
+        "int.mul_or" | "int_mul_or" if args.len() == 3 => {
+            let left = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            let right = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
+            let fallback = ctx.lookup(args[2].as_str()).map(|(v, _)| v);
+            match (left, right, fallback) {
+                (Some(left), Some(right), Some(fallback)) => {
+                    let (product, overflow) = builder.ins().smul_overflow(left, right);
+                    LowerResult::Value(builder.ins().select(overflow, fallback, product))
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
         "int.div_or" | "int_div_or" if args.len() == 3 => {
             let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
             let divisor = ctx.lookup(args[1].as_str()).map(|(v, _)| v);

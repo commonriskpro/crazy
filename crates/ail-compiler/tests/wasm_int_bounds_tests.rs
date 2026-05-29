@@ -212,6 +212,29 @@ fn wasm_emits_int_sub_or_as_overflow_safe_signed_branch() {
 }
 
 #[test]
+fn wasm_emits_int_mul_or_as_trap_safe_signed_branch() {
+    let wasm = emit_call_wasm("int.mul_or", &["left", "right", "fallback"], &[6, 7, -1]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.mul"),
+        "int.mul_or must still emit signed multiplication on the safe path: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i64.div_s"),
+        "int.mul_or must verify multiplication by dividing the wrapped product: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i32.and"),
+        "int.mul_or must combine the i64::MIN / -1 trap guard: {ops:?}"
+    );
+    assert!(
+        ops.iter().filter(|name| **name == "if").count() >= 3,
+        "int.mul_or must branch around zero, trap-prone division, and fallback selection: {ops:?}"
+    );
+}
+
+#[test]
 fn wasm_emits_int_div_or_as_trap_safe_signed_branch() {
     let wasm = emit_call_wasm(
         "int.div_or",
