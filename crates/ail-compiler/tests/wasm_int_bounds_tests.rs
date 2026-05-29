@@ -215,6 +215,21 @@ fn wasm_emits_int_bit_or_as_plain_or() {
 }
 
 #[test]
+fn wasm_emits_int_bit_xor_as_plain_xor() {
+    let wasm = emit_call_wasm("int.bit_xor", &["left", "right"], &[6, 3]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.xor"),
+        "int.bit_xor must emit plain bitwise xor: {ops:?}"
+    );
+    assert!(
+        !ops.contains(&"if"),
+        "int.bit_xor must not emit branches: {ops:?}"
+    );
+}
+
+#[test]
 fn wasm_emits_int_wrapping_add_as_plain_add() {
     let wasm = emit_call_wasm("int.wrapping_add", &["left", "right"], &[40, 2]);
     let ops = operator_names(&wasm);

@@ -190,6 +190,9 @@ fn fold_call(
             Some(LiteralValue::Int(a & b))
         }
         ("i64.or" | "or" | "int.bit_or" | "int_bit_or", [a, b]) => Some(LiteralValue::Int(a | b)),
+        ("i64.xor" | "xor" | "int.bit_xor" | "int_bit_xor", [a, b]) => {
+            Some(LiteralValue::Int(a ^ b))
+        }
         ("int.min" | "int_min", [a, b]) => Some(LiteralValue::Int((*a).min(*b))),
         ("int.max" | "int_max", [a, b]) => Some(LiteralValue::Int((*a).max(*b))),
         ("int.abs_or" | "int_abs_or", [value, fallback]) => {

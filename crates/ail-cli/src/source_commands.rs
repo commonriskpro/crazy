@@ -945,7 +945,8 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         | "int.wrapping_add" | "int.wrapping_sub" | "int.wrapping_mul" | "int_min" | "int_max"
         | "int_abs_or" | "int_neg_or" | "int_saturating_add" | "int_saturating_sub"
         | "int_saturating_mul" | "int_wrapping_add" | "int_wrapping_sub" | "int_wrapping_mul"
-        | "int.bit_and" | "int.bit_or" | "int_bit_and" | "int_bit_or" => SourceArity::Exact(2),
+        | "int.bit_and" | "int.bit_or" | "int.bit_xor" | "int_bit_and" | "int_bit_or"
+        | "int_bit_xor" => SourceArity::Exact(2),
         "int.saturating_neg" | "int.wrapping_neg" | "int_saturating_neg" | "int_wrapping_neg" => {
             SourceArity::Exact(1)
         }
@@ -1289,7 +1290,7 @@ fn infer_source_call_type(
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "int.min" | "int.max"
         | "int.abs_or" | "int.neg_or" | "int.saturating_add" | "int.saturating_sub"
         | "int.saturating_mul" | "int.wrapping_add" | "int.wrapping_sub" | "int.wrapping_mul"
-        | "int.bit_and" | "int.bit_or" => {
+        | "int.bit_and" | "int.bit_or" | "int.bit_xor" => {
             validate_source_arg_types(func, args, scope, functions, &["Int", "Int"])?;
             Ok("Int".to_string())
         }
@@ -2288,6 +2289,17 @@ fn format_source_expr_node(
         return (
             format!(
                 "int_bit_or({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "int.bit_xor" && args.len() == 2 {
+        return (
+            format!(
+                "int_bit_xor({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
             ),
@@ -3709,6 +3721,7 @@ fn lower_source_int_bounds_expr(expr: &str, line_num: usize) -> Result<Option<St
         "int_wrapping_neg" => ("int.wrapping_neg", "int_wrapping_neg(value)"),
         "int_bit_and" => ("int.bit_and", "int_bit_and(left, right)"),
         "int_bit_or" => ("int.bit_or", "int_bit_or(left, right)"),
+        "int_bit_xor" => ("int.bit_xor", "int_bit_xor(left, right)"),
         "int_saturating_neg" => ("int.saturating_neg", "int_saturating_neg(value)"),
         "int_abs_or" => ("int.abs_or", "int_abs_or(value, fallback)"),
         "int_neg_or" => ("int.neg_or", "int_neg_or(value, fallback)"),
@@ -5516,6 +5529,7 @@ fn wrapped_product(left: Int, right: Int) -> Int = int_wrapping_mul(left, right)
 fn wrapped_negated(value: Int) -> Int = int_wrapping_neg(value)
 fn masked(left: Int, right: Int) -> Int = int_bit_and(left, right)
 fn flagged(left: Int, right: Int) -> Int = int_bit_or(left, right)
+fn toggled(left: Int, right: Int) -> Int = int_bit_xor(left, right)
 fn quotient(value: Int, divisor: Int, fallback: Int) -> Int = int_div_or(value, divisor, fallback)
 fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value, divisor, fallback)
 "#,
@@ -5575,6 +5589,11 @@ fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value,
         assert!(
             acl.contains(
                 "op create_function id=fn.flagged return=Int body=int.bit_or(left, right)"
+            )
+        );
+        assert!(
+            acl.contains(
+                "op create_function id=fn.toggled return=Int body=int.bit_xor(left, right)"
             )
         );
         assert!(acl.contains(
@@ -5729,7 +5748,7 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
         )
         .expect("source int bounds helpers must format");
 
-        assert_eq!(item_count, 20);
+        assert_eq!(item_count, 21);
         assert!(
             formatted.contains("fn low(left: Int, right: Int) -> Int = int_min(left, right)\n")
         );
