@@ -189,6 +189,29 @@ fn wasm_emits_int_add_or_as_overflow_safe_signed_branch() {
 }
 
 #[test]
+fn wasm_emits_int_sub_or_as_overflow_safe_signed_branch() {
+    let wasm = emit_call_wasm("int.sub_or", &["left", "right", "fallback"], &[40, 2, -1]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.sub"),
+        "int.sub_or must still emit signed subtraction on the safe path: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i32.and"),
+        "int.sub_or must combine sign-specific overflow guards: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i32.or"),
+        "int.sub_or must combine positive and negative overflow guards: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"if"),
+        "int.sub_or must branch between fallback and difference: {ops:?}"
+    );
+}
+
+#[test]
 fn wasm_emits_int_div_or_as_trap_safe_signed_branch() {
     let wasm = emit_call_wasm(
         "int.div_or",

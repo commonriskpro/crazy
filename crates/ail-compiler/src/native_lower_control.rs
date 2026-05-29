@@ -156,6 +156,29 @@ pub(super) fn lower_call(
                 }
             }
         }
+        "int.sub_or" | "int_sub_or" if args.len() == 3 => {
+            let left = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            let right = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
+            let fallback = ctx.lookup(args[2].as_str()).map(|(v, _)| v);
+            match (left, right, fallback) {
+                (Some(left), Some(right), Some(fallback)) => {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let diff = builder.ins().isub(left, right);
+                    let right_positive = builder.ins().icmp(IntCC::SignedGreaterThan, right, zero);
+                    let diff_gt_left = builder.ins().icmp(IntCC::SignedGreaterThan, diff, left);
+                    let pos_overflow = builder.ins().band(right_positive, diff_gt_left);
+                    let right_negative = builder.ins().icmp(IntCC::SignedLessThan, right, zero);
+                    let diff_lt_left = builder.ins().icmp(IntCC::SignedLessThan, diff, left);
+                    let neg_overflow = builder.ins().band(right_negative, diff_lt_left);
+                    let overflow = builder.ins().bor(pos_overflow, neg_overflow);
+                    LowerResult::Value(builder.ins().select(overflow, fallback, diff))
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
         "int.div_or" | "int_div_or" if args.len() == 3 => {
             let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
             let divisor = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
