@@ -944,6 +944,7 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         | "int.saturating_add" | "int.saturating_sub" | "int.saturating_mul" | "int_min"
         | "int_max" | "int_abs_or" | "int_neg_or" | "int_saturating_add" | "int_saturating_sub"
         | "int_saturating_mul" => SourceArity::Exact(2),
+        "int.saturating_neg" | "int_saturating_neg" => SourceArity::Exact(1),
         "text.contains" | "text.ends_with" | "text.index_of" | "text.starts_with"
         | "text_contains" | "text_ends_with" | "text_index_of" | "text_starts_with" | "text.eq"
         | "text_eq" => SourceArity::Exact(2),
@@ -1285,6 +1286,10 @@ fn infer_source_call_type(
         | "int.abs_or" | "int.neg_or" | "int.saturating_add" | "int.saturating_sub"
         | "int.saturating_mul" => {
             validate_source_arg_types(func, args, scope, functions, &["Int", "Int"])?;
+            Ok("Int".to_string())
+        }
+        "int.saturating_neg" => {
+            validate_source_arg_types(func, args, scope, functions, &["Int"])?;
             Ok("Int".to_string())
         }
         "int.clamp" | "int.add_or" | "int.sub_or" | "int.mul_or" | "int.div_or" | "int.rem_or" => {
@@ -2225,6 +2230,16 @@ fn format_source_expr_node(
                 "int_saturating_mul({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "int.saturating_neg" && args.len() == 1 {
+        return (
+            format!(
+                "int_saturating_neg({})",
+                format_source_expr(&args[0], module, constants)
             ),
             CALL_PRECEDENCE,
         );
@@ -3618,13 +3633,16 @@ fn lower_source_int_bounds_expr(expr: &str, line_num: usize) -> Result<Option<St
         "int_saturating_add" => ("int.saturating_add", "int_saturating_add(left, right)"),
         "int_saturating_sub" => ("int.saturating_sub", "int_saturating_sub(left, right)"),
         "int_saturating_mul" => ("int.saturating_mul", "int_saturating_mul(left, right)"),
+        "int_saturating_neg" => ("int.saturating_neg", "int_saturating_neg(value)"),
         "int_abs_or" => ("int.abs_or", "int_abs_or(value, fallback)"),
         "int_neg_or" => ("int.neg_or", "int_neg_or(value, fallback)"),
         "int_div_or" => ("int.div_or", "int_div_or(value, divisor, fallback)"),
         "int_rem_or" => ("int.rem_or", "int_rem_or(value, divisor, fallback)"),
         _ => return Ok(None),
     };
-    let expected_len = if matches!(
+    let expected_len = if func == "int_saturating_neg" {
+        1
+    } else if matches!(
         func.as_str(),
         "int_clamp" | "int_add_or" | "int_sub_or" | "int_mul_or" | "int_div_or" | "int_rem_or"
     ) {
@@ -5415,6 +5433,7 @@ fn product(left: Int, right: Int, fallback: Int) -> Int = int_mul_or(left, right
 fn saturated(left: Int, right: Int) -> Int = int_saturating_add(left, right)
 fn saturated_difference(left: Int, right: Int) -> Int = int_saturating_sub(left, right)
 fn saturated_product(left: Int, right: Int) -> Int = int_saturating_mul(left, right)
+fn saturated_negated(value: Int) -> Int = int_saturating_neg(value)
 fn quotient(value: Int, divisor: Int, fallback: Int) -> Int = int_div_or(value, divisor, fallback)
 fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value, divisor, fallback)
 "#,
@@ -5450,6 +5469,9 @@ fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value,
         ));
         assert!(acl.contains(
             "op create_function id=fn.saturated_product return=Int body=int.saturating_mul(left, right)"
+        ));
+        assert!(acl.contains(
+            "op create_function id=fn.saturated_negated return=Int body=int.saturating_neg(value)"
         ));
         assert!(acl.contains(
             "op create_function id=fn.quotient return=Int body=int.div_or(value, divisor, fallback)"
@@ -5603,7 +5625,7 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
         )
         .expect("source int bounds helpers must format");
 
-        assert_eq!(item_count, 13);
+        assert_eq!(item_count, 14);
         assert!(
             formatted.contains("fn low(left: Int, right: Int) -> Int = int_min(left, right)\n")
         );

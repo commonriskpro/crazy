@@ -862,6 +862,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "int_saturating_mul(${1:left}, ${2:right})",
     },
     AclSymbol {
+        label: "int_saturating_neg",
+        detail: "AIL source Int safety helper",
+        documentation: "Negates an Int value, clamping the minimum Int overflow case to Int max.",
+        insert_text: "int_saturating_neg(${1:value})",
+    },
+    AclSymbol {
         label: "int_div_or",
         detail: "AIL source Int safety helper",
         documentation: "Divides two Int values, or returns fallback on divide-by-zero or signed overflow.",

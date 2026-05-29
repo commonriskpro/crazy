@@ -651,6 +651,30 @@ fn emit_int_mul_or<'a>(
     Some(ValType::I64)
 }
 
+fn emit_int_saturating_neg<'a>(
+    args: &[String],
+    ctx: &WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [value] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+
+    emit_local_as_i64(ctx, value, insns);
+    insns.push(Instruction::I64Const(i64::MIN));
+    insns.push(Instruction::I64Eq);
+    insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+    insns.push(Instruction::I64Const(i64::MAX));
+    insns.push(Instruction::Else);
+    insns.push(Instruction::I64Const(0));
+    emit_local_as_i64(ctx, value, insns);
+    insns.push(Instruction::I64Sub);
+    insns.push(Instruction::End);
+
+    Some(ValType::I64)
+}
+
 fn emit_int_saturating_add<'a>(
     args: &[String],
     ctx: &mut WasmCodegenCtx<'a>,
@@ -2586,6 +2610,9 @@ fn emit_anf_expr<'a>(
             }
             if matches!(func.as_str(), "int.neg_or" | "int_neg_or") {
                 return emit_int_neg_or(args, ctx, insns);
+            }
+            if matches!(func.as_str(), "int.saturating_neg" | "int_saturating_neg") {
+                return emit_int_saturating_neg(args, ctx, insns);
             }
             if matches!(func.as_str(), "int.add_or" | "int_add_or") {
                 return emit_int_add_or(args, ctx, insns);

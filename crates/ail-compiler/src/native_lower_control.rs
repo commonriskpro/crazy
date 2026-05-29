@@ -133,6 +133,23 @@ pub(super) fn lower_call(
             }
         }
 
+        "int.saturating_neg" | "int_saturating_neg" if args.len() == 1 => {
+            let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            match value {
+                Some(value) => {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let max = builder.ins().iconst(types::I64, i64::MAX);
+                    let min = builder.ins().iconst(types::I64, i64::MIN);
+                    let is_min = builder.ins().icmp(IntCC::Equal, value, min);
+                    let negated = builder.ins().isub(zero, value);
+                    LowerResult::Value(builder.ins().select(is_min, max, negated))
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
         "int.add_or" | "int_add_or" if args.len() == 3 => {
             let left = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
             let right = ctx.lookup(args[1].as_str()).map(|(v, _)| v);

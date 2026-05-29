@@ -166,6 +166,25 @@ fn wasm_emits_int_neg_or_as_overflow_safe_signed_branch() {
 }
 
 #[test]
+fn wasm_emits_int_saturating_neg_as_clamping_signed_branch() {
+    let wasm = emit_call_wasm("int.saturating_neg", &["value"], &[-5]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.eq"),
+        "int.saturating_neg must check the minimum Int overflow case: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i64.sub"),
+        "int.saturating_neg must negate safe values with subtraction: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"if"),
+        "int.saturating_neg must branch between max clamp and negated value: {ops:?}"
+    );
+}
+
+#[test]
 fn wasm_emits_int_add_or_as_overflow_safe_signed_branch() {
     let wasm = emit_call_wasm("int.add_or", &["left", "right", "fallback"], &[40, 2, -1]);
     let ops = operator_names(&wasm);
