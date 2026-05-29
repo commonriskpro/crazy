@@ -355,7 +355,7 @@ fn run_file_executes_ail_source_int_bounds_helpers() {
     let source = dir.child("int_bounds.ail");
     source
         .write_str(
-            "fn bounded() -> Int = int_min(10, -2) + int_max(10, -2) + int_clamp(42, 0, 10) + int_abs_or(-7, 0) + int_abs_or(-9223372036854775808, 99) + int_div_or(21, 3, -1) + int_div_or(1, 0, 5) + int_div_or(-9223372036854775808, -1, 11) + int_rem_or(22, 5, -1) + int_rem_or(1, 0, 6) + int_rem_or(-9223372036854775808, -1, 13)\n",
+            "fn bounded() -> Int = int_min(10, -2) + int_max(10, -2) + int_clamp(42, 0, 10) + int_abs_or(-7, 0) + int_abs_or(-9223372036854775808, 99) + int_neg_or(-5, 0) + int_neg_or(-9223372036854775808, 17) + int_div_or(21, 3, -1) + int_div_or(1, 0, 5) + int_div_or(-9223372036854775808, -1, 11) + int_rem_or(22, 5, -1) + int_rem_or(1, 0, 6) + int_rem_or(-9223372036854775808, -1, 13)\n",
         )
         .expect("source fixture must be written");
 
@@ -370,7 +370,7 @@ fn run_file_executes_ail_source_int_bounds_helpers() {
         .assert()
         .success()
         .stdout(predicate::str::contains("module: fn.bounded"))
-        .stdout(predicate::str::contains("result: 168"));
+        .stdout(predicate::str::contains("result: 190"));
 }
 
 #[test]
@@ -1043,7 +1043,7 @@ fn compile_file_accepts_source_int_bounds_helpers() {
     let source = dir.child("int_bounds.ail");
     source
         .write_str(
-            "fn bounded(value: Int, low: Int, high: Int, fallback: Int) -> Int = int_rem_or(int_div_or(int_abs_or(int_clamp(int_min(value, high), low, high), 0), 2, fallback), 3, fallback)\n",
+            "fn bounded(value: Int, low: Int, high: Int, fallback: Int) -> Int = int_neg_or(int_rem_or(int_div_or(int_abs_or(int_clamp(int_min(value, high), low, high), 0), 2, fallback), 3, fallback), fallback)\n",
         )
         .expect("source fixture must be written");
 
@@ -1074,7 +1074,7 @@ fn compile_file_rejects_source_int_bounds_helper_type_mismatch() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "type mismatch in int.rem_or argument 3: expected Int, got Text",
+            "type mismatch in int.neg_or argument 2: expected Int, got Text",
         ));
 }
 
@@ -5662,6 +5662,24 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .any(|item| item["label"] == "int_abs_or"
                 && item["detail"] == "AIL source Int safety helper"),
         "completion must include AIL source int_abs_or helper; got: {int_abs_or_items:?}"
+    );
+
+    let int_neg_or_completion_output = ail()
+        .args(["lsp", "--complete", "int_neg_or", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let int_neg_or_completion = parse_json_output(&int_neg_or_completion_output);
+    let int_neg_or_items = int_neg_or_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        int_neg_or_items
+            .iter()
+            .any(|item| item["label"] == "int_neg_or"
+                && item["detail"] == "AIL source Int safety helper"),
+        "completion must include AIL source int_neg_or helper; got: {int_neg_or_items:?}"
     );
 
     let int_div_or_completion_output = ail()

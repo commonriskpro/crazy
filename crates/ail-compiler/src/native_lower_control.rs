@@ -114,6 +114,24 @@ pub(super) fn lower_call(
                 }
             }
         }
+
+        "int.neg_or" | "int_neg_or" if args.len() == 2 => {
+            let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            let fallback = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
+            match (value, fallback) {
+                (Some(value), Some(fallback)) => {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let min_value = builder.ins().iconst(types::I64, i64::MIN);
+                    let is_min = builder.ins().icmp(IntCC::Equal, value, min_value);
+                    let negated = builder.ins().isub(zero, value);
+                    LowerResult::Value(builder.ins().select(is_min, fallback, negated))
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
         "int.div_or" | "int_div_or" if args.len() == 3 => {
             let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
             let divisor = ctx.lookup(args[1].as_str()).map(|(v, _)| v);

@@ -820,6 +820,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "int_abs_or(${1:value}, ${2:fallback})",
     },
     AclSymbol {
+        label: "int_neg_or",
+        detail: "AIL source Int safety helper",
+        documentation: "Negates an Int value, or returns fallback for the minimum Int overflow case.",
+        insert_text: "int_neg_or(${1:value}, ${2:fallback})",
+    },
+    AclSymbol {
         label: "int_div_or",
         detail: "AIL source Int safety helper",
         documentation: "Divides two Int values, or returns fallback on divide-by-zero or signed overflow.",

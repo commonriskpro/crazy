@@ -145,6 +145,25 @@ fn wasm_emits_int_abs_or_as_overflow_safe_signed_branch() {
 }
 
 #[test]
+fn wasm_emits_int_neg_or_as_overflow_safe_signed_branch() {
+    let wasm = emit_call_wasm("int.neg_or", &["value", "fallback"], &[-5, 17]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.eq"),
+        "int.neg_or must check the minimum Int overflow case: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i64.sub"),
+        "int.neg_or must negate safe values with subtraction: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"if"),
+        "int.neg_or must branch between fallback and negated value: {ops:?}"
+    );
+}
+
+#[test]
 fn wasm_emits_int_div_or_as_trap_safe_signed_branch() {
     let wasm = emit_call_wasm(
         "int.div_or",
