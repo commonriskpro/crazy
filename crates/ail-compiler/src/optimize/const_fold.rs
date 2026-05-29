@@ -200,6 +200,9 @@ fn fold_call(
         ("int.wrapping_add" | "int_wrapping_add", [left, right]) => {
             Some(LiteralValue::Int(left.wrapping_add(*right)))
         }
+        ("int.wrapping_sub" | "int_wrapping_sub", [left, right]) => {
+            Some(LiteralValue::Int(left.wrapping_sub(*right)))
+        }
         ("int.add_or" | "int_add_or", [left, right, fallback]) => Some(LiteralValue::Int(
             left.checked_add(*right).unwrap_or(*fallback),
         )),

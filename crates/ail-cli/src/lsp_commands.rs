@@ -874,6 +874,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "int_wrapping_add(${1:left}, ${2:right})",
     },
     AclSymbol {
+        label: "int_wrapping_sub",
+        detail: "AIL source Int explicit wrapping helper",
+        documentation: "Subtracts two Int values with explicit two's-complement wrapping semantics.",
+        insert_text: "int_wrapping_sub(${1:left}, ${2:right})",
+    },
+    AclSymbol {
         label: "int_div_or",
         detail: "AIL source Int safety helper",
         documentation: "Divides two Int values, or returns fallback on divide-by-zero or signed overflow.",

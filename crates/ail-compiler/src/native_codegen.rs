@@ -192,6 +192,7 @@ pub(crate) fn infer_cranelift_return_type(
             | "int.neg_or" | "int_neg_or"
             | "int.saturating_neg" | "int_saturating_neg"
             | "int.wrapping_add" | "int_wrapping_add"
+            | "int.wrapping_sub" | "int_wrapping_sub"
             | "int.add_or" | "int_add_or"
             | "int.sub_or" | "int_sub_or"
             | "int.mul_or" | "int_mul_or"
