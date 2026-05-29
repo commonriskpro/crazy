@@ -355,7 +355,7 @@ fn run_file_executes_ail_source_int_bounds_helpers() {
     let source = dir.child("int_bounds.ail");
     source
         .write_str(
-            "fn bounded() -> Int = int_min(10, -2) + int_max(10, -2) + int_clamp(42, 0, 10) + int_abs_or(-7, 0) + int_abs_or(-9223372036854775808, 99) + int_neg_or(-5, 0) + int_neg_or(-9223372036854775808, 17) + int_add_or(40, 2, -1) + int_add_or(9223372036854775807, 1, 19) + int_sub_or(50, 8, -1) + int_sub_or(-9223372036854775808, 1, 23) + int_mul_or(6, 7, -1) + int_mul_or(9223372036854775807, 2, 29) + int_mul_or(-9223372036854775808, -1, 31) + int_div_or(21, 3, -1) + int_div_or(1, 0, 5) + int_div_or(-9223372036854775808, -1, 11) + int_rem_or(22, 5, -1) + int_rem_or(1, 0, 6) + int_rem_or(-9223372036854775808, -1, 13)\n",
+            "fn bounded() -> Int = int_min(10, -2) + int_max(10, -2) + int_clamp(42, 0, 10) + int_abs_or(-7, 0) + int_abs_or(-9223372036854775808, 99) + int_neg_or(-5, 0) + int_neg_or(-9223372036854775808, 17) + int_add_or(40, 2, -1) + int_add_or(9223372036854775807, 1, 19) + int_sub_or(50, 8, -1) + int_sub_or(-9223372036854775808, 1, 23) + int_mul_or(6, 7, -1) + int_mul_or(9223372036854775807, 2, 29) + int_mul_or(-9223372036854775808, -1, 31) + int_saturating_add(40, 2) + int_div_or(21, 3, -1) + int_div_or(1, 0, 5) + int_div_or(-9223372036854775808, -1, 11) + int_rem_or(22, 5, -1) + int_rem_or(1, 0, 6) + int_rem_or(-9223372036854775808, -1, 13)\n",
         )
         .expect("source fixture must be written");
 
@@ -370,7 +370,7 @@ fn run_file_executes_ail_source_int_bounds_helpers() {
         .assert()
         .success()
         .stdout(predicate::str::contains("module: fn.bounded"))
-        .stdout(predicate::str::contains("result: 418"));
+        .stdout(predicate::str::contains("result: 460"));
 }
 
 #[test]
@@ -1043,7 +1043,7 @@ fn compile_file_accepts_source_int_bounds_helpers() {
     let source = dir.child("int_bounds.ail");
     source
         .write_str(
-            "fn bounded(value: Int, low: Int, high: Int, fallback: Int) -> Int = int_mul_or(int_sub_or(int_add_or(int_neg_or(int_rem_or(int_div_or(int_abs_or(int_clamp(int_min(value, high), low, high), 0), 2, fallback), 3, fallback), fallback), 1, fallback), 1, fallback))\n",
+            "fn bounded(value: Int, low: Int, high: Int, fallback: Int) -> Int = int_saturating_add(int_mul_or(int_sub_or(int_add_or(int_neg_or(int_rem_or(int_div_or(int_abs_or(int_clamp(int_min(value, high), low, high), 0), 2, fallback), 3, fallback), fallback), 1, fallback), 1, fallback), 1))\n",
         )
         .expect("source fixture must be written");
 
@@ -1063,7 +1063,7 @@ fn compile_file_rejects_source_int_bounds_helper_type_mismatch() {
     let source = dir.child("bad_int_bounds.ail");
     source
         .write_str(
-            "fn bounded(value: Int, fallback: Text) -> Int = int_mul_or(value, 2, fallback)\n",
+            "fn bounded(value: Int, fallback: Text) -> Int = int_saturating_add(value, fallback)\n",
         )
         .expect("source fixture must be written");
 
@@ -1074,7 +1074,7 @@ fn compile_file_rejects_source_int_bounds_helper_type_mismatch() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "type mismatch in int.mul_or argument 3: expected Int, got Text",
+            "type mismatch in int.saturating_add argument 2: expected Int, got Text",
         ));
 }
 
@@ -3822,7 +3822,7 @@ fn lsp_diagnose_accepts_source_int_bounds_helpers() {
     let source = dir.child("main.ail");
     source
         .write_str(
-            "fn bounded(value: Int, low: Int, high: Int) -> Int = int_mul_or(int_sub_or(int_add_or(int_neg_or(int_rem_or(int_div_or(int_abs_or(int_clamp(int_min(value, high), low, high), 0), 2, 0), 3, 0), 0), 1, 0), 1, 0))\n",
+            "fn bounded(value: Int, low: Int, high: Int) -> Int = int_saturating_add(int_mul_or(int_sub_or(int_add_or(int_neg_or(int_rem_or(int_div_or(int_abs_or(int_clamp(int_min(value, high), low, high), 0), 2, 0), 3, 0), 0), 1, 0), 1, 0), 1))\n",
         )
         .expect("source fixture must be written");
 
@@ -5734,6 +5734,24 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .any(|item| item["label"] == "int_mul_or"
                 && item["detail"] == "AIL source Int safety helper"),
         "completion must include AIL source int_mul_or helper; got: {int_mul_or_items:?}"
+    );
+
+    let int_saturating_add_completion_output = ail()
+        .args(["lsp", "--complete", "int_saturating_add", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let int_saturating_add_completion = parse_json_output(&int_saturating_add_completion_output);
+    let int_saturating_add_items = int_saturating_add_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        int_saturating_add_items
+            .iter()
+            .any(|item| item["label"] == "int_saturating_add"
+                && item["detail"] == "AIL source Int safety helper"),
+        "completion must include AIL source int_saturating_add helper; got: {int_saturating_add_items:?}"
     );
 
     let int_div_or_completion_output = ail()

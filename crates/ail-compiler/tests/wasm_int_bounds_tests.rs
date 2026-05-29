@@ -235,6 +235,25 @@ fn wasm_emits_int_mul_or_as_trap_safe_signed_branch() {
 }
 
 #[test]
+fn wasm_emits_int_saturating_add_as_clamping_signed_branch() {
+    let wasm = emit_call_wasm("int.saturating_add", &["left", "right"], &[40, 2]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.add"),
+        "int.saturating_add must still emit signed addition on the safe path: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i32.and"),
+        "int.saturating_add must combine sign-specific overflow guards: {ops:?}"
+    );
+    assert!(
+        ops.iter().filter(|name| **name == "if").count() >= 2,
+        "int.saturating_add must branch between high clamp, low clamp, and sum: {ops:?}"
+    );
+}
+
+#[test]
 fn wasm_emits_int_div_or_as_trap_safe_signed_branch() {
     let wasm = emit_call_wasm(
         "int.div_or",

@@ -941,7 +941,8 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
     let arity = match call {
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
         | "le" | "and" | "or" | "concat" | "int.min" | "int.max" | "int.abs_or" | "int.neg_or"
-        | "int_min" | "int_max" | "int_abs_or" | "int_neg_or" => SourceArity::Exact(2),
+        | "int.saturating_add" | "int_min" | "int_max" | "int_abs_or" | "int_neg_or"
+        | "int_saturating_add" => SourceArity::Exact(2),
         "text.contains" | "text.ends_with" | "text.index_of" | "text.starts_with"
         | "text_contains" | "text_ends_with" | "text_index_of" | "text_starts_with" | "text.eq"
         | "text_eq" => SourceArity::Exact(2),
@@ -1280,7 +1281,7 @@ fn infer_source_call_type(
             infer_source_match_type(args, scope, functions)
         }
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "int.min" | "int.max"
-        | "int.abs_or" | "int.neg_or" => {
+        | "int.abs_or" | "int.neg_or" | "int.saturating_add" => {
             validate_source_arg_types(func, args, scope, functions, &["Int", "Int"])?;
             Ok("Int".to_string())
         }
@@ -2187,6 +2188,17 @@ fn format_source_expr_node(
         return (
             format!(
                 "int_neg_or({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "int.saturating_add" && args.len() == 2 {
+        return (
+            format!(
+                "int_saturating_add({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
             ),
@@ -3579,6 +3591,7 @@ fn lower_source_int_bounds_expr(expr: &str, line_num: usize) -> Result<Option<St
         "int_add_or" => ("int.add_or", "int_add_or(left, right, fallback)"),
         "int_sub_or" => ("int.sub_or", "int_sub_or(left, right, fallback)"),
         "int_mul_or" => ("int.mul_or", "int_mul_or(left, right, fallback)"),
+        "int_saturating_add" => ("int.saturating_add", "int_saturating_add(left, right)"),
         "int_abs_or" => ("int.abs_or", "int_abs_or(value, fallback)"),
         "int_neg_or" => ("int.neg_or", "int_neg_or(value, fallback)"),
         "int_div_or" => ("int.div_or", "int_div_or(value, divisor, fallback)"),
@@ -5373,6 +5386,7 @@ fn negated(value: Int, fallback: Int) -> Int = int_neg_or(value, fallback)
 fn summed(left: Int, right: Int, fallback: Int) -> Int = int_add_or(left, right, fallback)
 fn difference(left: Int, right: Int, fallback: Int) -> Int = int_sub_or(left, right, fallback)
 fn product(left: Int, right: Int, fallback: Int) -> Int = int_mul_or(left, right, fallback)
+fn saturated(left: Int, right: Int) -> Int = int_saturating_add(left, right)
 fn quotient(value: Int, divisor: Int, fallback: Int) -> Int = int_div_or(value, divisor, fallback)
 fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value, divisor, fallback)
 "#,
@@ -5399,6 +5413,9 @@ fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value,
         ));
         assert!(acl.contains(
             "op create_function id=fn.product return=Int body=int.mul_or(left, right, fallback)"
+        ));
+        assert!(acl.contains(
+            "op create_function id=fn.saturated return=Int body=int.saturating_add(left, right)"
         ));
         assert!(acl.contains(
             "op create_function id=fn.quotient return=Int body=int.div_or(value, divisor, fallback)"
@@ -5552,7 +5569,7 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
         )
         .expect("source int bounds helpers must format");
 
-        assert_eq!(item_count, 10);
+        assert_eq!(item_count, 11);
         assert!(
             formatted.contains("fn low(left: Int, right: Int) -> Int = int_min(left, right)\n")
         );

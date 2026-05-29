@@ -194,6 +194,30 @@ pub(super) fn lower_call(
                 }
             }
         }
+        "int.saturating_add" | "int_saturating_add" if args.len() == 2 => {
+            let left = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            let right = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
+            match (left, right) {
+                (Some(left), Some(right)) => {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let max = builder.ins().iconst(types::I64, i64::MAX);
+                    let min = builder.ins().iconst(types::I64, i64::MIN);
+                    let sum = builder.ins().iadd(left, right);
+                    let right_positive = builder.ins().icmp(IntCC::SignedGreaterThan, right, zero);
+                    let sum_lt_left = builder.ins().icmp(IntCC::SignedLessThan, sum, left);
+                    let pos_overflow = builder.ins().band(right_positive, sum_lt_left);
+                    let right_negative = builder.ins().icmp(IntCC::SignedLessThan, right, zero);
+                    let sum_gt_left = builder.ins().icmp(IntCC::SignedGreaterThan, sum, left);
+                    let neg_overflow = builder.ins().band(right_negative, sum_gt_left);
+                    let high_or_sum = builder.ins().select(pos_overflow, max, sum);
+                    LowerResult::Value(builder.ins().select(neg_overflow, min, high_or_sum))
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
         "int.div_or" | "int_div_or" if args.len() == 3 => {
             let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
             let divisor = ctx.lookup(args[1].as_str()).map(|(v, _)| v);

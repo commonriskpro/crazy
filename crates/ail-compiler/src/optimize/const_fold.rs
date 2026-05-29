@@ -203,6 +203,9 @@ fn fold_call(
         ("int.mul_or" | "int_mul_or", [left, right, fallback]) => Some(LiteralValue::Int(
             left.checked_mul(*right).unwrap_or(*fallback),
         )),
+        ("int.saturating_add" | "int_saturating_add", [left, right]) => {
+            Some(LiteralValue::Int(left.saturating_add(*right)))
+        }
         ("int.div_or" | "int_div_or", [value, divisor, fallback]) => Some(LiteralValue::Int(
             value.checked_div(*divisor).unwrap_or(*fallback),
         )),
