@@ -59,10 +59,12 @@ fn operator_names(wasm: &[u8]) -> Vec<&'static str> {
                     Operator::I64LtS => names.push("i64.lt_s"),
                     Operator::I64GtS => names.push("i64.gt_s"),
                     Operator::I64Eq => names.push("i64.eq"),
+                    Operator::I64Add => names.push("i64.add"),
                     Operator::I64Sub => names.push("i64.sub"),
                     Operator::I64DivS => names.push("i64.div_s"),
                     Operator::I64RemS => names.push("i64.rem_s"),
                     Operator::I32And => names.push("i32.and"),
+                    Operator::I32Or => names.push("i32.or"),
                     Operator::If { .. } => names.push("if"),
                     _ => {}
                 }
@@ -160,6 +162,29 @@ fn wasm_emits_int_neg_or_as_overflow_safe_signed_branch() {
     assert!(
         ops.contains(&"if"),
         "int.neg_or must branch between fallback and negated value: {ops:?}"
+    );
+}
+
+#[test]
+fn wasm_emits_int_add_or_as_overflow_safe_signed_branch() {
+    let wasm = emit_call_wasm("int.add_or", &["left", "right", "fallback"], &[40, 2, -1]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.add"),
+        "int.add_or must still emit signed addition on the safe path: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i32.and"),
+        "int.add_or must combine sign-specific overflow guards: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i32.or"),
+        "int.add_or must combine positive and negative overflow guards: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"if"),
+        "int.add_or must branch between fallback and sum: {ops:?}"
     );
 }
 

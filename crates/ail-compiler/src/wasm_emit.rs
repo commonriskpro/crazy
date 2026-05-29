@@ -480,6 +480,60 @@ fn emit_int_neg_or<'a>(
     Some(ValType::I64)
 }
 
+fn emit_int_add_or<'a>(
+    args: &[String],
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [left_arg, right_arg, fallback_arg] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+
+    let left = ctx.bind_temp(ValType::I64);
+    emit_local_as_i64(ctx, left_arg, insns);
+    insns.push(Instruction::LocalSet(left));
+
+    let right = ctx.bind_temp(ValType::I64);
+    emit_local_as_i64(ctx, right_arg, insns);
+    insns.push(Instruction::LocalSet(right));
+
+    let fallback = ctx.bind_temp(ValType::I64);
+    emit_local_as_i64(ctx, fallback_arg, insns);
+    insns.push(Instruction::LocalSet(fallback));
+
+    let sum = ctx.bind_temp(ValType::I64);
+    insns.push(Instruction::LocalGet(left));
+    insns.push(Instruction::LocalGet(right));
+    insns.push(Instruction::I64Add);
+    insns.push(Instruction::LocalSet(sum));
+
+    insns.push(Instruction::LocalGet(right));
+    insns.push(Instruction::I64Const(0));
+    insns.push(Instruction::I64GtS);
+    insns.push(Instruction::LocalGet(sum));
+    insns.push(Instruction::LocalGet(left));
+    insns.push(Instruction::I64LtS);
+    insns.push(Instruction::I32And);
+
+    insns.push(Instruction::LocalGet(right));
+    insns.push(Instruction::I64Const(0));
+    insns.push(Instruction::I64LtS);
+    insns.push(Instruction::LocalGet(sum));
+    insns.push(Instruction::LocalGet(left));
+    insns.push(Instruction::I64GtS);
+    insns.push(Instruction::I32And);
+
+    insns.push(Instruction::I32Or);
+    insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+    insns.push(Instruction::LocalGet(fallback));
+    insns.push(Instruction::Else);
+    insns.push(Instruction::LocalGet(sum));
+    insns.push(Instruction::End);
+
+    Some(ValType::I64)
+}
+
 fn emit_int_div_or<'a>(
     args: &[String],
     ctx: &WasmCodegenCtx<'a>,
@@ -2235,6 +2289,9 @@ fn emit_anf_expr<'a>(
             }
             if matches!(func.as_str(), "int.neg_or" | "int_neg_or") {
                 return emit_int_neg_or(args, ctx, insns);
+            }
+            if matches!(func.as_str(), "int.add_or" | "int_add_or") {
+                return emit_int_add_or(args, ctx, insns);
             }
             if matches!(func.as_str(), "int.div_or" | "int_div_or") {
                 return emit_int_div_or(args, ctx, insns);
