@@ -206,6 +206,9 @@ fn fold_call(
         ("int.saturating_add" | "int_saturating_add", [left, right]) => {
             Some(LiteralValue::Int(left.saturating_add(*right)))
         }
+        ("int.saturating_sub" | "int_saturating_sub", [left, right]) => {
+            Some(LiteralValue::Int(left.saturating_sub(*right)))
+        }
         ("int.div_or" | "int_div_or", [value, divisor, fallback]) => Some(LiteralValue::Int(
             value.checked_div(*divisor).unwrap_or(*fallback),
         )),
