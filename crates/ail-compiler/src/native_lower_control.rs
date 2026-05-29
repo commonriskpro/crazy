@@ -172,6 +172,19 @@ pub(super) fn lower_call(
                 }
             }
         }
+        "int.shift_left" | "int_shift_left" if args.len() == 2 => {
+            let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            let amount = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
+            match (value, amount) {
+                (Some(value), Some(amount)) => {
+                    LowerResult::Value(builder.ins().ishl(value, amount))
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
         "int.bit_not" | "int_bit_not" if args.len() == 1 => {
             let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
             match value {

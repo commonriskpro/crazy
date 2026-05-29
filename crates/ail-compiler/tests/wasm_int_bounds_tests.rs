@@ -245,6 +245,25 @@ fn wasm_emits_int_bit_not_as_xor_with_all_ones() {
 }
 
 #[test]
+fn wasm_emits_int_shift_left_as_wrapping_shl() {
+    let wasm = emit_call_wasm("int.shift_left", &["value", "amount"], &[1, 3]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.shl"),
+        "int.shift_left must emit plain left shift: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i32.wrap_i64"),
+        "int.shift_left must wrap the Int shift amount to i32 for wasm: {ops:?}"
+    );
+    assert!(
+        !ops.contains(&"if"),
+        "int.shift_left must not emit branches: {ops:?}"
+    );
+}
+
+#[test]
 fn wasm_emits_int_wrapping_add_as_plain_add() {
     let wasm = emit_call_wasm("int.wrapping_add", &["left", "right"], &[40, 2]);
     let ops = operator_names(&wasm);
