@@ -185,6 +185,21 @@ fn wasm_emits_int_saturating_neg_as_clamping_signed_branch() {
 }
 
 #[test]
+fn wasm_emits_int_bit_and_as_plain_and() {
+    let wasm = emit_call_wasm("int.bit_and", &["left", "right"], &[6, 3]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.and"),
+        "int.bit_and must emit plain bitwise and: {ops:?}"
+    );
+    assert!(
+        !ops.contains(&"if"),
+        "int.bit_and must not emit branches: {ops:?}"
+    );
+}
+
+#[test]
 fn wasm_emits_int_wrapping_add_as_plain_add() {
     let wasm = emit_call_wasm("int.wrapping_add", &["left", "right"], &[40, 2]);
     let ops = operator_names(&wasm);

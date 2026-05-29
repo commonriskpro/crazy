@@ -892,6 +892,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "int_wrapping_neg(${1:value})",
     },
     AclSymbol {
+        label: "int_bit_and",
+        detail: "AIL source Int bitwise helper",
+        documentation: "Computes the bitwise AND of two Int values.",
+        insert_text: "int_bit_and(${1:left}, ${2:right})",
+    },
+    AclSymbol {
         label: "int_div_or",
         detail: "AIL source Int safety helper",
         documentation: "Divides two Int values, or returns fallback on divide-by-zero or signed overflow.",

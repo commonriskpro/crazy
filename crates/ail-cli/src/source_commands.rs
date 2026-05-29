@@ -938,40 +938,40 @@ fn validate_source_call_arity(
 }
 
 fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
-    let arity =
-        match call {
-            "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge"
-            | "lt" | "le" | "and" | "or" | "concat" | "int.min" | "int.max" | "int.abs_or"
-            | "int.neg_or" | "int.saturating_add" | "int.saturating_sub" | "int.saturating_mul"
-            | "int.wrapping_add" | "int.wrapping_sub" | "int.wrapping_mul" | "int_min"
-            | "int_max" | "int_abs_or" | "int_neg_or" | "int_saturating_add"
-            | "int_saturating_sub" | "int_saturating_mul" | "int_wrapping_add"
-            | "int_wrapping_sub" | "int_wrapping_mul" => SourceArity::Exact(2),
-            "int.saturating_neg" | "int.wrapping_neg" | "int_saturating_neg"
-            | "int_wrapping_neg" => SourceArity::Exact(1),
-            "text.contains" | "text.ends_with" | "text.index_of" | "text.starts_with"
-            | "text_contains" | "text_ends_with" | "text_index_of" | "text_starts_with"
-            | "text.eq" | "text_eq" => SourceArity::Exact(2),
-            "text.parse_int_or" | "text_parse_int_or" => SourceArity::Exact(2),
-            "text.byte_at_or" | "text_byte_at_or" | "text.replace_first" | "text_replace_first"
-            | "text.slice" | "text_slice" | "int.clamp" | "int.add_or" | "int.div_or"
-            | "int.rem_or" | "int.sub_or" | "int.mul_or" | "int_clamp" | "int_add_or"
-            | "int_sub_or" | "int_mul_or" | "int_div_or" | "int_rem_or" => SourceArity::Exact(3),
-            "field" | "index" | "unwrap_or" | "first_or" | "last_or" => SourceArity::Exact(2),
-            "get_or" => SourceArity::Exact(3),
-            "update" => SourceArity::Exact(3),
-            "none" => SourceArity::Exact(0),
-            "not" | "len" | "print" | "text.trim" | "text_trim" | "Var" | "is_empty"
-            | "is_some" | "is_none" | "is_ok" | "is_err" => SourceArity::Exact(1),
-            "some" | "ok" | "err" => SourceArity::Exact(1),
-            "if" | "let" | "fold" => SourceArity::Exact(3),
-            "let_typed" => SourceArity::Exact(5),
-            "effect_call" => SourceArity::Min(2),
-            "map" | "record" => SourceArity::Even,
-            "tuple" | "list" | "set" => SourceArity::Any,
-            "match" => SourceArity::Match,
-            _ => return None,
-        };
+    let arity = match call {
+        "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "eq" | "ne" | "gt" | "ge" | "lt"
+        | "le" | "and" | "or" | "concat" | "int.min" | "int.max" | "int.abs_or" | "int.neg_or"
+        | "int.saturating_add" | "int.saturating_sub" | "int.saturating_mul"
+        | "int.wrapping_add" | "int.wrapping_sub" | "int.wrapping_mul" | "int_min" | "int_max"
+        | "int_abs_or" | "int_neg_or" | "int_saturating_add" | "int_saturating_sub"
+        | "int_saturating_mul" | "int_wrapping_add" | "int_wrapping_sub" | "int_wrapping_mul"
+        | "int.bit_and" | "int_bit_and" => SourceArity::Exact(2),
+        "int.saturating_neg" | "int.wrapping_neg" | "int_saturating_neg" | "int_wrapping_neg" => {
+            SourceArity::Exact(1)
+        }
+        "text.contains" | "text.ends_with" | "text.index_of" | "text.starts_with"
+        | "text_contains" | "text_ends_with" | "text_index_of" | "text_starts_with" | "text.eq"
+        | "text_eq" => SourceArity::Exact(2),
+        "text.parse_int_or" | "text_parse_int_or" => SourceArity::Exact(2),
+        "text.byte_at_or" | "text_byte_at_or" | "text.replace_first" | "text_replace_first"
+        | "text.slice" | "text_slice" | "int.clamp" | "int.add_or" | "int.div_or"
+        | "int.rem_or" | "int.sub_or" | "int.mul_or" | "int_clamp" | "int_add_or"
+        | "int_sub_or" | "int_mul_or" | "int_div_or" | "int_rem_or" => SourceArity::Exact(3),
+        "field" | "index" | "unwrap_or" | "first_or" | "last_or" => SourceArity::Exact(2),
+        "get_or" => SourceArity::Exact(3),
+        "update" => SourceArity::Exact(3),
+        "none" => SourceArity::Exact(0),
+        "not" | "len" | "print" | "text.trim" | "text_trim" | "Var" | "is_empty" | "is_some"
+        | "is_none" | "is_ok" | "is_err" => SourceArity::Exact(1),
+        "some" | "ok" | "err" => SourceArity::Exact(1),
+        "if" | "let" | "fold" => SourceArity::Exact(3),
+        "let_typed" => SourceArity::Exact(5),
+        "effect_call" => SourceArity::Min(2),
+        "map" | "record" => SourceArity::Even,
+        "tuple" | "list" | "set" => SourceArity::Any,
+        "match" => SourceArity::Match,
+        _ => return None,
+    };
     Some(arity)
 }
 
@@ -1288,7 +1288,8 @@ fn infer_source_call_type(
         }
         "add" | "sub" | "mul" | "div" | "mod" | "signed_mod" | "int.min" | "int.max"
         | "int.abs_or" | "int.neg_or" | "int.saturating_add" | "int.saturating_sub"
-        | "int.saturating_mul" | "int.wrapping_add" | "int.wrapping_sub" | "int.wrapping_mul" => {
+        | "int.saturating_mul" | "int.wrapping_add" | "int.wrapping_sub" | "int.wrapping_mul"
+        | "int.bit_and" => {
             validate_source_arg_types(func, args, scope, functions, &["Int", "Int"])?;
             Ok("Int".to_string())
         }
@@ -2265,6 +2266,17 @@ fn format_source_expr_node(
         return (
             format!(
                 "int_wrapping_mul({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "int.bit_and" && args.len() == 2 {
+        return (
+            format!(
+                "int_bit_and({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
             ),
@@ -3684,6 +3696,7 @@ fn lower_source_int_bounds_expr(expr: &str, line_num: usize) -> Result<Option<St
         "int_wrapping_sub" => ("int.wrapping_sub", "int_wrapping_sub(left, right)"),
         "int_wrapping_mul" => ("int.wrapping_mul", "int_wrapping_mul(left, right)"),
         "int_wrapping_neg" => ("int.wrapping_neg", "int_wrapping_neg(value)"),
+        "int_bit_and" => ("int.bit_and", "int_bit_and(left, right)"),
         "int_saturating_neg" => ("int.saturating_neg", "int_saturating_neg(value)"),
         "int_abs_or" => ("int.abs_or", "int_abs_or(value, fallback)"),
         "int_neg_or" => ("int.neg_or", "int_neg_or(value, fallback)"),
@@ -5489,6 +5502,7 @@ fn wrapped_sum(left: Int, right: Int) -> Int = int_wrapping_add(left, right)
 fn wrapped_difference(left: Int, right: Int) -> Int = int_wrapping_sub(left, right)
 fn wrapped_product(left: Int, right: Int) -> Int = int_wrapping_mul(left, right)
 fn wrapped_negated(value: Int) -> Int = int_wrapping_neg(value)
+fn masked(left: Int, right: Int) -> Int = int_bit_and(left, right)
 fn quotient(value: Int, divisor: Int, fallback: Int) -> Int = int_div_or(value, divisor, fallback)
 fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value, divisor, fallback)
 "#,
@@ -5540,6 +5554,11 @@ fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value,
         assert!(acl.contains(
             "op create_function id=fn.wrapped_negated return=Int body=int.wrapping_neg(value)"
         ));
+        assert!(
+            acl.contains(
+                "op create_function id=fn.masked return=Int body=int.bit_and(left, right)"
+            )
+        );
         assert!(acl.contains(
             "op create_function id=fn.quotient return=Int body=int.div_or(value, divisor, fallback)"
         ));
@@ -5692,7 +5711,7 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
         )
         .expect("source int bounds helpers must format");
 
-        assert_eq!(item_count, 18);
+        assert_eq!(item_count, 19);
         assert!(
             formatted.contains("fn low(left: Int, right: Int) -> Int = int_min(left, right)\n")
         );

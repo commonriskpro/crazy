@@ -186,6 +186,9 @@ fn fold_call(
         ("i64.div_s" | "/" | "div", [a, b]) => Some(LiteralValue::Int(a / b)),
         ("i64.rem_s" | "%" | "mod", [_, 0]) => None,
         ("i64.rem_s" | "%" | "mod", [a, b]) => Some(LiteralValue::Int(a % b)),
+        ("i64.and" | "and" | "int.bit_and" | "int_bit_and", [a, b]) => {
+            Some(LiteralValue::Int(a & b))
+        }
         ("int.min" | "int_min", [a, b]) => Some(LiteralValue::Int((*a).min(*b))),
         ("int.max" | "int_max", [a, b]) => Some(LiteralValue::Int((*a).max(*b))),
         ("int.abs_or" | "int_abs_or", [value, fallback]) => {
