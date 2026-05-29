@@ -316,6 +316,10 @@ fn emit_i64_primitive_call<'a>(
         ("i64.and" | "and" | "int.bit_and" | "int_bit_and", 2) => insns.push(Instruction::I64And),
         ("i64.or" | "or" | "int.bit_or" | "int_bit_or", 2) => insns.push(Instruction::I64Or),
         ("i64.xor" | "xor" | "int.bit_xor" | "int_bit_xor", 2) => insns.push(Instruction::I64Xor),
+        ("int.bit_not" | "int_bit_not", 1) => {
+            insns.push(Instruction::I64Const(-1));
+            insns.push(Instruction::I64Xor);
+        }
         ("i64.neg" | "neg" | "negate", 1) => {
             insns.push(Instruction::I64Const(-1));
             insns.push(Instruction::I64Mul);

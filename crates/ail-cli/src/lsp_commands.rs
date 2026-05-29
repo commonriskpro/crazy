@@ -910,6 +910,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "int_bit_xor(${1:left}, ${2:right})",
     },
     AclSymbol {
+        label: "int_bit_not",
+        detail: "AIL source Int bitwise helper",
+        documentation: "Computes the bitwise NOT of an Int value.",
+        insert_text: "int_bit_not(${1:value})",
+    },
+    AclSymbol {
         label: "int_div_or",
         detail: "AIL source Int safety helper",
         documentation: "Divides two Int values, or returns fallback on divide-by-zero or signed overflow.",

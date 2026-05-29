@@ -172,6 +172,19 @@ pub(super) fn lower_call(
                 }
             }
         }
+        "int.bit_not" | "int_bit_not" if args.len() == 1 => {
+            let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            match value {
+                Some(value) => {
+                    let all_ones = builder.ins().iconst(types::I64, -1);
+                    LowerResult::Value(builder.ins().bxor(value, all_ones))
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
         "int.wrapping_neg" | "int_wrapping_neg" if args.len() == 1 => {
             let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
             match value {

@@ -947,9 +947,8 @@ fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         | "int_saturating_mul" | "int_wrapping_add" | "int_wrapping_sub" | "int_wrapping_mul"
         | "int.bit_and" | "int.bit_or" | "int.bit_xor" | "int_bit_and" | "int_bit_or"
         | "int_bit_xor" => SourceArity::Exact(2),
-        "int.saturating_neg" | "int.wrapping_neg" | "int_saturating_neg" | "int_wrapping_neg" => {
-            SourceArity::Exact(1)
-        }
+        "int.saturating_neg" | "int.wrapping_neg" | "int.bit_not" | "int_saturating_neg"
+        | "int_wrapping_neg" | "int_bit_not" => SourceArity::Exact(1),
         "text.contains" | "text.ends_with" | "text.index_of" | "text.starts_with"
         | "text_contains" | "text_ends_with" | "text_index_of" | "text_starts_with" | "text.eq"
         | "text_eq" => SourceArity::Exact(2),
@@ -1294,7 +1293,7 @@ fn infer_source_call_type(
             validate_source_arg_types(func, args, scope, functions, &["Int", "Int"])?;
             Ok("Int".to_string())
         }
-        "int.saturating_neg" | "int.wrapping_neg" => {
+        "int.saturating_neg" | "int.wrapping_neg" | "int.bit_not" => {
             validate_source_arg_types(func, args, scope, functions, &["Int"])?;
             Ok("Int".to_string())
         }
@@ -2302,6 +2301,16 @@ fn format_source_expr_node(
                 "int_bit_xor({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "int.bit_not" && args.len() == 1 {
+        return (
+            format!(
+                "int_bit_not({})",
+                format_source_expr(&args[0], module, constants)
             ),
             CALL_PRECEDENCE,
         );
@@ -3722,6 +3731,7 @@ fn lower_source_int_bounds_expr(expr: &str, line_num: usize) -> Result<Option<St
         "int_bit_and" => ("int.bit_and", "int_bit_and(left, right)"),
         "int_bit_or" => ("int.bit_or", "int_bit_or(left, right)"),
         "int_bit_xor" => ("int.bit_xor", "int_bit_xor(left, right)"),
+        "int_bit_not" => ("int.bit_not", "int_bit_not(value)"),
         "int_saturating_neg" => ("int.saturating_neg", "int_saturating_neg(value)"),
         "int_abs_or" => ("int.abs_or", "int_abs_or(value, fallback)"),
         "int_neg_or" => ("int.neg_or", "int_neg_or(value, fallback)"),
@@ -3729,7 +3739,10 @@ fn lower_source_int_bounds_expr(expr: &str, line_num: usize) -> Result<Option<St
         "int_rem_or" => ("int.rem_or", "int_rem_or(value, divisor, fallback)"),
         _ => return Ok(None),
     };
-    let expected_len = if matches!(func.as_str(), "int_saturating_neg" | "int_wrapping_neg") {
+    let expected_len = if matches!(
+        func.as_str(),
+        "int_saturating_neg" | "int_wrapping_neg" | "int_bit_not"
+    ) {
         1
     } else if matches!(
         func.as_str(),
@@ -5530,6 +5543,7 @@ fn wrapped_negated(value: Int) -> Int = int_wrapping_neg(value)
 fn masked(left: Int, right: Int) -> Int = int_bit_and(left, right)
 fn flagged(left: Int, right: Int) -> Int = int_bit_or(left, right)
 fn toggled(left: Int, right: Int) -> Int = int_bit_xor(left, right)
+fn inverted(value: Int) -> Int = int_bit_not(value)
 fn quotient(value: Int, divisor: Int, fallback: Int) -> Int = int_div_or(value, divisor, fallback)
 fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value, divisor, fallback)
 "#,
@@ -5595,6 +5609,9 @@ fn remainder(value: Int, divisor: Int, fallback: Int) -> Int = int_rem_or(value,
             acl.contains(
                 "op create_function id=fn.toggled return=Int body=int.bit_xor(left, right)"
             )
+        );
+        assert!(
+            acl.contains("op create_function id=fn.inverted return=Int body=int.bit_not(value)")
         );
         assert!(acl.contains(
             "op create_function id=fn.quotient return=Int body=int.div_or(value, divisor, fallback)"
@@ -5748,7 +5765,7 @@ fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suf
         )
         .expect("source int bounds helpers must format");
 
-        assert_eq!(item_count, 21);
+        assert_eq!(item_count, 22);
         assert!(
             formatted.contains("fn low(left: Int, right: Int) -> Int = int_min(left, right)\n")
         );
