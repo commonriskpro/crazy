@@ -166,6 +166,19 @@ pub(super) fn lower_call(
                 }
             }
         }
+        "int.wrapping_neg" | "int_wrapping_neg" if args.len() == 1 => {
+            let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            match value {
+                Some(value) => {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    LowerResult::Value(builder.ins().isub(zero, value))
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
         "int.saturating_neg" | "int_saturating_neg" if args.len() == 1 => {
             let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
             match value {

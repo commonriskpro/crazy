@@ -230,6 +230,21 @@ fn wasm_emits_int_wrapping_mul_as_plain_mul() {
 }
 
 #[test]
+fn wasm_emits_int_wrapping_neg_as_plain_sub() {
+    let wasm = emit_call_wasm("int.wrapping_neg", &["value"], &[-5]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.sub"),
+        "int.wrapping_neg must emit plain wrapping subtraction from zero: {ops:?}"
+    );
+    assert!(
+        !ops.contains(&"if"),
+        "int.wrapping_neg must not emit overflow branches: {ops:?}"
+    );
+}
+
+#[test]
 fn wasm_emits_int_add_or_as_overflow_safe_signed_branch() {
     let wasm = emit_call_wasm("int.add_or", &["left", "right", "fallback"], &[40, 2, -1]);
     let ops = operator_names(&wasm);

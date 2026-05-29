@@ -886,6 +886,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "int_wrapping_mul(${1:left}, ${2:right})",
     },
     AclSymbol {
+        label: "int_wrapping_neg",
+        detail: "AIL source Int explicit wrapping helper",
+        documentation: "Negates an Int value with explicit two's-complement wrapping semantics.",
+        insert_text: "int_wrapping_neg(${1:value})",
+    },
+    AclSymbol {
         label: "int_div_or",
         detail: "AIL source Int safety helper",
         documentation: "Divides two Int values, or returns fallback on divide-by-zero or signed overflow.",
