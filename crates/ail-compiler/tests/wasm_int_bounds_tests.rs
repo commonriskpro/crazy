@@ -273,6 +273,29 @@ fn wasm_emits_int_saturating_sub_as_clamping_signed_branch() {
 }
 
 #[test]
+fn wasm_emits_int_saturating_mul_as_trap_safe_clamping_branch() {
+    let wasm = emit_call_wasm("int.saturating_mul", &["left", "right"], &[6, 7]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.mul"),
+        "int.saturating_mul must still emit signed multiplication on the safe path: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i64.div_s"),
+        "int.saturating_mul must verify multiplication by dividing the wrapped product: {ops:?}"
+    );
+    assert!(
+        ops.contains(&"i32.xor"),
+        "int.saturating_mul must derive clamp direction from operand signs: {ops:?}"
+    );
+    assert!(
+        ops.iter().filter(|name| **name == "if").count() >= 4,
+        "int.saturating_mul must branch around zero, trap-prone division, clamp selection, and overflow selection: {ops:?}"
+    );
+}
+
+#[test]
 fn wasm_emits_int_div_or_as_trap_safe_signed_branch() {
     let wasm = emit_call_wasm(
         "int.div_or",

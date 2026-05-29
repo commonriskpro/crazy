@@ -757,6 +757,80 @@ fn emit_int_saturating_sub<'a>(
     Some(ValType::I64)
 }
 
+fn emit_int_saturating_mul<'a>(
+    args: &[String],
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [left_arg, right_arg] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+
+    let left = ctx.bind_temp(ValType::I64);
+    emit_local_as_i64(ctx, left_arg, insns);
+    insns.push(Instruction::LocalSet(left));
+
+    let right = ctx.bind_temp(ValType::I64);
+    emit_local_as_i64(ctx, right_arg, insns);
+    insns.push(Instruction::LocalSet(right));
+
+    let product = ctx.bind_temp(ValType::I64);
+    insns.push(Instruction::LocalGet(left));
+    insns.push(Instruction::LocalGet(right));
+    insns.push(Instruction::I64Mul);
+    insns.push(Instruction::LocalSet(product));
+
+    let clamp = ctx.bind_temp(ValType::I64);
+    insns.push(Instruction::LocalGet(left));
+    insns.push(Instruction::I64Const(0));
+    insns.push(Instruction::I64LtS);
+    insns.push(Instruction::LocalGet(right));
+    insns.push(Instruction::I64Const(0));
+    insns.push(Instruction::I64LtS);
+    insns.push(Instruction::I32Xor);
+    insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+    insns.push(Instruction::I64Const(i64::MIN));
+    insns.push(Instruction::Else);
+    insns.push(Instruction::I64Const(i64::MAX));
+    insns.push(Instruction::End);
+    insns.push(Instruction::LocalSet(clamp));
+
+    insns.push(Instruction::LocalGet(right));
+    insns.push(Instruction::I64Const(0));
+    insns.push(Instruction::I64Eq);
+    insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+    insns.push(Instruction::LocalGet(product));
+    insns.push(Instruction::Else);
+
+    insns.push(Instruction::LocalGet(product));
+    insns.push(Instruction::I64Const(i64::MIN));
+    insns.push(Instruction::I64Eq);
+    insns.push(Instruction::LocalGet(right));
+    insns.push(Instruction::I64Const(-1));
+    insns.push(Instruction::I64Eq);
+    insns.push(Instruction::I32And);
+    insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+    insns.push(Instruction::LocalGet(clamp));
+    insns.push(Instruction::Else);
+
+    insns.push(Instruction::LocalGet(product));
+    insns.push(Instruction::LocalGet(right));
+    insns.push(Instruction::I64DivS);
+    insns.push(Instruction::LocalGet(left));
+    insns.push(Instruction::I64Ne);
+    insns.push(Instruction::If(BlockType::Result(ValType::I64)));
+    insns.push(Instruction::LocalGet(clamp));
+    insns.push(Instruction::Else);
+    insns.push(Instruction::LocalGet(product));
+    insns.push(Instruction::End);
+
+    insns.push(Instruction::End);
+    insns.push(Instruction::End);
+
+    Some(ValType::I64)
+}
+
 fn emit_int_div_or<'a>(
     args: &[String],
     ctx: &WasmCodegenCtx<'a>,
@@ -2527,6 +2601,9 @@ fn emit_anf_expr<'a>(
             }
             if matches!(func.as_str(), "int.saturating_sub" | "int_saturating_sub") {
                 return emit_int_saturating_sub(args, ctx, insns);
+            }
+            if matches!(func.as_str(), "int.saturating_mul" | "int_saturating_mul") {
+                return emit_int_saturating_mul(args, ctx, insns);
             }
             if matches!(func.as_str(), "int.div_or" | "int_div_or") {
                 return emit_int_div_or(args, ctx, insns);

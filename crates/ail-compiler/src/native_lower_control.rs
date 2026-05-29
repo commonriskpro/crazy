@@ -242,6 +242,27 @@ pub(super) fn lower_call(
                 }
             }
         }
+        "int.saturating_mul" | "int_saturating_mul" if args.len() == 2 => {
+            let left = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            let right = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
+            match (left, right) {
+                (Some(left), Some(right)) => {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let max = builder.ins().iconst(types::I64, i64::MAX);
+                    let min = builder.ins().iconst(types::I64, i64::MIN);
+                    let (product, overflow) = builder.ins().smul_overflow(left, right);
+                    let left_negative = builder.ins().icmp(IntCC::SignedLessThan, left, zero);
+                    let right_negative = builder.ins().icmp(IntCC::SignedLessThan, right, zero);
+                    let sign_diff = builder.ins().bxor(left_negative, right_negative);
+                    let clamp = builder.ins().select(sign_diff, min, max);
+                    LowerResult::Value(builder.ins().select(overflow, clamp, product))
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
         "int.div_or" | "int_div_or" if args.len() == 3 => {
             let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
             let divisor = ctx.lookup(args[1].as_str()).map(|(v, _)| v);

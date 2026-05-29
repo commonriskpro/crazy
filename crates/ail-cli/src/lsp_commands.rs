@@ -856,6 +856,12 @@ const AIL_SOURCE_SYMBOLS: &[AclSymbol] = &[
         insert_text: "int_saturating_sub(${1:left}, ${2:right})",
     },
     AclSymbol {
+        label: "int_saturating_mul",
+        detail: "AIL source Int safety helper",
+        documentation: "Multiplies two Int values, clamping to Int bounds on signed overflow.",
+        insert_text: "int_saturating_mul(${1:left}, ${2:right})",
+    },
+    AclSymbol {
         label: "int_div_or",
         detail: "AIL source Int safety helper",
         documentation: "Divides two Int values, or returns fallback on divide-by-zero or signed overflow.",

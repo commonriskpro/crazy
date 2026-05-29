@@ -195,6 +195,7 @@ pub(crate) fn infer_cranelift_return_type(
             | "int.mul_or" | "int_mul_or"
             | "int.saturating_add" | "int_saturating_add"
             | "int.saturating_sub" | "int_saturating_sub"
+            | "int.saturating_mul" | "int_saturating_mul"
             | "int.div_or" | "int_div_or"
             | "int.rem_or" | "int_rem_or" => Some(types::I64),
             "i64.eq" | "==" | "eq"
