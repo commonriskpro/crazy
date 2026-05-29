@@ -114,6 +114,72 @@ pub(super) fn lower_call(
                 }
             }
         }
+        "int.div_or" | "int_div_or" if args.len() == 3 => {
+            let value = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            let divisor = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
+            let fallback = ctx.lookup(args[2].as_str()).map(|(v, _)| v);
+            match (value, divisor, fallback) {
+                (Some(value), Some(divisor), Some(fallback)) => {
+                    let fallback_block = builder.create_block();
+                    let overflow_check_block = builder.create_block();
+                    let divisor_minus_one_check_block = builder.create_block();
+                    let div_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64);
+
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let divisor_is_zero = builder.ins().icmp(IntCC::Equal, divisor, zero);
+                    builder.ins().brif(
+                        divisor_is_zero,
+                        fallback_block,
+                        &[],
+                        overflow_check_block,
+                        &[],
+                    );
+
+                    builder.switch_to_block(overflow_check_block);
+                    builder.seal_block(overflow_check_block);
+                    let min_value = builder.ins().iconst(types::I64, i64::MIN);
+                    let value_is_min = builder.ins().icmp(IntCC::Equal, value, min_value);
+                    builder.ins().brif(
+                        value_is_min,
+                        divisor_minus_one_check_block,
+                        &[],
+                        div_block,
+                        &[],
+                    );
+
+                    builder.switch_to_block(divisor_minus_one_check_block);
+                    builder.seal_block(divisor_minus_one_check_block);
+                    let minus_one = builder.ins().iconst(types::I64, -1);
+                    let divisor_is_minus_one = builder.ins().icmp(IntCC::Equal, divisor, minus_one);
+                    builder
+                        .ins()
+                        .brif(divisor_is_minus_one, fallback_block, &[], div_block, &[]);
+
+                    builder.switch_to_block(div_block);
+                    builder.seal_block(div_block);
+                    let quotient = builder.ins().sdiv(value, divisor);
+                    builder
+                        .ins()
+                        .jump(merge_block, &[BlockArg::Value(quotient)]);
+
+                    builder.switch_to_block(fallback_block);
+                    builder.seal_block(fallback_block);
+                    builder
+                        .ins()
+                        .jump(merge_block, &[BlockArg::Value(fallback)]);
+
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    LowerResult::Value(builder.block_params(merge_block)[0])
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
 
         // ── binary comparisons → I8 ────────────────────────────
         "i64.eq" | "==" | "eq" | "i64.ne" | "!=" | "ne" | "i64.lt_s" | "<" | "lt" | "i64.le_s"

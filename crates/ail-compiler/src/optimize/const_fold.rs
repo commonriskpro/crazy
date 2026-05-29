@@ -191,6 +191,9 @@ fn fold_call(
         ("int.abs_or" | "int_abs_or", [value, fallback]) => {
             Some(LiteralValue::Int(value.checked_abs().unwrap_or(*fallback)))
         }
+        ("int.div_or" | "int_div_or", [value, divisor, fallback]) => Some(LiteralValue::Int(
+            value.checked_div(*divisor).unwrap_or(*fallback),
+        )),
         ("int.clamp" | "int_clamp", [value, low, high]) => {
             Some(LiteralValue::Int(if value < low {
                 *low
