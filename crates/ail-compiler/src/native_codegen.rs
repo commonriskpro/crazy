@@ -196,6 +196,7 @@ pub(crate) fn infer_cranelift_return_type(
             | "int.wrapping_mul" | "int_wrapping_mul"
             | "int.wrapping_neg" | "int_wrapping_neg"
             | "int.bit_and" | "int_bit_and"
+            | "int.bit_or" | "int_bit_or"
             | "int.add_or" | "int_add_or"
             | "int.sub_or" | "int_sub_or"
             | "int.mul_or" | "int_mul_or"

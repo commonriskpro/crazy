@@ -30,7 +30,7 @@ pub(super) fn lower_call(
         // ── binary I64 arithmetic ──────────────────────────────
         "i64.add" | "+" | "add" | "i64.sub" | "-" | "sub" | "i64.mul" | "*" | "mul"
         | "i64.div_s" | "/" | "div" | "i64.rem_s" | "%" | "mod" | "i64.and" | "and"
-        | "int.bit_and" | "int_bit_and" | "i64.or" | "or"
+        | "int.bit_and" | "int_bit_and" | "i64.or" | "or" | "int.bit_or" | "int_bit_or"
             if args.len() == 2 =>
         {
             let lhs = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
@@ -46,7 +46,7 @@ pub(super) fn lower_call(
                         "i64.and" | "and" | "int.bit_and" | "int_bit_and" => {
                             builder.ins().band(l, r)
                         }
-                        "i64.or" | "or" => builder.ins().bor(l, r),
+                        "i64.or" | "or" | "int.bit_or" | "int_bit_or" => builder.ins().bor(l, r),
                         _ => unreachable!(),
                     };
                     LowerResult::Value(val)
