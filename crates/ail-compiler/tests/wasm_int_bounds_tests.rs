@@ -185,6 +185,21 @@ fn wasm_emits_int_saturating_neg_as_clamping_signed_branch() {
 }
 
 #[test]
+fn wasm_emits_int_wrapping_add_as_plain_add() {
+    let wasm = emit_call_wasm("int.wrapping_add", &["left", "right"], &[40, 2]);
+    let ops = operator_names(&wasm);
+
+    assert!(
+        ops.contains(&"i64.add"),
+        "int.wrapping_add must emit plain wrapping addition: {ops:?}"
+    );
+    assert!(
+        !ops.contains(&"if"),
+        "int.wrapping_add must not emit overflow branches: {ops:?}"
+    );
+}
+
+#[test]
 fn wasm_emits_int_add_or_as_overflow_safe_signed_branch() {
     let wasm = emit_call_wasm("int.add_or", &["left", "right", "fallback"], &[40, 2, -1]);
     let ops = operator_names(&wasm);
