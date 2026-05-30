@@ -18,6 +18,38 @@ use crate::error::PreflightFailure;
 use crate::host::TraceContext;
 use crate::profile::CapabilityId;
 
+// ── Stable denial categories ─────────────────────────────────────────────
+
+/// Runtime denial category for capability calls denied because the active
+/// profile does not grant the requested capability.
+pub const DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED: &str = "capability.not_granted";
+/// Runtime denial category for capability calls blocked by a revocation record.
+pub const DENIAL_CATEGORY_CAPABILITY_REVOKED: &str = "capability.revoked";
+/// Runtime denial category for granted capabilities with no bound handler.
+pub const DENIAL_CATEGORY_HANDLER_NOT_BOUND: &str = "handler.not_bound";
+/// Runtime denial category for input payload size limit failures.
+pub const DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE: &str = "limit.payload_size";
+/// Runtime denial category for max capability call count failures.
+pub const DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS: &str = "limit.max_capability_calls";
+/// Runtime denial category for rate-limit failures.
+pub const DENIAL_CATEGORY_LIMIT_RATE: &str = "limit.rate";
+/// Runtime denial category for concurrent call limit failures.
+pub const DENIAL_CATEGORY_LIMIT_CONCURRENCY: &str = "limit.concurrency";
+/// Runtime denial category for call-depth/recursion limit failures.
+pub const DENIAL_CATEGORY_LIMIT_RECURSION_DEPTH: &str = "limit.recursion_depth";
+/// Runtime denial category for output payload size limit failures.
+pub const DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE: &str = "limit.output_size";
+/// Runtime denial category for runtime input schema validation failures.
+pub const DENIAL_CATEGORY_SCHEMA_INPUT: &str = "schema.input";
+/// Runtime denial category for runtime output schema validation failures.
+pub const DENIAL_CATEGORY_SCHEMA_OUTPUT: &str = "schema.output";
+/// Runtime denial category for host/WASM payload boundary decode failures.
+pub const DENIAL_CATEGORY_PAYLOAD_DECODE: &str = "payload.decode";
+
+pub(crate) fn denial_category(category: &'static str) -> Option<String> {
+    Some(category.to_string())
+}
+
 // ── AuditEvent ────────────────────────────────────────────────────────────
 
 /// A single audit record.
@@ -104,16 +136,17 @@ pub enum AuditEvent {
         trace_context: Option<TraceContext>,
 
         // ── Audit-only denial metadata (no secret data) ───────────────────
-        /// Generic failure category set by the handler on denial.
+        /// Generic failure category set by the runtime or handler on denial.
         ///
-        /// `Some` only when the handler returned
-        /// [`HostError::CapabilityDeniedCategorized`](crate::abi::HostError::CapabilityDeniedCategorized).
-        /// The category is a machine-readable string (e.g. `"secret.not_found"`,
-        /// `"secret.provider_unavailable"`) that describes WHY the call was
-        /// denied without revealing any secret IDs, vault paths, or other
-        /// sensitive data.
+        /// Runtime-controlled denials use stable machine-readable categories
+        /// such as `"capability.not_granted"` or `"limit.payload_size"`.
+        /// Handler-controlled denials may also provide opaque categories via
+        /// [`HostError::CapabilityDeniedCategorized`](crate::abi::HostError::CapabilityDeniedCategorized),
+        /// e.g. `"secret.not_found"`. Categories must not reveal secret IDs,
+        /// vault paths, raw payloads, or other sensitive data.
         ///
-        /// `None` on success or when the handler did not provide a category.
+        /// `None` on success or when a non-denial handler failure did not
+        /// provide a category.
         denial_category: Option<String>,
     },
 }
@@ -162,5 +195,46 @@ impl AuditLog {
     /// `true` if no events have been recorded yet.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_denial_categories_are_stable_machine_readable_values() {
+        let categories = [
+            DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED,
+            DENIAL_CATEGORY_CAPABILITY_REVOKED,
+            DENIAL_CATEGORY_HANDLER_NOT_BOUND,
+            DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE,
+            DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS,
+            DENIAL_CATEGORY_LIMIT_RATE,
+            DENIAL_CATEGORY_LIMIT_CONCURRENCY,
+            DENIAL_CATEGORY_LIMIT_RECURSION_DEPTH,
+            DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE,
+            DENIAL_CATEGORY_SCHEMA_INPUT,
+            DENIAL_CATEGORY_SCHEMA_OUTPUT,
+            DENIAL_CATEGORY_PAYLOAD_DECODE,
+        ];
+
+        for category in categories {
+            assert!(
+                category.contains('.'),
+                "category `{category}` must include a namespace"
+            );
+            assert!(
+                category
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'.' || byte == b'_'),
+                "category `{category}` must stay machine readable"
+            );
+            assert_eq!(
+                denial_category(category),
+                Some(category.to_string()),
+                "helper must preserve the stable category text"
+            );
+        }
     }
 }

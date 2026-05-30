@@ -17,21 +17,43 @@ pub(crate) struct CapabilityAuditContext {
     pub(crate) trace_id: Option<String>,
     pub(crate) verification_report_hash: Option<String>,
     pub(crate) trace_context: Option<TraceContext>,
-    /// Generic failure category set by the handler on denial.
+    /// Generic failure category set by the runtime or handler on denial.
     ///
-    /// Defaults to `None`.  Set this field on a clone of the context before
-    /// calling `push` when the handler returned a categorized denial (e.g.
-    /// `"secret.not_found"`, `"secret.provider_unavailable"`).  The category
-    /// MUST NOT contain secret IDs, vault paths, or any sensitive data.
+    /// Defaults to `None`.  Use `push_denied` for runtime-controlled denial
+    /// categories, or set this field on a clone before calling `push` when the
+    /// handler returned a categorized denial.  The category MUST NOT contain
+    /// secret IDs, vault paths, raw payloads, or any sensitive data.
     pub(crate) denial_category: Option<String>,
 }
 
 impl CapabilityAuditContext {
     /// Append a [`AuditEvent::CapabilityCallExecuted`] event to `audit_log`.
     ///
-    /// The `denial_category` field of this context is forwarded to the event;
-    /// set it to `Some(category)` on a clone before calling `push` when the
-    /// handler returned a `CapabilityDeniedCategorized` error.
+    /// The `denial_category` field of this context is forwarded to the event.
+    pub(crate) fn with_denial_category(&self, category: &'static str) -> Self {
+        let mut audit = self.clone();
+        audit.denial_category = crate::audit::denial_category(category);
+        audit
+    }
+
+    pub(crate) fn push_denied(
+        &self,
+        audit_log: &Arc<Mutex<AuditLog>>,
+        capability: CapabilityId,
+        operation: String,
+        handler_name: String,
+        category: &'static str,
+    ) {
+        self.with_denial_category(category).push(
+            audit_log,
+            capability,
+            operation,
+            handler_name,
+            false,
+            None,
+        );
+    }
+
     pub(crate) fn push(
         &self,
         audit_log: &Arc<Mutex<AuditLog>>,
