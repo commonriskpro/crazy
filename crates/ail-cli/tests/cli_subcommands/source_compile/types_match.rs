@@ -229,6 +229,28 @@ fn compile_file_rejects_source_result_predicate_type_mismatch() {
         ));
 }
 #[test]
+fn compile_file_rejects_nested_source_match_pattern() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_nested_match.ail");
+    source
+        .write_str(
+            "fn main(value: Option<Result<Int, Text>>) -> Int = match value { Some(Ok(v)) => v, None => 0 }\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unsupported nested source match pattern `Some(Ok(v))`",
+        ));
+}
+#[test]
 fn compile_file_rejects_source_match_arm_type_mismatch() {
     use assert_fs::prelude::*;
 
