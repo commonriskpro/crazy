@@ -1,0 +1,74 @@
+use cranelift_codegen::ir::{InstBuilder, TrapCode, condcodes::IntCC, types};
+use cranelift_frontend::FunctionBuilder;
+
+use crate::native_codegen::{LowerResult, NativeCodegenCtx};
+
+mod int_ops;
+
+// ── lower_call ────────────────────────────────────────────────────────────
+
+/// Lower `AnfExpr::Call` — arithmetic, comparison, and unary intrinsics.
+///
+/// Only pure register-level operations; no module references required.
+pub(super) fn lower_call(
+    func: &str,
+    args: &[String],
+    ctx: &mut NativeCodegenCtx<'_>,
+    builder: &mut FunctionBuilder<'_>,
+) -> LowerResult {
+    if let Some(result) = int_ops::try_lower_int_call(func, args, ctx, builder) {
+        return result;
+    }
+
+    match func {
+        // ── binary comparisons → I8 ────────────────────────────
+        "i64.eq" | "==" | "eq" | "i64.ne" | "!=" | "ne" | "i64.lt_s" | "<" | "lt" | "i64.le_s"
+        | "<=" | "le" | "i64.gt_s" | ">" | "gt" | "i64.ge_s" | ">=" | "ge"
+            if args.len() == 2 =>
+        {
+            let lhs = ctx.lookup(args[0].as_str()).map(|(v, _)| v);
+            let rhs = ctx.lookup(args[1].as_str()).map(|(v, _)| v);
+            match (lhs, rhs) {
+                (Some(l), Some(r)) => {
+                    let cc = match func {
+                        "i64.eq" | "==" | "eq" => IntCC::Equal,
+                        "i64.ne" | "!=" | "ne" => IntCC::NotEqual,
+                        "i64.lt_s" | "<" | "lt" => IntCC::SignedLessThan,
+                        "i64.le_s" | "<=" | "le" => IntCC::SignedLessThanOrEqual,
+                        "i64.gt_s" | ">" | "gt" => IntCC::SignedGreaterThan,
+                        "i64.ge_s" | ">=" | "ge" => IntCC::SignedGreaterThanOrEqual,
+                        _ => unreachable!(),
+                    };
+                    LowerResult::Value(builder.ins().icmp(cc, l, r))
+                }
+                _ => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
+        // ── unary ops ─────────────────────────────────────────
+        "i64.neg" | "neg" | "negate" if args.len() == 1 => {
+            match ctx.lookup(args[0].as_str()).map(|(v, _)| v) {
+                Some(a) => LowerResult::Value(builder.ins().ineg(a)),
+                None => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
+        "i64.eqz" | "not" | "!" if args.len() == 1 => {
+            match ctx.lookup(args[0].as_str()).map(|(v, _)| v) {
+                Some(a) => LowerResult::Value(builder.ins().icmp_imm(IntCC::Equal, a, 0)),
+                None => {
+                    builder.ins().trap(TrapCode::user(1).unwrap());
+                    LowerResult::Terminated
+                }
+            }
+        }
+        _ => {
+            builder.ins().trap(TrapCode::user(1).unwrap());
+            LowerResult::Terminated
+        }
+    }
+}
