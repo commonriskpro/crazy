@@ -1,0 +1,456 @@
+// Mechanical phase 2 split from source_compile.rs. Keep behavior-only moves in this module.
+use crate::common::ail;
+use predicates::prelude::*;
+
+#[test]
+fn compile_file_accepts_source_list_literals() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("lists.ail");
+    source
+        .write_str(
+            "fn main() -> Int {\n  let values: List<Int> = [1, 2 + 3, 5]\n  return values[1]\n}\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+#[test]
+fn compile_file_accepts_source_list_len() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("list_len.ail");
+    source
+        .write_str("fn main() -> Int = len([1, 2 + 3, 5])\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+#[test]
+fn compile_file_accepts_source_set_and_map_collections() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("set_map.ail");
+    source
+        .write_str(
+            "fn ids() -> Set<Int> = set(1, 2 + 3)\n\
+fn labels() -> Map<Text, Int> = map(\"one\", 1, \"two\", 2)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+#[test]
+fn compile_file_accepts_source_tuple_collections() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("tuple.ail");
+    source
+        .write_str("fn pair() -> Tuple<Int, Text> = tuple(42, \"answer\")\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+#[test]
+fn compile_file_accepts_source_record_field_access_and_update() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("record.ail");
+    source
+        .write_str(
+            "fn person() -> Record<age: Int, name: Text> = { age: 42, name: \"Ada\" }\n\
+fn age() -> Int = person().age\n\
+fn older() -> Record<age: Int, name: Text> = { ...person(), age: 43 }\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+#[test]
+fn compile_file_rejects_source_list_element_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_list.ail");
+    source
+        .write_str("fn main() -> List<Int> = [1, true]\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in list element: expected Int, got Bool",
+        ));
+}
+#[test]
+fn compile_file_rejects_source_set_element_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_set.ail");
+    source
+        .write_str("fn ids() -> Set<Int> = set(1, true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in set element: expected Int, got Bool",
+        ));
+}
+#[test]
+fn compile_file_rejects_source_map_value_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_map.ail");
+    source
+        .write_str("fn labels() -> Map<Text, Int> = map(\"one\", 1, \"two\", true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in map value: expected Int, got Bool",
+        ));
+}
+#[test]
+fn compile_file_rejects_source_tuple_item_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_tuple.ail");
+    source
+        .write_str("fn pair() -> Tuple<Int, Text> = tuple(42, true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in fn.pair: expected Tuple<Int,Text>, got Tuple<Int,Bool>",
+        ));
+}
+#[test]
+fn compile_file_rejects_source_record_field_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_record.ail");
+    source
+        .write_str("fn person() -> Record<age: Int, name: Text> = { age: true, name: \"Ada\" }\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in fn.person: expected Record<age:Int,name:Text>, got Record<age:Bool,name:Text>",
+        ));
+}
+#[test]
+fn compile_file_rejects_malformed_source_record_literal() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_record_literal.ail");
+    source
+        .write_str("fn person() -> Record<age: Int> = { age 42 }\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "record literal field requires `name: expression`",
+        ));
+}
+#[test]
+fn compile_file_rejects_record_update_spread_after_fields() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_record_update.ail");
+    source
+        .write_str(
+            "fn person() -> Record<age: Int> = { age: 42 }\n\
+fn older() -> Record<age: Int> = { age: 43, ...person() }\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "record update spread must appear first",
+        ));
+}
+#[test]
+fn compile_file_rejects_source_unknown_record_field() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_field.ail");
+    source
+        .write_str(
+            "fn main() -> Int {\n  let p: Record<age: Int> = { age: 42 }\n  return p.name\n}\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unknown record field `name` for Record<age:Int>",
+        ));
+}
+#[test]
+fn compile_file_rejects_source_index_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_index.ail");
+    source
+        .write_str(
+            "fn main() -> Int {\n  let values: List<Int> = [1, 2]\n  return values[true]\n}\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in index argument 2: expected Int, got Bool",
+        ));
+}
+#[test]
+fn compile_file_rejects_source_len_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_len.ail");
+    source
+        .write_str("fn main() -> Int = len(true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in len argument 1: expected Text or List<Unknown>, got Bool",
+        ));
+}
+#[test]
+fn compile_file_accepts_source_first_or_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("first_or.ail");
+    source
+        .write_str("fn first(values: List<Int>) -> Int = first_or(values, 0)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+#[test]
+fn compile_file_accepts_source_last_or_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("last_or.ail");
+    source
+        .write_str("fn last(values: List<Int>) -> Int = last_or(values, 0)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+#[test]
+fn compile_file_rejects_source_last_or_fallback_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_last_or.ail");
+    source
+        .write_str("fn last(values: List<Int>) -> Int = last_or(values, true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in if branches: expected Int, got Bool",
+        ));
+}
+#[test]
+fn compile_file_accepts_source_get_or_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("get_or.ail");
+    source
+        .write_str("fn item(values: List<Int>, idx: Int) -> Int = get_or(values, idx, 0)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+#[test]
+fn compile_file_rejects_source_get_or_fallback_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_get_or.ail");
+    source
+        .write_str("fn item(values: List<Int>, idx: Int) -> Int = get_or(values, idx, true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in if branches: expected Int, got Bool",
+        ));
+}
+#[test]
+fn compile_file_accepts_source_is_empty_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("is_empty.ail");
+    source
+        .write_str(
+            "fn no_items(values: List<Int>) -> Bool = is_empty(values)\n\
+             fn no_text(value: Text) -> Bool = is_empty(value)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+#[test]
+fn compile_file_rejects_source_is_empty_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_is_empty.ail");
+    source
+        .write_str("fn empty(flag: Bool) -> Bool = is_empty(flag)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in len argument 1: expected Text or List<Unknown>, got Bool",
+        ));
+}
+#[test]
+fn compile_file_rejects_source_first_or_fallback_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_first_or.ail");
+    source
+        .write_str("fn first(values: List<Int>) -> Int = first_or(values, true)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in if branches: expected Int, got Bool",
+        ));
+}
