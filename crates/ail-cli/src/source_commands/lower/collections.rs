@@ -1,0 +1,348 @@
+use super::*;
+
+pub(super) fn lower_source_first_or_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "first_or" {
+        return Ok(None);
+    }
+    if args.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: first_or requires `first_or(list, fallback)`"
+        )));
+    }
+    let list = lower_source_expr(&args[0], line_num)?;
+    Ok(Some(format!(
+        "if(gt(len({list}), 0), index({list}, 0), {})",
+        lower_source_expr(&args[1], line_num)?
+    )))
+}
+
+pub(super) fn lower_source_last_or_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "last_or" {
+        return Ok(None);
+    }
+    if args.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: last_or requires `last_or(list, fallback)`"
+        )));
+    }
+    let list = lower_source_expr(&args[0], line_num)?;
+    Ok(Some(format!(
+        "if(gt(len({list}), 0), index({list}, sub(len({list}), 1)), {})",
+        lower_source_expr(&args[1], line_num)?
+    )))
+}
+
+pub(super) fn lower_source_get_or_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "get_or" {
+        return Ok(None);
+    }
+    if args.len() != 3 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: get_or requires `get_or(list, index, fallback)`"
+        )));
+    }
+    let list = lower_source_expr(&args[0], line_num)?;
+    let index = lower_source_expr(&args[1], line_num)?;
+    Ok(Some(format!(
+        "if(and(ge({index}, 0), lt({index}, len({list}))), index({list}, {index}), {})",
+        lower_source_expr(&args[2], line_num)?
+    )))
+}
+
+pub(super) fn lower_source_unwrap_or_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "unwrap_or" {
+        return Ok(None);
+    }
+    if args.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: unwrap_or requires `unwrap_or(value, fallback)`"
+        )));
+    }
+    Ok(Some(format!(
+        "match({}, Some(__ail_unwrap), __ail_unwrap, None, {})",
+        lower_source_expr(&args[0], line_num)?,
+        lower_source_expr(&args[1], line_num)?
+    )))
+}
+
+pub(super) fn parse_source_list_literal(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<Vec<String>>, CliError> {
+    if !expr.starts_with('[') {
+        return Ok(None);
+    }
+    if !expr.ends_with(']') {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: list literal has unclosed `[`"
+        )));
+    }
+    if matching_bracket(expr, 0) != Some(expr.len() - 1) {
+        return Ok(None);
+    }
+    let inner = expr[1..expr.len() - 1].trim();
+    if inner.is_empty() {
+        return Ok(Some(vec![]));
+    }
+    Ok(Some(split_source_args(inner)))
+}
+
+pub(super) struct SourceRecordLiteral {
+    pub(super) base: Option<String>,
+    pub(super) fields: Vec<(String, String)>,
+}
+
+pub(super) fn parse_source_record_literal(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<SourceRecordLiteral>, CliError> {
+    if !expr.starts_with('{') {
+        return Ok(None);
+    }
+    let close = matching_brace(expr, 0);
+    if close.is_none() {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: record literal has unclosed `{{`"
+        )));
+    }
+    if close != Some(expr.len() - 1) {
+        return Ok(None);
+    }
+    let inner = expr[1..expr.len() - 1].trim();
+    if inner.is_empty() {
+        return Ok(Some(SourceRecordLiteral {
+            base: None,
+            fields: vec![],
+        }));
+    }
+
+    let mut base = None;
+    let mut fields = Vec::new();
+    for (entry_idx, field_expr) in split_source_args(inner).into_iter().enumerate() {
+        let entry = field_expr.trim();
+        if let Some(spread) = entry.strip_prefix("...") {
+            if entry_idx != 0 || base.is_some() {
+                return Err(CliError::ParseError(format!(
+                    "line {line_num}: record update spread must appear first"
+                )));
+            }
+            let spread = spread.trim();
+            if spread.is_empty() {
+                return Err(CliError::ParseError(format!(
+                    "line {line_num}: record update spread requires a base expression"
+                )));
+            }
+            base = Some(spread.to_string());
+            continue;
+        }
+
+        let colon = find_top_level_source_colon(entry).ok_or_else(|| {
+            CliError::ParseError(format!(
+                "line {line_num}: record literal field requires `name: expression`"
+            ))
+        })?;
+        let field = entry[..colon].trim();
+        let value = entry[colon + ':'.len_utf8()..].trim();
+        if field.is_empty() || value.is_empty() {
+            return Err(CliError::ParseError(format!(
+                "line {line_num}: record literal field and value must be non-empty"
+            )));
+        }
+        validate_source_local_name(field, line_num)?;
+        fields.push((field.to_string(), value.to_string()));
+    }
+
+    Ok(Some(SourceRecordLiteral { base, fields }))
+}
+
+pub(super) fn find_top_level_source_colon(expr: &str) -> Option<usize> {
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut angle_depth = 0usize;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+
+    for (idx, ch) in expr.char_indices() {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '<' => angle_depth += 1,
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            ':' if paren_depth == 0
+                && brace_depth == 0
+                && bracket_depth == 0
+                && angle_depth == 0 =>
+            {
+                return Some(idx);
+            }
+            _ => {}
+        }
+        prev_was_escape = false;
+    }
+
+    None
+}
+
+pub(super) fn parse_source_index_expr<'a>(
+    expr: &'a str,
+    line_num: usize,
+) -> Result<Option<(&'a str, &'a str)>, CliError> {
+    if !expr.ends_with(']') || expr.starts_with('[') {
+        return Ok(None);
+    }
+    let open = find_top_level_source_index_bracket(expr);
+    let Some(open) = open else {
+        return Ok(None);
+    };
+    if matching_bracket(expr, open) != Some(expr.len() - 1) {
+        return Ok(None);
+    }
+    let collection = expr[..open].trim();
+    let index = expr[open + 1..expr.len() - 1].trim();
+    if collection.is_empty() || index.is_empty() {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: index expression requires `collection[index]`"
+        )));
+    }
+    Ok(Some((collection, index)))
+}
+
+pub(super) fn parse_source_dot_field_expr<'a>(
+    expr: &'a str,
+    line_num: usize,
+) -> Result<Option<(&'a str, &'a str)>, CliError> {
+    let Some(dot) = find_top_level_source_dot(expr) else {
+        return Ok(None);
+    };
+    let record = expr[..dot].trim();
+    let field = expr[dot + 1..].trim();
+    if record.is_empty() || field.is_empty() {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: field access requires `record.field`"
+        )));
+    }
+    if !is_source_local_ident(field) {
+        return Ok(None);
+    }
+    Ok(Some((record, field)))
+}
+
+pub(super) fn find_top_level_source_dot(expr: &str) -> Option<usize> {
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+    let mut candidate = None;
+
+    for (idx, ch) in expr.char_indices() {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '.' if paren_depth == 0
+                && brace_depth == 0
+                && bracket_depth == 0
+                && source_dot_has_record_operand(expr, idx) =>
+            {
+                candidate = Some(idx);
+            }
+            _ => {}
+        }
+        prev_was_escape = false;
+    }
+
+    candidate
+}
+
+pub(super) fn source_dot_has_record_operand(expr: &str, idx: usize) -> bool {
+    expr[..idx]
+        .chars()
+        .rev()
+        .find(|ch| !ch.is_whitespace())
+        .is_some_and(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ')' | '}' | ']' | '"'))
+}
+
+pub(super) fn find_top_level_source_index_bracket(expr: &str) -> Option<usize> {
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+    let mut candidate = None;
+
+    for (idx, ch) in expr.char_indices() {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '[' if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 => {
+                candidate = Some(idx);
+                bracket_depth += 1;
+            }
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            _ => {}
+        }
+        prev_was_escape = false;
+    }
+
+    candidate
+}
