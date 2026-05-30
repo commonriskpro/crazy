@@ -171,6 +171,39 @@ fn failed(input: Result<Int, Text>) -> Bool = is_err(input)\n",
     assert_eq!(v["data"]["error_count"], 0);
 }
 #[test]
+fn lsp_diagnose_reports_nested_source_match_pattern() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn main(value: Option<Result<Int, Text>>) -> Int = match value { Some(Ok(v)) => v, None => 0 }\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("unsupported nested source match pattern `Some(Ok(v))`")
+    );
+}
+#[test]
 fn lsp_diagnose_reports_non_exhaustive_source_match() {
     use assert_fs::prelude::*;
 

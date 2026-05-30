@@ -13,13 +13,83 @@ pub(super) fn validate_source_match_pattern(pattern: &str) -> Result<(), CliErro
         if let Some(binding) = binding
             && binding != "_"
         {
+            validate_source_constructor_pattern_binding_shape(pattern, binding)?;
             validate_source_local_expr_name(binding)?;
         }
         return Ok(());
     }
+    if let Some(message) = unsupported_source_constructor_pattern_message(pattern)? {
+        return Err(CliError::ParseError(message));
+    }
     Err(CliError::ParseError(format!(
         "unsupported source match pattern `{pattern}`"
     )))
+}
+
+fn validate_source_constructor_pattern_binding_shape(
+    pattern: &str,
+    binding: &str,
+) -> Result<(), CliError> {
+    if binding.starts_with('{') || binding.contains(':') {
+        return Err(CliError::ParseError(format!(
+            "unsupported source record-field match pattern `{pattern}`: constructor arms currently support only a single local binding or `_`; bind the value and inspect fields in the arm body"
+        )));
+    }
+    Ok(())
+}
+
+fn unsupported_source_constructor_pattern_message(
+    pattern: &str,
+) -> Result<Option<String>, CliError> {
+    let Some((tag, inner)) = unsupported_source_constructor_pattern_parts(pattern)? else {
+        return Ok(None);
+    };
+    validate_source_constructor_tag(tag)?;
+
+    let fields = split_source_args(inner);
+    if fields.len() > 1 {
+        return Ok(Some(format!(
+            "unsupported multi-binding source match pattern `{pattern}`: constructor arms currently support exactly one local binding or `_`"
+        )));
+    }
+
+    let binding = fields.first().map(String::as_str).unwrap_or(inner).trim();
+    if binding.starts_with('{') || binding.contains(':') {
+        return Ok(Some(format!(
+            "unsupported source record-field match pattern `{pattern}`: constructor arms currently support only a single local binding or `_`; bind the value and inspect fields in the arm body"
+        )));
+    }
+    if binding.contains('(') || binding.contains(')') {
+        return Ok(Some(format!(
+            "unsupported nested source match pattern `{pattern}`: constructor arms currently support only a single local binding or `_`; bind the value and match again inside the arm"
+        )));
+    }
+
+    Ok(None)
+}
+
+fn unsupported_source_constructor_pattern_parts(
+    pattern: &str,
+) -> Result<Option<(&str, &str)>, CliError> {
+    let trimmed = pattern.trim();
+    let Some(open) = trimmed.find('(') else {
+        return Ok(None);
+    };
+    let tag = trimmed[..open].trim();
+    if !tag.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()) {
+        return Ok(None);
+    }
+    let Some(close) = matching_paren(trimmed, open) else {
+        return Err(CliError::ParseError(format!(
+            "unsupported source match pattern `{pattern}`: constructor pattern has unclosed `)`"
+        )));
+    };
+    if close != trimmed.len() - 1 {
+        return Err(CliError::ParseError(format!(
+            "unsupported source match pattern `{pattern}`: unexpected tokens after constructor pattern"
+        )));
+    }
+    Ok(Some((tag, trimmed[open + 1..close].trim())))
 }
 
 pub(super) fn validate_source_constructor_tag(tag: &str) -> Result<(), CliError> {

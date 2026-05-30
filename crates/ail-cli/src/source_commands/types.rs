@@ -491,11 +491,13 @@ pub(super) fn infer_source_match_type(
     functions: &BTreeMap<&str, SourceCallable>,
 ) -> Result<String, CliError> {
     let scrutinee_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    for pattern in args[1..].iter().step_by(2) {
+        validate_source_match_pattern(pattern)?;
+    }
     validate_source_match_reachable(&args[1..])?;
     validate_source_match_exhaustive(&args[1..], &scrutinee_ty)?;
     let mut branch_ty = None;
     for pair in args[1..].chunks_exact(2) {
-        validate_source_match_pattern(&pair[0])?;
         validate_source_match_pattern_type(&pair[0], &scrutinee_ty)?;
         let mut arm_scope = scope.clone();
         if let Some((binding, ty)) = source_match_pattern_binding_type(&pair[0], &scrutinee_ty)? {
