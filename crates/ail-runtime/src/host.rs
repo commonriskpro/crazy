@@ -48,7 +48,14 @@ use wasmtime::{Config, Engine, Linker};
 use ail_package::manifest::PackageManifest;
 
 use crate::abi::{HostError, HostResult};
-use crate::audit::{AuditEvent, AuditLog};
+use crate::audit::{
+    AuditEvent, AuditLog, DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED,
+    DENIAL_CATEGORY_CAPABILITY_REVOKED, DENIAL_CATEGORY_HANDLER_NOT_BOUND,
+    DENIAL_CATEGORY_LIMIT_CONCURRENCY, DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS,
+    DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE, DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE,
+    DENIAL_CATEGORY_LIMIT_RATE, DENIAL_CATEGORY_LIMIT_RECURSION_DEPTH,
+    DENIAL_CATEGORY_SCHEMA_INPUT, DENIAL_CATEGORY_SCHEMA_OUTPUT, denial_category,
+};
 use crate::codec::ValueLayout;
 use crate::error::RuntimeResult;
 use crate::handler::Handler;
@@ -450,7 +457,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED),
                 },
             );
             return Err(err);
@@ -484,7 +491,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_CAPABILITY_REVOKED),
                 },
             );
             return Err(err);
@@ -517,7 +524,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE),
                 },
             );
             return Err(err);
@@ -550,7 +557,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS),
                 },
             );
             return Err(err);
@@ -590,7 +597,7 @@ impl RuntimeHost {
                         trace_id,
                         verification_report_hash: vr_hash,
                         trace_context: child_trace,
-                        denial_category: None,
+                        denial_category: denial_category(DENIAL_CATEGORY_LIMIT_RATE),
                     },
                 );
                 return Err(err);
@@ -625,7 +632,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_LIMIT_CONCURRENCY),
                 },
             );
             return Err(err);
@@ -659,7 +666,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_LIMIT_RECURSION_DEPTH),
                 },
             );
             return Err(err);
@@ -697,7 +704,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_SCHEMA_INPUT),
                 },
             );
             return Err(err);
@@ -730,7 +737,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_HANDLER_NOT_BOUND),
                 },
             );
             return Err(err);
@@ -739,7 +746,8 @@ impl RuntimeHost {
         let handler_name = handler.name().to_string();
 
         // Step 4: dispatch.
-        let result = match handler.handle(capability, operation, payload) {
+        let (result, runtime_denial_category) = match handler.handle(capability, operation, payload)
+        {
             Ok(response) => {
                 if let Some(max_output_bytes) = self
                     .current_profile
@@ -747,9 +755,12 @@ impl RuntimeHost {
                     .and_then(|p| p.limits().output_size_limit)
                     && response.len() as u64 > max_output_bytes
                 {
-                    Err(HostError::LimitExceeded(format!(
-                        "output_size_limit exceeded: limit={max_output_bytes}"
-                    )))
+                    (
+                        Err(HostError::LimitExceeded(format!(
+                            "output_size_limit exceeded: limit={max_output_bytes}"
+                        ))),
+                        denial_category(DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE),
+                    )
                 // Step 5: output schema/boundary validation (if registered).
                 //
                 // Branch on declared_value_layout() to pick the correct validator:
@@ -761,28 +772,34 @@ impl RuntimeHost {
                     let output_schema = def.schema().output();
                     if output_schema.declared_value_layout() == Some(ValueLayout::Bytes) {
                         match output_schema.validate_bytes_response(&response) {
-                            Ok(_) => Ok(response),
-                            Err(schema_err) => Err(HostError::ContractViolation(format!(
-                                "schema validation failed for `{}` response: {}",
-                                capability.as_str(),
-                                schema_err.message
-                            ))),
+                            Ok(_) => (Ok(response), None),
+                            Err(schema_err) => (
+                                Err(HostError::ContractViolation(format!(
+                                    "schema validation failed for `{}` response: {}",
+                                    capability.as_str(),
+                                    schema_err.message
+                                ))),
+                                denial_category(DENIAL_CATEGORY_SCHEMA_OUTPUT),
+                            ),
                         }
                     } else {
                         match output_schema.validate(&response) {
-                            Ok(()) => Ok(response),
-                            Err(schema_err) => Err(HostError::ContractViolation(format!(
-                                "schema validation failed for `{}` response: {}",
-                                capability.as_str(),
-                                schema_err.message
-                            ))),
+                            Ok(()) => (Ok(response), None),
+                            Err(schema_err) => (
+                                Err(HostError::ContractViolation(format!(
+                                    "schema validation failed for `{}` response: {}",
+                                    capability.as_str(),
+                                    schema_err.message
+                                ))),
+                                denial_category(DENIAL_CATEGORY_SCHEMA_OUTPUT),
+                            ),
                         }
                     }
                 } else {
-                    Ok(response)
+                    (Ok(response), None)
                 }
             }
-            Err(err) => Err(err),
+            Err(err) => (Err(err), None),
         };
 
         // Extract the generic audit category BEFORE converting the error to
@@ -792,7 +809,8 @@ impl RuntimeHost {
             .as_ref()
             .err()
             .and_then(|e| e.audit_category())
-            .map(|s| s.to_string());
+            .map(|s| s.to_string())
+            .or(runtime_denial_category);
         // Convert any `CapabilityDeniedCategorized` to `CapabilityDenied` so
         // the audit category is never returned to the caller.
         let result = result.map_err(|e| e.into_opaque_denial());
@@ -986,5 +1004,125 @@ impl RuntimeHost {
 impl Default for RuntimeHost {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::audit::{
+        AuditEvent, DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED,
+        DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS, DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE,
+    };
+    use crate::handler::InMemoryHandler;
+    use crate::manifest::CapabilityManifest;
+    use crate::profile::{CapabilityGrant, ResourceLimits, RuntimeProfile};
+
+    use super::*;
+
+    fn minimal_wasm() -> Vec<u8> {
+        vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]
+    }
+
+    fn matching_profile_with_limits(
+        wasm: &[u8],
+        manifest: &CapabilityManifest,
+        grant: CapabilityId,
+        limits: ResourceLimits,
+    ) -> RuntimeProfile {
+        RuntimeProfile::new(
+            "audit-category-profile".to_string(),
+            blake3_hex_of(wasm),
+            "a".repeat(64),
+            manifest.blake3_hex().expect("manifest hash must succeed"),
+            vec![CapabilityGrant {
+                module: manifest.module.clone(),
+                capability: grant,
+            }],
+            limits,
+        )
+    }
+
+    fn instantiate_for_capability(cap: CapabilityId, limits: ResourceLimits) -> RuntimeHost {
+        let wasm = minimal_wasm();
+        let manifest = CapabilityManifest {
+            module: "audit-category-test".to_string(),
+            requires: vec![cap.clone()],
+        };
+        let profile = matching_profile_with_limits(&wasm, &manifest, cap.clone(), limits);
+        let handler = Arc::new(InMemoryHandler::new(
+            "audit-category-handler",
+            vec![cap],
+            b"ok".to_vec(),
+        ));
+        let mut host = RuntimeHost::new().with_handler(handler);
+        host.validate_and_instantiate(&wasm, &manifest, &profile)
+            .expect("preflight must pass");
+        host
+    }
+
+    fn last_denial_category(host: &RuntimeHost) -> Option<String> {
+        match host.audit_log().events().last() {
+            Some(AuditEvent::CapabilityCallExecuted {
+                denial_category, ..
+            }) => denial_category.clone(),
+            other => panic!("expected capability audit event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ungranted_direct_capability_call_records_stable_denial_category() {
+        let granted = CapabilityId::new("audit.granted");
+        let denied = CapabilityId::new("audit.denied");
+        let mut host = instantiate_for_capability(granted, ResourceLimits::default());
+
+        let result = host.call_capability(&denied, "op", b"");
+
+        assert!(result.is_err(), "ungranted capability must be denied");
+        assert_eq!(
+            last_denial_category(&host).as_deref(),
+            Some(DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED)
+        );
+    }
+
+    #[test]
+    fn payload_limit_direct_capability_call_records_stable_denial_category() {
+        let cap = CapabilityId::new("audit.payload-limit");
+        let mut host = instantiate_for_capability(
+            cap.clone(),
+            ResourceLimits {
+                payload_size_limit: Some(2),
+                ..Default::default()
+            },
+        );
+
+        let result = host.call_capability(&cap, "op", b"too-large");
+
+        assert!(result.is_err(), "oversized payload must be denied");
+        assert_eq!(
+            last_denial_category(&host).as_deref(),
+            Some(DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE)
+        );
+    }
+
+    #[test]
+    fn max_calls_direct_capability_call_records_stable_denial_category() {
+        let cap = CapabilityId::new("audit.max-calls");
+        let mut host = instantiate_for_capability(
+            cap.clone(),
+            ResourceLimits {
+                max_capability_calls: Some(0),
+                ..Default::default()
+            },
+        );
+
+        let result = host.call_capability(&cap, "op", b"");
+
+        assert!(result.is_err(), "exhausted call budget must be denied");
+        assert_eq!(
+            last_denial_category(&host).as_deref(),
+            Some(DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS)
+        );
     }
 }

@@ -5,7 +5,13 @@ use std::time::Instant;
 use wasmtime::Caller;
 
 use crate::abi::HostError;
-use crate::audit::AuditEvent;
+use crate::audit::{
+    AuditEvent, DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED, DENIAL_CATEGORY_CAPABILITY_REVOKED,
+    DENIAL_CATEGORY_HANDLER_NOT_BOUND, DENIAL_CATEGORY_LIMIT_CONCURRENCY,
+    DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS, DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE,
+    DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE, DENIAL_CATEGORY_LIMIT_RATE,
+    DENIAL_CATEGORY_LIMIT_RECURSION_DEPTH, DENIAL_CATEGORY_PAYLOAD_DECODE, denial_category,
+};
 use crate::host_dispatch::limits::{check_rate_limits, unix_timestamp_micros};
 use crate::host_dispatch::memory::{handler_payload, read_memory};
 use crate::host_dispatch::state::HostState;
@@ -63,7 +69,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED),
                 },
             );
             return Some(-1);
@@ -88,7 +94,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_CAPABILITY_REVOKED),
                 },
             );
             return Some(-1);
@@ -113,7 +119,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE),
                 },
             );
             return Some(-1);
@@ -137,7 +143,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS),
                 },
             );
             return Some(-1);
@@ -172,7 +178,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_LIMIT_RATE),
                 },
             );
             return Some(-1);
@@ -197,7 +203,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_LIMIT_CONCURRENCY),
                 },
             );
             return Some(-1);
@@ -222,7 +228,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: None,
+                    denial_category: denial_category(DENIAL_CATEGORY_LIMIT_RECURSION_DEPTH),
                 },
             );
             return Some(-1);
@@ -267,7 +273,7 @@ pub(crate) fn dispatch_host_call(
                 trace_id,
                 verification_report_hash: vr_hash,
                 trace_context: child_trace,
-                denial_category: None,
+                denial_category: denial_category(DENIAL_CATEGORY_HANDLER_NOT_BOUND),
             });
         return Some(-1);
     };
@@ -298,24 +304,27 @@ pub(crate) fn dispatch_host_call(
                 trace_id,
                 verification_report_hash: vr_hash,
                 trace_context: child_trace,
-                denial_category: None,
+                denial_category: denial_category(DENIAL_CATEGORY_PAYLOAD_DECODE),
             });
         return Some(-1);
     };
 
-    let result = match handler.handle(&cap, &operation, &payload) {
+    let (result, runtime_denial_category) = match handler.handle(&cap, &operation, &payload) {
         Ok(bytes) => {
             if let Some(max_output_bytes) = caller.data().profile.limits().output_size_limit
                 && bytes.len() as u64 > max_output_bytes
             {
-                Err(HostError::LimitExceeded(format!(
-                    "output_size_limit exceeded: limit={max_output_bytes}"
-                )))
+                (
+                    Err(HostError::LimitExceeded(format!(
+                        "output_size_limit exceeded: limit={max_output_bytes}"
+                    ))),
+                    denial_category(DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE),
+                )
             } else {
-                Ok(bytes)
+                (Ok(bytes), None)
             }
         }
-        Err(err) => Err(err),
+        Err(err) => (Err(err), None),
     };
     // Extract the generic audit category before the result is consumed.
     // The category is opaque (no secret data) and recorded only in the audit
@@ -324,7 +333,8 @@ pub(crate) fn dispatch_host_call(
         .as_ref()
         .err()
         .and_then(|e| e.audit_category())
-        .map(|s| s.to_string());
+        .map(|s| s.to_string())
+        .or(runtime_denial_category);
     let succeeded = result.is_ok();
     let output_hash = result
         .as_ref()

@@ -4,6 +4,13 @@ use std::time::Instant;
 
 use wasmtime::Caller;
 
+use crate::audit::{
+    DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED, DENIAL_CATEGORY_CAPABILITY_REVOKED,
+    DENIAL_CATEGORY_HANDLER_NOT_BOUND, DENIAL_CATEGORY_LIMIT_CONCURRENCY,
+    DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS, DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE,
+    DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE, DENIAL_CATEGORY_LIMIT_RATE,
+    DENIAL_CATEGORY_LIMIT_RECURSION_DEPTH, DENIAL_CATEGORY_PAYLOAD_DECODE,
+};
 use crate::host_dispatch::audit::CapabilityAuditContext;
 use crate::host_dispatch::limits::{check_rate_limits, unix_timestamp_micros};
 use crate::host_dispatch::memory::{handler_payload, read_memory};
@@ -55,7 +62,13 @@ pub(crate) fn dispatch_host_call_write(
 
     // Validate output buffer params after decoding call metadata so failures are auditable.
     if out_ptr < 0 || out_max < 0 {
-        audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+        audit.push_denied(
+            &audit_log,
+            cap,
+            operation,
+            "none".to_string(),
+            DENIAL_CATEGORY_PAYLOAD_DECODE,
+        );
         return None;
     }
 
@@ -63,27 +76,51 @@ pub(crate) fn dispatch_host_call_write(
     {
         let state = caller.data_mut();
         if !state.profile.grants_capability(&state.module_name, &cap) {
-            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+            audit.push_denied(
+                &audit_log,
+                cap,
+                operation,
+                "none".to_string(),
+                DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED,
+            );
             return None;
         }
         if state
             .revocations
             .is_revoked(&state.module_name, cap.as_str(), state.profile.name())
         {
-            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+            audit.push_denied(
+                &audit_log,
+                cap,
+                operation,
+                "none".to_string(),
+                DENIAL_CATEGORY_CAPABILITY_REVOKED,
+            );
             return None;
         }
         if log_write_text_limit.is_none()
             && let Some(max_payload_bytes) = state.profile.limits().payload_size_limit
             && args_bytes.len() as u64 > max_payload_bytes
         {
-            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+            audit.push_denied(
+                &audit_log,
+                cap,
+                operation,
+                "none".to_string(),
+                DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE,
+            );
             return None;
         }
         if let Some(max_calls) = state.profile.limits().max_capability_calls
             && state.capability_calls_used >= max_calls
         {
-            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+            audit.push_denied(
+                &audit_log,
+                cap,
+                operation,
+                "none".to_string(),
+                DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS,
+            );
             return None;
         }
         // Rate limit enforcement.
@@ -100,21 +137,39 @@ pub(crate) fn dispatch_host_call_write(
             &mut state.rate_limit_windows,
             &cap,
         ) {
-            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+            audit.push_denied(
+                &audit_log,
+                cap,
+                operation,
+                "none".to_string(),
+                DENIAL_CATEGORY_LIMIT_RATE,
+            );
             return None;
         }
         // Concurrency limit enforcement.
         if let Some(max_concurrent) = state.profile.limits().concurrency_limit
             && state.concurrent_calls >= max_concurrent
         {
-            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+            audit.push_denied(
+                &audit_log,
+                cap,
+                operation,
+                "none".to_string(),
+                DENIAL_CATEGORY_LIMIT_CONCURRENCY,
+            );
             return None;
         }
         // Recursion stack (call depth) limit enforcement.
         if let Some(max_depth) = state.profile.limits().recursion_stack_limit
             && state.call_depth >= max_depth
         {
-            audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+            audit.push_denied(
+                &audit_log,
+                cap,
+                operation,
+                "none".to_string(),
+                DENIAL_CATEGORY_LIMIT_RECURSION_DEPTH,
+            );
             return None;
         }
     }
@@ -129,7 +184,13 @@ pub(crate) fn dispatch_host_call_write(
             .cloned()
     };
     let Some(handler) = handler else {
-        audit.push(&audit_log, cap, operation, "none".to_string(), false, None);
+        audit.push_denied(
+            &audit_log,
+            cap,
+            operation,
+            "none".to_string(),
+            DENIAL_CATEGORY_HANDLER_NOT_BOUND,
+        );
         return None;
     };
     // Increment AFTER handler is found: a granted-but-unbound call does NOT
@@ -158,7 +219,13 @@ pub(crate) fn dispatch_host_call_write(
             state.concurrent_calls -= 1;
             state.call_depth -= 1;
         }
-        audit.push(&audit_log, cap, operation, handler_name, false, None);
+        audit.push_denied(
+            &audit_log,
+            cap,
+            operation,
+            handler_name,
+            DENIAL_CATEGORY_PAYLOAD_DECODE,
+        );
         return None;
     };
     let result = handler.handle(&cap, &operation, &payload);
@@ -191,7 +258,13 @@ pub(crate) fn dispatch_host_call_write(
             state.concurrent_calls -= 1;
             state.call_depth -= 1;
         }
-        audit.push(&audit_log, cap, operation, handler_name, false, None);
+        audit.push_denied(
+            &audit_log,
+            cap,
+            operation,
+            handler_name,
+            DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE,
+        );
         return None;
     }
 
@@ -202,7 +275,13 @@ pub(crate) fn dispatch_host_call_write(
             state.concurrent_calls -= 1;
             state.call_depth -= 1;
         }
-        audit.push(&audit_log, cap, operation, handler_name, false, None);
+        audit.push_denied(
+            &audit_log,
+            cap,
+            operation,
+            handler_name,
+            DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE,
+        );
         return None;
     }
 
@@ -218,7 +297,13 @@ pub(crate) fn dispatch_host_call_write(
                 state.concurrent_calls -= 1;
                 state.call_depth -= 1;
             }
-            audit.push(&audit_log, cap, operation, handler_name, false, None);
+            audit.push_denied(
+                &audit_log,
+                cap,
+                operation,
+                handler_name,
+                DENIAL_CATEGORY_PAYLOAD_DECODE,
+            );
             return None;
         }
     };
@@ -231,7 +316,13 @@ pub(crate) fn dispatch_host_call_write(
             state.concurrent_calls -= 1;
             state.call_depth -= 1;
         }
-        audit.push(&audit_log, cap, operation, handler_name, false, None);
+        audit.push_denied(
+            &audit_log,
+            cap,
+            operation,
+            handler_name,
+            DENIAL_CATEGORY_PAYLOAD_DECODE,
+        );
         return None;
     }
 
