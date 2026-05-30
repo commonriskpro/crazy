@@ -33,6 +33,11 @@ fn lsp_diagnose_reports_ail_source_unknown_function_calls() {
             .contains("line 2: unknown function call `typo_add`")
     );
     assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["range"]["start"]["character"],
+        19
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["character"], 27);
 }
 #[test]
 fn lsp_diagnose_reports_ail_source_builtin_call_arity_errors() {
@@ -65,6 +70,11 @@ fn lsp_diagnose_reports_ail_source_builtin_call_arity_errors() {
             .contains("line 2: function call `add` expects 2 argument(s), got 1")
     );
     assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["range"]["start"]["character"],
+        19
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["character"], 22);
 }
 #[test]
 fn lsp_diagnose_reports_ail_source_user_call_arity_errors() {
@@ -128,6 +138,11 @@ fn lsp_diagnose_reports_ail_source_unknown_variables() {
             .contains("line 2: unknown variable `x`")
     );
     assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["range"]["start"]["character"],
+        23
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["character"], 24);
 }
 #[test]
 fn lsp_diagnose_accepts_ail_source_params_and_let_variables() {
