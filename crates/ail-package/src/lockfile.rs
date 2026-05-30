@@ -22,6 +22,8 @@
 // All fields use deterministic types (String, Vec<String>, Option<String>).
 // CBOR serialization via `ciborium` is byte-deterministic for this layout.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use blake3::Hasher;
 use ciborium::ser::into_writer;
 use serde::{Deserialize, Serialize};
@@ -57,22 +59,47 @@ pub struct LockfileEntry {
     pub accepted_assumptions: Vec<String>,
 }
 
+/// Reproducibility and integrity problems found in a lockfile validation pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LockfileValidationIssue {
+    /// Entries are not in canonical `(name, version)` order.
+    UnstableEntryOrder {
+        previous_name: String,
+        previous_version: String,
+        name: String,
+        version: String,
+    },
+    /// The same `(name, version)` package is pinned more than once.
+    DuplicatePackageEntry { name: String, version: String },
+    /// The caller supplied the same actual package coordinate more than once.
+    DuplicateActualPackage { name: String, version: String },
+    /// A locked package was not present in the actual package set.
+    MissingPackage { name: String, version: String },
+    /// A locked package exists, but its artifact digest differs from the lock.
+    PackageHashMismatch {
+        name: String,
+        version: String,
+        expected: String,
+        actual: String,
+    },
+}
+
 // ── Lockfile ──────────────────────────────────────────────────────────────
 
 /// A resolved and pinned dependency graph — the full lockfile.
 ///
-/// A `Lockfile` is an ordered collection of `LockfileEntry` records.
+/// A `Lockfile` is a canonically ordered collection of `LockfileEntry` records.
 /// It is produced by the dependency resolver after a successful resolution
 /// run and can be used to reproduce the same graph deterministically.
 ///
 /// The lockfile itself is content-addressed via
 /// [`Lockfile::blake3_hex`] — hashing the canonical CBOR encoding of all
-/// entries in insertion order.
+/// entries in canonical `(name, version)` order.
 ///
 /// See `docs/packages.md` §Reproducibility.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lockfile {
-    /// Pinned package entries in resolution order.
+    /// Pinned package entries in canonical `(name, version)` order.
     pub entries: Vec<LockfileEntry>,
 }
 
@@ -83,6 +110,9 @@ impl Lockfile {
     }
 
     /// Add a resolved entry to the lockfile.
+    ///
+    /// This preserves caller order; use [`Lockfile::validate_reproducibility`]
+    /// to reject non-canonical locks before publishing or replaying them.
     pub fn add(&mut self, entry: LockfileEntry) {
         self.entries.push(entry);
     }
@@ -124,9 +154,11 @@ impl Lockfile {
     ///
     /// Each resolution is pinned to the manifest's exact version.  The
     /// `package_hash` is derived from `PackageManifest::blake3_hex()`; if
-    /// hashing fails the field is set to an empty string.
+    /// hashing fails the field is set to an empty string. Entries are sorted
+    /// by `(name, version)` so the resulting lock does not depend on resolver
+    /// traversal order.
     pub fn from_resolution(resolutions: Vec<(&DependencySpec, &PackageManifest)>) -> Self {
-        let entries = resolutions
+        let mut entries: Vec<_> = resolutions
             .into_iter()
             .map(|(_spec, manifest)| {
                 let package_hash = manifest.blake3_hex().unwrap_or_default();
@@ -144,6 +176,7 @@ impl Lockfile {
                 }
             })
             .collect();
+        entries.sort_by(|a, b| (&a.name, &a.version).cmp(&(&b.name, &b.version)));
         Lockfile { entries }
     }
 
@@ -166,6 +199,79 @@ impl Lockfile {
                 min_core_ir_schema: None,
             })
             .collect()
+    }
+
+    /// Validate that this lockfile is deterministic and matches the actual package set.
+    ///
+    /// The reproducibility contract is intentionally stricter than
+    /// [`Lockfile::verify_integrity`]: entries must be in canonical
+    /// `(name, version)` order, each `(name, version)` coordinate must appear
+    /// exactly once, and every locked package must match the actual artifact
+    /// digest supplied by the caller.
+    pub fn validate_reproducibility(
+        &self,
+        actual: &[(&str, &str, &str)],
+    ) -> Vec<LockfileValidationIssue> {
+        let mut issues = Vec::new();
+        let mut previous: Option<(&LockfileEntry, (&str, &str))> = None;
+        let mut locked_seen = BTreeSet::new();
+
+        for entry in &self.entries {
+            let coordinate = (entry.name.as_str(), entry.version.as_str());
+            if let Some((previous_entry, previous_coordinate)) = previous {
+                if coordinate < previous_coordinate {
+                    issues.push(LockfileValidationIssue::UnstableEntryOrder {
+                        previous_name: previous_entry.name.clone(),
+                        previous_version: previous_entry.version.clone(),
+                        name: entry.name.clone(),
+                        version: entry.version.clone(),
+                    });
+                }
+            }
+
+            if !locked_seen.insert((entry.name.clone(), entry.version.clone())) {
+                issues.push(LockfileValidationIssue::DuplicatePackageEntry {
+                    name: entry.name.clone(),
+                    version: entry.version.clone(),
+                });
+            }
+            previous = Some((entry, coordinate));
+        }
+
+        let mut actual_by_coordinate = BTreeMap::new();
+        for (name, version, hash) in actual {
+            if actual_by_coordinate
+                .insert((*name, *version), *hash)
+                .is_some()
+            {
+                issues.push(LockfileValidationIssue::DuplicateActualPackage {
+                    name: (*name).to_string(),
+                    version: (*version).to_string(),
+                });
+            }
+        }
+
+        for entry in &self.entries {
+            match actual_by_coordinate.get(&(entry.name.as_str(), entry.version.as_str())) {
+                Some(actual_hash) if *actual_hash == entry.package_hash.as_str() => {}
+                Some(actual_hash) => {
+                    issues.push(LockfileValidationIssue::PackageHashMismatch {
+                        name: entry.name.clone(),
+                        version: entry.version.clone(),
+                        expected: entry.package_hash.clone(),
+                        actual: (*actual_hash).to_string(),
+                    });
+                }
+                None => {
+                    issues.push(LockfileValidationIssue::MissingPackage {
+                        name: entry.name.clone(),
+                        version: entry.version.clone(),
+                    });
+                }
+            }
+        }
+
+        issues
     }
 
     /// Verify that all entries in this lockfile are present in the provided
@@ -199,6 +305,17 @@ mod tests {
             trust_level: TrustLevel::Assumed,
             verification_report_hash: Some("b".repeat(64)),
             accepted_assumptions: vec!["assume-pci".to_string(), "assume-gdpr".to_string()],
+        }
+    }
+
+    fn entry_with(name: &str, version: &str, hash: &str) -> LockfileEntry {
+        LockfileEntry {
+            name: name.to_string(),
+            version: version.to_string(),
+            package_hash: hash.to_string(),
+            trust_level: TrustLevel::Verified,
+            verification_report_hash: None,
+            accepted_assumptions: vec![],
         }
     }
 
@@ -347,6 +464,113 @@ mod tests {
         assert_eq!(mismatches, vec!["payments.stripe"]);
     }
 
+    // ── lockfile_validate_reproducibility_passes_for_canonical_lock ──────
+    // Spec scenario: "Canonical lockfile validates against actual artifacts"
+    #[test]
+    fn lockfile_validate_reproducibility_passes_for_canonical_lock() {
+        let mut lf = Lockfile::new();
+        lf.add(entry_with("pkg.a", "1.0.0", "a"));
+        lf.add(entry_with("pkg.b", "2.0.0", "b"));
+
+        let actual = vec![("pkg.a", "1.0.0", "a"), ("pkg.b", "2.0.0", "b")];
+
+        assert_eq!(lf.validate_reproducibility(&actual), vec![]);
+    }
+
+    // ── lockfile_validate_reproducibility_detects_unstable_order ─────────
+    // Spec scenario: "Lockfile validation rejects non-canonical order"
+    #[test]
+    fn lockfile_validate_reproducibility_detects_unstable_order() {
+        let mut lf = Lockfile::new();
+        lf.add(entry_with("pkg.z", "1.0.0", "z"));
+        lf.add(entry_with("pkg.a", "1.0.0", "a"));
+
+        let actual = vec![("pkg.z", "1.0.0", "z"), ("pkg.a", "1.0.0", "a")];
+
+        assert_eq!(
+            lf.validate_reproducibility(&actual),
+            vec![LockfileValidationIssue::UnstableEntryOrder {
+                previous_name: "pkg.z".to_string(),
+                previous_version: "1.0.0".to_string(),
+                name: "pkg.a".to_string(),
+                version: "1.0.0".to_string(),
+            }]
+        );
+    }
+
+    // ── lockfile_validate_reproducibility_detects_duplicate_lock_entry ───
+    // Spec scenario: "Lockfile validation rejects duplicate package pins"
+    #[test]
+    fn lockfile_validate_reproducibility_detects_duplicate_lock_entry() {
+        let mut lf = Lockfile::new();
+        lf.add(entry_with("pkg.a", "1.0.0", "a"));
+        lf.add(entry_with("pkg.a", "1.0.0", "a"));
+
+        let actual = vec![("pkg.a", "1.0.0", "a")];
+
+        assert_eq!(
+            lf.validate_reproducibility(&actual),
+            vec![LockfileValidationIssue::DuplicatePackageEntry {
+                name: "pkg.a".to_string(),
+                version: "1.0.0".to_string(),
+            }]
+        );
+    }
+
+    // ── lockfile_validate_reproducibility_detects_actual_digest_mismatch ─
+    // Spec scenario: "Lockfile validation rejects actual package digest drift"
+    #[test]
+    fn lockfile_validate_reproducibility_detects_actual_digest_mismatch() {
+        let mut lf = Lockfile::new();
+        lf.add(entry_with("pkg.a", "1.0.0", "expected"));
+
+        let actual = vec![("pkg.a", "1.0.0", "actual")];
+
+        assert_eq!(
+            lf.validate_reproducibility(&actual),
+            vec![LockfileValidationIssue::PackageHashMismatch {
+                name: "pkg.a".to_string(),
+                version: "1.0.0".to_string(),
+                expected: "expected".to_string(),
+                actual: "actual".to_string(),
+            }]
+        );
+    }
+
+    // ── lockfile_validate_reproducibility_detects_missing_actual_package ─
+    // Spec scenario: "Lockfile validation rejects missing actual package"
+    #[test]
+    fn lockfile_validate_reproducibility_detects_missing_actual_package() {
+        let mut lf = Lockfile::new();
+        lf.add(entry_with("pkg.a", "1.0.0", "a"));
+
+        assert_eq!(
+            lf.validate_reproducibility(&[]),
+            vec![LockfileValidationIssue::MissingPackage {
+                name: "pkg.a".to_string(),
+                version: "1.0.0".to_string(),
+            }]
+        );
+    }
+
+    // ── lockfile_validate_reproducibility_detects_duplicate_actual_package
+    // Spec scenario: "Lockfile validation rejects ambiguous actual artifacts"
+    #[test]
+    fn lockfile_validate_reproducibility_detects_duplicate_actual_package() {
+        let mut lf = Lockfile::new();
+        lf.add(entry_with("pkg.a", "1.0.0", "a"));
+
+        let actual = vec![("pkg.a", "1.0.0", "a"), ("pkg.a", "1.0.0", "a")];
+
+        assert_eq!(
+            lf.validate_reproducibility(&actual),
+            vec![LockfileValidationIssue::DuplicateActualPackage {
+                name: "pkg.a".to_string(),
+                version: "1.0.0".to_string(),
+            }]
+        );
+    }
+
     // ── lockfile_get_returns_none_for_missing ─────────────────────────────
     // TRIANGULATE: lookup of absent package returns None
     #[test]
@@ -490,5 +714,22 @@ mod tests {
                 .iter()
                 .any(|s| s.name == "pkg.b" && s.version_constraint == "2.5.0")
         );
+    }
+
+    // Spec PKG-LOCK-REPRO-1: from_resolution() canonicalizes package order
+    #[test]
+    fn from_resolution_is_independent_of_input_order() {
+        let m1 = make_test_manifest("pkg.a", "1.0.0");
+        let m2 = make_test_manifest("pkg.b", "2.5.0");
+        let s1 = make_test_spec("pkg.a", "^1.0");
+        let s2 = make_test_spec("pkg.b", ">=2.0");
+
+        let lf1 = Lockfile::from_resolution(vec![(&s1, &m1), (&s2, &m2)]);
+        let lf2 = Lockfile::from_resolution(vec![(&s2, &m2), (&s1, &m1)]);
+
+        assert_eq!(lf1.entries[0].name, "pkg.a");
+        assert_eq!(lf1.entries[1].name, "pkg.b");
+        assert_eq!(lf1, lf2);
+        assert_eq!(lf1.blake3_hex().unwrap(), lf2.blake3_hex().unwrap());
     }
 }
