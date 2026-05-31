@@ -89,6 +89,9 @@ pub const POLICY_ASSUMED_UNAPPROVED: &str = "POLICY_ASSUMED_UNAPPROVED";
 /// Policy violation: a critical profile requires Strong approval but only Weak was provided.
 pub const POLICY_WEAK_ASSUMPTION: &str = "POLICY_WEAK_ASSUMPTION";
 
+/// Policy violation: a critical profile approval lacks required audit metadata.
+pub const POLICY_CRITICAL_APPROVAL_INCOMPLETE: &str = "POLICY_CRITICAL_APPROVAL_INCOMPLETE";
+
 /// Policy violation: a public API was changed without explicit approval.
 pub const POLICY_PUBLIC_API_CHANGED: &str = "POLICY_PUBLIC_API_CHANGED";
 
@@ -737,9 +740,19 @@ impl PolicyEngine {
 
             // Assumed — requires boundary/approval in strict profiles.
             VerificationState::Assumed => match profile {
-                // critical: requires Strong approval — Weak is rejected.
+                // critical: requires Strong approval with complete audit metadata.
                 "critical" => match approval {
-                    Some(a) if a.strength == ApprovalStrength::Strong => GateResult::Pass,
+                    Some(a)
+                        if a.strength == ApprovalStrength::Strong
+                            && Self::approval_has_critical_metadata(a) =>
+                    {
+                        GateResult::Pass
+                    }
+                    Some(a) if a.strength == ApprovalStrength::Strong => GateResult::Block(
+                        POLICY_CRITICAL_APPROVAL_INCOMPLETE.to_string(),
+                        "critical profile requires Assumed approvals to include approver and reason"
+                            .to_string(),
+                    ),
                     Some(_) => GateResult::Block(
                         POLICY_WEAK_ASSUMPTION.to_string(),
                         "critical profile rejects Assumed with only Weak approval".to_string(),
@@ -780,7 +793,18 @@ impl PolicyEngine {
                 "test" => GateResult::Pass,
                 // STRICT-BY-DEFAULT: unknown profiles treat Assumed like critical.
                 _ => match approval {
-                    Some(a) if a.strength == ApprovalStrength::Strong => GateResult::Pass,
+                    Some(a)
+                        if a.strength == ApprovalStrength::Strong
+                            && Self::approval_has_critical_metadata(a) =>
+                    {
+                        GateResult::Pass
+                    }
+                    Some(a) if a.strength == ApprovalStrength::Strong => GateResult::Block(
+                        POLICY_CRITICAL_APPROVAL_INCOMPLETE.to_string(),
+                        format!(
+                            "unknown profile '{profile}' treated as conservative — requires Assumed approval metadata"
+                        ),
+                    ),
                     Some(_) => GateResult::Block(
                         POLICY_WEAK_ASSUMPTION.to_string(),
                         format!(
@@ -859,6 +883,10 @@ impl PolicyEngine {
     /// matches `scope` (any strength).
     fn has_any_approval(scope: &str, approvals: &[ApprovalRecord]) -> bool {
         approvals.iter().any(|a| a.scope == scope)
+    }
+
+    fn approval_has_critical_metadata(approval: &ApprovalRecord) -> bool {
+        !approval.approver.trim().is_empty() && !approval.reason.trim().is_empty()
     }
 }
 
