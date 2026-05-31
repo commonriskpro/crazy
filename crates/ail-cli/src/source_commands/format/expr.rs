@@ -606,6 +606,34 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if matches!(
+        func.as_str(),
+        "queue.push_back"
+            | "queue.pop_front"
+            | "queue.peek_front"
+            | "queue.length"
+            | "queue.is_empty"
+    ) {
+        let helper = match func.as_str() {
+            "queue.push_back" => "queue_push_back",
+            "queue.pop_front" => "queue_pop_front",
+            "queue.peek_front" => "queue_peek_front",
+            "queue.length" => "queue_length",
+            "queue.is_empty" => "queue_is_empty",
+            _ => unreachable!("checked queue helper"),
+        };
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if matches!(func.as_str(), "set.contains" | "set.length" | "set.insert") {
         let helper = match func.as_str() {
             "set.contains" => "set_contains",

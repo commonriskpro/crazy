@@ -296,6 +296,43 @@ fn pair_get()->Option<Text>=tuple.get(pair(),1)
 }
 
 #[test]
+fn formats_source_queue_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn queue()->List<Int>=list(1,2)
+fn pushed()->List<Int>=queue.push_back(queue(),3)
+fn popped()->Option<Tuple<Int,List<Int>>>=queue.pop_front(queue())
+fn peeked()->Option<Int>=queue.peek_front(queue())
+fn count()->Int=queue.length(queue())
+fn empty()->Bool=queue.is_empty(queue())
+"#,
+    )
+    .expect("source queue helpers must format");
+
+    assert_eq!(item_count, 6);
+    assert!(formatted.contains(
+        "fn pushed() -> List<Int> = queue_push_back(queue(), 3)
+"
+    ));
+    assert!(formatted.contains(
+        "fn popped() -> Option<Tuple<Int,List<Int>>> = queue_pop_front(queue())
+"
+    ));
+    assert!(formatted.contains(
+        "fn peeked() -> Option<Int> = queue_peek_front(queue())
+"
+    ));
+    assert!(formatted.contains(
+        "fn count() -> Int = queue_length(queue())
+"
+    ));
+    assert!(formatted.contains(
+        "fn empty() -> Bool = queue_is_empty(queue())
+"
+    ));
+}
+
+#[test]
 fn formats_source_set_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"

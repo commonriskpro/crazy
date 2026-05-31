@@ -158,6 +158,79 @@ fn compile_file_rejects_source_map_value_type_mismatch() {
 }
 
 #[test]
+fn compile_file_accepts_source_queue_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("queue_helpers.ail");
+    source
+        .write_str(
+            "fn queue() -> List<Int> = list(1, 2)
+fn pushed() -> List<Int> = queue_push_back(queue(), 3)
+fn popped() -> Option<Tuple<Int, List<Int>>> = queue_pop_front(queue())
+fn peeked() -> Option<Int> = queue_peek_front(queue())
+fn count() -> Int = queue_length(queue())
+fn empty() -> Bool = queue_is_empty(queue())
+",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_queue_push_value_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_queue_push.ail");
+    source
+        .write_str(
+            "fn pushed(values: List<Int>) -> List<Int> = queue_push_back(values, true)
+",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in queue.push_back argument 2: expected Int, got Bool",
+        ));
+}
+
+#[test]
+fn compile_file_rejects_source_queue_non_list() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_queue_pop.ail");
+    source
+        .write_str(
+            "fn popped(value: Text) -> Option<Tuple<Int, List<Int>>> = queue_pop_front(value)
+",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in queue.pop_front argument 1: expected List<Unknown>, got Text",
+        ));
+}
+#[test]
 fn compile_file_accepts_source_set_helpers() {
     use assert_fs::prelude::*;
 

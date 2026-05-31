@@ -124,6 +124,45 @@ pub(super) fn lower_source_unwrap_or_expr(
     )))
 }
 
+pub(super) fn lower_source_queue_helper_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    let Some((lowered_func, arity, usage)) = (match func.as_str() {
+        "queue.push_back" | "queue_push_back" => {
+            Some(("queue.push_back", 2, "queue_push_back(queue, value)"))
+        }
+        "queue.pop_front" | "queue_pop_front" => {
+            Some(("queue.pop_front", 1, "queue_pop_front(queue)"))
+        }
+        "queue.peek_front" | "queue_peek_front" => {
+            Some(("queue.peek_front", 1, "queue_peek_front(queue)"))
+        }
+        "queue.length" | "queue_length" => Some(("queue.length", 1, "queue_length(queue)")),
+        "queue.is_empty" | "queue_is_empty" => Some(("queue.is_empty", 1, "queue_is_empty(queue)")),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    if args.len() != arity {
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::CollectionArity,
+            format!("{func} requires `{usage}`"),
+        ));
+    }
+    Ok(Some(format!(
+        "{lowered_func}({})",
+        args.iter()
+            .map(|arg| lower_source_expr(arg, line_num))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(", ")
+    )))
+}
+
 pub(super) fn lower_source_set_helper_expr(
     expr: &str,
     line_num: usize,

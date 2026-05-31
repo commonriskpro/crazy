@@ -270,6 +270,19 @@ pub(super) fn infer_source_call_type(
         }
         "list" => infer_source_list_type(args, scope, functions),
         "list.get" | "list_get" => infer_source_list_get_type(args, scope, functions),
+        "queue.push_back" | "queue_push_back" => {
+            infer_source_queue_push_back_type(args, scope, functions)
+        }
+        "queue.pop_front" | "queue_pop_front" => {
+            infer_source_queue_pop_front_type(args, scope, functions)
+        }
+        "queue.peek_front" | "queue_peek_front" => {
+            infer_source_queue_peek_front_type(args, scope, functions)
+        }
+        "queue.length" | "queue_length" => infer_source_queue_length_type(args, scope, functions),
+        "queue.is_empty" | "queue_is_empty" => {
+            infer_source_queue_is_empty_type(args, scope, functions)
+        }
         "tuple" => infer_source_tuple_type(args, scope, functions),
         "tuple.length" | "tuple_length" => infer_source_tuple_length_type(args, scope, functions),
         "tuple.get" | "tuple_get" => infer_source_tuple_get_type(args, scope, functions),
@@ -367,6 +380,72 @@ pub(super) fn infer_source_list_type(
         validate_source_type_match(&element_ty, &actual, "list element")?;
     }
     Ok(format!("List<{element_ty}>"))
+}
+
+pub(super) fn infer_source_queue_push_back_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let queue_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let value_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    let expected =
+        require_source_list_type(&queue_ty, "queue.push_back argument 1")?.unwrap_or("Unknown");
+    validate_source_type_match(expected, &value_ty, "queue.push_back argument 2")?;
+    Ok(queue_ty)
+}
+
+pub(super) fn infer_source_queue_pop_front_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let queue_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let item_ty =
+        require_source_list_type(&queue_ty, "queue.pop_front argument 1")?.unwrap_or("Unknown");
+    Ok(format!("Option<Tuple<{item_ty},List<{item_ty}>>>"))
+}
+
+pub(super) fn infer_source_queue_peek_front_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let queue_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let item_ty =
+        require_source_list_type(&queue_ty, "queue.peek_front argument 1")?.unwrap_or("Unknown");
+    Ok(format!("Option<{item_ty}>"))
+}
+
+pub(super) fn infer_source_queue_length_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let queue_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    require_source_list_type(&queue_ty, "queue.length argument 1")?;
+    Ok("Int".to_string())
+}
+
+pub(super) fn infer_source_queue_is_empty_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let queue_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    require_source_list_type(&queue_ty, "queue.is_empty argument 1")?;
+    Ok("Bool".to_string())
+}
+
+fn require_source_list_type<'a>(ty: &'a str, context: &str) -> Result<Option<&'a str>, CliError> {
+    if ty == "Unknown" {
+        return Ok(None);
+    }
+    source_list_element_type(ty).map(Some).ok_or_else(|| {
+        CliError::ParseError(format!(
+            "type mismatch in {context}: expected List<Unknown>, got {ty}"
+        ))
+    })
 }
 
 pub(super) fn infer_source_tuple_type(

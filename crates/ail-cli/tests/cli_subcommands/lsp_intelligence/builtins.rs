@@ -161,6 +161,42 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include AIL source result_unwrap_or helper; got: {result_unwrap_items:?}"
     );
 
+    let queue_push_completion_output = ail()
+        .args(["lsp", "--complete", "queue_push", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let queue_push_completion = parse_json_output(&queue_push_completion_output);
+    let queue_push_items = queue_push_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        queue_push_items
+            .iter()
+            .any(|item| item["label"] == "queue_push_back"
+                && item["detail"] == "AIL source Queue helper"),
+        "completion must include AIL source queue_push_back helper; got: {queue_push_items:?}"
+    );
+
+    let queue_pop_completion_output = ail()
+        .args(["lsp", "--complete", "queue_pop", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let queue_pop_completion = parse_json_output(&queue_pop_completion_output);
+    let queue_pop_items = queue_pop_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        queue_pop_items
+            .iter()
+            .any(|item| item["label"] == "queue_pop_front"
+                && item["detail"] == "AIL source Queue helper"),
+        "completion must include AIL source queue_pop_front helper; got: {queue_pop_items:?}"
+    );
+
     let set_contains_completion_output = ail()
         .args(["lsp", "--complete", "set_contains", "--json"])
         .assert()

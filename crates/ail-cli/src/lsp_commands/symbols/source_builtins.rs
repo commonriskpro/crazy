@@ -308,6 +308,36 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "list_get(${1:list}, ${2:index})",
     },
     AclSymbol {
+        label: "queue_push_back",
+        detail: "AIL source Queue helper",
+        documentation: "Returns a queue List<T> with the supplied value appended at the back.",
+        insert_text: "queue_push_back(${1:queue}, ${2:value})",
+    },
+    AclSymbol {
+        label: "queue_pop_front",
+        detail: "AIL source Queue helper",
+        documentation: "Returns Option<Tuple<T,List<T>>> with the front value and remaining queue, or None when empty.",
+        insert_text: "queue_pop_front(${1:queue})",
+    },
+    AclSymbol {
+        label: "queue_peek_front",
+        detail: "AIL source Queue helper",
+        documentation: "Returns Option<T> for the oldest queued value without removing it.",
+        insert_text: "queue_peek_front(${1:queue})",
+    },
+    AclSymbol {
+        label: "queue_length",
+        detail: "AIL source Queue helper",
+        documentation: "Returns the number of entries in a queue List<T>.",
+        insert_text: "queue_length(${1:queue})",
+    },
+    AclSymbol {
+        label: "queue_is_empty",
+        detail: "AIL source Queue helper",
+        documentation: "Returns true when the queue List<T> is empty.",
+        insert_text: "queue_is_empty(${1:queue})",
+    },
+    AclSymbol {
         label: "set",
         detail: "AIL source Set builtin",
         documentation: "Constructs a typed Set<T> from same-typed values.",

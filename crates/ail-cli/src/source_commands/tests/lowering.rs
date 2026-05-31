@@ -234,6 +234,34 @@ fn pair_get() -> Option<Text> = tuple_get(pair(), 1)
 }
 
 #[test]
+fn lowers_source_queue_helpers_to_core_calls() {
+    let program = parse_ail_source(
+        r#"
+fn queue() -> List<Int> = list(1, 2)
+fn pushed() -> List<Int> = queue_push_back(queue(), 3)
+fn popped() -> Option<Tuple<Int, List<Int>>> = queue_pop_front(queue())
+fn peeked() -> Option<Int> = queue_peek_front(queue())
+fn count() -> Int = queue_length(queue())
+fn empty() -> Bool = queue_is_empty(queue())
+"#,
+    )
+    .expect("source queue helpers must parse");
+    let acl = source_program_to_acl(&program, "source_queue_helpers".to_string());
+
+    assert!(acl.contains(
+        "op create_function id=fn.pushed return=List<Int> body=queue.push_back(queue(), 3)"
+    ));
+    assert!(acl.contains("op create_function id=fn.popped return=Option<Tuple<Int,List<Int>>> body=queue.pop_front(queue())"));
+    assert!(acl.contains(
+        "op create_function id=fn.peeked return=Option<Int> body=queue.peek_front(queue())"
+    ));
+    assert!(acl.contains("op create_function id=fn.count return=Int body=queue.length(queue())"));
+    assert!(
+        acl.contains("op create_function id=fn.empty return=Bool body=queue.is_empty(queue())")
+    );
+}
+
+#[test]
 fn lowers_source_set_helpers_to_core_calls() {
     let program = parse_ail_source(
         r#"
