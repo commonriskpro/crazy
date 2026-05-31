@@ -257,3 +257,65 @@ fn evidence_some_round_trips_via_cbor() {
     );
     assert_eq!(decoded.state, VerificationState::Failed);
 }
+
+// ── Scenario: CI canonicalization dedupes entries without losing chronology ─
+
+#[test]
+fn canonicalize_for_ci_dedupes_entries_preserving_first_seen_order() {
+    let duplicate = VerificationEntry {
+        claim: "stage-a".into(),
+        state: VerificationState::Failed,
+        scope: "node-a".into(),
+        evidence: Some("same failure".into()),
+        blocking: true,
+        repair_options: vec![],
+    };
+    let later = VerificationEntry {
+        claim: "stage-b".into(),
+        state: VerificationState::Proven,
+        scope: "node-b".into(),
+        evidence: None,
+        blocking: false,
+        repair_options: vec![],
+    };
+    let mut report = VerificationReport {
+        entries: vec![duplicate.clone(), later.clone(), duplicate],
+        ..Default::default()
+    };
+
+    report.canonicalize_for_ci();
+
+    assert_eq!(
+        report.entries,
+        vec![
+            VerificationEntry {
+                claim: "stage-a".into(),
+                state: VerificationState::Failed,
+                scope: "node-a".into(),
+                evidence: Some("same failure".into()),
+                blocking: true,
+                repair_options: vec![],
+            },
+            later,
+        ]
+    );
+    assert_eq!(report.summary_counts.failed_count, 1);
+    assert_eq!(report.summary_counts.verified_count, 1);
+}
+
+#[test]
+fn canonicalize_for_ci_sorts_and_dedupes_diagnostics() {
+    use ail_core::semantic_graph::NodeRef;
+    use ail_verify::diagnostic::{Diagnostic, E_EFFECT_UNUSED, E_TYPE_MISMATCH};
+
+    let error = Diagnostic::error(E_TYPE_MISMATCH, NodeRef(1)).with_actual("String");
+    let warning = Diagnostic::warning(E_EFFECT_UNUSED, NodeRef(2));
+    let mut report = VerificationReport {
+        diagnostics: vec![warning.clone(), error.clone(), error.clone()],
+        ..Default::default()
+    };
+
+    report.canonicalize_for_ci();
+
+    assert_eq!(report.diagnostics, vec![error, warning]);
+}

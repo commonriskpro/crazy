@@ -12,6 +12,7 @@ use ail_core::semantic_graph::{
 use ail_verify::codegen_checker::ArtifactEntry;
 use ail_verify::pipeline::{PipelineContext, VerificationPipeline};
 use ail_verify::policy::{PolicyDecision, PolicyRule};
+use ail_verify::report::VerificationState;
 use ail_verify::solver::SimpleSolver;
 
 use pipeline_helpers::{empty_graph, make_ctx};
@@ -289,6 +290,69 @@ fn pipeline_policy_audit_excludes_codegen_entries_but_final_report_keeps_them() 
             .entries
             .iter()
             .all(|entry| entry.scope != "artifact:wasm")
+    );
+}
+
+#[test]
+fn pipeline_canonicalizes_duplicate_codegen_report_entries_for_ci() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let artifacts = vec![
+        ArtifactEntry {
+            name: "wasm".into(),
+            expected_hash: "expected".into(),
+            actual_hash: "actual".into(),
+        },
+        ArtifactEntry {
+            name: "wasm".into(),
+            expected_hash: "expected".into(),
+            actual_hash: "actual".into(),
+        },
+    ];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &[],
+        profile: "test",
+        solver: &solver,
+        approvals: &[],
+        rules: &[],
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &artifacts,
+        manifest_caps: &[],
+        artifact_manifest_hash: None,
+    };
+
+    let report = VerificationPipeline::run(&ctx);
+    let codegen_wasm_entries = report
+        .entries
+        .iter()
+        .filter(|entry| entry.claim == "codegen-consistency" && entry.scope == "artifact:wasm")
+        .count();
+    let wasm_hash_entries = report
+        .artifact_hashes
+        .iter()
+        .filter(|hash| hash.artifact == "wasm" && hash.hash == "actual")
+        .count();
+
+    assert_eq!(
+        codegen_wasm_entries, 1,
+        "duplicate CI report entries must collapse"
+    );
+    assert_eq!(
+        wasm_hash_entries, 1,
+        "duplicate artifact hash rows must collapse"
+    );
+    assert_eq!(
+        report.summary_counts.failed_count,
+        report
+            .entries
+            .iter()
+            .filter(|entry| entry.state == VerificationState::Failed)
+            .count(),
+        "summary counts must be recomputed after canonicalization"
     );
 }
 
