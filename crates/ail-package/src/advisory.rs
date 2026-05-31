@@ -81,6 +81,16 @@ pub struct SecurityAdvisory {
 pub struct AdvisoryChecker;
 
 impl AdvisoryChecker {
+    fn compare_matches(left: &SecurityAdvisory, right: &SecurityAdvisory) -> std::cmp::Ordering {
+        right
+            .severity
+            .cmp(&left.severity)
+            .then_with(|| left.id.cmp(&right.id))
+            .then_with(|| left.package.cmp(&right.package))
+            .then_with(|| left.affected_constraint.cmp(&right.affected_constraint))
+            .then_with(|| left.reason.cmp(&right.reason))
+    }
+
     /// Test whether `version` matches `constraint`.
     ///
     /// Constraint evaluation order:
@@ -119,30 +129,38 @@ impl AdvisoryChecker {
         })
     }
 
-    /// Return the first advisory in `advisories` that matches `name` and `version`,
+    /// Return the highest-severity matching advisory in `advisories`,
     /// or `None` if no match is found.
+    ///
+    /// Ties are ordered by stable advisory metadata so callers do not make
+    /// install/publish/audit decisions from registry insertion order.
     pub fn first_match<'a>(
         name: &str,
         version: &str,
         advisories: &'a [SecurityAdvisory],
     ) -> Option<&'a SecurityAdvisory> {
-        advisories.iter().find(|adv| {
-            adv.package == name && Self::version_matches(version, &adv.affected_constraint)
-        })
+        Self::matches(name, version, advisories).into_iter().next()
     }
 
     /// Return all advisories that match `name` and `version`.
+    ///
+    /// Results are deterministic and severity-first: Critical, High, Medium,
+    /// Low, then advisory ID and other stable fields. This keeps audit JSON,
+    /// resolver diagnostics, and package policy gates stable when registry
+    /// metadata arrives in a different order.
     pub fn matches<'a>(
         name: &str,
         version: &str,
         advisories: &'a [SecurityAdvisory],
     ) -> Vec<&'a SecurityAdvisory> {
-        advisories
+        let mut matches = advisories
             .iter()
             .filter(|adv| {
                 adv.package == name && Self::version_matches(version, &adv.affected_constraint)
             })
-            .collect()
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| Self::compare_matches(*left, *right));
+        matches
     }
 }
 
@@ -275,6 +293,77 @@ mod tests {
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].id, "adv_001");
         assert_eq!(matches[1].id, "adv_002");
+    }
+
+    #[test]
+    fn matches_are_severity_first_and_deterministic() {
+        let advisories = vec![
+            SecurityAdvisory {
+                id: "adv_low_z".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::Low,
+                reason: "low inserted first".to_string(),
+            },
+            SecurityAdvisory {
+                id: "adv_high_b".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::High,
+                reason: "high b".to_string(),
+            },
+            SecurityAdvisory {
+                id: "adv_critical".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::Critical,
+                reason: "critical inserted late".to_string(),
+            },
+            SecurityAdvisory {
+                id: "adv_high_a".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::High,
+                reason: "high a".to_string(),
+            },
+        ];
+
+        let ids = AdvisoryChecker::matches("payments.stripe", "1.5.0", &advisories)
+            .into_iter()
+            .map(|advisory| advisory.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ids,
+            vec!["adv_critical", "adv_high_a", "adv_high_b", "adv_low_z"],
+            "matching advisories must not inherit registry insertion order"
+        );
+    }
+
+    #[test]
+    fn first_match_returns_highest_severity_match() {
+        let advisories = vec![
+            SecurityAdvisory {
+                id: "adv_low_first".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::Low,
+                reason: "low inserted first".to_string(),
+            },
+            SecurityAdvisory {
+                id: "adv_critical_later".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::Critical,
+                reason: "critical inserted later".to_string(),
+            },
+        ];
+
+        let found = AdvisoryChecker::first_match("payments.stripe", "1.1.0", &advisories)
+            .expect("matching advisory must be found");
+
+        assert_eq!(found.id, "adv_critical_later");
+        assert_eq!(found.severity, AdvisorySeverity::Critical);
     }
 
     // ── RED: severity_display ─────────────────────────────────────────────
