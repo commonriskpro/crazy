@@ -78,6 +78,44 @@ fn compile_file_rejects_malformed_source_constructor() {
             "source constructor `Some` requires exactly one value",
         ));
 }
+
+#[test]
+fn compile_file_reports_redacted_source_lowering_diagnostic() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_lowering.ail");
+    source
+        .write_str("fn main() -> Int = for customer_secret in values { customer_secret }\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(output.stderr).expect("stderr must be UTF-8");
+
+    assert!(
+        stderr.contains("AIL_SOURCE_LOWER_UNSUPPORTED_CONSTRUCT"),
+        "stderr must include the stable source-lowerer diagnostic code; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("category=source.lower.unsupported"),
+        "stderr must include source-lowerer diagnostic category; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("descriptor={line=1,construct=for,sourceLength=49,sourceHash="),
+        "stderr must include a redacted source descriptor; got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("customer_secret"),
+        "stderr must not echo raw source details in lowerer descriptors; got: {stderr}"
+    );
+}
 #[test]
 fn compile_file_compiles_ail_source_without_acl_authoring() {
     use assert_fs::prelude::*;
