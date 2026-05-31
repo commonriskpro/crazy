@@ -109,6 +109,41 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include AIL source is_empty helper; got: {is_empty_items:?}"
     );
 
+    let ok_or_completion_output = ail()
+        .args(["lsp", "--complete", "ok_or", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let ok_or_completion = parse_json_output(&ok_or_completion_output);
+    let ok_or_items = ok_or_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ok_or_items
+            .iter()
+            .any(|item| item["label"] == "ok_or" && item["detail"] == "AIL source Option helper"),
+        "completion must include AIL source ok_or helper; got: {ok_or_items:?}"
+    );
+
+    let result_unwrap_completion_output = ail()
+        .args(["lsp", "--complete", "result_unwrap", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let result_unwrap_completion = parse_json_output(&result_unwrap_completion_output);
+    let result_unwrap_items = result_unwrap_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        result_unwrap_items
+            .iter()
+            .any(|item| item["label"] == "result_unwrap_or"
+                && item["detail"] == "AIL source Result helper"),
+        "completion must include AIL source result_unwrap_or helper; got: {result_unwrap_items:?}"
+    );
+
     let text_eq_completion_output = ail()
         .args(["lsp", "--complete", "text_eq", "--json"])
         .assert()

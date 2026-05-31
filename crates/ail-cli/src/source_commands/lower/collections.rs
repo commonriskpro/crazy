@@ -80,14 +80,17 @@ pub(super) fn lower_source_unwrap_or_expr(
     let Some((func, args)) = parse_source_call(expr) else {
         return Ok(None);
     };
-    if func != "unwrap_or" {
+    if !matches!(
+        func.as_str(),
+        "unwrap_or" | "option.unwrap_or" | "option_unwrap_or"
+    ) {
         return Ok(None);
     }
     if args.len() != 2 {
         return Err(source_lower_error(
             line_num,
             SourceLowerDiagnostic::CollectionArity,
-            "unwrap_or requires `unwrap_or(value, fallback)`",
+            "unwrap_or requires `unwrap_or(option, fallback)`",
         ));
     }
     Ok(Some(format!(

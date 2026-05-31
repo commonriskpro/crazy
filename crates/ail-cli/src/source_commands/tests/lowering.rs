@@ -303,6 +303,29 @@ fn value(input: Option<Int>) -> Int = unwrap_or(input, 0)
 }
 
 #[test]
+fn lowers_source_option_result_conversion_helpers() {
+    let program = parse_ail_source(
+        r#"
+fn value(input: Result<Int, Text>) -> Int = result_unwrap_or(input, 0)
+fn promoted(input: Option<Int>) -> Result<Int, Text> = ok_or(input, "missing")
+fn option_value(input: Option<Int>) -> Int = option_unwrap_or(input, 1)
+"#,
+    )
+    .expect("source option/result conversion helpers must parse");
+    let acl = source_program_to_acl(&program, "source_option_result_helpers".to_string());
+
+    assert!(acl.contains(
+            "op create_function id=fn.value return=Int body=match(input, Ok(__ail_unwrap), __ail_unwrap, Err(_), 0)"
+        ));
+    assert!(acl.contains(
+            r#"op create_function id=fn.promoted return=Result<Int,Text> body=match(input, Some(__ail_ok), ok(__ail_ok), None, err("missing"))"#
+        ));
+    assert!(acl.contains(
+            "op create_function id=fn.option_value return=Int body=match(input, Some(__ail_unwrap), __ail_unwrap, None, 1)"
+        ));
+}
+
+#[test]
 fn lowers_source_option_predicate_helpers() {
     let program = parse_ail_source(
         r#"

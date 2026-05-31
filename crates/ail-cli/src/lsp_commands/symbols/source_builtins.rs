@@ -266,6 +266,24 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_ends_with(${1:haystack}, ${2:suffix})",
     },
     AclSymbol {
+        label: "unwrap_or",
+        detail: "AIL source Option helper",
+        documentation: "Returns the value inside Option<T>, or a fallback when it is None.",
+        insert_text: "unwrap_or(${1:option}, ${2:fallback})",
+    },
+    AclSymbol {
+        label: "ok_or",
+        detail: "AIL source Option helper",
+        documentation: "Converts Option<T> to Result<T,E> using the supplied error when None.",
+        insert_text: "ok_or(${1:option}, ${2:error})",
+    },
+    AclSymbol {
+        label: "result_unwrap_or",
+        detail: "AIL source Result helper",
+        documentation: "Returns the Ok value inside Result<T,E>, or a fallback when it is Err.",
+        insert_text: "result_unwrap_or(${1:result}, ${2:fallback})",
+    },
+    AclSymbol {
         label: "first_or",
         detail: "AIL source List helper",
         documentation: "Returns the first List element when present, otherwise returns a fallback value.",

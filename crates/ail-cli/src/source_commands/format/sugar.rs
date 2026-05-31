@@ -209,6 +209,76 @@ pub(super) fn source_match_as_unwrap_or(args: &[String]) -> Option<(String, Stri
     }
 }
 
+pub(super) fn source_match_as_result_unwrap_or(args: &[String]) -> Option<(String, String)> {
+    if args.len() != 5 {
+        return None;
+    }
+    let scrutinee = args[0].trim().to_string();
+    let arms = args[1..]
+        .chunks_exact(2)
+        .map(|pair| (pair[0].trim(), pair[1].trim()))
+        .collect::<Vec<_>>();
+
+    let mut success = None;
+    let mut fallback = None;
+    for (pattern, body) in arms {
+        match source_constructor_pattern(pattern) {
+            Some(("Ok", Some(binding))) if body == binding => success = Some(()),
+            Some(("Err", Some("_"))) => fallback = Some(body.to_string()),
+            _ => return None,
+        }
+    }
+    if success.is_some() {
+        Some((scrutinee, fallback?))
+    } else {
+        None
+    }
+}
+
+pub(super) fn source_match_as_option_ok_or(args: &[String]) -> Option<(String, String)> {
+    if args.len() != 5 {
+        return None;
+    }
+    let scrutinee = args[0].trim().to_string();
+    let arms = args[1..]
+        .chunks_exact(2)
+        .map(|pair| (pair[0].trim(), pair[1].trim()))
+        .collect::<Vec<_>>();
+
+    let mut success = None;
+    let mut error = None;
+    for (pattern, body) in arms {
+        match source_constructor_pattern(pattern) {
+            Some(("Some", Some(binding))) if source_body_is_ok_binding(body, binding) => {
+                success = Some(())
+            }
+            Some(("None", None)) => error = source_body_err_arg(body),
+            _ => return None,
+        }
+    }
+    if success.is_some() {
+        Some((scrutinee, error?))
+    } else {
+        None
+    }
+}
+
+fn source_body_is_ok_binding(body: &str, binding: &str) -> bool {
+    let Some((func, args)) = parse_source_call(body) else {
+        return false;
+    };
+    matches!(func.as_str(), "ok" | "Ok") && args.len() == 1 && args[0].trim() == binding
+}
+
+fn source_body_err_arg(body: &str) -> Option<String> {
+    let (func, args) = parse_source_call(body)?;
+    if matches!(func.as_str(), "err" | "Err") && args.len() == 1 {
+        Some(args[0].trim().to_string())
+    } else {
+        None
+    }
+}
+
 pub(super) fn collect_source_update_literal(expr: &str) -> Option<(String, Vec<(String, String)>)> {
     let (func, args) = parse_source_call(expr)?;
     if func != "update" || args.len() != 3 || !is_source_local_ident(&args[1]) {

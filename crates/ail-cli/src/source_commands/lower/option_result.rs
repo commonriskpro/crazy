@@ -81,6 +81,50 @@ pub(super) fn lower_source_result_predicate_expr(
     )))
 }
 
+pub(super) fn lower_source_option_ok_or_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if !matches!(func.as_str(), "ok_or" | "option.ok_or" | "option_ok_or") {
+        return Ok(None);
+    }
+    if args.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: {func} requires `{func}(option, error)`"
+        )));
+    }
+    Ok(Some(format!(
+        "match({}, Some(__ail_ok), ok(__ail_ok), None, err({}))",
+        lower_source_expr(&args[0], line_num)?,
+        lower_source_expr(&args[1], line_num)?
+    )))
+}
+
+pub(super) fn lower_source_result_unwrap_or_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if !matches!(func.as_str(), "result.unwrap_or" | "result_unwrap_or") {
+        return Ok(None);
+    }
+    if args.len() != 2 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: {func} requires `{func}(result, fallback)`"
+        )));
+    }
+    Ok(Some(format!(
+        "match({}, Ok(__ail_unwrap), __ail_unwrap, Err(_), {})",
+        lower_source_expr(&args[0], line_num)?,
+        lower_source_expr(&args[1], line_num)?
+    )))
+}
+
 pub(super) fn lower_source_is_empty_expr(
     expr: &str,
     line_num: usize,

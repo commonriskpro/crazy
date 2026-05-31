@@ -353,6 +353,31 @@ fn value(input:Option<Int>)->Int=match(input,Some(v),v,None,0)
 }
 
 #[test]
+fn formats_source_option_result_conversion_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn value(input:Result<Int,Text>)->Int=match(input,Ok(v),v,Err(_),0)
+fn promoted(input:Option<Int>)->Result<Int,Text>=match(input,Some(v),Ok(v),None,Err("missing"))
+fn dotted(input:Result<Int,Text>, maybe:Option<Int>)->Int=add(result.unwrap_or(input,0),option.unwrap_or(maybe,1))
+"#,
+    )
+    .expect("source option/result conversion helpers must format");
+
+    assert_eq!(item_count, 3);
+    assert!(
+        formatted
+            .contains("fn value(input: Result<Int,Text>) -> Int = result_unwrap_or(input, 0)\n")
+    );
+    assert!(formatted.contains(
+        r#"fn promoted(input: Option<Int>) -> Result<Int,Text> = ok_or(input, "missing")
+"#
+    ));
+    assert!(formatted.contains(
+        "fn dotted(input: Result<Int,Text>, maybe: Option<Int>) -> Int = result_unwrap_or(input, 0) + option_unwrap_or(maybe, 1)\n"
+    ));
+}
+
+#[test]
 fn formats_source_match_constructor_aliases_idempotently() {
     let src = "fn picked(input:Option<Int>,fallback:Int)->Int=match(input,some(v),if(gt(v,0),v,fallback),none(),fallback)\n";
 

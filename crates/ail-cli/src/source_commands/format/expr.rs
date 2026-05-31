@@ -100,6 +100,26 @@ pub(super) fn format_source_expr_node(
                 CALL_PRECEDENCE,
             );
         }
+        if let Some((value, fallback)) = source_match_as_result_unwrap_or(&args) {
+            return (
+                format!(
+                    "result_unwrap_or({}, {})",
+                    format_source_expr(&value, module, constants),
+                    format_source_expr(&fallback, module, constants)
+                ),
+                CALL_PRECEDENCE,
+            );
+        }
+        if let Some((value, error)) = source_match_as_option_ok_or(&args) {
+            return (
+                format!(
+                    "ok_or({}, {})",
+                    format_source_expr(&value, module, constants),
+                    format_source_expr(&error, module, constants)
+                ),
+                CALL_PRECEDENCE,
+            );
+        }
         return (
             format_source_match_expr(&args, module, constants),
             IF_PRECEDENCE,
@@ -536,6 +556,39 @@ pub(super) fn format_source_expr_node(
         return (
             format!(
                 "text_ends_with({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "option.unwrap_or" && args.len() == 2 {
+        return (
+            format!(
+                "option_unwrap_or({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "option.ok_or" && args.len() == 2 {
+        return (
+            format!(
+                "ok_or({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "result.unwrap_or" && args.len() == 2 {
+        return (
+            format!(
+                "result_unwrap_or({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
             ),

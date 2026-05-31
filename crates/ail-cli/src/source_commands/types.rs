@@ -278,6 +278,15 @@ pub(super) fn infer_source_call_type(
         "tuple.second" | "tuple_second" => {
             infer_source_tuple_positional_type(args, scope, functions, 1, func)
         }
+        "unwrap_or" | "option.unwrap_or" | "option_unwrap_or" => {
+            infer_source_option_unwrap_or_type(args, scope, functions)
+        }
+        "ok_or" | "option.ok_or" | "option_ok_or" => {
+            infer_source_option_ok_or_type(args, scope, functions)
+        }
+        "result.unwrap_or" | "result_unwrap_or" => {
+            infer_source_result_unwrap_or_type(args, scope, functions)
+        }
         "set" => infer_source_set_type(args, scope, functions),
         "map" => infer_source_map_type(args, scope, functions),
         "record" => infer_source_record_type(args, scope, functions),
@@ -416,6 +425,82 @@ fn require_source_tuple_type<'a>(
     source_tuple_types(ty).map(Some).ok_or_else(|| {
         CliError::ParseError(format!(
             "type mismatch in {context}: expected Tuple<Unknown>, got {ty}"
+        ))
+    })
+}
+
+pub(super) fn infer_source_option_unwrap_or_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let option_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let fallback_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    let Some(inner_ty) = require_source_option_type(&option_ty, "option.unwrap_or argument 1")?
+    else {
+        return Ok(fallback_ty);
+    };
+    validate_source_type_match(inner_ty, &fallback_ty, "option.unwrap_or argument 2")?;
+    Ok(if inner_ty == "Unknown" {
+        fallback_ty
+    } else {
+        inner_ty.to_string()
+    })
+}
+
+pub(super) fn infer_source_option_ok_or_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let option_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let err_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    let ok_ty =
+        require_source_option_type(&option_ty, "option.ok_or argument 1")?.unwrap_or("Unknown");
+    Ok(format!("Result<{ok_ty},{err_ty}>"))
+}
+
+pub(super) fn infer_source_result_unwrap_or_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let result_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let fallback_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    let Some((ok_ty, _err_ty)) =
+        require_source_result_type(&result_ty, "result.unwrap_or argument 1")?
+    else {
+        return Ok(fallback_ty);
+    };
+    validate_source_type_match(ok_ty, &fallback_ty, "result.unwrap_or argument 2")?;
+    Ok(if ok_ty == "Unknown" {
+        fallback_ty
+    } else {
+        ok_ty.to_string()
+    })
+}
+
+fn require_source_option_type<'a>(ty: &'a str, context: &str) -> Result<Option<&'a str>, CliError> {
+    if ty == "Unknown" {
+        return Ok(None);
+    }
+    source_option_element_type(ty).map(Some).ok_or_else(|| {
+        CliError::ParseError(format!(
+            "type mismatch in {context}: expected Option<Unknown>, got {ty}"
+        ))
+    })
+}
+
+fn require_source_result_type<'a>(
+    ty: &'a str,
+    context: &str,
+) -> Result<Option<(&'a str, &'a str)>, CliError> {
+    if ty == "Unknown" {
+        return Ok(None);
+    }
+    source_result_types(ty).map(Some).ok_or_else(|| {
+        CliError::ParseError(format!(
+            "type mismatch in {context}: expected Result<Unknown,Unknown>, got {ty}"
         ))
     })
 }

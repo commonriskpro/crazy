@@ -286,6 +286,12 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
     if let Some(lowered) = lower_source_unwrap_or_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_option_ok_or_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
+    if let Some(lowered) = lower_source_result_unwrap_or_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_option_predicate_expr(expr, line_num)? {
         return Ok(lowered);
     }
