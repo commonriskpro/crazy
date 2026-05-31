@@ -15,8 +15,11 @@
 //     payment.charge is non_rollbackable
 //     requires idempotency + compensation/refund policy
 
+use ail_runtime::audit::{TRANSACTION_CATEGORY_COMMITTED, TRANSACTION_CATEGORY_ROLLED_BACK};
+use ail_runtime::host::RuntimeHost;
 use ail_runtime::profile::CapabilityId;
 use ail_runtime::transaction::{CompensationPolicy, TransactionGroup, TransactionPolicy};
+use ail_runtime::{AuditEvent, HostError};
 
 // ── CompensationPolicy ────────────────────────────────────────────────────
 
@@ -117,6 +120,112 @@ fn rollback_returns_non_rollbackable_with_compensation_info() {
 }
 
 // ── RuntimeHost rollback-on-failure ──────────────────────────────────────
+
+#[test]
+fn runtime_host_execute_with_rollback_records_redacted_commit_audit() {
+    let payment_cap = CapabilityId::new("payment.charge:PaymentProvider");
+    let refund_cap = CapabilityId::new("payment.refund:SecretRefundProvider");
+    let mut tx = TransactionGroup::new("customer@example.com/checkout");
+    tx.add_with_compensation(
+        payment_cap,
+        TransactionPolicy::NonRollbackable,
+        CompensationPolicy::ExplicitRefund {
+            refund_capability: refund_cap,
+        },
+    );
+
+    let mut host = RuntimeHost::new();
+    let result: Result<(), _> = host.execute_with_rollback(&mut tx, |_h| Ok(()));
+
+    assert!(result.is_ok());
+
+    let log = host.audit_log();
+    assert_eq!(log.len(), 1);
+    match log.events().last().expect("transaction audit event") {
+        AuditEvent::TransactionLifecycle {
+            group_name_shape,
+            action,
+            category,
+            status_before,
+            status_after,
+            entry_count,
+            non_rollbackable_count,
+            compensation_required_count,
+        } => {
+            assert_eq!(group_name_shape, "contains_separator");
+            assert_eq!(action, "commit");
+            assert_eq!(category, TRANSACTION_CATEGORY_COMMITTED);
+            assert_eq!(status_before, "pending");
+            assert_eq!(status_after, "committed");
+            assert_eq!(*entry_count, 1);
+            assert_eq!(*non_rollbackable_count, 1);
+            assert_eq!(*compensation_required_count, 1);
+        }
+        other => panic!("expected transaction lifecycle audit event, got {other:?}"),
+    }
+
+    let debug = format!("{log:?}");
+    assert!(!debug.contains("customer@example.com"));
+    assert!(!debug.contains("payment.charge"));
+    assert!(!debug.contains("payment.refund"));
+}
+
+#[test]
+fn runtime_host_execute_with_rollback_detail_records_redacted_rollback_audit() {
+    let db_cap = CapabilityId::new("database.write:Order");
+    let payment_cap = CapabilityId::new("payment.charge:PaymentProvider");
+    let mut tx = TransactionGroup::new("customer@example.com/checkout");
+    tx.add(db_cap, TransactionPolicy::Transactional);
+    tx.add_with_compensation(
+        payment_cap.clone(),
+        TransactionPolicy::NonRollbackable,
+        CompensationPolicy::IdempotentRetry {
+            idempotency_key: "order-42-secret".to_string(),
+        },
+    );
+
+    let mut host = RuntimeHost::new();
+    let (result, non_rollbackable): (Result<(), _>, _) =
+        host.execute_with_rollback_detail(&mut tx, |_h| {
+            Err(HostError::Custom(
+                "provider error for customer@example.com".to_string(),
+            ))
+        });
+
+    assert!(result.is_err());
+    assert_eq!(non_rollbackable, vec![payment_cap]);
+
+    let log = host.audit_log();
+    assert_eq!(log.len(), 1);
+    match log.events().last().expect("transaction audit event") {
+        AuditEvent::TransactionLifecycle {
+            group_name_shape,
+            action,
+            category,
+            status_before,
+            status_after,
+            entry_count,
+            non_rollbackable_count,
+            compensation_required_count,
+        } => {
+            assert_eq!(group_name_shape, "contains_separator");
+            assert_eq!(action, "rollback");
+            assert_eq!(category, TRANSACTION_CATEGORY_ROLLED_BACK);
+            assert_eq!(status_before, "pending");
+            assert_eq!(status_after, "rolled_back");
+            assert_eq!(*entry_count, 2);
+            assert_eq!(*non_rollbackable_count, 1);
+            assert_eq!(*compensation_required_count, 1);
+        }
+        other => panic!("expected transaction lifecycle audit event, got {other:?}"),
+    }
+
+    let debug = format!("{log:?}");
+    assert!(!debug.contains("customer@example.com"));
+    assert!(!debug.contains("payment.charge"));
+    assert!(!debug.contains("order-42-secret"));
+    assert!(!debug.contains("provider error"));
+}
 
 #[test]
 fn runtime_host_execute_with_rollback_commits_on_success() {
