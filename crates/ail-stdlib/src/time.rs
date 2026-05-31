@@ -180,6 +180,213 @@ pub fn validate_instant_contract(instant: &Instant) -> Result<(), InstantShapeEr
     validate_instant_shape(instant_shape(instant))
 }
 
+// ── Temporal contract diagnostics ────────────────────────────────────────
+
+/// Stable std.time value domains for redacted diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TemporalValueKind {
+    Instant,
+    Duration,
+    LocalDate,
+    LocalTime,
+    TimeZone,
+}
+
+impl TemporalValueKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Instant => "instant",
+            Self::Duration => "duration",
+            Self::LocalDate => "local-date",
+            Self::LocalTime => "local-time",
+            Self::TimeZone => "timezone",
+        }
+    }
+}
+
+/// Stable std.time contract issue kinds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TemporalIssueKind {
+    NanosecondsOutOfRange,
+    MonthOutOfRange,
+    DayOutOfRange,
+    HourOutOfRange,
+    MinuteOutOfRange,
+    SecondOutOfRange,
+    OffsetOutOfRange,
+    DurationNotNormalized,
+}
+
+impl TemporalIssueKind {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NanosecondsOutOfRange => "std.time.nanos.out_of_range",
+            Self::MonthOutOfRange => "std.time.date.month_out_of_range",
+            Self::DayOutOfRange => "std.time.date.day_out_of_range",
+            Self::HourOutOfRange => "std.time.time.hour_out_of_range",
+            Self::MinuteOutOfRange => "std.time.time.minute_out_of_range",
+            Self::SecondOutOfRange => "std.time.time.second_out_of_range",
+            Self::OffsetOutOfRange => "std.time.timezone.offset_out_of_range",
+            Self::DurationNotNormalized => "std.time.duration.not_normalized",
+        }
+    }
+
+    pub const fn category(self) -> &'static str {
+        match self {
+            Self::NanosecondsOutOfRange
+            | Self::MonthOutOfRange
+            | Self::DayOutOfRange
+            | Self::HourOutOfRange
+            | Self::MinuteOutOfRange
+            | Self::SecondOutOfRange
+            | Self::OffsetOutOfRange => "range",
+            Self::DurationNotNormalized => "normalization",
+        }
+    }
+}
+
+/// Machine-readable std.time contract issue that exposes shape, not values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TemporalIssue {
+    pub value: TemporalValueKind,
+    pub kind: TemporalIssueKind,
+    pub field: &'static str,
+    pub expected: &'static str,
+}
+
+impl TemporalIssue {
+    pub const fn code(&self) -> &'static str {
+        self.kind.code()
+    }
+
+    pub const fn category(&self) -> &'static str {
+        self.kind.category()
+    }
+
+    pub const fn value_label(&self) -> &'static str {
+        self.value.label()
+    }
+}
+
+fn temporal_issue(
+    value: TemporalValueKind,
+    kind: TemporalIssueKind,
+    field: &'static str,
+    expected: &'static str,
+) -> TemporalIssue {
+    TemporalIssue {
+        value,
+        kind,
+        field,
+        expected,
+    }
+}
+
+fn sort_temporal_issues(issues: &mut Vec<TemporalIssue>) {
+    issues.sort_by_key(|issue| (issue.value, issue.field, issue.kind));
+    issues.dedup();
+}
+
+/// Validate a local date without leaking the date value.
+pub fn diagnose_local_date(date: &LocalDate) -> Vec<TemporalIssue> {
+    let mut issues = Vec::new();
+    if !(1..=12).contains(&date.month) {
+        issues.push(temporal_issue(
+            TemporalValueKind::LocalDate,
+            TemporalIssueKind::MonthOutOfRange,
+            "month",
+            "1 <= month <= 12",
+        ));
+    }
+    if !(1..=31).contains(&date.day) {
+        issues.push(temporal_issue(
+            TemporalValueKind::LocalDate,
+            TemporalIssueKind::DayOutOfRange,
+            "day",
+            "1 <= day <= 31",
+        ));
+    }
+    sort_temporal_issues(&mut issues);
+    issues
+}
+
+/// Validate a local time without leaking the time value.
+pub fn diagnose_local_time(time: &LocalTime) -> Vec<TemporalIssue> {
+    let mut issues = Vec::new();
+    if time.hour > 23 {
+        issues.push(temporal_issue(
+            TemporalValueKind::LocalTime,
+            TemporalIssueKind::HourOutOfRange,
+            "hour",
+            "0 <= hour <= 23",
+        ));
+    }
+    if time.minute > 59 {
+        issues.push(temporal_issue(
+            TemporalValueKind::LocalTime,
+            TemporalIssueKind::MinuteOutOfRange,
+            "minute",
+            "0 <= minute <= 59",
+        ));
+    }
+    if time.second > 59 {
+        issues.push(temporal_issue(
+            TemporalValueKind::LocalTime,
+            TemporalIssueKind::SecondOutOfRange,
+            "second",
+            "0 <= second <= 59",
+        ));
+    }
+    if time.nanos >= 1_000_000_000 {
+        issues.push(temporal_issue(
+            TemporalValueKind::LocalTime,
+            TemporalIssueKind::NanosecondsOutOfRange,
+            "nanos",
+            "0 <= nanos < 1000000000",
+        ));
+    }
+    sort_temporal_issues(&mut issues);
+    issues
+}
+
+/// Validate a timezone offset without leaking local environment data.
+pub fn diagnose_timezone(timezone: &TimeZone) -> Vec<TemporalIssue> {
+    let mut issues = Vec::new();
+    if !(-24 * 60..=24 * 60).contains(&timezone.offset_minutes) {
+        issues.push(temporal_issue(
+            TemporalValueKind::TimeZone,
+            TemporalIssueKind::OffsetOutOfRange,
+            "offset_minutes",
+            "-1440 <= offset_minutes <= 1440",
+        ));
+    }
+    issues
+}
+
+/// Validate duration normalization without leaking exact duration values.
+pub fn diagnose_duration(duration: &StdDuration) -> Vec<TemporalIssue> {
+    let mut issues = Vec::new();
+    if duration.nanos <= -1_000_000_000 || duration.nanos >= 1_000_000_000 {
+        issues.push(temporal_issue(
+            TemporalValueKind::Duration,
+            TemporalIssueKind::DurationNotNormalized,
+            "nanos",
+            "-1000000000 < nanos < 1000000000",
+        ));
+    }
+    issues
+}
+
+/// Validate a full zoned date-time contract with deterministic issue ordering.
+pub fn diagnose_zoned_datetime(datetime: &ZonedDateTime) -> Vec<TemporalIssue> {
+    let mut issues = Vec::new();
+    issues.extend(diagnose_local_date(&datetime.datetime.date));
+    issues.extend(diagnose_local_time(&datetime.datetime.time));
+    issues.extend(diagnose_timezone(&datetime.timezone));
+    sort_temporal_issues(&mut issues);
+    issues
+}
+
 // ── Instant ───────────────────────────────────────────────────────────────
 
 /// A moment in time represented as seconds + nanoseconds since UNIX epoch.
@@ -429,5 +636,64 @@ mod tests {
             InstantShape::NanosecondsOutOfRange.label(),
             "nanos-out-of-range"
         );
+    }
+
+    #[test]
+    fn temporal_diagnostics_are_stable_and_redacted() {
+        let zoned = ZonedDateTime::new(
+            LocalDateTime::new(
+                LocalDate::new(2026, 13, 0),
+                LocalTime {
+                    hour: 24,
+                    minute: 60,
+                    second: 60,
+                    nanos: 1_000_000_000,
+                },
+            ),
+            TimeZone {
+                offset_minutes: 2_000,
+            },
+        );
+
+        let issues = diagnose_zoned_datetime(&zoned);
+        let codes: Vec<_> = issues.iter().map(TemporalIssue::code).collect();
+        let labels: Vec<_> = issues.iter().map(TemporalIssue::value_label).collect();
+
+        assert_eq!(
+            codes,
+            vec![
+                "std.time.date.day_out_of_range",
+                "std.time.date.month_out_of_range",
+                "std.time.time.hour_out_of_range",
+                "std.time.time.minute_out_of_range",
+                "std.time.nanos.out_of_range",
+                "std.time.time.second_out_of_range",
+                "std.time.timezone.offset_out_of_range",
+            ]
+        );
+        assert_eq!(
+            labels,
+            vec![
+                "local-date",
+                "local-date",
+                "local-time",
+                "local-time",
+                "local-time",
+                "local-time",
+                "timezone",
+            ]
+        );
+        assert!(issues.iter().all(|issue| issue.category() == "range"));
+    }
+
+    #[test]
+    fn duration_diagnostic_uses_shape_not_duration_value() {
+        let issues = diagnose_duration(&StdDuration::from_secs_nanos(1, 1_000_000_000));
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code(), "std.time.duration.not_normalized");
+        assert_eq!(issues[0].category(), "normalization");
+        assert_eq!(issues[0].field, "nanos");
+        assert_eq!(issues[0].value_label(), "duration");
     }
 }
