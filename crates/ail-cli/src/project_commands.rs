@@ -27,7 +27,7 @@ use crate::cli_helpers::{
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
 use crate::package_registry_io::load_package_lockfile;
-use crate::project::{ArtifactKind, ProjectContext};
+use crate::project::{ArtifactKind, ProjectContext, project_scaffold_names};
 use crate::store::{StoreHandle, file_store, init_file_layout_with_branch};
 
 // ── cmd_change ────────────────────────────────────────────────────────────
@@ -309,6 +309,10 @@ pub(crate) async fn cmd_new(
     branch: &str,
     force: bool,
 ) -> Result<(), CliError> {
+    let project_names = project_scaffold_names(&path)?;
+    let project_name = project_names.manifest_name.as_str();
+    let scaffold_ident = project_names.scaffold_ident.as_str();
+
     if path.exists() && !force && path.read_dir()?.next().is_some() {
         return Err(CliError::Domain(format!(
             "refusing to create project in non-empty directory: {}",
@@ -335,10 +339,6 @@ pub(crate) async fn cmd_new(
         std::fs::create_dir_all(&subdir)?;
     }
 
-    let project_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(".");
     let config_path = ctx.ail_dir.join("project.toml");
     if !config_path.exists() {
         let config_content = format!(
@@ -376,7 +376,7 @@ pub(crate) async fn cmd_new(
 
     let sample_path = path.join("main.acl");
     if !sample_path.exists() {
-        std::fs::write(&sample_path, starter_acl(project_name))?;
+        std::fs::write(&sample_path, starter_acl(scaffold_ident))?;
     }
 
     let disk_store = file_store(ctx.ail_dir.clone());
@@ -419,6 +419,8 @@ pub(crate) async fn cmd_new(
             "genesis_snapshot_id": genesis_hex,
             "starter_source": source_path,
             "starter_acl": sample_path,
+            "project_name": project_name,
+            "starter_change": format!("{scaffold_ident}_hello"),
         }),
     );
     Ok(())
@@ -429,9 +431,9 @@ fn starter_source() -> &'static str {
 test main_addition = eq(add(20, 22), 42)\n"
 }
 
-fn starter_acl(project_name: &str) -> String {
+fn starter_acl(scaffold_ident: &str) -> String {
     format!(
-        "change {project_name}_hello\n\
+        "change {scaffold_ident}_hello\n\
 author ail\n\
 description starter AIL program\n\
 base 0\n\

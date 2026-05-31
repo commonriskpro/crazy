@@ -111,6 +111,70 @@ fn new_creates_project_scaffold_with_starter_source_and_acl() {
     assert!(v["data"]["starter_source"].is_string());
     assert!(v["data"]["starter_acl"].is_string());
 }
+
+/// Spec scenario: new keeps package-style names manifest-safe and starter ACL usable.
+///   GIVEN a package-style project name with hyphen/dot punctuation
+///   WHEN `ail new my-app.v1 --json` runs
+///   THEN project.toml preserves the manifest name and starter ACL uses a valid change id
+#[test]
+fn new_sanitizes_starter_change_for_package_style_project_name() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let output = ail()
+        .args(["new", "my-app.v1", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let project = dir.child("my-app.v1");
+    let manifest = std::fs::read_to_string(project.path().join(".ail/project.toml"))
+        .expect("project manifest must be readable");
+    assert!(
+        manifest.contains("name = \"my-app.v1\""),
+        "project.toml must preserve the user-facing project name; got:\n{manifest}"
+    );
+
+    let acl = std::fs::read_to_string(project.path().join("main.acl"))
+        .expect("starter ACL must be readable");
+    assert!(
+        acl.contains("change my_app_v1_hello"),
+        "starter ACL must use an identifier-safe deterministic change id; got:\n{acl}"
+    );
+
+    ail()
+        .args(["change", "--file", "main.acl", "--json"])
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["project_name"], "my-app.v1");
+    assert_eq!(v["data"]["starter_change"], "my_app_v1_hello");
+}
+
+/// Spec scenario: new rejects unsafe project names before writing a scaffold.
+///   GIVEN a project name that would produce unsafe TOML/source metadata
+///   WHEN `ail new "bad name"` runs
+///   THEN the command fails with a clear diagnostic and writes no project directory
+#[test]
+fn new_rejects_unsafe_project_name_with_clear_diagnostic() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail()
+        .args(["new", "bad name", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid project name 'bad name'"))
+        .stderr(predicate::str::contains("Use ASCII letters"));
+
+    dir.child("bad name").assert(predicate::path::missing());
+}
+
 /// Spec scenario: file-backed store persists between CLI invocations.
 ///   GIVEN `ail init` has created an on-disk store
 ///   WHEN `ail change` writes a snapshot and `ail compile` runs later
