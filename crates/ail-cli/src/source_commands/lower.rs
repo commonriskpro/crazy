@@ -19,6 +19,53 @@ pub(super) use option_result::*;
 pub(super) use syntax_helpers::*;
 pub(super) use text::*;
 
+#[derive(Clone, Copy)]
+pub(super) enum SourceLowerDiagnostic {
+    CollectionArity,
+    FieldAccess,
+    IndexExpression,
+    ListLiteral,
+    RecordLiteral,
+    UnaryOperator,
+}
+
+impl SourceLowerDiagnostic {
+    fn code(self) -> &'static str {
+        match self {
+            SourceLowerDiagnostic::CollectionArity => "AIL_SOURCE_LOWER_COLLECTION_ARITY",
+            SourceLowerDiagnostic::FieldAccess => "AIL_SOURCE_LOWER_FIELD_ACCESS",
+            SourceLowerDiagnostic::IndexExpression => "AIL_SOURCE_LOWER_INDEX_EXPRESSION",
+            SourceLowerDiagnostic::ListLiteral => "AIL_SOURCE_LOWER_LIST_LITERAL",
+            SourceLowerDiagnostic::RecordLiteral => "AIL_SOURCE_LOWER_RECORD_LITERAL",
+            SourceLowerDiagnostic::UnaryOperator => "AIL_SOURCE_LOWER_UNARY_OPERATOR",
+        }
+    }
+
+    fn category(self) -> &'static str {
+        match self {
+            SourceLowerDiagnostic::CollectionArity
+            | SourceLowerDiagnostic::FieldAccess
+            | SourceLowerDiagnostic::IndexExpression
+            | SourceLowerDiagnostic::ListLiteral
+            | SourceLowerDiagnostic::RecordLiteral => "source.lower.collection",
+            SourceLowerDiagnostic::UnaryOperator => "source.lower.operator",
+        }
+    }
+}
+
+pub(super) fn source_lower_error(
+    line_num: usize,
+    diagnostic: SourceLowerDiagnostic,
+    message: impl AsRef<str>,
+) -> CliError {
+    CliError::ParseError(format!(
+        "line {line_num}: [{}] category={}: {}",
+        diagnostic.code(),
+        diagnostic.category(),
+        message.as_ref()
+    ))
+}
+
 pub(super) fn source_program_to_graph(
     program: &SourceProgram,
     change_name: impl Into<String>,
@@ -363,18 +410,22 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         }
         let inner = inner.trim();
         if inner.is_empty() {
-            return Err(CliError::ParseError(format!(
-                "line {line_num}: unary `-` requires an expression"
-            )));
+            return Err(source_lower_error(
+                line_num,
+                SourceLowerDiagnostic::UnaryOperator,
+                "unary `-` requires an expression",
+            ));
         }
         return Ok(format!("sub(0, {})", lower_source_expr(inner, line_num)?));
     }
     if let Some(inner) = expr.strip_prefix('!') {
         let inner = inner.trim();
         if inner.is_empty() || inner.starts_with('=') {
-            return Err(CliError::ParseError(format!(
-                "line {line_num}: unary `!` requires an expression"
-            )));
+            return Err(source_lower_error(
+                line_num,
+                SourceLowerDiagnostic::UnaryOperator,
+                "unary `!` requires an expression",
+            ));
         }
         return Ok(format!("not({})", lower_source_expr(inner, line_num)?));
     }
