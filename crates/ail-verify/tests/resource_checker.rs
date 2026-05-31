@@ -9,7 +9,10 @@ use ail_core::semantic_graph::{
 use ail_verify::diagnostic::{DiagnosticSeverity, RepairOption};
 use ail_verify::report::VerificationState;
 use ail_verify::resource_checker::{
-    E_RESOURCE_LIMIT_EXCEEDED, E_RESOURCE_QUOTA_EXCEEDED, RESOURCE_DIAGNOSTIC_CATEGORY_QUOTA_LIMIT,
+    E_DOUBLE_CLOSE, E_RESOURCE_LEAKED, E_RESOURCE_LIFETIME_MISMATCH, E_RESOURCE_LIMIT_EXCEEDED,
+    E_RESOURCE_MISSING_CAPABILITY, E_RESOURCE_QUOTA_EXCEEDED, E_SHARED_WITHOUT_SAFE_CAPABILITY,
+    E_USE_AFTER_CLOSE, RESOURCE_DIAGNOSTIC_CATEGORY_CAPABILITY,
+    RESOURCE_DIAGNOSTIC_CATEGORY_LIFECYCLE, RESOURCE_DIAGNOSTIC_CATEGORY_QUOTA_LIMIT,
     ResourceChecker,
 };
 
@@ -27,6 +30,15 @@ fn graph(nodes: Vec<GraphNode>) -> SemanticGraph {
         nodes,
         edges: vec![],
     }
+}
+
+fn diagnostic_text(report: &ail_verify::report::VerificationReport) -> String {
+    report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| format!("{diagnostic:?}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ── Scenario: non-resource nodes are skipped ──────────────────────────────
@@ -410,4 +422,123 @@ fn limit_exceeded_resource_emits_stable_structured_diagnostic() {
         diagnostic.repair_options.first(),
         Some(RepairOption::Explanation(_))
     ));
+}
+
+#[test]
+fn production_resource_diagnostics_cover_lifecycle_capability_and_lifetime() {
+    let g = graph(vec![
+        resource_node(
+            50,
+            "secret_shared_missing_capability",
+            "resource:shared",
+            vec!["missing-capability"],
+        ),
+        resource_node(
+            40,
+            "secret_linear_leaked",
+            "resource:linear",
+            vec!["leaked-resource"],
+        ),
+        resource_node(
+            30,
+            "secret_stream_lifetime",
+            "resource:affine",
+            vec!["lifetime-mismatch"],
+        ),
+        resource_node(
+            20,
+            "secret_file_double_close",
+            "resource:affine",
+            vec!["double-close"],
+        ),
+        resource_node(
+            10,
+            "secret_socket_use_after_close",
+            "resource:linear",
+            vec!["use-after-close"],
+        ),
+    ]);
+
+    let report = ResourceChecker::check(&g);
+
+    let codes: Vec<_> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert_eq!(
+        codes,
+        vec![
+            E_USE_AFTER_CLOSE,
+            E_DOUBLE_CLOSE,
+            E_RESOURCE_LIFETIME_MISMATCH,
+            E_RESOURCE_LEAKED,
+            E_RESOURCE_MISSING_CAPABILITY,
+        ],
+        "resource diagnostics must be sorted by stable production issue rank"
+    );
+
+    for diagnostic in &report.diagnostics {
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert!(diagnostic.blocking);
+        assert!(matches!(
+            diagnostic.repair_options.first(),
+            Some(RepairOption::Explanation(_))
+        ));
+    }
+}
+
+#[test]
+fn resource_diagnostics_are_sorted_deduped_and_redacted() {
+    let g = graph(vec![
+        resource_node(
+            20,
+            "private_shared_counter_secret",
+            "resource:shared",
+            vec![],
+        ),
+        resource_node(
+            10,
+            "private_file_handle_secret",
+            "resource:affine",
+            vec!["double-close", "double-close"],
+        ),
+        // Exact duplicate diagnostic shape: production diagnostics must dedup it.
+        resource_node(
+            10,
+            "private_file_handle_secret",
+            "resource:affine",
+            vec!["double-close", "double-close"],
+        ),
+    ]);
+
+    let report = ResourceChecker::check(&g);
+
+    let codes: Vec<_> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert_eq!(
+        codes,
+        vec![E_DOUBLE_CLOSE, E_SHARED_WITHOUT_SAFE_CAPABILITY],
+        "resource diagnostics must be sorted and exact duplicate diagnostics deduped"
+    );
+
+    let text = diagnostic_text(&report);
+    for secret in [
+        "private_shared_counter_secret",
+        "private_file_handle_secret",
+    ] {
+        assert!(
+            !text.contains(secret),
+            "production diagnostics must redact raw resource names, got:\n{text}"
+        );
+    }
+    assert!(
+        text.contains("resource#10") && text.contains("resource#20"),
+        "diagnostics should expose stable redacted resource descriptors, got:\n{text}"
+    );
+    assert!(text.contains(RESOURCE_DIAGNOSTIC_CATEGORY_LIFECYCLE));
+    assert!(text.contains(RESOURCE_DIAGNOSTIC_CATEGORY_CAPABILITY));
 }
