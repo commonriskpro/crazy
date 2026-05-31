@@ -690,6 +690,38 @@ fn source_map_preserves_duplicate_node_refs_for_synthetic_bindings() {
     assert_eq!(sm.entries[1].binding_name, "anf_0");
 }
 
+// Spec: source-map lookup returns every duplicate span in stable binding order.
+#[test]
+fn source_map_entries_for_node_returns_duplicates_in_binding_order() {
+    let bindings = vec![
+        AnfBinding {
+            source_ref: NodeRef(7),
+            name: "fn_original".to_string(),
+            expr: AnfExpr::Placeholder,
+        },
+        AnfBinding {
+            source_ref: NodeRef(3),
+            name: "fn_other".to_string(),
+            expr: AnfExpr::Placeholder,
+        },
+        AnfBinding {
+            source_ref: NodeRef(7),
+            name: "anf_synthetic".to_string(),
+            expr: AnfExpr::Placeholder,
+        },
+    ];
+
+    let sm = SourceMap::from_bindings(&bindings);
+    let matches = sm.entries_for_node(NodeRef(7));
+    let names: Vec<&str> = matches
+        .iter()
+        .map(|entry| entry.binding_name.as_str())
+        .collect();
+
+    assert_eq!(names, vec!["fn_original", "anf_synthetic"]);
+    assert!(sm.entries_for_node(NodeRef(99)).is_empty());
+}
+
 // Spec: empty input yields empty source map.
 #[test]
 fn source_map_from_empty_bindings_is_empty() {
