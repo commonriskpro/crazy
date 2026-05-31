@@ -11,11 +11,17 @@
 
 use ail_runtime::audit::{
     AuditEvent, AuditLog, DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED,
-    DENIAL_CATEGORY_CAPABILITY_REVOKED,
+    DENIAL_CATEGORY_CAPABILITY_REVOKED, DENIAL_CATEGORY_HANDLER_NOT_BOUND,
+    DENIAL_CATEGORY_LIMIT_MEMORY, DENIAL_CATEGORY_LIMIT_RATE, LIMIT_DENIAL_DIAGNOSTIC_KEY_FUEL,
+    LIMIT_DENIAL_DIAGNOSTIC_KEY_MEMORY, LIMIT_DENIAL_DIAGNOSTIC_KEY_RATE,
+    LIMIT_DENIAL_DIAGNOSTIC_KEY_TIME, LIMIT_DENIAL_SHAPE_FUEL, LIMIT_DENIAL_SHAPE_MEMORY,
+    LIMIT_DENIAL_SHAPE_RATE, LIMIT_DENIAL_SHAPE_TIME,
     PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED,
     PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_REVOKED,
     PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED,
-    PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_REVOKED,
+    PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_REVOKED, RUNTIME_ISSUE_DIAGNOSTIC_KEY_RESOURCE_POLICY,
+    RUNTIME_ISSUE_SHAPE_RESOURCE_POLICY, RuntimeIssueAxis, RuntimeIssueDescriptor,
+    runtime_issue_descriptors_for_events,
 };
 use ail_runtime::error::PreflightFailure;
 use ail_runtime::profile::CapabilityId;
@@ -292,5 +298,195 @@ fn capability_call_policy_denial_shapes_cover_not_granted_and_revoked() {
         assert!(!shape.contains("revoked-partner-api"));
         assert!(!shape.contains("prod-tenant-payroll"));
         assert!(!shape.contains("payroll-private-module"));
+    }
+}
+
+#[test]
+fn runtime_issue_descriptors_cover_limit_capability_and_resource_policy_axes() {
+    let timeout = AuditEvent::PreflightFailed {
+        profile_name: "prod-tenant-private".to_string(),
+        denied: vec![],
+        reason: PreflightFailure::ResourceLimitExceeded {
+            reason: "deadline exceeded while running private module".to_string(),
+        },
+    };
+    let step = AuditEvent::PreflightFailed {
+        profile_name: "prod-tenant-private".to_string(),
+        denied: vec![],
+        reason: PreflightFailure::ResourceLimitExceeded {
+            reason: "fuel limit exceeded after private loop".to_string(),
+        },
+    };
+    let memory = denied_event(DENIAL_CATEGORY_LIMIT_MEMORY);
+    let capability = AuditEvent::PreflightFailed {
+        profile_name: "prod-tenant-private".to_string(),
+        denied: vec![CapabilityId::new("secret.read:ProductionDbPassword")],
+        reason: PreflightFailure::CapabilityDenied {
+            denied: vec![CapabilityId::new("secret.read:ProductionDbPassword")],
+        },
+    };
+    let resource_policy = denied_event(DENIAL_CATEGORY_HANDLER_NOT_BOUND);
+
+    assert_eq!(
+        timeout.runtime_issue_descriptor(),
+        Some(RuntimeIssueDescriptor {
+            axis: RuntimeIssueAxis::Timeout,
+            diagnostic_key: LIMIT_DENIAL_DIAGNOSTIC_KEY_TIME,
+            shape: LIMIT_DENIAL_SHAPE_TIME,
+        })
+    );
+    assert_eq!(
+        step.runtime_issue_descriptor(),
+        Some(RuntimeIssueDescriptor {
+            axis: RuntimeIssueAxis::Step,
+            diagnostic_key: LIMIT_DENIAL_DIAGNOSTIC_KEY_FUEL,
+            shape: LIMIT_DENIAL_SHAPE_FUEL,
+        })
+    );
+    assert_eq!(
+        memory.runtime_issue_descriptor(),
+        Some(RuntimeIssueDescriptor {
+            axis: RuntimeIssueAxis::Memory,
+            diagnostic_key: LIMIT_DENIAL_DIAGNOSTIC_KEY_MEMORY,
+            shape: LIMIT_DENIAL_SHAPE_MEMORY,
+        })
+    );
+    assert_eq!(
+        capability.runtime_issue_descriptor(),
+        Some(RuntimeIssueDescriptor {
+            axis: RuntimeIssueAxis::Capability,
+            diagnostic_key: PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED,
+            shape: PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED,
+        })
+    );
+    assert_eq!(
+        resource_policy.runtime_issue_descriptor(),
+        Some(RuntimeIssueDescriptor {
+            axis: RuntimeIssueAxis::ResourcePolicy,
+            diagnostic_key: RUNTIME_ISSUE_DIAGNOSTIC_KEY_RESOURCE_POLICY,
+            shape: RUNTIME_ISSUE_SHAPE_RESOURCE_POLICY,
+        })
+    );
+}
+
+#[test]
+fn runtime_issue_descriptors_for_events_are_redacted_deduped_and_canonical() {
+    let events = vec![
+        denied_event(DENIAL_CATEGORY_LIMIT_RATE),
+        AuditEvent::PreflightFailed {
+            profile_name: "tenant-alpha-secret".to_string(),
+            denied: vec![CapabilityId::new("network.egress:private-vpc")],
+            reason: PreflightFailure::CapabilityDenied {
+                denied: vec![CapabilityId::new("network.egress:private-vpc")],
+            },
+        },
+        denied_event(DENIAL_CATEGORY_LIMIT_MEMORY),
+        AuditEvent::PreflightFailed {
+            profile_name: "tenant-alpha-secret".to_string(),
+            denied: vec![],
+            reason: PreflightFailure::ResourceLimitExceeded {
+                reason: "fuel limit exceeded in tenant-alpha-secret".to_string(),
+            },
+        },
+        AuditEvent::PreflightFailed {
+            profile_name: "tenant-alpha-secret".to_string(),
+            denied: vec![],
+            reason: PreflightFailure::ResourceLimitExceeded {
+                reason: "deadline exceeded in tenant-alpha-secret".to_string(),
+            },
+        },
+        // Duplicate timeout descriptor: batch output should de-duplicate it.
+        AuditEvent::PreflightFailed {
+            profile_name: "tenant-alpha-secret".to_string(),
+            denied: vec![],
+            reason: PreflightFailure::ResourceLimitExceeded {
+                reason: "timeout while calling private endpoint".to_string(),
+            },
+        },
+        AuditEvent::PreflightPassed {
+            profile_name: "tenant-alpha-secret".to_string(),
+            module_hash: "raw-private-module-hash".to_string(),
+        },
+    ];
+
+    let descriptors = runtime_issue_descriptors_for_events(events.iter());
+
+    assert_eq!(
+        descriptors,
+        vec![
+            RuntimeIssueDescriptor {
+                axis: RuntimeIssueAxis::Timeout,
+                diagnostic_key: LIMIT_DENIAL_DIAGNOSTIC_KEY_TIME,
+                shape: LIMIT_DENIAL_SHAPE_TIME,
+            },
+            RuntimeIssueDescriptor {
+                axis: RuntimeIssueAxis::Step,
+                diagnostic_key: LIMIT_DENIAL_DIAGNOSTIC_KEY_FUEL,
+                shape: LIMIT_DENIAL_SHAPE_FUEL,
+            },
+            RuntimeIssueDescriptor {
+                axis: RuntimeIssueAxis::Memory,
+                diagnostic_key: LIMIT_DENIAL_DIAGNOSTIC_KEY_MEMORY,
+                shape: LIMIT_DENIAL_SHAPE_MEMORY,
+            },
+            RuntimeIssueDescriptor {
+                axis: RuntimeIssueAxis::Capability,
+                diagnostic_key: PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED,
+                shape: PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED,
+            },
+            RuntimeIssueDescriptor {
+                axis: RuntimeIssueAxis::ResourcePolicy,
+                diagnostic_key: LIMIT_DENIAL_DIAGNOSTIC_KEY_RATE,
+                shape: LIMIT_DENIAL_SHAPE_RATE,
+            },
+        ]
+    );
+
+    for descriptor in descriptors {
+        assert!(!descriptor.shape.contains("tenant-alpha-secret"));
+        assert!(!descriptor.shape.contains("private-vpc"));
+        assert!(!descriptor.diagnostic_key.contains("tenant-alpha-secret"));
+        assert!(!descriptor.diagnostic_key.contains("private-vpc"));
+    }
+}
+
+#[test]
+fn audit_log_runtime_issue_descriptors_use_same_batch_ordering() {
+    let mut log = AuditLog::new();
+    log.push(denied_event(DENIAL_CATEGORY_LIMIT_RATE));
+    log.push(AuditEvent::PreflightFailed {
+        profile_name: "prod".to_string(),
+        denied: vec![],
+        reason: PreflightFailure::ResourceLimitExceeded {
+            reason: "deadline exceeded".to_string(),
+        },
+    });
+
+    assert_eq!(
+        log.runtime_issue_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.axis)
+            .collect::<Vec<_>>(),
+        vec![RuntimeIssueAxis::Timeout, RuntimeIssueAxis::ResourcePolicy]
+    );
+}
+
+fn denied_event(category: &'static str) -> AuditEvent {
+    AuditEvent::CapabilityCallExecuted {
+        capability: CapabilityId::new("secret.read:ProductionDbPassword"),
+        operation: "read-private-secret".to_string(),
+        handler_name: "none".to_string(),
+        succeeded: false,
+        duration_us: 1,
+        timestamp: 1,
+        profile: Some("tenant-alpha-secret".to_string()),
+        module: Some("private-module".to_string()),
+        function: None,
+        input_hash: Some("a".repeat(64)),
+        output_hash: None,
+        trace_id: None,
+        verification_report_hash: None,
+        trace_context: None,
+        denial_category: Some(category.to_string()),
     }
 }

@@ -140,6 +140,62 @@ pub const REPLAY_MISMATCH_DIAGNOSTIC_KEY_MISSING_RECORDING: &str =
 /// Deterministic diagnostic key for replay output-hash mismatches.
 pub const REPLAY_MISMATCH_DIAGNOSTIC_KEY_HASH_MISMATCH: &str = "replay.mismatch.hash_mismatch";
 
+// ── Stable runtime issue descriptors ────────────────────────────────────
+
+/// Coarse redacted axis for production runtime issue descriptors.
+///
+/// The declaration order is the canonical batch ordering used by
+/// [`runtime_issue_descriptors_for_events`]: timeout, step, memory,
+/// capability, then broader resource-policy issues.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RuntimeIssueAxis {
+    /// Wall-clock timeout/deadline limit.
+    Timeout,
+    /// Execution step/fuel budget limit.
+    Step,
+    /// Linear memory growth/size limit.
+    Memory,
+    /// Capability grant/revocation policy denial.
+    Capability,
+    /// Other runtime resource-policy denial such as rate, payload, output,
+    /// concurrency, handler binding/trust, package trust, or assumptions.
+    ResourcePolicy,
+}
+
+/// Stable redacted descriptor for one class of runtime safety issue.
+///
+/// Descriptors intentionally carry only stable grouping metadata. They never
+/// include profile names, module names, capability IDs, operation names,
+/// payload bytes, configured thresholds, current usage, or raw trap text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RuntimeIssueDescriptor {
+    /// Canonical coarse axis for sorting/grouping issue descriptors.
+    pub axis: RuntimeIssueAxis,
+    /// Stable machine-readable key for dashboards and support triage.
+    pub diagnostic_key: &'static str,
+    /// Redacted shape descriptor for UI grouping.
+    pub shape: &'static str,
+}
+
+impl RuntimeIssueDescriptor {
+    const fn new(
+        axis: RuntimeIssueAxis,
+        diagnostic_key: &'static str,
+        shape: &'static str,
+    ) -> Self {
+        RuntimeIssueDescriptor {
+            axis,
+            diagnostic_key,
+            shape,
+        }
+    }
+}
+
+/// Redacted descriptor shape for generic resource-policy issues.
+pub const RUNTIME_ISSUE_SHAPE_RESOURCE_POLICY: &str = "runtime.policy:<resource>";
+/// Deterministic diagnostic key for generic resource-policy issues.
+pub const RUNTIME_ISSUE_DIAGNOSTIC_KEY_RESOURCE_POLICY: &str = "runtime.policy.resource";
+
 // ── Stable transaction lifecycle categories ──────────────────────────────
 
 /// Transaction/audit category for a pending transaction committed successfully.
@@ -253,6 +309,69 @@ fn limit_denial_kind_from_category(category: &str) -> Option<LimitDenialKind> {
         DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE => Some(LimitDenialKind::OutputSize),
         _ => None,
     }
+}
+
+fn limit_denial_descriptor(kind: LimitDenialKind) -> RuntimeIssueDescriptor {
+    let axis = match kind {
+        LimitDenialKind::Time => RuntimeIssueAxis::Timeout,
+        LimitDenialKind::Fuel => RuntimeIssueAxis::Step,
+        LimitDenialKind::Memory => RuntimeIssueAxis::Memory,
+        LimitDenialKind::MaxCapabilityCalls
+        | LimitDenialKind::Rate
+        | LimitDenialKind::Concurrency
+        | LimitDenialKind::CallDepth
+        | LimitDenialKind::PayloadSize
+        | LimitDenialKind::OutputSize => RuntimeIssueAxis::ResourcePolicy,
+    };
+    RuntimeIssueDescriptor::new(axis, kind.diagnostic_key(), kind.shape())
+}
+
+fn profile_policy_denial_descriptor(kind: ProfilePolicyDenialKind) -> RuntimeIssueDescriptor {
+    RuntimeIssueDescriptor::new(
+        RuntimeIssueAxis::Capability,
+        kind.diagnostic_key(),
+        kind.shape(),
+    )
+}
+
+fn resource_policy_issue_descriptor() -> RuntimeIssueDescriptor {
+    RuntimeIssueDescriptor::new(
+        RuntimeIssueAxis::ResourcePolicy,
+        RUNTIME_ISSUE_DIAGNOSTIC_KEY_RESOURCE_POLICY,
+        RUNTIME_ISSUE_SHAPE_RESOURCE_POLICY,
+    )
+}
+
+fn runtime_issue_descriptor_from_preflight_failure(
+    reason: &PreflightFailure,
+) -> Option<RuntimeIssueDescriptor> {
+    match reason {
+        PreflightFailure::CapabilityDenied { .. } => Some(profile_policy_denial_descriptor(
+            ProfilePolicyDenialKind::CapabilityNotGranted,
+        )),
+        PreflightFailure::ResourceLimitExceeded { reason } => {
+            limit_denial_kind_from_resource_reason(reason).map(limit_denial_descriptor)
+        }
+        PreflightFailure::PackageTrustViolation { .. }
+        | PreflightFailure::UnsafePackageNotApproved { .. }
+        | PreflightFailure::PackageVerificationEvidenceInvalid { .. }
+        | PreflightFailure::HandlerNotBound { .. }
+        | PreflightFailure::HandlerTrustViolation { .. }
+        | PreflightFailure::AssumptionExpired { .. } => Some(resource_policy_issue_descriptor()),
+        PreflightFailure::HashMismatch { .. } | PreflightFailure::WasmValidationError(_) => None,
+    }
+}
+
+fn runtime_issue_descriptor_from_denial_category(category: &str) -> Option<RuntimeIssueDescriptor> {
+    limit_denial_kind_from_category(category)
+        .map(limit_denial_descriptor)
+        .or_else(|| {
+            profile_policy_denial_kind_from_category(category).map(profile_policy_denial_descriptor)
+        })
+        .or_else(|| match category {
+            DENIAL_CATEGORY_HANDLER_NOT_BOUND => Some(resource_policy_issue_descriptor()),
+            _ => None,
+        })
 }
 
 fn limit_denial_kind_from_resource_reason(reason: &str) -> Option<LimitDenialKind> {
@@ -473,6 +592,25 @@ impl AuditEvent {
         }
     }
 
+    /// Return a stable, redacted runtime issue descriptor for this event.
+    ///
+    /// This is the single-event form used by
+    /// [`runtime_issue_descriptors_for_events`] and
+    /// [`AuditLog::runtime_issue_descriptors`]. The descriptor is redacted and
+    /// stable: it carries only the coarse issue axis, diagnostic key, and shape.
+    pub fn runtime_issue_descriptor(&self) -> Option<RuntimeIssueDescriptor> {
+        match self {
+            AuditEvent::PreflightFailed { reason, .. } => {
+                runtime_issue_descriptor_from_preflight_failure(reason)
+            }
+            AuditEvent::CapabilityCallExecuted {
+                denial_category: Some(category),
+                ..
+            } => runtime_issue_descriptor_from_denial_category(category),
+            _ => None,
+        }
+    }
+
     /// Return a stable, redacted shape descriptor for secret access events.
     ///
     /// The descriptor deliberately ignores the concrete secret ID in
@@ -526,6 +664,32 @@ impl AuditLog {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Return deterministic, de-duplicated runtime issue descriptors for this log.
+    ///
+    /// Output order is canonical and does not depend on event insertion order:
+    /// timeout, step, memory, capability, then resource-policy descriptors.
+    pub fn runtime_issue_descriptors(&self) -> Vec<RuntimeIssueDescriptor> {
+        runtime_issue_descriptors_for_events(self.events())
+    }
+}
+
+/// Return deterministic, de-duplicated runtime issue descriptors for a batch of events.
+///
+/// The batch helper is intentionally redacted. It ignores successful events and
+/// non-policy/non-limit failures, de-duplicates repeated issue classes, and
+/// returns descriptors in canonical order for stable validation snapshots.
+pub fn runtime_issue_descriptors_for_events<'a>(
+    events: impl IntoIterator<Item = &'a AuditEvent>,
+) -> Vec<RuntimeIssueDescriptor> {
+    use std::collections::BTreeSet;
+
+    events
+        .into_iter()
+        .filter_map(AuditEvent::runtime_issue_descriptor)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 #[cfg(test)]
