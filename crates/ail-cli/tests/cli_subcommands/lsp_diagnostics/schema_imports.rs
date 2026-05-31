@@ -302,6 +302,43 @@ fn lsp_diagnose_reports_non_ail_source_imports() {
             .contains("import path `./math.txt` must end with `.ail`")
     );
 }
+
+#[test]
+fn lsp_diagnose_reports_duplicate_source_imports() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let dep = dir.child("math.ail");
+    dep.write_str("fn helper() -> Int = 1\n")
+        .expect("dep fixture must be written");
+    let source = dir.child("main.ail");
+    source
+        .write_str("use \"./math.ail\"\nuse \"./math.ail\"\nfn main() -> Int = helper()\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(v["data"]["diagnostics"][0]["source"], "ail-source-parser");
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("line 2: duplicate import declaration `./math.ail`")
+    );
+}
+
 #[test]
 fn lsp_diagnose_reports_ail_source_duplicate_imported_functions() {
     use assert_fs::prelude::*;
