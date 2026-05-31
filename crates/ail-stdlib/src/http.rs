@@ -27,6 +27,20 @@ impl HeaderMap {
     pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.0.insert(key.into().to_ascii_lowercase(), value.into());
     }
+
+    /// Insert a header only after validating the redacted header contract.
+    pub fn insert_checked(
+        &mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<(), HttpHeaderShapeError> {
+        let key = key.into();
+        let value = value.into();
+        let descriptor = HttpHeaderDescriptor::new(&key, &value);
+        descriptor.validate()?;
+        self.insert(key, value);
+        Ok(())
+    }
     pub fn get(&self, key: &str) -> Option<&str> {
         self.0.get(&key.to_ascii_lowercase()).map(String::as_str)
     }
@@ -112,6 +126,112 @@ impl HttpCapability {
         match self {
             HttpCapability::Call => "http.call",
         }
+    }
+}
+
+/// Stable structural categories for HTTP header names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HttpHeaderNameShape {
+    Empty,
+    ContainsColon,
+    ContainsWhitespace,
+    ContainsControl,
+    NonAscii,
+    Token,
+}
+
+impl HttpHeaderNameShape {
+    pub fn label(self) -> &'static str {
+        match self {
+            HttpHeaderNameShape::Empty => "empty",
+            HttpHeaderNameShape::ContainsColon => "contains-colon",
+            HttpHeaderNameShape::ContainsWhitespace => "contains-whitespace",
+            HttpHeaderNameShape::ContainsControl => "contains-control",
+            HttpHeaderNameShape::NonAscii => "non-ascii",
+            HttpHeaderNameShape::Token => "token",
+        }
+    }
+
+    pub fn is_allowed(self) -> bool {
+        matches!(self, HttpHeaderNameShape::Token)
+    }
+}
+
+/// Stable structural categories for HTTP header values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HttpHeaderValueShape {
+    Empty,
+    Present,
+    ContainsLineBreak,
+    ContainsNul,
+}
+
+impl HttpHeaderValueShape {
+    pub fn label(self) -> &'static str {
+        match self {
+            HttpHeaderValueShape::Empty => "empty",
+            HttpHeaderValueShape::Present => "present",
+            HttpHeaderValueShape::ContainsLineBreak => "contains-line-break",
+            HttpHeaderValueShape::ContainsNul => "contains-nul",
+        }
+    }
+
+    pub fn is_allowed(self) -> bool {
+        !matches!(
+            self,
+            HttpHeaderValueShape::ContainsLineBreak | HttpHeaderValueShape::ContainsNul
+        )
+    }
+}
+
+/// Redacted error for invalid HTTP header shapes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpHeaderShapeError {
+    pub field: &'static str,
+    pub actual: &'static str,
+    pub expected: &'static str,
+}
+
+impl std::fmt::Display for HttpHeaderShapeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "http header shape mismatch for {}: expected {}, got {}",
+            self.field, self.expected, self.actual
+        )
+    }
+}
+
+impl std::error::Error for HttpHeaderShapeError {}
+
+/// Descriptor for a single HTTP header entry. Values/names are never echoed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpHeaderDescriptor {
+    pub name_shape: HttpHeaderNameShape,
+    pub value_shape: HttpHeaderValueShape,
+    pub canonical_name_required: bool,
+}
+
+impl HttpHeaderDescriptor {
+    pub fn new(name: &str, value: &str) -> Self {
+        Self {
+            name_shape: header_name_shape(name),
+            value_shape: header_value_shape(value),
+            canonical_name_required: true,
+        }
+    }
+
+    pub fn diagnostic_key(&self) -> String {
+        format!(
+            "std.http.header:{}:{}",
+            self.name_shape.label(),
+            self.value_shape.label()
+        )
+    }
+
+    pub fn validate(&self) -> Result<(), HttpHeaderShapeError> {
+        validate_header_name_shape(self.name_shape)?;
+        validate_header_value_shape(self.value_shape)
     }
 }
 
@@ -262,6 +382,66 @@ impl HttpRequestDescriptor {
     pub fn validate_request_shape(&self) -> Result<(), HttpRequestShapeError> {
         validate_method_shape(self.method_shape)?;
         validate_url_shape(self.url_shape)
+    }
+}
+
+/// Return the stable structural shape for a header name without exposing it.
+pub fn header_name_shape(name: &str) -> HttpHeaderNameShape {
+    if name.is_empty() {
+        return HttpHeaderNameShape::Empty;
+    }
+    if name.chars().any(char::is_control) {
+        return HttpHeaderNameShape::ContainsControl;
+    }
+    if name.chars().any(char::is_whitespace) {
+        return HttpHeaderNameShape::ContainsWhitespace;
+    }
+    if name.contains(':') {
+        return HttpHeaderNameShape::ContainsColon;
+    }
+    if !name.is_ascii() {
+        return HttpHeaderNameShape::NonAscii;
+    }
+    HttpHeaderNameShape::Token
+}
+
+/// Return the stable structural shape for a header value without exposing it.
+pub fn header_value_shape(value: &str) -> HttpHeaderValueShape {
+    if value.contains('\0') {
+        return HttpHeaderValueShape::ContainsNul;
+    }
+    if value.contains('\n') || value.contains('\n') {
+        return HttpHeaderValueShape::ContainsLineBreak;
+    }
+    if value.is_empty() {
+        return HttpHeaderValueShape::Empty;
+    }
+    HttpHeaderValueShape::Present
+}
+
+pub fn validate_header_name_shape(shape: HttpHeaderNameShape) -> Result<(), HttpHeaderShapeError> {
+    if shape.is_allowed() {
+        Ok(())
+    } else {
+        Err(HttpHeaderShapeError {
+            field: "name",
+            actual: shape.label(),
+            expected: "ASCII header token without colon, whitespace, or controls",
+        })
+    }
+}
+
+pub fn validate_header_value_shape(
+    shape: HttpHeaderValueShape,
+) -> Result<(), HttpHeaderShapeError> {
+    if shape.is_allowed() {
+        Ok(())
+    } else {
+        Err(HttpHeaderShapeError {
+            field: "value",
+            actual: shape.label(),
+            expected: "header value without NUL or line breaks",
+        })
     }
 }
 
@@ -546,5 +726,59 @@ mod tests {
 
         request.method = HttpMethod::Custom("PATCHX".to_string());
         assert_eq!(validate_request_contract(&request), Ok(()));
+    }
+
+    #[test]
+    fn header_contracts_reject_injection_without_leaking_values() {
+        let descriptor = HttpHeaderDescriptor::new(
+            "Authorization",
+            "Bearer secret
+Injected: yes",
+        );
+
+        assert_eq!(descriptor.name_shape, HttpHeaderNameShape::Token);
+        assert_eq!(
+            descriptor.value_shape,
+            HttpHeaderValueShape::ContainsLineBreak
+        );
+        assert!(descriptor.canonical_name_required);
+        assert_eq!(
+            descriptor.diagnostic_key(),
+            "std.http.header:token:contains-line-break"
+        );
+        assert_eq!(
+            descriptor.validate(),
+            Err(HttpHeaderShapeError {
+                field: "value",
+                actual: "contains-line-break",
+                expected: "header value without NUL or line breaks",
+            })
+        );
+    }
+
+    #[test]
+    fn checked_header_insert_canonicalizes_safe_names() {
+        let mut headers = HeaderMap::new();
+
+        assert_eq!(headers.insert_checked("X-Trace-Id", "abc123"), Ok(()));
+        assert_eq!(headers.get("x-trace-id"), Some("abc123"));
+        assert_eq!(headers.get("X-TRACE-ID"), Some("abc123"));
+
+        assert_eq!(
+            headers.insert_checked("Bad Header", "ok"),
+            Err(HttpHeaderShapeError {
+                field: "name",
+                actual: "contains-whitespace",
+                expected: "ASCII header token without colon, whitespace, or controls",
+            })
+        );
+        assert_eq!(
+            headers.insert_checked("X-Secret", "token bytes"),
+            Err(HttpHeaderShapeError {
+                field: "value",
+                actual: "contains-nul",
+                expected: "header value without NUL or line breaks",
+            })
+        );
     }
 }
