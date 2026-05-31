@@ -12,6 +12,7 @@ use ail_core::semantic_graph::{
     TypeArgBinding, TypeFacts,
 };
 use ail_verify::diagnostic::DiagnosticSeverity;
+use ail_verify::effect_checker::EFFECT_DIAGNOSTIC_CATEGORY_MISSING_EFFECT;
 use ail_verify::report::VerificationState;
 use ail_verify::type_checker::{
     E_CAPABILITY_NOT_PROPAGATED, E_DYN_INTERFACE_UNAVAILABLE, E_EFFECT_NOT_PROPAGATED,
@@ -268,6 +269,76 @@ fn callee_effects_and_capabilities_must_propagate_to_caller() {
                 .unwrap_or("")
                 .contains(E_CAPABILITY_NOT_PROPAGATED)
     }));
+}
+
+#[test]
+fn effect_capability_propagation_entries_are_deduped_and_redacted() {
+    let mut caller = fn_node(0, "SecretCaller");
+    caller.effect_row = Some(EffectRow { effects: vec![] });
+    caller.capability_reqs = Some(CapabilityReqs { caps: vec![] });
+    let mut callee = fn_node(1, "SecretCallee");
+    callee.effect_row = Some(EffectRow {
+        effects: vec![
+            "PaymentSecret".into(),
+            "AuditSecret".into(),
+            "PaymentSecret".into(),
+        ],
+    });
+    callee.capability_reqs = Some(CapabilityReqs {
+        caps: vec!["payments:secret".into(), "audit:secret".into()],
+    });
+    let edge = GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls);
+    let duplicate_edge = GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::Calls);
+
+    let report = TypeChecker::check(&graph_with_edges(
+        vec![caller, callee],
+        vec![duplicate_edge, edge],
+    ));
+
+    assert_eq!(
+        report
+            .entries
+            .iter()
+            .filter(|entry| entry.claim == "effect-propagation"
+                && entry.state == VerificationState::Failed)
+            .count(),
+        1,
+        "duplicate call edges must not duplicate effect-propagation issues"
+    );
+    assert_eq!(
+        report
+            .entries
+            .iter()
+            .filter(|entry| entry.claim == "capability-propagation"
+                && entry.state == VerificationState::Failed)
+            .count(),
+        1,
+        "duplicate call edges must not duplicate capability-propagation issues"
+    );
+
+    let evidence = report
+        .entries
+        .iter()
+        .filter_map(|entry| entry.evidence.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(evidence.contains(EFFECT_DIAGNOSTIC_CATEGORY_MISSING_EFFECT));
+    assert!(evidence.contains("capability.missing"));
+    assert!(evidence.contains("descriptors=[effect#0, effect#1]"));
+    assert!(evidence.contains("descriptors=[capability#0, capability#1]"));
+    for secret in [
+        "SecretCaller",
+        "SecretCallee",
+        "PaymentSecret",
+        "AuditSecret",
+        "payments:secret",
+        "audit:secret",
+    ] {
+        assert!(
+            !evidence.contains(secret),
+            "effect/capability propagation evidence must redact {secret:?}; got:\n{evidence}"
+        );
+    }
 }
 
 #[test]
