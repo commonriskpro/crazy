@@ -50,7 +50,8 @@ use ail_package::manifest::PackageManifest;
 
 use crate::abi::{HostError, HostResult};
 use crate::audit::{
-    AuditEvent, AuditLog, DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED,
+    AuditEvent, AuditLog, DENIAL_CATEGORY_CAPABILITY_AMBIENT_ACCESS,
+    DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED, DENIAL_CATEGORY_CAPABILITY_PROFILE_MISMATCH,
     DENIAL_CATEGORY_CAPABILITY_REVOKED, DENIAL_CATEGORY_HANDLER_NOT_BOUND,
     DENIAL_CATEGORY_LIMIT_CONCURRENCY, DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS,
     DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE, DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE,
@@ -83,6 +84,24 @@ fn transaction_lifecycle_event(record: TransactionAuditRecord) -> AuditEvent {
         entry_count: record.entry_count,
         non_rollbackable_count: record.non_rollbackable_count,
         compensation_required_count: record.compensation_required_count,
+    }
+}
+
+fn capability_denial_category_for_access(
+    profile: Option<&RuntimeProfile>,
+    module: Option<&str>,
+    capability: &CapabilityId,
+) -> &'static str {
+    let Some(profile) = profile else {
+        return DENIAL_CATEGORY_CAPABILITY_AMBIENT_ACCESS;
+    };
+    let Some(module) = module.filter(|module| !module.is_empty()) else {
+        return DENIAL_CATEGORY_CAPABILITY_AMBIENT_ACCESS;
+    };
+    if profile.grants_capability_to_any_module(capability) {
+        DENIAL_CATEGORY_CAPABILITY_PROFILE_MISMATCH
+    } else {
+        DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED
     }
 }
 
@@ -454,6 +473,11 @@ impl RuntimeHost {
 
         if !granted {
             let err = HostError::CapabilityDenied(capability.as_str().to_string());
+            let category = capability_denial_category_for_access(
+                self.current_profile.as_deref(),
+                module_name.as_deref(),
+                capability,
+            );
             let duration_us = start.elapsed().as_micros() as u64;
             self.audit_log.lock().expect("audit_log lock").push(
                 AuditEvent::CapabilityCallExecuted {
@@ -471,7 +495,7 @@ impl RuntimeHost {
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: denial_category(DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED),
+                    denial_category: denial_category(category),
                 },
             );
             return Err(err);
@@ -1046,7 +1070,8 @@ mod tests {
     use std::sync::Arc;
 
     use crate::audit::{
-        AuditEvent, DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED,
+        AuditEvent, DENIAL_CATEGORY_CAPABILITY_AMBIENT_ACCESS,
+        DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED, DENIAL_CATEGORY_CAPABILITY_PROFILE_MISMATCH,
         DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS, DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE,
     };
     use crate::handler::InMemoryHandler;
@@ -1117,6 +1142,65 @@ mod tests {
         assert_eq!(
             last_denial_category(&host).as_deref(),
             Some(DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED)
+        );
+    }
+
+    #[test]
+    fn ambient_direct_capability_call_records_stable_denial_category() {
+        let mut host = RuntimeHost::new();
+        let result = host.call_capability(&CapabilityId::new("audit.ambient"), "op", b"");
+
+        assert!(result.is_err(), "ambient capability call must be denied");
+        assert_eq!(
+            last_denial_category(&host).as_deref(),
+            Some(DENIAL_CATEGORY_CAPABILITY_AMBIENT_ACCESS)
+        );
+    }
+
+    #[test]
+    fn profile_mismatch_direct_capability_call_records_stable_denial_category() {
+        let wasm = minimal_wasm();
+        let granted = CapabilityId::new("audit.granted");
+        let mismatched = CapabilityId::new("audit.mismatched");
+        let manifest = CapabilityManifest {
+            module: "active-module".to_string(),
+            requires: vec![granted.clone()],
+        };
+        let profile = RuntimeProfile::new(
+            "audit-category-profile".to_string(),
+            blake3_hex_of(&wasm),
+            "a".repeat(64),
+            manifest.blake3_hex().expect("manifest hash must succeed"),
+            vec![
+                CapabilityGrant {
+                    module: manifest.module.clone(),
+                    capability: granted.clone(),
+                },
+                CapabilityGrant {
+                    module: "other-module".to_string(),
+                    capability: mismatched.clone(),
+                },
+            ],
+            ResourceLimits::default(),
+        );
+        let handler = Arc::new(InMemoryHandler::new(
+            "audit-category-handler",
+            vec![granted, mismatched.clone()],
+            b"ok".to_vec(),
+        ));
+        let mut host = RuntimeHost::new().with_handler(handler);
+        host.validate_and_instantiate(&wasm, &manifest, &profile)
+            .expect("preflight must pass");
+
+        let result = host.call_capability(&mismatched, "op", b"");
+
+        assert!(
+            result.is_err(),
+            "profile-mismatched capability must be denied"
+        );
+        assert_eq!(
+            last_denial_category(&host).as_deref(),
+            Some(DENIAL_CATEGORY_CAPABILITY_PROFILE_MISMATCH)
         );
     }
 

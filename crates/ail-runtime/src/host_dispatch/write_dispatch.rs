@@ -5,11 +5,12 @@ use std::time::Instant;
 use wasmtime::Caller;
 
 use crate::audit::{
-    DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED, DENIAL_CATEGORY_CAPABILITY_REVOKED,
-    DENIAL_CATEGORY_HANDLER_NOT_BOUND, DENIAL_CATEGORY_LIMIT_CONCURRENCY,
-    DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS, DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE,
-    DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE, DENIAL_CATEGORY_LIMIT_RATE,
-    DENIAL_CATEGORY_LIMIT_RECURSION_DEPTH, DENIAL_CATEGORY_PAYLOAD_DECODE,
+    DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED, DENIAL_CATEGORY_CAPABILITY_PROFILE_MISMATCH,
+    DENIAL_CATEGORY_CAPABILITY_REVOKED, DENIAL_CATEGORY_HANDLER_NOT_BOUND,
+    DENIAL_CATEGORY_LIMIT_CONCURRENCY, DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS,
+    DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE, DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE,
+    DENIAL_CATEGORY_LIMIT_RATE, DENIAL_CATEGORY_LIMIT_RECURSION_DEPTH,
+    DENIAL_CATEGORY_PAYLOAD_DECODE,
 };
 use crate::host_dispatch::audit::CapabilityAuditContext;
 use crate::host_dispatch::limits::{check_rate_limits, unix_timestamp_micros};
@@ -76,13 +77,12 @@ pub(crate) fn dispatch_host_call_write(
     {
         let state = caller.data_mut();
         if !state.profile.grants_capability(&state.module_name, &cap) {
-            audit.push_denied(
-                &audit_log,
-                cap,
-                operation,
-                "none".to_string(),
-                DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED,
-            );
+            let category = if state.profile.grants_capability_to_any_module(&cap) {
+                DENIAL_CATEGORY_CAPABILITY_PROFILE_MISMATCH
+            } else {
+                DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED
+            };
+            audit.push_denied(&audit_log, cap, operation, "none".to_string(), category);
             return None;
         }
         if state

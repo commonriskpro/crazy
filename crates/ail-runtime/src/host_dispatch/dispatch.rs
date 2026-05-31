@@ -6,7 +6,8 @@ use wasmtime::Caller;
 
 use crate::abi::HostError;
 use crate::audit::{
-    AuditEvent, DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED, DENIAL_CATEGORY_CAPABILITY_REVOKED,
+    AuditEvent, DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED,
+    DENIAL_CATEGORY_CAPABILITY_PROFILE_MISMATCH, DENIAL_CATEGORY_CAPABILITY_REVOKED,
     DENIAL_CATEGORY_HANDLER_NOT_BOUND, DENIAL_CATEGORY_LIMIT_CONCURRENCY,
     DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS, DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE,
     DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE, DENIAL_CATEGORY_LIMIT_RATE,
@@ -53,6 +54,11 @@ pub(crate) fn dispatch_host_call(
         let state = caller.data_mut();
         // Grant check (module-scoped).
         if !state.profile.grants_capability(&state.module_name, &cap) {
+            let category = if state.profile.grants_capability_to_any_module(&cap) {
+                DENIAL_CATEGORY_CAPABILITY_PROFILE_MISMATCH
+            } else {
+                DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED
+            };
             state.audit_log.lock().expect("audit_log lock").push(
                 AuditEvent::CapabilityCallExecuted {
                     capability: cap,
@@ -69,7 +75,7 @@ pub(crate) fn dispatch_host_call(
                     trace_id,
                     verification_report_hash: vr_hash,
                     trace_context: child_trace,
-                    denial_category: denial_category(DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED),
+                    denial_category: denial_category(category),
                 },
             );
             return Some(-1);
