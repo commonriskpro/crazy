@@ -255,3 +255,142 @@ fn abi_descriptor_validation_returns_issues_in_canonical_order() {
         ]
     );
 }
+
+#[test]
+fn abi_descriptor_validation_reports_module_boundary_mismatches() {
+    let descriptor = AbiDescriptor::new(BTreeMap::from([
+        ("text_result".to_string(), WasmTypeDescriptor::Text),
+        (
+            "float_result".to_string(),
+            WasmTypeDescriptor::Scalar(WasmScalarType::F64),
+        ),
+        (
+            "record_result".to_string(),
+            WasmTypeDescriptor::Record {
+                fields: vec!["id".to_string()],
+            },
+        ),
+        ("missing_result".to_string(), WasmTypeDescriptor::Handle),
+    ]));
+    let mut module = super::AbiModuleShape::new(BTreeMap::from([
+        (
+            "text_result".to_string(),
+            super::AbiFunctionSignature::new(vec![WasmScalarType::I32], Some(WasmScalarType::I32)),
+        ),
+        (
+            "float_result".to_string(),
+            super::AbiFunctionSignature::new(vec![], Some(WasmScalarType::F64)),
+        ),
+        (
+            "record_result".to_string(),
+            super::AbiFunctionSignature::new(vec![], Some(WasmScalarType::I64)),
+        ),
+    ]));
+    module.imports.push(super::AbiImportShape::new(
+        "ail host",
+        "host.call",
+        super::AbiFunctionSignature::new(vec![WasmScalarType::I32], Some(WasmScalarType::I64)),
+    ));
+
+    let issues = descriptor.validation_issues_for_module(&module);
+    assert!(issues.contains(&AbiDescriptorIssue::UnsupportedTypeLayout {
+        export: "float_result".to_string(),
+        layout: super::AbiTypeLayout::F64Scalar,
+    }));
+    assert!(issues.contains(&AbiDescriptorIssue::InvalidImportName {
+        module: "ail host".to_string(),
+        name: "host.call".to_string(),
+    }));
+    assert!(issues.contains(&AbiDescriptorIssue::ArgumentTypeMismatch {
+        export: "text_result".to_string(),
+        index: 0,
+        expected: WasmScalarType::I64,
+        actual: WasmScalarType::I32,
+    }));
+    assert!(issues.contains(&AbiDescriptorIssue::ReturnTypeMismatch {
+        export: "text_result".to_string(),
+        expected: Some(WasmScalarType::I64),
+        actual: Some(WasmScalarType::I32),
+    }));
+    assert!(issues.contains(&AbiDescriptorIssue::ReturnTypeMismatch {
+        export: "record_result".to_string(),
+        expected: Some(WasmScalarType::I32),
+        actual: Some(WasmScalarType::I64),
+    }));
+    assert!(
+        issues.contains(&AbiDescriptorIssue::MemoryBoundaryMismatch {
+            export: "text_result".to_string(),
+        })
+    );
+    assert!(
+        issues.contains(&AbiDescriptorIssue::MemoryBoundaryMismatch {
+            export: "record_result".to_string(),
+        })
+    );
+    assert!(issues.contains(&AbiDescriptorIssue::MissingExportFunction {
+        export: "missing_result".to_string(),
+    }));
+}
+
+#[test]
+fn abi_descriptor_validation_diagnostics_are_redacted_and_stable() {
+    let descriptor = AbiDescriptor::new(BTreeMap::from([(
+        "customer-secret-token".to_string(),
+        WasmTypeDescriptor::Record {
+            fields: vec!["raw-email-address".to_string()],
+        },
+    )]));
+    let mut module = super::AbiModuleShape::new(BTreeMap::from([(
+        "customer-secret-token".to_string(),
+        super::AbiFunctionSignature::new(vec![WasmScalarType::F64], Some(WasmScalarType::I64)),
+    )]));
+    module.imports.push(super::AbiImportShape::new(
+        "private module",
+        "token.reader",
+        super::AbiFunctionSignature::new(vec![], Some(WasmScalarType::I64)),
+    ));
+
+    let diagnostics = descriptor.validation_diagnostics_for_module(&module);
+    let rendered = format!("{diagnostics:?}");
+    assert!(!rendered.contains("customer-secret-token"));
+    assert!(!rendered.contains("raw-email-address"));
+    assert!(!rendered.contains("private module"));
+    assert!(!rendered.contains("token.reader"));
+    assert!(rendered.contains("export:21:"));
+    assert!(rendered.contains("field:17:"));
+    assert!(rendered.contains("import_module:14:"));
+    assert!(rendered.contains("import_name:12:"));
+
+    assert_eq!(
+        diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![
+            super::AbiDiagnosticCode::InvalidExportName,
+            super::AbiDiagnosticCode::InvalidRecordField,
+            super::AbiDiagnosticCode::InvalidImportName,
+            super::AbiDiagnosticCode::ArgumentTypeMismatch,
+            super::AbiDiagnosticCode::ReturnTypeMismatch,
+            super::AbiDiagnosticCode::MemoryBoundaryMismatch,
+        ]
+    );
+    assert_eq!(
+        diagnostics,
+        descriptor.validation_diagnostics_for_module(&module),
+        "diagnostic order and redaction must be deterministic"
+    );
+}
+
+#[test]
+fn abi_descriptor_validation_reports_empty_tuple_layout_as_unsupported() {
+    let descriptor = AbiDescriptor::new(BTreeMap::from([(
+        "unit_tuple".to_string(),
+        WasmTypeDescriptor::Tuple(vec![]),
+    )]));
+
+    assert_eq!(
+        descriptor.validation_issues(),
+        vec![AbiDescriptorIssue::UnsupportedTypeLayout {
+            export: "unit_tuple".to_string(),
+            layout: super::AbiTypeLayout::EmptyTuple,
+        }]
+    );
+}
