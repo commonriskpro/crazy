@@ -367,4 +367,123 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
             ],
         }),
     });
+
+    // ── std.collections queue functions ───────────────────────────────────
+    //
+    // Executable queues use the same stable `List<T>` representation as sets:
+    // pure functions return the next queue value instead of mutating input.
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.collections.queue.push_back".to_string()),
+        module_path: "std::collections".to_string(),
+        name: "push_back".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "List".to_string(),
+            generics: vec!["T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec![
+                "first arg is List<T> (queue representation)".to_string(),
+                "second arg is T (element to enqueue)".to_string(),
+            ],
+            ensures: vec![
+                "result length equals input length plus one".to_string(),
+                "new element is appended at the back".to_string(),
+                "original queue is not mutated".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.collections.queue.pop_front".to_string()),
+        module_path: "std::collections".to_string(),
+        name: "pop_front".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["T".to_string(), "List".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["first arg is List<T> (queue representation)".to_string()],
+            ensures: vec![
+                "None when the queue is empty".to_string(),
+                "Some(List([front, rest])) when the queue is non-empty".to_string(),
+                "front is the oldest enqueued element".to_string(),
+                "rest preserves remaining order and original queue is not mutated".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.collections.queue.peek_front".to_string()),
+        module_path: "std::collections".to_string(),
+        name: "peek_front".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["first arg is List<T> (queue representation)".to_string()],
+            ensures: vec![
+                "None when the queue is empty".to_string(),
+                "Some(front) when the queue is non-empty".to_string(),
+                "front is observed without removing it".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.collections.queue.length".to_string()),
+        module_path: "std::collections".to_string(),
+        name: "length".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "UInt".to_string(),
+            generics: vec!["T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["first arg is List<T> (queue representation)".to_string()],
+            ensures: vec![
+                "result >= 0".to_string(),
+                "result equals the number of entries in the queue representation".to_string(),
+                "original queue is not mutated".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.collections.queue.is_empty".to_string()),
+        module_path: "std::collections".to_string(),
+        name: "is_empty".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Bool".to_string(),
+            generics: vec!["T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["first arg is List<T> (queue representation)".to_string()],
+            ensures: vec![
+                "true when queue length is zero".to_string(),
+                "false when queue contains one or more elements".to_string(),
+                "original queue is not mutated".to_string(),
+            ],
+        }),
+    });
 }

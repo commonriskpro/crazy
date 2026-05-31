@@ -28,8 +28,8 @@ mod time;
 ///   `to_bytes`, `from_bytes`, `starts_with`, `ends_with`, `contains`, `replace`
 /// - `std.iter`: `map`, `filter`, `any`, `all`, `find`, `position`, `fold`,
 ///   `traverse`
-/// - `std.collections`: list/map/set operations including length, membership,
-///   lookup, insertion, and functional list adapters
+/// - `std.collections`: list/map/set/queue operations including length,
+///   membership, lookup, insertion, and functional list adapters
 ///
 /// The returned registry is guaranteed to pass `validate()`.
 pub fn v1_registry_with_functions() -> StdlibRegistry {

@@ -282,6 +282,19 @@ fn v1_set_insert_has_contract_clauses() {
     );
 }
 
+#[test]
+fn v1_queue_functions_have_contract_clauses() {
+    for id in [
+        "std.collections.queue.push_back",
+        "std.collections.queue.pop_front",
+        "std.collections.queue.peek_front",
+        "std.collections.queue.length",
+        "std.collections.queue.is_empty",
+    ] {
+        assert!(has_contract_clauses(id), "{id} must have contract_clauses");
+    }
+}
+
 // Wave 21D: std.time contract clauses
 #[test]
 fn v1_time_duration_since_has_contract_clauses() {

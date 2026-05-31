@@ -310,6 +310,54 @@ pub(super) fn set_insert(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExec
     Ok(StdlibValue::List(items))
 }
 
+pub(super) fn queue_push_back(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::List(mut items) = args[0].clone() else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    items.push(args[1].clone());
+    Ok(StdlibValue::List(items))
+}
+
+pub(super) fn queue_pop_front(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    if items.is_empty() {
+        return Ok(StdlibValue::Option(None));
+    }
+    let mut rest = items.clone();
+    let front = rest.remove(0);
+    Ok(StdlibValue::Option(Some(Box::new(StdlibValue::List(
+        vec![front, StdlibValue::List(rest)],
+    )))))
+}
+
+pub(super) fn queue_peek_front(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    Ok(StdlibValue::Option(items.first().cloned().map(Box::new)))
+}
+
+pub(super) fn queue_length(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::List(items) => Ok(StdlibValue::Int(items.len() as i64)),
+        _ => Err(StdlibExecError::Type { expected: "List" }),
+    }
+}
+
+pub(super) fn queue_is_empty(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::List(items) => Ok(StdlibValue::Bool(items.is_empty())),
+        _ => Err(StdlibExecError::Type { expected: "List" }),
+    }
+}
+
 // ── Text adapters ─────────────────────────────────────────────────────────
 
 pub(super) fn text_trim(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {

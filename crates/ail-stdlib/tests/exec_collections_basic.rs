@@ -323,6 +323,84 @@ fn collection_observability_helpers_are_registered_in_exec_table() {
     }
 }
 
+#[test]
+fn queue_push_back_appends_to_back() {
+    let queue = StdlibValue::List(vec![StdlibValue::Text("a".to_string())]);
+    let result = call_pure_stdlib(
+        "std.collections.queue.push_back",
+        &[queue, StdlibValue::Text("b".to_string())],
+    );
+    assert_eq!(
+        result,
+        Ok(StdlibValue::List(vec![
+            StdlibValue::Text("a".to_string()),
+            StdlibValue::Text("b".to_string()),
+        ]))
+    );
+}
+
+#[test]
+fn queue_pop_front_returns_front_and_rest_pair() {
+    let queue = StdlibValue::List(vec![
+        StdlibValue::Text("a".to_string()),
+        StdlibValue::Text("b".to_string()),
+    ]);
+    let result = call_pure_stdlib("std.collections.queue.pop_front", &[queue]);
+    assert_eq!(
+        result,
+        Ok(StdlibValue::Option(Some(Box::new(StdlibValue::List(
+            vec![
+                StdlibValue::Text("a".to_string()),
+                StdlibValue::List(vec![StdlibValue::Text("b".to_string())]),
+            ]
+        )))))
+    );
+}
+
+#[test]
+fn queue_pop_front_empty_returns_none() {
+    let result = call_pure_stdlib(
+        "std.collections.queue.pop_front",
+        &[StdlibValue::List(vec![])],
+    );
+    assert_eq!(result, Ok(StdlibValue::Option(None)));
+}
+
+#[test]
+fn queue_peek_front_observes_without_removing() {
+    let queue = StdlibValue::List(vec![StdlibValue::Int(10), StdlibValue::Int(20)]);
+    let result = call_pure_stdlib("std.collections.queue.peek_front", &[queue]);
+    assert_eq!(
+        result,
+        Ok(StdlibValue::Option(Some(Box::new(StdlibValue::Int(10)))))
+    );
+}
+
+#[test]
+fn queue_length_and_is_empty_reflect_shape() {
+    let queue = StdlibValue::List(vec![StdlibValue::Int(1), StdlibValue::Int(2)]);
+    let length = call_pure_stdlib("std.collections.queue.length", std::slice::from_ref(&queue));
+    let is_empty = call_pure_stdlib("std.collections.queue.is_empty", &[queue]);
+    assert_eq!(length, Ok(StdlibValue::Int(2)));
+    assert_eq!(is_empty, Ok(StdlibValue::Bool(false)));
+}
+
+#[test]
+fn queue_exec_helpers_are_registered_in_exec_table() {
+    for id in [
+        "std.collections.queue.push_back",
+        "std.collections.queue.pop_front",
+        "std.collections.queue.peek_front",
+        "std.collections.queue.length",
+        "std.collections.queue.is_empty",
+    ] {
+        assert!(
+            find_function_entry(id).is_some(),
+            "{id} must be registered in executable stdlib table"
+        );
+    }
+}
+
 // ── Type-error paths ──────────────────────────────────────────────────────
 
 // list.push rejects a non-List first arg
@@ -397,6 +475,15 @@ fn map_insert_non_text_key_returns_type_error() {
 fn set_insert_non_list_returns_type_error() {
     let result = call_pure_stdlib(
         "std.collections.set.insert",
+        &[StdlibValue::Int(0), StdlibValue::Int(1)],
+    );
+    assert_eq!(result, Err(StdlibExecError::Type { expected: "List" }));
+}
+
+#[test]
+fn queue_push_back_non_list_returns_type_error() {
+    let result = call_pure_stdlib(
+        "std.collections.queue.push_back",
         &[StdlibValue::Int(0), StdlibValue::Int(1)],
     );
     assert_eq!(result, Err(StdlibExecError::Type { expected: "List" }));
