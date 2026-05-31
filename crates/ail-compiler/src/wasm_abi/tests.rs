@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    AbiDescriptor, WasmScalarType, WasmTypeDescriptor, WasmWireShape, derive_wasm_type, export_name,
+    AbiDescriptor, AbiDescriptorIssue, WasmScalarType, WasmTypeDescriptor, WasmWireShape,
+    derive_wasm_type, export_name,
 };
 use crate::{anf::AnfExpr, core_ir::LiteralValue};
 
@@ -95,4 +96,87 @@ fn bytes_and_text_literals_share_the_packed_pointer_length_wire_shape() {
     assert_eq!(bytes, WasmTypeDescriptor::Bytes);
     assert_eq!(text.wire_shape(), WasmWireShape::PackedPtrLen);
     assert_eq!(bytes.wire_shape(), WasmWireShape::PackedPtrLen);
+}
+
+#[test]
+fn abi_descriptor_validation_accepts_current_canonical_descriptor() {
+    let descriptor = AbiDescriptor::new(BTreeMap::from([
+        (
+            "main".to_string(),
+            WasmTypeDescriptor::Scalar(WasmScalarType::I64),
+        ),
+        (
+            "profile".to_string(),
+            WasmTypeDescriptor::Record {
+                fields: vec!["id".to_string(), "name".to_string()],
+            },
+        ),
+    ]));
+
+    assert!(descriptor.validation_issues().is_empty());
+    assert!(descriptor.is_valid_for_runtime());
+}
+
+#[test]
+fn abi_descriptor_validation_reports_version_and_export_name_issues() {
+    let descriptor = AbiDescriptor {
+        abi_version: super::ABI_VERSION + 1,
+        exports: BTreeMap::from([
+            ("".to_string(), WasmTypeDescriptor::Text),
+            ("fn.main".to_string(), WasmTypeDescriptor::Bytes),
+        ]),
+    };
+
+    let issues = descriptor.validation_issues();
+    assert!(issues.contains(&AbiDescriptorIssue::IncompatibleVersion {
+        expected: super::ABI_VERSION,
+        actual: super::ABI_VERSION + 1,
+    }));
+    assert!(issues.contains(&AbiDescriptorIssue::EmptyExportName));
+    assert!(issues.contains(&AbiDescriptorIssue::LegacyGraphExportName {
+        export: "fn.main".to_string(),
+    }));
+    assert!(!descriptor.is_valid_for_runtime());
+}
+
+#[test]
+fn abi_descriptor_validation_reports_ambiguous_structured_shapes() {
+    let descriptor = AbiDescriptor::new(BTreeMap::from([
+        (
+            "empty_record".to_string(),
+            WasmTypeDescriptor::Record { fields: vec![] },
+        ),
+        (
+            "duplicate_field".to_string(),
+            WasmTypeDescriptor::Record {
+                fields: vec!["id".to_string(), "id".to_string()],
+            },
+        ),
+        (
+            "empty_variant".to_string(),
+            WasmTypeDescriptor::Variant { tags: vec![] },
+        ),
+        (
+            "duplicate_tag".to_string(),
+            WasmTypeDescriptor::Variant {
+                tags: vec!["Ok".to_string(), "Ok".to_string()],
+            },
+        ),
+    ]));
+
+    let issues = descriptor.validation_issues();
+    assert!(issues.contains(&AbiDescriptorIssue::EmptyRecordFields {
+        export: "empty_record".to_string(),
+    }));
+    assert!(issues.contains(&AbiDescriptorIssue::DuplicateRecordField {
+        export: "duplicate_field".to_string(),
+        field: "id".to_string(),
+    }));
+    assert!(issues.contains(&AbiDescriptorIssue::EmptyVariantTags {
+        export: "empty_variant".to_string(),
+    }));
+    assert!(issues.contains(&AbiDescriptorIssue::DuplicateVariantTag {
+        export: "duplicate_tag".to_string(),
+        tag: "Ok".to_string(),
+    }));
 }

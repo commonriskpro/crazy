@@ -36,7 +36,8 @@ mod naming;
 
 pub use derive::derive_wasm_type;
 pub use descriptors::{
-    ABI_VERSION, AbiDescriptor, WasmScalarType, WasmTypeDescriptor, WasmWireShape,
+    ABI_VERSION, AbiDescriptor, AbiDescriptorIssue, WasmScalarType, WasmTypeDescriptor,
+    WasmWireShape,
 };
 pub use naming::export_name;
 
