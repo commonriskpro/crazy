@@ -26,21 +26,143 @@ use std::sync::{Arc, Mutex};
 type ReplayResponseMap = HashMap<(String, String), (Vec<u8>, String)>;
 
 use crate::abi::{HostError, HostResult};
+use crate::audit::{REPLAY_MISMATCH_HASH_MISMATCH, REPLAY_MISMATCH_MISSING_RECORDING};
 use crate::handler::Handler;
 use crate::profile::CapabilityId;
 
 // ── ReplayVerificationError ───────────────────────────────────────────────
 
+/// Stable replay verification failure kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayMismatchKind {
+    /// No recording exists for the requested capability/operation pair.
+    MissingRecording,
+    /// A recording exists, but its replayed bytes hash to a different digest.
+    HashMismatch,
+}
+
+impl ReplayMismatchKind {
+    /// Stable audit/diagnostic category for this mismatch kind.
+    pub fn category(self) -> &'static str {
+        match self {
+            ReplayMismatchKind::MissingRecording => REPLAY_MISMATCH_MISSING_RECORDING,
+            ReplayMismatchKind::HashMismatch => REPLAY_MISMATCH_HASH_MISMATCH,
+        }
+    }
+}
+
 /// Error returned when replay output-hash verification fails.
+///
+/// Diagnostics intentionally carry only stable categories, capability shapes,
+/// operation shapes, and hashes.  They never echo raw operation strings because
+/// operations commonly contain URLs, database keys, tenant IDs, or secret IDs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayVerificationError {
-    /// Human-readable description of the verification failure.
+    /// Human-readable redacted description of the verification failure.
     pub message: String,
+    /// Stable machine-readable mismatch kind.
+    pub kind: ReplayMismatchKind,
+    /// Stable audit/diagnostic category matching [`ReplayMismatchKind::category`].
+    pub category: &'static str,
+    /// Redacted capability label, e.g. `"database.read:*"`.
+    pub capability: String,
+    /// Redacted operation shape, e.g. `"http.request"` or `"keyed.read"`.
+    pub operation_shape: String,
+    /// Recorded output hash when available.
+    pub recorded_hash: Option<String>,
+    /// Actual output hash when available.
+    pub actual_hash: Option<String>,
+}
+
+impl ReplayVerificationError {
+    fn missing_recording(capability: &CapabilityId, operation: &str) -> Self {
+        Self::new(
+            ReplayMismatchKind::MissingRecording,
+            capability,
+            operation,
+            None,
+            None,
+        )
+    }
+
+    fn hash_mismatch(
+        capability: &CapabilityId,
+        operation: &str,
+        recorded_hash: String,
+        actual_hash: String,
+    ) -> Self {
+        Self::new(
+            ReplayMismatchKind::HashMismatch,
+            capability,
+            operation,
+            Some(recorded_hash),
+            Some(actual_hash),
+        )
+    }
+
+    fn new(
+        kind: ReplayMismatchKind,
+        capability: &CapabilityId,
+        operation: &str,
+        recorded_hash: Option<String>,
+        actual_hash: Option<String>,
+    ) -> Self {
+        let category = kind.category();
+        let capability = replay_capability_label(capability);
+        let operation_shape = replay_operation_shape(operation).to_string();
+        let mut message = format!(
+            "replay verification failed: category={category} capability={capability} \
+             operation_shape={operation_shape}"
+        );
+        if let (Some(recorded), Some(actual)) = (&recorded_hash, &actual_hash) {
+            message.push_str(&format!(" recorded_hash={recorded} actual_hash={actual}"));
+        }
+
+        Self {
+            message,
+            kind,
+            category,
+            capability,
+            operation_shape,
+            recorded_hash,
+            actual_hash,
+        }
+    }
 }
 
 impl std::fmt::Display for ReplayVerificationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
+    }
+}
+
+fn replay_capability_label(capability: &CapabilityId) -> String {
+    match capability.as_str().split_once(':') {
+        Some((namespace, _)) => format!("{namespace}:*"),
+        None => capability.as_str().to_string(),
+    }
+}
+
+fn replay_operation_shape(operation: &str) -> &'static str {
+    if operation.is_empty() {
+        "empty"
+    } else if operation.starts_with("read:") {
+        "keyed.read"
+    } else if operation.starts_with("write:") {
+        "keyed.write"
+    } else if operation.starts_with("GET:")
+        || operation.starts_with("POST:")
+        || operation.starts_with("PUT:")
+        || operation.starts_with("PATCH:")
+        || operation.starts_with("DELETE:")
+        || operation.starts_with("HEAD:")
+        || operation.starts_with("OPTIONS:")
+    {
+        "http.request"
+    } else if operation.contains(':') {
+        "namespaced"
+    } else {
+        "literal"
     }
 }
 
@@ -463,28 +585,18 @@ impl ReplayEngine {
         operation: &str,
         actual_response: &[u8],
     ) -> Result<(), ReplayVerificationError> {
-        let recorded_hash =
-            self.recorded_hash(capability, operation)
-                .ok_or_else(|| ReplayVerificationError {
-                    message: format!(
-                        "replay: no recording for capability=`{}` operation=`{}`",
-                        capability.as_str(),
-                        operation
-                    ),
-                })?;
+        let recorded_hash = self
+            .recorded_hash(capability, operation)
+            .ok_or_else(|| ReplayVerificationError::missing_recording(capability, operation))?;
 
         let actual_hash = blake3_hex(actual_response);
         if actual_hash != recorded_hash {
-            return Err(ReplayVerificationError {
-                message: format!(
-                    "replay hash mismatch for capability=`{}` operation=`{}`: \
-                     recorded={} actual={}",
-                    capability.as_str(),
-                    operation,
-                    recorded_hash,
-                    actual_hash
-                ),
-            });
+            return Err(ReplayVerificationError::hash_mismatch(
+                capability,
+                operation,
+                recorded_hash,
+                actual_hash,
+            ));
         }
         Ok(())
     }
@@ -572,23 +684,20 @@ impl Handler for ReplayHandler {
                 if self.verify {
                     let actual_hash = blake3_hex(resp);
                     if &actual_hash != recorded_hash {
-                        return Err(HostError::ManifestMismatch(format!(
-                            "ReplayHandler: hash mismatch for capability=`{}` \
-                             operation=`{}`: recorded={} actual={}",
-                            capability.as_str(),
+                        let err = ReplayVerificationError::hash_mismatch(
+                            capability,
                             operation,
-                            recorded_hash,
-                            actual_hash
-                        )));
+                            recorded_hash.clone(),
+                            actual_hash,
+                        );
+                        return Err(HostError::ManifestMismatch(err.to_string()));
                     }
                 }
                 Ok(resp.clone())
             }
-            None => Err(HostError::HandlerUnavailable(format!(
-                "ReplayHandler: no recording for capability=`{}` operation=`{}`",
-                capability.as_str(),
-                operation
-            ))),
+            None => Err(HostError::HandlerUnavailable(
+                ReplayVerificationError::missing_recording(capability, operation).to_string(),
+            )),
         }
     }
 }
