@@ -32,6 +32,52 @@ pub const E_TV_EFFECT_UNDECLARED: &str = "E_TV_EFFECT_UNDECLARED";
 /// and no `runtime_checks` — there is no evidence path through lowering.
 pub const E_TV_INSUFFICIENT_EVIDENCE: &str = "E_TV_INSUFFICIENT_EVIDENCE";
 
+// ── Deterministic normalization helpers ──────────────────────────────────
+
+fn canonical_effects<'a>(effects: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    use std::collections::BTreeSet;
+
+    effects
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+pub(crate) fn normalize_translation_entries(entries: &mut Vec<VerificationEntry>) {
+    entries.sort_by(|a, b| {
+        translation_claim_rank(&a.claim)
+            .cmp(&translation_claim_rank(&b.claim))
+            .then_with(|| a.scope.cmp(&b.scope))
+            .then_with(|| verification_state_rank(a.state).cmp(&verification_state_rank(b.state)))
+            .then_with(|| a.evidence.cmp(&b.evidence))
+            .then_with(|| a.repair_options.cmp(&b.repair_options))
+    });
+    entries.dedup();
+}
+
+fn translation_claim_rank(claim: &str) -> u8 {
+    match claim {
+        "translation-validation/shape" => 0,
+        "translation-validation/provenance" => 1,
+        "translation-validation/effect-obligation" => 2,
+        "translation-validation/evidence-sufficiency" => 3,
+        "translation-validation/summary" => 4,
+        _ => 9,
+    }
+}
+
+fn verification_state_rank(state: VerificationState) -> u8 {
+    match state {
+        VerificationState::Proven => 0,
+        VerificationState::RuntimeChecked => 1,
+        VerificationState::Assumed => 2,
+        VerificationState::Unverified => 3,
+        VerificationState::Unsafe => 4,
+        VerificationState::Failed => 5,
+    }
+}
+
 // ── TV-3: Effect obligations ──────────────────────────────────────────────
 
 /// Extract effect identifiers referenced in a body expression.
@@ -40,7 +86,7 @@ pub const E_TV_INSUFFICIENT_EVIDENCE: &str = "E_TV_INSUFFICIENT_EVIDENCE";
 /// effect references — these are the three canonical patterns used by the ANF
 /// lowering stage and Stage 20 ordering checks.
 ///
-/// Returns a deduplicated list of identifier strings found in the body.
+/// Returns a sorted, deduplicated list of identifier strings found in the body.
 ///
 /// # Scan assumptions
 ///
@@ -121,7 +167,12 @@ pub(crate) fn check_effect_obligations(graph: &SemanticGraph) -> Vec<Verificatio
         let declared: Vec<String> = node
             .effect_row
             .as_ref()
-            .map(|r| r.effects.clone())
+            .map(|r| {
+                canonical_effects(r.effects.iter().map(String::as_str))
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default();
 
         let undeclared: Vec<&str> = body_effects
@@ -186,6 +237,10 @@ pub(crate) fn check_evidence_sufficiency(graph: &SemanticGraph) -> Vec<Verificat
             continue;
         }
 
+        let declared_effects = canonical_effects(row.effects.iter().map(String::as_str));
+        let declared_count = declared_effects.len();
+        let declared_list = declared_effects.join(", ");
+
         let has_body = node.body_expr.is_some();
         let has_runtime_checks = node
             .runtime_checks
@@ -201,9 +256,7 @@ pub(crate) fn check_evidence_sufficiency(graph: &SemanticGraph) -> Vec<Verificat
                     "{E_TV_INSUFFICIENT_EVIDENCE}: function '{}' declares {} effect(s) [{}] but \
                      has no body_expr and no runtime_checks; critical profile requires at least \
                      one evidence path through the translation chain",
-                    node.name,
-                    row.effects.len(),
-                    row.effects.join(", ")
+                    node.name, declared_count, declared_list
                 )),
                 vec![
                     "provide a body_expr with at least one effect call to serve as \
@@ -224,8 +277,7 @@ pub(crate) fn check_evidence_sufficiency(graph: &SemanticGraph) -> Vec<Verificat
                 Some(format!(
                     "function '{}' has evidence path for {} declared effect(s); \
                      translation sufficiency satisfied",
-                    node.name,
-                    row.effects.len()
+                    node.name, declared_count
                 )),
                 vec![],
             ));
