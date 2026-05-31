@@ -7,6 +7,11 @@ use crate::source_commands::{load_source_program_from_text, parse_ail_source};
 
 use super::source_helpers::{file_path_from_uri, is_ail_source_uri};
 
+pub(super) const LSP_DIAGNOSTIC_ACL_PARSER: &str = "AIL_ACL_PARSER";
+pub(super) const LSP_DIAGNOSTIC_ACL_SCHEMA: &str = "AIL_ACL_SCHEMA";
+pub(super) const LSP_DIAGNOSTIC_SOURCE_IMPORT: &str = "AIL_SOURCE_IMPORT";
+pub(super) const LSP_DIAGNOSTIC_SOURCE_PARSER: &str = "AIL_SOURCE_PARSER";
+
 pub(super) fn diagnostics_for_document(uri: &str, text: &str) -> Vec<Value> {
     if is_ail_source_uri(uri) {
         if let Some(path) = file_path_from_uri(uri) {
@@ -21,13 +26,23 @@ pub(super) fn diagnostics_for_acl_text(_uri: &str, text: &str) -> Vec<Value> {
     match parse_changeset(text) {
         Ok(parsed) => validate_op_schemas(&parsed)
             .into_iter()
-            .map(|err| diagnostic(0, 0, 1, err.to_string(), "ail-acl-schema"))
+            .map(|err| {
+                diagnostic(
+                    0,
+                    0,
+                    1,
+                    err.to_string(),
+                    "ail-acl-schema",
+                    LSP_DIAGNOSTIC_ACL_SCHEMA,
+                )
+            })
             .collect(),
         Err(err) => vec![diagnostic_for_text(
             text,
             line_from_error(&err),
             err,
             "ail-acl-parser",
+            LSP_DIAGNOSTIC_ACL_PARSER,
         )],
     }
 }
@@ -42,6 +57,7 @@ fn diagnostics_for_ail_source_text(_uri: &str, text: &str) -> Vec<Value> {
                 line_from_error(&message),
                 message,
                 "ail-source-parser",
+                LSP_DIAGNOSTIC_SOURCE_PARSER,
             )]
         }
     }
@@ -67,15 +83,16 @@ fn diagnostics_for_ail_source_document_path(path: &std::path::Path, text: &str) 
                 line_from_error(&message),
                 message,
                 "ail-source-import",
+                LSP_DIAGNOSTIC_SOURCE_IMPORT,
             )]
         }
     }
 }
 
-fn diagnostic_for_text(text: &str, line: u64, message: String, source: &str) -> Value {
+fn diagnostic_for_text(text: &str, line: u64, message: String, source: &str, code: &str) -> Value {
     let (start_character, end_character) =
         diagnostic_character_range(text, line, &message).unwrap_or((0, 1));
-    diagnostic(line, start_character, end_character, message, source)
+    diagnostic(line, start_character, end_character, message, source, code)
 }
 
 fn diagnostic(
@@ -84,6 +101,7 @@ fn diagnostic(
     end_character: u64,
     message: String,
     source: &str,
+    code: &str,
 ) -> Value {
     json!({
         "range": {
@@ -92,6 +110,7 @@ fn diagnostic(
         },
         "severity": 1,
         "source": source,
+        "code": code,
         "message": message,
     })
 }
