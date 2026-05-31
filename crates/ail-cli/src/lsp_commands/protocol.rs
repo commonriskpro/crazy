@@ -5,7 +5,10 @@ use serde_json::{Value, json};
 
 use crate::error::CliError;
 
-use super::definition::definition_for_token_with_workspace;
+use super::definition::{
+    definition_diagnostic_at_position, definition_for_token_with_workspace,
+    missing_document_definition_failure,
+};
 use super::diagnostics::{
     LSP_DIAGNOSTIC_ACL_PARSER, LSP_DIAGNOSTIC_ACL_SCHEMA, LSP_DIAGNOSTIC_SOURCE_IMPORT,
     LSP_DIAGNOSTIC_SOURCE_PARSER, diagnostics_for_document,
@@ -192,6 +195,26 @@ impl LspSession {
                         })
                     })
                     .unwrap_or(Value::Null);
+                vec![lsp_response(message, result)]
+            }
+            "ail/definition" => {
+                let params = &message["params"];
+                let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+                let line = params["position"]["line"].as_u64().unwrap_or(0) as usize;
+                let character = params["position"]["character"].as_u64().unwrap_or(0) as usize;
+                let result = self
+                    .documents
+                    .get(uri)
+                    .map(|text| {
+                        definition_diagnostic_at_position(
+                            uri,
+                            text,
+                            line,
+                            character,
+                            &self.documents,
+                        )
+                    })
+                    .unwrap_or_else(missing_document_definition_failure);
                 vec![lsp_response(message, result)]
             }
 
