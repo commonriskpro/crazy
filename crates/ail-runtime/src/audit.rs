@@ -134,6 +134,11 @@ pub(crate) fn denial_category(category: &'static str) -> Option<String> {
 pub const REPLAY_MISMATCH_MISSING_RECORDING: &str = "replay.missing_recording";
 /// Replay/audit category for recorded responses whose output hash no longer matches.
 pub const REPLAY_MISMATCH_HASH_MISMATCH: &str = "replay.hash_mismatch";
+/// Deterministic diagnostic key for missing replay recordings.
+pub const REPLAY_MISMATCH_DIAGNOSTIC_KEY_MISSING_RECORDING: &str =
+    "replay.mismatch.missing_recording";
+/// Deterministic diagnostic key for replay output-hash mismatches.
+pub const REPLAY_MISMATCH_DIAGNOSTIC_KEY_HASH_MISMATCH: &str = "replay.mismatch.hash_mismatch";
 
 // ── Stable transaction lifecycle categories ──────────────────────────────
 

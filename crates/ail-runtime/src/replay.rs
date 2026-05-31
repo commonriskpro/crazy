@@ -26,7 +26,10 @@ use std::sync::{Arc, Mutex};
 type ReplayResponseMap = HashMap<(String, String), (Vec<u8>, String)>;
 
 use crate::abi::{HostError, HostResult};
-use crate::audit::{REPLAY_MISMATCH_HASH_MISMATCH, REPLAY_MISMATCH_MISSING_RECORDING};
+use crate::audit::{
+    REPLAY_MISMATCH_DIAGNOSTIC_KEY_HASH_MISMATCH, REPLAY_MISMATCH_DIAGNOSTIC_KEY_MISSING_RECORDING,
+    REPLAY_MISMATCH_HASH_MISMATCH, REPLAY_MISMATCH_MISSING_RECORDING,
+};
 use crate::handler::Handler;
 use crate::profile::CapabilityId;
 
@@ -49,6 +52,17 @@ impl ReplayMismatchKind {
             ReplayMismatchKind::HashMismatch => REPLAY_MISMATCH_HASH_MISMATCH,
         }
     }
+
+    /// Stable redacted diagnostic key for metrics, issue grouping, and support
+    /// triage.
+    pub fn diagnostic_key(self) -> &'static str {
+        match self {
+            ReplayMismatchKind::MissingRecording => {
+                REPLAY_MISMATCH_DIAGNOSTIC_KEY_MISSING_RECORDING
+            }
+            ReplayMismatchKind::HashMismatch => REPLAY_MISMATCH_DIAGNOSTIC_KEY_HASH_MISMATCH,
+        }
+    }
 }
 
 /// Error returned when replay output-hash verification fails.
@@ -62,6 +76,8 @@ pub struct ReplayVerificationError {
     pub message: String,
     /// Stable machine-readable mismatch kind.
     pub kind: ReplayMismatchKind,
+    /// Stable redacted machine-readable diagnostic key.
+    pub diagnostic_key: &'static str,
     /// Stable audit/diagnostic category matching [`ReplayMismatchKind::category`].
     pub category: &'static str,
     /// Redacted capability label, e.g. `"database.read:*"`.
@@ -108,10 +124,11 @@ impl ReplayVerificationError {
         actual_hash: Option<String>,
     ) -> Self {
         let category = kind.category();
+        let diagnostic_key = kind.diagnostic_key();
         let capability = replay_capability_label(capability);
         let operation_shape = replay_operation_shape(operation).to_string();
         let mut message = format!(
-            "replay verification failed: category={category} capability={capability} \
+            "replay verification failed: key={diagnostic_key} category={category} capability={capability} \
              operation_shape={operation_shape}"
         );
         if let (Some(recorded), Some(actual)) = (&recorded_hash, &actual_hash) {
@@ -121,12 +138,22 @@ impl ReplayVerificationError {
         Self {
             message,
             kind,
+            diagnostic_key,
             category,
             capability,
             operation_shape,
             recorded_hash,
             actual_hash,
         }
+    }
+
+    fn diagnostic_sort_key(&self) -> (&'static str, &'static str, &str, &str) {
+        (
+            self.diagnostic_key,
+            self.category,
+            self.capability.as_str(),
+            self.operation_shape.as_str(),
+        )
     }
 }
 
@@ -599,6 +626,29 @@ impl ReplayEngine {
             ));
         }
         Ok(())
+    }
+
+    /// Verify multiple replay outputs and return all mismatches in a stable,
+    /// redacted order.
+    ///
+    /// The returned issues are sorted only by diagnostic key/category and
+    /// redacted capability/operation shape. Raw operations and payloads are
+    /// never copied into diagnostics or used as visible ordering keys.
+    pub fn verify_many<I, O, B>(&self, actual_responses: I) -> Vec<ReplayVerificationError>
+    where
+        I: IntoIterator<Item = (CapabilityId, O, B)>,
+        O: AsRef<str>,
+        B: AsRef<[u8]>,
+    {
+        let mut issues: Vec<_> = actual_responses
+            .into_iter()
+            .filter_map(|(capability, operation, actual_response)| {
+                self.verify(&capability, operation.as_ref(), actual_response.as_ref())
+                    .err()
+            })
+            .collect();
+        issues.sort_by(|left, right| left.diagnostic_sort_key().cmp(&right.diagnostic_sort_key()));
+        issues
     }
 
     /// Consume the engine and produce a [`Handler`] that replays recordings
