@@ -48,6 +48,15 @@ use crate::proof::ObligationLedgerEntry;
 /// downgrade the policy portion of a stricter verification run.
 pub const VERIFY_PROFILE_RULE_MISMATCH: &str = "VERIFY_PROFILE_RULE_MISMATCH";
 
+/// Stable verifier diagnostic code for a solver timeout or external solver budget expiry.
+pub const VERIFY_SOLVER_TIMEOUT: &str = "VERIFY_SOLVER_TIMEOUT";
+
+/// Stable verifier diagnostic code for solver memory/search/resource exhaustion.
+pub const VERIFY_SOLVER_RESOURCE_LIMITED: &str = "VERIFY_SOLVER_RESOURCE_LIMITED";
+
+/// Stable verifier diagnostic code for predicates outside the supported solver fragment.
+pub const VERIFY_SOLVER_UNSUPPORTED: &str = "VERIFY_SOLVER_UNSUPPORTED";
+
 // Re-export PolicyAudit sub-types so callers can import from `report` module.
 pub use crate::policy::PolicyAuditEntry;
 
@@ -268,6 +277,15 @@ impl SolverDiagnosticStatus {
             SolverDiagnosticStatus::Unsupported => "unsupported",
         }
     }
+
+    /// Stable issue code used by policy gates, report consumers, and CI tooling.
+    pub fn issue_code(self) -> &'static str {
+        match self {
+            SolverDiagnosticStatus::Timeout => VERIFY_SOLVER_TIMEOUT,
+            SolverDiagnosticStatus::ResourceLimited => VERIFY_SOLVER_RESOURCE_LIMITED,
+            SolverDiagnosticStatus::Unsupported => VERIFY_SOLVER_UNSUPPORTED,
+        }
+    }
 }
 
 /// Structured diagnostic derived from proof-obligation solver attempts.
@@ -279,6 +297,12 @@ impl SolverDiagnosticStatus {
 /// `solver_unsupported:`).  Other prose remains unclassified.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SolverDiagnostic {
+    /// Stable machine-readable verifier issue code for this solver outcome.
+    ///
+    /// Older serialized reports did not include this field; defaulting keeps
+    /// those reports readable while new pipeline output always populates it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub code: String,
     /// Stable proof obligation id this diagnostic describes.
     pub obligation_id: String,
     /// Verification stage that generated the obligation.
@@ -306,6 +330,7 @@ impl SolverDiagnostic {
         }
 
         Some(Self {
+            code: status.issue_code().to_string(),
             obligation_id: entry.id.clone(),
             source_stage: entry.source_stage.clone(),
             status,
