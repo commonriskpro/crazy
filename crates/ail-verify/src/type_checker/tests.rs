@@ -1,7 +1,8 @@
 use super::*;
 use ail_core::semantic_graph::{
     AssociatedTypeBinding, CapabilityReqs, EdgeKind, EffectRow, GenericParamDecl, GenericParamKind,
-    GraphEdge, GraphNode, InterfaceImplMeta, NodeKind, NodeRef, SemanticGraph, TypeArgBinding,
+    GraphEdge, GraphNode, InterfaceImplMeta, NodeKind, NodeRef, ParamDecl, RefinementRef,
+    RefinementStatus, SemanticGraph, TypeArgBinding,
 };
 
 use crate::report::{VerificationEntry, VerificationState};
@@ -21,6 +22,31 @@ fn entries_with_claim<'a>(
     claim: &str,
 ) -> Vec<&'a VerificationEntry> {
     entries.iter().filter(|e| e.claim == claim).collect()
+}
+
+fn diagnostic_category(evidence: &str) -> Option<&str> {
+    evidence
+        .split(';')
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix("category="))
+}
+
+fn diagnostic_text(report: &crate::report::VerificationReport) -> String {
+    report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            format!(
+                "{} {:?} {:?} {:?} {:?}",
+                diagnostic.code,
+                diagnostic.evidence,
+                diagnostic.expected,
+                diagnostic.actual,
+                diagnostic.repair_options
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ── Task B1 (RED): check_associated_type_resolution ──────────────────
@@ -909,4 +935,108 @@ fn declared_return_type_wins_over_inferred() {
         "function with declared return_type must always be Proven, got: {:?}",
         boundary
     );
+}
+
+// ── Diagnostic output determinism/redaction ──────────────────────────────
+
+#[test]
+fn type_diagnostics_are_sorted_deduped_and_redacted() {
+    let mut refined = make_node(30, NodeKind::Type, "SecretRefinedType");
+    refined.refinement_ref = Some(RefinementRef {
+        base_type: "SecretBaseType".to_string(),
+        predicate: "token_owner == private_account".to_string(),
+        status: RefinementStatus::RuntimeChecked,
+        erased: false,
+    });
+
+    let mut callee = make_node(10, NodeKind::Function, "SecretCallee");
+    callee.params = Some(vec![ParamDecl {
+        name: "secret_param".to_string(),
+        ty: "PrivateExpectedType".to_string(),
+    }]);
+    callee.return_type = Some("Repository::SecretError".to_string());
+    callee.effect_row = Some(EffectRow {
+        effects: vec!["payments.secret".to_string()],
+    });
+    callee.generic_params = Some(vec![GenericParamDecl {
+        name: "T".to_string(),
+        kind: GenericParamKind::TypeParam,
+        required_constraints: vec![],
+    }]);
+
+    let mut caller = make_node(20, NodeKind::Function, "SecretCaller");
+    caller.effect_row = Some(EffectRow { effects: vec![] });
+
+    let mut first_edge = make_edge(20, 10);
+    first_edge.call_args = Some(vec!["PrivateActualType".to_string()]);
+    first_edge.type_arg_bindings = Some(vec![TypeArgBinding {
+        param: "SecretUnknownGeneric".to_string(),
+        ty: "PrivateBoundType".to_string(),
+    }]);
+
+    let mut duplicate_edge = make_edge(20, 10);
+    duplicate_edge.call_args = Some(vec!["PrivateActualType".to_string()]);
+    duplicate_edge.type_arg_bindings = Some(vec![TypeArgBinding {
+        param: "SecretUnknownGeneric".to_string(),
+        ty: "PrivateBoundType".to_string(),
+    }]);
+
+    let graph = SemanticGraph {
+        // Deliberately not sorted by diagnostic category or NodeRef.
+        nodes: vec![refined, callee, caller],
+        edges: vec![first_edge, duplicate_edge],
+    };
+
+    let report = TypeChecker::check(&graph);
+
+    assert_eq!(
+        report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == E_NOMINAL_MISMATCH)
+            .count(),
+        1,
+        "duplicate call edges must not duplicate identical mismatch diagnostics"
+    );
+
+    let categories: Vec<_> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            diagnostic_category(diagnostic.evidence.as_deref().unwrap_or(""))
+                .expect("diagnostic category")
+        })
+        .collect();
+
+    assert_eq!(
+        categories,
+        vec![
+            TYPE_DIAGNOSTIC_CATEGORY_TYPE_MISMATCH,
+            TYPE_DIAGNOSTIC_CATEGORY_UNKNOWN_SYMBOL,
+            TYPE_DIAGNOSTIC_CATEGORY_UNKNOWN_SYMBOL,
+            TYPE_DIAGNOSTIC_CATEGORY_EFFECT,
+            TYPE_DIAGNOSTIC_CATEGORY_REFINEMENT,
+        ],
+        "type diagnostics must be category-sorted independently of graph order"
+    );
+
+    let text = diagnostic_text(&report);
+    for secret in [
+        "SecretCaller",
+        "SecretCallee",
+        "SecretRefinedType",
+        "SecretBaseType",
+        "PrivateExpectedType",
+        "PrivateActualType",
+        "PrivateBoundType",
+        "SecretUnknownGeneric",
+        "payments.secret",
+        "token_owner",
+        "private_account",
+    ] {
+        assert!(
+            !text.contains(secret),
+            "diagnostics must redact descriptor {secret:?}; got:\n{text}"
+        );
+    }
 }
