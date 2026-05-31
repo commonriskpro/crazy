@@ -16,6 +16,7 @@ mod instance;
 mod instantiate;
 mod limits;
 mod memory;
+mod result_diagnostics;
 mod state;
 mod trace;
 mod values;
@@ -30,5 +31,9 @@ pub(crate) use write_dispatch::dispatch_host_call_write;
 
 pub use diagnostics::{WasmBridgeDiagnostic, WasmBridgeDiagnosticKind, WasmBridgeInvokeError};
 pub use instance::RuntimeInstance;
+pub use result_diagnostics::{
+    HostDispatchResultDiagnostic, HostDispatchResultDiagnosticKind,
+    sort_host_dispatch_result_diagnostics,
+};
 pub use trace::TraceContext;
 pub use values::{RuntimeArg, RuntimeValue};

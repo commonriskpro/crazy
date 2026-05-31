@@ -15,6 +15,7 @@ use crate::audit::{
 };
 use crate::host_dispatch::limits::{check_rate_limits, unix_timestamp_micros};
 use crate::host_dispatch::memory::{handler_payload, read_memory};
+use crate::host_dispatch::result_diagnostics::HostDispatchResultDiagnostic;
 use crate::host_dispatch::state::HostState;
 use crate::manifest::blake3_hex_of;
 use crate::profile::CapabilityId;
@@ -28,10 +29,91 @@ pub(crate) fn dispatch_host_call(
     args_ptr: i32,
     args_len: i32,
 ) -> Option<i64> {
-    let capability = String::from_utf8(read_memory(caller, cap_ptr, cap_len)?).ok()?;
-    let operation = String::from_utf8(read_memory(caller, op_ptr, op_len)?).ok()?;
-    let args_bytes = read_memory(caller, args_ptr, args_len.checked_mul(8)?)?;
+    let capability_bytes = match read_memory(caller, cap_ptr, cap_len) {
+        Some(bytes) => bytes,
+        None => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::malformed_args(
+                    None,
+                    None,
+                    "capability.memory",
+                    "failed to read capability label from wasm memory",
+                ),
+            );
+            return None;
+        }
+    };
+    let capability = match String::from_utf8(capability_bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::malformed_args(
+                    None,
+                    None,
+                    "capability.utf8",
+                    "capability label is not valid utf-8",
+                ),
+            );
+            return None;
+        }
+    };
     let cap = CapabilityId::new(capability);
+    let operation_bytes = match read_memory(caller, op_ptr, op_len) {
+        Some(bytes) => bytes,
+        None => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::malformed_args(
+                    Some(&cap),
+                    None,
+                    "operation.memory",
+                    "failed to read operation label from wasm memory",
+                ),
+            );
+            return None;
+        }
+    };
+    let operation = match String::from_utf8(operation_bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::malformed_args(
+                    Some(&cap),
+                    None,
+                    "operation.utf8",
+                    "operation label is not valid utf-8",
+                ),
+            );
+            return None;
+        }
+    };
+    let args_byte_len = match args_len.checked_mul(8) {
+        Some(len) => len,
+        None => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::malformed_args(
+                    Some(&cap),
+                    Some(&operation),
+                    "args.length_overflow",
+                    "args word length overflows byte length",
+                ),
+            );
+            return None;
+        }
+    };
+    let args_bytes = match read_memory(caller, args_ptr, args_byte_len) {
+        Some(bytes) => bytes,
+        None => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::malformed_args(
+                    Some(&cap),
+                    Some(&operation),
+                    "args.memory",
+                    "failed to read argument bytes from wasm memory",
+                ),
+            );
+            return None;
+        }
+    };
     let start = Instant::now();
     let timestamp = unix_timestamp_micros();
     let input_hash = Some(blake3_hex_of(&args_bytes));
@@ -258,6 +340,9 @@ pub(crate) fn dispatch_host_call(
 
     let Some(handler) = handler else {
         let state = caller.data_mut();
+        state.record_dispatch_result_diagnostic(HostDispatchResultDiagnostic::handler_missing(
+            &cap, &operation,
+        ));
         state.concurrent_calls -= 1;
         state.call_depth -= 1;
         state
@@ -289,6 +374,12 @@ pub(crate) fn dispatch_host_call(
         handler_payload(caller, &cap, &operation, &args_bytes, log_write_text_limit)
     else {
         let state = caller.data_mut();
+        state.record_dispatch_result_diagnostic(HostDispatchResultDiagnostic::malformed_args(
+            Some(&cap),
+            Some(&operation),
+            "payload.decode",
+            "failed to decode host payload from dispatch arguments",
+        ));
         state.concurrent_calls -= 1;
         state.call_depth -= 1;
         state
@@ -330,7 +421,12 @@ pub(crate) fn dispatch_host_call(
                 (Ok(bytes), None)
             }
         }
-        Err(err) => (Err(err), None),
+        Err(err) => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::host_error(&cap, &operation, &handler_name, &err),
+            );
+            (Err(err), None)
+        }
     };
     // Extract the generic audit category before the result is consumed.
     // The category is opaque (no secret data) and recorded only in the audit
@@ -346,6 +442,27 @@ pub(crate) fn dispatch_host_call(
         .as_ref()
         .ok()
         .map(|bytes| blake3_hex_of(bytes.as_slice()));
+    let dispatch_return = match result.as_ref() {
+        Ok(bytes) if bytes.len() >= 8 => {
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(&bytes[..8]);
+            Some(i64::from_le_bytes(buf))
+        }
+        Ok(bytes) => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::result_abi_mismatch(
+                    &cap,
+                    &operation,
+                    &handler_name,
+                    "result.i64_bytes",
+                    format!("expected_bytes=8; actual_bytes={}", bytes.len()),
+                ),
+            );
+            Some(0)
+        }
+        Err(_) => Some(-1),
+    };
+
     {
         let state = caller.data_mut();
         state.concurrent_calls -= 1;
@@ -373,13 +490,5 @@ pub(crate) fn dispatch_host_call(
             });
     }
 
-    match result {
-        Ok(bytes) if bytes.len() >= 8 => {
-            let mut buf = [0u8; 8];
-            buf.copy_from_slice(&bytes[..8]);
-            Some(i64::from_le_bytes(buf))
-        }
-        Ok(_) => Some(0),
-        Err(_) => Some(-1),
-    }
+    dispatch_return
 }

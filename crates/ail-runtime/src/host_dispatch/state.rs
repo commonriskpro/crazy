@@ -8,6 +8,9 @@ use wasmtime::StoreLimits;
 use crate::audit::AuditLog;
 use crate::handler::Handler;
 use crate::host_dispatch::limits::ClockFn;
+use crate::host_dispatch::result_diagnostics::{
+    HostDispatchResultDiagnostic, sort_host_dispatch_result_diagnostics,
+};
 use crate::host_dispatch::trace::TraceContext;
 use crate::profile::{CapabilityRevocationRegistry, RuntimeProfile};
 
@@ -45,6 +48,8 @@ pub(crate) struct HostState {
     pub(crate) audit_log: Arc<Mutex<AuditLog>>,
     /// Resource limiter enforcing `max_memory_bytes`.
     pub(crate) limiter: StoreLimits,
+    /// Stable redacted diagnostics recorded by WASM-side host dispatch.
+    pub(crate) dispatch_result_diagnostics: Vec<HostDispatchResultDiagnostic>,
     /// Active distributed trace context for WASM-side capability calls.
     ///
     /// Set via [`RuntimeInstance::set_trace_context`].  When `Some`, every
@@ -73,4 +78,21 @@ pub(crate) struct HostState {
     /// Enforces `recursion_stack_limit` for re-entrant call chains (e.g. a
     /// handler that calls back into the WASM runtime).
     pub(crate) call_depth: u64,
+}
+
+impl HostState {
+    pub(crate) fn record_dispatch_result_diagnostic(
+        &mut self,
+        diagnostic: HostDispatchResultDiagnostic,
+    ) {
+        self.dispatch_result_diagnostics.push(diagnostic);
+    }
+
+    pub(crate) fn dispatch_result_diagnostics(&self) -> Vec<HostDispatchResultDiagnostic> {
+        sort_host_dispatch_result_diagnostics(self.dispatch_result_diagnostics.clone())
+    }
+
+    pub(crate) fn clear_dispatch_result_diagnostics(&mut self) {
+        self.dispatch_result_diagnostics.clear();
+    }
 }

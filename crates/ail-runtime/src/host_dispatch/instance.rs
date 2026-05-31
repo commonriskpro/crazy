@@ -10,6 +10,7 @@ use crate::error::{RuntimeError, RuntimeResult};
 use crate::host_dispatch::diagnostics::{
     WasmBridgeDiagnostic, WasmBridgeInvokeError, diagnose_func_abi, sort_wasm_bridge_diagnostics,
 };
+use crate::host_dispatch::result_diagnostics::HostDispatchResultDiagnostic;
 use crate::host_dispatch::state::HostState;
 use crate::host_dispatch::trace::TraceContext;
 use crate::host_dispatch::values::{RuntimeArg, RuntimeValue, runtime_arg_to_val};
@@ -169,6 +170,16 @@ impl RuntimeInstance {
             ))),
             _ => unreachable!("multiple results rejected before invocation"),
         }
+    }
+
+    /// Return sorted, deduplicated redacted diagnostics recorded by WASM-side host dispatch.
+    pub fn host_dispatch_result_diagnostics(&self) -> Vec<HostDispatchResultDiagnostic> {
+        self.store.data().dispatch_result_diagnostics()
+    }
+
+    /// Clear recorded WASM-side host dispatch result diagnostics.
+    pub fn clear_host_dispatch_result_diagnostics(&mut self) {
+        self.store.data_mut().clear_dispatch_result_diagnostics();
     }
 
     /// Read `len` bytes from WASM linear memory starting at `ptr`.
