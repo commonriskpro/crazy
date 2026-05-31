@@ -158,6 +158,77 @@ fn compile_file_rejects_source_map_value_type_mismatch() {
 }
 
 #[test]
+fn compile_file_accepts_source_set_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("set_helpers.ail");
+    source
+        .write_str(
+            "fn ids() -> Set<Int> = set(1, 2)
+fn has_two() -> Bool = set_contains(ids(), 2)
+fn count() -> Int = set_length(ids())
+fn updated() -> Set<Int> = set_insert(ids(), 3)
+",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_set_helper_element_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_set_contains.ail");
+    source
+        .write_str(
+            "fn has(ids: Set<Int>) -> Bool = set_contains(ids, true)
+",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in set.contains argument 2: expected Int, got Bool",
+        ));
+}
+
+#[test]
+fn compile_file_rejects_source_set_insert_value_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_set_insert.ail");
+    source
+        .write_str(
+            "fn updated(ids: Set<Int>) -> Set<Int> = set_insert(ids, true)
+",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in set.insert argument 2: expected Int, got Bool",
+        ));
+}
+#[test]
 fn compile_file_accepts_source_map_helpers() {
     use assert_fs::prelude::*;
 

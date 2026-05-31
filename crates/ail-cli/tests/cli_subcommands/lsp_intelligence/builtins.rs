@@ -161,6 +161,40 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include AIL source result_unwrap_or helper; got: {result_unwrap_items:?}"
     );
 
+    let set_contains_completion_output = ail()
+        .args(["lsp", "--complete", "set_contains", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let set_contains_completion = parse_json_output(&set_contains_completion_output);
+    let set_contains_items = set_contains_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        set_contains_items.iter().any(
+            |item| item["label"] == "set_contains" && item["detail"] == "AIL source Set helper"
+        ),
+        "completion must include AIL source set_contains helper; got: {set_contains_items:?}"
+    );
+
+    let set_insert_completion_output = ail()
+        .args(["lsp", "--complete", "set_insert", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let set_insert_completion = parse_json_output(&set_insert_completion_output);
+    let set_insert_items = set_insert_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        set_insert_items
+            .iter()
+            .any(|item| item["label"] == "set_insert" && item["detail"] == "AIL source Set helper"),
+        "completion must include AIL source set_insert helper; got: {set_insert_items:?}"
+    );
+
     let map_get_completion_output = ail()
         .args(["lsp", "--complete", "map_get", "--json"])
         .assert()

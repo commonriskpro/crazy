@@ -234,6 +234,28 @@ fn pair_get() -> Option<Text> = tuple_get(pair(), 1)
 }
 
 #[test]
+fn lowers_source_set_helpers_to_core_calls() {
+    let program = parse_ail_source(
+        r#"
+fn ids() -> Set<Int> = set(1, 2)
+fn has_two() -> Bool = set_contains(ids(), 2)
+fn count() -> Int = set_length(ids())
+fn updated() -> Set<Int> = set_insert(ids(), 3)
+"#,
+    )
+    .expect("source set helpers must parse");
+    let acl = source_program_to_acl(&program, "source_set_helpers".to_string());
+
+    assert!(
+        acl.contains("op create_function id=fn.has_two return=Bool body=set.contains(ids(), 2)")
+    );
+    assert!(acl.contains("op create_function id=fn.count return=Int body=set.length(ids())"));
+    assert!(
+        acl.contains("op create_function id=fn.updated return=Set<Int> body=set.insert(ids(), 3)")
+    );
+}
+
+#[test]
 fn lowers_source_map_helpers_to_core_calls() {
     let program = parse_ail_source(
         r#"

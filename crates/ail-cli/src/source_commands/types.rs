@@ -289,6 +289,9 @@ pub(super) fn infer_source_call_type(
             infer_source_result_unwrap_or_type(args, scope, functions)
         }
         "set" => infer_source_set_type(args, scope, functions),
+        "set.contains" | "set_contains" => infer_source_set_contains_type(args, scope, functions),
+        "set.length" | "set_length" => infer_source_set_length_type(args, scope, functions),
+        "set.insert" | "set_insert" => infer_source_set_insert_type(args, scope, functions),
         "map" => infer_source_map_type(args, scope, functions),
         "map.get" | "map_get" => infer_source_map_get_type(args, scope, functions),
         "map.contains_key" | "map_contains_key" => {
@@ -526,6 +529,52 @@ pub(super) fn infer_source_set_type(
         validate_source_type_match(&element_ty, &actual, "set element")?;
     }
     Ok(format!("Set<{element_ty}>"))
+}
+
+pub(super) fn infer_source_set_contains_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let set_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let element_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    let expected =
+        require_source_set_type(&set_ty, "set.contains argument 1")?.unwrap_or("Unknown");
+    validate_source_type_match(expected, &element_ty, "set.contains argument 2")?;
+    Ok("Bool".to_string())
+}
+
+pub(super) fn infer_source_set_length_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let set_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    require_source_set_type(&set_ty, "set.length argument 1")?;
+    Ok("Int".to_string())
+}
+
+pub(super) fn infer_source_set_insert_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let set_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let element_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    let expected = require_source_set_type(&set_ty, "set.insert argument 1")?.unwrap_or("Unknown");
+    validate_source_type_match(expected, &element_ty, "set.insert argument 2")?;
+    Ok(set_ty)
+}
+
+fn require_source_set_type<'a>(ty: &'a str, context: &str) -> Result<Option<&'a str>, CliError> {
+    if ty == "Unknown" {
+        return Ok(None);
+    }
+    source_set_element_type(ty).map(Some).ok_or_else(|| {
+        CliError::ParseError(format!(
+            "type mismatch in {context}: expected Set<Unknown>, got {ty}"
+        ))
+    })
 }
 
 pub(super) fn infer_source_map_type(

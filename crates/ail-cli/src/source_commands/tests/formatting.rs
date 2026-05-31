@@ -296,6 +296,33 @@ fn pair_get()->Option<Text>=tuple.get(pair(),1)
 }
 
 #[test]
+fn formats_source_set_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn ids()->Set<Int>=set(1,2)
+fn has_two()->Bool=set.contains(ids(),2)
+fn count()->Int=set.length(ids())
+fn updated()->Set<Int>=set.insert(ids(),3)
+"#,
+    )
+    .expect("source set helpers must format");
+
+    assert_eq!(item_count, 4);
+    assert!(formatted.contains(
+        "fn has_two() -> Bool = set_contains(ids(), 2)
+"
+    ));
+    assert!(formatted.contains(
+        "fn count() -> Int = set_length(ids())
+"
+    ));
+    assert!(formatted.contains(
+        "fn updated() -> Set<Int> = set_insert(ids(), 3)
+"
+    ));
+}
+
+#[test]
 fn formats_source_map_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"

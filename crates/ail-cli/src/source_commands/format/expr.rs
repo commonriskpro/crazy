@@ -606,6 +606,25 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if matches!(func.as_str(), "set.contains" | "set.length" | "set.insert") {
+        let helper = match func.as_str() {
+            "set.contains" => "set_contains",
+            "set.length" => "set_length",
+            "set.insert" => "set_insert",
+            _ => unreachable!("checked set helper"),
+        };
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if matches!(
         func.as_str(),
         "map.get" | "map.contains_key" | "map.length" | "map.insert"

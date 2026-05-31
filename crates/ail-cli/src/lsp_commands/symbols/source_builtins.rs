@@ -344,6 +344,24 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "tuple_second(${1:tuple})",
     },
     AclSymbol {
+        label: "set_contains",
+        detail: "AIL source Set helper",
+        documentation: "Returns true when Set<T> contains the supplied value.",
+        insert_text: "set_contains(${1:set}, ${2:value})",
+    },
+    AclSymbol {
+        label: "set_length",
+        detail: "AIL source Set helper",
+        documentation: "Returns the number of entries in a Set<T>.",
+        insert_text: "set_length(${1:set})",
+    },
+    AclSymbol {
+        label: "set_insert",
+        detail: "AIL source Set helper",
+        documentation: "Returns a Set<T> with the supplied value inserted.",
+        insert_text: "set_insert(${1:set}, ${2:value})",
+    },
+    AclSymbol {
         label: "map",
         detail: "AIL source Map builtin",
         documentation: "Constructs a typed Map<K,V> from key/value argument pairs.",
