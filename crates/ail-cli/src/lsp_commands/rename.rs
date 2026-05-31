@@ -3,9 +3,93 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::references::references_for_token_with_workspace;
-use super::source_helpers::{is_acl_token_char, is_ail_source_uri};
+use super::source_helpers::{file_path_from_uri, is_acl_token_char, is_ail_source_uri};
 use super::symbols::workspace_symbol_items;
 use super::tokens::{TokenRange, token_range_at_position};
+
+pub(super) fn rename_workspace_edit_at_position(
+    uri: &str,
+    text: &str,
+    line: usize,
+    character: usize,
+    new_name: &str,
+    workspace_documents: &BTreeMap<String, String>,
+) -> Value {
+    let result =
+        rename_edits_at_position(uri, text, line, character, new_name, workspace_documents);
+    if result["canRename"].as_bool().unwrap_or(false) {
+        result["workspaceEdit"].clone()
+    } else {
+        Value::Null
+    }
+}
+
+pub(super) fn rename_edits_at_position(
+    uri: &str,
+    text: &str,
+    line: usize,
+    character: usize,
+    new_name: &str,
+    workspace_documents: &BTreeMap<String, String>,
+) -> Value {
+    let new_name = new_name.trim();
+    if !is_rename_new_name(new_name) {
+        return blocked(
+            "invalid_new_name",
+            "newName must be a single renameable .ail identifier",
+        );
+    }
+
+    let candidate = rename_candidate_at_position(uri, text, line, character, workspace_documents);
+    if !candidate["canRename"].as_bool().unwrap_or(false) {
+        return candidate;
+    }
+
+    let reference_token = candidate["referenceToken"].as_str().unwrap_or_default();
+    let mut changes: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for reference in candidate["references"].as_array().into_iter().flatten() {
+        let Some(reference_uri) = reference["uri"].as_str() else {
+            continue;
+        };
+        let Some((document_uri, document_text)) =
+            workspace_document_entry(workspace_documents, reference_uri)
+        else {
+            continue;
+        };
+        let Some(edit) =
+            text_edit_for_reference(document_text, reference, reference_token, new_name)
+        else {
+            continue;
+        };
+        changes
+            .entry(document_uri.to_string())
+            .or_default()
+            .push(edit);
+    }
+
+    for edits in changes.values_mut() {
+        edits.sort_by(|left, right| {
+            location_sort_key(left)
+                .cmp(&location_sort_key(right))
+                .then_with(|| left.to_string().cmp(&right.to_string()))
+        });
+    }
+
+    let document_count = changes.len();
+    let edit_count = changes.values().map(Vec::len).sum::<usize>();
+    json!({
+        "canRename": true,
+        "token": candidate["token"].clone(),
+        "referenceToken": candidate["referenceToken"].clone(),
+        "symbolKind": candidate["symbolKind"].clone(),
+        "newName": new_name,
+        "documentCount": document_count,
+        "editCount": edit_count,
+        "workspaceEdit": {
+            "changes": changes
+        }
+    })
+}
 
 pub(super) fn prepare_rename_at_position(
     uri: &str,
@@ -111,6 +195,94 @@ fn symbol_matches_token(symbol: &RenameSymbol, token: &str) -> bool {
             .name
             .rsplit_once('.')
             .is_some_and(|(_, local)| local == token)
+}
+
+fn is_rename_new_name(name: &str) -> bool {
+    is_rename_identifier(name) && !name.contains('.')
+}
+
+fn workspace_document_entry<'a>(
+    workspace_documents: &'a BTreeMap<String, String>,
+    uri: &str,
+) -> Option<(&'a str, &'a str)> {
+    workspace_documents
+        .get_key_value(uri)
+        .map(|(uri, text)| (uri.as_str(), text.as_str()))
+        .or_else(|| {
+            let reference_path = file_path_from_uri(uri)?;
+            let canonical_reference = std::fs::canonicalize(reference_path).ok()?;
+            workspace_documents
+                .iter()
+                .find_map(|(candidate_uri, text)| {
+                    let candidate_path = file_path_from_uri(candidate_uri)?;
+                    let canonical_candidate = std::fs::canonicalize(candidate_path).ok()?;
+                    (canonical_candidate == canonical_reference)
+                        .then_some((candidate_uri.as_str(), text.as_str()))
+                })
+        })
+}
+
+fn text_edit_for_reference(
+    document_text: &str,
+    reference: &Value,
+    reference_token: &str,
+    new_name: &str,
+) -> Option<Value> {
+    let snippet = text_for_range(document_text, &reference["range"])?;
+    let new_text = replacement_text_for_reference(&snippet, reference_token, new_name)?;
+    Some(json!({
+        "range": reference["range"].clone(),
+        "newText": new_text,
+    }))
+}
+
+fn text_for_range(text: &str, range: &Value) -> Option<String> {
+    let start_line = range["start"]["line"].as_u64()? as usize;
+    let start_character = range["start"]["character"].as_u64()? as usize;
+    let end_line = range["end"]["line"].as_u64()? as usize;
+    let end_character = range["end"]["character"].as_u64()? as usize;
+    if start_line != end_line || start_character >= end_character {
+        return None;
+    }
+    let line = text.lines().nth(start_line)?;
+    line.get(start_character..end_character)
+        .map(ToString::to_string)
+}
+
+fn replacement_text_for_reference(
+    snippet: &str,
+    reference_token: &str,
+    new_name: &str,
+) -> Option<String> {
+    if snippet == reference_token {
+        return Some(qualified_replacement(reference_token, new_name));
+    }
+    if let Some((qualifier, local)) = reference_token.rsplit_once('.') {
+        if snippet == local {
+            return Some(new_name.to_string());
+        }
+        if snippet
+            .rsplit_once('.')
+            .is_some_and(|(snippet_qualifier, snippet_local)| {
+                snippet_qualifier == qualifier && snippet_local == local
+            })
+        {
+            return Some(format!("{qualifier}.{new_name}"));
+        }
+    }
+    if let Some(local) = reference_token.strip_prefix("test.")
+        && snippet == local
+    {
+        return Some(new_name.to_string());
+    }
+    None
+}
+
+fn qualified_replacement(reference_token: &str, new_name: &str) -> String {
+    reference_token
+        .rsplit_once('.')
+        .map(|(qualifier, _)| format!("{qualifier}.{new_name}"))
+        .unwrap_or_else(|| new_name.to_string())
 }
 
 fn is_rename_identifier(token: &str) -> bool {
