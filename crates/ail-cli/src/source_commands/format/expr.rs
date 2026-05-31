@@ -656,7 +656,7 @@ pub(super) fn format_source_match_expr(
         .map(|pair| {
             format!(
                 "{} => {}",
-                pair[0].trim(),
+                format_source_match_pattern(&pair[0]),
                 format_source_expr(&pair[1], module, constants)
             )
         })
@@ -666,6 +666,33 @@ pub(super) fn format_source_match_expr(
         "match {} {{ {arms} }}",
         format_source_expr(&args[0], module, constants)
     )
+}
+
+fn format_source_match_pattern(pattern: &str) -> String {
+    let pattern = pattern.trim();
+    if let Some((tag, binding)) = source_constructor_pattern(pattern) {
+        return match (tag, binding) {
+            ("Some" | "Ok" | "Err", Some(binding)) => format!("{tag}({})", binding.trim()),
+            ("None", None) => "None".to_string(),
+            _ => pattern.to_string(),
+        };
+    }
+
+    if matches!(pattern, "none" | "none()") {
+        return "None".to_string();
+    }
+
+    for (lower, canonical) in [("some", "Some"), ("ok", "Ok"), ("err", "Err")] {
+        let prefix = format!("{lower}(");
+        if let Some(inner) = pattern
+            .strip_prefix(prefix.as_str())
+            .and_then(|rest| rest.strip_suffix(')'))
+        {
+            return format!("{canonical}({})", inner.trim());
+        }
+    }
+
+    pattern.to_string()
 }
 
 pub(super) fn format_source_child_expr(
