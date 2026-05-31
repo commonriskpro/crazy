@@ -1,5 +1,11 @@
 use crate::anf::AnfExpr;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PurityBlockReason {
+    pub shape: &'static str,
+    pub reason: &'static str,
+}
+
 pub(crate) fn is_pure(expr: &AnfExpr) -> bool {
     match expr {
         AnfExpr::Literal(_)
@@ -53,6 +59,107 @@ pub(crate) fn is_pure(expr: &AnfExpr) -> bool {
         | AnfExpr::ForEach { .. }
         | AnfExpr::Fold { .. }
         | AnfExpr::Placeholder => false,
+    }
+}
+
+pub(crate) fn purity_blocking_reason(expr: &AnfExpr) -> Option<PurityBlockReason> {
+    match expr {
+        AnfExpr::Literal(_)
+        | AnfExpr::Var(_)
+        | AnfExpr::Call { .. }
+        | AnfExpr::FieldGet { .. }
+        | AnfExpr::RecordNew { .. }
+        | AnfExpr::TupleNew(_)
+        | AnfExpr::VariantNew { .. }
+        | AnfExpr::ListNew(_)
+        | AnfExpr::Lambda { .. } => None,
+        AnfExpr::Let { value, body, .. } => {
+            purity_blocking_reason(value).or_else(|| purity_blocking_reason(body))
+        }
+        AnfExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => purity_blocking_reason(then_branch).or_else(|| purity_blocking_reason(else_branch)),
+        AnfExpr::Seq(exprs) => exprs.iter().find_map(purity_blocking_reason),
+        AnfExpr::Match { arms, .. } => arms
+            .iter()
+            .find_map(|arm| purity_blocking_reason(&arm.body)),
+        AnfExpr::Return(_) => Some(PurityBlockReason {
+            shape: "Return",
+            reason: "alters control flow",
+        }),
+        AnfExpr::FieldUpdate { .. } => Some(PurityBlockReason {
+            shape: "FieldUpdate",
+            reason: "writes derived state",
+        }),
+        AnfExpr::Loop { .. } | AnfExpr::WhileLoop { .. } => Some(PurityBlockReason {
+            shape: "Loop",
+            reason: "may not terminate",
+        }),
+        AnfExpr::Break { .. } | AnfExpr::Continue => Some(PurityBlockReason {
+            shape: "LoopControl",
+            reason: "alters loop control flow",
+        }),
+        AnfExpr::ShortCircuitAnd { .. } | AnfExpr::ShortCircuitOr { .. } => {
+            Some(PurityBlockReason {
+                shape: "ShortCircuit",
+                reason: "conditional evaluation order is observable",
+            })
+        }
+        AnfExpr::EffectCall { .. } | AnfExpr::Dispatch { .. } => Some(PurityBlockReason {
+            shape: "EffectCall",
+            reason: "external effect",
+        }),
+        AnfExpr::TaskSpawn { .. }
+        | AnfExpr::TaskAwait { .. }
+        | AnfExpr::TaskCancel { .. }
+        | AnfExpr::TaskGroup { .. } => Some(PurityBlockReason {
+            shape: "Task",
+            reason: "scheduler interaction",
+        }),
+        AnfExpr::ChannelSend { .. }
+        | AnfExpr::ChannelReceive { .. }
+        | AnfExpr::ChannelNew { .. }
+        | AnfExpr::Select { .. } => Some(PurityBlockReason {
+            shape: "Channel",
+            reason: "communication effect",
+        }),
+        AnfExpr::RuntimeCheck { .. }
+        | AnfExpr::Assume { .. }
+        | AnfExpr::Abort { .. }
+        | AnfExpr::Placeholder => Some(PurityBlockReason {
+            shape: "RuntimeCheck",
+            reason: "runtime validation or trap",
+        }),
+        AnfExpr::ResourceAcquire { .. } | AnfExpr::ResourceRelease { .. } => {
+            Some(PurityBlockReason {
+                shape: "Resource",
+                reason: "resource lifetime effect",
+            })
+        }
+        AnfExpr::Timeout { .. } => Some(PurityBlockReason {
+            shape: "Timeout",
+            reason: "time-dependent control flow",
+        }),
+        AnfExpr::CellNew { .. } | AnfExpr::CellGet { .. } | AnfExpr::CellSet { .. } => {
+            Some(PurityBlockReason {
+                shape: "Cell",
+                reason: "mutable cell access",
+            })
+        }
+        AnfExpr::IndexGet { .. } => Some(PurityBlockReason {
+            shape: "IndexGet",
+            reason: "bounds-sensitive access",
+        }),
+        AnfExpr::MapNew { .. } | AnfExpr::SetNew { .. } => Some(PurityBlockReason {
+            shape: "CollectionNew",
+            reason: "collection allocation semantics not modeled as pure",
+        }),
+        AnfExpr::ForEach { .. } | AnfExpr::Fold { .. } => Some(PurityBlockReason {
+            shape: "Iterator",
+            reason: "iterator evaluation semantics not modeled as pure",
+        }),
     }
 }
 

@@ -704,3 +704,181 @@ fn uses_var_foreach_false_when_binding_shadows_name() {
         "ForEach binding 'x' shadows the outer 'x' — uses_var must return false"
     );
 }
+
+// ── optimizer diagnostics ─────────────────────────────────────────────
+
+#[test]
+fn diagnostics_reports_disabled_pass() {
+    let config =
+        OptimizerDiagnosticConfig::default().with_disabled_pass(OptimizerPass::InlineSmallPure);
+    let diagnostics =
+        diagnose_optimizer_with_config(&[binding(AnfExpr::Literal(LiteralValue::Unit))], &config);
+
+    assert!(
+        diagnostics.iter().any(|issue| {
+            issue.pass == OptimizerPass::InlineSmallPure
+                && issue.kind == OptimizerIssueKind::PassDisabled
+                && issue.severity == OptimizerSeverity::Info
+        }),
+        "disabled passes must be visible to production diagnostics"
+    );
+}
+
+#[test]
+fn diagnostics_reports_unsupported_ir_shape() {
+    let expr = AnfExpr::Select {
+        branches: vec![crate::anf::AnfSelectClause {
+            channel: "customer.private.channel".to_string(),
+            binding: "payload".to_string(),
+            body: AnfExpr::Literal(LiteralValue::Unit),
+        }],
+    };
+
+    let diagnostics = diagnose_optimizer(&[binding(expr)]);
+
+    assert!(
+        diagnostics.iter().any(|issue| {
+            issue.pass == OptimizerPass::CseBindings
+                && issue.kind == OptimizerIssueKind::UnsupportedIrShape
+                && issue.node.starts_with("anf.Select#")
+        }),
+        "unsupported optimizer IR shapes must be reported with a stable node descriptor"
+    );
+}
+
+#[test]
+fn diagnostics_reports_purity_blocking_reason() {
+    let expr = AnfExpr::Seq(vec![
+        AnfExpr::EffectCall {
+            capability: "secret.payment.gateway".to_string(),
+            func: "charge".to_string(),
+            args: vec![],
+        },
+        AnfExpr::Literal(LiteralValue::Unit),
+    ]);
+
+    let diagnostics = diagnose_optimizer(&[binding(expr)]);
+    let issue = diagnostics
+        .iter()
+        .find(|issue| {
+            issue.pass == OptimizerPass::EliminateDeadPure
+                && issue.kind == OptimizerIssueKind::PurityBlocked
+        })
+        .expect("expected purity blocking diagnostic for effectful seq element");
+
+    assert!(
+        issue.detail.contains("external effect"),
+        "diagnostic must explain why the pass was blocked"
+    );
+    assert!(
+        issue
+            .function
+            .as_deref()
+            .is_some_and(|f| f.starts_with("fn#")),
+        "effect target must be redacted into a stable function descriptor"
+    );
+    assert!(
+        !issue.detail.contains("secret.payment.gateway")
+            && !format!("{issue:?}").contains("charge"),
+        "diagnostics must not leak raw effect/function names"
+    );
+}
+
+#[test]
+fn diagnostics_reports_non_idempotent_inline_pass() {
+    let leaf = AnfBinding {
+        source_ref: NodeRef(1),
+        name: "fn.customer.secret.leaf".to_string(),
+        expr: AnfExpr::Lambda {
+            params: vec![],
+            captures: vec![],
+            body: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+        },
+    };
+    let wrapper = AnfBinding {
+        source_ref: NodeRef(2),
+        name: "fn.customer.secret.wrapper".to_string(),
+        expr: AnfExpr::Lambda {
+            params: vec![],
+            captures: vec![],
+            body: Box::new(AnfExpr::Call {
+                func: "fn.customer.secret.leaf".to_string(),
+                args: vec![],
+            }),
+        },
+    };
+    let main = AnfBinding {
+        source_ref: NodeRef(3),
+        name: "fn.customer.secret.main".to_string(),
+        expr: AnfExpr::Call {
+            func: "fn.customer.secret.wrapper".to_string(),
+            args: vec![],
+        },
+    };
+
+    let diagnostics = diagnose_optimizer(&[leaf, wrapper, main]);
+
+    assert!(
+        diagnostics.iter().any(|issue| {
+            issue.pass == OptimizerPass::InlineSmallPure
+                && issue.kind == OptimizerIssueKind::NonIdempotentPass
+                && issue.severity == OptimizerSeverity::Error
+        }),
+        "nested small-lambda inlining must surface as a non-idempotent pass issue"
+    );
+}
+
+#[test]
+fn diagnostics_issue_order_is_independent_of_input_order() {
+    let first = AnfBinding {
+        source_ref: NodeRef(11),
+        name: "fn.private.first".to_string(),
+        expr: AnfExpr::ForEach {
+            binding: "item".to_string(),
+            collection: "items".to_string(),
+            body: Box::new(AnfExpr::Literal(LiteralValue::Unit)),
+        },
+    };
+    let second = AnfBinding {
+        source_ref: NodeRef(12),
+        name: "fn.private.second".to_string(),
+        expr: AnfExpr::Select {
+            branches: vec![crate::anf::AnfSelectClause {
+                channel: "updates".to_string(),
+                binding: "msg".to_string(),
+                body: AnfExpr::Literal(LiteralValue::Unit),
+            }],
+        },
+    };
+
+    let forward = diagnose_optimizer(&[first.clone(), second.clone()]).issues;
+    let reversed = diagnose_optimizer(&[second, first]).issues;
+
+    assert_eq!(
+        forward, reversed,
+        "diagnostic ordering must be deterministic, not input-order dependent"
+    );
+}
+
+#[test]
+fn diagnostics_redact_binding_node_and_function_descriptors() {
+    let binding = AnfBinding {
+        source_ref: NodeRef(42),
+        name: "fn.customer.secret.calculate".to_string(),
+        expr: AnfExpr::Call {
+            func: "fn.customer.secret.calculate".to_string(),
+            args: vec!["private_arg".to_string()],
+        },
+    };
+
+    let binding_descriptor = redacted_binding_descriptor(&binding);
+    let node_descriptor = redacted_node_descriptor(&binding.expr);
+    let function_descriptor = redacted_function_descriptor("fn.customer.secret.calculate");
+
+    assert!(binding_descriptor.starts_with("binding#"));
+    assert!(node_descriptor.starts_with("anf.Call#"));
+    assert!(function_descriptor.starts_with("fn#"));
+    assert!(!binding_descriptor.contains("customer"));
+    assert!(!node_descriptor.contains("customer"));
+    assert!(!function_descriptor.contains("customer"));
+}

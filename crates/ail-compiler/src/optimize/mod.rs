@@ -18,15 +18,22 @@
 mod const_fold;
 mod cse;
 mod dce;
+mod diagnostics;
 mod inline;
 mod purity;
 
 pub use const_fold::optimize_bindings;
 pub use cse::cse_bindings;
 pub use dce::eliminate_dead_pure;
+pub use diagnostics::{
+    OptimizerDiagnostic, OptimizerDiagnosticConfig, OptimizerDiagnostics, OptimizerIssueKind,
+    OptimizerPass, OptimizerSeverity, diagnose_optimizer, diagnose_optimizer_with_config,
+    optimize_bindings_with_diagnostics, redacted_binding_descriptor, redacted_function_descriptor,
+    redacted_node_descriptor,
+};
 pub use inline::inline_small_pure;
 
-pub(crate) use purity::{anf_node_count, is_pure, uses_var};
+pub(crate) use purity::{anf_node_count, is_pure, purity_blocking_reason, uses_var};
 
 #[cfg(test)]
 mod tests;
