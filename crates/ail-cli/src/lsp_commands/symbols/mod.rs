@@ -2,11 +2,15 @@ mod acl;
 mod source_builtins;
 mod source_syntax;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use super::source_helpers::{is_ail_source_uri, source_module_from_text};
+use super::source_helpers::{
+    file_path_from_uri, is_ail_source_uri, resolve_lsp_source_import, source_imports_from_text,
+    source_module_from_text,
+};
 
 use acl::ACL_SYMBOLS;
 use source_builtins::AIL_SOURCE_BUILTIN_SYMBOLS;
@@ -318,6 +322,32 @@ fn qualified_source_name(name: &str, module: Option<&str>, prefix: Option<&str>)
 }
 
 pub(super) fn hover_for_token(token: &str) -> Value {
+    hover_for_static_symbol(token)
+}
+
+pub(super) fn hover_for_token_with_workspace(
+    uri: &str,
+    text: &str,
+    token: &str,
+    workspace_documents: &BTreeMap<String, String>,
+) -> Value {
+    let token = token.trim();
+    if token.is_empty() {
+        return Value::Null;
+    }
+
+    if is_ail_source_uri(uri) {
+        match source_hover_for_token(uri, text, token, workspace_documents) {
+            SourceHoverLookup::Found(hover) => return hover,
+            SourceHoverLookup::Ambiguous => return Value::Null,
+            SourceHoverLookup::NotFound => {}
+        }
+    }
+
+    hover_for_static_symbol(token)
+}
+
+fn hover_for_static_symbol(token: &str) -> Value {
     let normalized = token.trim();
     let symbol = all_symbols().find(|symbol| {
         symbol.label == normalized
@@ -336,4 +366,389 @@ pub(super) fn hover_for_token(token: &str) -> Value {
         }),
         None => Value::Null,
     }
+}
+
+#[derive(Debug, Clone)]
+struct SourceHoverCandidate {
+    label: String,
+    kind: &'static str,
+    signature: String,
+    detail: String,
+    uri: String,
+    line: usize,
+    start: usize,
+    end: usize,
+}
+
+enum SourceHoverLookup {
+    Found(Value),
+    Ambiguous,
+    NotFound,
+}
+
+fn source_hover_for_token(
+    uri: &str,
+    text: &str,
+    token: &str,
+    workspace_documents: &BTreeMap<String, String>,
+) -> SourceHoverLookup {
+    match source_hover_lookup_from_matches(source_hover_candidates_in_text(uri, text, token)) {
+        SourceHoverLookup::Found(hover) => return SourceHoverLookup::Found(hover),
+        SourceHoverLookup::Ambiguous => return SourceHoverLookup::Ambiguous,
+        SourceHoverLookup::NotFound => {}
+    }
+
+    let Some(root_path) = file_path_from_uri(uri) else {
+        return SourceHoverLookup::NotFound;
+    };
+    let Ok(canonical_root) = std::fs::canonicalize(&root_path) else {
+        return SourceHoverLookup::NotFound;
+    };
+    let mut visited = BTreeSet::new();
+    visited.insert(canonical_root.clone());
+    source_hover_for_imports(
+        &canonical_root,
+        text,
+        token,
+        workspace_documents,
+        &mut visited,
+    )
+}
+
+fn source_hover_for_imports(
+    source_path: &Path,
+    text: &str,
+    token: &str,
+    workspace_documents: &BTreeMap<String, String>,
+    visited: &mut BTreeSet<PathBuf>,
+) -> SourceHoverLookup {
+    let mut candidates = Vec::new();
+    let mut ambiguous = false;
+
+    for import in source_imports_from_text(text) {
+        let path = resolve_lsp_source_import(source_path, &import);
+        let Ok(canonical) = std::fs::canonicalize(&path) else {
+            continue;
+        };
+        if !visited.insert(canonical.clone()) {
+            continue;
+        }
+        let imported_uri = format!("file://{}", canonical.display());
+        let imported_text =
+            match workspace_document_text(workspace_documents, &imported_uri, &canonical) {
+                Some(text) => text.to_string(),
+                None => match std::fs::read_to_string(&canonical) {
+                    Ok(text) => text,
+                    Err(_) => continue,
+                },
+            };
+
+        match source_hover_lookup_from_matches(source_hover_candidates_in_text(
+            &imported_uri,
+            &imported_text,
+            token,
+        )) {
+            SourceHoverLookup::Found(hover) => candidates.push(hover),
+            SourceHoverLookup::Ambiguous => ambiguous = true,
+            SourceHoverLookup::NotFound => {}
+        }
+
+        match source_hover_for_imports(
+            &canonical,
+            &imported_text,
+            token,
+            workspace_documents,
+            visited,
+        ) {
+            SourceHoverLookup::Found(hover) => candidates.push(hover),
+            SourceHoverLookup::Ambiguous => ambiguous = true,
+            SourceHoverLookup::NotFound => {}
+        }
+    }
+
+    if ambiguous || candidates.len() > 1 {
+        SourceHoverLookup::Ambiguous
+    } else {
+        source_hover_lookup_from_values(candidates)
+    }
+}
+
+fn workspace_document_text<'a>(
+    workspace_documents: &'a BTreeMap<String, String>,
+    imported_uri: &str,
+    imported_path: &Path,
+) -> Option<&'a str> {
+    workspace_documents
+        .get(imported_uri)
+        .map(String::as_str)
+        .or_else(|| {
+            workspace_documents.iter().find_map(|(uri, text)| {
+                let path = file_path_from_uri(uri)?;
+                let canonical = std::fs::canonicalize(path).ok()?;
+                (canonical == imported_path).then_some(text.as_str())
+            })
+        })
+}
+
+fn source_hover_lookup_from_matches(candidates: Vec<SourceHoverCandidate>) -> SourceHoverLookup {
+    source_hover_lookup_from_values(candidates.into_iter().map(source_hover_json).collect())
+}
+
+fn source_hover_lookup_from_values(mut candidates: Vec<Value>) -> SourceHoverLookup {
+    match candidates.len() {
+        0 => SourceHoverLookup::NotFound,
+        1 => SourceHoverLookup::Found(candidates.remove(0)),
+        _ => SourceHoverLookup::Ambiguous,
+    }
+}
+
+fn source_hover_json(candidate: SourceHoverCandidate) -> Value {
+    json!({
+        "contents": {
+            "kind": "markdown",
+            "value": format!(
+                "```ail\n{}\n```\n\n**{}** — {}\n\nDefined in `{}`.",
+                candidate.signature, candidate.kind, candidate.detail, candidate.uri
+            )
+        },
+        "range": {
+            "start": { "line": candidate.line, "character": candidate.start },
+            "end": { "line": candidate.line, "character": candidate.end }
+        },
+        "data": {
+            "language": "ail-source",
+            "kind": candidate.kind,
+            "label": candidate.label,
+            "detail": candidate.detail,
+            "uri": candidate.uri
+        }
+    })
+}
+
+fn source_hover_candidates_in_text(
+    uri: &str,
+    text: &str,
+    token: &str,
+) -> Vec<SourceHoverCandidate> {
+    let mut candidates = Vec::new();
+    let module = source_module_from_text(text);
+    for (line_idx, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let leading = line.len() - trimmed.len();
+
+        if let Some(rest) = trimmed.strip_prefix("use ") {
+            candidates.extend(source_import_hover_candidate(
+                uri,
+                token,
+                rest,
+                line_idx,
+                leading + "use ".len(),
+            ));
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("fn ") {
+            if let Some(candidate) = source_function_hover_candidate(
+                uri,
+                token,
+                module.as_deref(),
+                rest,
+                line_idx,
+                leading + "fn ".len(),
+            ) {
+                candidates.push(candidate);
+            }
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("const ") {
+            if let Some(candidate) = source_const_hover_candidate(
+                uri,
+                token,
+                module.as_deref(),
+                rest,
+                line_idx,
+                leading + "const ".len(),
+            ) {
+                candidates.push(candidate);
+            }
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("test ") {
+            if let Some(candidate) =
+                source_test_hover_candidate(uri, token, rest, line_idx, leading + "test ".len())
+            {
+                candidates.push(candidate);
+            }
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("capability ") {
+            if let Some(candidate) = source_capability_hover_candidate(
+                uri,
+                token,
+                rest,
+                line_idx,
+                leading + "capability ".len(),
+            ) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates
+}
+
+fn source_import_hover_candidate(
+    uri: &str,
+    token: &str,
+    rest: &str,
+    line_idx: usize,
+    start_offset: usize,
+) -> Option<SourceHoverCandidate> {
+    let import_start = rest.find('"')? + 1;
+    let import_end = rest[import_start..].find('"')? + import_start;
+    let import = &rest[import_start..import_end];
+    let file_name = Path::new(import)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(import);
+    if token != import && token != file_name {
+        return None;
+    }
+    Some(SourceHoverCandidate {
+        label: import.to_string(),
+        kind: "import",
+        signature: format!("use \"{import}\""),
+        detail: format!("Imports `{import}` into this source module."),
+        uri: uri.to_string(),
+        line: line_idx,
+        start: start_offset + import_start,
+        end: start_offset + import_end,
+    })
+}
+
+fn source_function_hover_candidate(
+    uri: &str,
+    token: &str,
+    module: Option<&str>,
+    rest: &str,
+    line_idx: usize,
+    start_offset: usize,
+) -> Option<SourceHoverCandidate> {
+    let name_end = rest.find('(')?;
+    let name = rest[..name_end].trim();
+    if !source_name_matches_token(name, module, token, "fn.") {
+        return None;
+    }
+    let signature_end = rest.find('=').unwrap_or(rest.len());
+    let signature = rest[..signature_end].trim();
+    Some(SourceHoverCandidate {
+        label: qualified_source_name(name, module, None),
+        kind: "function",
+        signature: format!("fn {signature}"),
+        detail: "Typed AIL source function.".to_string(),
+        uri: uri.to_string(),
+        line: line_idx,
+        start: start_offset,
+        end: start_offset + name.len(),
+    })
+}
+
+fn source_const_hover_candidate(
+    uri: &str,
+    token: &str,
+    module: Option<&str>,
+    rest: &str,
+    line_idx: usize,
+    start_offset: usize,
+) -> Option<SourceHoverCandidate> {
+    let name_end = rest.find(':')?;
+    let name = rest[..name_end].trim();
+    if !source_name_matches_token(name, module, token, "fn.") {
+        return None;
+    }
+    let type_end = rest.find('=').unwrap_or(rest.len());
+    let signature = rest[..type_end].trim();
+    Some(SourceHoverCandidate {
+        label: qualified_source_name(name, module, None),
+        kind: "constant",
+        signature: format!("const {signature}"),
+        detail: "Typed top-level AIL source constant.".to_string(),
+        uri: uri.to_string(),
+        line: line_idx,
+        start: start_offset,
+        end: start_offset + name.len(),
+    })
+}
+
+fn source_test_hover_candidate(
+    uri: &str,
+    token: &str,
+    rest: &str,
+    line_idx: usize,
+    start_offset: usize,
+) -> Option<SourceHoverCandidate> {
+    let name_end = [rest.find("->"), rest.find('=')]
+        .into_iter()
+        .flatten()
+        .min()?;
+    let name = rest[..name_end].trim();
+    if !source_test_name_matches_token(name, token) {
+        return None;
+    }
+    let signature_end = rest.find('=').unwrap_or(rest.len());
+    let signature = rest[..signature_end].trim();
+    Some(SourceHoverCandidate {
+        label: qualified_source_name(name, None, Some("test.")),
+        kind: "test",
+        signature: format!("test {signature}"),
+        detail: "Executable AIL source test discovered by `ail test --file`.".to_string(),
+        uri: uri.to_string(),
+        line: line_idx,
+        start: start_offset,
+        end: start_offset + name.len(),
+    })
+}
+
+fn source_capability_hover_candidate(
+    uri: &str,
+    token: &str,
+    rest: &str,
+    line_idx: usize,
+    start_offset: usize,
+) -> Option<SourceHoverCandidate> {
+    let name = rest.split_whitespace().next().unwrap_or_default();
+    if name != token {
+        return None;
+    }
+    Some(SourceHoverCandidate {
+        label: name.to_string(),
+        kind: "capability",
+        signature: format!("capability {name}"),
+        detail: "Declared external capability that source functions or tests may grant."
+            .to_string(),
+        uri: uri.to_string(),
+        line: line_idx,
+        start: start_offset,
+        end: start_offset + name.len(),
+    })
+}
+
+fn source_name_matches_token(name: &str, module: Option<&str>, token: &str, prefix: &str) -> bool {
+    if name == token || name.strip_prefix(prefix) == Some(token) {
+        return true;
+    }
+    if token == format!("{prefix}{name}") {
+        return true;
+    }
+    let Some(module) = module else {
+        return false;
+    };
+    let bare_name = name.strip_prefix(prefix).unwrap_or(name);
+    token == format!("{module}.{bare_name}")
+}
+
+fn source_test_name_matches_token(name: &str, token: &str) -> bool {
+    name == token || token == format!("test.{name}") || name.strip_prefix("test.") == Some(token)
 }

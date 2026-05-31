@@ -13,7 +13,7 @@ use super::rename::{
     rename_workspace_edit_at_position,
 };
 use super::source_helpers::{is_acl_token_char, is_ail_source_uri};
-use super::symbols::{completion_items, hover_for_token, workspace_symbol_items};
+use super::symbols::{completion_items, hover_for_token_with_workspace, workspace_symbol_items};
 use super::tokens::{SEMANTIC_TOKEN_TYPES, semantic_token_data_for_source, token_at_position};
 
 pub(super) fn run_stdio_lsp() -> Result<(), CliError> {
@@ -151,12 +151,16 @@ impl LspSession {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
                 let line = params["position"]["line"].as_u64().unwrap_or(0) as usize;
                 let character = params["position"]["character"].as_u64().unwrap_or(0) as usize;
-                let token = self
+                let hover = self
                     .documents
                     .get(uri)
-                    .and_then(|text| token_at_position(text, line, character))
-                    .unwrap_or_default();
-                vec![lsp_response(message, hover_for_token(&token))]
+                    .and_then(|text| {
+                        token_at_position(text, line, character).map(|token| {
+                            hover_for_token_with_workspace(uri, text, &token, &self.documents)
+                        })
+                    })
+                    .unwrap_or(Value::Null);
+                vec![lsp_response(message, hover)]
             }
             "textDocument/definition" => {
                 let params = &message["params"];
