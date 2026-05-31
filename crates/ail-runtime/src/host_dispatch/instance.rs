@@ -2,10 +2,14 @@
 
 use std::fmt;
 
-use wasmtime::{Module, Store, Val};
+use wasmtime::{Extern, Module, Store, Val};
 
+use crate::audit::AuditLog;
 use crate::codec::{StructuredValue, ValueDecoder, ValueLayout};
 use crate::error::{RuntimeError, RuntimeResult};
+use crate::host_dispatch::diagnostics::{
+    WasmBridgeDiagnostic, WasmBridgeInvokeError, diagnose_func_abi, sort_wasm_bridge_diagnostics,
+};
 use crate::host_dispatch::state::HostState;
 use crate::host_dispatch::trace::TraceContext;
 use crate::host_dispatch::values::{RuntimeArg, RuntimeValue, runtime_arg_to_val};
@@ -30,6 +34,65 @@ impl RuntimeInstance {
     /// observing a real Wasmtime `Instance` rather than only a compiled module.
     pub fn export_count(&mut self) -> usize {
         self.instance.exports(&mut self.store).count()
+    }
+
+    /// Return stable redacted diagnostics for invoking `export_name` with `args`.
+    ///
+    /// This is a non-executing ABI check: it reports missing exports and
+    /// export signature mismatches without calling into WASM.  Use
+    /// [`invoke_with_bridge_diagnostics`](Self::invoke_with_bridge_diagnostics)
+    /// when trap classification is also required.
+    pub fn wasm_bridge_diagnostics_for_call(
+        &mut self,
+        export_name: &str,
+        args: &[RuntimeArg],
+    ) -> Vec<WasmBridgeDiagnostic> {
+        let export = self.instance.get_export(&mut self.store, export_name);
+        let diagnostics = match export {
+            None => vec![WasmBridgeDiagnostic::missing_export(export_name)],
+            Some(Extern::Func(func)) => {
+                let func_ty = func.ty(&self.store);
+                let params = func_ty.params().collect::<Vec<_>>();
+                let results = func_ty.results().collect::<Vec<_>>();
+                diagnose_func_abi(export_name, &params, &results, args)
+            }
+            Some(other) => vec![WasmBridgeDiagnostic::export_abi_mismatch(
+                export_name,
+                "export.kind",
+                format!("expected func; actual {}", extern_kind(&other)),
+            )],
+        };
+        sort_wasm_bridge_diagnostics(diagnostics)
+    }
+
+    /// Invoke an export and attach stable redacted WASM bridge diagnostics on failure.
+    ///
+    /// Existing [`invoke`](Self::invoke) behavior is preserved.  This method is
+    /// additive for production runtimes that need deterministic missing export,
+    /// ABI mismatch, and trap classification without exposing raw labels.
+    pub fn invoke_with_bridge_diagnostics(
+        &mut self,
+        export_name: &str,
+        args: &[RuntimeArg],
+    ) -> Result<RuntimeValue, WasmBridgeInvokeError> {
+        let diagnostics = self.wasm_bridge_diagnostics_for_call(export_name, args);
+        if !diagnostics.is_empty() {
+            let source = self
+                .invoke(export_name, args)
+                .unwrap_err_or_encoding_error(export_name);
+            return Err(WasmBridgeInvokeError {
+                source,
+                diagnostics,
+            });
+        }
+
+        self.invoke(export_name, args).map_err(|source| {
+            let diagnostics = vec![WasmBridgeDiagnostic::trap(export_name, &source)];
+            WasmBridgeInvokeError {
+                source,
+                diagnostics,
+            }
+        })
     }
 
     pub fn invoke(
@@ -264,6 +327,32 @@ impl RuntimeInstance {
             .lock()
             .expect("audit_log lock must not be poisoned")
             .clone()
+    }
+}
+
+fn extern_kind(extern_: &Extern) -> &'static str {
+    match extern_ {
+        Extern::Func(_) => "func",
+        Extern::Global(_) => "global",
+        Extern::Memory(_) => "memory",
+        Extern::Table(_) => "table",
+        #[allow(unreachable_patterns)]
+        _ => "extern",
+    }
+}
+
+trait InvokeResultExt {
+    fn unwrap_err_or_encoding_error(self, export_name: &str) -> RuntimeError;
+}
+
+impl InvokeResultExt for RuntimeResult<RuntimeValue> {
+    fn unwrap_err_or_encoding_error(self, export_name: &str) -> RuntimeError {
+        match self {
+            Ok(_) => RuntimeError::EncodingError(format!(
+                "export `{export_name}` failed bridge diagnostics"
+            )),
+            Err(err) => err,
+        }
     }
 }
 
