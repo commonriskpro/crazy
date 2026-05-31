@@ -22,6 +22,7 @@ use ed25519_dalek::{Signer, Verifier};
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::{PackageError, PackageManifest};
+use crate::trust::{PackageSigningKeyTrust, PackageSigningTrustPolicy};
 
 // ── sig_serde ─────────────────────────────────────────────────────────────
 //
@@ -68,6 +69,260 @@ impl From<PackageError> for SigningError {
     fn from(e: PackageError) -> Self {
         SigningError::HashError(e.0)
     }
+}
+
+// ── Package signing diagnostics ───────────────────────────────────────────
+
+/// Stable machine-readable diagnostic kind for package signing and key trust.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum PackageSigningDiagnosticKind {
+    /// No signature was provided for the manifest.
+    MissingSignature,
+    /// The manifest could not be hashed for signature verification.
+    ManifestHashInvalid,
+    /// The Ed25519 signature does not verify for the manifest and signer key.
+    SignatureInvalid,
+    /// The signer key is not represented in the local trust policy.
+    UntrustedKey,
+    /// The signer key is represented but expired.
+    KeyExpired,
+    /// The signer key is represented but revoked.
+    KeyRevoked,
+}
+
+impl PackageSigningDiagnosticKind {
+    /// Stable issue code for downstream audit tooling.
+    pub fn code(self) -> &'static str {
+        match self {
+            PackageSigningDiagnosticKind::MissingSignature => "package.signing.missing_signature",
+            PackageSigningDiagnosticKind::ManifestHashInvalid => {
+                "package.signing.manifest_hash_invalid"
+            }
+            PackageSigningDiagnosticKind::SignatureInvalid => "package.signing.signature_invalid",
+            PackageSigningDiagnosticKind::UntrustedKey => "package.signing.key_untrusted",
+            PackageSigningDiagnosticKind::KeyExpired => "package.signing.key_expired",
+            PackageSigningDiagnosticKind::KeyRevoked => "package.signing.key_revoked",
+        }
+    }
+
+    /// Stable low-cardinality category for production metrics.
+    pub fn category(self) -> &'static str {
+        match self {
+            PackageSigningDiagnosticKind::MissingSignature => "signature_presence",
+            PackageSigningDiagnosticKind::ManifestHashInvalid => "manifest_integrity",
+            PackageSigningDiagnosticKind::SignatureInvalid => "signature_integrity",
+            PackageSigningDiagnosticKind::UntrustedKey
+            | PackageSigningDiagnosticKind::KeyExpired
+            | PackageSigningDiagnosticKind::KeyRevoked => "key_trust",
+        }
+    }
+}
+
+impl std::fmt::Display for PackageSigningDiagnosticKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+/// Redacted signer key shape for signing/trust diagnostics.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageSigningKeyShape {
+    /// Signature algorithm associated with the key material.
+    pub algorithm: String,
+    /// Raw public-key byte length, without exposing key bytes.
+    pub byte_len: usize,
+    /// Always true: diagnostics must not expose raw signing keys.
+    pub redacted: bool,
+}
+
+impl PackageSigningKeyShape {
+    fn from_signature(signature: &PackageSignature) -> Self {
+        Self {
+            algorithm: "ed25519".to_string(),
+            byte_len: signature.signer.len(),
+            redacted: true,
+        }
+    }
+}
+
+/// Redacted, stable signing/trust diagnostic suitable for production logs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageSigningDiagnostic {
+    /// Stable machine-readable diagnostic kind.
+    pub kind: PackageSigningDiagnosticKind,
+    /// Stable issue code for downstream audit tooling.
+    pub code: String,
+    /// Stable category for low-cardinality aggregation.
+    pub category: String,
+    /// Package name associated with the diagnostic.
+    pub package_name: String,
+    /// Package version associated with the diagnostic.
+    pub package_version: String,
+    /// Redacted signer key shape, if a signature was present.
+    pub signer_key: Option<PackageSigningKeyShape>,
+    /// Stable human-readable summary without raw keys or signatures.
+    pub message: String,
+    /// Always true for diagnostics that deliberately omit sensitive metadata.
+    pub redacted: bool,
+}
+
+impl PackageSigningDiagnostic {
+    fn new(
+        kind: PackageSigningDiagnosticKind,
+        manifest: &PackageManifest,
+        signature: Option<&PackageSignature>,
+    ) -> Self {
+        Self {
+            kind,
+            code: kind.code().to_string(),
+            category: kind.category().to_string(),
+            package_name: manifest.name.clone(),
+            package_version: manifest.version.clone(),
+            signer_key: signature.map(PackageSigningKeyShape::from_signature),
+            message: package_signing_diagnostic_message(kind, manifest),
+            redacted: true,
+        }
+    }
+}
+
+/// Redacted signing/trust diagnostic report.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageSigningDiagnosticReport {
+    /// Whether no signing/trust issues were detected.
+    pub accepted: bool,
+    /// Package name associated with the report.
+    pub package_name: String,
+    /// Package version associated with the report.
+    pub package_version: String,
+    /// Deterministically ordered signing/trust issues.
+    pub issues: Vec<PackageSigningDiagnostic>,
+}
+
+/// Return stable, redacted diagnostics for package signature and key trust.
+///
+/// This is the diagnostic companion to [`SignedPackage::verify`].  It preserves
+/// the existing verification API while giving production callers a structured
+/// report that can explain missing signatures, invalid signatures, untrusted
+/// keys, and represented expired/revoked keys without logging raw keys or raw
+/// signatures.
+pub fn diagnose_package_signing_trust(
+    manifest: &PackageManifest,
+    signature: Option<&PackageSignature>,
+    trust_policy: &PackageSigningTrustPolicy,
+) -> PackageSigningDiagnosticReport {
+    let mut issues = Vec::new();
+
+    let Some(signature) = signature else {
+        issues.push(PackageSigningDiagnostic::new(
+            PackageSigningDiagnosticKind::MissingSignature,
+            manifest,
+            None,
+        ));
+        return package_signing_diagnostic_report(manifest, issues);
+    };
+
+    let signed = SignedPackage {
+        manifest: manifest.clone(),
+        sig: signature.clone(),
+    };
+
+    if let Err(error) = signed.verify() {
+        issues.push(PackageSigningDiagnostic::new(
+            diagnostic_kind_from_signing_error(&error),
+            manifest,
+            Some(signature),
+        ));
+    }
+
+    match trust_policy.trust_for_key(&signature.signer) {
+        Some(PackageSigningKeyTrust::Trusted) => {}
+        Some(PackageSigningKeyTrust::Expired) => issues.push(PackageSigningDiagnostic::new(
+            PackageSigningDiagnosticKind::KeyExpired,
+            manifest,
+            Some(signature),
+        )),
+        Some(PackageSigningKeyTrust::Revoked) => issues.push(PackageSigningDiagnostic::new(
+            PackageSigningDiagnosticKind::KeyRevoked,
+            manifest,
+            Some(signature),
+        )),
+        None => issues.push(PackageSigningDiagnostic::new(
+            PackageSigningDiagnosticKind::UntrustedKey,
+            manifest,
+            Some(signature),
+        )),
+    }
+
+    sort_package_signing_diagnostics(&mut issues);
+    package_signing_diagnostic_report(manifest, issues)
+}
+
+fn package_signing_diagnostic_report(
+    manifest: &PackageManifest,
+    issues: Vec<PackageSigningDiagnostic>,
+) -> PackageSigningDiagnosticReport {
+    PackageSigningDiagnosticReport {
+        accepted: issues.is_empty(),
+        package_name: manifest.name.clone(),
+        package_version: manifest.version.clone(),
+        issues,
+    }
+}
+
+fn diagnostic_kind_from_signing_error(error: &SigningError) -> PackageSigningDiagnosticKind {
+    match error {
+        SigningError::SignatureInvalid => PackageSigningDiagnosticKind::SignatureInvalid,
+        SigningError::HashError(_) => PackageSigningDiagnosticKind::ManifestHashInvalid,
+    }
+}
+
+fn package_signing_diagnostic_message(
+    kind: PackageSigningDiagnosticKind,
+    manifest: &PackageManifest,
+) -> String {
+    let package = &manifest.name;
+    let version = &manifest.version;
+    match kind {
+        PackageSigningDiagnosticKind::MissingSignature => {
+            format!("package '{package}' version '{version}' is missing a package signature")
+        }
+        PackageSigningDiagnosticKind::ManifestHashInvalid => {
+            format!("package '{package}' version '{version}' manifest hash could not be computed")
+        }
+        PackageSigningDiagnosticKind::SignatureInvalid => {
+            format!("package '{package}' version '{version}' signature is invalid")
+        }
+        PackageSigningDiagnosticKind::UntrustedKey => {
+            format!("package '{package}' version '{version}' signer key is not trusted")
+        }
+        PackageSigningDiagnosticKind::KeyExpired => {
+            format!("package '{package}' version '{version}' signer key is expired")
+        }
+        PackageSigningDiagnosticKind::KeyRevoked => {
+            format!("package '{package}' version '{version}' signer key is revoked")
+        }
+    }
+}
+
+fn sort_package_signing_diagnostics(issues: &mut [PackageSigningDiagnostic]) {
+    issues.sort_by(|a, b| {
+        package_signing_diagnostic_sort_key(a).cmp(&package_signing_diagnostic_sort_key(b))
+    });
+}
+
+fn package_signing_diagnostic_sort_key(
+    issue: &PackageSigningDiagnostic,
+) -> (PackageSigningDiagnosticKind, &str, &str, usize) {
+    (
+        issue.kind,
+        issue.package_name.as_str(),
+        issue.package_version.as_str(),
+        issue
+            .signer_key
+            .as_ref()
+            .map(|signer_key| signer_key.byte_len)
+            .unwrap_or_default(),
+    )
 }
 
 // ── PackageSignature ───────────────────────────────────────────────────────
@@ -121,6 +376,14 @@ impl SignedPackage {
         verifying_key
             .verify(payload, &signature)
             .map_err(|_| SigningError::SignatureInvalid)
+    }
+
+    /// Return stable, redacted diagnostics for this signed package and trust policy.
+    pub fn signing_trust_diagnostics(
+        &self,
+        trust_policy: &PackageSigningTrustPolicy,
+    ) -> PackageSigningDiagnosticReport {
+        diagnose_package_signing_trust(&self.manifest, Some(&self.sig), trust_policy)
     }
 }
 
@@ -288,7 +551,7 @@ impl PackageKeypair {
 mod tests {
     use super::*;
     use crate::manifest::{PackageDef, PackageManifest};
-    use crate::trust::TrustLevel;
+    use crate::trust::{PackageSigningTrustAnchor, PackageSigningTrustPolicy, TrustLevel};
     use rand::rngs::OsRng;
 
     fn minimal_manifest() -> PackageManifest {
@@ -320,6 +583,180 @@ mod tests {
     fn generate_keypair() -> PackageKeypair {
         let secret = ed25519_dalek::SigningKey::generate(&mut OsRng);
         PackageKeypair { secret }
+    }
+
+    fn signing_trust_policy_for(
+        public_key: [u8; 32],
+        trust_anchor: fn([u8; 32]) -> PackageSigningTrustAnchor,
+    ) -> PackageSigningTrustPolicy {
+        PackageSigningTrustPolicy::from_trust_anchors(vec![trust_anchor(public_key)])
+    }
+
+    fn lower_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    // ── signing_diagnostics_report_missing_signature ─────────────────────
+    // Production gate: unsigned package input gets a stable redacted issue.
+    #[test]
+    fn signing_diagnostics_report_missing_signature() {
+        let manifest = minimal_manifest();
+        let policy = PackageSigningTrustPolicy::new();
+
+        let report = diagnose_package_signing_trust(&manifest, None, &policy);
+
+        assert!(!report.accepted);
+        assert_eq!(report.package_name, "test.pkg");
+        assert_eq!(report.package_version, "1.0.0");
+        assert_eq!(report.issues.len(), 1);
+        let issue = &report.issues[0];
+        assert_eq!(issue.kind, PackageSigningDiagnosticKind::MissingSignature);
+        assert_eq!(issue.code, "package.signing.missing_signature");
+        assert_eq!(issue.category, "signature_presence");
+        assert_eq!(issue.signer_key, None);
+        assert!(issue.redacted);
+    }
+
+    // ── signing_diagnostics_report_invalid_signature ─────────────────────
+    // Production gate: invalid signatures get stable diagnostics without raw
+    // signature material.
+    #[test]
+    fn signing_diagnostics_report_invalid_signature() {
+        let kp = generate_keypair();
+        let manifest = minimal_manifest();
+        let mut signed = kp.sign_manifest(manifest).expect("sign must succeed");
+        signed.manifest.version = "9.9.9".to_string();
+        let policy = signing_trust_policy_for(kp.public_key(), PackageSigningTrustAnchor::trusted);
+
+        let report = signed.signing_trust_diagnostics(&policy);
+
+        assert!(!report.accepted);
+        assert_eq!(report.issues.len(), 1);
+        let issue = &report.issues[0];
+        assert_eq!(issue.kind, PackageSigningDiagnosticKind::SignatureInvalid);
+        assert_eq!(issue.code, "package.signing.signature_invalid");
+        assert_eq!(issue.category, "signature_integrity");
+        assert_eq!(
+            issue.signer_key,
+            Some(PackageSigningKeyShape {
+                algorithm: "ed25519".to_string(),
+                byte_len: 32,
+                redacted: true,
+            })
+        );
+
+        let rendered = format!("{report:?}");
+        assert!(
+            !rendered.contains(&lower_hex(&signed.sig.signature)),
+            "diagnostics must not leak raw signature bytes: {rendered}"
+        );
+    }
+
+    // ── signing_diagnostics_report_untrusted_key ─────────────────────────
+    // Production gate: valid signatures from keys outside the local trust
+    // policy get key-trust diagnostics.
+    #[test]
+    fn signing_diagnostics_report_untrusted_key() {
+        let kp = generate_keypair();
+        let manifest = minimal_manifest();
+        let signed = kp.sign_manifest(manifest).expect("sign must succeed");
+        let policy = PackageSigningTrustPolicy::new();
+
+        let report = signed.signing_trust_diagnostics(&policy);
+
+        assert!(!report.accepted);
+        assert_eq!(report.issues.len(), 1);
+        let issue = &report.issues[0];
+        assert_eq!(issue.kind, PackageSigningDiagnosticKind::UntrustedKey);
+        assert_eq!(issue.code, "package.signing.key_untrusted");
+        assert_eq!(issue.category, "key_trust");
+
+        let rendered = format!("{report:?}");
+        assert!(
+            !rendered.contains(&lower_hex(&signed.sig.signer)),
+            "diagnostics must not leak raw signer keys: {rendered}"
+        );
+    }
+
+    // ── signing_diagnostics_report_expired_key ───────────────────────────
+    // Production gate: represented expired keys are distinct from unknown keys.
+    #[test]
+    fn signing_diagnostics_report_expired_key() {
+        let kp = generate_keypair();
+        let manifest = minimal_manifest();
+        let signed = kp.sign_manifest(manifest).expect("sign must succeed");
+        let policy = signing_trust_policy_for(kp.public_key(), PackageSigningTrustAnchor::expired);
+
+        let report = signed.signing_trust_diagnostics(&policy);
+
+        assert!(!report.accepted);
+        assert_eq!(report.issues.len(), 1);
+        assert_eq!(
+            report.issues[0].kind,
+            PackageSigningDiagnosticKind::KeyExpired
+        );
+        assert_eq!(report.issues[0].code, "package.signing.key_expired");
+    }
+
+    // ── signing_diagnostics_report_revoked_key ───────────────────────────
+    // Production gate: represented revoked keys are distinct from unknown keys.
+    #[test]
+    fn signing_diagnostics_report_revoked_key() {
+        let kp = generate_keypair();
+        let manifest = minimal_manifest();
+        let signed = kp.sign_manifest(manifest).expect("sign must succeed");
+        let policy = signing_trust_policy_for(kp.public_key(), PackageSigningTrustAnchor::revoked);
+
+        let report = signed.signing_trust_diagnostics(&policy);
+
+        assert!(!report.accepted);
+        assert_eq!(report.issues.len(), 1);
+        assert_eq!(
+            report.issues[0].kind,
+            PackageSigningDiagnosticKind::KeyRevoked
+        );
+        assert_eq!(report.issues[0].code, "package.signing.key_revoked");
+    }
+
+    // ── signing_diagnostics_order_is_deterministic ───────────────────────
+    // Production gate: multi-issue reports are sorted by stable issue kind.
+    #[test]
+    fn signing_diagnostics_order_is_deterministic() {
+        let kp = generate_keypair();
+        let manifest = minimal_manifest();
+        let mut signed = kp.sign_manifest(manifest).expect("sign must succeed");
+        signed.manifest.version = "9.9.9".to_string();
+        let policy = PackageSigningTrustPolicy::new();
+
+        let report = signed.signing_trust_diagnostics(&policy);
+
+        let kinds = report
+            .issues
+            .iter()
+            .map(|issue| issue.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec![
+                PackageSigningDiagnosticKind::SignatureInvalid,
+                PackageSigningDiagnosticKind::UntrustedKey,
+            ]
+        );
+    }
+
+    // ── signing_diagnostics_accept_trusted_valid_signature ───────────────
+    // Control: a valid signature with a trusted key emits no diagnostics.
+    #[test]
+    fn signing_diagnostics_accept_trusted_valid_signature() {
+        let kp = generate_keypair();
+        let manifest = minimal_manifest();
+        let signed = kp.sign_manifest(manifest).expect("sign must succeed");
+        let policy = signing_trust_policy_for(kp.public_key(), PackageSigningTrustAnchor::trusted);
+
+        let report = signed.signing_trust_diagnostics(&policy);
+
+        assert!(report.accepted);
+        assert!(report.issues.is_empty());
     }
 
     // ── RED: package_signature_cbor_round_trip ────────────────────────────
