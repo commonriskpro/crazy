@@ -27,7 +27,10 @@ use crate::cli_helpers::{
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
 use crate::package_registry_io::load_package_lockfile;
-use crate::project::{ArtifactKind, ProjectContext, project_scaffold_names};
+use crate::project::{
+    ArtifactKind, ProjectContext, project_scaffold_names, project_workflow_diagnostic_status,
+    project_workflow_diagnostics,
+};
 use crate::store::{StoreHandle, file_store, init_file_layout_with_branch};
 
 // ── cmd_change ────────────────────────────────────────────────────────────
@@ -456,6 +459,14 @@ end\n"
 /// - runtime profile status
 /// - package advisories
 pub(crate) async fn cmd_status(mode: OutputMode, store: &StoreHandle) -> Result<(), CliError> {
+    let project_ctx = ProjectContext::from_cwd()?;
+    let project_diagnostics = project_workflow_diagnostics(&project_ctx.root);
+    let project_diagnostics_status = project_workflow_diagnostic_status(&project_diagnostics);
+    let project_diagnostics_json: Vec<_> = project_diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.to_json())
+        .collect();
+
     let snapshots = store.list_snapshots().await?;
     let current_branch = store
         .current_branch()?
@@ -519,9 +530,26 @@ pub(crate) async fn cmd_status(mode: OutputMode, store: &StoreHandle) -> Result<
         0
     };
 
+    let project_diagnostics_human = if project_diagnostics.is_empty() {
+        "project diagnostics: ok".to_string()
+    } else {
+        let lines = project_diagnostics
+            .iter()
+            .map(|diagnostic| {
+                format!(
+                    "- {} {} {}: {}",
+                    diagnostic.severity, diagnostic.code, diagnostic.subject, diagnostic.message
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("project diagnostics: {project_diagnostics_status}\n{lines}")
+    };
+
     let human_msg = format!(
         "branch: {branch}\nHEAD snapshot: {snap_hex}\ngraph nodes: {graph_nodes}\nlast change: {last_change_at}\ngraph_root: {graph_root_hex}\npending changes: {pending_changes}\nverification: {verification_state}\nstale indexes: {stale_indexes}\nruntime profile: {runtime_profile_status}\npackage advisories: {package_advisories}"
     );
+    let human_msg = format!("{human_msg}\n{project_diagnostics_human}");
     print_response(
         mode,
         &human_msg,
@@ -538,6 +566,10 @@ pub(crate) async fn cmd_status(mode: OutputMode, store: &StoreHandle) -> Result<
             "stale_indexes": stale_indexes,
             "runtime_profile_status": runtime_profile_status,
             "package_advisories": package_advisories,
+            "project_diagnostics": {
+                "status": project_diagnostics_status,
+                "diagnostics": project_diagnostics_json,
+            },
         }),
     );
     Ok(())

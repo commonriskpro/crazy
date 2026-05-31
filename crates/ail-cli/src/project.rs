@@ -15,9 +15,11 @@
 //   native/       ← compiled native object artifacts
 // ```
 
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::CliError;
+use serde_json::{Value, json};
 
 // ── ArtifactKind ──────────────────────────────────────────────────────────
 
@@ -54,6 +56,13 @@ pub(crate) struct ProjectScaffoldNames {
 /// commands one shared invariant: generated projects must be manifest-safe and
 /// starter files must be immediately usable by follow-up tooling.
 pub(crate) fn project_scaffold_names(path: &Path) -> Result<ProjectScaffoldNames, CliError> {
+    validate_project_path_for_creation(path).map_err(|diagnostic| {
+        CliError::Domain(format!(
+            "{} {}: {}",
+            diagnostic.code, diagnostic.subject, diagnostic.message
+        ))
+    })?;
+
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -74,6 +83,21 @@ pub(crate) fn project_scaffold_names(path: &Path) -> Result<ProjectScaffoldNames
         manifest_name: name.to_string(),
         scaffold_ident: scaffold_ident_from_project_name(name),
     })
+}
+
+fn validate_project_path_for_creation(path: &Path) -> Result<(), ProjectWorkflowDiagnostic> {
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(ProjectWorkflowDiagnostic::error(
+            "project.path.traversal",
+            "<redacted:project-path>",
+            "project path must not contain '..' traversal segments",
+        ));
+    }
+
+    Ok(())
 }
 
 fn validate_project_manifest_name(name: &str) -> Result<(), &'static str> {
@@ -113,6 +137,256 @@ fn scaffold_ident_from_project_name(name: &str) -> String {
         }
     }
     ident
+}
+
+// ── ProjectWorkflowDiagnostic ─────────────────────────────────────────────
+
+/// Stable, redacted diagnostic emitted by project workflow commands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectWorkflowDiagnostic {
+    pub(crate) code: &'static str,
+    pub(crate) severity: &'static str,
+    pub(crate) subject: String,
+    pub(crate) message: &'static str,
+}
+
+impl ProjectWorkflowDiagnostic {
+    fn warning(code: &'static str, subject: impl Into<String>, message: &'static str) -> Self {
+        Self {
+            code,
+            severity: "warning",
+            subject: subject.into(),
+            message,
+        }
+    }
+
+    fn error(code: &'static str, subject: impl Into<String>, message: &'static str) -> Self {
+        Self {
+            code,
+            severity: "error",
+            subject: subject.into(),
+            message,
+        }
+    }
+
+    pub(crate) fn to_json(&self) -> Value {
+        json!({
+            "code": self.code,
+            "severity": self.severity,
+            "subject": self.subject,
+            "message": self.message,
+        })
+    }
+}
+
+/// Compute the aggregate status for project workflow diagnostics.
+pub(crate) fn project_workflow_diagnostic_status(
+    diagnostics: &[ProjectWorkflowDiagnostic],
+) -> &'static str {
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == "error")
+    {
+        "error"
+    } else if diagnostics.is_empty() {
+        "ok"
+    } else {
+        "warning"
+    }
+}
+
+/// Inspect the project workflow layout without leaking absolute local paths.
+pub(crate) fn project_workflow_diagnostics(root: &Path) -> Vec<ProjectWorkflowDiagnostic> {
+    let mut diagnostics = Vec::new();
+
+    if !root.exists() {
+        diagnostics.push(ProjectWorkflowDiagnostic::error(
+            "project.root.missing",
+            "project-root",
+            "project root does not exist",
+        ));
+        sort_project_workflow_diagnostics(&mut diagnostics);
+        return diagnostics;
+    }
+
+    if !root.is_dir() {
+        diagnostics.push(ProjectWorkflowDiagnostic::error(
+            "project.root.invalid",
+            "project-root",
+            "project root is not a directory",
+        ));
+        sort_project_workflow_diagnostics(&mut diagnostics);
+        return diagnostics;
+    }
+
+    let ail_dir = root.join(".ail");
+    if !ail_dir.exists() {
+        diagnostics.push(ProjectWorkflowDiagnostic::warning(
+            "project.config.missing",
+            "project-config",
+            "project is not initialized; .ail/project.toml is missing",
+        ));
+        sort_project_workflow_diagnostics(&mut diagnostics);
+        return diagnostics;
+    }
+
+    if !ail_dir.is_dir() {
+        diagnostics.push(ProjectWorkflowDiagnostic::error(
+            "project.workspace.invalid_layout",
+            "project-workspace",
+            "project workspace metadata is not a directory",
+        ));
+        sort_project_workflow_diagnostics(&mut diagnostics);
+        return diagnostics;
+    }
+
+    for (relative, subject) in [
+        ("HEAD", "project-head"),
+        ("store/objects", "project-object-store"),
+    ] {
+        let required = ail_dir.join(relative);
+        if !required.exists() {
+            diagnostics.push(ProjectWorkflowDiagnostic::error(
+                "project.workspace.invalid_layout",
+                subject,
+                "project workspace layout is missing required metadata",
+            ));
+        }
+    }
+
+    let config_path = ail_dir.join("project.toml");
+    if !config_path.exists() {
+        diagnostics.push(ProjectWorkflowDiagnostic::warning(
+            "project.config.missing",
+            "project-config",
+            "project config is missing",
+        ));
+    } else if !config_path.is_file() {
+        diagnostics.push(ProjectWorkflowDiagnostic::error(
+            "project.workspace.invalid_layout",
+            "project-config",
+            "project config is not a file",
+        ));
+    } else {
+        match std::fs::read_to_string(&config_path) {
+            Ok(config) => diagnostics.extend(project_config_duplicate_diagnostics(&config)),
+            Err(_) => diagnostics.push(ProjectWorkflowDiagnostic::error(
+                "project.workspace.invalid_layout",
+                "project-config",
+                "project config could not be read",
+            )),
+        }
+    }
+
+    sort_project_workflow_diagnostics(&mut diagnostics);
+    diagnostics
+}
+
+fn sort_project_workflow_diagnostics(diagnostics: &mut [ProjectWorkflowDiagnostic]) {
+    diagnostics.sort_by(|left, right| {
+        (
+            left.code,
+            left.severity,
+            left.subject.as_str(),
+            left.message,
+        )
+            .cmp(&(
+                right.code,
+                right.severity,
+                right.subject.as_str(),
+                right.message,
+            ))
+    });
+}
+
+fn project_config_duplicate_diagnostics(config: &str) -> Vec<ProjectWorkflowDiagnostic> {
+    let mut modules = BTreeMap::new();
+    let mut packages = BTreeMap::new();
+
+    for line in config.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let values = quoted_values(value);
+        match key {
+            "module" | "modules" => {
+                for value in values {
+                    *modules.entry(value).or_insert(0usize) += 1;
+                }
+            }
+            "package" | "packages" => {
+                for value in values {
+                    *packages.entry(value).or_insert(0usize) += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut diagnostics = Vec::new();
+    for (module, count) in modules {
+        if count > 1 {
+            diagnostics.push(ProjectWorkflowDiagnostic::error(
+                "project.config.duplicate_module_entry",
+                redacted_config_subject("module", &module),
+                "project config contains a duplicate module entry",
+            ));
+        }
+    }
+    for (package, count) in packages {
+        if count > 1 {
+            diagnostics.push(ProjectWorkflowDiagnostic::error(
+                "project.config.duplicate_package_entry",
+                redacted_config_subject("package", &package),
+                "project config contains a duplicate package entry",
+            ));
+        }
+    }
+
+    diagnostics
+}
+
+fn quoted_values(value: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+    let mut quote = '\0';
+    let mut escaped = false;
+
+    for ch in value.chars() {
+        if in_quote {
+            if escaped {
+                current.push(ch);
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == quote {
+                values.push(std::mem::take(&mut current));
+                in_quote = false;
+            } else {
+                current.push(ch);
+            }
+        } else if ch == '"' || ch == '\'' {
+            in_quote = true;
+            quote = ch;
+        }
+    }
+
+    values
+}
+
+fn redacted_config_subject(kind: &str, value: &str) -> String {
+    if value.len() <= 64
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/'))
+    {
+        format!("{kind}:{value}")
+    } else {
+        format!("{kind}:<redacted>")
+    }
 }
 
 // ── ProjectContext ────────────────────────────────────────────────────────
@@ -275,6 +549,68 @@ mod tests {
             msg.contains("Use ASCII letters"),
             "error must explain the safe project-name contract; got: {msg}"
         );
+    }
+
+    // Scenario: project creation rejects parent-directory traversal before
+    // scaffold names are derived.
+    //   GIVEN a project path containing `..`
+    //   WHEN scaffold names are derived
+    //   THEN a stable redacted path diagnostic is returned
+    #[test]
+    fn project_scaffold_names_reject_path_traversal() {
+        let err = project_scaffold_names(Path::new("../escape"))
+            .expect_err("path traversal must not be accepted");
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("project.path.traversal"),
+            "diagnostic must expose stable code; got: {msg}"
+        );
+        assert!(
+            msg.contains("<redacted:project-path>"),
+            "diagnostic must redact the unsafe path; got: {msg}"
+        );
+        assert!(
+            !msg.contains("../escape"),
+            "diagnostic must not echo traversal input; got: {msg}"
+        );
+    }
+
+    // Scenario: project workflow diagnostics are deterministic and redacted.
+    //   GIVEN an invalid .ail layout with duplicate module/package entries
+    //   WHEN diagnostics are collected
+    //   THEN codes are stable sorted and duplicate entries are reported
+    #[test]
+    fn project_workflow_diagnostics_sort_invalid_layout_and_duplicates() {
+        let root =
+            std::env::temp_dir().join(format!("ail-project-diagnostics-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".ail")).expect("test .ail dir must be created");
+        std::fs::write(
+            root.join(".ail").join("project.toml"),
+            "packages = [\"pkg.alpha\", \"pkg.alpha\"]\nmodule = \"mod.core\"\nmodule = \"mod.core\"\n",
+        )
+        .expect("test project config must be written");
+
+        let diagnostics = project_workflow_diagnostics(&root);
+        let codes = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            codes,
+            vec![
+                "project.config.duplicate_module_entry",
+                "project.config.duplicate_package_entry",
+                "project.workspace.invalid_layout",
+                "project.workspace.invalid_layout",
+            ],
+            "diagnostics must have deterministic code ordering"
+        );
+        assert_eq!(project_workflow_diagnostic_status(&diagnostics), "error");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // TRIANGULATE: from_cwd() succeeds in the current process environment.

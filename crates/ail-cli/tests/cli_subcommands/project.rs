@@ -175,6 +175,106 @@ fn new_rejects_unsafe_project_name_with_clear_diagnostic() {
     dir.child("bad name").assert(predicate::path::missing());
 }
 
+/// Spec scenario: new rejects path traversal without leaking local paths.
+///   GIVEN a nested workspace directory
+///   WHEN `ail new ../escape` runs
+///   THEN the command fails with a stable redacted diagnostic and writes no sibling project
+#[test]
+fn new_rejects_path_traversal_with_redacted_diagnostic() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let workspace = dir.child("workspace");
+    std::fs::create_dir_all(workspace.path()).expect("workspace dir");
+
+    ail()
+        .args(["new", "../escape", "--json"])
+        .current_dir(workspace.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("project.path.traversal"))
+        .stderr(predicate::str::contains("<redacted:project-path>"))
+        .stderr(predicate::str::contains("../escape").not());
+
+    dir.child("escape").assert(predicate::path::missing());
+}
+
+/// Spec scenario: status reports missing project config as a redacted workflow diagnostic.
+///   GIVEN an uninitialized directory
+///   WHEN `ail status --json` runs
+///   THEN status still succeeds but includes a stable project diagnostic
+#[test]
+fn status_json_reports_missing_project_config_diagnostic() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let output = ail()
+        .args(["status", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = std::str::from_utf8(&output.stdout).expect("stdout must be UTF-8");
+    assert!(
+        !stdout.contains(dir.path().to_string_lossy().as_ref()),
+        "diagnostics must not leak absolute temp paths; got:\n{stdout}"
+    );
+
+    let v = parse_json_output(&output);
+    let diagnostics = v["data"]["project_diagnostics"]["diagnostics"]
+        .as_array()
+        .expect("project diagnostics must be an array");
+
+    assert_eq!(v["data"]["project_diagnostics"]["status"], "warning");
+    assert_eq!(diagnostics[0]["code"], "project.config.missing");
+    assert_eq!(diagnostics[0]["subject"], "project-config");
+}
+
+/// Spec scenario: status reports invalid layout and duplicate entries in stable order.
+///   GIVEN a malformed .ail workspace with duplicate module/package config
+///   WHEN `ail status --json` runs
+///   THEN diagnostics are redacted and deterministically ordered
+#[test]
+fn status_json_reports_invalid_layout_and_duplicate_entries_in_order() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    std::fs::create_dir_all(dir.path().join(".ail")).expect(".ail dir");
+    std::fs::write(
+        dir.path().join(".ail/project.toml"),
+        "package = \"pkg.alpha\"\nmodule = \"mod.core\"\npackages = [\"pkg.alpha\"]\nmodules = [\"mod.core\"]\n",
+    )
+    .expect("project config must be writable");
+
+    let output = ail()
+        .args(["status", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+    let diagnostics = v["data"]["project_diagnostics"]["diagnostics"]
+        .as_array()
+        .expect("project diagnostics must be an array");
+    let codes = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic["code"].as_str().expect("code must be string"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(v["data"]["project_diagnostics"]["status"], "error");
+    assert_eq!(
+        codes,
+        vec![
+            "project.config.duplicate_module_entry",
+            "project.config.duplicate_package_entry",
+            "project.workspace.invalid_layout",
+            "project.workspace.invalid_layout",
+        ],
+        "diagnostic ordering must be stable"
+    );
+}
+
 /// Spec scenario: file-backed store persists between CLI invocations.
 ///   GIVEN `ail init` has created an on-disk store
 ///   WHEN `ail change` writes a snapshot and `ail compile` runs later
