@@ -91,6 +91,23 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include AIL source get_or helper; got: {get_or_items:?}"
     );
 
+    let list_get_completion_output = ail()
+        .args(["lsp", "--complete", "list_get", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let list_get_completion = parse_json_output(&list_get_completion_output);
+    let list_get_items = list_get_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        list_get_items
+            .iter()
+            .any(|item| item["label"] == "list_get" && item["detail"] == "AIL source List helper"),
+        "completion must include AIL source list_get helper; got: {list_get_items:?}"
+    );
+
     let is_empty_completion_output = ail()
         .args(["lsp", "--complete", "is_empty", "--json"])
         .assert()

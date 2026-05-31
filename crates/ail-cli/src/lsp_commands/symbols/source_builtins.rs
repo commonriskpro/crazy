@@ -302,6 +302,12 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "get_or(${1:list}, ${2:index}, ${3:fallback})",
     },
     AclSymbol {
+        label: "list_get",
+        detail: "AIL source List helper",
+        documentation: "Returns Option<T> for a zero-based List index; None when out of bounds.",
+        insert_text: "list_get(${1:list}, ${2:index})",
+    },
+    AclSymbol {
         label: "set",
         detail: "AIL source Set builtin",
         documentation: "Constructs a typed Set<T> from same-typed values.",

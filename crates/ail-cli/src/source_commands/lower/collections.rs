@@ -73,6 +73,30 @@ pub(super) fn lower_source_get_or_expr(
     )))
 }
 
+pub(super) fn lower_source_list_get_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if !matches!(func.as_str(), "list.get" | "list_get") {
+        return Ok(None);
+    }
+    if args.len() != 2 {
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::CollectionArity,
+            "list_get requires `list_get(list, index)`",
+        ));
+    }
+    let list = lower_source_expr(&args[0], line_num)?;
+    let index = lower_source_expr(&args[1], line_num)?;
+    Ok(Some(format!(
+        "if(and(ge({index}, 0), lt({index}, len({list}))), some(index({list}, {index})), none())"
+    )))
+}
+
 pub(super) fn lower_source_unwrap_or_expr(
     expr: &str,
     line_num: usize,

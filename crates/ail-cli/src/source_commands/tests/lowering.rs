@@ -409,6 +409,21 @@ fn item(values: List<Int>, idx: Int) -> Int = get_or(values, idx, 0)
 }
 
 #[test]
+fn lowers_source_list_get_helper() {
+    let program = parse_ail_source(
+        r#"
+fn maybe_item(values: List<Int>, idx: Int) -> Option<Int> = list_get(values, idx)
+"#,
+    )
+    .expect("source list_get must parse");
+    let acl = source_program_to_acl(&program, "source_list_get".to_string());
+
+    assert!(acl.contains(
+            "op create_function id=fn.maybe_item return=Option<Int> body=if(and(ge(idx, 0), lt(idx, len(values))), some(index(values, idx)), none())"
+        ));
+}
+
+#[test]
 fn lowers_source_is_empty_helper() {
     let program = parse_ail_source(
         r#"

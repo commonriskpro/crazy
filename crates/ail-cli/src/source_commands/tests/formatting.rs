@@ -467,6 +467,25 @@ fn item(values:List<Int>,idx:Int)->Int=if(and(ge(idx,0),lt(idx,len(values))),ind
 }
 
 #[test]
+fn formats_source_list_get_helper() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn maybe_item(values:List<Int>,idx:Int)->Option<Int>=if(and(ge(idx,0),lt(idx,len(values))),some(index(values,idx)),none())
+fn dotted(values:List<Int>,idx:Int)->Option<Int>=list.get(values,idx)
+"#,
+    )
+    .expect("source list_get must format");
+
+    assert_eq!(item_count, 2);
+    assert!(formatted.contains(
+        "fn maybe_item(values: List<Int>, idx: Int) -> Option<Int> = list_get(values, idx)\n"
+    ));
+    assert!(formatted.contains(
+        "fn dotted(values: List<Int>, idx: Int) -> Option<Int> = list_get(values, idx)\n"
+    ));
+}
+
+#[test]
 fn formats_source_is_empty_helper() {
     let (formatted, item_count) = format_ail_source(
         r#"

@@ -725,9 +725,9 @@ pub(super) fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         | "text.slice" | "text_slice" | "int.clamp" | "int.add_or" | "int.div_or"
         | "int.rem_or" | "int.sub_or" | "int.mul_or" | "int_clamp" | "int_add_or"
         | "int_sub_or" | "int_mul_or" | "int_div_or" | "int_rem_or" => SourceArity::Exact(3),
-        "field" | "index" | "unwrap_or" | "option.unwrap_or" | "option_unwrap_or"
-        | "result.unwrap_or" | "result_unwrap_or" | "ok_or" | "option.ok_or" | "option_ok_or"
-        | "first_or" | "last_or" => SourceArity::Exact(2),
+        "field" | "index" | "list.get" | "list_get" | "unwrap_or" | "option.unwrap_or"
+        | "option_unwrap_or" | "result.unwrap_or" | "result_unwrap_or" | "ok_or"
+        | "option.ok_or" | "option_ok_or" | "first_or" | "last_or" => SourceArity::Exact(2),
         "tuple.get" | "tuple_get" => SourceArity::Exact(2),
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),

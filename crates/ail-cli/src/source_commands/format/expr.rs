@@ -60,6 +60,16 @@ pub(super) fn format_source_expr_node(
                 CALL_PRECEDENCE,
             );
         }
+        if let Some((list, index)) = source_if_as_list_get(&args) {
+            return (
+                format!(
+                    "list_get({}, {})",
+                    format_source_expr(&list, module, constants),
+                    format_source_expr(&index, module, constants)
+                ),
+                CALL_PRECEDENCE,
+            );
+        }
         return (
             format!(
                 "if {} {{ {} }} else {{ {} }}",
@@ -589,6 +599,17 @@ pub(super) fn format_source_expr_node(
         return (
             format!(
                 "result_unwrap_or({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "list.get" && args.len() == 2 {
+        return (
+            format!(
+                "list_get({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
             ),

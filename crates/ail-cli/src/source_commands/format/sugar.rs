@@ -110,6 +110,41 @@ pub(super) fn source_get_or_lt_len(expr: &str) -> Option<(String, String)> {
     }
 }
 
+pub(super) fn source_if_as_list_get(args: &[String]) -> Option<(String, String)> {
+    if args.len() != 3 {
+        return None;
+    }
+    let (then_func, then_args) = parse_source_call(&args[1])?;
+    if !matches!(then_func.as_str(), "some" | "Some") || then_args.len() != 1 {
+        return None;
+    }
+    let (index_func, index_args) = parse_source_call(&then_args[0])?;
+    if index_func != "index" || index_args.len() != 2 {
+        return None;
+    }
+    if !source_expr_is_none(&args[2]) {
+        return None;
+    }
+    let list = index_args[0].trim();
+    let index = index_args[1].trim();
+    let (cond_list, cond_index) = source_get_or_guard_parts(&args[0])?;
+    if cond_list.trim() != list || cond_index.trim() != index {
+        return None;
+    }
+    Some((list.to_string(), index.to_string()))
+}
+
+fn source_expr_is_none(expr: &str) -> bool {
+    let expr = expr.trim();
+    if matches!(expr, "none" | "None" | "none()" | "None()") {
+        return true;
+    }
+    let Some((func, args)) = parse_source_call(expr) else {
+        return false;
+    };
+    matches!(func.as_str(), "none" | "None") && args.is_empty()
+}
+
 pub(super) fn source_eq_as_is_empty(args: &[String]) -> Option<String> {
     if args.len() != 2 {
         return None;

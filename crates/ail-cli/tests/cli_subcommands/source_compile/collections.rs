@@ -394,6 +394,45 @@ fn compile_file_rejects_source_get_or_fallback_mismatch() {
             "type mismatch in if branches: expected Int, got Bool",
         ));
 }
+
+#[test]
+fn compile_file_accepts_source_list_get_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("list_get.ail");
+    source
+        .write_str("fn item(values: List<Int>, idx: Int) -> Option<Int> = list_get(values, idx)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_list_get_non_list() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_list_get.ail");
+    source
+        .write_str("fn item(value: Text, idx: Int) -> Option<Int> = list_get(value, idx)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in list.get argument 1: expected List<Unknown>, got Text",
+        ));
+}
 #[test]
 fn compile_file_accepts_source_is_empty_helper() {
     use assert_fs::prelude::*;

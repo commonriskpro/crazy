@@ -421,6 +421,32 @@ fn lsp_diagnose_accepts_source_get_or_helper() {
     assert_eq!(v["data"]["diagnostic_count"], 0);
     assert_eq!(v["data"]["error_count"], 0);
 }
+
+#[test]
+fn lsp_diagnose_accepts_source_list_get_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn item(values: List<Int>, idx: Int) -> Option<Int> = list_get(values, idx)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
 #[test]
 fn lsp_diagnose_accepts_source_is_empty_helper() {
     use assert_fs::prelude::*;

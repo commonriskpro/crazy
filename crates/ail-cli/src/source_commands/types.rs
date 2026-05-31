@@ -269,6 +269,7 @@ pub(super) fn infer_source_call_type(
             Ok("Text".to_string())
         }
         "list" => infer_source_list_type(args, scope, functions),
+        "list.get" | "list_get" => infer_source_list_get_type(args, scope, functions),
         "tuple" => infer_source_tuple_type(args, scope, functions),
         "tuple.length" | "tuple_length" => infer_source_tuple_length_type(args, scope, functions),
         "tuple.get" | "tuple_get" => infer_source_tuple_get_type(args, scope, functions),
@@ -634,6 +635,25 @@ pub(super) fn infer_source_index_type(
                 "type mismatch in index argument 1: expected List<Unknown>, got {collection_ty}"
             ))
         })
+}
+
+pub(super) fn infer_source_list_get_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let collection_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let index_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    validate_source_type_match("Int", &index_ty, "list.get argument 2")?;
+    if collection_ty == "Unknown" {
+        return Ok("Option<Unknown>".to_string());
+    }
+    let element_ty = source_list_element_type(&collection_ty).ok_or_else(|| {
+        CliError::ParseError(format!(
+            "type mismatch in list.get argument 1: expected List<Unknown>, got {collection_ty}"
+        ))
+    })?;
+    Ok(format!("Option<{element_ty}>"))
 }
 
 pub(super) fn infer_source_match_type(
