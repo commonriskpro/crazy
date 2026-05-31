@@ -4,6 +4,14 @@
 
 /// Call-site generic binding/arity diagnostic category.
 pub const TYPE_DIAGNOSTIC_CATEGORY_GENERIC_CALL_BINDING: &str = "generic-call-binding";
+/// Type relationship mismatch diagnostic category.
+pub const TYPE_DIAGNOSTIC_CATEGORY_TYPE_MISMATCH: &str = "type-mismatch";
+/// Unknown or unresolved type symbol diagnostic category.
+pub const TYPE_DIAGNOSTIC_CATEGORY_UNKNOWN_SYMBOL: &str = "unknown-symbol";
+/// Effect/capability propagation diagnostic category.
+pub const TYPE_DIAGNOSTIC_CATEGORY_EFFECT: &str = "effect";
+/// Refinement proof/materialization diagnostic category.
+pub const TYPE_DIAGNOSTIC_CATEGORY_REFINEMENT: &str = "refinement";
 
 /// Nominal type mismatch at a call site.
 pub const E_NOMINAL_MISMATCH: &str = "E_NOMINAL_MISMATCH";
