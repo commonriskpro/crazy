@@ -26,6 +26,7 @@
 //   `execute_with_rollback(tx, closure)` runs the closure with a `&mut RuntimeHost`.
 //   On closure success, it commits the TransactionGroup.
 //   On closure failure, it rolls back the TransactionGroup.
+//   Both paths append one redacted AuditEvent::TransactionLifecycle event.
 //   `execute_with_rollback_detail` additionally returns the non-rollbackable
 //   capability IDs on failure.
 //
@@ -67,10 +68,23 @@ use crate::manifest::{CapabilityManifest, blake3_hex_of};
 use crate::profile::{CapabilityId, CapabilityRevocationRegistry, InFlightPolicy, RuntimeProfile};
 use crate::report::{CapabilityCallSummary, RuntimeReport, RuntimeReportStatus};
 use crate::schema::CapabilityDefinition;
-use crate::transaction::TransactionGroup;
+use crate::transaction::{TransactionAuditRecord, TransactionGroup};
 
 // Re-export public types that originate in sub-modules.
 pub use crate::host_dispatch::{RuntimeArg, RuntimeInstance, RuntimeValue, TraceContext};
+
+fn transaction_lifecycle_event(record: TransactionAuditRecord) -> AuditEvent {
+    AuditEvent::TransactionLifecycle {
+        group_name_shape: record.group_name_shape,
+        action: record.action.to_string(),
+        category: record.category.to_string(),
+        status_before: record.status_before.to_string(),
+        status_after: record.status_after.to_string(),
+        entry_count: record.entry_count,
+        non_rollbackable_count: record.non_rollbackable_count,
+        compensation_required_count: record.compensation_required_count,
+    }
+}
 
 // ── CapabilityCallMode ────────────────────────────────────────────────────
 
@@ -855,8 +869,10 @@ impl RuntimeHost {
     /// rolling back on failure.
     ///
     /// The closure receives `&mut RuntimeHost` for capability dispatch.
-    /// - On `Ok(_)`: `tx.commit()` is called and the result is returned.
-    /// - On `Err(_)`: `tx.rollback()` is called and the error is returned.
+    /// - On `Ok(_)`: `tx.commit_with_audit()` is called and the result is returned.
+    /// - On `Err(_)`: `tx.rollback_with_audit()` is called and the error is returned.
+    ///
+    /// Both paths append one redacted [`AuditEvent::TransactionLifecycle`] event.
     ///
     /// Use [`execute_with_rollback_detail`] to also receive the list of
     /// non-rollbackable capability IDs on failure.
@@ -869,11 +885,19 @@ impl RuntimeHost {
         let result = f(self);
         match result {
             Ok(val) => {
-                tx.commit();
+                let audit = tx.commit_with_audit();
+                self.audit_log
+                    .lock()
+                    .expect("audit_log lock")
+                    .push(transaction_lifecycle_event(audit));
                 Ok(val)
             }
             Err(err) => {
-                tx.rollback();
+                let (_, audit) = tx.rollback_with_audit();
+                self.audit_log
+                    .lock()
+                    .expect("audit_log lock")
+                    .push(transaction_lifecycle_event(audit));
                 Err(err)
             }
         }
@@ -887,6 +911,8 @@ impl RuntimeHost {
     /// (i.e. those with [`TransactionPolicy::NonRollbackable`]).
     ///
     /// On success, `non_rollbackable` is always empty.
+    /// Both success and failure append one redacted
+    /// [`AuditEvent::TransactionLifecycle`] event.
     ///
     /// [`TransactionPolicy::NonRollbackable`]: crate::transaction::TransactionPolicy::NonRollbackable
     pub fn execute_with_rollback_detail<F, T>(
@@ -900,11 +926,19 @@ impl RuntimeHost {
         let result = f(self);
         match result {
             Ok(val) => {
-                tx.commit();
+                let audit = tx.commit_with_audit();
+                self.audit_log
+                    .lock()
+                    .expect("audit_log lock")
+                    .push(transaction_lifecycle_event(audit));
                 (Ok(val), vec![])
             }
             Err(err) => {
-                let non_rollbackable = tx.rollback();
+                let (non_rollbackable, audit) = tx.rollback_with_audit();
+                self.audit_log
+                    .lock()
+                    .expect("audit_log lock")
+                    .push(transaction_lifecycle_event(audit));
                 (Err(err), non_rollbackable)
             }
         }
