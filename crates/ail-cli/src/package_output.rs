@@ -30,6 +30,10 @@ pub(crate) struct InstalledPackage {
     pub(crate) verification_report: Option<ail_package::PackageVerificationReport>,
     /// Locally-recorded reproducible-build evidence from the package manifest.
     pub(crate) reproducible_evidence: Option<ail_package::ReproducibleBuildEvidence>,
+    pub(crate) lockfile_hash: String,
+    pub(crate) installed_package_count: usize,
+    pub(crate) lockfile_reproducibility: &'static str,
+    pub(crate) lockfile_reproducibility_issues: Vec<LockfileReproducibilityCliIssue>,
     pub(crate) warnings: Vec<String>,
     pub(crate) compatibility_issues: Vec<PackageCompatibilityCliIssue>,
 }

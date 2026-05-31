@@ -51,12 +51,45 @@ pub(super) fn install_package_from_registry(
         .entries
         .sort_by(|a, b| (&a.name, &a.version).cmp(&(&b.name, &b.version)));
     save_package_lockfile(store, &lockfile)?;
+
+    let lockfile_hash = lockfile
+        .blake3_hex()
+        .map_err(|e| CliError::Domain(format!("package lock hash failed: {e}")))?;
+    let actual = registry
+        .all()
+        .iter()
+        .map(|manifest| {
+            manifest
+                .blake3_hex()
+                .map(|hash| (manifest.name.clone(), manifest.version.clone(), hash))
+                .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let actual_refs = actual
+        .iter()
+        .map(|(name, version, hash)| (name.as_str(), version.as_str(), hash.as_str()))
+        .collect::<Vec<_>>();
+    let lockfile_reproducibility_issues = lockfile
+        .validate_reproducibility(&actual_refs)
+        .iter()
+        .map(LockfileReproducibilityCliIssue::from_validation_issue)
+        .collect::<Vec<_>>();
+    let lockfile_reproducibility = if lockfile_reproducibility_issues.is_empty() {
+        "ok"
+    } else {
+        "failed"
+    };
+
     Ok(PackageInstallResult::Installed(Box::new(
         InstalledPackage {
             entry: stored_entry,
             signature_status: lookup.signature_status,
             verification_report: manifest.verification_report.clone(),
             reproducible_evidence: manifest.reproducible_evidence.clone(),
+            lockfile_hash,
+            installed_package_count: lockfile.len(),
+            lockfile_reproducibility,
+            lockfile_reproducibility_issues,
             warnings: lookup
                 .warning
                 .into_iter()
