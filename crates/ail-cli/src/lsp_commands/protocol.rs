@@ -8,6 +8,7 @@ use crate::error::CliError;
 use super::definition::definition_for_token_with_workspace;
 use super::diagnostics::diagnostics_for_document;
 use super::references::references_for_token_with_workspace;
+use super::rename::{prepare_rename_at_position, rename_candidate_at_position};
 use super::symbols::{completion_items, hover_for_token, workspace_symbol_items};
 use super::tokens::token_at_position;
 
@@ -91,6 +92,9 @@ impl LspSession {
                         "hoverProvider": true,
                         "definitionProvider": true,
                         "referencesProvider": true,
+                        "renameProvider": {
+                            "prepareProvider": true
+                        },
                         "workspaceSymbolProvider": true
                     },
                     "serverInfo": {
@@ -166,6 +170,40 @@ impl LspSession {
                     message,
                     Value::Array(workspace_symbol_items(query, &self.documents)),
                 )]
+            }
+            "textDocument/prepareRename" => {
+                let params = &message["params"];
+                let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+                let line = params["position"]["line"].as_u64().unwrap_or(0) as usize;
+                let character = params["position"]["character"].as_u64().unwrap_or(0) as usize;
+                let result = self
+                    .documents
+                    .get(uri)
+                    .map(|text| {
+                        prepare_rename_at_position(uri, text, line, character, &self.documents)
+                    })
+                    .unwrap_or(Value::Null);
+                vec![lsp_response(message, result)]
+            }
+            "ail/renameCandidates" => {
+                let params = &message["params"];
+                let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+                let line = params["position"]["line"].as_u64().unwrap_or(0) as usize;
+                let character = params["position"]["character"].as_u64().unwrap_or(0) as usize;
+                let result = self
+                    .documents
+                    .get(uri)
+                    .map(|text| {
+                        rename_candidate_at_position(uri, text, line, character, &self.documents)
+                    })
+                    .unwrap_or_else(|| {
+                        json!({
+                            "canRename": false,
+                            "reason": "missing_document",
+                            "message": "document is not open in this LSP session"
+                        })
+                    });
+                vec![lsp_response(message, result)]
             }
             "textDocument/references" => {
                 let params = &message["params"];

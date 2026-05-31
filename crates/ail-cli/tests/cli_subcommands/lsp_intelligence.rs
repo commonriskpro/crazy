@@ -3,4 +3,5 @@ mod builtins;
 mod completion_hover;
 mod definitions;
 mod references;
+mod rename;
 mod workspace_symbols;

@@ -11,6 +11,7 @@ mod definition;
 mod diagnostics;
 mod protocol;
 mod references;
+mod rename;
 mod source_helpers;
 mod symbols;
 mod tokens;
