@@ -35,7 +35,9 @@ mod layout;
 mod naming;
 
 pub use derive::derive_wasm_type;
-pub use descriptors::{ABI_VERSION, AbiDescriptor, WasmScalarType, WasmTypeDescriptor};
+pub use descriptors::{
+    ABI_VERSION, AbiDescriptor, WasmScalarType, WasmTypeDescriptor, WasmWireShape,
+};
 pub use naming::export_name;
 
 pub(crate) use bindings::{
