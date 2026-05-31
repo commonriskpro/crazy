@@ -286,6 +286,37 @@ fn lsp_text_document_rename_returns_workspace_edit_for_open_documents() {
 
 #[test]
 fn lsp_rename_edits_rejects_qualified_new_names() {
+    let result = rename_edits_result_for_new_name("math.sum_pair", 34);
+
+    assert_eq!(result["canRename"], false);
+    assert_eq!(result["reason"], "qualified_new_name");
+}
+
+#[test]
+fn lsp_rename_edits_rejects_invalid_identifiers() {
+    let result = rename_edits_result_for_new_name("1sum_pair", 35);
+
+    assert_eq!(result["canRename"], false);
+    assert_eq!(result["reason"], "invalid_identifier");
+}
+
+#[test]
+fn lsp_rename_edits_rejects_reserved_keywords() {
+    let result = rename_edits_result_for_new_name("fn", 36);
+
+    assert_eq!(result["canRename"], false);
+    assert_eq!(result["reason"], "reserved_keyword");
+}
+
+#[test]
+fn lsp_rename_edits_rejects_same_name_no_ops() {
+    let result = rename_edits_result_for_new_name("add_pair", 37);
+
+    assert_eq!(result["canRename"], false);
+    assert_eq!(result["reason"], "same_name");
+}
+
+fn rename_edits_result_for_new_name(new_name: &str, request_id: u64) -> serde_json::Value {
     use assert_fs::prelude::*;
 
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
@@ -309,12 +340,12 @@ fn lsp_rename_edits_rejects_qualified_new_names() {
     .to_string();
     let rename_edits = serde_json::json!({
         "jsonrpc": "2.0",
-        "id": 34,
+        "id": request_id,
         "method": "ail/renameEdits",
         "params": {
             "textDocument": { "uri": uri.clone() },
             "position": { "line": 1, "character": 4 },
-            "newName": "math.sum_pair"
+            "newName": new_name
         }
     })
     .to_string();
@@ -336,9 +367,7 @@ fn lsp_rename_edits_rejects_qualified_new_names() {
     let messages = lsp_json_messages(&output.stdout);
     let response = messages
         .iter()
-        .find(|message| message["id"] == 34)
+        .find(|message| message["id"] == request_id)
         .expect("renameEdits response must be emitted");
-
-    assert_eq!(response["result"]["canRename"], false);
-    assert_eq!(response["result"]["reason"], "invalid_new_name");
+    response["result"].clone()
 }
