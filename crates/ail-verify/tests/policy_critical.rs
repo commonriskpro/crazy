@@ -19,9 +19,9 @@
 // Unknown profiles mirror `critical` (strict-by-default fallback).
 
 use ail_verify::policy::{
-    ApprovalRecord, ApprovalStrength, POLICY_RUNTIME_CHECK_ADVISORY,
-    POLICY_SOLVER_DIAGNOSTIC_BLOCKED, POLICY_WEAK_ASSUMPTION, PolicyDecision, PolicyEngine,
-    PolicyInput, PolicyRule,
+    ApprovalRecord, ApprovalStrength, POLICY_CRITICAL_APPROVAL_INCOMPLETE,
+    POLICY_RUNTIME_CHECK_ADVISORY, POLICY_SOLVER_DIAGNOSTIC_BLOCKED, POLICY_WEAK_ASSUMPTION,
+    PolicyDecision, PolicyEngine, PolicyInput, PolicyRule,
 };
 use ail_verify::report::{
     SolverDiagnostic, SolverDiagnosticStatus, VerificationEntry, VerificationReport,
@@ -452,6 +452,69 @@ fn prod_assumed_with_strong_approval_passes_even_with_solver_diagnostic() {
 // Both critical and prod require Strong approval for Assumed.
 // This test is a regression guard ensuring prod wasn't accidentally tightened
 // to critical semantics for Assumed (they should remain the same here).
+
+#[test]
+fn critical_blocks_strong_assumed_approval_without_approver() {
+    let report = report_with(vec![entry("fn.assumed", VerificationState::Assumed)]);
+    let approvals = [ApprovalRecord {
+        scope: "fn.assumed".to_string(),
+        approver: "   ".to_string(),
+        reason: "reviewed critical boundary assumption".to_string(),
+        strength: ApprovalStrength::Strong,
+    }];
+
+    match evaluate_profile(&report, "critical", &approvals) {
+        PolicyDecision::Failed(violations) => assert!(
+            violations
+                .iter()
+                .any(|v| v.code == POLICY_CRITICAL_APPROVAL_INCOMPLETE),
+            "critical must reject anonymous Strong Assumed approvals with stable code; got {violations:?}"
+        ),
+        other => panic!("expected Failed for anonymous critical approval, got {other:?}"),
+    }
+}
+
+#[test]
+fn critical_blocks_strong_assumed_approval_without_reason() {
+    let report = report_with(vec![entry("fn.assumed", VerificationState::Assumed)]);
+    let approvals = [ApprovalRecord {
+        scope: "fn.assumed".to_string(),
+        approver: "security-team".to_string(),
+        reason: "\t".to_string(),
+        strength: ApprovalStrength::Strong,
+    }];
+
+    match evaluate_profile(&report, "critical", &approvals) {
+        PolicyDecision::Failed(violations) => assert!(
+            violations
+                .iter()
+                .any(|v| v.code == POLICY_CRITICAL_APPROVAL_INCOMPLETE),
+            "critical must reject reasonless Strong Assumed approvals with stable code; got {violations:?}"
+        ),
+        other => panic!("expected Failed for reasonless critical approval, got {other:?}"),
+    }
+}
+
+#[test]
+fn unknown_profile_blocks_incomplete_assumed_approval_like_critical() {
+    let report = report_with(vec![entry("fn.assumed", VerificationState::Assumed)]);
+    let approvals = [ApprovalRecord {
+        scope: "fn.assumed".to_string(),
+        approver: "security-team".to_string(),
+        reason: "".to_string(),
+        strength: ApprovalStrength::Strong,
+    }];
+
+    match evaluate_profile(&report, "custom-critical-like", &approvals) {
+        PolicyDecision::Failed(violations) => assert!(
+            violations
+                .iter()
+                .any(|v| v.code == POLICY_CRITICAL_APPROVAL_INCOMPLETE),
+            "unknown profiles must reject incomplete critical-style approvals; got {violations:?}"
+        ),
+        other => panic!("expected Failed for unknown profile incomplete approval, got {other:?}"),
+    }
+}
 
 #[test]
 fn critical_and_prod_both_reject_weak_assumed_approval() {

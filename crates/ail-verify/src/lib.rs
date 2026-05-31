@@ -59,11 +59,11 @@ pub mod z3_solver;
 pub use package_checker::PackageTrustChecker;
 pub use policy::{
     ApprovalRecord, ApprovalStrength, CapabilityGrant, POLICY_ASSUMED_UNAPPROVED,
-    POLICY_PROFILE_GATE, POLICY_PUBLIC_API_CHANGED, POLICY_RUNTIME_CHECK_ADVISORY,
-    POLICY_SOLVER_DIAGNOSTIC_BLOCKED, POLICY_UNSAFE_BLOCKED, POLICY_UNVERIFIED_PUBLIC_API,
-    POLICY_WEAK_ASSUMPTION, PackageTrustEntry, PolicyAudit, PolicyAuditEntry, PolicyDecision,
-    PolicyEngine, PolicyInput, PolicyRule, PolicyViolation, PolicyWarning, PublicApiChange,
-    StructuralDiff,
+    POLICY_CRITICAL_APPROVAL_INCOMPLETE, POLICY_PROFILE_GATE, POLICY_PUBLIC_API_CHANGED,
+    POLICY_RUNTIME_CHECK_ADVISORY, POLICY_SOLVER_DIAGNOSTIC_BLOCKED, POLICY_UNSAFE_BLOCKED,
+    POLICY_UNVERIFIED_PUBLIC_API, POLICY_WEAK_ASSUMPTION, PackageTrustEntry, PolicyAudit,
+    PolicyAuditEntry, PolicyDecision, PolicyEngine, PolicyInput, PolicyRule, PolicyViolation,
+    PolicyWarning, PublicApiChange, StructuralDiff,
 };
 pub use proof::{
     ClauseRole, ObligationAttempt, ObligationLedgerEntry, ObligationState, ProofObligation,
