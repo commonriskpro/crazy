@@ -23,6 +23,12 @@ use crate::profile::CapabilityId;
 /// Runtime denial category for capability calls denied because the active
 /// profile does not grant the requested capability.
 pub const DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED: &str = "capability.not_granted";
+/// Runtime denial category for capability calls attempted without an active
+/// profile/module binding.
+pub const DENIAL_CATEGORY_CAPABILITY_AMBIENT_ACCESS: &str = "capability.ambient_access";
+/// Runtime denial category for capability calls granted to a different
+/// module/profile scope than the active caller.
+pub const DENIAL_CATEGORY_CAPABILITY_PROFILE_MISMATCH: &str = "capability.profile_mismatch";
 /// Runtime denial category for capability calls blocked by a revocation record.
 pub const DENIAL_CATEGORY_CAPABILITY_REVOKED: &str = "capability.revoked";
 /// Runtime denial category for granted capabilities with no bound handler.
@@ -69,16 +75,33 @@ pub const SECRET_ACCESS_SHAPE_MALFORMED: &str = "secret.read:<malformed>";
 
 // ── Stable profile policy denial shape descriptors ─────────────────────
 
-/// Redacted shape descriptor for profile capability grants denied by default.
+/// Redacted shape descriptor for manifest capabilities missing profile grants.
+pub const PROFILE_POLICY_DENIAL_SHAPE_MISSING_GRANT: &str =
+    "profile.policy:<missing_capability_grant>";
+/// Redacted shape descriptor for runtime capability grants denied by default.
 pub const PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED: &str =
     "profile.policy:<capability_not_granted>";
+/// Redacted shape descriptor for ambient capability access attempts.
+pub const PROFILE_POLICY_DENIAL_SHAPE_AMBIENT_ACCESS: &str =
+    "profile.policy:<ambient_access_attempt>";
+/// Redacted shape descriptor for profile/module mismatch denials.
+pub const PROFILE_POLICY_DENIAL_SHAPE_PROFILE_MISMATCH: &str = "profile.policy:<profile_mismatch>";
 /// Redacted shape descriptor for profile capability grants denied by revocation.
 pub const PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_REVOKED: &str =
     "profile.policy:<capability_revoked>";
 
-/// Deterministic diagnostic key for profile capability grants denied by default.
+/// Deterministic diagnostic key for manifest capabilities missing profile grants.
+pub const PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_MISSING_GRANT: &str =
+    "profile.policy.missing_capability_grant";
+/// Deterministic diagnostic key for runtime capability grants denied by default.
 pub const PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED: &str =
     "profile.policy.capability_not_granted";
+/// Deterministic diagnostic key for ambient capability access attempts.
+pub const PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_AMBIENT_ACCESS: &str =
+    "profile.policy.ambient_access_attempt";
+/// Deterministic diagnostic key for profile/module mismatch denials.
+pub const PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_PROFILE_MISMATCH: &str =
+    "profile.policy.profile_mismatch";
 /// Deterministic diagnostic key for profile capability grants denied by revocation.
 pub const PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_REVOKED: &str =
     "profile.policy.capability_revoked";
@@ -215,15 +238,23 @@ pub const TRANSACTION_CATEGORY_ROLLBACK_ALREADY_ROLLED_BACK: &str =
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProfilePolicyDenialKind {
+    MissingGrant,
     CapabilityNotGranted,
+    AmbientAccess,
+    ProfileMismatch,
     CapabilityRevoked,
 }
 
 impl ProfilePolicyDenialKind {
     fn shape(self) -> &'static str {
         match self {
+            ProfilePolicyDenialKind::MissingGrant => PROFILE_POLICY_DENIAL_SHAPE_MISSING_GRANT,
             ProfilePolicyDenialKind::CapabilityNotGranted => {
                 PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED
+            }
+            ProfilePolicyDenialKind::AmbientAccess => PROFILE_POLICY_DENIAL_SHAPE_AMBIENT_ACCESS,
+            ProfilePolicyDenialKind::ProfileMismatch => {
+                PROFILE_POLICY_DENIAL_SHAPE_PROFILE_MISMATCH
             }
             ProfilePolicyDenialKind::CapabilityRevoked => {
                 PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_REVOKED
@@ -233,8 +264,17 @@ impl ProfilePolicyDenialKind {
 
     fn diagnostic_key(self) -> &'static str {
         match self {
+            ProfilePolicyDenialKind::MissingGrant => {
+                PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_MISSING_GRANT
+            }
             ProfilePolicyDenialKind::CapabilityNotGranted => {
                 PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED
+            }
+            ProfilePolicyDenialKind::AmbientAccess => {
+                PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_AMBIENT_ACCESS
+            }
+            ProfilePolicyDenialKind::ProfileMismatch => {
+                PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_PROFILE_MISMATCH
             }
             ProfilePolicyDenialKind::CapabilityRevoked => {
                 PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_REVOKED
@@ -247,6 +287,10 @@ fn profile_policy_denial_kind_from_category(category: &str) -> Option<ProfilePol
     match category {
         DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED => {
             Some(ProfilePolicyDenialKind::CapabilityNotGranted)
+        }
+        DENIAL_CATEGORY_CAPABILITY_AMBIENT_ACCESS => Some(ProfilePolicyDenialKind::AmbientAccess),
+        DENIAL_CATEGORY_CAPABILITY_PROFILE_MISMATCH => {
+            Some(ProfilePolicyDenialKind::ProfileMismatch)
         }
         DENIAL_CATEGORY_CAPABILITY_REVOKED => Some(ProfilePolicyDenialKind::CapabilityRevoked),
         _ => None,
@@ -347,7 +391,7 @@ fn runtime_issue_descriptor_from_preflight_failure(
 ) -> Option<RuntimeIssueDescriptor> {
     match reason {
         PreflightFailure::CapabilityDenied { .. } => Some(profile_policy_denial_descriptor(
-            ProfilePolicyDenialKind::CapabilityNotGranted,
+            ProfilePolicyDenialKind::MissingGrant,
         )),
         PreflightFailure::ResourceLimitExceeded { reason } => {
             limit_denial_kind_from_resource_reason(reason).map(limit_denial_descriptor)
@@ -550,7 +594,7 @@ impl AuditEvent {
             AuditEvent::PreflightFailed {
                 reason: PreflightFailure::CapabilityDenied { .. },
                 ..
-            } => Some(ProfilePolicyDenialKind::CapabilityNotGranted),
+            } => Some(ProfilePolicyDenialKind::MissingGrant),
             AuditEvent::CapabilityCallExecuted {
                 denial_category: Some(category),
                 ..

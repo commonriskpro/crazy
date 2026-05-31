@@ -15,6 +15,8 @@ use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 use ail_package::trust::TrustLevel;
 
+use crate::manifest::CapabilityManifest;
+
 // ── CapabilityId ─────────────────────────────────────────────────────────
 
 /// A string-keyed capability identifier.
@@ -51,6 +53,154 @@ pub struct CapabilityGrant {
     pub module: String,
     /// The capability being granted.
     pub capability: CapabilityId,
+}
+
+// ── Runtime capability diagnostics ──────────────────────────────────────
+
+/// Deterministic key for manifest capabilities missing a profile grant.
+pub const RUNTIME_CAPABILITY_DIAGNOSTIC_KEY_MISSING_GRANT: &str =
+    "runtime.capability.missing_grant";
+/// Deterministic key for direct capability calls denied by the active profile.
+pub const RUNTIME_CAPABILITY_DIAGNOSTIC_KEY_DENIED_CAPABILITY: &str = "runtime.capability.denied";
+/// Deterministic key for capability calls attempted without an active profile.
+pub const RUNTIME_CAPABILITY_DIAGNOSTIC_KEY_AMBIENT_ACCESS: &str =
+    "runtime.capability.ambient_access";
+/// Deterministic key for capability calls granted to another module/profile scope.
+pub const RUNTIME_CAPABILITY_DIAGNOSTIC_KEY_PROFILE_MISMATCH: &str =
+    "runtime.capability.profile_mismatch";
+
+/// Production-safe capability enforcement diagnostic kind.
+///
+/// Declaration order is the canonical batch ordering: ambient access attempts
+/// first, then profile mismatches, missing startup grants, and finally direct
+/// denied capability calls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RuntimeCapabilityDiagnosticKind {
+    /// Runtime access was attempted without an active profile/module binding.
+    AmbientAccessAttempt,
+    /// The active profile grants the capability, but not to the calling module.
+    ProfileMismatch,
+    /// A manifest-required capability is absent from the profile grants.
+    MissingGrant,
+    /// A direct capability call was denied by the active profile.
+    DeniedCapability,
+}
+
+impl RuntimeCapabilityDiagnosticKind {
+    /// Stable machine-readable key for this diagnostic kind.
+    pub const fn diagnostic_key(self) -> &'static str {
+        match self {
+            RuntimeCapabilityDiagnosticKind::AmbientAccessAttempt => {
+                RUNTIME_CAPABILITY_DIAGNOSTIC_KEY_AMBIENT_ACCESS
+            }
+            RuntimeCapabilityDiagnosticKind::ProfileMismatch => {
+                RUNTIME_CAPABILITY_DIAGNOSTIC_KEY_PROFILE_MISMATCH
+            }
+            RuntimeCapabilityDiagnosticKind::MissingGrant => {
+                RUNTIME_CAPABILITY_DIAGNOSTIC_KEY_MISSING_GRANT
+            }
+            RuntimeCapabilityDiagnosticKind::DeniedCapability => {
+                RUNTIME_CAPABILITY_DIAGNOSTIC_KEY_DENIED_CAPABILITY
+            }
+        }
+    }
+}
+
+/// Stable redacted descriptor for one runtime capability enforcement issue.
+///
+/// The descriptor never includes raw profile names, module names, operations,
+/// payload bytes, or capability targets such as secret IDs. Capability families
+/// with safe lowercase namespace shapes are retained; unsafe names collapse to
+/// a fixed opaque descriptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeCapabilityDiagnostic {
+    /// Canonical diagnostic kind.
+    pub kind: RuntimeCapabilityDiagnosticKind,
+    /// Stable machine-readable key for dashboards/support triage.
+    pub diagnostic_key: &'static str,
+    /// Redacted capability shape, e.g. `secret.read:<redacted>`.
+    pub capability: String,
+    /// Redacted profile presence only, never the profile name.
+    pub profile: &'static str,
+    /// Redacted module presence only, never the module name.
+    pub module: &'static str,
+}
+
+impl RuntimeCapabilityDiagnostic {
+    fn new(
+        kind: RuntimeCapabilityDiagnosticKind,
+        capability: &CapabilityId,
+        profile: Option<&RuntimeProfile>,
+        module: Option<&str>,
+    ) -> Self {
+        RuntimeCapabilityDiagnostic {
+            kind,
+            diagnostic_key: kind.diagnostic_key(),
+            capability: redacted_capability_descriptor(capability),
+            profile: if profile.is_some() {
+                "profile:<active>"
+            } else {
+                "profile:<ambient>"
+            },
+            module: if module.is_some_and(|m| !m.is_empty()) {
+                "module:<bound>"
+            } else {
+                "module:<ambient>"
+            },
+        }
+    }
+
+    fn sort_key(&self) -> (RuntimeCapabilityDiagnosticKind, &str, &str, &str) {
+        (
+            self.kind,
+            self.capability.as_str(),
+            self.profile,
+            self.module,
+        )
+    }
+}
+
+/// Return a stable redacted capability descriptor for diagnostics.
+///
+/// Capability targets after `:` are always redacted. Families are retained only
+/// when they are low-cardinality lowercase namespace labels such as
+/// `secret.read` or `network.egress`; otherwise the descriptor is opaque.
+pub fn redacted_capability_descriptor(capability: &CapabilityId) -> String {
+    let raw = capability.as_str();
+    if raw.is_empty() {
+        return "capability:<empty>".to_string();
+    }
+
+    let (family, has_target) = match raw.split_once(':') {
+        Some((family, _)) => (family, true),
+        None => (raw, false),
+    };
+
+    if !is_safe_capability_family(family) {
+        return "capability:<opaque>".to_string();
+    }
+
+    if has_target {
+        format!("{family}:<redacted>")
+    } else {
+        format!("{family}:<none>")
+    }
+}
+
+fn is_safe_capability_family(family: &str) -> bool {
+    !family.is_empty()
+        && family.split('.').all(|segment| !segment.is_empty())
+        && family.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+}
+
+fn sort_and_dedup_capability_diagnostics(
+    mut diagnostics: Vec<RuntimeCapabilityDiagnostic>,
+) -> Vec<RuntimeCapabilityDiagnostic> {
+    diagnostics.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
+    diagnostics.dedup_by(|left, right| left.sort_key() == right.sort_key());
+    diagnostics
 }
 
 // ── RateLimit ────────────────────────────────────────────────────────────
@@ -646,6 +796,94 @@ impl RuntimeProfile {
         self.grants
             .iter()
             .any(|g| g.module.as_str() == module && &g.capability == capability)
+    }
+
+    /// Return `true` if any module in this profile is granted `capability`.
+    ///
+    /// This is used only for diagnostics so the runtime can distinguish a
+    /// capability that is unknown to the profile from one granted to a
+    /// different module scope.
+    pub fn grants_capability_to_any_module(&self, capability: &CapabilityId) -> bool {
+        self.grants.iter().any(|g| &g.capability == capability)
+    }
+
+    /// Return stable redacted diagnostics for manifest requirements missing grants.
+    ///
+    /// Output is canonical and de-duplicated by diagnostic kind and redacted
+    /// descriptor so batches are stable even when manifests repeat capability
+    /// requirements in different declaration orders.
+    pub fn capability_diagnostics_for_manifest(
+        &self,
+        manifest: &CapabilityManifest,
+    ) -> Vec<RuntimeCapabilityDiagnostic> {
+        sort_and_dedup_capability_diagnostics(
+            manifest
+                .requires
+                .iter()
+                .filter(|capability| !self.grants_capability(&manifest.module, capability))
+                .map(|capability| {
+                    RuntimeCapabilityDiagnostic::new(
+                        RuntimeCapabilityDiagnosticKind::MissingGrant,
+                        capability,
+                        Some(self),
+                        Some(&manifest.module),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// Return a stable redacted diagnostic for a runtime capability access.
+    ///
+    /// `None` means the access is granted for the provided module. Denials are
+    /// classified without leaking raw profile/module/capability target names.
+    pub fn capability_diagnostic_for_access(
+        &self,
+        module: Option<&str>,
+        capability: &CapabilityId,
+    ) -> Option<RuntimeCapabilityDiagnostic> {
+        match module {
+            Some(module) if self.grants_capability(module, capability) => None,
+            Some(module) if self.grants_capability_to_any_module(capability) => {
+                Some(RuntimeCapabilityDiagnostic::new(
+                    RuntimeCapabilityDiagnosticKind::ProfileMismatch,
+                    capability,
+                    Some(self),
+                    Some(module),
+                ))
+            }
+            Some(module) => Some(RuntimeCapabilityDiagnostic::new(
+                RuntimeCapabilityDiagnosticKind::DeniedCapability,
+                capability,
+                Some(self),
+                Some(module),
+            )),
+            None => Some(RuntimeCapabilityDiagnostic::new(
+                RuntimeCapabilityDiagnosticKind::AmbientAccessAttempt,
+                capability,
+                Some(self),
+                None,
+            )),
+        }
+    }
+
+    /// Batch form of [`RuntimeProfile::capability_diagnostic_for_access`].
+    ///
+    /// Returned diagnostics are canonical and de-duplicated by redacted
+    /// descriptor; raw operation names or payloads are intentionally not part
+    /// of this API.
+    pub fn capability_diagnostics_for_accesses<'a>(
+        &self,
+        accesses: impl IntoIterator<Item = (Option<&'a str>, &'a CapabilityId)>,
+    ) -> Vec<RuntimeCapabilityDiagnostic> {
+        sort_and_dedup_capability_diagnostics(
+            accesses
+                .into_iter()
+                .filter_map(|(module, capability)| {
+                    self.capability_diagnostic_for_access(module, capability)
+                })
+                .collect(),
+        )
     }
 
     /// `true` if preflight must verify handler binding for all grants.

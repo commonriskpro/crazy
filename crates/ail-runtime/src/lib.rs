@@ -80,7 +80,8 @@ pub use manifest::{CapabilityManifest, blake3_hex_of};
 pub use profile::{
     AssumptionStatus, AuditConfig, CapabilityGrant, CapabilityId, CapabilityRevocationRegistry,
     CapabilityState, InFlightPolicy, ProfileAssumption, ProfilePolicy, RateLimit, ReplayConfig,
-    ResourceLimits, RevocationRecord, RevocationRecords, RuntimeProfile, SecretEntry,
+    ResourceLimits, RevocationRecord, RevocationRecords, RuntimeCapabilityDiagnostic,
+    RuntimeCapabilityDiagnosticKind, RuntimeProfile, SecretEntry, redacted_capability_descriptor,
 };
 pub use replay::{
     FakePayment, FixedClock, InMemoryDb, RecordedHttp, ReplayEngine, ReplayHandler,

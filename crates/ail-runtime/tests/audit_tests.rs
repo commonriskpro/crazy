@@ -10,16 +10,21 @@
 //   - AuditEvent::is_passed() discriminates correctly
 
 use ail_runtime::audit::{
-    AuditEvent, AuditLog, DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED,
+    AuditEvent, AuditLog, DENIAL_CATEGORY_CAPABILITY_AMBIENT_ACCESS,
+    DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED, DENIAL_CATEGORY_CAPABILITY_PROFILE_MISMATCH,
     DENIAL_CATEGORY_CAPABILITY_REVOKED, DENIAL_CATEGORY_HANDLER_NOT_BOUND,
     DENIAL_CATEGORY_LIMIT_MEMORY, DENIAL_CATEGORY_LIMIT_RATE, LIMIT_DENIAL_DIAGNOSTIC_KEY_FUEL,
     LIMIT_DENIAL_DIAGNOSTIC_KEY_MEMORY, LIMIT_DENIAL_DIAGNOSTIC_KEY_RATE,
     LIMIT_DENIAL_DIAGNOSTIC_KEY_TIME, LIMIT_DENIAL_SHAPE_FUEL, LIMIT_DENIAL_SHAPE_MEMORY,
     LIMIT_DENIAL_SHAPE_RATE, LIMIT_DENIAL_SHAPE_TIME,
+    PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_AMBIENT_ACCESS,
     PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED,
     PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_REVOKED,
-    PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED,
-    PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_REVOKED, RUNTIME_ISSUE_DIAGNOSTIC_KEY_RESOURCE_POLICY,
+    PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_MISSING_GRANT,
+    PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_PROFILE_MISMATCH,
+    PROFILE_POLICY_DENIAL_SHAPE_AMBIENT_ACCESS, PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED,
+    PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_REVOKED, PROFILE_POLICY_DENIAL_SHAPE_MISSING_GRANT,
+    PROFILE_POLICY_DENIAL_SHAPE_PROFILE_MISMATCH, RUNTIME_ISSUE_DIAGNOSTIC_KEY_RESOURCE_POLICY,
     RUNTIME_ISSUE_SHAPE_RESOURCE_POLICY, RuntimeIssueAxis, RuntimeIssueDescriptor,
     runtime_issue_descriptors_for_events,
 };
@@ -225,11 +230,11 @@ fn preflight_capability_denial_has_stable_redacted_profile_policy_shape() {
 
     assert_eq!(
         event.profile_policy_denial_shape(),
-        Some(PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED)
+        Some(PROFILE_POLICY_DENIAL_SHAPE_MISSING_GRANT)
     );
     assert_eq!(
         event.profile_policy_denial_diagnostic_key(),
-        Some(PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED)
+        Some(PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_MISSING_GRANT)
     );
 
     let shape = event.profile_policy_denial_shape().expect("policy shape");
@@ -302,6 +307,29 @@ fn capability_call_policy_denial_shapes_cover_not_granted_and_revoked() {
 }
 
 #[test]
+fn capability_call_policy_denial_shapes_cover_ambient_and_profile_mismatch() {
+    let ambient = denied_event(DENIAL_CATEGORY_CAPABILITY_AMBIENT_ACCESS);
+    let mismatch = denied_event(DENIAL_CATEGORY_CAPABILITY_PROFILE_MISMATCH);
+
+    assert_eq!(
+        ambient.profile_policy_denial_shape(),
+        Some(PROFILE_POLICY_DENIAL_SHAPE_AMBIENT_ACCESS)
+    );
+    assert_eq!(
+        ambient.profile_policy_denial_diagnostic_key(),
+        Some(PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_AMBIENT_ACCESS)
+    );
+    assert_eq!(
+        mismatch.profile_policy_denial_shape(),
+        Some(PROFILE_POLICY_DENIAL_SHAPE_PROFILE_MISMATCH)
+    );
+    assert_eq!(
+        mismatch.profile_policy_denial_diagnostic_key(),
+        Some(PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_PROFILE_MISMATCH)
+    );
+}
+
+#[test]
 fn runtime_issue_descriptors_cover_limit_capability_and_resource_policy_axes() {
     let timeout = AuditEvent::PreflightFailed {
         profile_name: "prod-tenant-private".to_string(),
@@ -355,8 +383,8 @@ fn runtime_issue_descriptors_cover_limit_capability_and_resource_policy_axes() {
         capability.runtime_issue_descriptor(),
         Some(RuntimeIssueDescriptor {
             axis: RuntimeIssueAxis::Capability,
-            diagnostic_key: PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED,
-            shape: PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED,
+            diagnostic_key: PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_MISSING_GRANT,
+            shape: PROFILE_POLICY_DENIAL_SHAPE_MISSING_GRANT,
         })
     );
     assert_eq!(
@@ -431,8 +459,8 @@ fn runtime_issue_descriptors_for_events_are_redacted_deduped_and_canonical() {
             },
             RuntimeIssueDescriptor {
                 axis: RuntimeIssueAxis::Capability,
-                diagnostic_key: PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED,
-                shape: PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED,
+                diagnostic_key: PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_MISSING_GRANT,
+                shape: PROFILE_POLICY_DENIAL_SHAPE_MISSING_GRANT,
             },
             RuntimeIssueDescriptor {
                 axis: RuntimeIssueAxis::ResourcePolicy,
