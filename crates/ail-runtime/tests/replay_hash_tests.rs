@@ -9,7 +9,10 @@
 //       verify same output hashes
 //     end
 
-use ail_runtime::audit::{REPLAY_MISMATCH_HASH_MISMATCH, REPLAY_MISMATCH_MISSING_RECORDING};
+use ail_runtime::audit::{
+    REPLAY_MISMATCH_DIAGNOSTIC_KEY_HASH_MISMATCH, REPLAY_MISMATCH_DIAGNOSTIC_KEY_MISSING_RECORDING,
+    REPLAY_MISMATCH_HASH_MISMATCH, REPLAY_MISMATCH_MISSING_RECORDING,
+};
 use ail_runtime::profile::CapabilityId;
 use ail_runtime::replay::{ReplayEngine, ReplayMismatchKind};
 
@@ -136,13 +139,18 @@ fn replay_engine_verify_fails_for_mismatched_output() {
     assert!(result.is_err(), "mismatched output must fail verification");
     let err = result.unwrap_err();
     assert_eq!(err.kind, ReplayMismatchKind::HashMismatch);
+    assert_eq!(
+        err.diagnostic_key,
+        REPLAY_MISMATCH_DIAGNOSTIC_KEY_HASH_MISMATCH
+    );
     assert_eq!(err.category, REPLAY_MISMATCH_HASH_MISMATCH);
     assert_eq!(err.capability, "http.call:*");
     assert_eq!(err.operation_shape, "http.request");
     assert!(err.recorded_hash.is_some());
     assert!(err.actual_hash.is_some());
     assert!(
-        err.message.contains("replay.hash_mismatch")
+        err.message.contains("key=replay.mismatch.hash_mismatch")
+            && err.message.contains("replay.hash_mismatch")
             && err.message.contains("operation_shape=http.request"),
         "error must carry stable redacted classification: {:?}",
         err
@@ -160,6 +168,10 @@ fn replay_engine_verify_fails_for_unknown_recording() {
     );
     let err = result.unwrap_err();
     assert_eq!(err.kind, ReplayMismatchKind::MissingRecording);
+    assert_eq!(
+        err.diagnostic_key,
+        REPLAY_MISMATCH_DIAGNOSTIC_KEY_MISSING_RECORDING
+    );
     assert_eq!(err.category, REPLAY_MISMATCH_MISSING_RECORDING);
     assert_eq!(err.capability, "database.read:*");
     assert_eq!(err.operation_shape, "keyed.read");
@@ -179,6 +191,10 @@ fn replay_verification_errors_do_not_echo_sensitive_operations() {
         .expect_err("hash mismatch must fail");
 
     assert_eq!(err.kind, ReplayMismatchKind::HashMismatch);
+    assert_eq!(
+        err.diagnostic_key,
+        REPLAY_MISMATCH_DIAGNOSTIC_KEY_HASH_MISMATCH
+    );
     assert_eq!(err.category, REPLAY_MISMATCH_HASH_MISMATCH);
     assert_eq!(err.capability, "http.call:*");
     assert_eq!(err.operation_shape, "http.request");
@@ -186,6 +202,58 @@ fn replay_verification_errors_do_not_echo_sensitive_operations() {
     assert!(!err.message.contains("api.example.com"));
     assert!(!err.message.contains("TenantBillingProvider"));
     assert!(!err.message.contains(sensitive_operation));
+}
+
+#[test]
+fn replay_verify_many_returns_redacted_issues_in_deterministic_key_order() {
+    let mut engine = ReplayEngine::new();
+    let http_cap = CapabilityId::new("http.call:TenantBillingProvider");
+    let db_cap = CapabilityId::new("database.read:TenantLedger");
+    let secret_http_operation = "GET:https://api.example.com/users?token=super-secret-token";
+    let secret_db_operation = "read:tenant-42/private-ledger";
+
+    engine.record(
+        http_cap.clone(),
+        secret_http_operation,
+        b"original".to_vec(),
+    );
+
+    let issues = engine.verify_many(vec![
+        (
+            db_cap,
+            secret_db_operation,
+            b"payload-with-private-id".to_vec(),
+        ),
+        (
+            http_cap,
+            secret_http_operation,
+            b"payload-with-super-secret-token".to_vec(),
+        ),
+    ]);
+
+    assert_eq!(issues.len(), 2);
+    assert_eq!(
+        issues[0].diagnostic_key, REPLAY_MISMATCH_DIAGNOSTIC_KEY_HASH_MISMATCH,
+        "hash mismatches must sort before missing recordings by stable key"
+    );
+    assert_eq!(
+        issues[1].diagnostic_key,
+        REPLAY_MISMATCH_DIAGNOSTIC_KEY_MISSING_RECORDING
+    );
+
+    let rendered = issues
+        .iter()
+        .map(|issue| issue.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!rendered.contains("super-secret-token"));
+    assert!(!rendered.contains("api.example.com"));
+    assert!(!rendered.contains("tenant-42"));
+    assert!(!rendered.contains("private-ledger"));
+    assert!(!rendered.contains("payload-with-private-id"));
+    assert!(!rendered.contains("payload-with-super-secret-token"));
+    assert!(rendered.contains("key=replay.mismatch.hash_mismatch"));
+    assert!(rendered.contains("key=replay.mismatch.missing_recording"));
 }
 
 // ── ReplayVerificationError ───────────────────────────────────────────────
@@ -200,8 +268,12 @@ fn replay_verification_error_carries_message() {
         .verify(&cap, "read:Cart:42", b"different")
         .expect_err("mismatch must produce an error");
     assert_eq!(err.kind, ReplayMismatchKind::HashMismatch);
+    assert_eq!(
+        err.diagnostic_key,
+        REPLAY_MISMATCH_DIAGNOSTIC_KEY_HASH_MISMATCH
+    );
     assert_eq!(err.category, REPLAY_MISMATCH_HASH_MISMATCH);
-    assert!(err.message.contains("replay.hash_mismatch"));
+    assert!(err.message.contains("key=replay.mismatch.hash_mismatch"));
 }
 
 // ── hash_of helper ────────────────────────────────────────────────────────
