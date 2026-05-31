@@ -16,6 +16,10 @@ use wasm_encoder::{
     Module, StartSection, TypeSection,
 };
 
+use ail_runtime::audit::{
+    LIMIT_DENIAL_DIAGNOSTIC_KEY_FUEL, LIMIT_DENIAL_DIAGNOSTIC_KEY_MEMORY, LIMIT_DENIAL_SHAPE_FUEL,
+    LIMIT_DENIAL_SHAPE_MEMORY,
+};
 use ail_runtime::{
     CapabilityManifest, PreflightFailure, ResourceLimits, RuntimeError, RuntimeHost,
     RuntimeProfile, blake3_hex_of,
@@ -196,6 +200,16 @@ fn fuel_limit_trap_appends_audit_event() {
         !log.events()[0].is_passed(),
         "audit event must be PreflightFailed (not passed)"
     );
+    assert_eq!(
+        log.events()[0].limit_denial_shape(),
+        Some(LIMIT_DENIAL_SHAPE_FUEL),
+        "fuel traps must expose a stable redacted limit shape"
+    );
+    assert_eq!(
+        log.events()[0].limit_denial_diagnostic_key(),
+        Some(LIMIT_DENIAL_DIAGNOSTIC_KEY_FUEL),
+        "fuel traps must expose a deterministic diagnostic key"
+    );
 }
 
 // ── RL2: Module within fuel budget succeeds ───────────────────────────────
@@ -285,6 +299,18 @@ fn memory_limit_blocks_excessive_grow() {
             ))
         ),
         "memory.grow beyond limit must produce ResourceLimitExceeded, got {result:?}"
+    );
+
+    let log = host.audit_log();
+    assert_eq!(
+        log.events()[0].limit_denial_shape(),
+        Some(LIMIT_DENIAL_SHAPE_MEMORY),
+        "memory traps must expose a stable redacted limit shape"
+    );
+    assert_eq!(
+        log.events()[0].limit_denial_diagnostic_key(),
+        Some(LIMIT_DENIAL_DIAGNOSTIC_KEY_MEMORY),
+        "memory traps must expose a deterministic diagnostic key"
     );
 }
 

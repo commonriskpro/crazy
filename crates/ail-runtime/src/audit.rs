@@ -29,6 +29,12 @@ pub const DENIAL_CATEGORY_CAPABILITY_REVOKED: &str = "capability.revoked";
 pub const DENIAL_CATEGORY_HANDLER_NOT_BOUND: &str = "handler.not_bound";
 /// Runtime denial category for input payload size limit failures.
 pub const DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE: &str = "limit.payload_size";
+/// Runtime denial category for Wasmtime memory resource limit failures.
+pub const DENIAL_CATEGORY_LIMIT_MEMORY: &str = "limit.memory";
+/// Runtime denial category for Wasmtime fuel resource limit failures.
+pub const DENIAL_CATEGORY_LIMIT_FUEL: &str = "limit.fuel";
+/// Runtime denial category for wall-clock timeout limit failures.
+pub const DENIAL_CATEGORY_LIMIT_TIMEOUT: &str = "limit.timeout";
 /// Runtime denial category for max capability call count failures.
 pub const DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS: &str = "limit.max_capability_calls";
 /// Runtime denial category for rate-limit failures.
@@ -61,6 +67,47 @@ pub const SECRET_ACCESS_SHAPE_READ: &str = "secret.read:<redacted>";
 /// Redacted shape descriptor for malformed empty `secret.read:` accesses.
 pub const SECRET_ACCESS_SHAPE_MALFORMED: &str = "secret.read:<malformed>";
 
+// ── Stable limit denial shape descriptors ───────────────────────────────
+
+/// Redacted shape descriptor for memory-limit denials.
+pub const LIMIT_DENIAL_SHAPE_MEMORY: &str = "runtime.limit:<memory>";
+/// Redacted shape descriptor for fuel-limit denials.
+pub const LIMIT_DENIAL_SHAPE_FUEL: &str = "runtime.limit:<fuel>";
+/// Redacted shape descriptor for wall-clock timeout denials.
+pub const LIMIT_DENIAL_SHAPE_TIME: &str = "runtime.limit:<time>";
+/// Redacted shape descriptor for max capability call denials.
+pub const LIMIT_DENIAL_SHAPE_MAX_CAPABILITY_CALLS: &str = "dispatch.limit:<max_capability_calls>";
+/// Redacted shape descriptor for fixed-window rate limit denials.
+pub const LIMIT_DENIAL_SHAPE_RATE: &str = "dispatch.limit:<rate>";
+/// Redacted shape descriptor for concurrent in-flight call denials.
+pub const LIMIT_DENIAL_SHAPE_CONCURRENCY: &str = "dispatch.limit:<concurrency>";
+/// Redacted shape descriptor for call-depth/recursion denials.
+pub const LIMIT_DENIAL_SHAPE_CALL_DEPTH: &str = "dispatch.limit:<call_depth>";
+/// Redacted shape descriptor for input payload size denials.
+pub const LIMIT_DENIAL_SHAPE_PAYLOAD_SIZE: &str = "dispatch.limit:<payload_size>";
+/// Redacted shape descriptor for output payload size denials.
+pub const LIMIT_DENIAL_SHAPE_OUTPUT_SIZE: &str = "dispatch.limit:<output_size>";
+
+/// Deterministic diagnostic key for memory-limit denials.
+pub const LIMIT_DENIAL_DIAGNOSTIC_KEY_MEMORY: &str = "runtime.limit.memory";
+/// Deterministic diagnostic key for fuel-limit denials.
+pub const LIMIT_DENIAL_DIAGNOSTIC_KEY_FUEL: &str = "runtime.limit.fuel";
+/// Deterministic diagnostic key for wall-clock timeout denials.
+pub const LIMIT_DENIAL_DIAGNOSTIC_KEY_TIME: &str = "runtime.limit.time";
+/// Deterministic diagnostic key for max capability call denials.
+pub const LIMIT_DENIAL_DIAGNOSTIC_KEY_MAX_CAPABILITY_CALLS: &str =
+    "dispatch.limit.max_capability_calls";
+/// Deterministic diagnostic key for fixed-window rate limit denials.
+pub const LIMIT_DENIAL_DIAGNOSTIC_KEY_RATE: &str = "dispatch.limit.rate";
+/// Deterministic diagnostic key for concurrent in-flight call denials.
+pub const LIMIT_DENIAL_DIAGNOSTIC_KEY_CONCURRENCY: &str = "dispatch.limit.concurrency";
+/// Deterministic diagnostic key for call-depth/recursion denials.
+pub const LIMIT_DENIAL_DIAGNOSTIC_KEY_CALL_DEPTH: &str = "dispatch.limit.call_depth";
+/// Deterministic diagnostic key for input payload size denials.
+pub const LIMIT_DENIAL_DIAGNOSTIC_KEY_PAYLOAD_SIZE: &str = "dispatch.limit.payload_size";
+/// Deterministic diagnostic key for output payload size denials.
+pub const LIMIT_DENIAL_DIAGNOSTIC_KEY_OUTPUT_SIZE: &str = "dispatch.limit.output_size";
+
 pub(crate) fn denial_category(category: &'static str) -> Option<String> {
     Some(category.to_string())
 }
@@ -88,6 +135,80 @@ pub const TRANSACTION_CATEGORY_ROLLBACK_AFTER_COMMIT: &str = "transaction.rollba
 /// Transaction/audit category for a rollback request repeated after rollback.
 pub const TRANSACTION_CATEGORY_ROLLBACK_ALREADY_ROLLED_BACK: &str =
     "transaction.rollback_already_rolled_back";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LimitDenialKind {
+    Memory,
+    Fuel,
+    Time,
+    MaxCapabilityCalls,
+    Rate,
+    Concurrency,
+    CallDepth,
+    PayloadSize,
+    OutputSize,
+}
+
+impl LimitDenialKind {
+    fn shape(self) -> &'static str {
+        match self {
+            LimitDenialKind::Memory => LIMIT_DENIAL_SHAPE_MEMORY,
+            LimitDenialKind::Fuel => LIMIT_DENIAL_SHAPE_FUEL,
+            LimitDenialKind::Time => LIMIT_DENIAL_SHAPE_TIME,
+            LimitDenialKind::MaxCapabilityCalls => LIMIT_DENIAL_SHAPE_MAX_CAPABILITY_CALLS,
+            LimitDenialKind::Rate => LIMIT_DENIAL_SHAPE_RATE,
+            LimitDenialKind::Concurrency => LIMIT_DENIAL_SHAPE_CONCURRENCY,
+            LimitDenialKind::CallDepth => LIMIT_DENIAL_SHAPE_CALL_DEPTH,
+            LimitDenialKind::PayloadSize => LIMIT_DENIAL_SHAPE_PAYLOAD_SIZE,
+            LimitDenialKind::OutputSize => LIMIT_DENIAL_SHAPE_OUTPUT_SIZE,
+        }
+    }
+
+    fn diagnostic_key(self) -> &'static str {
+        match self {
+            LimitDenialKind::Memory => LIMIT_DENIAL_DIAGNOSTIC_KEY_MEMORY,
+            LimitDenialKind::Fuel => LIMIT_DENIAL_DIAGNOSTIC_KEY_FUEL,
+            LimitDenialKind::Time => LIMIT_DENIAL_DIAGNOSTIC_KEY_TIME,
+            LimitDenialKind::MaxCapabilityCalls => LIMIT_DENIAL_DIAGNOSTIC_KEY_MAX_CAPABILITY_CALLS,
+            LimitDenialKind::Rate => LIMIT_DENIAL_DIAGNOSTIC_KEY_RATE,
+            LimitDenialKind::Concurrency => LIMIT_DENIAL_DIAGNOSTIC_KEY_CONCURRENCY,
+            LimitDenialKind::CallDepth => LIMIT_DENIAL_DIAGNOSTIC_KEY_CALL_DEPTH,
+            LimitDenialKind::PayloadSize => LIMIT_DENIAL_DIAGNOSTIC_KEY_PAYLOAD_SIZE,
+            LimitDenialKind::OutputSize => LIMIT_DENIAL_DIAGNOSTIC_KEY_OUTPUT_SIZE,
+        }
+    }
+}
+
+fn limit_denial_kind_from_category(category: &str) -> Option<LimitDenialKind> {
+    match category {
+        DENIAL_CATEGORY_LIMIT_MEMORY => Some(LimitDenialKind::Memory),
+        DENIAL_CATEGORY_LIMIT_FUEL => Some(LimitDenialKind::Fuel),
+        DENIAL_CATEGORY_LIMIT_TIMEOUT => Some(LimitDenialKind::Time),
+        DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS => Some(LimitDenialKind::MaxCapabilityCalls),
+        DENIAL_CATEGORY_LIMIT_RATE => Some(LimitDenialKind::Rate),
+        DENIAL_CATEGORY_LIMIT_CONCURRENCY => Some(LimitDenialKind::Concurrency),
+        DENIAL_CATEGORY_LIMIT_RECURSION_DEPTH => Some(LimitDenialKind::CallDepth),
+        DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE => Some(LimitDenialKind::PayloadSize),
+        DENIAL_CATEGORY_LIMIT_OUTPUT_SIZE => Some(LimitDenialKind::OutputSize),
+        _ => None,
+    }
+}
+
+fn limit_denial_kind_from_resource_reason(reason: &str) -> Option<LimitDenialKind> {
+    let normalized = reason.to_ascii_lowercase();
+    if normalized.contains("memory") {
+        Some(LimitDenialKind::Memory)
+    } else if normalized.contains("fuel") {
+        Some(LimitDenialKind::Fuel)
+    } else if normalized.contains("timeout")
+        || normalized.contains("time limit")
+        || normalized.contains("deadline")
+    {
+        Some(LimitDenialKind::Time)
+    } else {
+        None
+    }
+}
 
 // ── AuditEvent ────────────────────────────────────────────────────────────
 
@@ -225,6 +346,39 @@ impl AuditEvent {
     /// `true` if this is a `CapabilityCallExecuted` event.
     pub fn is_capability_call(&self) -> bool {
         matches!(self, AuditEvent::CapabilityCallExecuted { .. })
+    }
+
+    /// Return a stable, redacted shape descriptor for limit-denial events.
+    ///
+    /// The descriptor intentionally records only the limit axis (for example,
+    /// memory, fuel, rate, or call depth), never configured thresholds, current
+    /// usage, capability names, payloads, module names, or raw trap text.
+    pub fn limit_denial_shape(&self) -> Option<&'static str> {
+        self.limit_denial_kind().map(LimitDenialKind::shape)
+    }
+
+    /// Return a deterministic diagnostic key for limit-denial events.
+    ///
+    /// Keys are stable machine-readable identifiers intended for metrics,
+    /// dashboards, and support triage. They are redacted for the same reason as
+    /// [`AuditEvent::limit_denial_shape`].
+    pub fn limit_denial_diagnostic_key(&self) -> Option<&'static str> {
+        self.limit_denial_kind()
+            .map(LimitDenialKind::diagnostic_key)
+    }
+
+    fn limit_denial_kind(&self) -> Option<LimitDenialKind> {
+        match self {
+            AuditEvent::PreflightFailed {
+                reason: PreflightFailure::ResourceLimitExceeded { reason },
+                ..
+            } => limit_denial_kind_from_resource_reason(reason),
+            AuditEvent::CapabilityCallExecuted {
+                denial_category: Some(category),
+                ..
+            } => limit_denial_kind_from_category(category),
+            _ => None,
+        }
     }
 
     /// Return a stable, redacted shape descriptor for secret access events.
@@ -371,6 +525,9 @@ mod tests {
             DENIAL_CATEGORY_CAPABILITY_REVOKED,
             DENIAL_CATEGORY_HANDLER_NOT_BOUND,
             DENIAL_CATEGORY_LIMIT_PAYLOAD_SIZE,
+            DENIAL_CATEGORY_LIMIT_MEMORY,
+            DENIAL_CATEGORY_LIMIT_FUEL,
+            DENIAL_CATEGORY_LIMIT_TIMEOUT,
             DENIAL_CATEGORY_LIMIT_MAX_CAPABILITY_CALLS,
             DENIAL_CATEGORY_LIMIT_RATE,
             DENIAL_CATEGORY_LIMIT_CONCURRENCY,
@@ -398,6 +555,90 @@ mod tests {
                 "helper must preserve the stable category text"
             );
         }
+    }
+
+    #[test]
+    fn limit_denial_shape_and_key_redact_resource_reason_details() {
+        let event = AuditEvent::PreflightFailed {
+            profile_name: "prod".to_string(),
+            denied: vec![],
+            reason: PreflightFailure::ResourceLimitExceeded {
+                reason: "memory growth denied by resource limiter for tenant-prod".to_string(),
+            },
+        };
+
+        assert_eq!(event.limit_denial_shape(), Some(LIMIT_DENIAL_SHAPE_MEMORY));
+        assert_eq!(
+            event.limit_denial_diagnostic_key(),
+            Some(LIMIT_DENIAL_DIAGNOSTIC_KEY_MEMORY)
+        );
+        assert!(!event.limit_denial_shape().unwrap().contains("tenant-prod"));
+    }
+
+    #[test]
+    fn limit_denial_shape_and_key_cover_dispatch_call_depth() {
+        let event = AuditEvent::CapabilityCallExecuted {
+            capability: CapabilityId::new("ops.internal_sensitive_capability"),
+            operation: "private-operation".to_string(),
+            handler_name: "none".to_string(),
+            succeeded: false,
+            duration_us: 1,
+            timestamp: 1,
+            profile: None,
+            module: None,
+            function: None,
+            input_hash: None,
+            output_hash: None,
+            trace_id: None,
+            verification_report_hash: None,
+            trace_context: None,
+            denial_category: Some(DENIAL_CATEGORY_LIMIT_RECURSION_DEPTH.to_string()),
+        };
+
+        assert_eq!(
+            event.limit_denial_shape(),
+            Some(LIMIT_DENIAL_SHAPE_CALL_DEPTH)
+        );
+        assert_eq!(
+            event.limit_denial_diagnostic_key(),
+            Some(LIMIT_DENIAL_DIAGNOSTIC_KEY_CALL_DEPTH)
+        );
+        assert!(!event.limit_denial_shape().unwrap().contains("ops.internal"));
+    }
+
+    #[test]
+    fn limit_denial_shape_and_key_cover_fuel_and_time() {
+        let fuel_event = AuditEvent::PreflightFailed {
+            profile_name: "prod".to_string(),
+            denied: vec![],
+            reason: PreflightFailure::ResourceLimitExceeded {
+                reason: "fuel limit exceeded after private loop".to_string(),
+            },
+        };
+        let timeout_event = AuditEvent::PreflightFailed {
+            profile_name: "prod".to_string(),
+            denied: vec![],
+            reason: PreflightFailure::ResourceLimitExceeded {
+                reason: "deadline exceeded while running private module".to_string(),
+            },
+        };
+
+        assert_eq!(
+            fuel_event.limit_denial_shape(),
+            Some(LIMIT_DENIAL_SHAPE_FUEL)
+        );
+        assert_eq!(
+            fuel_event.limit_denial_diagnostic_key(),
+            Some(LIMIT_DENIAL_DIAGNOSTIC_KEY_FUEL)
+        );
+        assert_eq!(
+            timeout_event.limit_denial_shape(),
+            Some(LIMIT_DENIAL_SHAPE_TIME)
+        );
+        assert_eq!(
+            timeout_event.limit_denial_diagnostic_key(),
+            Some(LIMIT_DENIAL_DIAGNOSTIC_KEY_TIME)
+        );
     }
 
     #[test]
