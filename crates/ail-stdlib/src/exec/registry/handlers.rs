@@ -329,7 +329,7 @@ pub(super) fn queue_pop_front(args: &[StdlibValue]) -> Result<StdlibValue, Stdli
     }
     let mut rest = items.clone();
     let front = rest.remove(0);
-    Ok(StdlibValue::Option(Some(Box::new(StdlibValue::List(
+    Ok(StdlibValue::Option(Some(Box::new(StdlibValue::Tuple(
         vec![front, StdlibValue::List(rest)],
     )))))
 }
@@ -645,6 +645,7 @@ fn stdlib_to_json(v: &StdlibValue) -> json::Json {
         StdlibValue::Text(s) => json::Json::Str(s.clone()),
         StdlibValue::Bytes(b) => json::Json::Str(encoding::hex_encode(b)),
         StdlibValue::List(items) => json::Json::Array(items.iter().map(stdlib_to_json).collect()),
+        StdlibValue::Tuple(items) => json::Json::Array(items.iter().map(stdlib_to_json).collect()),
         StdlibValue::Map(map) => json::Json::Object(
             map.iter()
                 .map(|(k, v)| (k.clone(), stdlib_to_json(v)))

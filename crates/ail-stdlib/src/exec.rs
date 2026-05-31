@@ -325,6 +325,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn exec_json_stringify_tuple_as_array_shape() {
+        let result = call_pure_stdlib(
+            "std.json.stringify",
+            &[StdlibValue::Tuple(vec![
+                StdlibValue::Text("front".to_string()),
+                StdlibValue::List(vec![StdlibValue::Text("rest".to_string())]),
+            ])],
+        );
+        assert!(
+            matches!(result, Ok(StdlibValue::Text(ref s)) if s.contains("front") && s.contains("rest")),
+            "tuple stringify must preserve ordered tuple shape as JSON array text"
+        );
+    }
+
     // Spec STDLIB-EXEC-1: std.numeric.narrow_to_i32 — ok
     #[test]
     fn exec_numeric_narrow_to_i32_ok() {

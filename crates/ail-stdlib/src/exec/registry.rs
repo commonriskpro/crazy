@@ -276,7 +276,7 @@ pub fn stdlib_function_entries() -> Vec<FunctionEntry> {
             "std.collections",
             "pop_front",
             &["List<T>"],
-            "Option<List<[T, List<T>]>>",
+            "Option<Tuple<T, List<T>>>",
             queue_pop_front,
         ),
         pure(

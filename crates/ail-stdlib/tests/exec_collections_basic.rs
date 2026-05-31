@@ -348,7 +348,7 @@ fn queue_pop_front_returns_front_and_rest_pair() {
     let result = call_pure_stdlib("std.collections.queue.pop_front", &[queue]);
     assert_eq!(
         result,
-        Ok(StdlibValue::Option(Some(Box::new(StdlibValue::List(
+        Ok(StdlibValue::Option(Some(Box::new(StdlibValue::Tuple(
             vec![
                 StdlibValue::Text("a".to_string()),
                 StdlibValue::List(vec![StdlibValue::Text("b".to_string())]),

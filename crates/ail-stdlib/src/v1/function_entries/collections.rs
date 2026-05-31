@@ -406,7 +406,7 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
         stability: StabilityTier::Stable,
         type_facts: Some(TypeFacts {
             nominal: "Option".to_string(),
-            generics: vec!["T".to_string(), "List".to_string()],
+            generics: vec!["Tuple".to_string(), "T".to_string(), "List".to_string()],
         }),
         effect_row: None,
         capability_reqs: None,
@@ -414,7 +414,7 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
             requires: vec!["first arg is List<T> (queue representation)".to_string()],
             ensures: vec![
                 "None when the queue is empty".to_string(),
-                "Some(List([front, rest])) when the queue is non-empty".to_string(),
+                "Some(Tuple(front, rest)) when the queue is non-empty".to_string(),
                 "front is the oldest enqueued element".to_string(),
                 "rest preserves remaining order and original queue is not mutated".to_string(),
             ],
