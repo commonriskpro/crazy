@@ -217,6 +217,11 @@ pub(crate) async fn cmd_package(
                 .map(|(name, version, hash)| (name.as_str(), version.as_str(), hash.as_str()))
                 .collect::<Vec<_>>();
             let mismatches = lockfile.verify_integrity(&actual_refs);
+            let lockfile_reproducibility_issues = lockfile
+                .validate_reproducibility(&actual_refs)
+                .iter()
+                .map(LockfileReproducibilityCliIssue::from_validation_issue)
+                .collect::<Vec<_>>();
             let report_mismatches =
                 verification_report_hash_mismatches(&lockfile, &actual_by_package);
             let compatibility_issues =
@@ -224,6 +229,7 @@ pub(crate) async fn cmd_package(
             let hash_ok = mismatches.is_empty();
             let signature_ok = signature_failures.is_empty();
             let report_hash_ok = report_mismatches.is_empty();
+            let lockfile_reproducibility_ok = lockfile_reproducibility_issues.is_empty();
             let compatibility_blocked = compatibility_issues
                 .iter()
                 .any(|issue| issue.status == "blocked");
@@ -244,7 +250,11 @@ pub(crate) async fn cmd_package(
             } else {
                 "warning"
             };
-            let verified = hash_ok && signature_ok && report_hash_ok && compatibility_ok;
+            let verified = hash_ok
+                && signature_ok
+                && report_hash_ok
+                && lockfile_reproducibility_ok
+                && compatibility_ok;
             // 4G: human summary differentiates "all verified" from "verified but
             // reproducible evidence is missing", because runtime preflight hard-fails
             // on Verified packages that lack evidence even when all other integrity
@@ -259,10 +269,15 @@ pub(crate) async fn cmd_package(
                 "verification failed"
             };
             let mut human_msg = format!(
-                "packages: {packages_summary}\nhash_integrity: {}\nsignature_integrity: {}\nverification_report_integrity: {}\ncompatibility_integrity: {}\nreproducible_evidence_integrity: {}\nlock_file: {}\npackages_checked: {}\nwarnings: {}",
+                "packages: {packages_summary}\nhash_integrity: {}\nsignature_integrity: {}\nverification_report_integrity: {}\nlockfile_reproducibility: {}\ncompatibility_integrity: {}\nreproducible_evidence_integrity: {}\nlock_file: {}\npackages_checked: {}\nwarnings: {}",
                 if hash_ok { "ok" } else { "mismatch" },
                 if signature_ok { "ok" } else { "failed" },
                 if report_hash_ok { "ok" } else { "mismatch" },
+                if lockfile_reproducibility_ok {
+                    "ok"
+                } else {
+                    "failed"
+                },
                 compatibility_integrity,
                 repro_evidence_integrity,
                 if verified {
@@ -283,11 +298,27 @@ pub(crate) async fn cmd_package(
                     verified_packages_missing_evidence.join(", ")
                 ));
             }
+            if !lockfile_reproducibility_issues.is_empty() {
+                human_msg.push_str(&format!(
+                    "\nlockfile_reproducibility_issues: {}\n{}",
+                    lockfile_reproducibility_issues.len(),
+                    lockfile_reproducibility_issues
+                        .iter()
+                        .map(LockfileReproducibilityCliIssue::to_human_line)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
             let response_data = json!({
                 "verified": verified,
                 "hash_integrity": if hash_ok { "ok" } else { "mismatch" },
                 "signature_integrity": if signature_ok { "ok" } else { "failed" },
                 "verification_report_integrity": if report_hash_ok { "ok" } else { "mismatch" },
+                "lockfile_reproducibility": if lockfile_reproducibility_ok { "ok" } else { "failed" },
+                "lockfile_reproducibility_issues": lockfile_reproducibility_issues
+                    .iter()
+                    .map(LockfileReproducibilityCliIssue::to_json)
+                    .collect::<Vec<_>>(),
                 "compatibility_integrity": compatibility_integrity,
                 "reproducible_evidence_integrity": repro_evidence_integrity,
                 "verified_packages_missing_evidence": verified_packages_missing_evidence,
@@ -333,6 +364,23 @@ pub(crate) async fn cmd_package(
                         .iter()
                         .filter(|issue| issue.status == "blocked")
                         .count()
+                );
+                if mode == OutputMode::Json {
+                    let mut error_data = response_data;
+                    if let Some(obj) = error_data.as_object_mut() {
+                        obj.insert("error".to_string(), json!("package_verification_failed"));
+                        obj.insert("message".to_string(), json!(message.clone()));
+                    }
+                    print_error_response(error_data);
+                } else {
+                    print_response(mode, &human_msg, response_data);
+                }
+                return Err(CliError::Domain(message));
+            }
+            if !lockfile_reproducibility_ok {
+                let message = format!(
+                    "package verification failed: {} lockfile reproducibility issue(s)",
+                    lockfile_reproducibility_issues.len()
                 );
                 if mode == OutputMode::Json {
                     let mut error_data = response_data;

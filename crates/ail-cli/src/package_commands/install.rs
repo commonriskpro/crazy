@@ -47,6 +47,9 @@ pub(super) fn install_package_from_registry(
         lockfile.add(entry.clone());
         entry
     };
+    lockfile
+        .entries
+        .sort_by(|a, b| (&a.name, &a.version).cmp(&(&b.name, &b.version)));
     save_package_lockfile(store, &lockfile)?;
     Ok(PackageInstallResult::Installed(Box::new(
         InstalledPackage {
