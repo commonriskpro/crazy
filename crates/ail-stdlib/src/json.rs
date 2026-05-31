@@ -26,9 +26,101 @@ pub enum Json {
     Object(BTreeMap<String, Json>),
 }
 
+/// Stable parse failure categories that do not echo user JSON payloads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum JsonParseIssueKind {
+    EmptyInput,
+    UnexpectedEnd,
+    UnexpectedTrailingInput,
+    UnexpectedCharacter,
+    InvalidNumber,
+    UnterminatedString,
+    UnterminatedEscape,
+    UnknownEscape,
+    ExpectedLiteral,
+    ExpectedStringKey,
+    ExpectedObjectColon,
+    ExpectedArraySeparator,
+    ExpectedObjectSeparator,
+}
+
+impl JsonParseIssueKind {
+    pub fn code(self) -> &'static str {
+        match self {
+            JsonParseIssueKind::EmptyInput => "JSON_EMPTY_INPUT",
+            JsonParseIssueKind::UnexpectedEnd => "JSON_UNEXPECTED_END",
+            JsonParseIssueKind::UnexpectedTrailingInput => "JSON_UNEXPECTED_TRAILING_INPUT",
+            JsonParseIssueKind::UnexpectedCharacter => "JSON_UNEXPECTED_CHARACTER",
+            JsonParseIssueKind::InvalidNumber => "JSON_INVALID_NUMBER",
+            JsonParseIssueKind::UnterminatedString => "JSON_UNTERMINATED_STRING",
+            JsonParseIssueKind::UnterminatedEscape => "JSON_UNTERMINATED_ESCAPE",
+            JsonParseIssueKind::UnknownEscape => "JSON_UNKNOWN_ESCAPE",
+            JsonParseIssueKind::ExpectedLiteral => "JSON_EXPECTED_LITERAL",
+            JsonParseIssueKind::ExpectedStringKey => "JSON_EXPECTED_STRING_KEY",
+            JsonParseIssueKind::ExpectedObjectColon => "JSON_EXPECTED_OBJECT_COLON",
+            JsonParseIssueKind::ExpectedArraySeparator => "JSON_EXPECTED_ARRAY_SEPARATOR",
+            JsonParseIssueKind::ExpectedObjectSeparator => "JSON_EXPECTED_OBJECT_SEPARATOR",
+        }
+    }
+
+    pub fn category(self) -> &'static str {
+        match self {
+            JsonParseIssueKind::EmptyInput | JsonParseIssueKind::UnexpectedEnd => "input-boundary",
+            JsonParseIssueKind::UnexpectedTrailingInput => "document-boundary",
+            JsonParseIssueKind::UnexpectedCharacter | JsonParseIssueKind::InvalidNumber => {
+                "token-shape"
+            }
+            JsonParseIssueKind::UnterminatedString
+            | JsonParseIssueKind::UnterminatedEscape
+            | JsonParseIssueKind::UnknownEscape => "string-shape",
+            JsonParseIssueKind::ExpectedLiteral
+            | JsonParseIssueKind::ExpectedStringKey
+            | JsonParseIssueKind::ExpectedObjectColon
+            | JsonParseIssueKind::ExpectedArraySeparator
+            | JsonParseIssueKind::ExpectedObjectSeparator => "grammar-shape",
+        }
+    }
+}
+
+/// Redacted parse issue for logs/LSP/registry checks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JsonParseIssue {
+    pub kind: JsonParseIssueKind,
+    pub code: &'static str,
+    pub category: &'static str,
+}
+
+impl JsonParseIssue {
+    pub fn new(kind: JsonParseIssueKind) -> Self {
+        Self {
+            kind,
+            code: kind.code(),
+            category: kind.category(),
+        }
+    }
+
+    pub fn diagnostic_key(&self) -> String {
+        format!("std.json.parse:{}:{}", self.category, self.code)
+    }
+}
+
 /// Error produced during JSON parsing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JsonError(pub String);
+
+impl JsonError {
+    pub fn issue(&self) -> JsonParseIssue {
+        JsonParseIssue::new(classify_parse_error(&self.0))
+    }
+
+    pub fn code(&self) -> &'static str {
+        self.issue().code
+    }
+
+    pub fn diagnostic_key(&self) -> String {
+        self.issue().diagnostic_key()
+    }
+}
 
 impl std::fmt::Display for JsonError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -36,6 +128,42 @@ impl std::fmt::Display for JsonError {
     }
 }
 impl std::error::Error for JsonError {}
+
+/// Classify existing parse messages into a stable, redacted issue kind.
+pub fn classify_parse_error(message: &str) -> JsonParseIssueKind {
+    if message == "unexpected end of input" {
+        JsonParseIssueKind::UnexpectedEnd
+    } else if message.starts_with("unexpected trailing input") {
+        JsonParseIssueKind::UnexpectedTrailingInput
+    } else if message.starts_with("unexpected character") {
+        JsonParseIssueKind::UnexpectedCharacter
+    } else if message.starts_with("invalid number") {
+        JsonParseIssueKind::InvalidNumber
+    } else if message == "unterminated string" {
+        JsonParseIssueKind::UnterminatedString
+    } else if message == "unterminated escape" {
+        JsonParseIssueKind::UnterminatedEscape
+    } else if message.starts_with("unknown escape") {
+        JsonParseIssueKind::UnknownEscape
+    } else if message.starts_with("expected 'null'")
+        || message.starts_with("expected 'true'")
+        || message.starts_with("expected 'false'")
+    {
+        JsonParseIssueKind::ExpectedLiteral
+    } else if message == "expected string key in object" {
+        JsonParseIssueKind::ExpectedStringKey
+    } else if message == "expected ':' in object" {
+        JsonParseIssueKind::ExpectedObjectColon
+    } else if message == "expected ',' or ']' in array" {
+        JsonParseIssueKind::ExpectedArraySeparator
+    } else if message == "expected ',' or '}' in object" {
+        JsonParseIssueKind::ExpectedObjectSeparator
+    } else if message == "empty input" {
+        JsonParseIssueKind::EmptyInput
+    } else {
+        JsonParseIssueKind::UnexpectedCharacter
+    }
+}
 
 /// Stable JSON value categories used by contract diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -361,6 +489,9 @@ pub fn stringify(v: &Json) -> String {
 /// Parse a JSON string into a `Json` value.
 pub fn parse(s: &str) -> Result<Json, JsonError> {
     let s = s.trim();
+    if s.is_empty() {
+        return Err(JsonError("empty input".into()));
+    }
     let (val, rest) = parse_value(s)?;
     if !rest.trim().is_empty() {
         return Err(JsonError(format!("unexpected trailing input: {rest}")));
@@ -580,6 +711,49 @@ mod tests {
                 expected: "string".to_string(),
                 actual: "number".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn parse_errors_expose_redacted_stable_issue_codes() {
+        let err = parse("{\"token\":\"secret\"} trailing").expect_err("trailing input");
+        let issue = err.issue();
+
+        assert_eq!(issue.kind, JsonParseIssueKind::UnexpectedTrailingInput);
+        assert_eq!(issue.code, "JSON_UNEXPECTED_TRAILING_INPUT");
+        assert_eq!(issue.category, "document-boundary");
+        assert_eq!(
+            issue.diagnostic_key(),
+            "std.json.parse:document-boundary:JSON_UNEXPECTED_TRAILING_INPUT"
+        );
+        assert!(!issue.diagnostic_key().contains("secret"));
+    }
+
+    #[test]
+    fn parse_error_classification_covers_string_and_number_shapes() {
+        let bad_escape = parse("\"\\x\"").expect_err("bad escape");
+        assert_eq!(bad_escape.code(), "JSON_UNKNOWN_ESCAPE");
+        assert_eq!(
+            bad_escape.diagnostic_key(),
+            "std.json.parse:string-shape:JSON_UNKNOWN_ESCAPE"
+        );
+
+        let bad_number = parse("1e+").expect_err("bad number");
+        assert_eq!(bad_number.code(), "JSON_INVALID_NUMBER");
+        assert_eq!(
+            bad_number.diagnostic_key(),
+            "std.json.parse:token-shape:JSON_INVALID_NUMBER"
+        );
+    }
+
+    #[test]
+    fn empty_input_has_specific_boundary_code() {
+        let err = parse("   ").expect_err("empty input");
+
+        assert_eq!(err.code(), "JSON_EMPTY_INPUT");
+        assert_eq!(
+            err.diagnostic_key(),
+            "std.json.parse:input-boundary:JSON_EMPTY_INPUT"
         );
     }
 }
