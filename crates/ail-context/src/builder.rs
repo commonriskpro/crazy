@@ -29,14 +29,17 @@ use ail_core::semantic_graph::{NodeRef, SemanticGraph};
 use ail_storage::codec::{CborCodec, ContentCodec};
 use ail_storage::graph::SnapshotEnvelope;
 
-use crate::assembly::{BudgetResult, apply_budget, assemble_provenance};
+use crate::assembly::{
+    BudgetResult, apply_budget, assemble_provenance, canonicalize_bundle_nodes,
+    diagnose_graph_manifest,
+};
 use crate::dto::{
     CONTEXT_SCHEMA_V1, ContextQuery, ContextResponse, FreshnessStatus, ImpactInfo, RedactionPolicy,
     RefactorInfo, ResponseLimits,
 };
 use crate::error::{ContextError, ContextResult};
 use crate::freshness::{build_repair_options, resolve_freshness_status};
-use crate::redaction::{compute_redaction_state, filter_redacted};
+use crate::redaction::{RedactionFilter, compute_redaction_state, filter_redacted};
 use crate::selection::{
     collect_candidates_with_history, compute_impact_info, compute_refactor_info,
 };
@@ -170,12 +173,21 @@ impl ResponseBuilder {
             .map_err(|e| ContextError::Codec(e.to_string()))?;
         let query_hash = *blake3::hash(&query_cbor).as_bytes();
 
-        // ── Step 2: Collect candidates (sorted by NodeRef) ────────────────
+        // ── Step 2: Collect and canonicalize candidates ──────────────────
+        let mut diagnostics = diagnose_graph_manifest(graph);
         let (candidates, history_entries) =
             collect_candidates_with_history(query, graph, snapshot, opts.all_snapshots)?;
+        let canonical = canonicalize_bundle_nodes(candidates, &codec)?;
+        diagnostics.extend(canonical.diagnostics);
+        diagnostics.sort();
+        diagnostics.dedup();
 
         // ── Step 3: Apply redaction ───────────────────────────────────────
-        let (unredacted, redacted) = filter_redacted(candidates, redacted_refs);
+        let RedactionFilter {
+            unredacted,
+            redacted,
+            descriptors: redacted_descriptors,
+        } = filter_redacted(canonical.nodes, redacted_refs);
 
         // ── Step 3a: Compute query-specific info from pre-truncation set ──
         // These info structs are derived from the full unredacted candidate
@@ -249,6 +261,8 @@ impl ResponseBuilder {
             structured,
             summary,
             redacted,
+            redacted_descriptors,
+            diagnostics,
             redaction_state,
             redaction_policy,
             truncated,

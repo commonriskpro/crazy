@@ -11,31 +11,51 @@ use std::collections::BTreeSet;
 
 use ail_core::semantic_graph::{GraphNode, NodeRef};
 
-use crate::dto::{RedactionPolicy, RedactionState};
+use crate::dto::{RedactedDescriptor, RedactionPolicy, RedactionState};
+
+// ── RedactionFilter ──────────────────────────────────────────────────────
+
+/// Output of redaction filtering.
+pub(crate) struct RedactionFilter {
+    /// Candidate nodes that remain visible.
+    pub(crate) unredacted: Vec<GraphNode>,
+    /// `true` when at least one candidate was withheld.
+    pub(crate) redacted: bool,
+    /// Safe structural descriptors for withheld nodes.
+    pub(crate) descriptors: Vec<RedactedDescriptor>,
+}
 
 // ── filter_redacted ───────────────────────────────────────────────────────
 
 /// Remove redacted nodes from `candidates`.
 ///
-/// Returns `(unredacted_nodes, was_any_redacted)`.  The boolean is `true` if
-/// at least one node was removed.
+/// Descriptors intentionally expose only `NodeRef` + candidate ordinal, never
+/// names or bodies, so callers can diagnose omissions without leaking content.
 pub(crate) fn filter_redacted(
     candidates: Vec<GraphNode>,
     redacted_refs: &BTreeSet<NodeRef>,
-) -> (Vec<GraphNode>, bool) {
+) -> RedactionFilter {
     let mut redacted = false;
-    let unredacted = candidates
-        .into_iter()
-        .filter(|n| {
-            if redacted_refs.contains(&n.id) {
-                redacted = true;
-                false
-            } else {
-                true
-            }
-        })
-        .collect();
-    (unredacted, redacted)
+    let mut unredacted = Vec::with_capacity(candidates.len());
+    let mut descriptors = Vec::new();
+
+    for (ordinal, node) in candidates.into_iter().enumerate() {
+        if redacted_refs.contains(&node.id) {
+            redacted = true;
+            descriptors.push(RedactedDescriptor {
+                node_ref: node.id,
+                ordinal: Some(ordinal),
+            });
+        } else {
+            unredacted.push(node);
+        }
+    }
+
+    RedactionFilter {
+        unredacted,
+        redacted,
+        descriptors,
+    }
 }
 
 // ── compute_redaction_state ───────────────────────────────────────────────

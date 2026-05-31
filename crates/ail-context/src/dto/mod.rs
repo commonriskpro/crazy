@@ -9,12 +9,17 @@
 // No floating-point values; timestamps are `u64` Unix milliseconds.
 
 mod budget;
+mod diagnostics;
 mod provenance;
 mod query;
 mod redaction;
 mod response;
 
 pub use budget::QueryBudget;
+pub use diagnostics::{
+    BundleDescriptor, BundleIssue, ISSUE_DUPLICATE_NODE_REF, ISSUE_MISSING_NODE_REF,
+    ISSUE_UNSTABLE_INPUT_ORDER, RedactedDescriptor,
+};
 pub use provenance::{CONTEXT_SCHEMA_V1, IndexInfo, ProvenanceBlock};
 pub use query::{ContextQuery, QueryScope, SnapshotSelector};
 pub use redaction::{RedactionPolicy, RedactionState};
