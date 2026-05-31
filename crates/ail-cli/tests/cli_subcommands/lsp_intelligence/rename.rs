@@ -184,6 +184,82 @@ fn lsp_json_messages(stdout: &[u8]) -> Vec<serde_json::Value> {
     messages
 }
 
+fn did_open_message(uri: &str, text: &str, version: u64) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "ail",
+                "version": version,
+                "text": text,
+            }
+        }
+    })
+    .to_string()
+}
+
+fn lsp_input(messages: Vec<String>) -> String {
+    messages
+        .into_iter()
+        .map(|message| format!("Content-Length: {}\r\n\r\n{}", message.len(), message))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn rename_candidates_result_for_documents(
+    documents: Vec<(&str, &str)>,
+    target_document: &str,
+    line: u64,
+    character: u64,
+    request_id: u64,
+) -> serde_json::Value {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let mut messages = Vec::new();
+    let mut target_uri = None;
+    for (index, (name, text)) in documents.into_iter().enumerate() {
+        let file = dir.child(name);
+        file.write_str(text)
+            .expect("source fixture must be written");
+        let uri = format!("file://{}", file.path().display());
+        if name == target_document {
+            target_uri = Some(uri.clone());
+        }
+        messages.push(did_open_message(&uri, text, index as u64 + 1));
+    }
+    let target_uri = target_uri.expect("target document must be in fixture set");
+    messages.push(
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "ail/renameCandidates",
+            "params": {
+                "textDocument": { "uri": target_uri },
+                "position": { "line": line, "character": character }
+            }
+        })
+        .to_string(),
+    );
+    let input = lsp_input(messages);
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == request_id)
+        .expect("renameCandidates response must be emitted");
+    response["result"].clone()
+}
+
 #[test]
 fn lsp_text_document_rename_returns_workspace_edit_for_open_documents() {
     use assert_fs::prelude::*;
@@ -314,6 +390,179 @@ fn lsp_rename_edits_rejects_same_name_no_ops() {
 
     assert_eq!(result["canRename"], false);
     assert_eq!(result["reason"], "same_name");
+    assert_eq!(result["diagnostic"]["code"], "AIL_RENAME_SAME_NAME");
+    assert_eq!(result["diagnostic"]["category"], "invalid_new_name");
+}
+
+#[test]
+fn lsp_rename_edits_reports_redacted_invalid_new_name_diagnostic() {
+    let result = rename_edits_result_for_new_name("customer.secret", 38);
+    let diagnostic = &result["diagnostic"];
+
+    assert_eq!(result["canRename"], false);
+    assert_eq!(result["reason"], "qualified_new_name");
+    assert_eq!(diagnostic["code"], "AIL_RENAME_QUALIFIED_NEW_NAME");
+    assert_eq!(diagnostic["category"], "invalid_new_name");
+    assert_eq!(diagnostic["descriptor"]["containsQualifier"], true);
+    assert!(!diagnostic.to_string().contains("customer.secret"));
+}
+
+#[test]
+fn lsp_rename_candidates_reports_unresolved_symbol_diagnostic() {
+    let source = "module math\nfn main() -> Int = customer_private_value()\n";
+    let result =
+        rename_candidates_result_for_documents(vec![("main.ail", source)], "main.ail", 1, 21, 39);
+    let diagnostic = &result["diagnostic"];
+
+    assert_eq!(result["canRename"], false);
+    assert_eq!(result["reason"], "unresolved_symbol");
+    assert_eq!(diagnostic["code"], "AIL_RENAME_UNRESOLVED_SYMBOL");
+    assert_eq!(diagnostic["category"], "symbol_resolution");
+    assert_eq!(diagnostic["descriptor"]["token"]["tokenLength"], 22);
+    assert!(!diagnostic.to_string().contains("customer_private_value"));
+}
+
+#[test]
+fn lsp_rename_candidates_reports_ambiguous_symbol_diagnostic() {
+    let alpha = "module alpha\nfn add_pair(x: Int, y: Int) -> Int = x + y\n";
+    let beta = "module beta\nfn add_pair(x: Int, y: Int) -> Int = x + y\n";
+    let result = rename_candidates_result_for_documents(
+        vec![("alpha.ail", alpha), ("beta.ail", beta)],
+        "alpha.ail",
+        1,
+        4,
+        40,
+    );
+
+    assert_eq!(result["canRename"], false);
+    assert_eq!(result["reason"], "ambiguous_symbol");
+    assert_eq!(result["diagnostic"]["code"], "AIL_RENAME_AMBIGUOUS_SYMBOL");
+    assert_eq!(result["diagnostic"]["category"], "symbol_resolution");
+    assert_eq!(result["diagnostic"]["descriptor"]["candidateCount"], 2);
+    assert_eq!(
+        result["diagnostic"]["descriptor"]["symbolKinds"],
+        serde_json::json!([12])
+    );
+    assert!(!result["diagnostic"].to_string().contains("alpha.add_pair"));
+    assert!(!result["diagnostic"].to_string().contains("beta.add_pair"));
+}
+
+#[test]
+fn lsp_rename_edits_reports_unopened_import_references_as_unsupported() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let math = dir.child("math.ail");
+    let consumer = dir.child("consumer.ail");
+    let math_text =
+        "module math\nuse \"./consumer.ail\"\nfn add_pair(x: Int, y: Int) -> Int = x + y\n";
+    let consumer_text = "use \"./math.ail\"\nfn main() -> Int = math.add_pair(1, 2)\n";
+    math.write_str(math_text)
+        .expect("math fixture must be written");
+    consumer
+        .write_str(consumer_text)
+        .expect("consumer fixture must be written");
+
+    let math_uri = format!("file://{}", math.path().display());
+    let open_math = did_open_message(&math_uri, math_text, 1);
+    let rename_edits = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 41,
+        "method": "ail/renameEdits",
+        "params": {
+            "textDocument": { "uri": math_uri.clone() },
+            "position": { "line": 2, "character": 4 },
+            "newName": "sum_pair"
+        }
+    })
+    .to_string();
+    let input = lsp_input(vec![open_math, rename_edits]);
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 41)
+        .expect("renameEdits response must be emitted");
+    let result = &response["result"];
+
+    assert_eq!(result["canRename"], false);
+    assert_eq!(result["reason"], "cross_file_import_unsupported");
+    assert_eq!(
+        result["diagnostic"]["code"],
+        "AIL_RENAME_CROSS_FILE_IMPORT_UNSUPPORTED"
+    );
+    assert_eq!(result["diagnostic"]["category"], "unsupported");
+    assert_eq!(
+        result["diagnostic"]["descriptor"]["missingDocumentCount"],
+        1
+    );
+    assert!(!result["diagnostic"].to_string().contains("consumer.ail"));
+}
+
+#[test]
+fn lsp_rename_edits_orders_document_edits_by_range() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("math.ail");
+    let text = concat!(
+        "module math\n",
+        "fn add_pair(x: Int, y: Int) -> Int = x + y\n",
+        "fn first() -> Int = add_pair(1, 2)\n",
+        "fn second() -> Int = math.add_pair(3, 4)\n",
+    );
+    source
+        .write_str(text)
+        .expect("source fixture must be written");
+    let uri = format!("file://{}", source.path().display());
+    let open_source = did_open_message(&uri, text, 1);
+    let rename_edits = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "method": "ail/renameEdits",
+        "params": {
+            "textDocument": { "uri": uri.clone() },
+            "position": { "line": 1, "character": 4 },
+            "newName": "sum_pair"
+        }
+    })
+    .to_string();
+    let input = lsp_input(vec![open_source, rename_edits]);
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 42)
+        .expect("renameEdits response must be emitted");
+    let changes = response["result"]["workspaceEdit"]["changes"]
+        .as_object()
+        .expect("workspace changes must be returned");
+    let edits = changes
+        .get(&uri)
+        .and_then(|value| value.as_array())
+        .expect("source document edits must be returned");
+
+    assert_eq!(edits.len(), 3);
+    assert_eq!(edits[0]["range"]["start"]["line"], 1);
+    assert_eq!(edits[0]["range"]["start"]["character"], 3);
+    assert_eq!(edits[1]["range"]["start"]["line"], 2);
+    assert_eq!(edits[1]["range"]["start"]["character"], 20);
+    assert_eq!(edits[2]["range"]["start"]["line"], 3);
+    assert_eq!(edits[2]["range"]["start"]["character"], 21);
 }
 
 fn rename_edits_result_for_new_name(new_name: &str, request_id: u64) -> serde_json::Value {

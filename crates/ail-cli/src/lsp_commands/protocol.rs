@@ -9,8 +9,8 @@ use super::definition::definition_for_token_with_workspace;
 use super::diagnostics::diagnostics_for_document;
 use super::references::references_for_token_with_workspace;
 use super::rename::{
-    prepare_rename_at_position, rename_candidate_at_position, rename_edits_at_position,
-    rename_workspace_edit_at_position,
+    missing_document_rename_failure, prepare_rename_at_position, rename_candidate_at_position,
+    rename_edits_at_position, rename_workspace_edit_at_position,
 };
 use super::source_helpers::{is_acl_token_char, is_ail_source_uri};
 use super::symbols::{completion_items, hover_for_token_with_workspace, workspace_symbol_items};
@@ -211,13 +211,7 @@ impl LspSession {
                     .map(|text| {
                         rename_candidate_at_position(uri, text, line, character, &self.documents)
                     })
-                    .unwrap_or_else(|| {
-                        json!({
-                            "canRename": false,
-                            "reason": "missing_document",
-                            "message": "document is not open in this LSP session"
-                        })
-                    });
+                    .unwrap_or_else(missing_document_rename_failure);
                 vec![lsp_response(message, result)]
             }
 
@@ -262,13 +256,7 @@ impl LspSession {
                             &self.documents,
                         )
                     })
-                    .unwrap_or_else(|| {
-                        json!({
-                            "canRename": false,
-                            "reason": "missing_document",
-                            "message": "document is not open in this LSP session"
-                        })
-                    });
+                    .unwrap_or_else(missing_document_rename_failure);
                 vec![lsp_response(message, result)]
             }
             "textDocument/semanticTokens/full" => {
