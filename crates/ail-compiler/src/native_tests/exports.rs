@@ -51,11 +51,15 @@ fn emit_native_rejects_duplicate_sanitized_export_names() {
     };
 
     assert!(
-        msg.contains("duplicate native export name `fn_add`"),
-        "diagnostic must name the colliding native export, got: {msg}"
+        msg.contains("AIL-NATIVE-ABI-SYMBOL-DUPLICATE"),
+        "diagnostic must use stable duplicate symbol code, got: {msg}"
     );
     assert!(
-        msg.contains("`fn.add`") && msg.contains("`fn-add`"),
-        "diagnostic must name both source bindings, got: {msg}"
+        msg.contains("category=symbol-name-shape"),
+        "diagnostic must carry the stable symbol category, got: {msg}"
+    );
+    assert!(
+        !msg.contains("fn.add") && !msg.contains("fn-add"),
+        "diagnostic must redact raw source binding names, got: {msg}"
     );
 }

@@ -1,3 +1,5 @@
+#[path = "native_tests/abi.rs"]
+mod abi;
 #[path = "native_tests/arithmetic.rs"]
 mod arithmetic;
 #[path = "native_tests/control.rs"]
