@@ -109,6 +109,112 @@ pub enum SecretProviderError {
     Unavailable,
 }
 
+// ── SecretProviderMetadata ───────────────────────────────────────────────
+
+/// Stable provider kind exposed for redacted diagnostics and future audit
+/// fields.
+///
+/// This deliberately avoids per-secret, per-path, endpoint, tenant, region,
+/// or account information.  External providers should identify the adapter
+/// class, not the configured vault instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecretProviderKind {
+    /// Built-in in-memory vault implementation.
+    InMemory,
+    /// External vault adapter such as HashiCorp Vault or AWS Secrets Manager.
+    External,
+    /// Provider did not expose safe metadata.
+    Unknown,
+}
+
+impl SecretProviderKind {
+    /// Stable, low-cardinality diagnostic label.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SecretProviderKind::InMemory => "in_memory",
+            SecretProviderKind::External => "external",
+            SecretProviderKind::Unknown => "unknown",
+        }
+    }
+}
+
+/// Redacted, low-cardinality metadata for a secret provider.
+///
+/// `name` is intended to be a static adapter identifier such as
+/// `"aws-secrets-manager"`, not a configured URL, namespace, path, tenant,
+/// or credential name.  Use [`SecretProviderMetadata::diagnostic_name`] when
+/// producing diagnostics; unsafe names are replaced with a fixed redaction
+/// marker.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SecretProviderMetadata {
+    name: &'static str,
+    kind: SecretProviderKind,
+}
+
+impl SecretProviderMetadata {
+    /// Safe fallback for providers that do not expose metadata.
+    pub const UNKNOWN: SecretProviderMetadata = SecretProviderMetadata {
+        name: "unknown",
+        kind: SecretProviderKind::Unknown,
+    };
+
+    /// Create metadata for a provider adapter.
+    ///
+    /// The constructor stores `name` exactly, but all diagnostic accessors
+    /// validate it before exposing it.  This keeps external provider adapters
+    /// from accidentally leaking endpoints or namespaces through debug output.
+    pub const fn new(name: &'static str, kind: SecretProviderKind) -> Self {
+        SecretProviderMetadata { name, kind }
+    }
+
+    /// Provider name safe to include in redacted diagnostics.
+    pub fn name(self) -> &'static str {
+        self.diagnostic_name()
+    }
+
+    /// Stable provider kind supplied by the provider implementation.
+    pub const fn kind(self) -> SecretProviderKind {
+        self.kind
+    }
+
+    /// Validate that a provider name is safe for diagnostics.
+    ///
+    /// Safe names are low-cardinality adapter identifiers: non-empty, at most
+    /// 64 bytes, and restricted to ASCII letters, digits, `.`, `_`, and `-`.
+    /// This rejects common accidental leaks such as URLs (`https://...`),
+    /// vault paths (`prod/db/password`), ARNs, and space-containing messages.
+    pub fn is_safe_provider_name(name: &str) -> bool {
+        !name.is_empty()
+            && name.len() <= 64
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    }
+
+    /// Provider name safe to include in redacted diagnostics.
+    pub fn diagnostic_name(self) -> &'static str {
+        if Self::is_safe_provider_name(self.name) {
+            self.name
+        } else {
+            "invalid-provider-name-redacted"
+        }
+    }
+
+    /// Provider kind safe to include in redacted diagnostics.
+    pub const fn diagnostic_kind(self) -> &'static str {
+        self.kind.as_str()
+    }
+}
+
+impl fmt::Debug for SecretProviderMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretProviderMetadata")
+            .field("kind", &self.diagnostic_kind())
+            .field("name", &self.diagnostic_name())
+            .finish()
+    }
+}
+
 // ── SecretProvider ────────────────────────────────────────────────────────
 
 /// Trait for backends that resolve vault paths to secret byte values.
@@ -136,6 +242,16 @@ pub enum SecretProviderError {
 /// In both cases the runtime returns the same opaque `HostError::CapabilityDenied`
 /// to callers; the generic category is recorded only in the audit log.
 pub trait SecretProvider: Send + Sync {
+    /// Return stable, redacted provider metadata for diagnostics.
+    ///
+    /// External implementations should return an adapter-level identifier
+    /// only, for example `"aws-secrets-manager"` or `"hashicorp-vault"`.
+    /// Never include configured URLs, namespaces, vault paths, secret IDs,
+    /// tenants, account numbers, or credential material.
+    fn metadata(&self) -> SecretProviderMetadata {
+        SecretProviderMetadata::UNKNOWN
+    }
+
     /// Resolve `vault_path` to its secret bytes.
     ///
     /// Returns `Ok(bytes)` on success.
@@ -212,6 +328,10 @@ impl fmt::Debug for SecretVault {
 }
 
 impl SecretProvider for SecretVault {
+    fn metadata(&self) -> SecretProviderMetadata {
+        SecretProviderMetadata::new("secret-vault", SecretProviderKind::InMemory)
+    }
+
     /// Resolve a vault path to an owned copy of its secret bytes.
     ///
     /// Returns `Ok(bytes)` if the path is registered, or
@@ -263,6 +383,7 @@ pub struct SecretReadHandler {
     // (secret_id, vault_path) parallel to caps, same index ordering.
     mapping: Vec<(String, String)>,
     provider: Arc<dyn SecretProvider>,
+    provider_metadata: SecretProviderMetadata,
 }
 
 /// Capability prefix used by all secret-read capabilities.
@@ -282,6 +403,7 @@ impl SecretReadHandler {
         secrets_mapping: Vec<SecretEntry>,
         provider: Arc<P>,
     ) -> Self {
+        let provider_metadata = provider.metadata();
         let (caps, mapping): (Vec<_>, Vec<_>) = secrets_mapping
             .into_iter()
             .map(|entry| {
@@ -295,7 +417,13 @@ impl SecretReadHandler {
             caps,
             mapping,
             provider,
+            provider_metadata,
         }
+    }
+
+    /// Return provider metadata with diagnostic-safe accessors.
+    pub fn provider_metadata(&self) -> SecretProviderMetadata {
+        self.provider_metadata
     }
 }
 
@@ -307,6 +435,8 @@ impl fmt::Debug for SecretReadHandler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SecretReadHandler")
             .field("caps_count", &self.caps.len())
+            .field("provider_kind", &self.provider_metadata.diagnostic_kind())
+            .field("provider_name", &self.provider_metadata.diagnostic_name())
             .field("provider", &"[redacted]")
             .finish()
     }
@@ -594,6 +724,106 @@ mod tests {
         let h = SecretReadHandler::new(mapping, Arc::new(vault));
         let caps: Vec<&str> = h.capabilities().iter().map(|c| c.as_str()).collect();
         assert_eq!(caps, vec!["secret.read:KeyA", "secret.read:KeyB"]);
+    }
+
+    #[test]
+    fn provider_metadata_name_validation_accepts_low_cardinality_names() {
+        assert!(SecretProviderMetadata::is_safe_provider_name(
+            "aws-secrets-manager"
+        ));
+        assert!(SecretProviderMetadata::is_safe_provider_name(
+            "hashicorp_vault.v2"
+        ));
+        assert!(!SecretProviderMetadata::is_safe_provider_name(""));
+        assert!(!SecretProviderMetadata::is_safe_provider_name(
+            "https://vault.prod.local"
+        ));
+        assert!(!SecretProviderMetadata::is_safe_provider_name(
+            "prod/db/password"
+        ));
+        assert!(!SecretProviderMetadata::is_safe_provider_name(
+            "provider with spaces"
+        ));
+    }
+
+    #[test]
+    fn vault_exposes_redacted_provider_metadata() {
+        let vault = SecretVault::new();
+        let metadata = vault.metadata();
+        assert_eq!(metadata.kind(), SecretProviderKind::InMemory);
+        assert_eq!(metadata.name(), "secret-vault");
+        assert_eq!(metadata.diagnostic_kind(), "in_memory");
+        assert_eq!(metadata.diagnostic_name(), "secret-vault");
+    }
+
+    #[test]
+    fn handler_captures_provider_metadata_without_secret_identifiers() {
+        struct NamedProvider;
+        impl SecretProvider for NamedProvider {
+            fn metadata(&self) -> SecretProviderMetadata {
+                SecretProviderMetadata::new("aws-secrets-manager", SecretProviderKind::External)
+            }
+
+            fn resolve(&self, _: &str) -> Result<Vec<u8>, SecretProviderError> {
+                Err(SecretProviderError::NotFound)
+            }
+        }
+
+        let mapping = vec![SecretEntry {
+            secret_id: "DbPassword".to_string(),
+            vault_path: "prod/db/password".to_string(),
+        }];
+        let h = SecretReadHandler::new(mapping, Arc::new(NamedProvider));
+        let metadata = h.provider_metadata();
+        assert_eq!(metadata.kind(), SecretProviderKind::External);
+        assert_eq!(metadata.diagnostic_name(), "aws-secrets-manager");
+
+        let debug = format!("{h:?}");
+        assert!(debug.contains("external"));
+        assert!(debug.contains("aws-secrets-manager"));
+        assert!(!debug.contains("DbPassword"), "must not leak secret ID");
+        assert!(
+            !debug.contains("prod/db/password"),
+            "must not leak vault path"
+        );
+    }
+
+    #[test]
+    fn handler_redacts_unsafe_provider_metadata_names() {
+        struct UnsafeNamedProvider;
+        impl SecretProvider for UnsafeNamedProvider {
+            fn metadata(&self) -> SecretProviderMetadata {
+                SecretProviderMetadata::new(
+                    "https://vault.prod.local/prod/db/password",
+                    SecretProviderKind::External,
+                )
+            }
+
+            fn resolve(&self, _: &str) -> Result<Vec<u8>, SecretProviderError> {
+                Err(SecretProviderError::Unavailable)
+            }
+        }
+
+        let mapping = vec![SecretEntry {
+            secret_id: "DbPassword".to_string(),
+            vault_path: "prod/db/password".to_string(),
+        }];
+        let h = SecretReadHandler::new(mapping, Arc::new(UnsafeNamedProvider));
+        assert_eq!(
+            h.provider_metadata().diagnostic_name(),
+            "invalid-provider-name-redacted"
+        );
+
+        let metadata_debug = format!("{:?}", h.provider_metadata());
+        assert!(metadata_debug.contains("invalid-provider-name-redacted"));
+        assert!(!metadata_debug.contains("vault.prod.local"));
+        assert!(!metadata_debug.contains("prod/db/password"));
+
+        let debug = format!("{h:?}");
+        assert!(debug.contains("invalid-provider-name-redacted"));
+        assert!(!debug.contains("vault.prod.local"));
+        assert!(!debug.contains("prod/db/password"));
+        assert!(!debug.contains("DbPassword"));
     }
 
     // ── SecretProvider trait: custom provider tests ───────────────────────
