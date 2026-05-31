@@ -33,11 +33,8 @@ pub(super) fn rename_edits_at_position(
     workspace_documents: &BTreeMap<String, String>,
 ) -> Value {
     let new_name = new_name.trim();
-    if !is_rename_new_name(new_name) {
-        return blocked(
-            "invalid_new_name",
-            "newName must be a single renameable .ail identifier",
-        );
+    if let Some(blocked) = validate_rename_new_name(new_name) {
+        return blocked;
     }
 
     let candidate = rename_candidate_at_position(uri, text, line, character, workspace_documents);
@@ -46,6 +43,13 @@ pub(super) fn rename_edits_at_position(
     }
 
     let reference_token = candidate["referenceToken"].as_str().unwrap_or_default();
+    if symbol_local_name(reference_token) == new_name {
+        return blocked(
+            "same_name",
+            "newName must differ from the current symbol name",
+        );
+    }
+
     let mut changes: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     for reference in candidate["references"].as_array().into_iter().flatten() {
         let Some(reference_uri) = reference["uri"].as_str() else {
@@ -197,8 +201,75 @@ fn symbol_matches_token(symbol: &RenameSymbol, token: &str) -> bool {
             .is_some_and(|(_, local)| local == token)
 }
 
-fn is_rename_new_name(name: &str) -> bool {
-    is_rename_identifier(name) && !name.contains('.')
+fn validate_rename_new_name(name: &str) -> Option<Value> {
+    if name.contains('.') {
+        return Some(blocked(
+            "qualified_new_name",
+            "newName must be an unqualified .ail identifier",
+        ));
+    }
+    if !is_rename_local_identifier(name) {
+        return Some(blocked(
+            "invalid_identifier",
+            "newName must be a valid .ail identifier",
+        ));
+    }
+    if is_ail_keyword(name) {
+        return Some(blocked(
+            "reserved_keyword",
+            "newName must not be a reserved .ail keyword",
+        ));
+    }
+    None
+}
+
+fn is_rename_local_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn is_ail_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "as" | "capability"
+            | "case"
+            | "const"
+            | "effect"
+            | "else"
+            | "ensures"
+            | "enum"
+            | "false"
+            | "fn"
+            | "foreach"
+            | "if"
+            | "in"
+            | "let"
+            | "match"
+            | "module"
+            | "policy"
+            | "proof"
+            | "record"
+            | "requires"
+            | "return"
+            | "struct"
+            | "test"
+            | "then"
+            | "true"
+            | "type"
+            | "use"
+            | "where"
+    )
+}
+
+fn symbol_local_name(symbol_name: &str) -> &str {
+    symbol_name
+        .rsplit_once('.')
+        .map(|(_, local)| local)
+        .unwrap_or(symbol_name)
 }
 
 fn workspace_document_entry<'a>(
