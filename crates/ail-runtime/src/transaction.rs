@@ -20,6 +20,11 @@
 // `TransactionGroup` tracks a named set of capability calls with their
 // rollback and compensation policies.
 
+use crate::audit::{
+    TRANSACTION_CATEGORY_COMMIT_AFTER_ROLLBACK, TRANSACTION_CATEGORY_COMMIT_ALREADY_COMMITTED,
+    TRANSACTION_CATEGORY_COMMITTED, TRANSACTION_CATEGORY_ROLLBACK_AFTER_COMMIT,
+    TRANSACTION_CATEGORY_ROLLBACK_ALREADY_ROLLED_BACK, TRANSACTION_CATEGORY_ROLLED_BACK,
+};
 use crate::profile::CapabilityId;
 
 // ── TransactionPolicy ─────────────────────────────────────────────────────
@@ -103,6 +108,46 @@ pub enum TransactionStatus {
     Committed,
     /// `rollback()` was called.
     RolledBack,
+}
+
+impl TransactionStatus {
+    /// Stable lowercase label for audit/report surfaces.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TransactionStatus::Pending => "pending",
+            TransactionStatus::Committed => "committed",
+            TransactionStatus::RolledBack => "rolled_back",
+        }
+    }
+}
+
+// ── TransactionAuditRecord ────────────────────────────────────────────────
+
+/// Redacted, deterministic lifecycle record for transaction audit surfaces.
+///
+/// The record intentionally does **not** include the raw transaction group
+/// name, capability names, idempotency keys, refund capabilities, payloads, or
+/// handler errors. Those values can contain tenant IDs, secret names, order
+/// IDs, or external-provider details. Use counts and stable categories for
+/// operational decisions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransactionAuditRecord {
+    /// Redacted shape of the transaction group name.
+    pub group_name_shape: String,
+    /// Requested lifecycle action (`"commit"` or `"rollback"`).
+    pub action: &'static str,
+    /// Stable machine-readable transaction category.
+    pub category: &'static str,
+    /// Status before the requested action.
+    pub status_before: &'static str,
+    /// Status after the requested action.
+    pub status_after: &'static str,
+    /// Number of capability entries tracked by the transaction.
+    pub entry_count: usize,
+    /// Number of entries marked non-rollbackable.
+    pub non_rollbackable_count: usize,
+    /// Number of non-rollbackable entries with explicit compensation.
+    pub compensation_required_count: usize,
 }
 
 // ── TransactionEntry ──────────────────────────────────────────────────────
@@ -237,6 +282,18 @@ impl TransactionGroup {
         }
     }
 
+    /// Commit the group and return a redacted deterministic audit record.
+    ///
+    /// The transition remains idempotent like [`commit`](Self::commit), but
+    /// callers can persist the returned record to an audit sink without
+    /// leaking raw group names, capability names, idempotency keys, or refund
+    /// capability names.
+    pub fn commit_with_audit(&mut self) -> TransactionAuditRecord {
+        let before = self.status.clone();
+        self.commit();
+        self.audit_record("commit", before)
+    }
+
     /// Roll back the transaction group.
     ///
     /// Transitions status from `Pending` → `RolledBack`.
@@ -253,6 +310,19 @@ impl TransactionGroup {
             .filter(|e| e.policy == TransactionPolicy::NonRollbackable)
             .map(|e| e.capability.clone())
             .collect()
+    }
+
+    /// Roll back the group and return non-rollbackable capabilities plus a
+    /// redacted deterministic audit record.
+    ///
+    /// The returned capability IDs preserve the existing rollback contract for
+    /// compensation orchestration. The audit record intentionally exposes only
+    /// counts and stable categories.
+    pub fn rollback_with_audit(&mut self) -> (Vec<CapabilityId>, TransactionAuditRecord) {
+        let before = self.status.clone();
+        let non_rollbackable = self.rollback();
+        let audit = self.audit_record("rollback", before);
+        (non_rollbackable, audit)
     }
 
     /// Roll back the transaction group, returning full compensation details.
@@ -276,4 +346,80 @@ impl TransactionGroup {
             })
             .collect()
     }
+
+    fn audit_record(
+        &self,
+        action: &'static str,
+        status_before: TransactionStatus,
+    ) -> TransactionAuditRecord {
+        TransactionAuditRecord {
+            group_name_shape: redacted_group_name_shape(&self.name).to_string(),
+            action,
+            category: transaction_audit_category(action, &status_before),
+            status_before: status_before.as_str(),
+            status_after: self.status.as_str(),
+            entry_count: self.entries.len(),
+            non_rollbackable_count: self.non_rollbackable_count(),
+            compensation_required_count: self.compensation_required_count(),
+        }
+    }
+
+    fn non_rollbackable_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.policy == TransactionPolicy::NonRollbackable)
+            .count()
+    }
+
+    fn compensation_required_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry.policy == TransactionPolicy::NonRollbackable
+                    && entry.compensation != CompensationPolicy::None
+            })
+            .count()
+    }
+}
+
+fn transaction_audit_category(action: &str, status_before: &TransactionStatus) -> &'static str {
+    match (action, status_before) {
+        ("commit", TransactionStatus::Pending) => TRANSACTION_CATEGORY_COMMITTED,
+        ("commit", TransactionStatus::Committed) => TRANSACTION_CATEGORY_COMMIT_ALREADY_COMMITTED,
+        ("commit", TransactionStatus::RolledBack) => TRANSACTION_CATEGORY_COMMIT_AFTER_ROLLBACK,
+        ("rollback", TransactionStatus::Pending) => TRANSACTION_CATEGORY_ROLLED_BACK,
+        ("rollback", TransactionStatus::Committed) => TRANSACTION_CATEGORY_ROLLBACK_AFTER_COMMIT,
+        ("rollback", TransactionStatus::RolledBack) => {
+            TRANSACTION_CATEGORY_ROLLBACK_ALREADY_ROLLED_BACK
+        }
+        _ => "transaction.unknown_action",
+    }
+}
+
+fn redacted_group_name_shape(name: &str) -> &'static str {
+    if name.is_empty() {
+        return "empty";
+    }
+    if name.len() > 64 {
+        return "too_long";
+    }
+    if !name.is_ascii() {
+        return "non_ascii";
+    }
+    if name.bytes().any(|byte| byte.is_ascii_whitespace()) {
+        return "contains_whitespace";
+    }
+    if name
+        .bytes()
+        .any(|byte| matches!(byte, b'/' | b'\\' | b':' | b'@'))
+    {
+        return "contains_separator";
+    }
+    if name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return "safe_label";
+    }
+    "other"
 }

@@ -57,6 +57,23 @@ pub const REPLAY_MISMATCH_MISSING_RECORDING: &str = "replay.missing_recording";
 /// Replay/audit category for recorded responses whose output hash no longer matches.
 pub const REPLAY_MISMATCH_HASH_MISMATCH: &str = "replay.hash_mismatch";
 
+// ── Stable transaction lifecycle categories ──────────────────────────────
+
+/// Transaction/audit category for a pending transaction committed successfully.
+pub const TRANSACTION_CATEGORY_COMMITTED: &str = "transaction.committed";
+/// Transaction/audit category for a pending transaction rolled back successfully.
+pub const TRANSACTION_CATEGORY_ROLLED_BACK: &str = "transaction.rolled_back";
+/// Transaction/audit category for a commit request repeated after commit.
+pub const TRANSACTION_CATEGORY_COMMIT_ALREADY_COMMITTED: &str =
+    "transaction.commit_already_committed";
+/// Transaction/audit category for a commit request made after rollback.
+pub const TRANSACTION_CATEGORY_COMMIT_AFTER_ROLLBACK: &str = "transaction.commit_after_rollback";
+/// Transaction/audit category for a rollback request made after commit.
+pub const TRANSACTION_CATEGORY_ROLLBACK_AFTER_COMMIT: &str = "transaction.rollback_after_commit";
+/// Transaction/audit category for a rollback request repeated after rollback.
+pub const TRANSACTION_CATEGORY_ROLLBACK_ALREADY_ROLLED_BACK: &str =
+    "transaction.rollback_already_rolled_back";
+
 // ── AuditEvent ────────────────────────────────────────────────────────────
 
 /// A single audit record.
@@ -155,6 +172,32 @@ pub enum AuditEvent {
         /// `None` on success or when a non-denial handler failure did not
         /// provide a category.
         denial_category: Option<String>,
+    },
+
+    /// A transaction group lifecycle transition was requested.
+    ///
+    /// The event shape is deterministic and redacted: it records the group
+    /// name *shape* instead of the raw group name, counts of entries that need
+    /// operational attention, stable statuses, and a stable category. It never
+    /// includes user payloads, idempotency keys, refund capability names, or
+    /// raw transaction labels.
+    TransactionLifecycle {
+        /// Redacted shape of the transaction group name, not the raw name.
+        group_name_shape: String,
+        /// Requested action, currently `"commit"` or `"rollback"`.
+        action: String,
+        /// Stable machine-readable transaction category.
+        category: String,
+        /// Status before the requested action.
+        status_before: String,
+        /// Status after the requested action.
+        status_after: String,
+        /// Number of capability entries tracked by this transaction.
+        entry_count: usize,
+        /// Number of entries marked non-rollbackable.
+        non_rollbackable_count: usize,
+        /// Number of non-rollbackable entries with explicit compensation.
+        compensation_required_count: usize,
     },
 }
 
@@ -256,6 +299,31 @@ mod tests {
             assert!(
                 category.starts_with("replay."),
                 "category `{category}` must stay under replay namespace"
+            );
+            assert!(
+                category
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'.' || byte == b'_'),
+                "category `{category}` must stay machine readable"
+            );
+        }
+    }
+
+    #[test]
+    fn transaction_lifecycle_categories_are_stable_machine_readable_values() {
+        let categories = [
+            TRANSACTION_CATEGORY_COMMITTED,
+            TRANSACTION_CATEGORY_ROLLED_BACK,
+            TRANSACTION_CATEGORY_COMMIT_ALREADY_COMMITTED,
+            TRANSACTION_CATEGORY_COMMIT_AFTER_ROLLBACK,
+            TRANSACTION_CATEGORY_ROLLBACK_AFTER_COMMIT,
+            TRANSACTION_CATEGORY_ROLLBACK_ALREADY_ROLLED_BACK,
+        ];
+
+        for category in categories {
+            assert!(
+                category.starts_with("transaction."),
+                "category `{category}` must stay under transaction namespace"
             );
             assert!(
                 category
