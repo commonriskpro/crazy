@@ -26,6 +26,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use ail_runtime::audit::{
+    LIMIT_DENIAL_DIAGNOSTIC_KEY_CALL_DEPTH, LIMIT_DENIAL_DIAGNOSTIC_KEY_RATE,
+    LIMIT_DENIAL_SHAPE_CALL_DEPTH, LIMIT_DENIAL_SHAPE_RATE,
+};
 use ail_runtime::{
     CapabilityGrant, CapabilityId, CapabilityManifest, Handler, HostError, HostResult, RateLimit,
     ResourceLimits, RuntimeHost, RuntimeProfile, blake3_hex_of,
@@ -324,6 +328,19 @@ fn recursion_stack_limit_zero_denies_all_calls() {
         matches!(result, Err(HostError::LimitExceeded(_))),
         "recursion_stack_limit=0 must deny all calls, got {result:?}"
     );
+
+    let log = host.audit_log();
+    let last = &log.events()[log.len() - 1];
+    assert_eq!(
+        last.limit_denial_shape(),
+        Some(LIMIT_DENIAL_SHAPE_CALL_DEPTH),
+        "call-depth denials must expose a stable redacted limit shape"
+    );
+    assert_eq!(
+        last.limit_denial_diagnostic_key(),
+        Some(LIMIT_DENIAL_DIAGNOSTIC_KEY_CALL_DEPTH),
+        "call-depth denials must expose a deterministic diagnostic key"
+    );
 }
 
 // ── RS2: recursion_stack_limit = 1 ────────────────────────────────────────
@@ -443,5 +460,15 @@ fn rate_limit_denial_appends_failed_audit_event() {
     assert!(
         !last.is_passed(),
         "denied call audit event must not be marked as passed"
+    );
+    assert_eq!(
+        last.limit_denial_shape(),
+        Some(LIMIT_DENIAL_SHAPE_RATE),
+        "rate-limit denials must expose a stable redacted limit shape"
+    );
+    assert_eq!(
+        last.limit_denial_diagnostic_key(),
+        Some(LIMIT_DENIAL_DIAGNOSTIC_KEY_RATE),
+        "rate-limit denials must expose a deterministic diagnostic key"
     );
 }
