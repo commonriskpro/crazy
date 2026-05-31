@@ -124,7 +124,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
 }
 
 pub(crate) fn load_source_program(path: &Path) -> Result<SourceProgram, CliError> {
-    let mut visiting = BTreeSet::new();
+    let mut visiting = Vec::new();
     let mut visited = BTreeSet::new();
     load_source_program_inner(path, &mut visiting, &mut visited)
 }
@@ -139,14 +139,14 @@ pub(crate) fn load_source_program_from_text(
             path.display()
         ))
     })?;
-    let mut visiting = BTreeSet::new();
+    let mut visiting = Vec::new();
     let mut visited = BTreeSet::new();
     load_source_program_from_text_inner(&canonical_path, src, &mut visiting, &mut visited)
 }
 
 pub(super) fn load_source_program_inner(
     path: &Path,
-    visiting: &mut BTreeSet<PathBuf>,
+    visiting: &mut Vec<PathBuf>,
     visited: &mut BTreeSet<PathBuf>,
 ) -> Result<SourceProgram, CliError> {
     let canonical_path = std::fs::canonicalize(path).map_err(|e| {
@@ -167,26 +167,39 @@ pub(super) fn load_source_program_inner(
 pub(super) fn load_source_program_from_text_inner(
     canonical_path: &Path,
     src: &str,
-    visiting: &mut BTreeSet<PathBuf>,
+    visiting: &mut Vec<PathBuf>,
     visited: &mut BTreeSet<PathBuf>,
 ) -> Result<SourceProgram, CliError> {
     let canonical_path = canonical_path.to_path_buf();
-    if visiting.contains(&canonical_path) {
-        return Err(CliError::ParseError(format!(
-            "cyclic AIL source import detected at {}",
-            canonical_path.display()
+    if let Some(start) = visiting.iter().position(|path| path == &canonical_path) {
+        return Err(CliError::ParseError(format_source_import_cycle(
+            visiting,
+            start,
+            &canonical_path,
         )));
     }
     if !visited.insert(canonical_path.clone()) {
         return Ok(SourceProgram::default());
     }
 
-    visiting.insert(canonical_path.clone());
+    visiting.push(canonical_path.clone());
+    let result =
+        load_source_program_from_text_inner_with_stack(&canonical_path, src, visiting, visited);
+    visiting.pop();
+    result
+}
+
+fn load_source_program_from_text_inner_with_stack(
+    canonical_path: &Path,
+    src: &str,
+    visiting: &mut Vec<PathBuf>,
+    visited: &mut BTreeSet<PathBuf>,
+) -> Result<SourceProgram, CliError> {
     let program = parse_ail_source(src)?;
     let root_module = program.module.clone();
     let mut combined = SourceProgram::default();
     for import in &program.imports {
-        let import_path = resolve_source_import(&canonical_path, import);
+        let import_path = resolve_source_import(canonical_path, import);
         let imported = load_source_program_inner(&import_path, visiting, visited)?;
         combined.extend(imported);
     }
@@ -198,8 +211,16 @@ pub(super) fn load_source_program_from_text_inner(
     validate_source_program_calls(&combined)?;
     validate_source_program_effect_calls(&combined)?;
     validate_source_program_types(&combined)?;
-    visiting.remove(&canonical_path);
     Ok(combined)
+}
+
+fn format_source_import_cycle(visiting: &[PathBuf], start: usize, repeated: &Path) -> String {
+    let mut chain = visiting[start..]
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+    chain.push(repeated.display().to_string());
+    format!("cyclic AIL source import detected: {}", chain.join(" -> "))
 }
 
 pub(super) fn resolve_source_import(source_path: &Path, import: &str) -> PathBuf {
