@@ -410,7 +410,7 @@ pub fn header_value_shape(value: &str) -> HttpHeaderValueShape {
     if value.contains('\0') {
         return HttpHeaderValueShape::ContainsNul;
     }
-    if value.contains('\n') || value.contains('\n') {
+    if value.contains('\n') || value.contains('\r') {
         return HttpHeaderValueShape::ContainsLineBreak;
     }
     if value.is_empty() {
@@ -550,6 +550,143 @@ pub fn validate_method_shape(shape: HttpMethodShape) -> Result<(), HttpRequestSh
 /// Validate a request against std.http boundary metadata.
 pub fn validate_request_contract(request: &HttpRequest) -> Result<(), HttpRequestShapeError> {
     HttpRequestDescriptor::new(request).validate_request_shape()
+}
+
+// ── HTTP issue diagnostics ───────────────────────────────────────────────
+
+/// Stable HTTP issue kinds for host and tooling diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HttpIssueKind {
+    PermissionDenied,
+    Timeout,
+    ConnectionFailed,
+    InvalidRequest,
+    ServerError,
+    Other,
+    UnsafeRequestShape,
+    UnsafeHeaderShape,
+}
+
+impl HttpIssueKind {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::PermissionDenied => "std.http.permission_denied",
+            Self::Timeout => "std.http.timeout",
+            Self::ConnectionFailed => "std.http.connection_failed",
+            Self::InvalidRequest => "std.http.invalid_request",
+            Self::ServerError => "std.http.server_error",
+            Self::Other => "std.http.other",
+            Self::UnsafeRequestShape => "std.http.request.unsafe_shape",
+            Self::UnsafeHeaderShape => "std.http.header.unsafe_shape",
+        }
+    }
+
+    pub const fn category(self) -> &'static str {
+        match self {
+            Self::PermissionDenied => "capability",
+            Self::Timeout => "timeout",
+            Self::ConnectionFailed => "network",
+            Self::InvalidRequest | Self::UnsafeRequestShape | Self::UnsafeHeaderShape => "shape",
+            Self::ServerError => "remote-status",
+            Self::Other => "host-error",
+        }
+    }
+}
+
+/// Redacted, machine-readable HTTP issue descriptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpIssue {
+    pub kind: HttpIssueKind,
+    pub code: &'static str,
+    pub category: &'static str,
+    pub method_shape: Option<HttpMethodShape>,
+    pub url_shape: Option<HttpUrlShape>,
+    pub header_name_shape: Option<HttpHeaderNameShape>,
+    pub header_value_shape: Option<HttpHeaderValueShape>,
+    pub status_class: Option<&'static str>,
+    pub redacted: bool,
+}
+
+impl HttpIssue {
+    fn new(kind: HttpIssueKind) -> Self {
+        Self {
+            kind,
+            code: kind.code(),
+            category: kind.category(),
+            method_shape: None,
+            url_shape: None,
+            header_name_shape: None,
+            header_value_shape: None,
+            status_class: None,
+            redacted: true,
+        }
+    }
+
+    pub fn diagnostic_key(&self) -> String {
+        let method = self
+            .method_shape
+            .map(HttpMethodShape::label)
+            .unwrap_or("none");
+        let url = self.url_shape.map(HttpUrlShape::label).unwrap_or("none");
+        let header_name = self
+            .header_name_shape
+            .map(HttpHeaderNameShape::label)
+            .unwrap_or("none");
+        let header_value = self
+            .header_value_shape
+            .map(HttpHeaderValueShape::label)
+            .unwrap_or("none");
+        let status = self.status_class.unwrap_or("none");
+        format!(
+            "std.http.issue:{}:{}:{method}:{url}:{header_name}:{header_value}:{status}",
+            self.category, self.code
+        )
+    }
+}
+
+/// Convert an HTTP host error into a stable redacted issue descriptor.
+pub fn http_error_issue(error: &HttpError) -> HttpIssue {
+    match error {
+        HttpError::PermissionDenied => HttpIssue::new(HttpIssueKind::PermissionDenied),
+        HttpError::Timeout => HttpIssue::new(HttpIssueKind::Timeout),
+        HttpError::ConnectionFailed(_) => HttpIssue::new(HttpIssueKind::ConnectionFailed),
+        HttpError::InvalidRequest(_) => HttpIssue::new(HttpIssueKind::InvalidRequest),
+        HttpError::ServerError(status) => {
+            let mut issue = HttpIssue::new(HttpIssueKind::ServerError);
+            issue.status_class = Some(status_class(*status));
+            issue
+        }
+        HttpError::Other(_) => HttpIssue::new(HttpIssueKind::Other),
+    }
+}
+
+/// Convert request-shape failures into redacted diagnostics.
+pub fn request_shape_issue(request: &HttpRequest, _error: &HttpRequestShapeError) -> HttpIssue {
+    let descriptor = HttpRequestDescriptor::new(request);
+    let mut issue = HttpIssue::new(HttpIssueKind::UnsafeRequestShape);
+    issue.method_shape = Some(descriptor.method_shape);
+    issue.url_shape = Some(descriptor.url_shape);
+    issue
+}
+
+/// Convert header-shape failures into redacted diagnostics.
+pub fn header_shape_issue(name: &str, value: &str, _error: &HttpHeaderShapeError) -> HttpIssue {
+    let descriptor = HttpHeaderDescriptor::new(name, value);
+    let mut issue = HttpIssue::new(HttpIssueKind::UnsafeHeaderShape);
+    issue.header_name_shape = Some(descriptor.name_shape);
+    issue.header_value_shape = Some(descriptor.value_shape);
+    issue
+}
+
+fn status_class(status: StatusCode) -> &'static str {
+    match status.0 {
+        100..=199 => "1xx",
+        200..=299 => "2xx",
+        300..=399 => "3xx",
+        400..=499 => "4xx",
+        500..=599 => "5xx",
+        _ => "non-standard",
+    }
 }
 
 // ── HttpRequest ───────────────────────────────────────────────────────────
@@ -779,6 +916,81 @@ Injected: yes",
                 actual: "contains-nul",
                 expected: "header value without NUL or line breaks",
             })
+        );
+    }
+
+    #[test]
+    fn http_error_issue_redacts_host_messages() {
+        let err = HttpError::ConnectionFailed("token=secret host unreachable".to_string());
+        let issue = http_error_issue(&err);
+
+        assert_eq!(issue.code, "std.http.connection_failed");
+        assert_eq!(issue.category, "network");
+        assert!(issue.redacted);
+        assert_eq!(
+            issue.diagnostic_key(),
+            "std.http.issue:network:std.http.connection_failed:none:none:none:none:none"
+        );
+        assert!(!issue.diagnostic_key().contains("secret"));
+    }
+
+    #[test]
+    fn request_shape_issue_uses_url_and_method_shapes() {
+        let mut request = HttpRequest::get("https://user:secret@example.test/private");
+        request.method = HttpMethod::Custom("BAD METHOD".to_string());
+        let err = HttpRequestShapeError {
+            field: "method",
+            actual: "contains-whitespace",
+            expected: "standard method or custom token without whitespace/control characters",
+        };
+
+        let issue = request_shape_issue(&request, &err);
+
+        assert_eq!(issue.code, "std.http.request.unsafe_shape");
+        assert_eq!(issue.category, "shape");
+        assert_eq!(
+            issue.method_shape,
+            Some(HttpMethodShape::ContainsWhitespace)
+        );
+        assert_eq!(issue.url_shape, Some(HttpUrlShape::ContainsCredentials));
+        assert_eq!(
+            issue.diagnostic_key(),
+            "std.http.issue:shape:std.http.request.unsafe_shape:contains-whitespace:contains-credentials:none:none:none"
+        );
+        assert!(!issue.diagnostic_key().contains("secret"));
+    }
+
+    #[test]
+    fn header_shape_issue_redacts_header_values() {
+        let err = HttpHeaderShapeError {
+            field: "value",
+            actual: "contains-line-break",
+            expected: "header value without NUL or line breaks",
+        };
+
+        let issue = header_shape_issue("Authorization", "Bearer secret\r\nInjected: yes", &err);
+
+        assert_eq!(issue.code, "std.http.header.unsafe_shape");
+        assert_eq!(issue.category, "shape");
+        assert_eq!(issue.header_name_shape, Some(HttpHeaderNameShape::Token));
+        assert_eq!(
+            issue.header_value_shape,
+            Some(HttpHeaderValueShape::ContainsLineBreak)
+        );
+        assert!(!issue.diagnostic_key().contains("secret"));
+        assert!(!issue.diagnostic_key().contains("Authorization"));
+    }
+
+    #[test]
+    fn server_error_issue_reports_status_class_only() {
+        let issue = http_error_issue(&HttpError::ServerError(StatusCode(503)));
+
+        assert_eq!(issue.code, "std.http.server_error");
+        assert_eq!(issue.category, "remote-status");
+        assert_eq!(issue.status_class, Some("5xx"));
+        assert_eq!(
+            issue.diagnostic_key(),
+            "std.http.issue:remote-status:std.http.server_error:none:none:none:none:5xx"
         );
     }
 }
