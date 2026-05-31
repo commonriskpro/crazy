@@ -1,4 +1,29 @@
+use super::super::lower::*;
 use super::*;
+
+fn assert_lowering_diagnostic(
+    result: Result<String, CliError>,
+    code: &str,
+    category: &str,
+    detail: &str,
+) {
+    let err = result.expect_err("source lowering must fail");
+    let CliError::ParseError(message) = err else {
+        panic!("source lowering must return ParseError");
+    };
+    assert!(
+        message.contains(code),
+        "lowering diagnostic must include stable code `{code}`; got: {message}"
+    );
+    assert!(
+        message.contains(&format!("category={category}")),
+        "lowering diagnostic must include category `{category}`; got: {message}"
+    );
+    assert!(
+        message.contains(detail),
+        "lowering diagnostic must keep actionable detail `{detail}`; got: {message}"
+    );
+}
 
 #[test]
 fn lowers_source_to_acl_create_ops() {
@@ -9,6 +34,48 @@ fn lowers_source_to_acl_create_ops() {
 
     assert!(acl.contains("op create_function id=fn.main return=Int body=add(20, 22)"));
     assert!(acl.contains("op create_test id=test.add return=Bool body=eq(add(20, 22), 42)"));
+}
+
+#[test]
+fn rejects_collection_helper_arity_with_stable_lowering_diagnostic() {
+    assert_lowering_diagnostic(
+        lower_source_expr("first_or(values)", 12),
+        "AIL_SOURCE_LOWER_COLLECTION_ARITY",
+        "source.lower.collection",
+        "first_or requires `first_or(list, fallback)`",
+    );
+}
+
+#[test]
+fn rejects_collection_literals_with_stable_lowering_diagnostics() {
+    assert_lowering_diagnostic(
+        lower_source_expr("[1, 2", 7),
+        "AIL_SOURCE_LOWER_LIST_LITERAL",
+        "source.lower.collection",
+        "list literal has unclosed `[`",
+    );
+    assert_lowering_diagnostic(
+        lower_source_expr("{ age 42 }", 8),
+        "AIL_SOURCE_LOWER_RECORD_LITERAL",
+        "source.lower.collection",
+        "record literal field requires `name: expression`",
+    );
+}
+
+#[test]
+fn rejects_accessor_and_operator_shapes_with_stable_lowering_diagnostics() {
+    assert_lowering_diagnostic(
+        lower_source_expr("values[]", 20),
+        "AIL_SOURCE_LOWER_INDEX_EXPRESSION",
+        "source.lower.collection",
+        "index expression requires `collection[index]`",
+    );
+    assert_lowering_diagnostic(
+        lower_source_expr("-", 21),
+        "AIL_SOURCE_LOWER_UNARY_OPERATOR",
+        "source.lower.operator",
+        "unary `-` requires an expression",
+    );
 }
 
 #[test]

@@ -11,9 +11,11 @@ pub(super) fn lower_source_first_or_expr(
         return Ok(None);
     }
     if args.len() != 2 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: first_or requires `first_or(list, fallback)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::CollectionArity,
+            "first_or requires `first_or(list, fallback)`",
+        ));
     }
     let list = lower_source_expr(&args[0], line_num)?;
     Ok(Some(format!(
@@ -33,9 +35,11 @@ pub(super) fn lower_source_last_or_expr(
         return Ok(None);
     }
     if args.len() != 2 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: last_or requires `last_or(list, fallback)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::CollectionArity,
+            "last_or requires `last_or(list, fallback)`",
+        ));
     }
     let list = lower_source_expr(&args[0], line_num)?;
     Ok(Some(format!(
@@ -55,9 +59,11 @@ pub(super) fn lower_source_get_or_expr(
         return Ok(None);
     }
     if args.len() != 3 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: get_or requires `get_or(list, index, fallback)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::CollectionArity,
+            "get_or requires `get_or(list, index, fallback)`",
+        ));
     }
     let list = lower_source_expr(&args[0], line_num)?;
     let index = lower_source_expr(&args[1], line_num)?;
@@ -78,9 +84,11 @@ pub(super) fn lower_source_unwrap_or_expr(
         return Ok(None);
     }
     if args.len() != 2 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: unwrap_or requires `unwrap_or(value, fallback)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::CollectionArity,
+            "unwrap_or requires `unwrap_or(value, fallback)`",
+        ));
     }
     Ok(Some(format!(
         "match({}, Some(__ail_unwrap), __ail_unwrap, None, {})",
@@ -97,9 +105,11 @@ pub(super) fn parse_source_list_literal(
         return Ok(None);
     }
     if !expr.ends_with(']') {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: list literal has unclosed `[`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::ListLiteral,
+            "list literal has unclosed `[`",
+        ));
     }
     if matching_bracket(expr, 0) != Some(expr.len() - 1) {
         return Ok(None);
@@ -125,9 +135,11 @@ pub(super) fn parse_source_record_literal(
     }
     let close = matching_brace(expr, 0);
     if close.is_none() {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: record literal has unclosed `{{`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::RecordLiteral,
+            "record literal has unclosed `{`",
+        ));
     }
     if close != Some(expr.len() - 1) {
         return Ok(None);
@@ -146,31 +158,39 @@ pub(super) fn parse_source_record_literal(
         let entry = field_expr.trim();
         if let Some(spread) = entry.strip_prefix("...") {
             if entry_idx != 0 || base.is_some() {
-                return Err(CliError::ParseError(format!(
-                    "line {line_num}: record update spread must appear first"
-                )));
+                return Err(source_lower_error(
+                    line_num,
+                    SourceLowerDiagnostic::RecordLiteral,
+                    "record update spread must appear first",
+                ));
             }
             let spread = spread.trim();
             if spread.is_empty() {
-                return Err(CliError::ParseError(format!(
-                    "line {line_num}: record update spread requires a base expression"
-                )));
+                return Err(source_lower_error(
+                    line_num,
+                    SourceLowerDiagnostic::RecordLiteral,
+                    "record update spread requires a base expression",
+                ));
             }
             base = Some(spread.to_string());
             continue;
         }
 
         let colon = find_top_level_source_colon(entry).ok_or_else(|| {
-            CliError::ParseError(format!(
-                "line {line_num}: record literal field requires `name: expression`"
-            ))
+            source_lower_error(
+                line_num,
+                SourceLowerDiagnostic::RecordLiteral,
+                "record literal field requires `name: expression`",
+            )
         })?;
         let field = entry[..colon].trim();
         let value = entry[colon + ':'.len_utf8()..].trim();
         if field.is_empty() || value.is_empty() {
-            return Err(CliError::ParseError(format!(
-                "line {line_num}: record literal field and value must be non-empty"
-            )));
+            return Err(source_lower_error(
+                line_num,
+                SourceLowerDiagnostic::RecordLiteral,
+                "record literal field and value must be non-empty",
+            ));
         }
         validate_source_local_name(field, line_num)?;
         fields.push((field.to_string(), value.to_string()));
@@ -237,9 +257,11 @@ pub(super) fn parse_source_index_expr<'a>(
     let collection = expr[..open].trim();
     let index = expr[open + 1..expr.len() - 1].trim();
     if collection.is_empty() || index.is_empty() {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: index expression requires `collection[index]`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::IndexExpression,
+            "index expression requires `collection[index]`",
+        ));
     }
     Ok(Some((collection, index)))
 }
@@ -254,9 +276,11 @@ pub(super) fn parse_source_dot_field_expr<'a>(
     let record = expr[..dot].trim();
     let field = expr[dot + 1..].trim();
     if record.is_empty() || field.is_empty() {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: field access requires `record.field`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::FieldAccess,
+            "field access requires `record.field`",
+        ));
     }
     if !is_source_local_ident(field) {
         return Ok(None);
