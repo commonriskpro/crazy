@@ -77,6 +77,50 @@ fn main(input: Option<List<Int>>) -> Int = match input { Some([head, tail]) => h
 }
 
 #[test]
+fn rejects_malformed_nested_source_types_with_specific_diagnostics() {
+    let cases = [
+        (
+            r#"
+fn bad(input: List<Map<Int,Bool>) -> Int = 1
+"#,
+            "line 2: unbalanced angle brackets in source type `List<Map<Int,Bool>`",
+        ),
+        (
+            r#"
+fn bad() -> Map<Text> = map("a", 1)
+"#,
+            "line 2: source type `Map` expects 2 type argument(s), got 1 in `Map<Text>`",
+        ),
+        (
+            r#"
+fn bad(input: Option<Result<Int>>) -> Int = 1
+"#,
+            "line 2: source type `Result` expects 2 type argument(s), got 1 in `Result<Int>`",
+        ),
+        (
+            r#"
+fn bad(input: Tuple<Int,,Bool>) -> Int = 1
+"#,
+            "line 2: source type `Tuple` has empty type argument at position 2 in `Tuple<Int,,Bool>`",
+        ),
+        (
+            r#"
+fn bad(input: Record<person:Record<age:Int>,nameText>) -> Int = 1
+"#,
+            "line 2: source type `Record` field `nameText` must use `field: Type` in `Record<person:Record<age:Int>,nameText>`",
+        ),
+    ];
+
+    for (src, expected) in cases {
+        let err = parse_ail_source(src).expect_err("malformed source type must be rejected");
+        assert!(
+            err.to_string().contains(expected),
+            "expected diagnostic `{expected}`, got `{err}`"
+        );
+    }
+}
+
+#[test]
 fn qualifies_source_module_declarations_and_local_calls() {
     let program = parse_ail_source(
         r#"
