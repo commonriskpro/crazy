@@ -89,11 +89,15 @@ pub(super) fn anf_with_if(cond_val: bool, then_val: i64, else_val: i64) -> AnfIr
 }
 
 pub(super) fn anf_for_binding(binding: crate::anf::AnfBinding) -> AnfIr {
+    anf_for_bindings(vec![binding])
+}
+
+pub(super) fn anf_for_bindings(bindings: Vec<crate::anf::AnfBinding>) -> AnfIr {
     use crate::anf::SourceMap;
     AnfIr {
         schema_version: crate::anf::ANF_SCHEMA_VERSION,
-        source_map: SourceMap::from_bindings(std::slice::from_ref(&binding)),
-        bindings: vec![binding],
+        source_map: SourceMap::from_bindings(&bindings),
+        bindings,
         stage_hashes: StageHashes {
             graph_snapshot_hash: [0u8; 32],
             verification_report_hash: [0u8; 32],
