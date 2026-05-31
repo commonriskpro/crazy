@@ -606,6 +606,24 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if matches!(func.as_str(), "list.push" | "list.concat") {
+        let helper = match func.as_str() {
+            "list.push" => "list_push",
+            "list.concat" => "list_concat",
+            _ => unreachable!("checked list helper"),
+        };
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if matches!(
         func.as_str(),
         "queue.push_back"

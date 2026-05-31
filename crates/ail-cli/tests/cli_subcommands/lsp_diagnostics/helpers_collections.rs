@@ -505,6 +505,36 @@ fn labels() -> Map<Text, Int> = map(\"one\", 1, \"two\", 2)\n",
 }
 
 #[test]
+fn lsp_diagnose_accepts_source_list_mutation_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn values() -> List<Int> = list(1, 2)
+fn pushed() -> List<Int> = list_push(values(), 3)
+fn merged() -> List<Int> = list_concat(values(), list(3, 4))
+",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+#[test]
 fn lsp_diagnose_accepts_source_queue_helpers() {
     use assert_fs::prelude::*;
 

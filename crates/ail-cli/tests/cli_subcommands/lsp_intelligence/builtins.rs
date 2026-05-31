@@ -161,6 +161,40 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include AIL source result_unwrap_or helper; got: {result_unwrap_items:?}"
     );
 
+    let list_push_completion_output = ail()
+        .args(["lsp", "--complete", "list_push", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let list_push_completion = parse_json_output(&list_push_completion_output);
+    let list_push_items = list_push_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        list_push_items
+            .iter()
+            .any(|item| item["label"] == "list_push" && item["detail"] == "AIL source List helper"),
+        "completion must include AIL source list_push helper; got: {list_push_items:?}"
+    );
+
+    let list_concat_completion_output = ail()
+        .args(["lsp", "--complete", "list_concat", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let list_concat_completion = parse_json_output(&list_concat_completion_output);
+    let list_concat_items = list_concat_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        list_concat_items.iter().any(
+            |item| item["label"] == "list_concat" && item["detail"] == "AIL source List helper"
+        ),
+        "completion must include AIL source list_concat helper; got: {list_concat_items:?}"
+    );
+
     let queue_push_completion_output = ail()
         .args(["lsp", "--complete", "queue_push", "--json"])
         .assert()

@@ -158,6 +158,76 @@ fn compile_file_rejects_source_map_value_type_mismatch() {
 }
 
 #[test]
+fn compile_file_accepts_source_list_mutation_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("list_helpers.ail");
+    source
+        .write_str(
+            "fn values() -> List<Int> = list(1, 2)
+fn pushed() -> List<Int> = list_push(values(), 3)
+fn merged() -> List<Int> = list_concat(values(), list(3, 4))
+",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_list_push_value_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_list_push.ail");
+    source
+        .write_str(
+            "fn pushed(values: List<Int>) -> List<Int> = list_push(values, true)
+",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in list.push argument 2: expected Int, got Bool",
+        ));
+}
+
+#[test]
+fn compile_file_rejects_source_list_concat_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_list_concat.ail");
+    source
+        .write_str(
+            "fn merged(values: List<Int>) -> List<Int> = list_concat(values, list(true))
+",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in list.concat argument 2: expected List<Int>, got List<Bool>",
+        ));
+}
+#[test]
 fn compile_file_accepts_source_queue_helpers() {
     use assert_fs::prelude::*;
 

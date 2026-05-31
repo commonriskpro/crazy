@@ -270,6 +270,8 @@ pub(super) fn infer_source_call_type(
         }
         "list" => infer_source_list_type(args, scope, functions),
         "list.get" | "list_get" => infer_source_list_get_type(args, scope, functions),
+        "list.push" | "list_push" => infer_source_list_push_type(args, scope, functions),
+        "list.concat" | "list_concat" => infer_source_list_concat_type(args, scope, functions),
         "queue.push_back" | "queue_push_back" => {
             infer_source_queue_push_back_type(args, scope, functions)
         }
@@ -380,6 +382,31 @@ pub(super) fn infer_source_list_type(
         validate_source_type_match(&element_ty, &actual, "list element")?;
     }
     Ok(format!("List<{element_ty}>"))
+}
+
+pub(super) fn infer_source_list_push_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let list_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let value_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    let expected = require_source_list_type(&list_ty, "list.push argument 1")?.unwrap_or("Unknown");
+    validate_source_type_match(expected, &value_ty, "list.push argument 2")?;
+    Ok(list_ty)
+}
+
+pub(super) fn infer_source_list_concat_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let left_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let right_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    require_source_list_type(&left_ty, "list.concat argument 1")?;
+    require_source_list_type(&right_ty, "list.concat argument 2")?;
+    validate_source_type_match(&left_ty, &right_ty, "list.concat argument 2")?;
+    Ok(left_ty)
 }
 
 pub(super) fn infer_source_queue_push_back_type(

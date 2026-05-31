@@ -234,6 +234,28 @@ fn pair_get() -> Option<Text> = tuple_get(pair(), 1)
 }
 
 #[test]
+fn lowers_source_list_mutation_helpers_to_core_calls() {
+    let program = parse_ail_source(
+        r#"
+fn values() -> List<Int> = list(1, 2)
+fn pushed() -> List<Int> = list_push(values(), 3)
+fn merged() -> List<Int> = list_concat(values(), list(3, 4))
+"#,
+    )
+    .expect("source list helpers must parse");
+    let acl = source_program_to_acl(&program, "source_list_helpers".to_string());
+
+    assert!(
+        acl.contains(
+            "op create_function id=fn.pushed return=List<Int> body=list.push(values(), 3)"
+        )
+    );
+    assert!(acl.contains(
+        "op create_function id=fn.merged return=List<Int> body=list.concat(values(), list(3, 4))"
+    ));
+}
+
+#[test]
 fn lowers_source_queue_helpers_to_core_calls() {
     let program = parse_ail_source(
         r#"

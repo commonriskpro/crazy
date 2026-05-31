@@ -338,6 +338,18 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "queue_is_empty(${1:queue})",
     },
     AclSymbol {
+        label: "list_push",
+        detail: "AIL source List helper",
+        documentation: "Returns a List<T> with the supplied value appended at the end.",
+        insert_text: "list_push(${1:list}, ${2:value})",
+    },
+    AclSymbol {
+        label: "list_concat",
+        detail: "AIL source List helper",
+        documentation: "Returns a List<T> containing the first list followed by the second.",
+        insert_text: "list_concat(${1:left}, ${2:right})",
+    },
+    AclSymbol {
         label: "set",
         detail: "AIL source Set builtin",
         documentation: "Constructs a typed Set<T> from same-typed values.",

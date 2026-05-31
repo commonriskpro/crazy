@@ -349,6 +349,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
     if let Some(lowered) = lower_source_list_get_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_list_helper_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_queue_helper_expr(expr, line_num)? {
         return Ok(lowered);
     }

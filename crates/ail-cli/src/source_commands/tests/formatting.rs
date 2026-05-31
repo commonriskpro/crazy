@@ -296,6 +296,28 @@ fn pair_get()->Option<Text>=tuple.get(pair(),1)
 }
 
 #[test]
+fn formats_source_list_mutation_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn values()->List<Int>=list(1,2)
+fn pushed()->List<Int>=list.push(values(),3)
+fn merged()->List<Int>=list.concat(values(),list(3,4))
+"#,
+    )
+    .expect("source list helpers must format");
+
+    assert_eq!(item_count, 3);
+    assert!(formatted.contains(
+        "fn pushed() -> List<Int> = list_push(values(), 3)
+"
+    ));
+    assert!(formatted.contains(
+        "fn merged() -> List<Int> = list_concat(values(), [3, 4])
+"
+    ));
+}
+
+#[test]
 fn formats_source_queue_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"
