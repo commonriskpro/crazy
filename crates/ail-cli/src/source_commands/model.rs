@@ -1,4 +1,4 @@
-use super::SemanticGraph;
+use super::{Path, PathBuf, SemanticGraph};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SourceProgram {
@@ -17,6 +17,7 @@ pub(super) struct SourceConst {
     pub(super) return_type: String,
     pub(super) body: String,
     pub(super) line_num: usize,
+    pub(super) source_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +27,7 @@ pub(super) struct SourceFunction {
     pub(super) return_type: String,
     pub(super) body: String,
     pub(super) line_num: usize,
+    pub(super) source_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +42,7 @@ pub(super) struct SourceTest {
     pub(super) return_type: String,
     pub(super) body: String,
     pub(super) line_num: usize,
+    pub(super) source_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +63,18 @@ pub(crate) struct LoadedSourceGraph {
 }
 
 impl SourceProgram {
+    pub(super) fn set_source_path(&mut self, path: &Path) {
+        for constant in &mut self.constants {
+            constant.source_path = Some(path.to_path_buf());
+        }
+        for function in &mut self.functions {
+            function.source_path = Some(path.to_path_buf());
+        }
+        for test in &mut self.tests {
+            test.source_path = Some(path.to_path_buf());
+        }
+    }
+
     pub(super) fn extend(&mut self, other: SourceProgram) {
         self.imports.extend(other.imports);
         self.capabilities.extend(other.capabilities);

@@ -316,6 +316,61 @@ fn compile_file_rejects_source_export_syntax() {
 }
 
 #[test]
+fn compile_file_reports_source_import_name_collisions() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let math = dir.child("math.ail");
+    math.write_str("fn helper() -> Int = 1\n")
+        .expect("math fixture must be written");
+    let text = dir.child("text.ail");
+    text.write_str("fn helper() -> Int = 2\n")
+        .expect("text fixture must be written");
+    let source = dir.child("main.ail");
+    source
+        .write_str("use \"./math.ail\"\nuse \"./text.ail\"\nfn main() -> Int = helper()\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "duplicate imported source function `fn.helper`",
+        ))
+        .stderr(predicate::str::contains("math.ail line 1"))
+        .stderr(predicate::str::contains("text.ail line 1"));
+}
+
+#[test]
+fn compile_file_reports_local_source_import_name_collisions() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let dep = dir.child("dep.ail");
+    dep.write_str("const limit: Int = 1\n")
+        .expect("dep fixture must be written");
+    let source = dir.child("main.ail");
+    source
+        .write_str("use \"./dep.ail\"\nfn limit() -> Int = 2\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "duplicate imported source declaration `fn.limit`",
+        ))
+        .stderr(predicate::str::contains("dep.ail line 1"))
+        .stderr(predicate::str::contains("main.ail line 2"));
+}
+
+#[test]
 fn compile_file_rejects_invalid_ail_source_before_lowering() {
     use assert_fs::prelude::*;
 
