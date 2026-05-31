@@ -5,9 +5,9 @@ use serde_json::{Value, json};
 
 use crate::error::CliError;
 
-use super::definition::definition_for_token;
+use super::definition::definition_for_token_with_workspace;
 use super::diagnostics::diagnostics_for_document;
-use super::references::references_for_token;
+use super::references::references_for_token_with_workspace;
 use super::symbols::{completion_items, hover_for_token};
 use super::tokens::token_at_position;
 
@@ -151,8 +151,9 @@ impl LspSession {
                     .documents
                     .get(uri)
                     .and_then(|text| {
-                        token_at_position(text, line, character)
-                            .map(|token| definition_for_token(uri, text, &token))
+                        token_at_position(text, line, character).map(|token| {
+                            definition_for_token_with_workspace(uri, text, &token, &self.documents)
+                        })
                     })
                     .unwrap_or(Value::Null);
                 vec![lsp_response(message, result)]
@@ -166,8 +167,14 @@ impl LspSession {
                     .documents
                     .get(uri)
                     .and_then(|text| {
-                        token_at_position(text, line, character)
-                            .map(|token| Value::Array(references_for_token(uri, text, &token)))
+                        token_at_position(text, line, character).map(|token| {
+                            Value::Array(references_for_token_with_workspace(
+                                uri,
+                                text,
+                                &token,
+                                &self.documents,
+                            ))
+                        })
                     })
                     .unwrap_or_else(|| Value::Array(vec![]));
                 vec![lsp_response(message, result)]

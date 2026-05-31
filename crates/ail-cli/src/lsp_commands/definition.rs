@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
@@ -9,6 +9,15 @@ use super::source_helpers::{
 };
 
 pub(super) fn definition_for_token(uri: &str, text: &str, token: &str) -> Value {
+    definition_for_token_with_workspace(uri, text, token, &BTreeMap::new())
+}
+
+pub(super) fn definition_for_token_with_workspace(
+    uri: &str,
+    text: &str,
+    token: &str,
+    workspace_documents: &BTreeMap<String, String>,
+) -> Value {
     let token = token.trim();
     if token.is_empty() {
         return Value::Null;
@@ -48,13 +57,20 @@ fn definition_for_ail_source_token(uri: &str, text: &str, token: &str) -> Option
     let canonical_root = std::fs::canonicalize(&root_path).ok()?;
     let mut visited = BTreeSet::new();
     visited.insert(canonical_root.clone());
-    definition_for_ail_source_imports(&canonical_root, text, token, &mut visited)
+    definition_for_ail_source_imports(
+        &canonical_root,
+        text,
+        token,
+        workspace_documents,
+        &mut visited,
+    )
 }
 
 fn definition_for_ail_source_imports(
-    source_path: &std::path::Path,
+    source_path: &Path,
     text: &str,
     token: &str,
+    workspace_documents: &BTreeMap<String, String>,
     visited: &mut BTreeSet<PathBuf>,
 ) -> Option<Value> {
     for import in source_imports_from_text(text) {
@@ -65,20 +81,46 @@ fn definition_for_ail_source_imports(
         if !visited.insert(canonical.clone()) {
             continue;
         }
-        let Ok(imported_text) = std::fs::read_to_string(&canonical) else {
-            continue;
-        };
         let imported_uri = format!("file://{}", canonical.display());
+        let imported_text =
+            match workspace_document_text(workspace_documents, &imported_uri, &canonical) {
+                Some(text) => text.to_string(),
+                None => match std::fs::read_to_string(&canonical) {
+                    Ok(text) => text,
+                    Err(_) => continue,
+                },
+            };
         if let Some(definition) = source_definition_in_text(&imported_uri, &imported_text, token) {
             return Some(definition);
         }
-        if let Some(definition) =
-            definition_for_ail_source_imports(&canonical, &imported_text, token, visited)
-        {
+        if let Some(definition) = definition_for_ail_source_imports(
+            &canonical,
+            &imported_text,
+            token,
+            workspace_documents,
+            visited,
+        ) {
             return Some(definition);
         }
     }
     None
+}
+
+fn workspace_document_text<'a>(
+    workspace_documents: &'a BTreeMap<String, String>,
+    imported_uri: &str,
+    imported_path: &Path,
+) -> Option<&'a str> {
+    workspace_documents
+        .get(imported_uri)
+        .map(String::as_str)
+        .or_else(|| {
+            workspace_documents.iter().find_map(|(uri, text)| {
+                let path = file_path_from_uri(uri)?;
+                let canonical = std::fs::canonicalize(path).ok()?;
+                (canonical == imported_path).then_some(text.as_str())
+            })
+        })
 }
 
 fn source_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
