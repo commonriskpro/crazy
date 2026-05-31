@@ -23,6 +23,29 @@
 
 use serde::{Deserialize, Serialize};
 
+// ── Compiler report diagnostics ─────────────────────────────────────────
+
+/// Current schema identifier for compiler reports emitted beside artifacts.
+pub const COMPILER_REPORT_SCHEMA_VERSION: &str = "compiler/1.0";
+
+/// Stable issue code for stale compiler report schema sidecars.
+pub const E_COMPILER_REPORT_STALE_SCHEMA: &str = "E_COMPILER_REPORT_STALE_SCHEMA";
+
+/// Stable issue code for outputs missing a persisted artifact path/id.
+pub const E_COMPILER_REPORT_MISSING_ARTIFACT: &str = "E_COMPILER_REPORT_MISSING_ARTIFACT";
+
+/// Stable issue code for outputs missing a content hash.
+pub const E_COMPILER_REPORT_MISSING_HASH: &str = "E_COMPILER_REPORT_MISSING_HASH";
+
+/// Stable issue code for outputs missing a compiler target.
+pub const E_COMPILER_REPORT_MISSING_TARGET: &str = "E_COMPILER_REPORT_MISSING_TARGET";
+
+/// Stable issue code for reports missing the compilation profile.
+pub const E_COMPILER_REPORT_MISSING_PROFILE: &str = "E_COMPILER_REPORT_MISSING_PROFILE";
+
+/// Stable issue code for report indexes containing the same output id twice.
+pub const E_COMPILER_REPORT_DUPLICATE_OUTPUT: &str = "E_COMPILER_REPORT_DUPLICATE_OUTPUT";
+
 // ── StageRecord ───────────────────────────────────────────────────────────
 
 /// A record of one stage that ran during compilation.
@@ -115,7 +138,7 @@ impl CompilerReport {
     pub fn new(profile: impl Into<String>) -> Self {
         Self {
             profile: profile.into(),
-            schema_version: "compiler/1.0".into(),
+            schema_version: COMPILER_REPORT_SCHEMA_VERSION.into(),
             ..Default::default()
         }
     }
@@ -153,6 +176,176 @@ impl CompilerReport {
     /// Return `true` if no warnings were emitted.
     pub fn is_clean(&self) -> bool {
         self.warnings.is_empty()
+    }
+}
+
+// ── Compiler report validation ───────────────────────────────────────────
+
+/// One compiler output plus its report-sidecar metadata for production gates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompilerReportValidationEntry<'a> {
+    /// Stable output identifier from the build plan or package manifest.
+    pub output_id: &'a str,
+    /// Persisted artifact path or package artifact reference.
+    pub artifact: Option<&'a str>,
+    /// Backend target that produced the artifact, e.g. `wasm32` or `native`.
+    pub target: Option<&'a str>,
+    /// Content hash recorded for the emitted artifact.
+    pub artifact_hash: Option<&'a str>,
+    /// Compiler report sidecar emitted with the artifact.
+    pub report: &'a CompilerReport,
+}
+
+impl<'a> CompilerReportValidationEntry<'a> {
+    /// Build a validation entry for one compiler output/report pair.
+    pub fn new(
+        output_id: &'a str,
+        artifact: Option<&'a str>,
+        target: Option<&'a str>,
+        artifact_hash: Option<&'a str>,
+        report: &'a CompilerReport,
+    ) -> Self {
+        Self {
+            output_id,
+            artifact,
+            target,
+            artifact_hash,
+            report,
+        }
+    }
+}
+
+/// Machine-readable compiler output/report diagnostic.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerReportValidationIssue {
+    /// Stable issue code for downstream build gates.
+    pub code: String,
+    /// Redacted stable output identifier for the failing output.
+    pub output_id: String,
+    /// Output or report field that failed validation.
+    pub field: String,
+    /// Human-readable explanation that avoids embedding raw paths or hashes.
+    pub message: String,
+}
+
+impl CompilerReportValidationIssue {
+    fn new(
+        code: &'static str,
+        output_id: impl Into<String>,
+        field: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: code.to_string(),
+            output_id: redact_pathlike_id(&output_id.into()),
+            field: field.to_string(),
+            message: message.into(),
+        }
+    }
+
+    fn sort_key(&self) -> (&str, &str, &str, &str) {
+        (&self.code, &self.output_id, &self.field, &self.message)
+    }
+}
+
+/// Validate compiler outputs and report sidecars before production packaging.
+///
+/// The diagnostics intentionally report stable machine codes and redacted
+/// output ids, never raw artifact paths or hashes. Returned issues are sorted
+/// and deduplicated so filesystem/package traversal order cannot affect
+/// production build logs.
+pub fn validate_compiler_report_entries(
+    entries: &[CompilerReportValidationEntry<'_>],
+) -> Vec<CompilerReportValidationIssue> {
+    use std::collections::BTreeMap;
+
+    let mut issues = Vec::new();
+    let mut output_counts: BTreeMap<&str, usize> = BTreeMap::new();
+
+    for entry in entries {
+        *output_counts.entry(entry.output_id).or_default() += 1;
+
+        if missing(entry.artifact) {
+            issues.push(CompilerReportValidationIssue::new(
+                E_COMPILER_REPORT_MISSING_ARTIFACT,
+                entry.output_id,
+                "artifact",
+                "artifact reference is required for production packaging",
+            ));
+        }
+
+        if missing(entry.artifact_hash) {
+            issues.push(CompilerReportValidationIssue::new(
+                E_COMPILER_REPORT_MISSING_HASH,
+                entry.output_id,
+                "artifact_hash",
+                "artifact content hash is required for production packaging",
+            ));
+        }
+
+        if missing(entry.target) {
+            issues.push(CompilerReportValidationIssue::new(
+                E_COMPILER_REPORT_MISSING_TARGET,
+                entry.output_id,
+                "target",
+                "compiler target is required for production packaging",
+            ));
+        }
+
+        if entry.report.profile.trim().is_empty() {
+            issues.push(CompilerReportValidationIssue::new(
+                E_COMPILER_REPORT_MISSING_PROFILE,
+                entry.output_id,
+                "profile",
+                "compiler report profile is required for production packaging",
+            ));
+        }
+
+        if entry.report.schema_version != COMPILER_REPORT_SCHEMA_VERSION {
+            issues.push(CompilerReportValidationIssue::new(
+                E_COMPILER_REPORT_STALE_SCHEMA,
+                entry.output_id,
+                "schema_version",
+                "compiler report schema is stale; re-emit with the current compiler",
+            ));
+        }
+    }
+
+    for (output_id, count) in output_counts {
+        if count > 1 {
+            issues.push(CompilerReportValidationIssue::new(
+                E_COMPILER_REPORT_DUPLICATE_OUTPUT,
+                output_id,
+                "output_id",
+                format!("output id appears {count} times in compiler report index"),
+            ));
+        }
+    }
+
+    issues.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
+    issues.dedup();
+    issues
+}
+
+fn missing(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => value.trim().is_empty(),
+        None => true,
+    }
+}
+
+fn redact_pathlike_id(value: &str) -> String {
+    let trimmed = value.trim();
+    let Some(name) = trimmed.rsplit(['/', '\\']).next() else {
+        return "<missing>".to_string();
+    };
+
+    if name.is_empty() {
+        "<missing>".to_string()
+    } else if name == trimmed {
+        name.to_string()
+    } else {
+        format!("…/{name}")
     }
 }
 
@@ -245,5 +438,143 @@ mod tests {
         assert_eq!(report.profile, "prod");
         assert!(report.stages.is_empty());
         assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn validation_reports_missing_fields_and_stale_schema_redacted() {
+        let mut report = CompilerReport::new(" ");
+        report.schema_version = "compiler/0.9".to_string();
+
+        let issues = validate_compiler_report_entries(&[CompilerReportValidationEntry::new(
+            "/private/build/program.wasm",
+            None,
+            Some(""),
+            None,
+            &report,
+        )]);
+
+        let issue_keys: Vec<(&str, &str, &str)> = issues
+            .iter()
+            .map(|issue| {
+                (
+                    issue.code.as_str(),
+                    issue.output_id.as_str(),
+                    issue.field.as_str(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            issue_keys,
+            vec![
+                (
+                    E_COMPILER_REPORT_MISSING_ARTIFACT,
+                    "…/program.wasm",
+                    "artifact",
+                ),
+                (
+                    E_COMPILER_REPORT_MISSING_HASH,
+                    "…/program.wasm",
+                    "artifact_hash",
+                ),
+                (
+                    E_COMPILER_REPORT_MISSING_PROFILE,
+                    "…/program.wasm",
+                    "profile",
+                ),
+                (E_COMPILER_REPORT_MISSING_TARGET, "…/program.wasm", "target",),
+                (
+                    E_COMPILER_REPORT_STALE_SCHEMA,
+                    "…/program.wasm",
+                    "schema_version",
+                ),
+            ]
+        );
+        assert!(
+            issues
+                .iter()
+                .all(|issue| !issue.message.contains("/private/build")),
+            "diagnostics must not leak raw artifact paths: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validation_reports_duplicate_outputs_once_and_dedups() {
+        let report = CompilerReport::new("prod");
+
+        let issues = validate_compiler_report_entries(&[
+            CompilerReportValidationEntry::new("program.wasm", None, None, None, &report),
+            CompilerReportValidationEntry::new("program.wasm", None, None, None, &report),
+        ]);
+
+        let issue_keys: Vec<(&str, &str)> = issues
+            .iter()
+            .map(|issue| (issue.code.as_str(), issue.field.as_str()))
+            .collect();
+
+        assert_eq!(
+            issue_keys,
+            vec![
+                (E_COMPILER_REPORT_DUPLICATE_OUTPUT, "output_id"),
+                (E_COMPILER_REPORT_MISSING_ARTIFACT, "artifact"),
+                (E_COMPILER_REPORT_MISSING_HASH, "artifact_hash"),
+                (E_COMPILER_REPORT_MISSING_TARGET, "target"),
+            ]
+        );
+    }
+
+    #[test]
+    fn validation_orders_issues_deterministically() {
+        let mut stale = CompilerReport::new("prod");
+        stale.schema_version = "compiler/0.8".to_string();
+        let complete = CompilerReport::new("prod");
+
+        let issues = validate_compiler_report_entries(&[
+            CompilerReportValidationEntry::new("zeta.wasm", Some("zeta.wasm"), None, None, &stale),
+            CompilerReportValidationEntry::new(
+                "alpha.wasm",
+                Some("alpha.wasm"),
+                Some("wasm32"),
+                Some("hash-a"),
+                &complete,
+            ),
+            CompilerReportValidationEntry::new(
+                "alpha.wasm",
+                Some("alpha.wasm"),
+                Some("wasm32"),
+                Some("hash-a"),
+                &complete,
+            ),
+        ]);
+        let reversed_issues = validate_compiler_report_entries(&[
+            CompilerReportValidationEntry::new(
+                "alpha.wasm",
+                Some("alpha.wasm"),
+                Some("wasm32"),
+                Some("hash-a"),
+                &complete,
+            ),
+            CompilerReportValidationEntry::new(
+                "alpha.wasm",
+                Some("alpha.wasm"),
+                Some("wasm32"),
+                Some("hash-a"),
+                &complete,
+            ),
+            CompilerReportValidationEntry::new("zeta.wasm", Some("zeta.wasm"), None, None, &stale),
+        ]);
+
+        let sorted_issue_keys = issues
+            .windows(2)
+            .all(|pair| pair[0].sort_key() <= pair[1].sort_key());
+
+        assert!(
+            sorted_issue_keys,
+            "compiler report validation issues must have deterministic ordering: {issues:?}"
+        );
+        assert_eq!(
+            issues, reversed_issues,
+            "validation issues must not depend on compiler output traversal order"
+        );
     }
 }
