@@ -37,14 +37,19 @@ pub(crate) async fn cmd_package(
         }
         PackageCmd::Add { package } => {
             let (name, version) = parse_package_spec(&package);
-            let installed = match install_package_from_registry(store, name, version)? {
-                PackageInstallResult::Installed(installed) => *installed,
-                PackageInstallResult::Blocked(issues) => {
+            let installed = match install_package_from_registry(store, name, version) {
+                Ok(PackageInstallResult::Installed(installed)) => *installed,
+                Ok(PackageInstallResult::Blocked(issues)) => {
                     emit_package_compatibility_blocked(mode, &issues);
                     return Err(CliError::Domain(format!(
                         "package compatibility blocked: {} blocked issue(s)",
                         issues.len()
                     )));
+                }
+                Err(error) => {
+                    let failure = PackageInstallFailure::from_error(&error);
+                    emit_package_install_failure(mode, failure);
+                    return Err(CliError::Domain(failure.to_cli_message()));
                 }
             };
             let entry = &installed.entry;
@@ -91,14 +96,19 @@ pub(crate) async fn cmd_package(
         }
         PackageCmd::Install { package } => {
             let (name, version) = parse_package_spec(&package);
-            let installed = match install_package_from_registry(store, name, version)? {
-                PackageInstallResult::Installed(installed) => *installed,
-                PackageInstallResult::Blocked(issues) => {
+            let installed = match install_package_from_registry(store, name, version) {
+                Ok(PackageInstallResult::Installed(installed)) => *installed,
+                Ok(PackageInstallResult::Blocked(issues)) => {
                     emit_package_compatibility_blocked(mode, &issues);
                     return Err(CliError::Domain(format!(
                         "package compatibility blocked: {} blocked issue(s)",
                         issues.len()
                     )));
+                }
+                Err(error) => {
+                    let failure = PackageInstallFailure::from_error(&error);
+                    emit_package_install_failure(mode, failure);
+                    return Err(CliError::Domain(failure.to_cli_message()));
                 }
             };
             let entry = &installed.entry;

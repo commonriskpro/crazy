@@ -24,11 +24,12 @@ use crate::error::CliError;
 use crate::output::{OutputMode, print_error_response, print_response};
 use crate::package_output::{
     InstalledPackage, LockfileReproducibilityCliIssue, PackageAuditIssue,
-    PackageCompatibilityCliIssue, PackageInstallResult, RegistryPackageIntegrity,
-    VerificationReportHashMismatch, advisory_to_json, emit_package_compatibility_blocked,
-    format_warnings_for_human, lockfile_entry_to_json, package_compatibility_issue_to_json,
-    package_manifest_to_json, reproducible_evidence_status,
-    verification_report_hash_mismatch_to_json, verification_report_status, yank_to_json,
+    PackageCompatibilityCliIssue, PackageInstallFailure, PackageInstallResult,
+    RegistryPackageIntegrity, VerificationReportHashMismatch, advisory_to_json,
+    emit_package_compatibility_blocked, emit_package_install_failure, format_warnings_for_human,
+    lockfile_entry_to_json, package_compatibility_issue_to_json, package_manifest_to_json,
+    reproducible_evidence_status, verification_report_hash_mismatch_to_json,
+    verification_report_status, yank_to_json,
 };
 use crate::package_registry_io::{
     LocalRegistryClient, load_local_package_registry_file_for_read,

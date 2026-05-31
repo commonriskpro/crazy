@@ -5,7 +5,7 @@
 
 mod common;
 
-use ail_package::{Lockfile, LockfileEntry, TrustLevel};
+use ail_package::{AdvisorySeverity, Lockfile, LockfileEntry, SecurityAdvisory, TrustLevel};
 use common::package_helpers::{
     TestPackageRegistryFile, lockfile_for_manifest, package_lockfile_path,
     read_package_registry_file, signed_test_package, test_package_manifest,
@@ -331,6 +331,112 @@ fn package_init_json_manifest_uses_stable_lowercase_trust_level() {
     assert_ne!(v["data"]["manifest"]["trust_level"], "Verified");
 }
 
+#[test]
+fn package_install_resolver_failure_reports_stable_redacted_diagnostic() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let output = ail()
+        .args([
+            "package",
+            "install",
+            "registry-token-secret@9.9.9",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("code=install.resolver.not_found"))
+        .stderr(predicate::str::contains("category=resolver"))
+        .get_output()
+        .clone();
+
+    let stdout = std::str::from_utf8(&output.stdout).expect("stdout must be UTF-8");
+    let stderr = std::str::from_utf8(&output.stderr).expect("stderr must be UTF-8");
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["data"]["code"], "install.resolver.not_found");
+    assert_eq!(v["data"]["category"], "resolver");
+    assert!(!stdout.contains("registry-token-secret"));
+    assert!(!stderr.contains("registry-token-secret"));
+}
+
+#[test]
+fn package_install_advisory_failure_reports_stable_redacted_diagnostic() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("blocked.pkg", "1.0.0", TrustLevel::Assumed);
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![],
+            legacy_manifests: vec![manifest],
+            advisories: vec![SecurityAdvisory {
+                id: "adv_install_block".to_string(),
+                package: "blocked.pkg".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::High,
+                reason: "secret /Users/dev/token-in-advisory must stay local".to_string(),
+            }],
+            yanked: vec![],
+        },
+    );
+
+    let output = ail()
+        .args(["package", "install", "blocked.pkg@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("code=install.advisory.blocked"))
+        .stderr(predicate::str::contains("category=advisory"))
+        .get_output()
+        .clone();
+
+    let stdout = std::str::from_utf8(&output.stdout).expect("stdout must be UTF-8");
+    let stderr = std::str::from_utf8(&output.stderr).expect("stderr must be UTF-8");
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["code"], "install.advisory.blocked");
+    assert_eq!(v["data"]["category"], "advisory");
+    assert!(!stdout.contains("token-in-advisory"));
+    assert!(!stderr.contains("token-in-advisory"));
+}
+
+#[test]
+fn package_install_lockfile_failure_reports_stable_redacted_diagnostic() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("lock.pkg", "1.0.0", TrustLevel::Assumed);
+    write_legacy_package_registry(dir.path(), &[manifest]);
+    fs::write(
+        package_lockfile_path(dir.path()),
+        b"not cbor; secret /Users/dev/token-in-lockfile",
+    )
+    .expect("corrupt lockfile must be written");
+
+    let output = ail()
+        .args(["package", "install", "lock.pkg@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "code=install.lockfile.unavailable",
+        ))
+        .stderr(predicate::str::contains("category=lockfile"))
+        .get_output()
+        .clone();
+
+    let stdout = std::str::from_utf8(&output.stdout).expect("stdout must be UTF-8");
+    let stderr = std::str::from_utf8(&output.stderr).expect("stderr must be UTF-8");
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["code"], "install.lockfile.unavailable");
+    assert_eq!(v["data"]["category"], "lockfile");
+    assert!(!stdout.contains("token-in-lockfile"));
+    assert!(!stderr.contains("token-in-lockfile"));
+}
+
 // ── signature integrity ───────────────────────────────────────────────────────
 
 #[test]
@@ -359,7 +465,8 @@ fn package_tampered_signature_fails_verify_and_install() {
         .current_dir(dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("signature verification failed"));
+        .stderr(predicate::str::contains("code=install.resolver.rejected"))
+        .stderr(predicate::str::contains("category=resolver"));
 }
 
 // ── legacy unsigned packages ──────────────────────────────────────────────────
@@ -421,9 +528,8 @@ fn package_legacy_verified_unsigned_install_fails() {
         .current_dir(dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "verified package missing local signature",
-        ));
+        .stderr(predicate::str::contains("code=install.resolver.rejected"))
+        .stderr(predicate::str::contains("category=resolver"));
 }
 
 #[test]
