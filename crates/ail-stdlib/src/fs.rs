@@ -33,9 +33,23 @@ impl Path {
     }
 
     /// Join a child segment to this path.
+    ///
+    /// This preserves the historical infallible behavior. Production host
+    /// boundaries should use [`Path::try_join`] when the child segment comes
+    /// from user input so traversal and absolute-child shapes are rejected
+    /// before capability checks.
     pub fn join(&self, child: &str) -> Self {
         let base = self.0.trim_end_matches('/');
         Self(format!("{base}/{child}"))
+    }
+
+    /// Join a single user-provided child segment after validating its shape.
+    ///
+    /// The returned error is redacted: it exposes only the segment shape, not
+    /// the segment itself. This keeps path diagnostics safe for logs and LSP.
+    pub fn try_join(&self, child: &str) -> Result<Self, FsJoinError> {
+        validate_join_segment_shape(join_segment_shape(child))?;
+        Ok(self.join(child))
     }
 
     /// Return the file name (last segment).
@@ -192,6 +206,88 @@ impl FsPathShape {
     }
 }
 
+/// Stable shape categories for child path segments used by [`Path::try_join`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FsJoinSegmentShape {
+    Empty,
+    CurrentDirectory,
+    ParentTraversal,
+    ContainsSeparator,
+    Absolute,
+    ContainsNul,
+    Segment,
+}
+
+impl FsJoinSegmentShape {
+    /// Diagnostic label that does not leak the segment itself.
+    pub fn label(self) -> &'static str {
+        match self {
+            FsJoinSegmentShape::Empty => "empty",
+            FsJoinSegmentShape::CurrentDirectory => "current-directory",
+            FsJoinSegmentShape::ParentTraversal => "parent-traversal",
+            FsJoinSegmentShape::ContainsSeparator => "contains-separator",
+            FsJoinSegmentShape::Absolute => "absolute",
+            FsJoinSegmentShape::ContainsNul => "contains-nul",
+            FsJoinSegmentShape::Segment => "segment",
+        }
+    }
+
+    /// Whether this child segment can be safely joined under an existing grant.
+    pub fn is_allowed(self) -> bool {
+        matches!(self, FsJoinSegmentShape::Segment)
+    }
+}
+
+/// Error produced when a child segment cannot be safely joined.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FsJoinError {
+    pub shape: FsJoinSegmentShape,
+    pub expected: &'static str,
+}
+
+impl std::fmt::Display for FsJoinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "fs join segment shape mismatch: expected {}, got {}",
+            self.expected,
+            self.shape.label()
+        )
+    }
+}
+
+impl std::error::Error for FsJoinError {}
+
+/// Descriptor for validating a child segment before joining it to a base path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FsJoinDescriptor {
+    pub base_shape: FsPathShape,
+    pub segment_shape: FsJoinSegmentShape,
+    pub grant_preserved: bool,
+}
+
+impl FsJoinDescriptor {
+    pub fn new(base: &Path, child: &str) -> Self {
+        Self {
+            base_shape: path_shape(base),
+            segment_shape: join_segment_shape(child),
+            grant_preserved: true,
+        }
+    }
+
+    pub fn diagnostic_key(&self) -> String {
+        format!(
+            "std.fs.join:{}:{}",
+            self.base_shape.label(),
+            self.segment_shape.label()
+        )
+    }
+
+    pub fn validate(&self) -> Result<(), FsJoinError> {
+        validate_join_segment_shape(self.segment_shape)
+    }
+}
+
 /// Error produced when a path has an unsupported structural shape.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FsPathShapeError {
@@ -250,6 +346,41 @@ impl FsOperationDescriptor {
     /// Validate the path shape before any host filesystem operation runs.
     pub fn validate_path_shape(&self) -> Result<(), FsPathShapeError> {
         validate_path_shape(self.path_shape)
+    }
+}
+
+/// Return the stable structural shape for a child segment without exposing it.
+pub fn join_segment_shape(child: &str) -> FsJoinSegmentShape {
+    if child.is_empty() {
+        return FsJoinSegmentShape::Empty;
+    }
+    if child.contains('\0') {
+        return FsJoinSegmentShape::ContainsNul;
+    }
+    if child.starts_with('/') {
+        return FsJoinSegmentShape::Absolute;
+    }
+    if child == "." {
+        return FsJoinSegmentShape::CurrentDirectory;
+    }
+    if child.split('/').any(|segment| segment == "..") {
+        return FsJoinSegmentShape::ParentTraversal;
+    }
+    if child.contains('/') {
+        return FsJoinSegmentShape::ContainsSeparator;
+    }
+    FsJoinSegmentShape::Segment
+}
+
+/// Validate an already-classified join segment shape.
+pub fn validate_join_segment_shape(shape: FsJoinSegmentShape) -> Result<(), FsJoinError> {
+    if shape.is_allowed() {
+        Ok(())
+    } else {
+        Err(FsJoinError {
+            shape,
+            expected: "single relative child segment without separators, traversal, or NUL",
+        })
     }
 }
 
@@ -357,6 +488,60 @@ mod tests {
         assert_eq!(
             empty.diagnostic_key(),
             "std.fs.read_metadata:file.read:empty"
+        );
+    }
+
+    #[test]
+    fn try_join_accepts_only_single_child_segments() {
+        let base = Path::new("workspace/project");
+
+        assert_eq!(
+            base.try_join("main.ail"),
+            Ok(Path::new("workspace/project/main.ail"))
+        );
+        assert_eq!(
+            base.try_join("../secret"),
+            Err(FsJoinError {
+                shape: FsJoinSegmentShape::ParentTraversal,
+                expected: "single relative child segment without separators, traversal, or NUL",
+            })
+        );
+        assert_eq!(
+            base.try_join(".."),
+            Err(FsJoinError {
+                shape: FsJoinSegmentShape::ParentTraversal,
+                expected: "single relative child segment without separators, traversal, or NUL",
+            })
+        );
+        assert_eq!(
+            base.try_join("/etc/passwd"),
+            Err(FsJoinError {
+                shape: FsJoinSegmentShape::Absolute,
+                expected: "single relative child segment without separators, traversal, or NUL",
+            })
+        );
+    }
+
+    #[test]
+    fn join_descriptor_reports_redacted_shapes() {
+        let descriptor = FsJoinDescriptor::new(&Path::new("workspace/project"), "secret/keys");
+
+        assert_eq!(descriptor.base_shape, FsPathShape::Relative);
+        assert_eq!(
+            descriptor.segment_shape,
+            FsJoinSegmentShape::ContainsSeparator
+        );
+        assert!(descriptor.grant_preserved);
+        assert_eq!(
+            descriptor.diagnostic_key(),
+            "std.fs.join:relative:contains-separator"
+        );
+        assert_eq!(
+            descriptor
+                .validate()
+                .expect_err("nested segment rejected")
+                .to_string(),
+            "fs join segment shape mismatch: expected single relative child segment without separators, traversal, or NUL, got contains-separator"
         );
     }
 }
