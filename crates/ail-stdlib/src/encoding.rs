@@ -7,6 +7,76 @@
 // - decoders return Result
 // - encoders declare exported fields
 
+// ── Decode contracts ─────────────────────────────────────────────────────
+
+/// Encoding families exposed by `std.encoding` decoders.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EncodingKind {
+    Base64,
+    Hex,
+}
+
+impl EncodingKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            EncodingKind::Base64 => "base64",
+            EncodingKind::Hex => "hex",
+        }
+    }
+}
+
+/// Stable redacted decode failure categories.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DecodeIssueKind {
+    InvalidLength,
+    InvalidCharacter,
+}
+
+impl DecodeIssueKind {
+    pub fn code(self) -> &'static str {
+        match self {
+            DecodeIssueKind::InvalidLength => "ENCODING_INVALID_LENGTH",
+            DecodeIssueKind::InvalidCharacter => "ENCODING_INVALID_CHARACTER",
+        }
+    }
+
+    pub fn category(self) -> &'static str {
+        match self {
+            DecodeIssueKind::InvalidLength => "length-shape",
+            DecodeIssueKind::InvalidCharacter => "character-shape",
+        }
+    }
+}
+
+/// Redacted decode issue suitable for LSP/logging/registry checks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecodeIssue {
+    pub encoding: EncodingKind,
+    pub kind: DecodeIssueKind,
+    pub code: &'static str,
+    pub category: &'static str,
+}
+
+impl DecodeIssue {
+    pub fn new(encoding: EncodingKind, kind: DecodeIssueKind) -> Self {
+        Self {
+            encoding,
+            kind,
+            code: kind.code(),
+            category: kind.category(),
+        }
+    }
+
+    pub fn diagnostic_key(&self) -> String {
+        format!(
+            "std.encoding.decode:{}:{}:{}",
+            self.encoding.label(),
+            self.category,
+            self.code
+        )
+    }
+}
+
 // ── EncodeError / DecodeError ─────────────────────────────────────────────
 
 /// Error produced during encoding.
@@ -24,12 +94,27 @@ impl std::error::Error for EncodeError {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodeError(pub String);
 
+impl DecodeError {
+    pub fn issue_for(&self, encoding: EncodingKind) -> DecodeIssue {
+        DecodeIssue::new(encoding, classify_decode_error(&self.0))
+    }
+}
+
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "decode error: {}", self.0)
     }
 }
 impl std::error::Error for DecodeError {}
+
+/// Classify existing decode messages into stable redacted categories.
+pub fn classify_decode_error(message: &str) -> DecodeIssueKind {
+    if message.contains("length") {
+        DecodeIssueKind::InvalidLength
+    } else {
+        DecodeIssueKind::InvalidCharacter
+    }
+}
 
 // ── Base64 ────────────────────────────────────────────────────────────────
 
@@ -126,4 +211,39 @@ pub fn hex_decode(s: &str) -> Result<Vec<u8>, DecodeError> {
                 .map_err(|_| DecodeError(format!("invalid hex at {i}")))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_decode_errors_have_redacted_stable_issues() {
+        let err = base64_decode("secret-token").expect_err("invalid base64 length");
+        let issue = err.issue_for(EncodingKind::Base64);
+
+        assert_eq!(issue.kind, DecodeIssueKind::InvalidLength);
+        assert_eq!(issue.code, "ENCODING_INVALID_LENGTH");
+        assert_eq!(issue.category, "length-shape");
+        assert_eq!(
+            issue.diagnostic_key(),
+            "std.encoding.decode:base64:length-shape:ENCODING_INVALID_LENGTH"
+        );
+        assert!(!issue.diagnostic_key().contains("secret"));
+    }
+
+    #[test]
+    fn hex_decode_errors_have_redacted_stable_issues() {
+        let odd = hex_decode("abc").expect_err("odd hex");
+        assert_eq!(
+            odd.issue_for(EncodingKind::Hex).diagnostic_key(),
+            "std.encoding.decode:hex:length-shape:ENCODING_INVALID_LENGTH"
+        );
+
+        let bad = hex_decode("zz").expect_err("bad hex");
+        assert_eq!(
+            bad.issue_for(EncodingKind::Hex).diagnostic_key(),
+            "std.encoding.decode:hex:character-shape:ENCODING_INVALID_CHARACTER"
+        );
+    }
 }
