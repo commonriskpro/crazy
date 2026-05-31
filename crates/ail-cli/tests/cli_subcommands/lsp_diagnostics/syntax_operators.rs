@@ -61,12 +61,12 @@ fn lsp_diagnose_reports_ail_source_cyclic_imports() {
     assert_eq!(v["data"]["diagnostic_count"], 1);
     assert_eq!(v["data"]["error_count"], 1);
     assert_eq!(v["data"]["diagnostics"][0]["source"], "ail-source-import");
-    assert!(
-        v["data"]["diagnostics"][0]["message"]
-            .as_str()
-            .expect("diagnostic message")
-            .contains("cyclic AIL source import detected")
-    );
+    let message = v["data"]["diagnostics"][0]["message"]
+        .as_str()
+        .expect("diagnostic message");
+    assert!(message.contains("cyclic AIL source import detected:"));
+    assert!(message.contains("main.ail ->"));
+    assert!(message.contains("dep.ail ->"));
 }
 #[test]
 fn lsp_diagnose_reports_numeric_leading_source_names() {

@@ -243,6 +243,31 @@ fn compile_file_rejects_non_ail_source_imports() {
 }
 
 #[test]
+fn compile_file_reports_source_import_cycles_with_chain() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let main = dir.child("main.ail");
+    main.write_str("use \"./dep.ail\"\nfn main() -> Int = dep()\n")
+        .expect("main fixture must be written");
+    let dep = dir.child("dep.ail");
+    dep.write_str("use \"./main.ail\"\nfn dep() -> Int = 42\n")
+        .expect("dep fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(main.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "cyclic AIL source import detected:",
+        ))
+        .stderr(predicate::str::contains("main.ail ->"))
+        .stderr(predicate::str::contains("dep.ail ->"));
+}
+
+#[test]
 fn compile_file_rejects_duplicate_source_imports() {
     use assert_fs::prelude::*;
 
