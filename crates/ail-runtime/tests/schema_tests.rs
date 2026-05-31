@@ -80,9 +80,17 @@ fn input_schema_rejects_non_utf8_payload() {
         .validate(b"cart_id=cart-1,noise=\xFF")
         .expect_err("invalid UTF-8 payload must be rejected");
 
+    assert!(err.message.contains("key=schema.payload.invalid_utf8"));
+    assert!(err.message.contains("category=payload_decode"));
     assert!(
-        err.message.contains("payload must be valid UTF-8"),
-        "error should identify malformed payload encoding: {err:?}"
+        err.message
+            .contains("expected_shape=payload:utf8_key_value_pairs")
+    );
+    assert!(err.message.contains("actual_shape=payload:non_utf8_bytes"));
+    assert!(
+        !err.message.contains("cart-1"),
+        "diagnostic must not leak payload values: {}",
+        err.message
     );
 }
 
@@ -93,6 +101,61 @@ fn empty_input_schema_still_accepts_arbitrary_bytes() {
     schema
         .validate(b"\xFF\xFE")
         .expect("empty schema remains deny-list free and accepts any payload");
+}
+
+#[test]
+fn input_schema_missing_field_uses_stable_redacted_diagnostic() {
+    let schema = CapabilityInputSchema::new(vec![
+        SchemaField::new("account_id", "String"),
+        SchemaField::new("api_token", "String"),
+    ]);
+
+    let err = schema
+        .validate(b"account_id=acct_123,secret=sk_live_abc123")
+        .expect_err("missing required field must be rejected");
+
+    assert!(err.message.contains("key=schema.mismatch.missing_field"));
+    assert!(err.message.contains("category=missing_field"));
+    assert!(
+        err.message
+            .contains("expected_shape=field:api_token:String")
+    );
+    assert!(err.message.contains("actual_shape=field:absent"));
+    assert!(
+        !err.message.contains("acct_123") && !err.message.contains("sk_live_abc123"),
+        "diagnostic must not leak payload values: {}",
+        err.message
+    );
+}
+
+#[test]
+fn input_schema_unknown_variant_redacts_actual_tag_value() {
+    let schema = CapabilityInputSchema::new(vec![SchemaField::option(
+        "receipt",
+        vec![SchemaField::new("id", "String")],
+    )]);
+
+    let err = schema
+        .validate(b"receipt.$tag=Bearer sk_live_abc123,receipt.id=rcpt-1")
+        .expect_err("unknown variant must be rejected");
+
+    assert!(err.message.contains("key=schema.mismatch.unknown_variant"));
+    assert!(err.message.contains("category=unknown_variant"));
+    assert!(
+        err.message
+            .contains("expected_shape=variant:receipt:Option:tags=None|Some")
+    );
+    assert!(
+        err.message
+            .contains("actual_shape=variant_tag:present_unknown")
+    );
+    assert!(
+        !err.message.contains("Bearer")
+            && !err.message.contains("sk_live_abc123")
+            && !err.message.contains("rcpt-1"),
+        "diagnostic must not leak tag or payload values: {}",
+        err.message
+    );
 }
 
 // ── CapabilityOutputSchema ────────────────────────────────────────────────
@@ -112,9 +175,12 @@ fn output_schema_rejects_non_utf8_payload() {
         .validate(b"receipt_id=rcpt-1,noise=\xFF")
         .expect_err("invalid UTF-8 response must be rejected");
 
+    assert!(err.message.contains("key=schema.payload.invalid_utf8"));
+    assert!(err.message.contains("category=payload_decode"));
     assert!(
-        err.message.contains("payload must be valid UTF-8"),
-        "error should identify malformed response encoding: {err:?}"
+        !err.message.contains("rcpt-1"),
+        "diagnostic must not leak response values: {}",
+        err.message
     );
 }
 
