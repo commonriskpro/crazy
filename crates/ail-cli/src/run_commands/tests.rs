@@ -281,8 +281,16 @@ fn capability_diagnostic_names_target_capability_and_grant() {
         "diagnostic must name target function; got: {msg}"
     );
     assert!(
+        msg.starts_with("AIL_RUN_CAPABILITY_GRANT_DENIED: run.capability_grant_denied:"),
+        "diagnostic must start with stable code and key; got: {msg}"
+    );
+    assert!(
         msg.contains("capability `log.write`"),
         "diagnostic must name missing capability; got: {msg}"
+    );
+    assert!(
+        msg.contains("denied_count=1"),
+        "diagnostic must expose stable denied count; got: {msg}"
     );
     assert!(
         msg.contains("suggestion: add `--grant log.write`"),
@@ -299,12 +307,46 @@ fn capability_diagnostic_omits_unsafe_grant_suggestion() {
     let msg = format_run_preflight_error(&err, "fn.print_hello");
 
     assert!(
-        msg.contains("capability `log write`"),
-        "diagnostic must still name unsafe capability text; got: {msg}"
+        msg.contains("capability `<redacted:unsafe-capability-id>`"),
+        "diagnostic must redact unsafe capability text; got: {msg}"
+    );
+    assert!(
+        !msg.contains("log write"),
+        "diagnostic must not leak unsafe capability text; got: {msg}"
     );
     assert!(
         !msg.contains("suggestion:"),
         "diagnostic must not suggest unsafe shell words; got: {msg}"
+    );
+}
+
+#[test]
+fn capability_diagnostic_redacts_secret_capability_ids() {
+    let err = RuntimeError::PreflightFailed(PreflightFailure::CapabilityDenied {
+        denied: vec![CapabilityId::new("secret.read:ProductionDbPassword")],
+    });
+
+    let msg = format_run_preflight_error(&err, "fn.read_secret");
+
+    assert!(
+        msg.contains("AIL_RUN_CAPABILITY_GRANT_DENIED"),
+        "diagnostic must include stable code; got: {msg}"
+    );
+    assert!(
+        msg.contains("capability `<redacted:secret-capability>`"),
+        "diagnostic must expose only redacted secret capability shape; got: {msg}"
+    );
+    assert!(
+        msg.contains("redacted_capabilities=1"),
+        "diagnostic must expose redaction count; got: {msg}"
+    );
+    assert!(
+        !msg.contains("ProductionDbPassword"),
+        "diagnostic must not leak secret capability suffix; got: {msg}"
+    );
+    assert!(
+        !msg.contains("suggestion:"),
+        "diagnostic must not suggest redacted secret grants; got: {msg}"
     );
 }
 
