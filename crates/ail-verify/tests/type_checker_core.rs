@@ -11,11 +11,13 @@ use ail_core::semantic_graph::{
     NodeRef, ParamDecl, RefinementRef, RefinementStatus, RuntimeCheckMeta, SemanticGraph,
     TypeArgBinding, TypeFacts,
 };
+use ail_verify::diagnostic::DiagnosticSeverity;
 use ail_verify::report::VerificationState;
 use ail_verify::type_checker::{
     E_CAPABILITY_NOT_PROPAGATED, E_DYN_INTERFACE_UNAVAILABLE, E_EFFECT_NOT_PROPAGATED,
     E_GENERIC_BINDING_ARITY, E_NOMINAL_MISMATCH, E_REFINEMENT_PROOF_UNDISCHARGED,
-    E_REFINEMENT_RUNTIME_CHECK_MISSING, E_STRUCTURAL_TYPE_MISMATCH, TypeChecker,
+    E_REFINEMENT_RUNTIME_CHECK_MISSING, E_STRUCTURAL_TYPE_MISMATCH,
+    TYPE_DIAGNOSTIC_CATEGORY_GENERIC_CALL_BINDING, TypeChecker,
 };
 
 fn graph_from(nodes: Vec<GraphNode>) -> SemanticGraph {
@@ -208,7 +210,7 @@ fn generic_call_missing_binding_fails_arity_validation() {
 
     let report = TypeChecker::check(&graph_with_edges(vec![caller, callee], vec![edge]));
     assert!(report.entries.iter().any(|entry| {
-        entry.claim == "generic-call-binding"
+        entry.claim == TYPE_DIAGNOSTIC_CATEGORY_GENERIC_CALL_BINDING
             && entry.state == VerificationState::Failed
             && entry
                 .evidence
@@ -216,6 +218,23 @@ fn generic_call_missing_binding_fails_arity_validation() {
                 .unwrap_or("")
                 .contains(E_GENERIC_BINDING_ARITY)
     }));
+
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == E_GENERIC_BINDING_ARITY)
+        .expect("generic call binding failure must produce a structured diagnostic");
+    assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+    assert_eq!(diagnostic.target, NodeRef(0));
+    assert!(diagnostic.blocking);
+    assert!(
+        diagnostic
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains(TYPE_DIAGNOSTIC_CATEGORY_GENERIC_CALL_BINDING),
+        "diagnostic evidence must carry the stable type category"
+    );
 }
 
 #[test]

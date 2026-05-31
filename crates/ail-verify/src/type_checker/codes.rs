@@ -1,5 +1,10 @@
 // ── Evidence codes ─────────────────────────────────────────────────────────
 
+// ── Stable type diagnostic categories ──────────────────────────────────────
+
+/// Call-site generic binding/arity diagnostic category.
+pub const TYPE_DIAGNOSTIC_CATEGORY_GENERIC_CALL_BINDING: &str = "generic-call-binding";
+
 /// Nominal type mismatch at a call site.
 pub const E_NOMINAL_MISMATCH: &str = "E_NOMINAL_MISMATCH";
 /// Generic parameter name is empty (arity error).

@@ -90,9 +90,11 @@ impl TypeChecker {
         type_obligations::check_blanket_impl_coherence(graph, &ctx, &mut entries);
 
         let summary_counts = type_diagnostics::build_summary_counts(&entries);
+        let diagnostics = type_diagnostics::build_structured_diagnostics(&entries);
 
         VerificationReport {
             entries,
+            diagnostics,
             schema_version: "verification/1.0".into(),
             summary_counts,
             ..Default::default()
