@@ -211,3 +211,47 @@ fn abi_descriptor_validation_reports_unstable_identifiers() {
         tag: "Bad Tag".to_string(),
     }));
 }
+
+#[test]
+fn abi_descriptor_validation_returns_issues_in_canonical_order() {
+    let descriptor = AbiDescriptor {
+        abi_version: super::ABI_VERSION + 1,
+        exports: BTreeMap::from([(
+            "z_export".to_string(),
+            WasmTypeDescriptor::Tuple(vec![
+                WasmTypeDescriptor::Variant {
+                    tags: vec!["bad tag z".to_string(), "bad tag a".to_string()],
+                },
+                WasmTypeDescriptor::Record {
+                    fields: vec!["bad-field-z".to_string(), "bad-field-a".to_string()],
+                },
+            ]),
+        )]),
+    };
+
+    assert_eq!(
+        descriptor.validation_issues(),
+        vec![
+            AbiDescriptorIssue::IncompatibleVersion {
+                expected: super::ABI_VERSION,
+                actual: super::ABI_VERSION + 1,
+            },
+            AbiDescriptorIssue::InvalidRecordField {
+                export: "z_export".to_string(),
+                field: "bad-field-a".to_string(),
+            },
+            AbiDescriptorIssue::InvalidRecordField {
+                export: "z_export".to_string(),
+                field: "bad-field-z".to_string(),
+            },
+            AbiDescriptorIssue::InvalidVariantTag {
+                export: "z_export".to_string(),
+                tag: "bad tag a".to_string(),
+            },
+            AbiDescriptorIssue::InvalidVariantTag {
+                export: "z_export".to_string(),
+                tag: "bad tag z".to_string(),
+            },
+        ]
+    );
+}
