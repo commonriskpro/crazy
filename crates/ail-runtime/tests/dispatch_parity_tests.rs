@@ -16,3 +16,5 @@ mod host_call;
 mod host_call_write;
 #[path = "dispatch_parity/limits.rs"]
 mod limits;
+#[path = "dispatch_parity/result_diagnostics.rs"]
+mod result_diagnostics;

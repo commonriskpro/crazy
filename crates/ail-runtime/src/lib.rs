@@ -76,7 +76,10 @@ pub use handler::{ClockHandler, Handler, InMemoryHandler, LogHandler};
 pub use host::{
     CapabilityCallMode, RuntimeArg, RuntimeHost, RuntimeInstance, RuntimeValue, TraceContext,
 };
-pub use host_dispatch::{WasmBridgeDiagnostic, WasmBridgeDiagnosticKind, WasmBridgeInvokeError};
+pub use host_dispatch::{
+    HostDispatchResultDiagnostic, HostDispatchResultDiagnosticKind, WasmBridgeDiagnostic,
+    WasmBridgeDiagnosticKind, WasmBridgeInvokeError, sort_host_dispatch_result_diagnostics,
+};
 pub use manifest::{
     CapabilityManifest, RUNTIME_ARTIFACT_MANIFEST_SCHEMA_VERSION, RuntimeArtifactLimits,
     RuntimeArtifactManifest, RuntimeArtifactManifestDiagnostic,

@@ -65,6 +65,7 @@ pub(crate) fn instantiate_inner(
             module_name: module_name.to_string(),
             audit_log: audit_log.clone(),
             limiter: store_limits,
+            dispatch_result_diagnostics: Vec::new(),
             trace_context: None,
             capability_calls_used: 0,
             revocations: revocations.clone(),

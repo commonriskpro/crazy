@@ -15,6 +15,7 @@ use crate::audit::{
 use crate::host_dispatch::audit::CapabilityAuditContext;
 use crate::host_dispatch::limits::{check_rate_limits, unix_timestamp_micros};
 use crate::host_dispatch::memory::{handler_payload, read_memory};
+use crate::host_dispatch::result_diagnostics::HostDispatchResultDiagnostic;
 use crate::host_dispatch::state::HostState;
 use crate::manifest::blake3_hex_of;
 use crate::profile::CapabilityId;
@@ -32,10 +33,91 @@ pub(crate) fn dispatch_host_call_write(
     out_max: i32,
 ) -> Option<i32> {
     // Read capability name, operation name, and args bytes from WASM memory.
-    let capability = String::from_utf8(read_memory(caller, cap_ptr, cap_len)?).ok()?;
-    let operation = String::from_utf8(read_memory(caller, op_ptr, op_len)?).ok()?;
-    let args_bytes = read_memory(caller, args_ptr, args_len.checked_mul(8)?)?;
+    let capability_bytes = match read_memory(caller, cap_ptr, cap_len) {
+        Some(bytes) => bytes,
+        None => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::malformed_args(
+                    None,
+                    None,
+                    "capability.memory",
+                    "failed to read capability label from wasm memory",
+                ),
+            );
+            return None;
+        }
+    };
+    let capability = match String::from_utf8(capability_bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::malformed_args(
+                    None,
+                    None,
+                    "capability.utf8",
+                    "capability label is not valid utf-8",
+                ),
+            );
+            return None;
+        }
+    };
     let cap = CapabilityId::new(capability);
+    let operation_bytes = match read_memory(caller, op_ptr, op_len) {
+        Some(bytes) => bytes,
+        None => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::malformed_args(
+                    Some(&cap),
+                    None,
+                    "operation.memory",
+                    "failed to read operation label from wasm memory",
+                ),
+            );
+            return None;
+        }
+    };
+    let operation = match String::from_utf8(operation_bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::malformed_args(
+                    Some(&cap),
+                    None,
+                    "operation.utf8",
+                    "operation label is not valid utf-8",
+                ),
+            );
+            return None;
+        }
+    };
+    let args_byte_len = match args_len.checked_mul(8) {
+        Some(len) => len,
+        None => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::malformed_args(
+                    Some(&cap),
+                    Some(&operation),
+                    "args.length_overflow",
+                    "args word length overflows byte length",
+                ),
+            );
+            return None;
+        }
+    };
+    let args_bytes = match read_memory(caller, args_ptr, args_byte_len) {
+        Some(bytes) => bytes,
+        None => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::malformed_args(
+                    Some(&cap),
+                    Some(&operation),
+                    "args.memory",
+                    "failed to read argument bytes from wasm memory",
+                ),
+            );
+            return None;
+        }
+    };
     let start = Instant::now();
     let timestamp = unix_timestamp_micros();
     let input_hash = Some(blake3_hex_of(&args_bytes));
@@ -63,6 +145,14 @@ pub(crate) fn dispatch_host_call_write(
 
     // Validate output buffer params after decoding call metadata so failures are auditable.
     if out_ptr < 0 || out_max < 0 {
+        caller.data_mut().record_dispatch_result_diagnostic(
+            HostDispatchResultDiagnostic::malformed_args(
+                Some(&cap),
+                Some(&operation),
+                "output_buffer.pointer",
+                "output buffer pointer or length is negative",
+            ),
+        );
         audit.push_denied(
             &audit_log,
             cap,
@@ -184,6 +274,9 @@ pub(crate) fn dispatch_host_call_write(
             .cloned()
     };
     let Some(handler) = handler else {
+        caller.data_mut().record_dispatch_result_diagnostic(
+            HostDispatchResultDiagnostic::handler_missing(&cap, &operation),
+        );
         audit.push_denied(
             &audit_log,
             cap,
@@ -216,6 +309,12 @@ pub(crate) fn dispatch_host_call_write(
     else {
         {
             let state = caller.data_mut();
+            state.record_dispatch_result_diagnostic(HostDispatchResultDiagnostic::malformed_args(
+                Some(&cap),
+                Some(&operation),
+                "payload.decode",
+                "failed to decode host payload from dispatch arguments",
+            ));
             state.concurrent_calls -= 1;
             state.call_depth -= 1;
         }
@@ -232,6 +331,9 @@ pub(crate) fn dispatch_host_call_write(
     let response = match result {
         Ok(response) => response,
         Err(err) => {
+            caller.data_mut().record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::host_error(&cap, &operation, &handler_name, &err),
+            );
             // Extract the generic audit category before discarding the error.
             // The category is opaque (no secret data) and recorded only in the
             // audit log.  The caller only sees the -1 return code.
@@ -272,6 +374,19 @@ pub(crate) fn dispatch_host_call_write(
     if response.len() > out_max as usize {
         {
             let state = caller.data_mut();
+            state.record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::result_abi_mismatch(
+                    &cap,
+                    &operation,
+                    &handler_name,
+                    "result.output_buffer_too_small",
+                    format!(
+                        "response_bytes={}; output_buffer_bytes={}",
+                        response.len(),
+                        out_max
+                    ),
+                ),
+            );
             state.concurrent_calls -= 1;
             state.call_depth -= 1;
         }
@@ -294,6 +409,15 @@ pub(crate) fn dispatch_host_call_write(
         None => {
             {
                 let state = caller.data_mut();
+                state.record_dispatch_result_diagnostic(
+                    HostDispatchResultDiagnostic::result_abi_mismatch(
+                        &cap,
+                        &operation,
+                        &handler_name,
+                        "result.memory_missing",
+                        "wasm memory export is unavailable for host_call_write result",
+                    ),
+                );
                 state.concurrent_calls -= 1;
                 state.call_depth -= 1;
             }
@@ -313,6 +437,15 @@ pub(crate) fn dispatch_host_call_write(
     {
         {
             let state = caller.data_mut();
+            state.record_dispatch_result_diagnostic(
+                HostDispatchResultDiagnostic::result_abi_mismatch(
+                    &cap,
+                    &operation,
+                    &handler_name,
+                    "result.memory_write",
+                    "failed to write host_call_write result into wasm memory",
+                ),
+            );
             state.concurrent_calls -= 1;
             state.call_depth -= 1;
         }
