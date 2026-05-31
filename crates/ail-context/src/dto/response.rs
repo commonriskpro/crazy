@@ -3,7 +3,7 @@ use ail_storage::graph::SnapshotEnvelope;
 use ail_storage::object::ObjectId;
 use serde::{Deserialize, Serialize};
 
-use super::{ProvenanceBlock, RedactionPolicy, RedactionState};
+use super::{BundleIssue, ProvenanceBlock, RedactedDescriptor, RedactionPolicy, RedactionState};
 
 // ── ImpactInfo ────────────────────────────────────────────────────────────
 
@@ -154,6 +154,15 @@ pub struct ContextResponse {
     ///
     /// Legacy boolean kept for backward compatibility.  Prefer `redaction_state`.
     pub redacted: bool,
+    /// Safe structural descriptors for nodes withheld by redaction.
+    ///
+    /// Names, stable IDs, bodies, and provenance are intentionally omitted so
+    /// diagnostics can explain omissions without leaking protected content.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redacted_descriptors: Vec<RedactedDescriptor>,
+    /// Deterministic bundle/slice diagnostics with stable issue codes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<BundleIssue>,
     /// Explicit redaction state for this response.
     ///
     /// Mirrors `redaction none | partial | restricted` in the protocol doc.

@@ -50,6 +50,8 @@ fn make_response(snapshot: SnapshotEnvelope, structured: Vec<GraphNode>) -> Cont
         structured,
         summary: String::new(),
         redacted: false,
+        redacted_descriptors: Vec::new(),
+        diagnostics: Vec::new(),
         redaction_state: RedactionState::None,
         redaction_policy: None,
         truncated: false,

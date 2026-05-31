@@ -303,3 +303,124 @@ fn response_has_limits_block() {
         "bytes_used must be > 0 for non-empty graph"
     );
 }
+
+// ── context_bundle_output_is_independent_of_input_node_order ──────────
+// Production-maturity guardrail: response bundles must canonicalize source
+// manifest ordering before hashing or redaction descriptors are produced.
+#[test]
+fn context_bundle_output_is_independent_of_input_node_order() {
+    let snapshot = make_snapshot();
+    let query = ContextQuery::Graph {
+        scope: QueryScope::Full,
+        budget: QueryBudget::default(),
+    };
+    let graph_a = make_graph();
+    let graph_b = SemanticGraph {
+        nodes: vec![
+            GraphNode::new(NodeRef(2), NodeKind::Effect, "io"),
+            GraphNode::new(NodeRef(0), NodeKind::Module, "core"),
+            GraphNode::new(NodeRef(1), NodeKind::Function, "run"),
+        ],
+        edges: vec![
+            GraphEdge::new(NodeRef(1), NodeRef(2), EdgeKind::Emits),
+            GraphEdge::new(NodeRef(0), NodeRef(1), EdgeKind::DependsOn),
+        ],
+    };
+
+    let mut redacted_refs = BTreeSet::new();
+    redacted_refs.insert(NodeRef(1));
+
+    let resp_a = ResponseBuilder::build(&query, &graph_a, &snapshot, &redacted_refs)
+        .expect("canonical graph builds");
+    let resp_b = ResponseBuilder::build(&query, &graph_b, &snapshot, &redacted_refs)
+        .expect("shuffled graph builds");
+
+    assert_eq!(
+        resp_a.context_hash, resp_b.context_hash,
+        "canonical bundle hashing must be independent of source node order"
+    );
+    assert_eq!(
+        resp_a.structured, resp_b.structured,
+        "structured bundle must be canonicalized before budgeting"
+    );
+    assert_eq!(
+        resp_a.redacted_descriptors, resp_b.redacted_descriptors,
+        "redacted descriptors must be stable after canonical ordering"
+    );
+    assert!(
+        resp_b
+            .diagnostics
+            .iter()
+            .any(|issue| issue.code == crate::dto::ISSUE_UNSTABLE_INPUT_ORDER),
+        "shuffled source manifest must be diagnosable"
+    );
+}
+
+// ── context_bundle_diagnoses_duplicate_and_missing_manifest_entries ───
+#[test]
+fn context_bundle_diagnoses_duplicate_and_missing_manifest_entries() {
+    let snapshot = make_snapshot();
+    let query = ContextQuery::Graph {
+        scope: QueryScope::Full,
+        budget: QueryBudget::default(),
+    };
+    let graph = SemanticGraph {
+        nodes: vec![
+            GraphNode::new(NodeRef(0), NodeKind::Module, "core"),
+            GraphNode::new(NodeRef(0), NodeKind::Function, "duplicate"),
+            GraphNode::new(NodeRef(2), NodeKind::Effect, "io"),
+        ],
+        edges: vec![GraphEdge::new(NodeRef(2), NodeRef(99), EdgeKind::DependsOn)],
+    };
+
+    let resp = ResponseBuilder::build(&query, &graph, &snapshot, &no_redactions())
+        .expect("diagnostics are non-fatal");
+    let codes: Vec<&str> = resp
+        .diagnostics
+        .iter()
+        .map(|issue| issue.code.as_str())
+        .collect();
+
+    assert!(
+        codes.contains(&crate::dto::ISSUE_DUPLICATE_NODE_REF),
+        "duplicate NodeRef must emit a stable diagnostic code"
+    );
+    assert!(
+        codes.contains(&crate::dto::ISSUE_MISSING_NODE_REF),
+        "missing edge endpoint must emit a stable diagnostic code"
+    );
+}
+
+// ── context_bundle_canonicalizes_duplicate_tie_order ─────────────────
+#[test]
+fn context_bundle_canonicalizes_duplicate_tie_order() {
+    let snapshot = make_snapshot();
+    let query = ContextQuery::Graph {
+        scope: QueryScope::Full,
+        budget: QueryBudget::default(),
+    };
+    let dup_a = GraphNode::new(NodeRef(0), NodeKind::Function, "a");
+    let dup_b = GraphNode::new(NodeRef(0), NodeKind::Function, "b");
+    let graph_a = SemanticGraph {
+        nodes: vec![dup_b.clone(), dup_a.clone()],
+        edges: vec![],
+    };
+    let graph_b = SemanticGraph {
+        nodes: vec![dup_a, dup_b],
+        edges: vec![],
+    };
+
+    let resp_a = ResponseBuilder::build(&query, &graph_a, &snapshot, &no_redactions())
+        .expect("first duplicate graph builds");
+    let resp_b = ResponseBuilder::build(&query, &graph_b, &snapshot, &no_redactions())
+        .expect("second duplicate graph builds");
+
+    assert_eq!(
+        resp_a.structured, resp_b.structured,
+        "duplicate NodeRef ties must be ordered by canonical node bytes"
+    );
+    assert_eq!(
+        resp_a.context_hash, resp_b.context_hash,
+        "duplicate NodeRef tie order must not affect context_hash"
+    );
+}
