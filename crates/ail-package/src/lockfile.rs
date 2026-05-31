@@ -255,6 +255,262 @@ impl LockfileValidationIssue {
     }
 }
 
+/// Stable machine-readable issue kind emitted by production lockfile diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum LockfileIntegrityIssueKind {
+    /// Entries are not in canonical `(name, version)` order.
+    UnstableEntryOrder,
+    /// The same `(name, version)` package is pinned more than once.
+    DuplicateLockfilePackage,
+    /// Replay metadata supplied the same `(name, version)` more than once.
+    DuplicateResolvedPackage,
+    /// A locked package was not present in the replay metadata.
+    MissingPackage,
+    /// A locked package exists, but its artifact digest differs from replay.
+    PackageHashMismatch,
+    /// A locked package's source digest differs from replay metadata.
+    SourceHashMismatch,
+    /// Replay metadata did not include a resolved source descriptor.
+    MissingResolvedSource,
+    /// Replay metadata reports a graph schema below the required floor.
+    StaleGraphSchemaVersion,
+    /// Replay metadata reports a Core IR schema below the required floor.
+    StaleCoreIrSchemaVersion,
+    /// A locked package has no package artifact digest.
+    EmptyPackageHash,
+    /// A locked package records an empty verification report digest.
+    EmptyVerificationReportHash,
+    /// A locked package records an empty accepted assumption ID.
+    EmptyAcceptedAssumption,
+    /// A locked package records the same accepted assumption more than once.
+    DuplicateAcceptedAssumption,
+    /// Accepted assumptions are not in canonical lexical order.
+    UnstableAcceptedAssumptionOrder,
+}
+
+impl LockfileIntegrityIssueKind {
+    /// Stable issue code for downstream tooling and reports.
+    pub fn code(self) -> &'static str {
+        match self {
+            LockfileIntegrityIssueKind::UnstableEntryOrder => "LOCKFILE_UNSTABLE_ENTRY_ORDER",
+            LockfileIntegrityIssueKind::DuplicateLockfilePackage => {
+                "LOCKFILE_DUPLICATE_LOCKFILE_PACKAGE"
+            }
+            LockfileIntegrityIssueKind::DuplicateResolvedPackage => {
+                "LOCKFILE_DUPLICATE_RESOLVED_PACKAGE"
+            }
+            LockfileIntegrityIssueKind::MissingPackage => "LOCKFILE_MISSING_PACKAGE",
+            LockfileIntegrityIssueKind::PackageHashMismatch => "LOCKFILE_PACKAGE_HASH_MISMATCH",
+            LockfileIntegrityIssueKind::SourceHashMismatch => "LOCKFILE_SOURCE_HASH_MISMATCH",
+            LockfileIntegrityIssueKind::MissingResolvedSource => "LOCKFILE_MISSING_RESOLVED_SOURCE",
+            LockfileIntegrityIssueKind::StaleGraphSchemaVersion => {
+                "LOCKFILE_STALE_GRAPH_SCHEMA_VERSION"
+            }
+            LockfileIntegrityIssueKind::StaleCoreIrSchemaVersion => {
+                "LOCKFILE_STALE_CORE_IR_SCHEMA_VERSION"
+            }
+            LockfileIntegrityIssueKind::EmptyPackageHash => "LOCKFILE_EMPTY_PACKAGE_HASH",
+            LockfileIntegrityIssueKind::EmptyVerificationReportHash => {
+                "LOCKFILE_EMPTY_VERIFICATION_REPORT_HASH"
+            }
+            LockfileIntegrityIssueKind::EmptyAcceptedAssumption => {
+                "LOCKFILE_EMPTY_ACCEPTED_ASSUMPTION"
+            }
+            LockfileIntegrityIssueKind::DuplicateAcceptedAssumption => {
+                "LOCKFILE_DUPLICATE_ACCEPTED_ASSUMPTION"
+            }
+            LockfileIntegrityIssueKind::UnstableAcceptedAssumptionOrder => {
+                "LOCKFILE_UNSTABLE_ACCEPTED_ASSUMPTION_ORDER"
+            }
+        }
+    }
+
+    /// Stable category for low-cardinality aggregation.
+    pub fn category(self) -> LockfileValidationCategory {
+        match self {
+            LockfileIntegrityIssueKind::UnstableEntryOrder
+            | LockfileIntegrityIssueKind::DuplicateLockfilePackage
+            | LockfileIntegrityIssueKind::DuplicateResolvedPackage
+            | LockfileIntegrityIssueKind::DuplicateAcceptedAssumption
+            | LockfileIntegrityIssueKind::UnstableAcceptedAssumptionOrder => {
+                LockfileValidationCategory::Determinism
+            }
+            LockfileIntegrityIssueKind::EmptyPackageHash
+            | LockfileIntegrityIssueKind::EmptyVerificationReportHash
+            | LockfileIntegrityIssueKind::EmptyAcceptedAssumption
+            | LockfileIntegrityIssueKind::MissingResolvedSource
+            | LockfileIntegrityIssueKind::StaleGraphSchemaVersion
+            | LockfileIntegrityIssueKind::StaleCoreIrSchemaVersion => {
+                LockfileValidationCategory::LockfileIntegrity
+            }
+            LockfileIntegrityIssueKind::MissingPackage
+            | LockfileIntegrityIssueKind::PackageHashMismatch
+            | LockfileIntegrityIssueKind::SourceHashMismatch => {
+                LockfileValidationCategory::ReplayIntegrity
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for LockfileIntegrityIssueKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.code())
+    }
+}
+
+/// Redacted package descriptor emitted by lockfile integrity diagnostics.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockfilePackageDescriptor {
+    /// Package name associated with the issue.
+    pub name: String,
+    /// Package version associated with the issue.
+    pub version: String,
+    /// Resolved source shape with credentials, path, query, and fragment removed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_source: Option<String>,
+    /// Always true: diagnostics must not expose raw source descriptors.
+    pub redacted: bool,
+}
+
+/// Redacted, stable issue emitted by production lockfile integrity diagnostics.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockfileIntegrityIssue {
+    /// Stable machine-readable issue kind.
+    pub kind: LockfileIntegrityIssueKind,
+    /// Stable issue code for downstream tooling and reports.
+    pub code: String,
+    /// Stable category for low-cardinality aggregation.
+    pub category: LockfileValidationCategory,
+    /// Redacted package descriptor.
+    pub package: LockfilePackageDescriptor,
+    /// Expected digest/version/detail, when the issue has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected: Option<String>,
+    /// Actual digest/version/detail, when the issue has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual: Option<String>,
+}
+
+impl LockfileIntegrityIssue {
+    fn new(kind: LockfileIntegrityIssueKind, name: impl ToString, version: impl ToString) -> Self {
+        Self::with_source(kind, name, version, None)
+    }
+
+    fn with_source(
+        kind: LockfileIntegrityIssueKind,
+        name: impl ToString,
+        version: impl ToString,
+        resolved_source: Option<&str>,
+    ) -> Self {
+        Self {
+            kind,
+            code: kind.code().to_string(),
+            category: kind.category(),
+            package: LockfilePackageDescriptor {
+                name: name.to_string(),
+                version: version.to_string(),
+                resolved_source: resolved_source.map(redacted_resolved_source),
+                redacted: true,
+            },
+            expected: None,
+            actual: None,
+        }
+    }
+
+    fn with_expected_actual(mut self, expected: impl ToString, actual: impl ToString) -> Self {
+        self.expected = Some(expected.to_string());
+        self.actual = Some(actual.to_string());
+        self
+    }
+}
+
+/// Replay-time resolved package metadata for lockfile integrity diagnostics.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockfileResolvedPackage {
+    /// Package name resolved during replay.
+    pub name: String,
+    /// Package version resolved during replay.
+    pub version: String,
+    /// Actual package artifact hash observed during replay.
+    pub package_hash: String,
+    /// Resolved source descriptor (registry URL, archive URI, or repository reference).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_source: Option<String>,
+    /// Source digest expected by lock/replay metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_source_hash: Option<String>,
+    /// Actual source digest observed during replay.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_source_hash: Option<String>,
+    /// Graph schema version observed on the replayed package.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_schema: Option<u32>,
+    /// Core IR schema version observed on the replayed package.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub core_ir_schema: Option<u32>,
+}
+
+impl LockfileResolvedPackage {
+    /// Construct replay metadata with the fields needed by legacy hash validation.
+    pub fn new(
+        name: impl Into<String>,
+        version: impl Into<String>,
+        package_hash: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            version: version.into(),
+            package_hash: package_hash.into(),
+            resolved_source: None,
+            expected_source_hash: None,
+            actual_source_hash: None,
+            graph_schema: None,
+            core_ir_schema: None,
+        }
+    }
+
+    /// Attach the resolved source descriptor observed during replay.
+    pub fn with_resolved_source(mut self, source: impl Into<String>) -> Self {
+        self.resolved_source = Some(source.into());
+        self
+    }
+
+    /// Attach expected and actual source digests for source-integrity checks.
+    pub fn with_source_hashes(
+        mut self,
+        expected: impl Into<String>,
+        actual: impl Into<String>,
+    ) -> Self {
+        self.expected_source_hash = Some(expected.into());
+        self.actual_source_hash = Some(actual.into());
+        self
+    }
+
+    /// Attach package schema versions observed during replay.
+    pub fn with_schema_versions(
+        mut self,
+        graph_schema: Option<u32>,
+        core_ir_schema: Option<u32>,
+    ) -> Self {
+        self.graph_schema = graph_schema;
+        self.core_ir_schema = core_ir_schema;
+        self
+    }
+}
+
+/// Additional production integrity gates for replay-time lockfile validation.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockfileValidationRequirements {
+    /// Require every replayed package to include a resolved source descriptor.
+    pub require_resolved_source: bool,
+    /// Minimum accepted graph schema version for replayed packages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_graph_schema: Option<u32>,
+    /// Minimum accepted Core IR schema version for replayed packages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_core_ir_schema: Option<u32>,
+}
+
 // ── Lockfile ──────────────────────────────────────────────────────────────
 
 /// A resolved and pinned dependency graph — the full lockfile.
@@ -471,6 +727,106 @@ impl Lockfile {
         issues
     }
 
+    /// Produce stable, redacted production diagnostics for lockfile replay integrity.
+    ///
+    /// This keeps [`Lockfile::validate_reproducibility`] compatible while giving
+    /// package-management workflows richer checks for source drift, missing
+    /// resolved source descriptors, schema floors, and deterministic issue order.
+    pub fn diagnose_integrity(
+        &self,
+        actual: &[LockfileResolvedPackage],
+        requirements: &LockfileValidationRequirements,
+    ) -> Vec<LockfileIntegrityIssue> {
+        let actual_tuples = actual
+            .iter()
+            .map(|package| {
+                (
+                    package.name.as_str(),
+                    package.version.as_str(),
+                    package.package_hash.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut issues = self
+            .validate_reproducibility(&actual_tuples)
+            .iter()
+            .map(integrity_issue_from_validation_issue)
+            .collect::<Vec<_>>();
+
+        let mut actual_by_coordinate: BTreeMap<(String, String), ResolvedPackageFacts> =
+            BTreeMap::new();
+        for package in actual {
+            actual_by_coordinate
+                .entry((package.name.clone(), package.version.clone()))
+                .or_default()
+                .record(package);
+        }
+
+        for ((name, version), facts) in &actual_by_coordinate {
+            if requirements.require_resolved_source && facts.has_missing_resolved_source {
+                issues.push(LockfileIntegrityIssue::new(
+                    LockfileIntegrityIssueKind::MissingResolvedSource,
+                    name,
+                    version,
+                ));
+            }
+
+            if !facts.expected_source_hashes.is_empty()
+                && facts.expected_source_hashes != facts.actual_source_hashes
+            {
+                issues.push(
+                    LockfileIntegrityIssue::with_source(
+                        LockfileIntegrityIssueKind::SourceHashMismatch,
+                        name,
+                        version,
+                        facts.first_resolved_source().as_deref(),
+                    )
+                    .with_expected_actual(
+                        join_strings(&facts.expected_source_hashes),
+                        join_strings(&facts.actual_source_hashes),
+                    ),
+                );
+            }
+
+            if let Some(minimum) = requirements.min_graph_schema {
+                let actual = facts.lowest_graph_schema();
+                if actual.unwrap_or(0) < minimum {
+                    issues.push(
+                        LockfileIntegrityIssue::new(
+                            LockfileIntegrityIssueKind::StaleGraphSchemaVersion,
+                            name,
+                            version,
+                        )
+                        .with_expected_actual(
+                            minimum.to_string(),
+                            actual.map(|value| value.to_string()).unwrap_or_default(),
+                        ),
+                    );
+                }
+            }
+
+            if let Some(minimum) = requirements.min_core_ir_schema {
+                let actual = facts.lowest_core_ir_schema();
+                if actual.unwrap_or(0) < minimum {
+                    issues.push(
+                        LockfileIntegrityIssue::new(
+                            LockfileIntegrityIssueKind::StaleCoreIrSchemaVersion,
+                            name,
+                            version,
+                        )
+                        .with_expected_actual(
+                            minimum.to_string(),
+                            actual.map(|value| value.to_string()).unwrap_or_default(),
+                        ),
+                    );
+                }
+            }
+        }
+
+        sort_integrity_issues(&mut issues);
+        issues
+    }
+
     /// Verify that all entries in this lockfile are present in the provided
     /// slice of `(name, version, hash)` tuples — confirming integrity.
     ///
@@ -529,6 +885,159 @@ fn validate_accepted_assumptions(entry: &LockfileEntry, issues: &mut Vec<Lockfil
     }
 }
 
+#[derive(Default)]
+struct ResolvedPackageFacts {
+    package_hashes: BTreeSet<String>,
+    resolved_sources: BTreeSet<String>,
+    expected_source_hashes: BTreeSet<String>,
+    actual_source_hashes: BTreeSet<String>,
+    graph_schemas: BTreeSet<Option<u32>>,
+    core_ir_schemas: BTreeSet<Option<u32>>,
+    has_missing_resolved_source: bool,
+}
+
+impl ResolvedPackageFacts {
+    fn record(&mut self, package: &LockfileResolvedPackage) {
+        self.package_hashes.insert(package.package_hash.clone());
+
+        match package.resolved_source.as_deref() {
+            Some(source) if !source.is_empty() => {
+                self.resolved_sources.insert(source.to_string());
+            }
+            _ => self.has_missing_resolved_source = true,
+        }
+
+        if let Some(expected) = package.expected_source_hash.as_ref() {
+            self.expected_source_hashes.insert(expected.clone());
+        }
+        if let Some(actual) = package.actual_source_hash.as_ref() {
+            self.actual_source_hashes.insert(actual.clone());
+        }
+
+        self.graph_schemas.insert(package.graph_schema);
+        self.core_ir_schemas.insert(package.core_ir_schema);
+    }
+
+    fn first_resolved_source(&self) -> Option<String> {
+        self.resolved_sources.iter().next().cloned()
+    }
+
+    fn lowest_graph_schema(&self) -> Option<u32> {
+        self.graph_schemas.iter().next().copied().flatten()
+    }
+
+    fn lowest_core_ir_schema(&self) -> Option<u32> {
+        self.core_ir_schemas.iter().next().copied().flatten()
+    }
+}
+
+fn integrity_issue_from_validation_issue(
+    issue: &LockfileValidationIssue,
+) -> LockfileIntegrityIssue {
+    match issue {
+        LockfileValidationIssue::UnstableEntryOrder {
+            previous_name,
+            previous_version,
+            name,
+            version,
+        } => LockfileIntegrityIssue::new(
+            LockfileIntegrityIssueKind::UnstableEntryOrder,
+            name,
+            version,
+        )
+        .with_expected_actual(
+            format!("{previous_name}@{previous_version}"),
+            format!("{name}@{version}"),
+        ),
+        LockfileValidationIssue::DuplicatePackageEntry { name, version } => {
+            LockfileIntegrityIssue::new(
+                LockfileIntegrityIssueKind::DuplicateLockfilePackage,
+                name,
+                version,
+            )
+        }
+        LockfileValidationIssue::DuplicateActualPackage { name, version } => {
+            LockfileIntegrityIssue::new(
+                LockfileIntegrityIssueKind::DuplicateResolvedPackage,
+                name,
+                version,
+            )
+        }
+        LockfileValidationIssue::MissingPackage { name, version } => {
+            LockfileIntegrityIssue::new(LockfileIntegrityIssueKind::MissingPackage, name, version)
+        }
+        LockfileValidationIssue::PackageHashMismatch {
+            name,
+            version,
+            expected,
+            actual,
+        } => LockfileIntegrityIssue::new(
+            LockfileIntegrityIssueKind::PackageHashMismatch,
+            name,
+            version,
+        )
+        .with_expected_actual(expected, actual),
+        LockfileValidationIssue::EmptyPackageHash { name, version } => {
+            LockfileIntegrityIssue::new(LockfileIntegrityIssueKind::EmptyPackageHash, name, version)
+        }
+        LockfileValidationIssue::EmptyVerificationReportHash { name, version } => {
+            LockfileIntegrityIssue::new(
+                LockfileIntegrityIssueKind::EmptyVerificationReportHash,
+                name,
+                version,
+            )
+        }
+        LockfileValidationIssue::EmptyAcceptedAssumption { name, version } => {
+            LockfileIntegrityIssue::new(
+                LockfileIntegrityIssueKind::EmptyAcceptedAssumption,
+                name,
+                version,
+            )
+        }
+        LockfileValidationIssue::DuplicateAcceptedAssumption {
+            name,
+            version,
+            assumption,
+        } => LockfileIntegrityIssue::new(
+            LockfileIntegrityIssueKind::DuplicateAcceptedAssumption,
+            name,
+            version,
+        )
+        .with_expected_actual(assumption, assumption),
+        LockfileValidationIssue::UnstableAcceptedAssumptionOrder {
+            name,
+            version,
+            previous,
+            assumption,
+        } => LockfileIntegrityIssue::new(
+            LockfileIntegrityIssueKind::UnstableAcceptedAssumptionOrder,
+            name,
+            version,
+        )
+        .with_expected_actual(previous, assumption),
+    }
+}
+
+fn join_strings(values: &BTreeSet<String>) -> String {
+    values.iter().cloned().collect::<Vec<_>>().join(",")
+}
+
+fn sort_integrity_issues(issues: &mut [LockfileIntegrityIssue]) {
+    issues.sort_by(|a, b| integrity_issue_sort_key(a).cmp(&integrity_issue_sort_key(b)));
+}
+
+fn integrity_issue_sort_key(
+    issue: &LockfileIntegrityIssue,
+) -> (String, String, String, String, String) {
+    (
+        issue.code.clone(),
+        issue.package.name.clone(),
+        issue.package.version.clone(),
+        issue.expected.clone().unwrap_or_default(),
+        issue.actual.clone().unwrap_or_default(),
+    )
+}
+
 fn sort_validation_issues(issues: &mut [LockfileValidationIssue]) {
     issues.sort_by(|a, b| validation_issue_sort_key(a).cmp(&validation_issue_sort_key(b)));
 }
@@ -568,6 +1077,32 @@ fn validation_issue_sort_key(
             previous,
             assumption,
         } => (issue.code(), name, version, previous, assumption),
+    }
+}
+
+fn redacted_resolved_source(raw: &str) -> String {
+    if raw.is_empty() {
+        return "<redacted>".to_string();
+    }
+
+    if let Some(scheme_end) = raw.find("://") {
+        let scheme = &raw[..scheme_end];
+        let rest = &raw[scheme_end + 3..];
+        let authority = rest
+            .split(|ch| matches!(ch, '/' | '?' | '#'))
+            .next()
+            .unwrap_or_default();
+        let authority = authority
+            .rsplit_once('@')
+            .map(|(_, host)| host)
+            .unwrap_or(authority);
+        if authority.is_empty() {
+            format!("{scheme}://<redacted>")
+        } else {
+            format!("{scheme}://{authority}/<redacted>")
+        }
+    } else {
+        "<redacted>".to_string()
     }
 }
 
@@ -978,6 +1513,108 @@ mod tests {
             &issues[4],
             LockfileValidationIssue::PackageHashMismatch { actual, .. } if actual == "x,y"
         ));
+    }
+
+    // ── lockfile_diagnose_integrity_reports_production_metadata ──────────
+    // Production gate: replay diagnostics expose stable issue codes for package
+    // hash/source drift, duplicate packages, missing source descriptors, stale
+    // schemas, and deterministic issue ordering.
+    #[test]
+    fn lockfile_diagnose_integrity_reports_production_metadata() {
+        let mut lf = Lockfile::new();
+        lf.add(entry_with("pkg.a", "1.0.0", "locked-package"));
+        lf.add(entry_with("pkg.b", "1.0.0", "b"));
+
+        let requirements = LockfileValidationRequirements {
+            require_resolved_source: true,
+            min_graph_schema: Some(3),
+            min_core_ir_schema: Some(2),
+        };
+        let actual_1 = vec![
+            LockfileResolvedPackage::new("pkg.b", "1.0.0", "b")
+                .with_schema_versions(Some(3), Some(2)),
+            LockfileResolvedPackage::new("pkg.a", "1.0.0", "actual-package")
+                .with_resolved_source(
+                    "https://user:secret@registry.example.test/packages/pkg.a?token=secret#frag",
+                )
+                .with_source_hashes("locked-source", "actual-source")
+                .with_schema_versions(Some(1), None),
+            LockfileResolvedPackage::new("pkg.a", "1.0.0", "actual-package")
+                .with_resolved_source("https://registry.example.test/packages/pkg.a")
+                .with_source_hashes("locked-source", "actual-source")
+                .with_schema_versions(Some(1), None),
+        ];
+        let actual_2 = actual_1.iter().cloned().rev().collect::<Vec<_>>();
+
+        let issues = lf.diagnose_integrity(&actual_1, &requirements);
+
+        assert_eq!(
+            issues,
+            lf.diagnose_integrity(&actual_2, &requirements),
+            "diagnostics must not depend on replay descriptor order"
+        );
+        assert_eq!(
+            issues
+                .iter()
+                .map(|issue| issue.code.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "LOCKFILE_DUPLICATE_RESOLVED_PACKAGE",
+                "LOCKFILE_MISSING_RESOLVED_SOURCE",
+                "LOCKFILE_PACKAGE_HASH_MISMATCH",
+                "LOCKFILE_SOURCE_HASH_MISMATCH",
+                "LOCKFILE_STALE_CORE_IR_SCHEMA_VERSION",
+                "LOCKFILE_STALE_GRAPH_SCHEMA_VERSION",
+            ]
+        );
+        assert_eq!(
+            issues
+                .iter()
+                .map(|issue| issue.category)
+                .collect::<Vec<_>>(),
+            vec![
+                LockfileValidationCategory::Determinism,
+                LockfileValidationCategory::LockfileIntegrity,
+                LockfileValidationCategory::ReplayIntegrity,
+                LockfileValidationCategory::ReplayIntegrity,
+                LockfileValidationCategory::LockfileIntegrity,
+                LockfileValidationCategory::LockfileIntegrity,
+            ]
+        );
+    }
+
+    // ── lockfile_diagnostics_redact_resolved_source_descriptors ──────────
+    // Production gate: package descriptors expose source shape without leaking
+    // URL credentials, path, query token, or fragment.
+    #[test]
+    fn lockfile_diagnostics_redact_resolved_source_descriptors() {
+        let mut lf = Lockfile::new();
+        lf.add(entry_with("pkg.secret", "1.0.0", "package"));
+        let actual = vec![
+            LockfileResolvedPackage::new("pkg.secret", "1.0.0", "package")
+                .with_resolved_source(
+                    "https://user:pass@registry.example.test/private/pkg?token=abc#frag",
+                )
+                .with_source_hashes("locked-source", "actual-source"),
+        ];
+
+        let issues = lf.diagnose_integrity(&actual, &LockfileValidationRequirements::default());
+        let source_issue = issues
+            .iter()
+            .find(|issue| issue.kind == LockfileIntegrityIssueKind::SourceHashMismatch)
+            .expect("source mismatch issue");
+
+        assert_eq!(source_issue.package.name, "pkg.secret");
+        assert_eq!(source_issue.package.version, "1.0.0");
+        assert_eq!(
+            source_issue.package.resolved_source.as_deref(),
+            Some("https://registry.example.test/<redacted>")
+        );
+        assert!(source_issue.package.redacted);
+        assert!(
+            !format!("{source_issue:?}").contains("token=abc"),
+            "diagnostic must not leak source URL secrets"
+        );
     }
 
     // ── lockfile_get_returns_none_for_missing ─────────────────────────────
