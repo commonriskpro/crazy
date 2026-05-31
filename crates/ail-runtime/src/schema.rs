@@ -38,9 +38,58 @@ pub struct SchemaValidationError {
     pub message: String,
 }
 
+impl SchemaValidationError {
+    fn from_diagnostic(diagnostic: SchemaMismatchDiagnostic) -> Self {
+        SchemaValidationError {
+            message: diagnostic.to_string(),
+        }
+    }
+}
+
 impl std::fmt::Display for SchemaValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
+    }
+}
+
+// ── SchemaMismatchDiagnostic ─────────────────────────────────────────────
+
+/// Stable, redacted diagnostic emitted for schema mismatch failures.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchemaMismatchDiagnostic {
+    /// Machine-readable diagnostic key.
+    pub key: &'static str,
+    /// Stable category for grouping mismatches.
+    pub category: &'static str,
+    /// Redacted expected shape descriptor.
+    pub expected_shape: String,
+    /// Redacted actual shape descriptor.
+    pub actual_shape: &'static str,
+}
+
+impl SchemaMismatchDiagnostic {
+    fn new(
+        key: &'static str,
+        category: &'static str,
+        expected_shape: impl Into<String>,
+        actual_shape: &'static str,
+    ) -> Self {
+        SchemaMismatchDiagnostic {
+            key,
+            category,
+            expected_shape: expected_shape.into(),
+            actual_shape,
+        }
+    }
+}
+
+impl std::fmt::Display for SchemaMismatchDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SchemaMismatch: key={} category={} expected_shape={} actual_shape={}",
+            self.key, self.category, self.expected_shape, self.actual_shape
+        )
     }
 }
 
@@ -172,8 +221,13 @@ impl SchemaField {
 /// This is the minimal boundary protocol: a comma-separated list of
 /// `key=value` pairs.  Empty payloads and empty schemas are always valid.
 fn parse_fields(payload: &[u8]) -> Result<HashMap<String, String>, SchemaValidationError> {
-    let s = std::str::from_utf8(payload).map_err(|_| SchemaValidationError {
-        message: "PayloadDecodeError: payload must be valid UTF-8".to_string(),
+    let s = std::str::from_utf8(payload).map_err(|_| {
+        SchemaValidationError::from_diagnostic(SchemaMismatchDiagnostic::new(
+            "schema.payload.invalid_utf8",
+            "payload_decode",
+            "payload:utf8_key_value_pairs",
+            "payload:non_utf8_bytes",
+        ))
     })?;
     Ok(s.split(',')
         .filter_map(|pair| {
@@ -208,6 +262,20 @@ fn validate_fields(
     Ok(())
 }
 
+fn field_shape(field: &SchemaField, path: &str) -> String {
+    format!("field:{path}:{}", field.type_name())
+}
+
+fn variant_shape(field: &SchemaField, path: &str) -> String {
+    let tags = field
+        .variants()
+        .iter()
+        .map(SchemaVariant::tag)
+        .collect::<Vec<_>>()
+        .join("|");
+    format!("variant:{path}:{}:tags={tags}", field.type_name())
+}
+
 fn validate_field_path(
     fields: &HashMap<String, String>,
     field: &SchemaField,
@@ -221,15 +289,25 @@ fn validate_field_path(
 
     if !field.variants().is_empty() {
         let tag_path = format!("{path}.$tag");
-        let tag = fields.get(&tag_path).ok_or_else(|| SchemaValidationError {
-            message: format!("PayloadDecodeError: missing required field `{tag_path}`"),
+        let tag = fields.get(&tag_path).ok_or_else(|| {
+            SchemaValidationError::from_diagnostic(SchemaMismatchDiagnostic::new(
+                "schema.mismatch.missing_variant_tag",
+                "missing_variant_tag",
+                variant_shape(field, &path),
+                "variant_tag:absent",
+            ))
         })?;
         let variant = field
             .variants()
             .iter()
             .find(|variant| variant.tag() == tag)
-            .ok_or_else(|| SchemaValidationError {
-                message: format!("PayloadDecodeError: unknown variant `{tag}` for `{path}`"),
+            .ok_or_else(|| {
+                SchemaValidationError::from_diagnostic(SchemaMismatchDiagnostic::new(
+                    "schema.mismatch.unknown_variant",
+                    "unknown_variant",
+                    variant_shape(field, &path),
+                    "variant_tag:present_unknown",
+                ))
             })?;
         for nested in variant.fields() {
             validate_field_path(fields, nested, &path)?;
@@ -239,9 +317,14 @@ fn validate_field_path(
 
     if field.fields().is_empty() {
         if !fields.contains_key(&path) {
-            return Err(SchemaValidationError {
-                message: format!("PayloadDecodeError: missing required field `{path}`"),
-            });
+            return Err(SchemaValidationError::from_diagnostic(
+                SchemaMismatchDiagnostic::new(
+                    "schema.mismatch.missing_field",
+                    "missing_field",
+                    field_shape(field, &path),
+                    "field:absent",
+                ),
+            ));
         }
         return Ok(());
     }
