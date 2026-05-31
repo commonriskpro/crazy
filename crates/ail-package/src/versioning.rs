@@ -23,8 +23,175 @@
 //   end
 
 use blake3::Hasher;
-use semver::Version;
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
+
+// ── VersionRequirement ───────────────────────────────────────────────────
+
+/// Stable issue kind for semantic version requirement parsing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VersionRequirementIssueKind {
+    /// Requirement syntax or shape is invalid.
+    Requirement,
+}
+
+impl VersionRequirementIssueKind {
+    /// Stable machine category for this issue kind.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VersionRequirementIssueKind::Requirement => "requirement",
+        }
+    }
+}
+
+impl std::fmt::Display for VersionRequirementIssueKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Stable machine-readable issue code for requirement parsing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VersionRequirementIssueCode {
+    /// Requirement is empty after trimming whitespace.
+    RequirementEmpty,
+    /// Requirement could not be parsed by the semantic version range parser.
+    RequirementInvalid,
+}
+
+impl VersionRequirementIssueCode {
+    /// Stable machine code for this issue.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VersionRequirementIssueCode::RequirementEmpty => "requirement.empty",
+            VersionRequirementIssueCode::RequirementInvalid => "requirement.invalid",
+        }
+    }
+}
+
+impl std::fmt::Display for VersionRequirementIssueCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Redacted input shape for invalid semantic version requirements.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VersionRequirementShape {
+    Empty,
+    Exact,
+    Caret,
+    Tilde,
+    Comparator,
+    Other,
+}
+
+impl VersionRequirementShape {
+    /// Stable redacted shape descriptor.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VersionRequirementShape::Empty => "empty",
+            VersionRequirementShape::Exact => "exact",
+            VersionRequirementShape::Caret => "caret",
+            VersionRequirementShape::Tilde => "tilde",
+            VersionRequirementShape::Comparator => "comparator",
+            VersionRequirementShape::Other => "other",
+        }
+    }
+}
+
+impl std::fmt::Display for VersionRequirementShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Stable redacted issue reported for an invalid version requirement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VersionRequirementIssue {
+    pub kind: VersionRequirementIssueKind,
+    pub code: VersionRequirementIssueCode,
+    pub shape: VersionRequirementShape,
+    pub char_len: usize,
+    pub reason: String,
+}
+
+impl VersionRequirementIssue {
+    /// Stable machine category for renderers that should not inspect prose.
+    pub fn category(&self) -> &'static str {
+        self.kind.as_str()
+    }
+}
+
+/// Error returned when a semantic version requirement cannot be parsed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VersionRequirementError {
+    pub issue: VersionRequirementIssue,
+}
+
+impl std::fmt::Display for VersionRequirementError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid semantic version requirement: {}",
+            self.issue.code
+        )
+    }
+}
+
+impl std::error::Error for VersionRequirementError {}
+
+/// Parsed semantic version requirement for package version resolution.
+///
+/// Bare versions such as `"1.2.3"` or `"1.2"` are treated as exact matches
+/// (`=1.2.3`, `=1.2.0`). Range syntax is delegated to the existing `semver`
+/// parser for caret, tilde, and comparator requirements.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VersionRequirement {
+    requirement: VersionReq,
+}
+
+impl VersionRequirement {
+    /// Parse an exact version or semantic version range requirement.
+    pub fn parse(requirement: &str) -> Result<Self, VersionRequirementError> {
+        let trimmed = requirement.trim();
+        if trimmed.is_empty() {
+            return Err(version_requirement_error(
+                trimmed,
+                VersionRequirementIssueCode::RequirementEmpty,
+                "version requirement must not be empty",
+            ));
+        }
+
+        let parse_target = exact_requirement(trimmed).unwrap_or_else(|| trimmed.to_string());
+        VersionReq::parse(&parse_target)
+            .map(|requirement| Self { requirement })
+            .map_err(|_| {
+                version_requirement_error(
+                    trimmed,
+                    VersionRequirementIssueCode::RequirementInvalid,
+                    "version requirement must be exact, caret, tilde, or comparator syntax",
+                )
+            })
+    }
+
+    /// Returns `true` when the parsed requirement accepts the given version.
+    pub fn matches_version(&self, version: &Version) -> bool {
+        self.requirement.matches(version)
+    }
+
+    /// Parse `version` and returns whether this requirement accepts it.
+    pub fn matches(&self, version: &str) -> Result<bool, CompatibilityError> {
+        let version = parse_version(version)?;
+        Ok(self.matches_version(&version))
+    }
+}
+
+impl std::fmt::Display for VersionRequirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.requirement)
+    }
+}
 
 // ── CompatibilityClass ────────────────────────────────────────────────────
 
@@ -501,6 +668,45 @@ impl CompatibilityEngine {
     }
 }
 
+fn exact_requirement(requirement: &str) -> Option<String> {
+    normalize_version(requirement)
+        .ok()
+        .map(|version| format!("={version}"))
+}
+
+fn version_requirement_error(
+    requirement: &str,
+    code: VersionRequirementIssueCode,
+    reason: &str,
+) -> VersionRequirementError {
+    VersionRequirementError {
+        issue: VersionRequirementIssue {
+            kind: VersionRequirementIssueKind::Requirement,
+            code,
+            shape: version_requirement_shape(requirement),
+            char_len: requirement.chars().count(),
+            reason: reason.to_string(),
+        },
+    }
+}
+
+fn version_requirement_shape(requirement: &str) -> VersionRequirementShape {
+    let trimmed = requirement.trim();
+    if trimmed.is_empty() {
+        VersionRequirementShape::Empty
+    } else if exact_requirement(trimmed).is_some() {
+        VersionRequirementShape::Exact
+    } else if trimmed.starts_with('^') {
+        VersionRequirementShape::Caret
+    } else if trimmed.starts_with('~') {
+        VersionRequirementShape::Tilde
+    } else if trimmed.starts_with('>') || trimmed.starts_with('<') || trimmed.starts_with('=') {
+        VersionRequirementShape::Comparator
+    } else {
+        VersionRequirementShape::Other
+    }
+}
+
 fn migration_record_issues(
     package: &str,
     migration: &MigrationRecord,
@@ -943,5 +1149,71 @@ mod tests {
                 .all(|issue| issue.kind == LocalCompatibilityIssueKind::Migration)
         );
         assert!(issues.iter().all(|issue| issue.migration_hash.is_none()));
+    }
+
+    #[test]
+    fn version_requirement_exact_versions_match_only_same_version() {
+        let requirement = VersionRequirement::parse("1.2.3").expect("exact requirement parses");
+
+        assert_eq!(requirement.to_string(), "=1.2.3");
+        assert!(requirement.matches("1.2.3").expect("version parses"));
+        assert!(!requirement.matches("1.2.4").expect("version parses"));
+        assert!(!requirement.matches("1.3.0").expect("version parses"));
+    }
+
+    #[test]
+    fn version_requirement_normalizes_shorthand_exact_versions() {
+        let requirement = VersionRequirement::parse("1.2").expect("shorthand exact parses");
+
+        assert_eq!(requirement.to_string(), "=1.2.0");
+        assert!(requirement.matches("1.2.0").expect("version parses"));
+        assert!(!requirement.matches("1.2.1").expect("version parses"));
+    }
+
+    #[test]
+    fn version_requirement_supports_caret_tilde_and_comparators() {
+        let caret = VersionRequirement::parse("^1.2.3").expect("caret requirement parses");
+        assert!(caret.matches("1.9.0").expect("version parses"));
+        assert!(!caret.matches("2.0.0").expect("version parses"));
+
+        let tilde = VersionRequirement::parse("~1.2.3").expect("tilde requirement parses");
+        assert!(tilde.matches("1.2.9").expect("version parses"));
+        assert!(!tilde.matches("1.3.0").expect("version parses"));
+
+        let comparator =
+            VersionRequirement::parse(">=1.2.0, <2.0.0").expect("comparator requirement parses");
+        assert!(comparator.matches("1.5.0").expect("version parses"));
+        assert!(!comparator.matches("2.0.0").expect("version parses"));
+    }
+
+    #[test]
+    fn invalid_version_requirement_reports_stable_redacted_issue() {
+        let error = VersionRequirement::parse("^definitely-not-a-version")
+            .expect_err("invalid requirement rejected");
+
+        assert_eq!(error.issue.kind, VersionRequirementIssueKind::Requirement);
+        assert_eq!(
+            error.issue.code,
+            VersionRequirementIssueCode::RequirementInvalid
+        );
+        assert_eq!(error.issue.category(), "requirement");
+        assert_eq!(error.issue.code.to_string(), "requirement.invalid");
+        assert_eq!(error.issue.shape, VersionRequirementShape::Caret);
+        assert_eq!(error.issue.char_len, "^definitely-not-a-version".len());
+        assert!(!error.to_string().contains("definitely"));
+        assert!(!error.issue.reason.contains("definitely"));
+    }
+
+    #[test]
+    fn empty_version_requirement_reports_stable_redacted_issue() {
+        let error = VersionRequirement::parse("   ").expect_err("empty requirement rejected");
+
+        assert_eq!(
+            error.issue.code,
+            VersionRequirementIssueCode::RequirementEmpty
+        );
+        assert_eq!(error.issue.code.to_string(), "requirement.empty");
+        assert_eq!(error.issue.shape, VersionRequirementShape::Empty);
+        assert_eq!(error.issue.char_len, 0);
     }
 }
