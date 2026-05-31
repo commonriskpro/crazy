@@ -543,6 +543,47 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if func == "tuple.length" && args.len() == 1 {
+        return (
+            format!(
+                "tuple_length({})",
+                format_source_expr(&args[0], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "tuple.get" && args.len() == 2 {
+        return (
+            format!(
+                "tuple_get({}, {})",
+                format_source_expr(&args[0], module, constants),
+                format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "tuple.first" && args.len() == 1 {
+        return (
+            format!(
+                "tuple_first({})",
+                format_source_expr(&args[0], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "tuple.second" && args.len() == 1 {
+        return (
+            format!(
+                "tuple_second({})",
+                format_source_expr(&args[0], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "list" {
         return (
             format!(

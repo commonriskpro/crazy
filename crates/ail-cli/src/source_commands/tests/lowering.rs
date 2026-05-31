@@ -206,6 +206,34 @@ fn pair() -> Tuple<Int, Text> = tuple(42, "answer")
 }
 
 #[test]
+fn lowers_source_tuple_accessors_to_core_calls() {
+    let program = parse_ail_source(
+        r#"
+fn pair() -> Tuple<Int, Text> = tuple(42, "answer")
+fn first() -> Option<Int> = tuple_first(pair())
+fn second() -> Option<Text> = tuple.second(pair())
+fn pair_len() -> Int = tuple_length(pair())
+fn pair_get() -> Option<Text> = tuple_get(pair(), 1)
+"#,
+    )
+    .expect("source tuple accessors must parse");
+    let acl = source_program_to_acl(&program, "source_tuple_accessors".to_string());
+
+    assert!(
+        acl.contains("op create_function id=fn.first return=Option<Int> body=tuple.first(pair())")
+    );
+    assert!(
+        acl.contains(
+            "op create_function id=fn.second return=Option<Text> body=tuple.second(pair())"
+        )
+    );
+    assert!(acl.contains("op create_function id=fn.pair_len return=Int body=tuple.length(pair())"));
+    assert!(acl.contains(
+        "op create_function id=fn.pair_get return=Option<Text> body=tuple.get(pair(), 1)"
+    ));
+}
+
+#[test]
 fn lowers_source_record_field_access_and_update() {
     let program = parse_ail_source(
         r#"

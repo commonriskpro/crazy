@@ -11,6 +11,7 @@ mod match_expr;
 mod option_result;
 mod syntax_helpers;
 mod text;
+mod tuple;
 
 pub(super) use collections::*;
 pub(super) use control::*;
@@ -19,6 +20,7 @@ pub(super) use match_expr::*;
 pub(super) use option_result::*;
 pub(super) use syntax_helpers::*;
 pub(super) use text::*;
+pub(super) use tuple::*;
 
 #[derive(Clone, Copy)]
 pub(super) enum SourceLowerDiagnostic {
@@ -288,6 +290,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_result_predicate_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
+    if let Some(lowered) = lower_source_tuple_accessor_expr(expr, line_num)? {
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_effect_call_expr(expr, line_num)? {

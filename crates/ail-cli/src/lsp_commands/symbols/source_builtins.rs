@@ -296,6 +296,30 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "tuple(${1:first}, ${2:second})",
     },
     AclSymbol {
+        label: "tuple_length",
+        detail: "AIL source Tuple helper",
+        documentation: "Returns the arity of a Tuple<T...> value as Int.",
+        insert_text: "tuple_length(${1:tuple})",
+    },
+    AclSymbol {
+        label: "tuple_get",
+        detail: "AIL source Tuple helper",
+        documentation: "Returns Option<T> for a zero-based tuple index; None when out of bounds.",
+        insert_text: "tuple_get(${1:tuple}, ${2:index})",
+    },
+    AclSymbol {
+        label: "tuple_first",
+        detail: "AIL source Tuple helper",
+        documentation: "Returns Option<T> containing the first tuple element, or None for an empty tuple.",
+        insert_text: "tuple_first(${1:tuple})",
+    },
+    AclSymbol {
+        label: "tuple_second",
+        detail: "AIL source Tuple helper",
+        documentation: "Returns Option<T> containing the second tuple element, or None when absent.",
+        insert_text: "tuple_second(${1:tuple})",
+    },
+    AclSymbol {
         label: "map",
         detail: "AIL source Map builtin",
         documentation: "Constructs a typed Map<K,V> from key/value argument pairs.",

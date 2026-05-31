@@ -270,6 +270,14 @@ pub(super) fn infer_source_call_type(
         }
         "list" => infer_source_list_type(args, scope, functions),
         "tuple" => infer_source_tuple_type(args, scope, functions),
+        "tuple.length" | "tuple_length" => infer_source_tuple_length_type(args, scope, functions),
+        "tuple.get" | "tuple_get" => infer_source_tuple_get_type(args, scope, functions),
+        "tuple.first" | "tuple_first" => {
+            infer_source_tuple_positional_type(args, scope, functions, 0, func)
+        }
+        "tuple.second" | "tuple_second" => {
+            infer_source_tuple_positional_type(args, scope, functions, 1, func)
+        }
         "set" => infer_source_set_type(args, scope, functions),
         "map" => infer_source_map_type(args, scope, functions),
         "record" => infer_source_record_type(args, scope, functions),
@@ -352,6 +360,64 @@ pub(super) fn infer_source_tuple_type(
         .map(|arg| infer_source_expr_type(arg, scope, functions))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(format!("Tuple<{}>", element_types.join(",")))
+}
+
+pub(super) fn infer_source_tuple_length_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let tuple_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    require_source_tuple_type(&tuple_ty, "tuple.length argument 1")?;
+    Ok("Int".to_string())
+}
+
+pub(super) fn infer_source_tuple_get_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let tuple_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let items = require_source_tuple_type(&tuple_ty, "tuple.get argument 1")?;
+    let index_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    validate_source_type_match("Int", &index_ty, "tuple.get argument 2")?;
+
+    let item_ty = args[1]
+        .parse::<i64>()
+        .ok()
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| items.and_then(|items| items.get(index).copied()))
+        .unwrap_or("Unknown");
+    Ok(format!("Option<{item_ty}>"))
+}
+
+pub(super) fn infer_source_tuple_positional_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+    index: usize,
+    context: &str,
+) -> Result<String, CliError> {
+    let tuple_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let items = require_source_tuple_type(&tuple_ty, &format!("{context} argument 1"))?;
+    let item_ty = items
+        .and_then(|items| items.get(index).copied())
+        .unwrap_or("Unknown");
+    Ok(format!("Option<{item_ty}>"))
+}
+
+fn require_source_tuple_type<'a>(
+    ty: &'a str,
+    context: &str,
+) -> Result<Option<Vec<&'a str>>, CliError> {
+    if ty == "Unknown" {
+        return Ok(None);
+    }
+    source_tuple_types(ty).map(Some).ok_or_else(|| {
+        CliError::ParseError(format!(
+            "type mismatch in {context}: expected Tuple<Unknown>, got {ty}"
+        ))
+    })
 }
 
 pub(super) fn infer_source_set_type(

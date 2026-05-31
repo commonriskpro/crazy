@@ -276,6 +276,26 @@ fn formats_source_tuple_types() {
 }
 
 #[test]
+fn formats_source_tuple_accessors() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn pair()->Tuple<i64,String>=tuple(42,"answer")
+fn pair_len()->Int=tuple.length(pair())
+fn pair_first()->Option<Int>=tuple.first(pair())
+fn pair_second()->Option<Text>=tuple_second(pair())
+fn pair_get()->Option<Text>=tuple.get(pair(),1)
+"#,
+    )
+    .expect("source tuple accessors must format");
+
+    assert_eq!(item_count, 5);
+    assert!(formatted.contains("fn pair_len() -> Int = tuple_length(pair())\n"));
+    assert!(formatted.contains("fn pair_first() -> Option<Int> = tuple_first(pair())\n"));
+    assert!(formatted.contains("fn pair_second() -> Option<Text> = tuple_second(pair())\n"));
+    assert!(formatted.contains("fn pair_get() -> Option<Text> = tuple_get(pair(), 1)\n"));
+}
+
+#[test]
 fn formats_source_record_types() {
     let (formatted, item_count) = format_ail_source(
         r#"

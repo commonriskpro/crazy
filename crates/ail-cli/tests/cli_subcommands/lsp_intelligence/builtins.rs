@@ -749,6 +749,12 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .any(|item| item["label"] == "tuple" && item["detail"] == "AIL source Tuple builtin"),
         "completion must include AIL source tuple builtin; got: {tuple_items:?}"
     );
+    assert!(
+        tuple_items.iter().any(|item| {
+            item["label"] == "tuple_first" && item["detail"] == "AIL source Tuple helper"
+        }),
+        "completion must include AIL source tuple helper; got: {tuple_items:?}"
+    );
 
     let record_completion_output = ail()
         .args(["lsp", "--complete", "rec", "--json"])
