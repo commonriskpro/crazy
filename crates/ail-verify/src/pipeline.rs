@@ -429,6 +429,7 @@ impl VerificationPipeline {
             verified_profile: Some(ctx.profile.to_string()),
             ..Default::default()
         };
+        pre_policy.canonicalize_for_ci();
 
         // ── Stage 17: Policy ──────────────────────────────────────────────
         let policy_input = PolicyInput {
@@ -546,11 +547,10 @@ impl VerificationPipeline {
                 .count(),
         };
 
-        VerificationReport {
-            policy_decision: Some(policy_decision),
-            policy_audit: Some(policy_audit),
-            ..pre_policy
-        }
+        pre_policy.policy_decision = Some(policy_decision);
+        pre_policy.policy_audit = Some(policy_audit);
+        pre_policy.canonicalize_for_ci();
+        pre_policy
     }
 }
 

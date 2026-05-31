@@ -35,9 +35,11 @@
 // All new fields use `serde(default)` so older CBOR/JSON without them still
 // deserializes cleanly.
 
+use std::cmp::Ordering;
+
 use serde::{Deserialize, Serialize};
 
-use crate::diagnostic::Diagnostic;
+use crate::diagnostic::{Diagnostic, DiagnosticSeverity};
 use crate::policy::{ApprovalRecord, PolicyAudit, PolicyDecision, StructuralDiff};
 use crate::proof::ObligationLedgerEntry;
 
@@ -608,6 +610,27 @@ pub struct SummaryCounts {
 }
 
 impl VerificationReport {
+    /// Canonicalize report collections that commonly appear in CI output.
+    ///
+    /// `entries` keep their first-seen pipeline order because that order explains
+    /// stage chronology, but exact duplicates are removed. Diagnostic-like
+    /// collections are sorted by stable machine fields and then deduplicated so
+    /// equivalent verifier output serializes consistently across runs.
+    pub fn canonicalize_for_ci(&mut self) {
+        dedupe_preserve_order(&mut self.entries);
+        self.diagnostics.sort_by(cmp_diagnostic);
+        self.diagnostics.dedup();
+        self.solver_diagnostics.sort_by(cmp_solver_diagnostic);
+        self.solver_diagnostics.dedup();
+        self.profile_diagnostics.sort_by(cmp_profile_diagnostic);
+        self.profile_diagnostics.dedup();
+        self.degradation_events.sort_by(cmp_degradation_event);
+        self.degradation_events.dedup();
+        self.artifact_hashes.sort_by(cmp_artifact_hash);
+        self.artifact_hashes.dedup();
+        self.summary_counts = SummaryCounts::from_entries(&self.entries);
+    }
+
     /// Returns the highest-severity `VerificationState` present in the report.
     ///
     /// An empty report returns `Proven` (vacuous truth — nothing has failed).
@@ -621,6 +644,113 @@ impl VerificationReport {
             .max_by_key(|s| s.priority())
             .unwrap_or(VerificationState::Proven)
     }
+}
+
+impl SummaryCounts {
+    fn from_entries(entries: &[VerificationEntry]) -> Self {
+        Self {
+            verified_count: entries
+                .iter()
+                .filter(|e| {
+                    e.state == VerificationState::Proven
+                        || e.state == VerificationState::RuntimeChecked
+                })
+                .count(),
+            runtime_checked_count: entries
+                .iter()
+                .filter(|e| e.state == VerificationState::RuntimeChecked)
+                .count(),
+            assumed_count: entries
+                .iter()
+                .filter(|e| e.state == VerificationState::Assumed)
+                .count(),
+            unverified_count: entries
+                .iter()
+                .filter(|e| e.state == VerificationState::Unverified)
+                .count(),
+            unsafe_count: entries
+                .iter()
+                .filter(|e| e.state == VerificationState::Unsafe)
+                .count(),
+            failed_count: entries
+                .iter()
+                .filter(|e| e.state == VerificationState::Failed)
+                .count(),
+        }
+    }
+}
+
+fn dedupe_preserve_order<T: PartialEq>(items: &mut Vec<T>) {
+    let mut deduped = Vec::with_capacity(items.len());
+    for item in items.drain(..) {
+        if !deduped.contains(&item) {
+            deduped.push(item);
+        }
+    }
+    *items = deduped;
+}
+
+fn cmp_diagnostic(a: &Diagnostic, b: &Diagnostic) -> Ordering {
+    severity_rank(a.severity)
+        .cmp(&severity_rank(b.severity))
+        .then_with(|| a.code.cmp(&b.code))
+        .then_with(|| a.target.cmp(&b.target))
+        .then_with(|| a.blocking.cmp(&b.blocking).reverse())
+        .then_with(|| a.evidence.cmp(&b.evidence))
+        .then_with(|| a.expected.cmp(&b.expected))
+        .then_with(|| a.actual.cmp(&b.actual))
+        .then_with(|| format!("{:?}", a.repair_options).cmp(&format!("{:?}", b.repair_options)))
+}
+
+fn severity_rank(severity: DiagnosticSeverity) -> u8 {
+    match severity {
+        DiagnosticSeverity::Error => 0,
+        DiagnosticSeverity::Warning => 1,
+        DiagnosticSeverity::Info => 2,
+    }
+}
+
+fn cmp_solver_diagnostic(a: &SolverDiagnostic, b: &SolverDiagnostic) -> Ordering {
+    a.code
+        .cmp(&b.code)
+        .then_with(|| a.obligation_id.cmp(&b.obligation_id))
+        .then_with(|| a.source_stage.cmp(&b.source_stage))
+        .then_with(|| solver_status_rank(a.status).cmp(&solver_status_rank(b.status)))
+        .then_with(|| a.reason.cmp(&b.reason))
+        .then_with(|| a.repair_options.cmp(&b.repair_options))
+}
+
+fn solver_status_rank(status: SolverDiagnosticStatus) -> u8 {
+    match status {
+        SolverDiagnosticStatus::Timeout => 0,
+        SolverDiagnosticStatus::ResourceLimited => 1,
+        SolverDiagnosticStatus::Unsupported => 2,
+    }
+}
+
+fn cmp_profile_diagnostic(a: &ProfileDiagnostic, b: &ProfileDiagnostic) -> Ordering {
+    a.code
+        .cmp(&b.code)
+        .then_with(|| a.requested_profile.cmp(&b.requested_profile))
+        .then_with(|| a.policy_profile.cmp(&b.policy_profile))
+        .then_with(|| a.blocking.cmp(&b.blocking).reverse())
+        .then_with(|| a.message.cmp(&b.message))
+}
+
+fn cmp_degradation_event(a: &DegradationEvent, b: &DegradationEvent) -> Ordering {
+    a.obligation_id
+        .cmp(&b.obligation_id)
+        .then_with(|| a.source_stage.cmp(&b.source_stage))
+        .then_with(|| a.from_state.priority().cmp(&b.from_state.priority()))
+        .then_with(|| a.to_state.priority().cmp(&b.to_state.priority()))
+        .then_with(|| a.reason.cmp(&b.reason))
+        .then_with(|| a.repair_options.cmp(&b.repair_options))
+}
+
+fn cmp_artifact_hash(a: &ArtifactHash, b: &ArtifactHash) -> Ordering {
+    a.artifact
+        .cmp(&b.artifact)
+        .then_with(|| a.hash.cmp(&b.hash))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
