@@ -67,6 +67,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::abi::{HostError, HostResult};
+use crate::audit::{
+    SECRET_AUDIT_CATEGORY_MALFORMED_CAPABILITY, SECRET_AUDIT_CATEGORY_NOT_FOUND,
+    SECRET_AUDIT_CATEGORY_PROVIDER_UNAVAILABLE, SECRET_AUDIT_CATEGORY_UNSUPPORTED_OPERATION,
+};
 use crate::handler::Handler;
 use crate::profile::{CapabilityId, SecretEntry};
 
@@ -490,6 +494,15 @@ pub struct SecretReadHandler {
 
 /// Capability prefix used by all secret-read capabilities.
 const SECRET_READ_PREFIX: &str = "secret.read:";
+/// Opaque message returned to callers for all secret access denials.
+const SECRET_ACCESS_DENIED_MESSAGE: &str = "secret access denied";
+
+fn secret_access_denied(audit_category: &'static str) -> HostError {
+    HostError::CapabilityDeniedCategorized {
+        message: SECRET_ACCESS_DENIED_MESSAGE.to_string(),
+        audit_category: audit_category.to_string(),
+    }
+}
 
 impl SecretReadHandler {
     /// Construct a handler from a list of secret entries and a secret provider.
@@ -561,8 +574,8 @@ impl Handler for SecretReadHandler {
     ) -> HostResult<Vec<u8>> {
         // Only the "read" operation is supported by this handler.
         if operation != "read" {
-            return Err(HostError::CapabilityDenied(
-                "secret access denied".to_string(),
+            return Err(secret_access_denied(
+                SECRET_AUDIT_CATEGORY_UNSUPPORTED_OPERATION,
             ));
         }
 
@@ -572,8 +585,8 @@ impl Handler for SecretReadHandler {
         let secret_id = match cap_str.strip_prefix(SECRET_READ_PREFIX) {
             Some(id) if !id.is_empty() => id,
             _ => {
-                return Err(HostError::CapabilityDenied(
-                    "invalid secret.read capability format".to_string(),
+                return Err(secret_access_denied(
+                    SECRET_AUDIT_CATEGORY_MALFORMED_CAPABILITY,
                 ));
             }
         };
@@ -592,10 +605,7 @@ impl Handler for SecretReadHandler {
         let vault_path = match vault_path {
             Some(p) => p,
             None => {
-                return Err(HostError::CapabilityDeniedCategorized {
-                    message: "secret access denied".to_string(),
-                    audit_category: "secret.not_found".to_string(),
-                });
+                return Err(secret_access_denied(SECRET_AUDIT_CATEGORY_NOT_FOUND));
             }
         };
 
@@ -604,14 +614,12 @@ impl Handler for SecretReadHandler {
         // the caller-visible message opaque in all cases.
         match self.provider.resolve(vault_path) {
             Ok(bytes) => Ok(bytes),
-            Err(SecretProviderError::NotFound) => Err(HostError::CapabilityDeniedCategorized {
-                message: "secret access denied".to_string(),
-                audit_category: "secret.not_found".to_string(),
-            }),
-            Err(SecretProviderError::Unavailable) => Err(HostError::CapabilityDeniedCategorized {
-                message: "secret access denied".to_string(),
-                audit_category: "secret.provider_unavailable".to_string(),
-            }),
+            Err(SecretProviderError::NotFound) => {
+                Err(secret_access_denied(SECRET_AUDIT_CATEGORY_NOT_FOUND))
+            }
+            Err(SecretProviderError::Unavailable) => Err(secret_access_denied(
+                SECRET_AUDIT_CATEGORY_PROVIDER_UNAVAILABLE,
+            )),
         }
     }
 }
@@ -792,8 +800,16 @@ mod tests {
             .handle(&cap, "write", b"")
             .expect_err("wrong operation must be denied");
         assert!(
-            matches!(err, HostError::CapabilityDenied(_)),
-            "expected CapabilityDenied for wrong operation, got {err:?}"
+            err.is_capability_denied(),
+            "expected capability denial for wrong operation, got {err:?}"
+        );
+        assert_eq!(
+            err.capability_denied_message(),
+            Some("secret access denied")
+        );
+        assert_eq!(
+            err.audit_category(),
+            Some(SECRET_AUDIT_CATEGORY_UNSUPPORTED_OPERATION)
         );
     }
 
@@ -807,7 +823,15 @@ mod tests {
         let err = h
             .handle(&cap, "read", b"")
             .expect_err("malformed cap should be denied");
-        assert!(matches!(err, HostError::CapabilityDenied(_)));
+        assert!(err.is_capability_denied());
+        assert_eq!(
+            err.capability_denied_message(),
+            Some("secret access denied")
+        );
+        assert_eq!(
+            err.audit_category(),
+            Some(SECRET_AUDIT_CATEGORY_MALFORMED_CAPABILITY)
+        );
     }
 
     #[test]

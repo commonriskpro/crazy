@@ -23,7 +23,9 @@ use std::sync::Arc;
 use ail_runtime::{
     AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, HostError, ResourceLimits,
     RuntimeHost, RuntimeProfile, SecretEntry, SecretProvider, SecretProviderError,
-    SecretReadHandler, SecretVault, blake3_hex_of,
+    SecretReadHandler, SecretVault,
+    audit::{SECRET_ACCESS_SHAPE_READ, SECRET_AUDIT_CATEGORY_UNSUPPORTED_OPERATION},
+    blake3_hex_of,
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -349,10 +351,85 @@ fn pa4_successful_read_has_no_denial_category() {
     }
 }
 
-// ── PA5 — Denial category string contains no secret data ─────────────────
+// ── PA5 — Wrong operation → redacted secret audit category and shape ─────
 
 #[test]
-fn pa5_denial_category_contains_no_secret_data() {
+fn pa5_wrong_operation_records_redacted_secret_audit_category_and_shape() {
+    let wasm = minimal_wasm();
+    let cap_id = CapabilityId::new("secret.read:PaymentsApiKey");
+    let manifest = CapabilityManifest {
+        module: "svc".to_string(),
+        requires: vec![cap_id.clone()],
+    };
+    let grant = CapabilityGrant {
+        module: "svc".to_string(),
+        capability: cap_id.clone(),
+    };
+    let mapping = vec![SecretEntry {
+        secret_id: "PaymentsApiKey".to_string(),
+        vault_path: "prod/payments/api-key".to_string(),
+    }];
+    let profile = matching_profile(&wasm, &manifest, vec![grant], mapping.clone());
+
+    let mut vault = SecretVault::new();
+    vault.insert("prod/payments/api-key", b"sk_live_payments_secret".to_vec());
+    let handler = SecretReadHandler::new(mapping, Arc::new(vault));
+
+    let mut host = RuntimeHost::new().with_handler(Arc::new(handler));
+    host.validate_and_instantiate(&wasm, &manifest, &profile)
+        .expect("preflight must pass");
+
+    let err = host
+        .call_capability(&cap_id, "write", b"")
+        .expect_err("unsupported operation must deny");
+
+    assert!(
+        matches!(err, HostError::CapabilityDenied(_)),
+        "caller must receive opaque CapabilityDenied, got {err:?}"
+    );
+    assert_eq!(
+        err.capability_denied_message(),
+        Some("secret access denied")
+    );
+
+    let event = last_cap_event(&host);
+    assert_eq!(
+        event.secret_access_shape(),
+        Some(SECRET_ACCESS_SHAPE_READ),
+        "secret access shape must redact the concrete secret name"
+    );
+    let shape = event.secret_access_shape().expect("secret access shape");
+    assert!(!shape.contains("PaymentsApiKey"));
+    assert!(!shape.contains("prod/payments"));
+    assert!(!shape.contains("sk_live"));
+
+    match event {
+        AuditEvent::CapabilityCallExecuted {
+            succeeded,
+            output_hash,
+            denial_category,
+            ..
+        } => {
+            assert!(!succeeded, "audit must record failure");
+            assert!(output_hash.is_none(), "no output hash on denial");
+            assert_eq!(
+                denial_category.as_deref(),
+                Some(SECRET_AUDIT_CATEGORY_UNSUPPORTED_OPERATION),
+                "audit category must classify unsupported secret operations"
+            );
+            let cat = denial_category.as_deref().unwrap_or("");
+            assert!(!cat.contains("PaymentsApiKey"));
+            assert!(!cat.contains("prod/payments"));
+            assert!(!cat.contains("sk_live"));
+        }
+        other => panic!("expected CapabilityCallExecuted, got {other:?}"),
+    }
+}
+
+// ── PA6 — Denial category string contains no secret data ─────────────────
+
+#[test]
+fn pa6_denial_category_contains_no_secret_data() {
     // Provider that signals unavailable — simulates a vault containing
     // obviously identifiable secret data to verify it does NOT appear.
     struct ObviousUnavailableProvider;

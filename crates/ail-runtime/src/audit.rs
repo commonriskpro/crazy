@@ -45,6 +45,21 @@ pub const DENIAL_CATEGORY_SCHEMA_INPUT: &str = "schema.input";
 pub const DENIAL_CATEGORY_SCHEMA_OUTPUT: &str = "schema.output";
 /// Runtime denial category for host/WASM payload boundary decode failures.
 pub const DENIAL_CATEGORY_PAYLOAD_DECODE: &str = "payload.decode";
+/// Runtime denial category for secret access when the mapped secret cannot be found.
+pub const SECRET_AUDIT_CATEGORY_NOT_FOUND: &str = "secret.not_found";
+/// Runtime denial category for secret access when the provider is unavailable.
+pub const SECRET_AUDIT_CATEGORY_PROVIDER_UNAVAILABLE: &str = "secret.provider_unavailable";
+/// Runtime denial category for secret access using an unsupported operation.
+pub const SECRET_AUDIT_CATEGORY_UNSUPPORTED_OPERATION: &str = "secret.unsupported_operation";
+/// Runtime denial category for malformed secret access capability identifiers.
+pub const SECRET_AUDIT_CATEGORY_MALFORMED_CAPABILITY: &str = "secret.malformed_capability";
+
+// ── Stable secret access shape descriptors ──────────────────────────────
+
+/// Redacted shape descriptor for well-formed `secret.read:<id>` accesses.
+pub const SECRET_ACCESS_SHAPE_READ: &str = "secret.read:<redacted>";
+/// Redacted shape descriptor for malformed empty `secret.read:` accesses.
+pub const SECRET_ACCESS_SHAPE_MALFORMED: &str = "secret.read:<malformed>";
 
 pub(crate) fn denial_category(category: &'static str) -> Option<String> {
     Some(category.to_string())
@@ -211,6 +226,25 @@ impl AuditEvent {
     pub fn is_capability_call(&self) -> bool {
         matches!(self, AuditEvent::CapabilityCallExecuted { .. })
     }
+
+    /// Return a stable, redacted shape descriptor for secret access events.
+    ///
+    /// The descriptor deliberately ignores the concrete secret ID in
+    /// `secret.read:<id>` capability names. Use this helper for summaries,
+    /// metrics, and audit views that must not expose secret names while still
+    /// distinguishing secret-access traffic from other capability calls.
+    pub fn secret_access_shape(&self) -> Option<&'static str> {
+        match self {
+            AuditEvent::CapabilityCallExecuted { capability, .. } => {
+                match capability.as_str().strip_prefix("secret.read:") {
+                    Some("") => Some(SECRET_ACCESS_SHAPE_MALFORMED),
+                    Some(_) => Some(SECRET_ACCESS_SHAPE_READ),
+                    None => None,
+                }
+            }
+            _ => None,
+        }
+    }
 }
 
 // ── AuditLog ─────────────────────────────────────────────────────────────
@@ -251,6 +285,84 @@ impl AuditLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_audit_categories_are_stable_machine_readable_values() {
+        let categories = [
+            SECRET_AUDIT_CATEGORY_NOT_FOUND,
+            SECRET_AUDIT_CATEGORY_PROVIDER_UNAVAILABLE,
+            SECRET_AUDIT_CATEGORY_UNSUPPORTED_OPERATION,
+            SECRET_AUDIT_CATEGORY_MALFORMED_CAPABILITY,
+        ];
+
+        for category in categories {
+            assert!(
+                category.starts_with("secret."),
+                "category `{category}` must stay under secret namespace"
+            );
+            assert!(
+                category
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'.' || byte == b'_'),
+                "category `{category}` must stay machine readable"
+            );
+            assert!(
+                !category.contains("ApiKey") && !category.contains("password"),
+                "category `{category}` must not carry secret names"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_access_shape_redacts_secret_names() {
+        let event = AuditEvent::CapabilityCallExecuted {
+            capability: CapabilityId::new("secret.read:ProductionDbPassword"),
+            operation: "read".to_string(),
+            handler_name: "secret.read".to_string(),
+            succeeded: false,
+            duration_us: 1,
+            timestamp: 1,
+            profile: None,
+            module: None,
+            function: None,
+            input_hash: None,
+            output_hash: None,
+            trace_id: None,
+            verification_report_hash: None,
+            trace_context: None,
+            denial_category: Some(SECRET_AUDIT_CATEGORY_NOT_FOUND.to_string()),
+        };
+
+        assert_eq!(event.secret_access_shape(), Some(SECRET_ACCESS_SHAPE_READ));
+        let shape = event.secret_access_shape().expect("secret shape");
+        assert!(!shape.contains("ProductionDbPassword"));
+    }
+
+    #[test]
+    fn secret_access_shape_marks_empty_secret_suffix_as_malformed() {
+        let event = AuditEvent::CapabilityCallExecuted {
+            capability: CapabilityId::new("secret.read:"),
+            operation: "read".to_string(),
+            handler_name: "secret.read".to_string(),
+            succeeded: false,
+            duration_us: 1,
+            timestamp: 1,
+            profile: None,
+            module: None,
+            function: None,
+            input_hash: None,
+            output_hash: None,
+            trace_id: None,
+            verification_report_hash: None,
+            trace_context: None,
+            denial_category: Some(SECRET_AUDIT_CATEGORY_MALFORMED_CAPABILITY.to_string()),
+        };
+
+        assert_eq!(
+            event.secret_access_shape(),
+            Some(SECRET_ACCESS_SHAPE_MALFORMED)
+        );
+    }
 
     #[test]
     fn runtime_denial_categories_are_stable_machine_readable_values() {
