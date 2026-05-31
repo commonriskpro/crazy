@@ -95,6 +95,141 @@ impl std::fmt::Display for FileError {
 }
 impl std::error::Error for FileError {}
 
+// ── Filesystem issue diagnostics ─────────────────────────────────────────
+
+/// Stable filesystem issue kinds for host and tooling diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FsIssueKind {
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    IsDirectory,
+    Other,
+    UnsafePathShape,
+    UnsafeJoinSegment,
+}
+
+impl FsIssueKind {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NotFound => "std.fs.not_found",
+            Self::PermissionDenied => "std.fs.permission_denied",
+            Self::AlreadyExists => "std.fs.already_exists",
+            Self::IsDirectory => "std.fs.is_directory",
+            Self::Other => "std.fs.other",
+            Self::UnsafePathShape => "std.fs.path.unsafe_shape",
+            Self::UnsafeJoinSegment => "std.fs.join.unsafe_segment",
+        }
+    }
+
+    pub const fn category(self) -> &'static str {
+        match self {
+            Self::NotFound | Self::AlreadyExists | Self::IsDirectory => "filesystem-state",
+            Self::PermissionDenied => "capability",
+            Self::Other => "host-error",
+            Self::UnsafePathShape | Self::UnsafeJoinSegment => "path-shape",
+        }
+    }
+}
+
+/// Redacted, machine-readable filesystem issue descriptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FsIssue {
+    pub operation: Option<FsOperationKind>,
+    pub kind: FsIssueKind,
+    pub code: &'static str,
+    pub category: &'static str,
+    pub path_shape: Option<FsPathShape>,
+    pub segment_shape: Option<FsJoinSegmentShape>,
+    pub redacted: bool,
+}
+
+impl FsIssue {
+    fn new(
+        operation: Option<FsOperationKind>,
+        kind: FsIssueKind,
+        path_shape: Option<FsPathShape>,
+        segment_shape: Option<FsJoinSegmentShape>,
+    ) -> Self {
+        Self {
+            operation,
+            kind,
+            code: kind.code(),
+            category: kind.category(),
+            path_shape,
+            segment_shape,
+            redacted: true,
+        }
+    }
+
+    pub fn diagnostic_key(&self) -> String {
+        let op = self
+            .operation
+            .map(FsOperationKind::label)
+            .unwrap_or("unknown");
+        let path = self.path_shape.map(FsPathShape::label).unwrap_or("none");
+        let segment = self
+            .segment_shape
+            .map(FsJoinSegmentShape::label)
+            .unwrap_or("none");
+        format!(
+            "std.fs.issue:{op}:{}:{}:{path}:{segment}",
+            self.category, self.code
+        )
+    }
+}
+
+/// Convert a host file error into a stable redacted issue descriptor.
+pub fn file_error_issue(operation: FsOperationKind, error: &FileError) -> FsIssue {
+    match error {
+        FileError::NotFound(path) => FsIssue::new(
+            Some(operation),
+            FsIssueKind::NotFound,
+            Some(path_shape(path)),
+            None,
+        ),
+        FileError::PermissionDenied(path) => FsIssue::new(
+            Some(operation),
+            FsIssueKind::PermissionDenied,
+            Some(path_shape(path)),
+            None,
+        ),
+        FileError::AlreadyExists(path) => FsIssue::new(
+            Some(operation),
+            FsIssueKind::AlreadyExists,
+            Some(path_shape(path)),
+            None,
+        ),
+        FileError::IsDirectory(path) => FsIssue::new(
+            Some(operation),
+            FsIssueKind::IsDirectory,
+            Some(path_shape(path)),
+            None,
+        ),
+        FileError::Other(_) => FsIssue::new(Some(operation), FsIssueKind::Other, None, None),
+    }
+}
+
+/// Convert a path-shape error into a redacted issue descriptor.
+pub fn path_shape_issue(operation: FsOperationKind, error: &FsPathShapeError) -> FsIssue {
+    FsIssue::new(
+        Some(operation),
+        FsIssueKind::UnsafePathShape,
+        Some(error.shape),
+        None,
+    )
+}
+
+/// Convert a join-shape error into a redacted issue descriptor.
+pub fn join_shape_issue(error: &FsJoinError) -> FsIssue {
+    FsIssue::new(
+        None,
+        FsIssueKind::UnsafeJoinSegment,
+        None,
+        Some(error.shape),
+    )
+}
+
 // ── FileHandle / DirectoryHandle ──────────────────────────────────────────
 
 /// A file resource marker for use with `io::Handle`.
@@ -542,6 +677,55 @@ mod tests {
                 .expect_err("nested segment rejected")
                 .to_string(),
             "fs join segment shape mismatch: expected single relative child segment without separators, traversal, or NUL, got contains-separator"
+        );
+    }
+
+    #[test]
+    fn file_error_issue_redacts_path_values() {
+        let err = FileError::PermissionDenied(Path::new("secrets/token.txt"));
+        let issue = file_error_issue(FsOperationKind::ReadFile, &err);
+
+        assert_eq!(issue.code, "std.fs.permission_denied");
+        assert_eq!(issue.category, "capability");
+        assert_eq!(issue.operation, Some(FsOperationKind::ReadFile));
+        assert_eq!(issue.path_shape, Some(FsPathShape::Relative));
+        assert!(issue.redacted);
+        assert_eq!(
+            issue.diagnostic_key(),
+            "std.fs.issue:read_file:capability:std.fs.permission_denied:relative:none"
+        );
+        assert!(!issue.diagnostic_key().contains("token"));
+        assert!(!issue.diagnostic_key().contains("secrets"));
+    }
+
+    #[test]
+    fn unsafe_path_and_join_errors_have_redacted_issue_codes() {
+        let path_error = FsPathShapeError {
+            shape: FsPathShape::ContainsParentTraversal,
+            expected: "root|absolute|relative without parent traversal or NUL",
+        };
+        let join_error = FsJoinError {
+            shape: FsJoinSegmentShape::ContainsNul,
+            expected: "single relative child segment without separators, traversal, or NUL",
+        };
+
+        let path_issue = path_shape_issue(FsOperationKind::WriteFile, &path_error);
+        let join_issue = join_shape_issue(&join_error);
+
+        assert_eq!(path_issue.code, "std.fs.path.unsafe_shape");
+        assert_eq!(path_issue.category, "path-shape");
+        assert_eq!(
+            path_issue.diagnostic_key(),
+            "std.fs.issue:write_file:path-shape:std.fs.path.unsafe_shape:contains-parent-traversal:none"
+        );
+        assert_eq!(join_issue.code, "std.fs.join.unsafe_segment");
+        assert_eq!(
+            join_issue.segment_shape,
+            Some(FsJoinSegmentShape::ContainsNul)
+        );
+        assert_eq!(
+            join_issue.diagnostic_key(),
+            "std.fs.issue:unknown:path-shape:std.fs.join.unsafe_segment:none:contains-nul"
         );
     }
 }
