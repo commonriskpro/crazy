@@ -8,17 +8,26 @@
 // degradation tracking).
 
 use ail_core::semantic_graph::{ContractClauses, GraphNode, NodeKind, NodeRef, SemanticGraph};
-use ail_verify::proof::{ObligationState, ProofObligationPipeline};
+use ail_verify::proof::{ClauseRole, ObligationState, ProofObligationPipeline};
 use ail_verify::solver::SimpleSolver;
 
-fn graph_with_clauses(node_name: &str, requires: Vec<&str>, ensures: Vec<&str>) -> SemanticGraph {
-    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, node_name);
+fn node_with_clauses(
+    id: u32,
+    node_name: &str,
+    requires: Vec<&str>,
+    ensures: Vec<&str>,
+) -> GraphNode {
+    let mut node = GraphNode::new(NodeRef(id), NodeKind::Function, node_name);
     node.contract_clauses = Some(ContractClauses {
         requires: requires.into_iter().map(String::from).collect(),
         ensures: ensures.into_iter().map(String::from).collect(),
     });
+    node
+}
+
+fn graph_with_clauses(node_name: &str, requires: Vec<&str>, ensures: Vec<&str>) -> SemanticGraph {
     SemanticGraph {
-        nodes: vec![node],
+        nodes: vec![node_with_clauses(0, node_name, requires, ensures)],
         edges: vec![],
     }
 }
@@ -92,6 +101,71 @@ fn ledger_entries_have_unique_ids() {
     // IDs must be non-empty
     assert!(!entries[0].id.is_empty());
     assert!(!entries[1].id.is_empty());
+}
+
+#[test]
+fn ledger_entries_are_ordered_independent_of_graph_insertion_order() {
+    let graph_ab = SemanticGraph {
+        nodes: vec![
+            node_with_clauses(1, "beta_fn", vec!["beta > 0"], vec![]),
+            node_with_clauses(0, "alpha_fn", vec!["alpha > 0"], vec![]),
+        ],
+        edges: vec![],
+    };
+    let graph_ba = SemanticGraph {
+        nodes: vec![
+            node_with_clauses(0, "alpha_fn", vec!["alpha > 0"], vec![]),
+            node_with_clauses(1, "beta_fn", vec!["beta > 0"], vec![]),
+        ],
+        edges: vec![],
+    };
+    let solver = SimpleSolver;
+
+    let entries_ab = ProofObligationPipeline::run_with_ledger(&graph_ab, &solver);
+    let entries_ba = ProofObligationPipeline::run_with_ledger(&graph_ba, &solver);
+    let fingerprint = |entries: &[ail_verify::proof::ObligationLedgerEntry]| {
+        entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.id.as_str(),
+                    entry.source_stage.as_str(),
+                    entry.obligation.scope.as_str(),
+                    entry.obligation.role,
+                    entry.obligation.predicate.as_str(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(fingerprint(&entries_ab), fingerprint(&entries_ba));
+    assert_eq!(entries_ab[0].id, "po_1");
+    assert_eq!(entries_ab[0].obligation.scope, "alpha_fn");
+    assert_eq!(entries_ab[1].id, "po_2");
+    assert_eq!(entries_ab[1].obligation.scope, "beta_fn");
+}
+
+#[test]
+fn ledger_entries_dedupe_identical_obligations_before_assigning_ids() {
+    let graph = graph_with_clauses(
+        "dedupe_fn",
+        vec!["amount > 0", "amount > 0"],
+        vec!["result >= 0", "result >= 0"],
+    );
+    let solver = SimpleSolver;
+    let entries = ProofObligationPipeline::run_with_ledger(&graph, &solver);
+
+    assert_eq!(
+        entries.len(),
+        2,
+        "duplicate clauses with the same source/scope/role/predicate must collapse"
+    );
+    assert_eq!(entries[0].id, "po_1");
+    assert_eq!(entries[0].obligation.role, ClauseRole::Requires);
+    assert_eq!(entries[0].obligation.predicate, "amount > 0");
+    assert_eq!(entries[1].id, "po_2");
+    assert_eq!(entries[1].obligation.role, ClauseRole::Ensures);
+    assert_eq!(entries[1].obligation.predicate, "result >= 0");
 }
 
 // ── Scenario: source_stage is "contract" for clauses from contract_clauses ─

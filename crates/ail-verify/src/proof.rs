@@ -48,7 +48,7 @@ use crate::solver::{Solver, SolverOutcome};
 ///
 /// Exactly two variants are permitted — exhaustive matches elsewhere in the
 /// codebase will fail to compile if a variant is added, which is intentional.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ClauseRole {
     /// A precondition: the caller is responsible for making this hold.
     Requires,
@@ -213,8 +213,9 @@ impl ProofObligationPipeline {
     ///
     /// Each entry carries identity (`id`), source stage, resolution attempts,
     /// and a degradation reason if the obligation was downgraded.  The `id`
-    /// values are sequential strings (`"po_1"`, `"po_2"`, …) stable within
-    /// one call.
+    /// values are sequential strings (`"po_1"`, `"po_2"`, …) assigned after
+    /// canonical ordering and deduplication, so equivalent graph content
+    /// produces a stable ledger independent of graph insertion order.
     ///
     /// Use this method when you need to store the obligation ledger in a
     /// `VerificationReport` or explain obligation resolution to tooling.
@@ -222,7 +223,7 @@ impl ProofObligationPipeline {
         graph: &SemanticGraph,
         solver: &dyn Solver,
     ) -> Vec<ObligationLedgerEntry> {
-        let obligations = Self::generate_with_sources(graph);
+        let obligations = Self::canonicalize_ledger_obligations(Self::generate_with_sources(graph));
         obligations
             .into_iter()
             .enumerate()
@@ -328,6 +329,37 @@ impl ProofObligationPipeline {
             }
         }
         obligations
+    }
+
+    fn canonicalize_ledger_obligations(
+        mut obligations: Vec<GeneratedObligation>,
+    ) -> Vec<GeneratedObligation> {
+        obligations.sort_by(|a, b| {
+            Self::source_stage_rank(&a.source_stage)
+                .cmp(&Self::source_stage_rank(&b.source_stage))
+                .then_with(|| a.source_stage.cmp(&b.source_stage))
+                .then_with(|| a.obligation.scope.cmp(&b.obligation.scope))
+                .then_with(|| a.obligation.role.cmp(&b.obligation.role))
+                .then_with(|| a.obligation.predicate.cmp(&b.obligation.predicate))
+        });
+        obligations.dedup_by(|a, b| {
+            a.source_stage == b.source_stage
+                && a.obligation.scope == b.obligation.scope
+                && a.obligation.role == b.obligation.role
+                && a.obligation.predicate == b.obligation.predicate
+        });
+        obligations
+    }
+
+    fn source_stage_rank(stage: &str) -> u8 {
+        match stage {
+            "contract" => 0,
+            "refinement" => 1,
+            "resource" => 2,
+            "concurrency" => 3,
+            "boundary" => 4,
+            _ => u8::MAX,
+        }
     }
 
     // ── Stages 2–5 for one obligation (original path) ────────────────────
