@@ -107,17 +107,34 @@ impl DirtySet {
     ///
     /// O(V + E) worst case — each edge is visited at most once.
     pub fn propagate(&mut self, index: &GraphIndex) {
+        let _ = self.propagate_with_order(index);
+    }
+
+    /// Expand the dirty set and return the canonical invalidation order.
+    ///
+    /// The returned vector starts with the initial dirty set in `NodeRef` order,
+    /// followed by newly discovered callers in deterministic BFS order.  Caller
+    /// lists from `GraphIndex` are sorted before enqueueing so the order is not
+    /// affected by the input graph's edge traversal order.
+    pub fn propagate_with_order(&mut self, index: &GraphIndex) -> Vec<NodeRef> {
         // Seed the BFS queue with the initially dirty nodes.
         let mut queue: VecDeque<NodeRef> = self.0.iter().copied().collect();
+        let mut invalidation_order: Vec<NodeRef> = queue.iter().copied().collect();
 
         while let Some(dirty_ref) = queue.pop_front() {
-            for &caller in index.callers(dirty_ref) {
+            let mut callers: Vec<NodeRef> = index.callers(dirty_ref).to_vec();
+            callers.sort();
+
+            for caller in callers {
                 if self.0.insert(caller) {
                     // Newly dirty — enqueue for further propagation.
                     queue.push_back(caller);
+                    invalidation_order.push(caller);
                 }
             }
         }
+
+        invalidation_order
     }
 
     /// Return `true` if `r` is in the dirty set.
@@ -504,6 +521,34 @@ mod tests {
         assert!(
             !dirty.contains(NodeRef(3)),
             "unrelated NodeRef(3) must not be dirty"
+        );
+    }
+
+    // Spec scenario: invalidation order does not depend on edge traversal order
+    // GIVEN two equivalent graphs with reversed caller edge order
+    // WHEN DirtySet::propagate_with_order(index) is called
+    // THEN both runs return the same canonical invalidation order
+    #[test]
+    fn invalidation_order_is_deterministic_across_edge_order() {
+        let graph_a = SemanticGraph {
+            nodes: vec![node(0), node(1), node(2)],
+            edges: vec![edge(1, 2), edge(0, 2)],
+        };
+        let graph_b = SemanticGraph {
+            nodes: vec![node(0), node(1), node(2)],
+            edges: vec![edge(0, 2), edge(1, 2)],
+        };
+
+        let mut dirty_a = DirtySet(BTreeSet::from([NodeRef(2)]));
+        let mut dirty_b = DirtySet(BTreeSet::from([NodeRef(2)]));
+
+        let order_a = dirty_a.propagate_with_order(&GraphIndex::build(&graph_a));
+        let order_b = dirty_b.propagate_with_order(&GraphIndex::build(&graph_b));
+
+        assert_eq!(order_a, vec![NodeRef(2), NodeRef(0), NodeRef(1)]);
+        assert_eq!(
+            order_a, order_b,
+            "invalidation order must not depend on SemanticGraph edge order"
         );
     }
 
