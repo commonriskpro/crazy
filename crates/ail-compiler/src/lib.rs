@@ -45,6 +45,7 @@ pub mod hash;
 pub mod incremental;
 pub mod lower;
 pub mod native;
+mod native_abi;
 mod native_binding;
 mod native_codegen;
 mod native_lower;

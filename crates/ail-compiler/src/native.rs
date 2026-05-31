@@ -67,6 +67,10 @@ use crate::hash::{hash_with_parent, stable_cbor_bytes};
 #[cfg(test)]
 pub(crate) use crate::native_codegen::infer_cranelift_return_type;
 // Binding-level compilation — see `native_binding.rs`.
+pub use crate::native_abi::{
+    NativeAbiDiagnostic, NativeAbiIssue, NativeAbiIssueCategory, NativeAbiIssueCode,
+    validate_native_abi,
+};
 use crate::native_binding::{LowerBindingEnv, lower_binding, native_export_name};
 // Shared data-layout type — see `native_types.rs`.
 pub use crate::native_types::NativeDataLayout;
@@ -185,6 +189,8 @@ pub fn emit_native_with_profile(
         .stage_hashes
         .anf_ir_hash
         .ok_or_else(|| CompileError::NativeEncodingError("anf_ir_hash not sealed".to_string()))?;
+
+    validate_native_abi(anf).into_result()?;
 
     let export_names = native_export_names(&anf.bindings)?;
 
