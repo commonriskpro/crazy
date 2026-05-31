@@ -62,8 +62,8 @@ use crate::codec::ValueLayout;
 use crate::error::RuntimeResult;
 use crate::handler::Handler;
 use crate::host_dispatch::{
-    ClockFn, HostState, default_clock_fn, dispatch_host_call, dispatch_host_call_write,
-    unix_timestamp_micros,
+    ClockFn, HostState, WasmBridgeDiagnostic, default_clock_fn, diagnose_wasm_bridge_module,
+    dispatch_host_call, dispatch_host_call_write, unix_timestamp_micros,
 };
 use crate::manifest::{CapabilityManifest, blake3_hex_of};
 use crate::profile::{CapabilityId, CapabilityRevocationRegistry, InFlightPolicy, RuntimeProfile};
@@ -377,6 +377,15 @@ impl RuntimeHost {
             .lock()
             .expect("audit_log lock must not be poisoned")
             .clone()
+    }
+
+    /// Return stable redacted diagnostics for WASM bridge/module issues.
+    ///
+    /// This check is additive and does not mutate runtime state.  It validates
+    /// the module enough to classify malformed bytes, missing runtime imports,
+    /// and known `ail/*` host import ABI mismatches with deterministic ordering.
+    pub fn wasm_bridge_diagnostics(&self, wasm: &[u8]) -> Vec<WasmBridgeDiagnostic> {
+        diagnose_wasm_bridge_module(&self.engine, wasm)
     }
 
     /// Preflight-check and instantiate a WASM module.
