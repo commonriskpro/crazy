@@ -84,6 +84,72 @@ fn sealed_anf_single(binding: AnfBinding) -> AnfIr {
     }
 }
 
+fn int_helper_call_anf(func: &str, arg_values: &[(&str, i64)]) -> AnfIr {
+    let args = arg_values
+        .iter()
+        .map(|(name, _)| (*name).to_string())
+        .collect();
+    let expr = arg_values.iter().rev().fold(
+        AnfExpr::Call {
+            func: func.to_string(),
+            args,
+        },
+        |body, (name, value)| AnfExpr::Let {
+            name: (*name).to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Int(*value))),
+            body: Box::new(body),
+        },
+    );
+
+    sealed_anf_single(AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn_int_helper".to_string(),
+        expr,
+    })
+}
+
+fn assert_int_helper_compiles_in_both_backends(func: &str, arg_values: &[(&str, i64)]) {
+    let anf = int_helper_call_anf(func, arg_values);
+    let wasm = emit_wasm(&anf).unwrap_or_else(|err| panic!("{func} must emit WASM: {err}"));
+    let native = emit_native(&anf).unwrap_or_else(|err| panic!("{func} must emit native: {err}"));
+
+    assert!(
+        !wasm.wasm.is_empty(),
+        "{func} WASM output must be non-empty"
+    );
+    assert!(
+        !native.native_bytes.is_empty(),
+        "{func} native output must be non-empty"
+    );
+    assert!(
+        wasm.hash_chain.wasm_hash.is_some(),
+        "{func} WASM hash must be sealed"
+    );
+    assert!(
+        native.hash_chain.native_hash.is_some(),
+        "{func} native hash must be sealed"
+    );
+
+    let wasm_refs: Vec<NodeRef> = wasm.provenance.keys().copied().collect();
+    let native_refs: Vec<NodeRef> = native.provenance.keys().copied().collect();
+    assert_eq!(
+        wasm_refs, native_refs,
+        "{func} must preserve the same provenance NodeRefs in both backends"
+    );
+
+    let wasm_node_ids: Vec<NodeRef> = wasm.source_map.entries.iter().map(|e| e.node_id).collect();
+    let native_node_ids: Vec<NodeRef> = native
+        .source_map
+        .entries
+        .iter()
+        .map(|e| e.node_id)
+        .collect();
+    assert_eq!(
+        wasm_node_ids, native_node_ids,
+        "{func} must preserve matching source-map node IDs in both backends"
+    );
+}
+
 // ── Parity: both backends accept the same AnfIr ───────────────────────────
 
 /// Parity smoke: 1-binding ANF succeeds in both WASM and native backends.
@@ -259,6 +325,59 @@ fn parity_smoke_wasm_hash_and_native_hash_differ() {
     assert_ne!(
         wasm_hash, native_hash,
         "parity smoke: wasm_hash and native_hash must differ (different content, different formula)"
+    );
+}
+
+// ── Parity: backend-lowered int helpers ───────────────────────────────────
+
+/// Parity smoke: bitwise and shift helpers compile in both backends.
+///
+/// These helpers have explicit WASM opcodes and native Cranelift lowerings.
+/// Keeping them in one backend-parity table prevents a future helper from
+/// silently working in one backend while degrading or failing in the other.
+#[test]
+fn parity_smoke_int_bitwise_and_shift_helpers_compile_in_both_backends() {
+    let cases = [
+        ("int.bit_and", vec![("left", 6), ("right", 3)]),
+        ("int.bit_or", vec![("left", 4), ("right", 1)]),
+        ("int.bit_xor", vec![("left", 6), ("right", 3)]),
+        ("int.bit_not", vec![("value", 0)]),
+        ("int.shift_left", vec![("value", 1), ("amount", 3)]),
+        ("int.shift_right", vec![("value", -8), ("amount", 1)]),
+        (
+            "int.shift_right_unsigned",
+            vec![("value", -8), ("amount", 1)],
+        ),
+    ];
+
+    for (func, args) in cases {
+        assert_int_helper_compiles_in_both_backends(func, &args);
+    }
+}
+
+/// Parity smoke: signed and unsigned right shifts stay distinct in both backends.
+///
+/// `int.shift_right` must remain arithmetic/signed (`shr_s`/`sshr`) while
+/// `int.shift_right_unsigned` must remain logical/unsigned (`shr_u`/`ushr`).
+/// The artifact bytes are a narrow structural guard that both lowerers preserve
+/// the semantic distinction for the same ANF shape and binding name.
+#[test]
+fn parity_smoke_signed_and_unsigned_right_shift_differ_in_both_backends() {
+    let signed = int_helper_call_anf("int.shift_right", &[("value", -8), ("amount", 1)]);
+    let unsigned = int_helper_call_anf("int.shift_right_unsigned", &[("value", -8), ("amount", 1)]);
+
+    let signed_wasm = emit_wasm(&signed).expect("signed right shift WASM");
+    let unsigned_wasm = emit_wasm(&unsigned).expect("unsigned right shift WASM");
+    assert_ne!(
+        signed_wasm.wasm, unsigned_wasm.wasm,
+        "signed and unsigned right shifts must emit different WASM artifacts"
+    );
+
+    let signed_native = emit_native(&signed).expect("signed right shift native");
+    let unsigned_native = emit_native(&unsigned).expect("unsigned right shift native");
+    assert_ne!(
+        signed_native.native_bytes, unsigned_native.native_bytes,
+        "signed and unsigned right shifts must emit different native artifacts"
     );
 }
 
