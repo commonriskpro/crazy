@@ -167,6 +167,23 @@ impl SecretProviderMetadata {
         SecretProviderMetadata { name, kind }
     }
 
+    /// Create metadata only when the provider name is safe to expose.
+    ///
+    /// Use this for external adapters that are configured by users or tests.
+    /// Unlike [`SecretProviderMetadata::new`], this rejects unsafe names up
+    /// front so adapters cannot accidentally carry URLs, tenant names, vault
+    /// paths, or secret IDs in their redacted diagnostics.
+    pub fn try_new(
+        name: &'static str,
+        kind: SecretProviderKind,
+    ) -> Result<Self, SecretProviderMetadataError> {
+        if Self::is_safe_provider_name(name) {
+            Ok(SecretProviderMetadata { name, kind })
+        } else {
+            Err(SecretProviderMetadataError::UnsafeName)
+        }
+    }
+
     /// Provider name safe to include in redacted diagnostics.
     pub fn name(self) -> &'static str {
         self.diagnostic_name()
@@ -215,6 +232,29 @@ impl fmt::Debug for SecretProviderMetadata {
     }
 }
 
+/// Error returned when provider metadata is unsafe for diagnostics.
+///
+/// This error intentionally stores no rejected value.  Provider names can
+/// accidentally contain endpoints, namespaces, vault paths, account IDs, or
+/// secret identifiers, so Display and Debug must remain generic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecretProviderMetadataError {
+    /// Provider name is not a safe low-cardinality adapter identifier.
+    UnsafeName,
+}
+
+impl fmt::Display for SecretProviderMetadataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SecretProviderMetadataError::UnsafeName => {
+                f.write_str("unsafe secret provider metadata")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SecretProviderMetadataError {}
+
 // ── SecretProvider ────────────────────────────────────────────────────────
 
 /// Trait for backends that resolve vault paths to secret byte values.
@@ -262,6 +302,68 @@ pub trait SecretProvider: Send + Sync {
     /// The returned bytes MUST NOT be written to logs or audit fields;
     /// the audit infrastructure accepts only hashes.
     fn resolve(&self, vault_path: &str) -> Result<Vec<u8>, SecretProviderError>;
+}
+
+// ── SecretProviderAdapter ─────────────────────────────────────────────────
+
+/// Small adapter surface for wiring external secret providers.
+///
+/// This is intentionally narrow: callers supply safe adapter metadata and a
+/// resolver function.  The constructor validates metadata before the provider
+/// can be used by [`SecretReadHandler`], and debug output never exposes the
+/// resolver or any returned secret bytes.
+pub struct SecretProviderAdapter<F>
+where
+    F: Fn(&str) -> Result<Vec<u8>, SecretProviderError> + Send + Sync,
+{
+    metadata: SecretProviderMetadata,
+    resolver: F,
+}
+
+impl<F> SecretProviderAdapter<F>
+where
+    F: Fn(&str) -> Result<Vec<u8>, SecretProviderError> + Send + Sync,
+{
+    /// Create an adapter-backed provider with validated metadata.
+    ///
+    /// `name` must be a low-cardinality adapter identifier such as
+    /// `"aws-secrets-manager"` or `"hashicorp-vault"`.  Unsafe names are
+    /// rejected without being stored in the returned error.
+    pub fn new(
+        name: &'static str,
+        kind: SecretProviderKind,
+        resolver: F,
+    ) -> Result<Self, SecretProviderMetadataError> {
+        Ok(Self {
+            metadata: SecretProviderMetadata::try_new(name, kind)?,
+            resolver,
+        })
+    }
+}
+
+impl<F> fmt::Debug for SecretProviderAdapter<F>
+where
+    F: Fn(&str) -> Result<Vec<u8>, SecretProviderError> + Send + Sync,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretProviderAdapter")
+            .field("metadata", &self.metadata)
+            .field("resolver", &"[redacted]")
+            .finish()
+    }
+}
+
+impl<F> SecretProvider for SecretProviderAdapter<F>
+where
+    F: Fn(&str) -> Result<Vec<u8>, SecretProviderError> + Send + Sync,
+{
+    fn metadata(&self) -> SecretProviderMetadata {
+        self.metadata
+    }
+
+    fn resolve(&self, vault_path: &str) -> Result<Vec<u8>, SecretProviderError> {
+        (self.resolver)(vault_path)
+    }
 }
 
 // ── SecretVault ───────────────────────────────────────────────────────────
@@ -747,6 +849,21 @@ mod tests {
     }
 
     #[test]
+    fn provider_metadata_try_new_rejects_unsafe_names_without_leaking_them() {
+        let unsafe_name = "https://vault.prod.local/prod/db/password";
+        let err = SecretProviderMetadata::try_new(unsafe_name, SecretProviderKind::External)
+            .expect_err("unsafe provider names must be rejected");
+
+        let display = err.to_string();
+        let debug = format!("{err:?}");
+        assert_eq!(display, "unsafe secret provider metadata");
+        assert!(!display.contains("vault.prod.local"));
+        assert!(!display.contains("prod/db/password"));
+        assert!(!debug.contains("vault.prod.local"));
+        assert!(!debug.contains("prod/db/password"));
+    }
+
+    #[test]
     fn vault_exposes_redacted_provider_metadata() {
         let vault = SecretVault::new();
         let metadata = vault.metadata();
@@ -824,6 +941,106 @@ mod tests {
         assert!(!debug.contains("vault.prod.local"));
         assert!(!debug.contains("prod/db/password"));
         assert!(!debug.contains("DbPassword"));
+    }
+
+    #[test]
+    fn adapter_provider_resolves_with_validated_redacted_metadata() {
+        let provider = SecretProviderAdapter::new(
+            "mock-external-vault",
+            SecretProviderKind::External,
+            |vault_path| match vault_path {
+                "prod/api-key" => Ok(b"external_secret_value".to_vec()),
+                _ => Err(SecretProviderError::NotFound),
+            },
+        )
+        .expect("safe adapter metadata should be accepted");
+
+        let metadata = provider.metadata();
+        assert_eq!(metadata.kind(), SecretProviderKind::External);
+        assert_eq!(metadata.diagnostic_name(), "mock-external-vault");
+
+        let provider_debug = format!("{provider:?}");
+        assert!(provider_debug.contains("mock-external-vault"));
+        assert!(provider_debug.contains("redacted"));
+        assert!(!provider_debug.contains("external_secret_value"));
+        assert!(!provider_debug.contains("prod/api-key"));
+
+        let mapping = vec![SecretEntry {
+            secret_id: "ApiKey".to_string(),
+            vault_path: "prod/api-key".to_string(),
+        }];
+        let h = SecretReadHandler::new(mapping, Arc::new(provider));
+        let cap = CapabilityId::new("secret.read:ApiKey");
+        let result = h.handle(&cap, "read", b"").expect("adapter resolves");
+        assert_eq!(result, b"external_secret_value");
+
+        let handler_debug = format!("{h:?}");
+        assert!(handler_debug.contains("mock-external-vault"));
+        assert!(!handler_debug.contains("external_secret_value"));
+        assert!(!handler_debug.contains("prod/api-key"));
+        assert!(!handler_debug.contains("ApiKey"));
+    }
+
+    #[test]
+    fn adapter_provider_rejects_unsafe_metadata_before_use() {
+        let unsafe_name = "https://vault.prod.local/prod/db/password";
+        let err = SecretProviderAdapter::new(unsafe_name, SecretProviderKind::External, |_| {
+            Ok(b"should-never-be-used".to_vec())
+        })
+        .expect_err("unsafe adapter names must be rejected");
+
+        let display = err.to_string();
+        let debug = format!("{err:?}");
+        assert!(!display.contains("vault.prod.local"));
+        assert!(!display.contains("prod/db/password"));
+        assert!(!debug.contains("vault.prod.local"));
+        assert!(!debug.contains("prod/db/password"));
+    }
+
+    #[test]
+    fn adapter_provider_classifies_not_found_and_unavailable_opaquely() {
+        let mapping = vec![SecretEntry {
+            secret_id: "DbPassword".to_string(),
+            vault_path: "prod/db/password".to_string(),
+        }];
+        let cap = CapabilityId::new("secret.read:DbPassword");
+
+        let not_found =
+            SecretProviderAdapter::new("mock-external-vault", SecretProviderKind::External, |_| {
+                Err(SecretProviderError::NotFound)
+            })
+            .expect("safe metadata");
+        let h_not_found = SecretReadHandler::new(mapping.clone(), Arc::new(not_found));
+        let err = h_not_found
+            .handle(&cap, "read", b"")
+            .expect_err("not found must deny");
+        assert_eq!(
+            err.capability_denied_message(),
+            Some("secret access denied")
+        );
+        assert_eq!(err.audit_category(), Some("secret.not_found"));
+        let err_debug = format!("{err:?}");
+        assert!(!err_debug.contains("DbPassword"));
+        assert!(!err_debug.contains("prod/db/password"));
+
+        let unavailable =
+            SecretProviderAdapter::new("mock-external-vault", SecretProviderKind::External, |_| {
+                Err(SecretProviderError::Unavailable)
+            })
+            .expect("safe metadata");
+        let h_unavailable = SecretReadHandler::new(mapping, Arc::new(unavailable));
+        let err = h_unavailable
+            .handle(&cap, "read", b"")
+            .expect_err("unavailable must deny");
+        assert_eq!(
+            err.capability_denied_message(),
+            Some("secret access denied")
+        );
+        assert_eq!(err.audit_category(), Some("secret.provider_unavailable"));
+        let err_debug = format!("{err:?}");
+        assert!(!err_debug.contains("DbPassword"));
+        assert!(!err_debug.contains("prod/db/password"));
+        assert!(!err_debug.contains("mock-external-vault"));
     }
 
     // ── SecretProvider trait: custom provider tests ───────────────────────
