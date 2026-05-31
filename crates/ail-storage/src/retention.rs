@@ -45,6 +45,8 @@ use crate::graph::{GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
 use crate::object::{ObjectId, ObjectStore, RawObject};
 use crate::tag::TagStore;
 
+const MILLIS_PER_DAY: u64 = 86_400_000;
+
 // ── RetentionPolicy ───────────────────────────────────────────────────────
 
 /// Policy that governs which snapshots survive physical GC.
@@ -84,7 +86,7 @@ impl RetentionPolicy {
         }
         // Rule 3: max_age_days protects young snapshots.
         if let Some(max_days) = self.max_age_days {
-            let max_age_ms = max_days.saturating_mul(86_400_000);
+            let max_age_ms = max_days.saturating_mul(MILLIS_PER_DAY);
             let cutoff = now_ms.saturating_sub(max_age_ms);
             if snapshot.created_at >= cutoff {
                 return true;
@@ -92,6 +94,242 @@ impl RetentionPolicy {
         }
         false
     }
+}
+
+// ── RetentionPolicyIssueDescriptor ───────────────────────────────────────
+
+/// Stable, deterministic, redacted descriptor for retention policy outcomes.
+/// Snapshot descriptors use canonical `(created_at, id)` position instead.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetentionPolicyIssueDescriptor {
+    pub code: String,
+    pub category: String,
+    pub severity: String,
+    pub subject: String,
+    pub reason: String,
+    pub snapshot_ordinal: Option<u64>,
+    pub message: String,
+}
+
+impl RetentionPolicyIssueDescriptor {
+    fn invalid_window_zero() -> Self {
+        Self::new(
+            "retention.policy.max_age_zero",
+            "retention.policy.invalid_window",
+            "error",
+            "policy",
+            "max_age_days_zero",
+            None,
+            "retention max_age_days must be greater than zero",
+        )
+    }
+
+    fn invalid_window_overflow() -> Self {
+        Self::new(
+            "retention.policy.max_age_overflow",
+            "retention.policy.invalid_window",
+            "error",
+            "policy",
+            "max_age_days_overflow",
+            None,
+            "retention max_age_days exceeds millisecond window capacity",
+        )
+    }
+
+    fn snapshot_protected(snapshot_ordinal: u64, reason: &'static str) -> Self {
+        Self::new(
+            "retention.snapshot.protected",
+            "retention.snapshot.protected",
+            "info",
+            "snapshot",
+            reason,
+            Some(snapshot_ordinal),
+            "snapshot is protected by retention policy or explicit hold",
+        )
+    }
+
+    fn snapshot_prune_eligible(snapshot_ordinal: u64) -> Self {
+        Self::new(
+            "retention.snapshot.prune_eligible",
+            "retention.snapshot.prune_eligible",
+            "info",
+            "snapshot",
+            "unprotected",
+            Some(snapshot_ordinal),
+            "snapshot is eligible for pruning",
+        )
+    }
+
+    fn new(
+        code: &'static str,
+        category: &'static str,
+        severity: &'static str,
+        subject: &'static str,
+        reason: &'static str,
+        snapshot_ordinal: Option<u64>,
+        message: &'static str,
+    ) -> Self {
+        Self {
+            code: code.to_owned(),
+            category: category.to_owned(),
+            severity: severity.to_owned(),
+            subject: subject.to_owned(),
+            reason: reason.to_owned(),
+            snapshot_ordinal,
+            message: message.to_owned(),
+        }
+    }
+
+    fn issue_phase(&self) -> u8 {
+        if self.snapshot_ordinal.is_some() {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn code_ord(&self) -> u8 {
+        match self.code.as_str() {
+            "retention.policy.max_age_zero" => 0,
+            "retention.policy.max_age_overflow" => 1,
+            "retention.snapshot.protected" => 2,
+            "retention.snapshot.prune_eligible" => 3,
+            _ => u8::MAX,
+        }
+    }
+}
+
+/// Read-only retention diagnostics report.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetentionDiagnosticsReport {
+    pub issues: Vec<RetentionPolicyIssueDescriptor>,
+    pub snapshots_examined: u64,
+    pub has_errors: bool,
+}
+
+/// Validate policy shape without inspecting snapshots.
+pub fn validate_retention_policy(policy: &RetentionPolicy) -> Vec<RetentionPolicyIssueDescriptor> {
+    let mut issues = Vec::new();
+    if let Some(max_age_days) = policy.max_age_days {
+        if max_age_days == 0 {
+            issues.push(RetentionPolicyIssueDescriptor::invalid_window_zero());
+        }
+        if max_age_days.checked_mul(MILLIS_PER_DAY).is_none() {
+            issues.push(RetentionPolicyIssueDescriptor::invalid_window_overflow());
+        }
+    }
+    issues
+}
+
+/// Build redacted policy and per-snapshot prune/protection descriptors.
+/// Snapshot order is canonical `(created_at, id)`; multiple protection rules
+/// resolve by priority from explicit holds to policy heuristics.
+pub fn describe_retention_policy_issues(
+    snapshots: &[SnapshotEnvelope],
+    policy: &RetentionPolicy,
+    holds: &SnapshotHolds,
+    now_ms: u64,
+) -> Vec<RetentionPolicyIssueDescriptor> {
+    let mut issues = validate_retention_policy(policy);
+
+    let branch_holds: BTreeSet<ObjectId> = holds.branch_heads.iter().copied().collect();
+    let tag_holds: BTreeSet<ObjectId> = holds.tag_locks.iter().copied().collect();
+    let audit_holds: BTreeSet<ObjectId> = holds.audit_holds.iter().copied().collect();
+
+    let mut canonical_snapshots: Vec<&SnapshotEnvelope> = snapshots.iter().collect();
+    canonical_snapshots.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.as_bytes().cmp(b.id.as_bytes()))
+    });
+
+    for (snapshot_ordinal, snapshot) in canonical_snapshots.into_iter().enumerate() {
+        let reason = snapshot_retention_reason(
+            snapshot,
+            policy,
+            &branch_holds,
+            &tag_holds,
+            &audit_holds,
+            now_ms,
+        );
+        let descriptor = match reason {
+            Some(reason) => {
+                RetentionPolicyIssueDescriptor::snapshot_protected(snapshot_ordinal as u64, reason)
+            }
+            None => {
+                RetentionPolicyIssueDescriptor::snapshot_prune_eligible(snapshot_ordinal as u64)
+            }
+        };
+        issues.push(descriptor);
+    }
+
+    sort_retention_issue_descriptors(&mut issues);
+    issues
+}
+
+/// Diagnose retention policy and snapshot outcomes from a graph store without
+/// mutating storage.
+pub async fn diagnose_retention_policy<G>(
+    graph_store: &G,
+    policy: &RetentionPolicy,
+    holds: &SnapshotHolds,
+    now_ms: u64,
+) -> StorageResult<RetentionDiagnosticsReport>
+where
+    G: GraphStore + Send + Sync,
+{
+    let snapshots = graph_store.list_snapshots().await?;
+    let issues = describe_retention_policy_issues(&snapshots, policy, holds, now_ms);
+    let has_errors = issues.iter().any(|issue| issue.severity == "error");
+    Ok(RetentionDiagnosticsReport {
+        issues,
+        snapshots_examined: snapshots.len() as u64,
+        has_errors,
+    })
+}
+
+fn snapshot_retention_reason(
+    snapshot: &SnapshotEnvelope,
+    policy: &RetentionPolicy,
+    branch_holds: &BTreeSet<ObjectId>,
+    tag_holds: &BTreeSet<ObjectId>,
+    audit_holds: &BTreeSet<ObjectId>,
+    now_ms: u64,
+) -> Option<&'static str> {
+    if branch_holds.contains(&snapshot.id) {
+        return Some("branch_hold");
+    }
+    if tag_holds.contains(&snapshot.id) {
+        return Some("tag_hold");
+    }
+    if audit_holds.contains(&snapshot.id) {
+        return Some("audit_hold");
+    }
+    if policy.keep_releases && snapshot.parent_id.is_none() {
+        return Some("release");
+    }
+    if policy.keep_tagged && snapshot.applied_change_id.is_some() {
+        return Some("tagged_change");
+    }
+    if let Some(max_days) = policy.max_age_days {
+        let max_age_ms = max_days.saturating_mul(MILLIS_PER_DAY);
+        let cutoff = now_ms.saturating_sub(max_age_ms);
+        if snapshot.created_at >= cutoff {
+            return Some("age_window");
+        }
+    }
+    None
+}
+
+fn sort_retention_issue_descriptors(issues: &mut [RetentionPolicyIssueDescriptor]) {
+    issues.sort_by(|a, b| {
+        a.issue_phase()
+            .cmp(&b.issue_phase())
+            .then_with(|| a.snapshot_ordinal.cmp(&b.snapshot_ordinal))
+            .then_with(|| a.code_ord().cmp(&b.code_ord()))
+            .then_with(|| a.reason.cmp(&b.reason))
+            .then_with(|| a.message.cmp(&b.message))
+    });
 }
 
 // ── SnapshotHolds ─────────────────────────────────────────────────────────
@@ -685,6 +923,160 @@ impl<S: ObjectStore + Send + Sync> MutableGraphStore for ObjectBackedGraphStore<
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod diagnostics_tests {
+    use futures::executor::block_on;
+
+    use super::*;
+    use crate::backends::memory::MemoryObjectStore;
+    use crate::graph::{GraphStore, ObjectBackedGraphStore};
+
+    fn snapshot(seed: &[u8], created_at: u64) -> SnapshotEnvelope {
+        let id = ObjectId::from_bytes(seed);
+        SnapshotEnvelope {
+            id,
+            graph_root_hash: id,
+            parent_id: Some(ObjectId::from_bytes(b"parent")),
+            applied_change_id: None,
+            created_at,
+            verification_report_hash: None,
+            audit_record_ids: Vec::new(),
+            migration_metadata_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn invalid_retention_windows_have_stable_codes_and_categories() {
+        let zero_window = RetentionPolicy {
+            max_age_days: Some(0),
+            keep_releases: false,
+            keep_tagged: false,
+        };
+        let overflow_window = RetentionPolicy {
+            max_age_days: Some(u64::MAX / MILLIS_PER_DAY + 1),
+            keep_releases: false,
+            keep_tagged: false,
+        };
+
+        let zero_issues = validate_retention_policy(&zero_window);
+        assert_eq!(zero_issues.len(), 1);
+        assert_eq!(zero_issues[0].code, "retention.policy.max_age_zero");
+        assert_eq!(zero_issues[0].category, "retention.policy.invalid_window");
+
+        let overflow_issues = validate_retention_policy(&overflow_window);
+        assert_eq!(overflow_issues.len(), 1);
+        assert_eq!(overflow_issues[0].code, "retention.policy.max_age_overflow");
+        assert_eq!(
+            overflow_issues[0].category,
+            "retention.policy.invalid_window"
+        );
+        assert_eq!(overflow_issues[0].severity, "error");
+    }
+
+    #[test]
+    fn snapshot_retention_descriptors_are_redacted_and_deterministically_ordered() {
+        let now_ms = MILLIS_PER_DAY * 10;
+        let old = snapshot(b"old-prune", MILLIS_PER_DAY);
+        let mut release = snapshot(b"release", MILLIS_PER_DAY * 2);
+        release.parent_id = None;
+        let mut tagged = snapshot(b"tagged", MILLIS_PER_DAY * 3);
+        tagged.applied_change_id = Some(ObjectId::from_bytes(b"change"));
+        let branch = snapshot(b"branch", MILLIS_PER_DAY * 4);
+        let young = snapshot(b"young", now_ms - 1);
+
+        let policy = RetentionPolicy {
+            max_age_days: Some(1),
+            keep_releases: true,
+            keep_tagged: true,
+        };
+        let holds = SnapshotHolds {
+            branch_heads: vec![branch.id],
+            tag_locks: Vec::new(),
+            audit_holds: Vec::new(),
+        };
+        let descriptors = describe_retention_policy_issues(
+            &[
+                young.clone(),
+                branch.clone(),
+                old.clone(),
+                tagged.clone(),
+                release.clone(),
+            ],
+            &policy,
+            &holds,
+            now_ms,
+        );
+
+        let codes: Vec<&str> = descriptors
+            .iter()
+            .map(|issue| issue.code.as_str())
+            .collect();
+        assert_eq!(
+            codes,
+            vec![
+                "retention.snapshot.prune_eligible",
+                "retention.snapshot.protected",
+                "retention.snapshot.protected",
+                "retention.snapshot.protected",
+                "retention.snapshot.protected",
+            ]
+        );
+        let reasons: Vec<&str> = descriptors
+            .iter()
+            .map(|issue| issue.reason.as_str())
+            .collect();
+        assert_eq!(
+            reasons,
+            vec![
+                "unprotected",
+                "release",
+                "tagged_change",
+                "branch_hold",
+                "age_window",
+            ]
+        );
+        let ordinals: Vec<Option<u64>> = descriptors
+            .iter()
+            .map(|issue| issue.snapshot_ordinal)
+            .collect();
+        assert_eq!(ordinals, vec![Some(0), Some(1), Some(2), Some(3), Some(4)]);
+
+        let branch_hex = branch.id.to_hex();
+        for descriptor in descriptors {
+            assert!(!descriptor.code.contains(&branch_hex));
+            assert!(!descriptor.category.contains(&branch_hex));
+            assert!(!descriptor.message.contains(&branch_hex));
+            assert_eq!(descriptor.subject, "snapshot");
+        }
+    }
+
+    #[test]
+    fn diagnose_retention_policy_reports_snapshot_count_and_policy_errors() {
+        let store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+        let snap = snapshot(b"stored-snapshot", MILLIS_PER_DAY);
+        let policy = RetentionPolicy {
+            max_age_days: Some(0),
+            keep_releases: false,
+            keep_tagged: false,
+        };
+
+        let report = block_on(async {
+            store.save_snapshot(&snap).await.expect("save snapshot");
+            diagnose_retention_policy(&store, &policy, &SnapshotHolds::default(), MILLIS_PER_DAY)
+                .await
+                .expect("diagnose retention policy")
+        });
+
+        assert_eq!(report.snapshots_examined, 1);
+        assert!(report.has_errors);
+        assert_eq!(report.issues[0].code, "retention.policy.max_age_zero");
+        assert_eq!(
+            report.issues[1].code, "retention.snapshot.protected",
+            "zero-day window still protects snapshots at the injected current time"
+        );
+    }
+}
 
 #[cfg(test)]
 mod gc_tests {
