@@ -6,7 +6,8 @@ use ail_verify::proof::{
     ClauseRole, ObligationAttempt, ObligationLedgerEntry, ObligationState, ProofObligation,
 };
 use ail_verify::report::{
-    SolverDiagnostic, SolverDiagnosticStatus, VerificationReport,
+    SolverDiagnostic, SolverDiagnosticStatus, VERIFY_SOLVER_RESOURCE_LIMITED,
+    VERIFY_SOLVER_TIMEOUT, VERIFY_SOLVER_UNSUPPORTED, VerificationReport,
     solver_diagnostic_status_from_reason,
 };
 use ail_verify::solver::{Solver, SolverOutcome};
@@ -86,6 +87,7 @@ fn solver_diagnostic_status_serializes_stable_snake_case() {
     let report = VerificationReport {
         solver_diagnostics: vec![
             SolverDiagnostic {
+                code: VERIFY_SOLVER_TIMEOUT.into(),
                 obligation_id: "po_1".into(),
                 source_stage: "contract".into(),
                 status: SolverDiagnosticStatus::Timeout,
@@ -93,6 +95,7 @@ fn solver_diagnostic_status_serializes_stable_snake_case() {
                 repair_options: vec!["split the predicate".into()],
             },
             SolverDiagnostic {
+                code: VERIFY_SOLVER_RESOURCE_LIMITED.into(),
                 obligation_id: "po_2".into(),
                 source_stage: "contract".into(),
                 status: SolverDiagnosticStatus::ResourceLimited,
@@ -100,6 +103,7 @@ fn solver_diagnostic_status_serializes_stable_snake_case() {
                 repair_options: vec!["reduce search space".into()],
             },
             SolverDiagnostic {
+                code: VERIFY_SOLVER_UNSUPPORTED.into(),
                 obligation_id: "po_3".into(),
                 source_stage: "contract".into(),
                 status: SolverDiagnosticStatus::Unsupported,
@@ -112,12 +116,45 @@ fn solver_diagnostic_status_serializes_stable_snake_case() {
 
     let json = serde_json::to_string(&report).expect("serialize report");
 
+    assert!(json.contains(r#""code":"VERIFY_SOLVER_TIMEOUT""#));
+    assert!(json.contains(r#""code":"VERIFY_SOLVER_RESOURCE_LIMITED""#));
+    assert!(json.contains(r#""code":"VERIFY_SOLVER_UNSUPPORTED""#));
     assert!(json.contains(r#""status":"timeout""#));
     assert!(json.contains(r#""status":"resource_limited""#));
     assert!(json.contains(r#""status":"unsupported""#));
     assert!(!json.contains("Timeout"));
     assert!(!json.contains("ResourceLimited"));
     assert!(!json.contains("Unsupported"));
+}
+
+#[test]
+fn solver_diagnostic_status_maps_to_stable_issue_codes() {
+    assert_eq!(
+        SolverDiagnosticStatus::Timeout.issue_code(),
+        VERIFY_SOLVER_TIMEOUT
+    );
+    assert_eq!(
+        SolverDiagnosticStatus::ResourceLimited.issue_code(),
+        VERIFY_SOLVER_RESOURCE_LIMITED
+    );
+    assert_eq!(
+        SolverDiagnosticStatus::Unsupported.issue_code(),
+        VERIFY_SOLVER_UNSUPPORTED
+    );
+}
+
+#[test]
+fn old_solver_diagnostics_without_code_still_deserialize() {
+    let json = r#"{"entries":[],"diagnostics":[],"solver_diagnostics":[{"obligation_id":"po_old","source_stage":"contract","status":"timeout","reason":"legacy"}]}"#;
+
+    let report: VerificationReport = serde_json::from_str(json).expect("legacy report");
+
+    assert_eq!(report.solver_diagnostics.len(), 1);
+    assert_eq!(report.solver_diagnostics[0].code, "");
+    assert_eq!(
+        report.solver_diagnostics[0].status,
+        SolverDiagnosticStatus::Timeout
+    );
 }
 
 #[test]
@@ -207,6 +244,7 @@ fn pipeline_derives_solver_diagnostics_for_representative_outcomes() {
             .iter()
             .find(|diagnostic| diagnostic.status == status)
             .expect("status diagnostic present");
+        assert_eq!(diagnostic.code, status.issue_code());
         assert!(
             !diagnostic.repair_options.is_empty(),
             "{status:?} diagnostics must include repair guidance"

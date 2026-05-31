@@ -75,6 +75,7 @@ fn solver_diag(obligation_id: &str, status: SolverDiagnosticStatus) -> SolverDia
         SolverDiagnosticStatus::Unsupported => "solver_unsupported: quantifier fragment",
     };
     SolverDiagnostic {
+        code: status.issue_code().to_string(),
         obligation_id: obligation_id.to_string(),
         source_stage: "contract".to_string(),
         status,
