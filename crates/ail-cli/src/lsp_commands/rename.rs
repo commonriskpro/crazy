@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 
@@ -6,6 +6,11 @@ use super::references::references_for_token_with_workspace;
 use super::source_helpers::{file_path_from_uri, is_acl_token_char, is_ail_source_uri};
 use super::symbols::workspace_symbol_items;
 use super::tokens::{TokenRange, token_range_at_position};
+
+const CATEGORY_INVALID_NEW_NAME: &str = "invalid_new_name";
+const CATEGORY_SYMBOL_RESOLUTION: &str = "symbol_resolution";
+const CATEGORY_UNSUPPORTED: &str = "unsupported";
+const CATEGORY_DOCUMENT_STATE: &str = "document_state";
 
 pub(super) fn rename_workspace_edit_at_position(
     uri: &str,
@@ -46,12 +51,44 @@ pub(super) fn rename_edits_at_position(
     if symbol_local_name(reference_token) == new_name {
         return blocked(
             "same_name",
+            "AIL_RENAME_SAME_NAME",
+            CATEGORY_INVALID_NEW_NAME,
             "newName must differ from the current symbol name",
+            json!({
+                "newNameLength": new_name.chars().count(),
+                "symbolNameLength": symbol_local_name(reference_token).chars().count(),
+            }),
+        );
+    }
+
+    let references = candidate["references"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let missing_document_count = references
+        .iter()
+        .filter(|reference| {
+            reference["uri"]
+                .as_str()
+                .is_some_and(|uri| workspace_document_entry(workspace_documents, uri).is_none())
+        })
+        .count();
+    if missing_document_count > 0 {
+        return blocked(
+            "cross_file_import_unsupported",
+            "AIL_RENAME_CROSS_FILE_IMPORT_UNSUPPORTED",
+            CATEGORY_UNSUPPORTED,
+            "rename cannot edit references from unopened imported documents",
+            json!({
+                "referenceCount": references.len(),
+                "missingDocumentCount": missing_document_count,
+                "openDocumentCount": workspace_documents.len(),
+            }),
         );
     }
 
     let mut changes: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    for reference in candidate["references"].as_array().into_iter().flatten() {
+    for reference in &references {
         let Some(reference_uri) = reference["uri"].as_str() else {
             continue;
         };
@@ -72,11 +109,7 @@ pub(super) fn rename_edits_at_position(
     }
 
     for edits in changes.values_mut() {
-        edits.sort_by(|left, right| {
-            location_sort_key(left)
-                .cmp(&location_sort_key(right))
-                .then_with(|| left.to_string().cmp(&right.to_string()))
-        });
+        sort_locations(edits);
     }
 
     let document_count = changes.len();
@@ -122,23 +155,56 @@ pub(super) fn rename_candidate_at_position(
     if !is_ail_source_uri(uri) {
         return blocked(
             "unsupported_language",
+            "AIL_RENAME_UNSUPPORTED_LANGUAGE",
+            CATEGORY_UNSUPPORTED,
             "rename is currently available for .ail source documents only",
+            json!({ "language": "unsupported" }),
         );
     }
 
     let Some(token_range) = token_range_at_position(text, line, character) else {
-        return blocked("missing_token", "position is not on an identifier token");
+        return blocked(
+            "missing_token",
+            "AIL_RENAME_MISSING_TOKEN",
+            CATEGORY_SYMBOL_RESOLUTION,
+            "position is not on an identifier token",
+            json!({ "line": line, "character": character }),
+        );
     };
     let token = token_range.token.trim();
     if !is_rename_identifier(token) {
-        return blocked("not_identifier", "token is not a renameable identifier");
+        return blocked(
+            "not_identifier",
+            "AIL_RENAME_NOT_IDENTIFIER",
+            CATEGORY_SYMBOL_RESOLUTION,
+            "token is not a renameable identifier",
+            token_descriptor(token),
+        );
     }
 
-    let Some(symbol) = resolve_workspace_symbol(token, workspace_documents) else {
-        return blocked(
-            "unknown_symbol",
-            "token does not resolve to a unique workspace symbol",
-        );
+    let symbol = match resolve_workspace_symbol(token, workspace_documents) {
+        RenameSymbolResolution::Found(symbol) => symbol,
+        RenameSymbolResolution::Unresolved => {
+            return blocked(
+                "unresolved_symbol",
+                "AIL_RENAME_UNRESOLVED_SYMBOL",
+                CATEGORY_SYMBOL_RESOLUTION,
+                "token does not resolve to a workspace symbol",
+                json!({
+                    "token": token_descriptor(token),
+                    "workspaceSymbolCount": workspace_symbol_items("", workspace_documents).len(),
+                }),
+            );
+        }
+        RenameSymbolResolution::Ambiguous(matches) => {
+            return blocked(
+                "ambiguous_symbol",
+                "AIL_RENAME_AMBIGUOUS_SYMBOL",
+                CATEGORY_SYMBOL_RESOLUTION,
+                "token resolves to multiple workspace symbols",
+                ambiguous_symbol_descriptor(token, &matches),
+            );
+        }
     };
 
     let mut references =
@@ -158,35 +224,70 @@ pub(super) fn rename_candidate_at_position(
     })
 }
 
+pub(super) fn missing_document_rename_failure() -> Value {
+    blocked(
+        "missing_document",
+        "AIL_RENAME_MISSING_DOCUMENT",
+        CATEGORY_DOCUMENT_STATE,
+        "document is not open in this LSP session",
+        json!({ "documentState": "not_open" }),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RenameSymbol {
     name: String,
     kind: u64,
+    uri: String,
+    line: u64,
+    character: u64,
+}
+
+enum RenameSymbolResolution {
+    Found(RenameSymbol),
+    Unresolved,
+    Ambiguous(Vec<RenameSymbol>),
 }
 
 fn resolve_workspace_symbol(
     token: &str,
     workspace_documents: &BTreeMap<String, String>,
-) -> Option<RenameSymbol> {
+) -> RenameSymbolResolution {
     let symbols = workspace_symbol_items("", workspace_documents);
     let mut matches = symbols
         .iter()
-        .filter_map(|symbol| rename_symbol_from_workspace_item(symbol))
+        .filter_map(rename_symbol_from_workspace_item)
         .filter(|symbol| symbol_matches_token(symbol, token))
         .collect::<Vec<_>>();
     matches.sort_by(|left, right| {
         left.name
             .cmp(&right.name)
             .then_with(|| left.kind.cmp(&right.kind))
+            .then_with(|| left.uri.cmp(&right.uri))
+            .then_with(|| left.line.cmp(&right.line))
+            .then_with(|| left.character.cmp(&right.character))
     });
     matches.dedup();
-    (matches.len() == 1).then(|| matches.remove(0))
+    match matches.len() {
+        0 => RenameSymbolResolution::Unresolved,
+        1 => RenameSymbolResolution::Found(matches.remove(0)),
+        _ => RenameSymbolResolution::Ambiguous(matches),
+    }
 }
 
 fn rename_symbol_from_workspace_item(item: &Value) -> Option<RenameSymbol> {
     let name = item["name"].as_str()?.to_string();
     let kind = item["kind"].as_u64()?;
-    Some(RenameSymbol { name, kind })
+    let uri = item["location"]["uri"].as_str()?.to_string();
+    let line = item["location"]["range"]["start"]["line"].as_u64()?;
+    let character = item["location"]["range"]["start"]["character"].as_u64()?;
+    Some(RenameSymbol {
+        name,
+        kind,
+        uri,
+        line,
+        character,
+    })
 }
 
 fn symbol_matches_token(symbol: &RenameSymbol, token: &str) -> bool {
@@ -205,19 +306,31 @@ fn validate_rename_new_name(name: &str) -> Option<Value> {
     if name.contains('.') {
         return Some(blocked(
             "qualified_new_name",
+            "AIL_RENAME_QUALIFIED_NEW_NAME",
+            CATEGORY_INVALID_NEW_NAME,
             "newName must be an unqualified .ail identifier",
+            json!({
+                "newNameLength": name.chars().count(),
+                "containsQualifier": true,
+            }),
         ));
     }
     if !is_rename_local_identifier(name) {
         return Some(blocked(
             "invalid_identifier",
+            "AIL_RENAME_INVALID_IDENTIFIER",
+            CATEGORY_INVALID_NEW_NAME,
             "newName must be a valid .ail identifier",
+            new_name_descriptor(name),
         ));
     }
     if is_ail_keyword(name) {
         return Some(blocked(
             "reserved_keyword",
+            "AIL_RENAME_RESERVED_KEYWORD",
+            CATEGORY_INVALID_NEW_NAME,
             "newName must not be a reserved .ail keyword",
+            new_name_descriptor(name),
         ));
     }
     None
@@ -391,10 +504,53 @@ fn location_sort_key(location: &Value) -> (String, u64, u64, u64, u64) {
     )
 }
 
-fn blocked(code: &str, reason: &str) -> Value {
+fn blocked(reason: &str, code: &str, category: &str, message: &str, descriptor: Value) -> Value {
     json!({
         "canRename": false,
-        "reason": code,
-        "message": reason,
+        "reason": reason,
+        "message": message,
+        "diagnostic": {
+            "code": code,
+            "category": category,
+            "severity": "error",
+            "descriptor": descriptor,
+        }
+    })
+}
+
+fn token_descriptor(token: &str) -> Value {
+    json!({
+        "tokenLength": token.chars().count(),
+        "containsQualifier": token.contains('.'),
+        "tokenClass": if token.chars().all(|ch| ch.is_ascii_digit()) {
+            "numeric"
+        } else {
+            "identifier_like"
+        },
+    })
+}
+
+fn new_name_descriptor(name: &str) -> Value {
+    json!({
+        "newNameLength": name.chars().count(),
+        "containsQualifier": name.contains('.'),
+        "startsWithValidIdentifierCharacter": name
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_'),
+    })
+}
+
+fn ambiguous_symbol_descriptor(token: &str, matches: &[RenameSymbol]) -> Value {
+    let symbol_kinds = matches
+        .iter()
+        .map(|symbol| symbol.kind)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    json!({
+        "token": token_descriptor(token),
+        "candidateCount": matches.len(),
+        "symbolKinds": symbol_kinds,
     })
 }
