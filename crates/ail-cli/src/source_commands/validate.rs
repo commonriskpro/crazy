@@ -194,14 +194,21 @@ pub(super) fn validate_source_program_symbols(program: &SourceProgram) -> Result
             "duplicate capability declaration `{name}`"
         )));
     }
-    if let Some(name) = duplicate_name(
-        program
-            .constants
-            .iter()
-            .map(|constant| constant.name.as_str()),
-    ) {
-        return Err(CliError::ParseError(format!(
-            "duplicate const declaration `{name}`"
+    if let Some((first, second)) =
+        duplicate_source_declaration(program.constants.iter().map(|constant| {
+            SourceDeclarationRef {
+                kind: "const",
+                name: constant.name.as_str(),
+                line_num: constant.line_num,
+                source_path: constant.source_path.as_deref(),
+            }
+        }))
+    {
+        return Err(CliError::ParseError(format_duplicate_source_declaration(
+            "const",
+            "duplicate const declaration",
+            first,
+            second,
         )));
     }
     let function_names = program
@@ -209,29 +216,63 @@ pub(super) fn validate_source_program_symbols(program: &SourceProgram) -> Result
         .iter()
         .map(|function| function.name.as_str())
         .collect::<BTreeSet<_>>();
-    if let Some(name) = program
+    if let Some(constant) = program
         .constants
         .iter()
-        .map(|constant| constant.name.as_str())
-        .find(|name| function_names.contains(name))
+        .find(|constant| function_names.contains(constant.name.as_str()))
     {
-        return Err(CliError::ParseError(format!(
-            "duplicate function or const declaration `{name}`"
-        )));
-    }
-    if let Some(name) = duplicate_name(
-        program
+        let function = program
             .functions
             .iter()
-            .map(|function| function.name.as_str()),
-    ) {
-        return Err(CliError::ParseError(format!(
-            "duplicate function declaration `{name}`"
+            .find(|function| function.name == constant.name)
+            .expect("matching function exists");
+        return Err(CliError::ParseError(format_duplicate_source_declaration(
+            "declaration",
+            "duplicate function or const declaration",
+            SourceDeclarationRef {
+                kind: "const",
+                name: constant.name.as_str(),
+                line_num: constant.line_num,
+                source_path: constant.source_path.as_deref(),
+            },
+            SourceDeclarationRef {
+                kind: "function",
+                name: function.name.as_str(),
+                line_num: function.line_num,
+                source_path: function.source_path.as_deref(),
+            },
         )));
     }
-    if let Some(name) = duplicate_name(program.tests.iter().map(|test| test.name.as_str())) {
-        return Err(CliError::ParseError(format!(
-            "duplicate test declaration `{name}`"
+    if let Some((first, second)) =
+        duplicate_source_declaration(program.functions.iter().map(|function| {
+            SourceDeclarationRef {
+                kind: "function",
+                name: function.name.as_str(),
+                line_num: function.line_num,
+                source_path: function.source_path.as_deref(),
+            }
+        }))
+    {
+        return Err(CliError::ParseError(format_duplicate_source_declaration(
+            "function",
+            "duplicate function declaration",
+            first,
+            second,
+        )));
+    }
+    if let Some((first, second)) =
+        duplicate_source_declaration(program.tests.iter().map(|test| SourceDeclarationRef {
+            kind: "test",
+            name: test.name.as_str(),
+            line_num: test.line_num,
+            source_path: test.source_path.as_deref(),
+        }))
+    {
+        return Err(CliError::ParseError(format_duplicate_source_declaration(
+            "test",
+            "duplicate test declaration",
+            first,
+            second,
         )));
     }
     for constant in &program.constants {
@@ -251,6 +292,56 @@ pub(super) fn validate_source_program_symbols(program: &SourceProgram) -> Result
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct SourceDeclarationRef<'a> {
+    kind: &'static str,
+    name: &'a str,
+    line_num: usize,
+    source_path: Option<&'a Path>,
+}
+
+fn duplicate_source_declaration<'a>(
+    declarations: impl Iterator<Item = SourceDeclarationRef<'a>>,
+) -> Option<(SourceDeclarationRef<'a>, SourceDeclarationRef<'a>)> {
+    let mut seen = BTreeMap::new();
+    for declaration in declarations {
+        if let Some(first) = seen.insert(declaration.name, declaration) {
+            return Some((first, declaration));
+        }
+    }
+    None
+}
+
+fn format_duplicate_source_declaration(
+    imported_kind: &str,
+    legacy_prefix: &str,
+    first: SourceDeclarationRef<'_>,
+    second: SourceDeclarationRef<'_>,
+) -> String {
+    if first.source_path.is_none() && second.source_path.is_none() {
+        return format!("{legacy_prefix} `{}`", first.name);
+    }
+
+    format!(
+        "duplicate imported source {imported_kind} `{}`: {} conflicts with {}",
+        first.name,
+        format_source_declaration_origin(first),
+        format_source_declaration_origin(second)
+    )
+}
+
+fn format_source_declaration_origin(declaration: SourceDeclarationRef<'_>) -> String {
+    match declaration.source_path {
+        Some(path) => format!(
+            "{} in {} line {}",
+            declaration.kind,
+            path.display(),
+            declaration.line_num
+        ),
+        None => format!("{} on line {}", declaration.kind, declaration.line_num),
+    }
 }
 
 pub(super) fn source_function_builtin_shadow(name: &str) -> Option<&str> {

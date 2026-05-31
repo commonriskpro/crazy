@@ -400,10 +400,11 @@ fn lsp_diagnose_reports_ail_source_duplicate_imported_functions() {
     assert_eq!(v["data"]["language"], "ail-source");
     assert_eq!(v["data"]["diagnostic_count"], 1);
     assert_eq!(v["data"]["error_count"], 1);
-    assert!(
-        v["data"]["diagnostics"][0]["message"]
-            .as_str()
-            .expect("diagnostic message")
-            .contains("duplicate function declaration `fn.helper`")
-    );
+    assert_eq!(v["data"]["diagnostics"][0]["source"], "ail-source-import");
+    let message = v["data"]["diagnostics"][0]["message"]
+        .as_str()
+        .expect("diagnostic message");
+    assert!(message.contains("duplicate imported source function `fn.helper`"));
+    assert!(message.contains("dep.ail line 1"));
+    assert!(message.contains("main.ail line 2"));
 }

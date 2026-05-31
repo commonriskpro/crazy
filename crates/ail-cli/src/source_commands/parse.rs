@@ -195,7 +195,8 @@ fn load_source_program_from_text_inner_with_stack(
     visiting: &mut Vec<PathBuf>,
     visited: &mut BTreeSet<PathBuf>,
 ) -> Result<SourceProgram, CliError> {
-    let program = parse_ail_source(src)?;
+    let mut program = parse_ail_source(src)?;
+    program.set_source_path(canonical_path);
     let root_module = program.module.clone();
     let mut combined = SourceProgram::default();
     for import in &program.imports {

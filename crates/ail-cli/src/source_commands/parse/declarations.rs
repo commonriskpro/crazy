@@ -92,6 +92,7 @@ pub(super) fn parse_source_const(rest: &str, line_num: usize) -> Result<SourceCo
         return_type,
         body: lower_source_expr(body, line_num)?,
         line_num,
+        source_path: None,
     })
 }
 
@@ -174,6 +175,7 @@ pub(super) fn build_source_function(
         return_type,
         body: lower_source_expr(body, line_num)?,
         line_num,
+        source_path: None,
     })
 }
 
@@ -331,6 +333,7 @@ pub(super) fn parse_source_test(rest: &str, line_num: usize) -> Result<SourceTes
         return_type,
         body: lower_source_expr(body, line_num)?,
         line_num,
+        source_path: None,
     })
 }
 
