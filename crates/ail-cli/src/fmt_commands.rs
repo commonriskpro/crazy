@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use ail_change::canonical::{Precondition, canonicalize_parsed};
 use ail_change::model::BlockHash;
 use ail_change::parser::parse_changeset;
-use serde_json::json;
+use serde_json::{Map, Value, json};
 
 use crate::error::CliError;
 use crate::output::{OutputMode, print_error_response, print_response};
@@ -27,6 +27,269 @@ pub(crate) struct FmtOutcome {
     pub op_count: usize,
     pub item_count: usize,
     pub language: &'static str,
+}
+
+// ── formatter diagnostics ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FmtLanguage {
+    Acl,
+    AilSource,
+    Unknown,
+}
+
+impl FmtLanguage {
+    fn as_str(self) -> &'static str {
+        match self {
+            FmtLanguage::Acl => "acl",
+            FmtLanguage::AilSource => "ail-source",
+            FmtLanguage::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FmtDiagnosticKind {
+    ParseFailure,
+    UnsupportedSyntax,
+    NonIdempotent,
+    WriteCheckModeMismatch,
+    NotCanonical,
+}
+
+impl FmtDiagnosticKind {
+    fn code(self) -> &'static str {
+        match self {
+            FmtDiagnosticKind::ParseFailure => "FMT_PARSE_FAILED",
+            FmtDiagnosticKind::UnsupportedSyntax => "FMT_UNSUPPORTED_SYNTAX",
+            FmtDiagnosticKind::NonIdempotent => "FMT_NON_IDEMPOTENT",
+            FmtDiagnosticKind::WriteCheckModeMismatch => "FMT_WRITE_CHECK_MODE_MISMATCH",
+            FmtDiagnosticKind::NotCanonical => "FMT_NOT_CANONICAL",
+        }
+    }
+
+    fn category(self) -> &'static str {
+        match self {
+            FmtDiagnosticKind::ParseFailure => "parse",
+            FmtDiagnosticKind::UnsupportedSyntax => "unsupported",
+            FmtDiagnosticKind::NonIdempotent => "stability",
+            FmtDiagnosticKind::WriteCheckModeMismatch => "usage",
+            FmtDiagnosticKind::NotCanonical => "check",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FmtDiagnosticDescriptor {
+    input: &'static str,
+    extension: &'static str,
+    language: &'static str,
+    mode: &'static str,
+    changed: Option<bool>,
+}
+
+impl FmtDiagnosticDescriptor {
+    fn to_json(&self) -> Value {
+        let mut obj = Map::new();
+        obj.insert("input".to_string(), json!(self.input));
+        obj.insert("extension".to_string(), json!(self.extension));
+        obj.insert("language".to_string(), json!(self.language));
+        obj.insert("mode".to_string(), json!(self.mode));
+        if let Some(changed) = self.changed {
+            obj.insert("changed".to_string(), json!(changed));
+        }
+        Value::Object(obj)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FmtDiagnostic {
+    kind: FmtDiagnosticKind,
+    message: String,
+    descriptor: FmtDiagnosticDescriptor,
+    details: Value,
+}
+
+impl FmtDiagnostic {
+    fn new(
+        kind: FmtDiagnosticKind,
+        message: impl Into<String>,
+        descriptor: FmtDiagnosticDescriptor,
+    ) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            descriptor,
+            details: json!({}),
+        }
+    }
+
+    fn with_details(mut self, details: Value) -> Self {
+        self.details = details;
+        self
+    }
+
+    fn to_json(&self) -> Value {
+        let descriptor = self.descriptor.to_json();
+        let diagnostic = json!({
+            "code": self.kind.code(),
+            "category": self.kind.category(),
+            "message": self.message,
+            "descriptor": descriptor,
+        });
+
+        let mut obj = Map::new();
+        obj.insert("code".to_string(), json!(self.kind.code()));
+        obj.insert("category".to_string(), json!(self.kind.category()));
+        obj.insert("message".to_string(), json!(self.message));
+        obj.insert("descriptor".to_string(), self.descriptor.to_json());
+        obj.insert("diagnostic".to_string(), diagnostic);
+        if let Value::Object(details) = &self.details {
+            for (key, value) in details {
+                obj.insert(key.clone(), value.clone());
+            }
+        }
+        Value::Object(obj)
+    }
+
+    fn into_cli_error(self) -> CliError {
+        match self.kind {
+            FmtDiagnosticKind::ParseFailure | FmtDiagnosticKind::UnsupportedSyntax => {
+                CliError::ParseError(self.message)
+            }
+            FmtDiagnosticKind::NonIdempotent
+            | FmtDiagnosticKind::WriteCheckModeMismatch
+            | FmtDiagnosticKind::NotCanonical => CliError::Domain(self.message),
+        }
+    }
+}
+
+fn print_fmt_diagnostic(mode: OutputMode, diagnostic: &FmtDiagnostic) {
+    if mode == OutputMode::Json {
+        print_error_response(diagnostic.to_json());
+    }
+}
+
+fn redacted_fmt_descriptor(
+    path: Option<&Path>,
+    language: FmtLanguage,
+    check: bool,
+    write: bool,
+    changed: Option<bool>,
+) -> FmtDiagnosticDescriptor {
+    FmtDiagnosticDescriptor {
+        input: if path.is_some() { "file" } else { "stdin" },
+        extension: redacted_extension(path),
+        language: language.as_str(),
+        mode: fmt_mode(check, write),
+        changed,
+    }
+}
+
+fn redacted_extension(path: Option<&Path>) -> &'static str {
+    match path
+        .and_then(|path| path.extension())
+        .and_then(|ext| ext.to_str())
+    {
+        Some("ail") => "ail",
+        Some("acl") => "acl",
+        Some(_) => "other",
+        None => "none",
+    }
+}
+
+fn fmt_mode(check: bool, write: bool) -> &'static str {
+    match (check, write) {
+        (true, true) => "check-write",
+        (true, false) => "check",
+        (false, true) => "write",
+        (false, false) => "print",
+    }
+}
+
+fn mode_mismatch_diagnostic(file: Option<&Path>) -> FmtDiagnostic {
+    FmtDiagnostic::new(
+        FmtDiagnosticKind::WriteCheckModeMismatch,
+        "ail fmt cannot combine --check and --write; run --check to validate or --write to rewrite",
+        redacted_fmt_descriptor(file, FmtLanguage::Unknown, true, true, None),
+    )
+}
+
+fn parse_diagnostic(
+    err: CliError,
+    path: Option<&Path>,
+    language: FmtLanguage,
+    check: bool,
+    write: bool,
+) -> FmtDiagnostic {
+    let message = match err {
+        CliError::ParseError(message) | CliError::Domain(message) => message,
+        other => other.to_string(),
+    };
+    let kind = if is_unsupported_syntax_message(&message) {
+        FmtDiagnosticKind::UnsupportedSyntax
+    } else {
+        FmtDiagnosticKind::ParseFailure
+    };
+    FmtDiagnostic::new(
+        kind,
+        message,
+        redacted_fmt_descriptor(path, language, check, write, None),
+    )
+}
+
+fn is_unsupported_syntax_message(message: &str) -> bool {
+    message.to_ascii_lowercase().contains("unsupported")
+}
+
+fn non_idempotent_diagnostic(
+    path: Option<&Path>,
+    language: FmtLanguage,
+    check: bool,
+    write: bool,
+    changed: bool,
+    reason: &'static str,
+) -> FmtDiagnostic {
+    FmtDiagnostic::new(
+        FmtDiagnosticKind::NonIdempotent,
+        "fmt produced output that is not stable on a second formatting pass",
+        redacted_fmt_descriptor(path, language, check, write, Some(changed)),
+    )
+    .with_details(json!({ "reason": reason }))
+}
+
+fn not_canonical_diagnostic(file: Option<&Path>, outcome: &FmtOutcome) -> FmtDiagnostic {
+    let message = match file {
+        Some(path) => format!("fmt check failed: {} is not canonical", path.display()),
+        None => "fmt check failed: stdin is not canonical".to_string(),
+    };
+    FmtDiagnostic::new(
+        FmtDiagnosticKind::NotCanonical,
+        message,
+        redacted_fmt_descriptor(
+            file,
+            FmtLanguage::from_language_name(outcome.language),
+            true,
+            false,
+            Some(true),
+        ),
+    )
+    .with_details(json!({
+        "changed": true,
+        "op_count": outcome.op_count,
+        "item_count": outcome.item_count,
+        "language": outcome.language,
+    }))
+}
+
+impl FmtLanguage {
+    fn from_language_name(language: &str) -> Self {
+        match language {
+            "acl" => FmtLanguage::Acl,
+            "ail-source" => FmtLanguage::AilSource,
+            _ => FmtLanguage::Unknown,
+        }
+    }
 }
 
 // ── format_acl_source ──────────────────────────────────────────────────────
@@ -150,21 +413,84 @@ pub(crate) fn format_acl_source(src: &str) -> Result<FmtOutcome, CliError> {
 }
 
 fn format_for_path(src: &str, path: Option<&Path>) -> Result<FmtOutcome, CliError> {
+    format_for_path_with_diagnostics(src, path).map_err(FmtDiagnostic::into_cli_error)
+}
+
+fn format_for_path_with_diagnostics(
+    src: &str,
+    path: Option<&Path>,
+) -> Result<FmtOutcome, FmtDiagnostic> {
+    format_for_path_with_mode_diagnostics(src, path, false, false)
+}
+
+fn format_for_path_with_mode_diagnostics(
+    src: &str,
+    path: Option<&Path>,
+    check: bool,
+    write: bool,
+) -> Result<FmtOutcome, FmtDiagnostic> {
+    let language = detect_format_language(src, path);
+    let outcome = format_for_language(src, language)
+        .map_err(|err| parse_diagnostic(err, path, language, check, write))?;
+    ensure_format_idempotent(&outcome, path, language, check, write)?;
+    Ok(outcome)
+}
+
+fn format_for_language(src: &str, language: FmtLanguage) -> Result<FmtOutcome, CliError> {
+    match language {
+        FmtLanguage::AilSource => {
+            let (formatted, item_count) = format_ail_source(src)?;
+            let changed = normalize_trailing_newline(src) != formatted;
+            Ok(FmtOutcome {
+                formatted,
+                changed,
+                op_count: 0,
+                item_count,
+                language: language.as_str(),
+            })
+        }
+        FmtLanguage::Acl | FmtLanguage::Unknown => format_acl_source(src),
+    }
+}
+
+fn ensure_format_idempotent(
+    outcome: &FmtOutcome,
+    path: Option<&Path>,
+    language: FmtLanguage,
+    check: bool,
+    write: bool,
+) -> Result<(), FmtDiagnostic> {
+    let second = format_for_language(&outcome.formatted, language).map_err(|_| {
+        non_idempotent_diagnostic(
+            path,
+            language,
+            check,
+            write,
+            outcome.changed,
+            "second_pass_parse_failed",
+        )
+    })?;
+    if second.formatted != outcome.formatted {
+        return Err(non_idempotent_diagnostic(
+            path,
+            language,
+            check,
+            write,
+            outcome.changed,
+            "second_pass_changed_output",
+        ));
+    }
+    Ok(())
+}
+
+fn detect_format_language(src: &str, path: Option<&Path>) -> FmtLanguage {
     if path.is_some_and(|path| path.extension().and_then(|ext| ext.to_str()) == Some("ail"))
         || (path.is_none() && looks_like_ail_source(src))
     {
-        let (formatted, item_count) = format_ail_source(src)?;
-        let changed = normalize_trailing_newline(src) != formatted;
-        return Ok(FmtOutcome {
-            formatted,
-            changed,
-            op_count: 0,
-            item_count,
-            language: "ail-source",
-        });
+        FmtLanguage::AilSource
+    } else {
+        FmtLanguage::Acl
     }
-
-    format_acl_source(src)
 }
 
 fn looks_like_ail_source(src: &str) -> bool {
@@ -192,6 +518,12 @@ pub(crate) fn cmd_fmt(
     check: bool,
     write: bool,
 ) -> Result<(), CliError> {
+    if check && write {
+        let diagnostic = mode_mismatch_diagnostic(file.as_deref());
+        print_fmt_diagnostic(mode, &diagnostic);
+        return Err(diagnostic.into_cli_error());
+    }
+
     if write && file.is_none() {
         return Err(CliError::Domain(
             "ail fmt --write requires --file <path>; stdin formatting is stdout-only".to_string(),
@@ -207,24 +539,19 @@ pub(crate) fn cmd_fmt(
         buf
     };
 
-    let outcome = format_for_path(&input, file.as_deref())?;
+    let outcome = match format_for_path_with_mode_diagnostics(&input, file.as_deref(), check, write)
+    {
+        Ok(outcome) => outcome,
+        Err(diagnostic) => {
+            print_fmt_diagnostic(mode, &diagnostic);
+            return Err(diagnostic.into_cli_error());
+        }
+    };
 
     if check && outcome.changed {
-        let message = match &file {
-            Some(path) => format!("fmt check failed: {} is not canonical", path.display()),
-            None => "fmt check failed: stdin is not canonical".to_string(),
-        };
-        if mode == OutputMode::Json {
-            print_error_response(json!({
-                "code": "FMT_NOT_CANONICAL",
-                "message": message,
-                "changed": true,
-                "op_count": outcome.op_count,
-                "item_count": outcome.item_count,
-                "language": outcome.language,
-            }));
-        }
-        return Err(CliError::Domain(message));
+        let diagnostic = not_canonical_diagnostic(file.as_deref(), &outcome);
+        print_fmt_diagnostic(mode, &diagnostic);
+        return Err(diagnostic.into_cli_error());
     }
 
     if write {
@@ -426,7 +753,7 @@ mod tests {
         assert_eq!(out.op_count, 0);
         assert_eq!(
             out.formatted,
-            "fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n"
+            "fn add_pair(x: Int, y: Int) -> Int = x + y\n"
         );
     }
 
@@ -439,7 +766,89 @@ mod tests {
         assert_eq!(out.item_count, 1);
         assert_eq!(
             out.formatted,
-            "fn add_pair(x: Int, y: Int) -> Int = add(x, y)\n"
+            "fn add_pair(x: Int, y: Int) -> Int = x + y\n"
         );
+    }
+
+    #[test]
+    fn fmt_parse_failure_has_stable_diagnostic_code() {
+        let err = CliError::ParseError("expected change header".to_string());
+        let diagnostic = parse_diagnostic(
+            err,
+            Some(std::path::Path::new("/private/customer/change.acl")),
+            FmtLanguage::Acl,
+            false,
+            false,
+        );
+
+        assert_eq!(diagnostic.kind.code(), "FMT_PARSE_FAILED");
+        assert_eq!(diagnostic.kind.category(), "parse");
+        assert_eq!(diagnostic.descriptor.input, "file");
+        assert_eq!(diagnostic.descriptor.extension, "acl");
+        assert_eq!(diagnostic.descriptor.language, "acl");
+    }
+
+    #[test]
+    fn fmt_unsupported_source_syntax_has_stable_diagnostic_code() {
+        let diagnostic = format_for_path_with_diagnostics(
+            "export fn helper() -> Int = 1\n",
+            Some(std::path::Path::new("main.ail")),
+        )
+        .expect_err("unsupported source syntax must fail with a diagnostic");
+
+        assert_eq!(diagnostic.kind.code(), "FMT_UNSUPPORTED_SYNTAX");
+        assert_eq!(diagnostic.kind.category(), "unsupported");
+        assert_eq!(diagnostic.descriptor.language, "ail-source");
+    }
+
+    #[test]
+    fn fmt_non_idempotent_diagnostic_has_stable_code() {
+        let diagnostic = non_idempotent_diagnostic(
+            Some(std::path::Path::new("main.ail")),
+            FmtLanguage::AilSource,
+            false,
+            false,
+            true,
+            "second_pass_changed_output",
+        );
+
+        assert_eq!(diagnostic.kind.code(), "FMT_NON_IDEMPOTENT");
+        assert_eq!(diagnostic.kind.category(), "stability");
+        assert_eq!(diagnostic.descriptor.changed, Some(true));
+        assert_eq!(diagnostic.to_json()["reason"], "second_pass_changed_output");
+    }
+
+    #[test]
+    fn fmt_check_write_mode_mismatch_has_stable_diagnostic_code() {
+        let diagnostic = mode_mismatch_diagnostic(Some(std::path::Path::new("main.ail")));
+
+        assert_eq!(diagnostic.kind.code(), "FMT_WRITE_CHECK_MODE_MISMATCH");
+        assert_eq!(diagnostic.kind.category(), "usage");
+        assert_eq!(diagnostic.descriptor.mode, "check-write");
+    }
+
+    #[test]
+    fn fmt_redacted_descriptor_excludes_path_segments_and_source_text() {
+        let descriptor = redacted_fmt_descriptor(
+            Some(std::path::Path::new(
+                "/private/customer/secrets/not-canonical.ail",
+            )),
+            FmtLanguage::AilSource,
+            true,
+            false,
+            Some(true),
+        )
+        .to_json();
+        let rendered = descriptor.to_string();
+
+        assert_eq!(descriptor["input"], "file");
+        assert_eq!(descriptor["extension"], "ail");
+        assert_eq!(descriptor["language"], "ail-source");
+        assert_eq!(descriptor["mode"], "check");
+        assert_eq!(descriptor["changed"], true);
+        assert!(!rendered.contains("private"));
+        assert!(!rendered.contains("customer"));
+        assert!(!rendered.contains("secrets"));
+        assert!(!rendered.contains("not-canonical"));
     }
 }

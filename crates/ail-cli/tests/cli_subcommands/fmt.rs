@@ -188,4 +188,53 @@ fn fmt_stdin_json_detects_ail_source() {
     );
 }
 
+#[test]
+fn fmt_json_reports_unsupported_source_diagnostic() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let source = dir.child("main.ail");
+    source
+        .write_str("export fn helper() -> Int = 1\n")
+        .expect("write source");
+
+    let output = ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["data"]["code"], "FMT_UNSUPPORTED_SYNTAX");
+    assert_eq!(v["data"]["category"], "unsupported");
+    assert_eq!(v["data"]["diagnostic"]["code"], "FMT_UNSUPPORTED_SYNTAX");
+    assert_eq!(v["data"]["descriptor"]["input"], "file");
+    assert_eq!(v["data"]["descriptor"]["extension"], "ail");
+    assert_eq!(v["data"]["descriptor"]["language"], "ail-source");
+}
+
+#[test]
+fn fmt_json_rejects_check_write_mode_mismatch() {
+    let output = ail()
+        .arg("fmt")
+        .arg("--check")
+        .arg("--write")
+        .arg("--json")
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["data"]["code"], "FMT_WRITE_CHECK_MODE_MISMATCH");
+    assert_eq!(v["data"]["category"], "usage");
+    assert_eq!(v["data"]["descriptor"]["mode"], "check-write");
+    assert_eq!(v["data"]["descriptor"]["input"], "stdin");
+}
+
 // ── ail link integration tests ─────────────────────────────────────────────
