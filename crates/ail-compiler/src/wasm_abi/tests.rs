@@ -180,3 +180,34 @@ fn abi_descriptor_validation_reports_ambiguous_structured_shapes() {
         tag: "Ok".to_string(),
     }));
 }
+
+#[test]
+fn abi_descriptor_validation_reports_unstable_identifiers() {
+    let descriptor = AbiDescriptor::new(BTreeMap::from([
+        (
+            "bad-export".to_string(),
+            WasmTypeDescriptor::Record {
+                fields: vec!["ok".to_string(), "bad-field".to_string()],
+            },
+        ),
+        (
+            "variant".to_string(),
+            WasmTypeDescriptor::Variant {
+                tags: vec!["Some".to_string(), "Bad Tag".to_string()],
+            },
+        ),
+    ]));
+
+    let issues = descriptor.validation_issues();
+    assert!(issues.contains(&AbiDescriptorIssue::InvalidExportName {
+        export: "bad-export".to_string(),
+    }));
+    assert!(issues.contains(&AbiDescriptorIssue::InvalidRecordField {
+        export: "bad-export".to_string(),
+        field: "bad-field".to_string(),
+    }));
+    assert!(issues.contains(&AbiDescriptorIssue::InvalidVariantTag {
+        export: "variant".to_string(),
+        tag: "Bad Tag".to_string(),
+    }));
+}

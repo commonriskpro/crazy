@@ -66,6 +66,11 @@ impl AbiDescriptor {
             if export.trim().is_empty() {
                 issues.push(AbiDescriptorIssue::EmptyExportName);
             }
+            if !export.trim().is_empty() && !is_stable_abi_identifier(export) {
+                issues.push(AbiDescriptorIssue::InvalidExportName {
+                    export: export.clone(),
+                });
+            }
             if export.starts_with("fn.") || export.starts_with("test.") {
                 issues.push(AbiDescriptorIssue::LegacyGraphExportName {
                     export: export.clone(),
@@ -90,11 +95,25 @@ impl AbiDescriptor {
 pub enum AbiDescriptorIssue {
     IncompatibleVersion { expected: u32, actual: u32 },
     EmptyExportName,
+    InvalidExportName { export: String },
     LegacyGraphExportName { export: String },
     EmptyRecordFields { export: String },
+    InvalidRecordField { export: String, field: String },
     DuplicateRecordField { export: String, field: String },
     EmptyVariantTags { export: String },
+    InvalidVariantTag { export: String, tag: String },
     DuplicateVariantTag { export: String, tag: String },
+}
+
+fn is_stable_abi_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 /// Scalar WASM primitive types used in the type descriptor.
@@ -183,6 +202,12 @@ impl WasmTypeDescriptor {
                 }
                 let mut seen = BTreeSet::new();
                 for field in fields {
+                    if !is_stable_abi_identifier(field) {
+                        issues.push(AbiDescriptorIssue::InvalidRecordField {
+                            export: export.to_string(),
+                            field: field.clone(),
+                        });
+                    }
                     if !seen.insert(field) {
                         issues.push(AbiDescriptorIssue::DuplicateRecordField {
                             export: export.to_string(),
@@ -199,6 +224,12 @@ impl WasmTypeDescriptor {
                 }
                 let mut seen = BTreeSet::new();
                 for tag in tags {
+                    if !is_stable_abi_identifier(tag) {
+                        issues.push(AbiDescriptorIssue::InvalidVariantTag {
+                            export: export.to_string(),
+                            tag: tag.clone(),
+                        });
+                    }
                     if !seen.insert(tag) {
                         issues.push(AbiDescriptorIssue::DuplicateVariantTag {
                             export: export.to_string(),
