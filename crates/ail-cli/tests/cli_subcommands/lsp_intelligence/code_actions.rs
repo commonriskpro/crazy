@@ -1,0 +1,236 @@
+use crate::common::ail;
+
+#[test]
+fn lsp_initialize_advertises_quickfix_code_actions() {
+    let initialize = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {}
+    })
+    .to_string();
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(lsp_input(&[initialize]))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 1)
+        .expect("initialize response must be emitted");
+
+    assert_eq!(
+        response["result"]["capabilities"]["codeActionProvider"]["codeActionKinds"],
+        serde_json::json!(["quickfix"])
+    );
+}
+
+#[test]
+fn lsp_code_action_reports_missing_document_with_redacted_diagnostic() {
+    let uri = "file:///private/customer_secret.ail";
+    let code_action =
+        code_action_message(uri, 20, vec![diagnostic_with_code("AIL_SOURCE_PARSER", 2)]);
+
+    let result = code_action_result(vec![code_action], 20);
+    let failure = &result[0]["data"]["diagnostic"];
+
+    assert_eq!(failure["code"], "AIL_CODE_ACTION_MISSING_DOCUMENT");
+    assert_eq!(failure["category"], "document_state");
+    assert_eq!(failure["descriptor"]["documentState"], "not_open");
+    assert!(!failure.to_string().contains("customer_secret"));
+}
+
+#[test]
+fn lsp_code_action_reports_unsupported_diagnostic_code_without_echoing_sensitive_code() {
+    let uri = "file:///workspace/main.ail";
+    let open = did_open_message(uri, "module main\n");
+    let mut diagnostic = diagnostic_with_code("SECRET_PATH_/tmp/customer.ail", 3);
+    diagnostic["source"] = serde_json::json!("/tmp/customer.ail");
+    let code_action = code_action_message(uri, 21, vec![diagnostic]);
+
+    let result = code_action_result(vec![open, code_action], 21);
+    let failure = &result[0]["data"]["diagnostic"];
+
+    assert_eq!(failure["code"], "AIL_CODE_ACTION_UNSUPPORTED_DIAGNOSTIC");
+    assert_eq!(failure["reason"], "unsupported_diagnostic_code");
+    assert_eq!(failure["descriptor"]["diagnosticCode"], "unsupported");
+    assert!(!failure.to_string().contains("customer.ail"));
+    assert!(!failure.to_string().contains("SECRET_PATH"));
+}
+
+#[test]
+fn lsp_code_action_reports_supported_diagnostic_with_no_repair() {
+    let uri = "file:///workspace/main.ail";
+    let open = did_open_message(uri, "module main\n");
+    let code_action =
+        code_action_message(uri, 22, vec![diagnostic_with_code("AIL_SOURCE_PARSER", 4)]);
+
+    let result = code_action_result(vec![open, code_action], 22);
+    let failure = &result[0]["data"]["diagnostic"];
+
+    assert_eq!(failure["code"], "AIL_CODE_ACTION_NO_REPAIR_AVAILABLE");
+    assert_eq!(failure["reason"], "no_repair_available");
+    assert_eq!(failure["descriptor"]["diagnosticCode"], "AIL_SOURCE_PARSER");
+}
+
+#[test]
+fn lsp_code_action_reports_ambiguous_repair_edits() {
+    let uri = "file:///workspace/main.ail";
+    let open = did_open_message(uri, "module main\n");
+    let mut diagnostic = diagnostic_with_code("AIL_SOURCE_PARSER", 5);
+    diagnostic["data"] = serde_json::json!({
+        "ailRepair": {
+            "code": "replace.module",
+            "edits": [workspace_edit(uri, "module one\n"), workspace_edit(uri, "module two\n")]
+        }
+    });
+    let code_action = code_action_message(uri, 23, vec![diagnostic]);
+
+    let result = code_action_result(vec![open, code_action], 23);
+    let failure = &result[0]["data"]["diagnostic"];
+
+    assert_eq!(failure["code"], "AIL_CODE_ACTION_AMBIGUOUS_REPAIR_EDIT");
+    assert_eq!(failure["reason"], "ambiguous_repair_edit");
+    assert_eq!(failure["descriptor"]["repairEditCount"], 2);
+}
+
+#[test]
+fn lsp_code_actions_are_deterministically_ordered_and_emit_single_repairs() {
+    let uri = "file:///workspace/main.ail";
+    let open = did_open_message(uri, "module main\n");
+    let mut later = diagnostic_with_code("AIL_SOURCE_PARSER", 10);
+    later["data"] = serde_json::json!({
+        "ailRepair": { "code": "replace.later", "edit": workspace_edit(uri, "module later\n") }
+    });
+    let mut earlier = diagnostic_with_code("AIL_SOURCE_PARSER", 1);
+    earlier["data"] = serde_json::json!({
+        "ailRepair": { "code": "replace.earlier", "edit": workspace_edit(uri, "module earlier\n") }
+    });
+    let code_action = code_action_message(uri, 24, vec![later, earlier]);
+
+    let result = code_action_result(vec![open, code_action], 24);
+    let repair_codes = result
+        .as_array()
+        .expect("code actions must be an array")
+        .iter()
+        .map(|action| action["data"]["repairCode"].as_str().expect("repair code"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(repair_codes, ["replace.earlier", "replace.later"]);
+    assert_eq!(
+        result[0]["edit"]["changes"][uri][0]["newText"],
+        "module earlier\n"
+    );
+    assert_eq!(
+        result[1]["edit"]["changes"][uri][0]["newText"],
+        "module later\n"
+    );
+}
+
+fn code_action_result(messages: Vec<String>, request_id: u64) -> serde_json::Value {
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(lsp_input(&messages))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == request_id)
+        .expect("codeAction response must be emitted");
+    response["result"].clone()
+}
+
+fn did_open_message(uri: &str, text: &str) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "ail",
+                "version": 1,
+                "text": text,
+            }
+        }
+    })
+    .to_string()
+}
+
+fn code_action_message(uri: &str, request_id: u64, diagnostics: Vec<serde_json::Value>) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "textDocument/codeAction",
+        "params": {
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "context": { "diagnostics": diagnostics }
+        }
+    })
+    .to_string()
+}
+
+fn diagnostic_with_code(code: &str, character: u64) -> serde_json::Value {
+    serde_json::json!({
+        "range": {
+            "start": { "line": 0, "character": character },
+            "end": { "line": 0, "character": character + 1 }
+        },
+        "severity": 1,
+        "source": "ail-source-parser",
+        "code": code,
+        "message": "redacted by code-action failure diagnostics"
+    })
+}
+
+fn workspace_edit(uri: &str, new_text: &str) -> serde_json::Value {
+    let mut changes = serde_json::Map::new();
+    changes.insert(
+        uri.to_string(),
+        serde_json::json!([{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "newText": new_text
+        }]),
+    );
+    serde_json::json!({ "changes": changes })
+}
+
+fn lsp_input(messages: &[String]) -> String {
+    messages
+        .iter()
+        .map(|message| format!("Content-Length: {}\r\n\r\n{}", message.len(), message))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn lsp_json_messages(stdout: &[u8]) -> Vec<serde_json::Value> {
+    let text = std::str::from_utf8(stdout).expect("LSP stdout must be UTF-8");
+    let mut messages = Vec::new();
+    let mut rest = text;
+    while let Some(header_start) = rest.find("Content-Length: ") {
+        rest = &rest[header_start + "Content-Length: ".len()..];
+        let Some((len, after_len)) = rest.split_once("\r\n\r\n") else {
+            break;
+        };
+        let len = len
+            .trim()
+            .parse::<usize>()
+            .expect("Content-Length must be numeric");
+        let body = &after_len[..len];
+        messages.push(serde_json::from_str(body).expect("LSP body must be JSON"));
+        rest = &after_len[len..];
+    }
+    messages
+}

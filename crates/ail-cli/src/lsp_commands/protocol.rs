@@ -6,7 +6,10 @@ use serde_json::{Value, json};
 use crate::error::CliError;
 
 use super::definition::definition_for_token_with_workspace;
-use super::diagnostics::diagnostics_for_document;
+use super::diagnostics::{
+    LSP_DIAGNOSTIC_ACL_PARSER, LSP_DIAGNOSTIC_ACL_SCHEMA, LSP_DIAGNOSTIC_SOURCE_IMPORT,
+    LSP_DIAGNOSTIC_SOURCE_PARSER, diagnostics_for_document,
+};
 use super::references::references_for_token_with_workspace;
 use super::rename::{
     missing_document_rename_failure, prepare_rename_at_position, rename_candidate_at_position,
@@ -94,6 +97,9 @@ impl LspSession {
                             "triggerCharacters": [" ", "_", ".", "+", "-", "*", "/", "%", "!", "=", ">", "<", "&", "|", "{"]
                         },
                         "hoverProvider": true,
+                        "codeActionProvider": {
+                            "codeActionKinds": ["quickfix"]
+                        },
                         "definitionProvider": true,
                         "referencesProvider": true,
                         "renameProvider": {
@@ -146,6 +152,9 @@ impl LspSession {
                     "items": completion_items(&self.completion_prefix(message))
                 }),
             )],
+            "textDocument/codeAction" => {
+                vec![lsp_response(message, self.code_actions(message))]
+            }
             "textDocument/hover" => {
                 let params = &message["params"];
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
@@ -297,6 +306,37 @@ impl LspSession {
         }
     }
 
+    fn code_actions(&self, message: &Value) -> Value {
+        let params = &message["params"];
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        if !self.documents.contains_key(uri) {
+            return Value::Array(vec![disabled_code_action(
+                "AIL: code action unavailable",
+                "document is not open in this LSP session",
+                code_action_failure(
+                    "missing_document",
+                    "AIL_CODE_ACTION_MISSING_DOCUMENT",
+                    "document_state",
+                    json!({
+                        "documentState": "not_open",
+                        "diagnosticCount": code_action_context_diagnostics(params).len(),
+                    }),
+                ),
+            )]);
+        }
+
+        let mut actions = code_action_context_diagnostics(params)
+            .into_iter()
+            .flat_map(|diagnostic| code_actions_for_diagnostic(&diagnostic))
+            .collect::<Vec<_>>();
+        actions.sort_by(|left, right| {
+            code_action_sort_key(left)
+                .cmp(&code_action_sort_key(right))
+                .then_with(|| left.to_string().cmp(&right.to_string()))
+        });
+        Value::Array(actions)
+    }
+
     fn completion_prefix(&self, message: &Value) -> String {
         let params = &message["params"];
         let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
@@ -341,4 +381,175 @@ fn is_completion_prefix_char(ch: char) -> bool {
             ch,
             '+' | '-' | '*' | '/' | '%' | '!' | '=' | '>' | '<' | '&' | '|' | '{'
         )
+}
+
+fn code_action_context_diagnostics(params: &Value) -> Vec<Value> {
+    params["context"]["diagnostics"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn code_actions_for_diagnostic(diagnostic: &Value) -> Vec<Value> {
+    let Some(code) = diagnostic_code(diagnostic) else {
+        return vec![disabled_code_action(
+            "AIL: unsupported diagnostic",
+            "diagnostic does not carry a supported AIL diagnostic code",
+            code_action_failure(
+                "unsupported_diagnostic_code",
+                "AIL_CODE_ACTION_UNSUPPORTED_DIAGNOSTIC",
+                "unsupported",
+                diagnostic_descriptor(diagnostic),
+            ),
+        )];
+    };
+
+    if !supported_diagnostic_code(code) {
+        return vec![disabled_code_action(
+            "AIL: unsupported diagnostic",
+            "diagnostic code is not supported by AIL code actions",
+            code_action_failure(
+                "unsupported_diagnostic_code",
+                "AIL_CODE_ACTION_UNSUPPORTED_DIAGNOSTIC",
+                "unsupported",
+                diagnostic_descriptor(diagnostic),
+            ),
+        )];
+    }
+
+    let Some(repair) = diagnostic["data"]["ailRepair"].as_object() else {
+        return vec![disabled_code_action(
+            "AIL: no repair available",
+            "diagnostic has no automated repair available",
+            code_action_failure(
+                "no_repair_available",
+                "AIL_CODE_ACTION_NO_REPAIR_AVAILABLE",
+                "unsupported",
+                diagnostic_descriptor(diagnostic),
+            ),
+        )];
+    };
+
+    let direct_edit = repair.get("edit").filter(|edit| edit.is_object());
+    let edit_choices = repair
+        .get("edits")
+        .and_then(|edits| edits.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let edit_count = usize::from(direct_edit.is_some()) + edit_choices.len();
+    if edit_count != 1 {
+        return vec![disabled_code_action(
+            "AIL: ambiguous diagnostic repair",
+            "diagnostic repair must resolve to exactly one workspace edit",
+            code_action_failure(
+                "ambiguous_repair_edit",
+                "AIL_CODE_ACTION_AMBIGUOUS_REPAIR_EDIT",
+                "ambiguous",
+                json!({
+                    "diagnostic": diagnostic_descriptor(diagnostic),
+                    "repairEditCount": edit_count,
+                    "hasDirectEdit": direct_edit.is_some(),
+                }),
+            ),
+        )];
+    }
+
+    let edit = direct_edit
+        .cloned()
+        .or_else(|| edit_choices.into_iter().next())
+        .unwrap_or_else(|| json!({}));
+    let repair_code = repair
+        .get("code")
+        .and_then(|value| value.as_str())
+        .filter(|code| is_stable_identifier(code))
+        .unwrap_or("inline_edit");
+    vec![json!({
+        "title": "AIL: apply diagnostic repair",
+        "kind": "quickfix",
+        "isPreferred": true,
+        "diagnostics": [diagnostic.clone()],
+        "edit": edit,
+        "data": {
+            "code": "AIL_CODE_ACTION_REPAIR",
+            "diagnosticCode": code,
+            "repairCode": repair_code,
+        }
+    })]
+}
+
+fn diagnostic_code(diagnostic: &Value) -> Option<&str> {
+    diagnostic["code"].as_str()
+}
+
+fn supported_diagnostic_code(code: &str) -> bool {
+    matches!(
+        code,
+        LSP_DIAGNOSTIC_ACL_PARSER
+            | LSP_DIAGNOSTIC_ACL_SCHEMA
+            | LSP_DIAGNOSTIC_SOURCE_IMPORT
+            | LSP_DIAGNOSTIC_SOURCE_PARSER
+    )
+}
+
+fn disabled_code_action(title: &str, reason: &str, diagnostic: Value) -> Value {
+    json!({
+        "title": title,
+        "kind": "quickfix",
+        "disabled": { "reason": reason },
+        "data": { "diagnostic": diagnostic }
+    })
+}
+
+fn code_action_failure(reason: &str, code: &str, category: &str, descriptor: Value) -> Value {
+    json!({
+        "reason": reason,
+        "code": code,
+        "category": category,
+        "severity": "error",
+        "descriptor": descriptor,
+    })
+}
+
+fn diagnostic_descriptor(diagnostic: &Value) -> Value {
+    json!({
+        "diagnosticCode": diagnostic["code"].as_str().filter(|code| supported_diagnostic_code(code)).unwrap_or("unsupported"),
+        "diagnosticCodeLength": diagnostic["code"].as_str().map(str::len).unwrap_or(0),
+        "source": diagnostic["source"].as_str().filter(|source| is_stable_identifier(source)).unwrap_or("unknown"),
+        "sourceLength": diagnostic["source"].as_str().map(str::len).unwrap_or(0),
+        "hasData": diagnostic.get("data").is_some(),
+        "range": {
+            "start": {
+                "line": diagnostic["range"]["start"]["line"].as_u64().unwrap_or(0),
+                "character": diagnostic["range"]["start"]["character"].as_u64().unwrap_or(0),
+            },
+            "end": {
+                "line": diagnostic["range"]["end"]["line"].as_u64().unwrap_or(0),
+                "character": diagnostic["range"]["end"]["character"].as_u64().unwrap_or(0),
+            }
+        }
+    })
+}
+
+fn code_action_sort_key(action: &Value) -> (String, String, u64, u64) {
+    (
+        action["title"].as_str().unwrap_or_default().to_string(),
+        action["data"]["diagnostic"]["code"]
+            .as_str()
+            .or_else(|| action["data"]["diagnosticCode"].as_str())
+            .unwrap_or_default()
+            .to_string(),
+        action["diagnostics"][0]["range"]["start"]["line"]
+            .as_u64()
+            .unwrap_or(0),
+        action["diagnostics"][0]["range"]["start"]["character"]
+            .as_u64()
+            .unwrap_or(0),
+    )
+}
+
+fn is_stable_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
 }
