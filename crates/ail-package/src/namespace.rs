@@ -25,6 +25,8 @@
 //   - `NamespaceOwnershipCheck` — validates that a namespace segment is
 //     owned by the expected package
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 
 // ── NamespaceKind ─────────────────────────────────────────────────────────
@@ -54,6 +56,191 @@ impl std::fmt::Display for NamespaceKind {
             NamespaceKind::Capability => write!(f, "cap"),
         }
     }
+}
+
+// ── NamespaceValidation ───────────────────────────────────────────────────
+
+/// Stable issue kind emitted by namespace validation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum NamespaceIssueKind {
+    /// A package identity is not a non-empty dotted list of lowercase segments.
+    InvalidPackageName,
+    /// A namespace prefix is not a valid package-style namespace.
+    InvalidNamespace,
+    /// A local import alias is not a single lowercase segment.
+    InvalidAlias,
+    /// One alias points at more than one stable package identity.
+    AliasCollision,
+    /// A namespace prefix is outside the owning package prefix.
+    NamespaceOwnerMismatch,
+    /// A symbol is claimed from a namespace owned by a different package.
+    UnauthorizedNamespace,
+}
+
+impl std::fmt::Display for NamespaceIssueKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NamespaceIssueKind::InvalidPackageName => write!(f, "invalid_package_name"),
+            NamespaceIssueKind::InvalidNamespace => write!(f, "invalid_namespace"),
+            NamespaceIssueKind::InvalidAlias => write!(f, "invalid_alias"),
+            NamespaceIssueKind::AliasCollision => write!(f, "alias_collision"),
+            NamespaceIssueKind::NamespaceOwnerMismatch => write!(f, "namespace_owner_mismatch"),
+            NamespaceIssueKind::UnauthorizedNamespace => write!(f, "unauthorized_namespace"),
+        }
+    }
+}
+
+/// One deterministic namespace validation issue.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamespaceIssue {
+    /// Stable machine-readable issue kind.
+    pub kind: NamespaceIssueKind,
+    /// The package, namespace, alias, or symbol that failed validation.
+    pub subject: String,
+    /// Stable explanatory detail for human/debug output.
+    pub detail: String,
+}
+
+impl NamespaceIssue {
+    fn new(
+        kind: NamespaceIssueKind,
+        subject: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            subject: subject.into(),
+            detail: detail.into(),
+        }
+    }
+}
+
+/// Validates package namespace and alias records with stable issue kinds.
+pub struct NamespaceValidation;
+
+impl NamespaceValidation {
+    /// Validate one package identity such as `payments.stripe`.
+    pub fn validate_package_name(package: &str) -> Vec<NamespaceIssue> {
+        if is_dotted_lowercase_path(package) {
+            Vec::new()
+        } else {
+            vec![NamespaceIssue::new(
+                NamespaceIssueKind::InvalidPackageName,
+                package,
+                "package names must be non-empty dotted lowercase segments",
+            )]
+        }
+    }
+
+    /// Validate one namespace ownership record.
+    pub fn validate_namespace(namespace: &PackageNamespace) -> Vec<NamespaceIssue> {
+        let mut issues = Vec::new();
+
+        if !is_dotted_lowercase_path(&namespace.owner) {
+            issues.push(NamespaceIssue::new(
+                NamespaceIssueKind::InvalidPackageName,
+                &namespace.owner,
+                "namespace owner must be a valid package name",
+            ));
+        }
+
+        if !is_dotted_lowercase_path(&namespace.namespace) {
+            issues.push(NamespaceIssue::new(
+                NamespaceIssueKind::InvalidNamespace,
+                &namespace.namespace,
+                "namespace must be a valid package-style prefix",
+            ));
+        }
+
+        if is_dotted_lowercase_path(&namespace.owner)
+            && is_dotted_lowercase_path(&namespace.namespace)
+            && namespace.namespace != namespace.owner
+            && !namespace
+                .namespace
+                .starts_with(&format!("{}.", namespace.owner))
+        {
+            issues.push(NamespaceIssue::new(
+                NamespaceIssueKind::NamespaceOwnerMismatch,
+                &namespace.namespace,
+                format!(
+                    "namespace must equal owner '{}' or be below that prefix",
+                    namespace.owner
+                ),
+            ));
+        }
+
+        sort_issues(&mut issues);
+        issues
+    }
+
+    /// Validate import aliases and report ambiguous alias collisions once.
+    pub fn validate_import_aliases(aliases: &[ImportAlias]) -> Vec<NamespaceIssue> {
+        let mut issues = Vec::new();
+        let mut packages_by_alias: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+
+        for alias in aliases {
+            if !is_dotted_lowercase_path(&alias.package) {
+                issues.push(NamespaceIssue::new(
+                    NamespaceIssueKind::InvalidPackageName,
+                    &alias.package,
+                    "alias package must be a valid package name",
+                ));
+            }
+
+            if !is_lowercase_segment(&alias.alias) || is_reserved_namespace_prefix(&alias.alias) {
+                issues.push(NamespaceIssue::new(
+                    NamespaceIssueKind::InvalidAlias,
+                    &alias.alias,
+                    "aliases must be single lowercase non-reserved segments",
+                ));
+            }
+
+            packages_by_alias
+                .entry(alias.alias.as_str())
+                .or_default()
+                .insert(alias.package.as_str());
+        }
+
+        for (alias, packages) in packages_by_alias {
+            if packages.len() > 1 {
+                issues.push(NamespaceIssue::new(
+                    NamespaceIssueKind::AliasCollision,
+                    alias,
+                    format!(
+                        "alias maps to multiple packages: {}",
+                        packages.into_iter().collect::<Vec<_>>().join(",")
+                    ),
+                ));
+            }
+        }
+
+        sort_issues(&mut issues);
+        issues
+    }
+}
+
+fn is_dotted_lowercase_path(value: &str) -> bool {
+    !value.is_empty() && value.split('.').all(is_lowercase_segment)
+}
+
+fn is_lowercase_segment(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    matches!(chars.next(), Some(ch) if ch.is_ascii_lowercase())
+        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+}
+
+fn is_reserved_namespace_prefix(segment: &str) -> bool {
+    matches!(segment, "pkg" | "type" | "handler" | "cap")
+}
+
+fn sort_issues(issues: &mut [NamespaceIssue]) {
+    issues.sort_by(|a, b| {
+        (a.kind, a.subject.as_str(), a.detail.as_str()).cmp(&(
+            b.kind,
+            b.subject.as_str(),
+            b.detail.as_str(),
+        ))
+    });
 }
 
 // ── PackageNamespace ──────────────────────────────────────────────────────
@@ -86,8 +273,16 @@ impl PackageNamespace {
     /// A symbol is within the namespace if it starts with the qualified
     /// prefix followed by `.` or equals the prefix exactly.
     pub fn contains_symbol(&self, symbol: &str) -> bool {
+        self.symbol_match_specificity(symbol).is_some()
+    }
+
+    fn symbol_match_specificity(&self, symbol: &str) -> Option<usize> {
         let prefix = self.qualified_prefix();
-        symbol == prefix || symbol.starts_with(&format!("{prefix}."))
+        if symbol == prefix || symbol.starts_with(&format!("{prefix}.")) {
+            Some(prefix.len())
+        } else {
+            None
+        }
     }
 }
 
@@ -157,25 +352,52 @@ impl std::fmt::Display for OwnershipError {
 
 impl std::error::Error for OwnershipError {}
 
+impl OwnershipError {
+    /// Return the stable namespace issue kind for this ownership error.
+    pub fn kind(&self) -> NamespaceIssueKind {
+        match self {
+            OwnershipError::UnauthorizedNamespace { .. } => {
+                NamespaceIssueKind::UnauthorizedNamespace
+            }
+        }
+    }
+}
+
 impl NamespaceOwnershipCheck {
     /// Check that `claimant` is permitted to export `symbol` given the
     /// registered namespace ownerships.
     ///
     /// A symbol is permitted if:
     /// - No namespace in `namespaces` contains it, OR
-    /// - The namespace that contains it is owned by `claimant`.
+    /// - The most specific namespace that contains it is owned by `claimant`.
     ///
     /// # Errors
     ///
-    /// Returns `Err(OwnershipError::UnauthorizedNamespace)` if a namespace
-    /// owned by a different package contains the symbol.
+    /// Returns `Err(OwnershipError::UnauthorizedNamespace)` if the most
+    /// specific namespace is owned by a different package.
     pub fn check(
         symbol: &str,
         claimant: &str,
         namespaces: &[PackageNamespace],
     ) -> Result<(), OwnershipError> {
-        for ns in namespaces {
-            if ns.contains_symbol(symbol) && ns.owner != claimant {
+        let matching_namespace = namespaces
+            .iter()
+            .filter_map(|ns| {
+                ns.symbol_match_specificity(symbol)
+                    .map(|specificity| (specificity, ns))
+            })
+            .max_by(
+                |(left_specificity, left_ns), (right_specificity, right_ns)| {
+                    left_specificity
+                        .cmp(right_specificity)
+                        .then_with(|| left_ns.qualified_prefix().cmp(&right_ns.qualified_prefix()))
+                        .then_with(|| left_ns.owner.cmp(&right_ns.owner))
+                },
+            )
+            .map(|(_, ns)| ns);
+
+        if let Some(ns) = matching_namespace {
+            if ns.owner != claimant {
                 return Err(OwnershipError::UnauthorizedNamespace {
                     symbol: symbol.to_string(),
                     namespace_owner: ns.owner.clone(),
@@ -183,6 +405,7 @@ impl NamespaceOwnershipCheck {
                 });
             }
         }
+
         Ok(())
     }
 }
@@ -355,6 +578,125 @@ mod tests {
         let result =
             NamespaceOwnershipCheck::check("type.utils.core.Result", "utils.core", &namespaces);
         assert_eq!(result, Ok(()));
+    }
+
+    // ── package_name_validation_rejects_invalid_segment_shapes ───────────
+    // Production gate: package identities must be platform-stable lowercase paths.
+    #[test]
+    fn package_name_validation_rejects_invalid_segment_shapes() {
+        for package in [
+            "",
+            "payments..stripe",
+            "Payments.stripe",
+            "payments.-stripe",
+        ] {
+            let issues = NamespaceValidation::validate_package_name(package);
+            assert_eq!(issues.len(), 1, "{package} must produce one stable issue");
+            assert_eq!(issues[0].kind, NamespaceIssueKind::InvalidPackageName);
+        }
+    }
+
+    // ── namespace_validation_rejects_unowned_prefix ───────────────────────
+    // Production gate: package namespace ownership cannot silently claim another prefix.
+    #[test]
+    fn namespace_validation_rejects_unowned_prefix() {
+        let namespace = PackageNamespace {
+            owner: "payments.stripe".to_string(),
+            namespace: "accounts.paypal".to_string(),
+            kind: NamespaceKind::Capability,
+        };
+
+        let issues = NamespaceValidation::validate_namespace(&namespace);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, NamespaceIssueKind::NamespaceOwnerMismatch);
+        assert_eq!(issues[0].subject, "accounts.paypal");
+    }
+
+    // ── alias_validation_reports_collision_deterministically ──────────────
+    // Production gate: one alias cannot ambiguously identify multiple packages.
+    #[test]
+    fn alias_validation_reports_collision_deterministically() {
+        let aliases = vec![
+            ImportAlias {
+                package: "zeta.gateway".to_string(),
+                alias: "stripe".to_string(),
+            },
+            ImportAlias {
+                package: "payments.stripe".to_string(),
+                alias: "stripe".to_string(),
+            },
+        ];
+        let reversed = aliases.iter().cloned().rev().collect::<Vec<_>>();
+
+        let issues = NamespaceValidation::validate_import_aliases(&aliases);
+        assert_eq!(
+            issues,
+            NamespaceValidation::validate_import_aliases(&reversed),
+            "alias issue order and detail must not depend on import order"
+        );
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, NamespaceIssueKind::AliasCollision);
+        assert_eq!(issues[0].subject, "stripe");
+        assert_eq!(
+            issues[0].detail,
+            "alias maps to multiple packages: payments.stripe,zeta.gateway"
+        );
+    }
+
+    // ── alias_validation_rejects_reserved_prefixes ────────────────────────
+    // Production gate: aliases must not shadow namespace kind prefixes.
+    #[test]
+    fn alias_validation_rejects_reserved_prefixes() {
+        let issues = NamespaceValidation::validate_import_aliases(&[ImportAlias {
+            package: "payments.stripe".to_string(),
+            alias: "type".to_string(),
+        }]);
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, NamespaceIssueKind::InvalidAlias);
+        assert_eq!(issues[0].subject, "type");
+    }
+
+    // ── ownership_check_uses_most_specific_namespace ──────────────────────
+    // Production gate: a parent package prefix must not steal a child namespace.
+    #[test]
+    fn ownership_check_uses_most_specific_namespace() {
+        let namespaces = vec![
+            PackageNamespace {
+                owner: "payments".to_string(),
+                namespace: "payments".to_string(),
+                kind: NamespaceKind::Type,
+            },
+            PackageNamespace {
+                owner: "payments.stripe".to_string(),
+                namespace: "payments.stripe".to_string(),
+                kind: NamespaceKind::Type,
+            },
+        ];
+
+        assert_eq!(
+            NamespaceOwnershipCheck::check(
+                "type.payments.stripe.PaymentRequest",
+                "payments.stripe",
+                &namespaces,
+            ),
+            Ok(())
+        );
+
+        let error = NamespaceOwnershipCheck::check(
+            "type.payments.stripe.PaymentRequest",
+            "payments",
+            &namespaces,
+        )
+        .expect_err("parent namespace must not own child symbol");
+        assert_eq!(error.kind(), NamespaceIssueKind::UnauthorizedNamespace);
+        assert!(matches!(
+            error,
+            OwnershipError::UnauthorizedNamespace {
+                namespace_owner,
+                ..
+            } if namespace_owner == "payments.stripe"
+        ));
     }
 
     // ── namespace_kind_display ────────────────────────────────────────────
