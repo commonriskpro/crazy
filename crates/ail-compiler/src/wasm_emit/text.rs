@@ -12,7 +12,7 @@ mod trim;
 pub(super) use self::boundary::emit_text_boundary_match;
 pub(super) use self::core::{
     emit_list_len_from_local, emit_text_concat, emit_text_len_from_local, emit_text_ptr_from_local,
-    load_i32_u8_at,
+    emit_text_utf8_boundary_test_from_locals, load_i32_u8_at,
 };
 pub(super) use self::parse::emit_text_parse_int_or;
 pub(super) use self::replace::emit_text_replace_first;

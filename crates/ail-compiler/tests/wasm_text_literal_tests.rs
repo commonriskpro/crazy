@@ -270,6 +270,62 @@ fn string_slice_call_preserves_text_export_type() {
 }
 
 #[test]
+fn string_slice_emits_utf8_boundary_gate() {
+    let artifact = emit_text_expr(
+        "fn.main",
+        AnfExpr::Let {
+            name: "value".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("éé".to_string()))),
+            body: Box::new(AnfExpr::Let {
+                name: "start".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(0))),
+                body: Box::new(AnfExpr::Let {
+                    name: "length".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                    body: Box::new(AnfExpr::Call {
+                        func: "text.slice".to_string(),
+                        args: vec![
+                            "value".to_string(),
+                            "start".to_string(),
+                            "length".to_string(),
+                        ],
+                    }),
+                }),
+            }),
+        },
+    );
+
+    let mut saw_continuation_mask = false;
+    let mut saw_continuation_tag = false;
+    let mut saw_and = false;
+
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.expect("payload must parse") {
+            let mut reader = body.get_operators_reader().expect("operators reader");
+            while !reader.eof() {
+                match reader.read().expect("operator must read") {
+                    wasmparser::Operator::I32Const { value: 0xC0 } => {
+                        saw_continuation_mask = true;
+                    }
+                    wasmparser::Operator::I32Const { value: 0x80 } => {
+                        saw_continuation_tag = true;
+                    }
+                    wasmparser::Operator::I32And => {
+                        saw_and = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    assert!(
+        saw_continuation_mask && saw_continuation_tag && saw_and,
+        "text.slice must gate UTF-8 continuation-byte boundaries before copying"
+    );
+}
+
+#[test]
 fn string_replace_first_call_preserves_text_export_type() {
     let artifact = emit_text_expr(
         "fn.main",

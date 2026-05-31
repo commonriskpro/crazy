@@ -91,6 +91,7 @@ pub(super) fn emit_text_slice<'a>(
     let remaining_i32 = ctx.bind_temp(ValType::I32);
     let remaining_i64 = ctx.bind_temp(ValType::I64);
     let copy_len = ctx.bind_temp(ValType::I32);
+    let end_i32 = ctx.bind_temp(ValType::I32);
     let out_ptr = ctx.bind_temp(ValType::I32);
 
     insns.push(Instruction::I32Const(0));
@@ -139,6 +140,17 @@ pub(super) fn emit_text_slice<'a>(
     insns.push(Instruction::LocalSet(copy_len));
     insns.push(Instruction::End);
 
+    insns.push(Instruction::LocalGet(start_i32));
+    insns.push(Instruction::LocalGet(copy_len));
+    insns.push(Instruction::I32Add);
+    insns.push(Instruction::LocalSet(end_i32));
+
+    emit_text_utf8_boundary_test_from_locals(value_ptr, value_len, start_i32, insns);
+    insns.push(Instruction::If(BlockType::Empty));
+
+    emit_text_utf8_boundary_test_from_locals(value_ptr, value_len, end_i32, insns);
+    insns.push(Instruction::If(BlockType::Empty));
+
     insns.push(Instruction::GlobalGet(0));
     insns.push(Instruction::LocalSet(out_ptr));
     insns.push(Instruction::GlobalGet(0));
@@ -155,6 +167,9 @@ pub(super) fn emit_text_slice<'a>(
         src_mem: 0,
         dst_mem: 0,
     });
+
+    insns.push(Instruction::End);
+    insns.push(Instruction::End);
 
     insns.push(Instruction::End);
     insns.push(Instruction::End);
