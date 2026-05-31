@@ -553,3 +553,45 @@ fn assumed_package_in_critical_with_strong_approval_passes() {
         "audit must record Strong approval used for assumed package scope"
     );
 }
+
+#[test]
+fn pipeline_blocks_profile_rule_mismatch_with_stable_code() {
+    let graph = empty_graph();
+    let solver = SimpleSolver;
+    let rules = vec![PolicyRule::ProfileGate("dev".into())];
+    let ctx = PipelineContext {
+        graph: &graph,
+        manifests: &[],
+        profile: "prod",
+        solver: &solver,
+        approvals: &[],
+        rules: &rules,
+        structural_diff: None,
+        capability_grants: &[],
+        public_api_changes: &[],
+        package_trust_metadata: &[],
+        artifacts: &[],
+        manifest_caps: &[],
+        artifact_manifest_hash: None,
+    };
+
+    let report = VerificationPipeline::run(&ctx);
+
+    assert_eq!(report.verified_profile.as_deref(), Some("prod"));
+    assert_eq!(report.profile_diagnostics.len(), 1);
+    let diagnostic = &report.profile_diagnostics[0];
+    assert_eq!(
+        diagnostic.code,
+        ail_verify::report::VERIFY_PROFILE_RULE_MISMATCH
+    );
+    assert_eq!(diagnostic.requested_profile, "prod");
+    assert_eq!(diagnostic.policy_profile, "dev");
+    assert!(diagnostic.blocking);
+    assert!(matches!(
+        report.policy_decision,
+        Some(PolicyDecision::Failed(ref violations))
+            if violations
+                .iter()
+                .any(|violation| violation.code == ail_verify::report::VERIFY_PROFILE_RULE_MISMATCH)
+    ));
+}
