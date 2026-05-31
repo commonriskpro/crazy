@@ -140,12 +140,62 @@ pub enum LocalCompatibilityIssueKind {
     Migration,
 }
 
+impl LocalCompatibilityIssueKind {
+    /// Stable machine category for this issue kind.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LocalCompatibilityIssueKind::Compatibility => "compatibility",
+            LocalCompatibilityIssueKind::Migration => "migration",
+        }
+    }
+}
+
 impl std::fmt::Display for LocalCompatibilityIssueKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Stable machine-readable issue code for local compatibility/migration checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalCompatibilityIssueCode {
+    /// Breaking upgrade has no matching local migration metadata.
+    MigrationMetadataRequired,
+    /// Breaking upgrade has matching local migration metadata.
+    MigrationMetadataPresent,
+    /// Migration step changed item is empty after trimming whitespace.
+    MigrationStepChangedEmpty,
+    /// Migration step replacement is empty after trimming whitespace.
+    MigrationStepReplacementEmpty,
+    /// Migration record repeats the same changed/replacement pair.
+    MigrationStepDuplicate,
+    /// Migration from/to version is not a canonical semantic version.
+    MigrationVersionNonCanonical,
+}
+
+impl LocalCompatibilityIssueCode {
+    /// Stable machine code for this issue.
+    pub fn as_str(self) -> &'static str {
         match self {
-            LocalCompatibilityIssueKind::Compatibility => write!(f, "compatibility"),
-            LocalCompatibilityIssueKind::Migration => write!(f, "migration"),
+            LocalCompatibilityIssueCode::MigrationMetadataRequired => "migration.metadata_required",
+            LocalCompatibilityIssueCode::MigrationMetadataPresent => "migration.metadata_present",
+            LocalCompatibilityIssueCode::MigrationStepChangedEmpty => {
+                "migration.step_changed_empty"
+            }
+            LocalCompatibilityIssueCode::MigrationStepReplacementEmpty => {
+                "migration.step_replacement_empty"
+            }
+            LocalCompatibilityIssueCode::MigrationStepDuplicate => "migration.step_duplicate",
+            LocalCompatibilityIssueCode::MigrationVersionNonCanonical => {
+                "migration.version_non_canonical"
+            }
         }
+    }
+}
+
+impl std::fmt::Display for LocalCompatibilityIssueCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -156,8 +206,16 @@ pub struct LocalCompatibilityIssue {
     pub current_version: String,
     pub target_version: String,
     pub kind: LocalCompatibilityIssueKind,
+    pub code: LocalCompatibilityIssueCode,
     pub reason: String,
     pub migration_hash: Option<String>,
+}
+
+impl LocalCompatibilityIssue {
+    /// Stable machine category for renderers that should not inspect prose.
+    pub fn category(&self) -> &'static str {
+        self.kind.as_str()
+    }
 }
 
 // ── PackageVersioning ─────────────────────────────────────────────────────
@@ -295,6 +353,44 @@ impl CompatibilityEngine {
         Ok(())
     }
 
+    /// Report migration metadata quality issues with stable codes and ordering.
+    pub fn evaluate_local_metadata_issues(
+        metadata: &PackageCompatibilityMetadata,
+    ) -> Result<Vec<LocalCompatibilityIssue>, CompatibilityError> {
+        match metadata.compatibility {
+            CompatibilityClass::Major if metadata.migrations.is_empty() => {
+                return Err(CompatibilityError::MajorBumpWithoutMigration);
+            }
+            CompatibilityClass::Patch if !metadata.migrations.is_empty() => {
+                return Err(CompatibilityError::PatchWithMigration);
+            }
+            _ => {}
+        }
+
+        let normalized_metadata_version = normalize_version(&metadata.version)?;
+        let mut issues = Vec::new();
+        for migration in &metadata.migrations {
+            if migration.package != metadata.package {
+                return Err(CompatibilityError::MigrationPackageMismatch);
+            }
+
+            match normalize_version(&migration.to_version) {
+                Ok(normalized_migration_target)
+                    if normalized_migration_target != normalized_metadata_version =>
+                {
+                    return Err(CompatibilityError::MigrationTargetMismatch);
+                }
+                Ok(_) => {}
+                Err(_) => {}
+            }
+
+            issues.extend(migration_record_issues(&metadata.package, migration));
+        }
+
+        sort_local_issues(&mut issues);
+        Ok(issues)
+    }
+
     /// Classify a version change using SemVer major/minor/patch semantics.
     pub fn classify_version_change(
         current_version: &str,
@@ -333,6 +429,7 @@ impl CompatibilityEngine {
                     current_version: current_version.to_string(),
                     target_version: target_version.to_string(),
                     kind: LocalCompatibilityIssueKind::Migration,
+                    code: LocalCompatibilityIssueCode::MigrationMetadataRequired,
                     reason: "breaking upgrade requires local migration metadata".to_string(),
                     migration_hash: None,
                 }])
@@ -347,7 +444,22 @@ impl CompatibilityEngine {
             return Err(CompatibilityError::MetadataTargetMismatch);
         }
 
-        Self::evaluate_local_metadata(metadata)?;
+        if metadata.compatibility == CompatibilityClass::Major && metadata.migrations.is_empty() {
+            return Ok(vec![LocalCompatibilityIssue {
+                package: package.to_string(),
+                current_version: current_version.to_string(),
+                target_version: target_version.to_string(),
+                kind: LocalCompatibilityIssueKind::Migration,
+                code: LocalCompatibilityIssueCode::MigrationMetadataRequired,
+                reason: "breaking upgrade requires local migration metadata".to_string(),
+                migration_hash: None,
+            }]);
+        }
+
+        let metadata_issues = Self::evaluate_local_metadata_issues(metadata)?;
+        if !metadata_issues.is_empty() {
+            return Ok(metadata_issues);
+        }
 
         if breaking {
             let normalized_current_version = normalize_version(current_version)?;
@@ -365,6 +477,7 @@ impl CompatibilityEngine {
                     current_version: current_version.to_string(),
                     target_version: target_version.to_string(),
                     kind: LocalCompatibilityIssueKind::Migration,
+                    code: LocalCompatibilityIssueCode::MigrationMetadataPresent,
                     reason: "breaking upgrade has local migration metadata".to_string(),
                     migration_hash: Some(
                         migration
@@ -378,6 +491,7 @@ impl CompatibilityEngine {
                 current_version: current_version.to_string(),
                 target_version: target_version.to_string(),
                 kind: LocalCompatibilityIssueKind::Migration,
+                code: LocalCompatibilityIssueCode::MigrationMetadataRequired,
                 reason: "breaking upgrade requires local migration metadata".to_string(),
                 migration_hash: None,
             }]);
@@ -385,6 +499,105 @@ impl CompatibilityEngine {
 
         Ok(Vec::new())
     }
+}
+
+fn migration_record_issues(
+    package: &str,
+    migration: &MigrationRecord,
+) -> Vec<LocalCompatibilityIssue> {
+    let mut issues = Vec::new();
+
+    if !is_canonical_version(&migration.from_version) {
+        issues.push(migration_issue(
+            package,
+            migration,
+            LocalCompatibilityIssueCode::MigrationVersionNonCanonical,
+            "migration from_version must be a canonical semantic version",
+        ));
+    }
+    if !is_canonical_version(&migration.to_version) {
+        issues.push(migration_issue(
+            package,
+            migration,
+            LocalCompatibilityIssueCode::MigrationVersionNonCanonical,
+            "migration to_version must be a canonical semantic version",
+        ));
+    }
+
+    let mut seen_steps = std::collections::BTreeSet::new();
+    for step in &migration.steps {
+        let changed = step.changed.trim();
+        let replacement = step.replacement.trim();
+
+        if changed.is_empty() {
+            issues.push(migration_issue(
+                package,
+                migration,
+                LocalCompatibilityIssueCode::MigrationStepChangedEmpty,
+                "migration step changed item must not be empty",
+            ));
+        }
+        if replacement.is_empty() {
+            issues.push(migration_issue(
+                package,
+                migration,
+                LocalCompatibilityIssueCode::MigrationStepReplacementEmpty,
+                "migration step replacement must not be empty",
+            ));
+        }
+
+        if !changed.is_empty() && !replacement.is_empty() {
+            let key = (changed.to_string(), replacement.to_string());
+            if !seen_steps.insert(key) {
+                issues.push(migration_issue(
+                    package,
+                    migration,
+                    LocalCompatibilityIssueCode::MigrationStepDuplicate,
+                    "migration record repeats a changed/replacement step",
+                ));
+            }
+        }
+    }
+
+    sort_local_issues(&mut issues);
+    issues
+}
+
+fn migration_issue(
+    package: &str,
+    migration: &MigrationRecord,
+    code: LocalCompatibilityIssueCode,
+    reason: &str,
+) -> LocalCompatibilityIssue {
+    LocalCompatibilityIssue {
+        package: package.to_string(),
+        current_version: migration.from_version.clone(),
+        target_version: migration.to_version.clone(),
+        kind: LocalCompatibilityIssueKind::Migration,
+        code,
+        reason: reason.to_string(),
+        migration_hash: None,
+    }
+}
+
+fn sort_local_issues(issues: &mut [LocalCompatibilityIssue]) {
+    issues.sort_by(|a, b| {
+        a.code
+            .as_str()
+            .cmp(b.code.as_str())
+            .then_with(|| a.kind.as_str().cmp(b.kind.as_str()))
+            .then_with(|| a.package.cmp(&b.package))
+            .then_with(|| a.current_version.cmp(&b.current_version))
+            .then_with(|| a.target_version.cmp(&b.target_version))
+            .then_with(|| a.reason.cmp(&b.reason))
+            .then_with(|| a.migration_hash.cmp(&b.migration_hash))
+    });
+}
+
+fn is_canonical_version(version: &str) -> bool {
+    Version::parse(version)
+        .map(|parsed| parsed.to_string() == version)
+        .unwrap_or(false)
 }
 
 fn parse_version(version: &str) -> Result<Version, CompatibilityError> {
@@ -635,5 +848,100 @@ mod tests {
         assert_eq!(hash.len(), 64);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(hash, hash.to_ascii_lowercase());
+    }
+
+    #[test]
+    fn local_breaking_upgrade_missing_migration_has_stable_code_and_category() {
+        let issues =
+            CompatibilityEngine::evaluate_local_upgrade("payments.stripe", "1.2.0", "2.0.0", None)
+                .expect("breaking upgrade must evaluate");
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(
+            issues[0].code,
+            LocalCompatibilityIssueCode::MigrationMetadataRequired
+        );
+        assert_eq!(issues[0].code.to_string(), "migration.metadata_required");
+        assert_eq!(issues[0].category(), "migration");
+    }
+
+    #[test]
+    fn local_breaking_upgrade_present_migration_has_stable_code_and_category() {
+        let mut metadata = sample_metadata(CompatibilityClass::Major);
+        metadata.migrations.push(sample_migration());
+
+        let issues = CompatibilityEngine::evaluate_local_upgrade(
+            "payments.stripe",
+            "1.2.0",
+            "2.0.0",
+            Some(&metadata),
+        )
+        .expect("breaking upgrade must evaluate");
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(
+            issues[0].code,
+            LocalCompatibilityIssueCode::MigrationMetadataPresent
+        );
+        assert_eq!(issues[0].code.to_string(), "migration.metadata_present");
+        assert_eq!(issues[0].category(), "migration");
+        assert!(issues[0].migration_hash.is_some());
+    }
+
+    #[test]
+    fn migration_metadata_issues_have_stable_codes_and_ordering() {
+        let mut metadata = sample_metadata(CompatibilityClass::Major);
+        metadata.migrations.push(MigrationRecord {
+            package: "payments.stripe".to_string(),
+            from_version: ">=1.2.0".to_string(),
+            to_version: "2.0".to_string(),
+            steps: vec![
+                MigrationStep {
+                    changed: "payment.capture".to_string(),
+                    replacement: "".to_string(),
+                },
+                MigrationStep {
+                    changed: "".to_string(),
+                    replacement: "payment.authorize".to_string(),
+                },
+                MigrationStep {
+                    changed: "payment.charge".to_string(),
+                    replacement: "payment.authorize + payment.capture".to_string(),
+                },
+                MigrationStep {
+                    changed: " payment.charge ".to_string(),
+                    replacement: " payment.authorize + payment.capture ".to_string(),
+                },
+            ],
+        });
+
+        let issues = CompatibilityEngine::evaluate_local_upgrade(
+            "payments.stripe",
+            "1.2.0",
+            "2.0.0",
+            Some(&metadata),
+        )
+        .expect("migration metadata must evaluate");
+
+        let codes = issues
+            .iter()
+            .map(|issue| issue.code.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            codes,
+            vec![
+                "migration.step_changed_empty",
+                "migration.step_duplicate",
+                "migration.step_replacement_empty",
+                "migration.version_non_canonical",
+                "migration.version_non_canonical",
+            ]
+        );
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.kind == LocalCompatibilityIssueKind::Migration)
+        );
+        assert!(issues.iter().all(|issue| issue.migration_hash.is_none()));
     }
 }
