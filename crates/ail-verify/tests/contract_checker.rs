@@ -13,7 +13,10 @@
 //   RCM-7  VerificationReport::summary() returns Failed when any entry is Failed.
 
 use ail_core::semantic_graph::{ContractClauses, GraphNode, NodeKind, NodeRef, SemanticGraph};
-use ail_verify::contract_checker::ContractChecker;
+use ail_verify::contract_checker::{
+    CONTRACT_DIAGNOSTIC_CATEGORY_POSTCONDITION_FAILED,
+    CONTRACT_DIAGNOSTIC_CATEGORY_PRECONDITION_FAILED, ContractChecker,
+};
 use ail_verify::diagnostic::{DiagnosticSeverity, E_CONTRACT_VIOLATED};
 use ail_verify::proof::ProofObligation;
 use ail_verify::report::VerificationState;
@@ -262,10 +265,10 @@ fn passing_clause_emits_no_diagnostic() {
     );
 }
 
-// ── Diagnostic: multiple failed clauses emit one diagnostic each ───────────
+// ── Diagnostic: duplicate failed clauses emit one stable diagnostic ────────
 
 #[test]
-fn multiple_failed_clauses_emit_one_diagnostic_each() {
+fn duplicate_failed_clauses_emit_one_diagnostic() {
     // GIVEN a node with requires: ["false", "false"]
     let graph = graph_with_clauses(vec!["false", "false"], vec![]);
     let solver = ail_verify::solver::SimpleSolver;
@@ -275,12 +278,70 @@ fn multiple_failed_clauses_emit_one_diagnostic_each() {
 
     assert_eq!(
         report.diagnostics.len(),
-        2,
-        "two failed clauses must emit two diagnostics"
+        1,
+        "duplicate failed clauses must emit one deduped diagnostic"
     );
     for diag in &report.diagnostics {
         assert_eq!(diag.code, E_CONTRACT_VIOLATED);
+        assert!(
+            diag.evidence
+                .as_deref()
+                .is_some_and(|e| e.contains(CONTRACT_DIAGNOSTIC_CATEGORY_PRECONDITION_FAILED)),
+            "precondition diagnostic must carry stable category; got {:?}",
+            diag.evidence
+        );
     }
+}
+
+// ── Diagnostic: failed contract diagnostics are deterministically ordered ─
+
+#[test]
+fn failed_contract_diagnostics_are_ordered_by_category_then_target() {
+    // GIVEN graph node order is postcondition target 20 before precondition target 10
+    let mut post = GraphNode::new(NodeRef(20), NodeKind::Function, "post_fn");
+    post.contract_clauses = Some(ContractClauses {
+        requires: vec![],
+        ensures: vec!["false".into()],
+    });
+    let mut pre = GraphNode::new(NodeRef(10), NodeKind::Function, "pre_fn");
+    pre.contract_clauses = Some(ContractClauses {
+        requires: vec!["false".into()],
+        ensures: vec![],
+    });
+    let graph = SemanticGraph {
+        nodes: vec![post, pre],
+        edges: vec![],
+    };
+    let solver = ail_verify::solver::SimpleSolver;
+    let checker = ContractChecker::new(&solver);
+
+    let report = checker.check(&graph);
+
+    assert_eq!(report.diagnostics.len(), 2);
+    assert_eq!(
+        report.diagnostics[0].target,
+        NodeRef(10),
+        "precondition diagnostics must be ordered before postcondition diagnostics"
+    );
+    assert!(
+        report.diagnostics[0]
+            .evidence
+            .as_deref()
+            .is_some_and(|e| e.contains(CONTRACT_DIAGNOSTIC_CATEGORY_PRECONDITION_FAILED)),
+        "first diagnostic must carry precondition category"
+    );
+    assert_eq!(
+        report.diagnostics[1].target,
+        NodeRef(20),
+        "postcondition diagnostic should remain after precondition diagnostics"
+    );
+    assert!(
+        report.diagnostics[1]
+            .evidence
+            .as_deref()
+            .is_some_and(|e| e.contains(CONTRACT_DIAGNOSTIC_CATEGORY_POSTCONDITION_FAILED)),
+        "second diagnostic must carry postcondition category"
+    );
 }
 
 // ── Diagnostic: target in diagnostic matches node id ──────────────────────
