@@ -58,6 +58,9 @@ impl PackageInstallFailure {
         if rendered.contains("package install blocked by local advisory policy") {
             return Self::advisory_blocked();
         }
+        if rendered.contains("invalid package version requirement") {
+            return Self::invalid_requirement();
+        }
         if matches!(error, CliError::NotFound(_)) {
             return Self::resolver_not_found();
         }
@@ -97,6 +100,14 @@ impl PackageInstallFailure {
             code: "install.resolver.rejected",
             category: "resolver",
             message: "package resolver rejected the package metadata",
+        }
+    }
+
+    fn invalid_requirement() -> Self {
+        Self {
+            code: "install.resolver.invalid_requirement",
+            category: "resolver",
+            message: "package resolver rejected the version requirement",
         }
     }
 

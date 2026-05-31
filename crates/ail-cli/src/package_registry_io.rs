@@ -10,9 +10,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use ail_package::{
-    PackageCompatibilityMetadata, PackageDef, PackageKeypair, PackageManifest, PackageRegistry,
-    PublishRequest, RegistryClient, SearchRequest, SecurityAdvisory, SignedPackage, TrustLevel,
-    VerifyOutcome, VerifyRequest, YankRecord,
+    DependencyResolver, DependencySpec, PackageCompatibilityMetadata, PackageDef, PackageKeypair,
+    PackageManifest, PackageRegistry, PublishRequest, RegistryClient, ResolverError, SearchRequest,
+    SecurityAdvisory, SignedPackage, TrustLevel, VerifyOutcome, VerifyRequest, YankRecord,
 };
 
 use crate::cli::ail_dir_for_store;
@@ -456,17 +456,23 @@ pub(crate) fn find_signed_package<'a>(
 
 /// Look up a package with trust verification.
 ///
+/// - Version requirements resolve to the highest matching semantic version.
+/// - `latest` preserves the historical latest-entry lookup behavior.
 /// - Signed packages: signature is verified; returns `signature_status: "signed"`.
 /// - Unsigned packages: only allowed for non-Verified trust levels; emits a
 ///   warning that the trust is not cryptographically verified.
 /// - Missing packages: `CliError::NotFound`.
+/// - Invalid version requirements: `CliError::ParseError` with redacted metadata.
 /// - Verified packages without a local signature: `CliError::Domain`.
 pub(crate) fn trusted_package_lookup(
     registry: &PackageRegistry,
     name: &str,
     version: &str,
 ) -> Result<LocalPackageLookup, CliError> {
-    if let Some(signed) = find_signed_package(registry, name, version) {
+    let manifest = resolve_package_manifest_for_install(registry, name, version)?;
+
+    if let Some(signed) = registry.lookup_signed_by_name_version(&manifest.name, &manifest.version)
+    {
         signed
             .verify()
             .map_err(|e| CliError::Domain(format!("package signature verification failed: {e}")))?;
@@ -477,8 +483,6 @@ pub(crate) fn trusted_package_lookup(
         });
     }
 
-    let manifest = find_package_manifest(registry, name, version)
-        .ok_or_else(|| CliError::NotFound(format!("package not found: {name}@{version}")))?;
     if manifest.trust_level == TrustLevel::Verified {
         return Err(CliError::Domain(format!(
             "verified package missing local signature: {}@{}",
@@ -492,5 +496,42 @@ pub(crate) fn trusted_package_lookup(
             "legacy unsigned package metadata for {}@{}; trust is not cryptographically verified",
             manifest.name, manifest.version
         )),
+    })
+}
+
+fn resolve_package_manifest_for_install<'a>(
+    registry: &'a PackageRegistry,
+    name: &str,
+    version_constraint: &str,
+) -> Result<&'a PackageManifest, CliError> {
+    if version_constraint == "latest" {
+        return find_package_manifest(registry, name, version_constraint)
+            .ok_or_else(|| CliError::NotFound(format!("package not found: {name}@latest")));
+    }
+
+    let spec = DependencySpec {
+        name: name.to_string(),
+        version_constraint: version_constraint.to_string(),
+        min_trust: TrustLevel::Unverified,
+        profile: None,
+        allowed_licenses: vec![],
+        denied_capabilities: vec![],
+        denied_handlers: vec![],
+        min_graph_schema: None,
+        min_core_ir_schema: None,
+    };
+
+    DependencyResolver::resolve(&spec, registry, &[], &[]).map_err(|error| match error {
+        ResolverError::InvalidVersionRequirement { issue, .. } => CliError::ParseError(format!(
+            "invalid package version requirement for {name}: code={} category={} shape={} char_len={}",
+            issue.code,
+            issue.category(),
+            issue.shape,
+            issue.char_len
+        )),
+        ResolverError::NotFound { .. } => CliError::NotFound(format!(
+            "package not found: {name}@{version_constraint}"
+        )),
+        other => CliError::Domain(format!("package resolver rejected {name}: {other}")),
     })
 }

@@ -627,6 +627,78 @@ fn package_install_writes_canonical_lockfile_order() {
 }
 
 #[test]
+fn package_install_accepts_semver_range_and_locks_resolved_version() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let old = test_package_manifest("range.pkg", "1.2.0", TrustLevel::Assumed);
+    let resolved = test_package_manifest("range.pkg", "1.5.0", TrustLevel::Assumed);
+    let next_major = test_package_manifest("range.pkg", "2.0.0", TrustLevel::Assumed);
+    write_legacy_package_registry(dir.path(), &[old, resolved.clone(), next_major]);
+
+    let output = ail()
+        .args(["package", "install", "range.pkg@^1.2", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let install_json = parse_json_output(&output);
+
+    assert_eq!(install_json["data"]["name"], "range.pkg");
+    assert_eq!(
+        install_json["data"]["version"], "1.5.0",
+        "install must lock the highest version satisfying the requested range"
+    );
+
+    let lockfile_bytes = fs::read(package_lockfile_path(dir.path())).expect("lockfile must exist");
+    let lockfile: Lockfile =
+        ciborium::from_reader(lockfile_bytes.as_slice()).expect("decode lockfile");
+    assert_eq!(lockfile.entries.len(), 1);
+    assert_eq!(lockfile.entries[0].name, "range.pkg");
+    assert_eq!(lockfile.entries[0].version, "1.5.0");
+    assert_eq!(
+        lockfile.entries[0].package_hash,
+        resolved
+            .blake3_hex()
+            .expect("resolved manifest hash must compute")
+    );
+}
+
+#[test]
+fn package_install_rejects_invalid_version_requirement_without_leaking_raw_input() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let manifest = test_package_manifest("range.pkg", "1.0.0", TrustLevel::Assumed);
+    write_legacy_package_registry(dir.path(), &[manifest]);
+
+    let output = ail()
+        .args([
+            "package",
+            "install",
+            "range.pkg@customer-secret-not-a-version",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .get_output()
+        .clone();
+    let failure_json = parse_json_output(&output);
+
+    assert_eq!(failure_json["status"], "error");
+    assert_eq!(
+        failure_json["data"]["code"],
+        "install.resolver.invalid_requirement"
+    );
+    assert_eq!(failure_json["data"]["category"], "resolver");
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("customer-secret-not-a-version"),
+        "redacted install failure must not leak raw invalid requirement in stderr"
+    );
+}
+
+#[test]
 fn package_publish_rejects_noncanonical_lockfile_preflight_json() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
