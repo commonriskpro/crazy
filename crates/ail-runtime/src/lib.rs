@@ -77,7 +77,11 @@ pub use host::{
     CapabilityCallMode, RuntimeArg, RuntimeHost, RuntimeInstance, RuntimeValue, TraceContext,
 };
 pub use host_dispatch::{WasmBridgeDiagnostic, WasmBridgeDiagnosticKind, WasmBridgeInvokeError};
-pub use manifest::{CapabilityManifest, blake3_hex_of};
+pub use manifest::{
+    CapabilityManifest, RUNTIME_ARTIFACT_MANIFEST_SCHEMA_VERSION, RuntimeArtifactLimits,
+    RuntimeArtifactManifest, RuntimeArtifactManifestDiagnostic,
+    RuntimeArtifactManifestDiagnosticKind, RuntimeArtifactRateLimit, blake3_hex_of,
+};
 pub use profile::{
     AssumptionStatus, AuditConfig, CapabilityGrant, CapabilityId, CapabilityRevocationRegistry,
     CapabilityState, InFlightPolicy, ProfileAssumption, ProfilePolicy, RateLimit, ReplayConfig,
