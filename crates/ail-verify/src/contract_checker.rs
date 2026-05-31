@@ -30,6 +30,22 @@ use crate::proof::{ClauseRole, ProofObligation};
 use crate::report::{VerificationEntry, VerificationReport, VerificationState};
 use crate::solver::{Solver, SolverOutcome};
 
+// ── Stable contract diagnostic categories ─────────────────────────────────
+
+/// Stable category for a failed `requires` contract clause.
+pub const CONTRACT_DIAGNOSTIC_CATEGORY_PRECONDITION_FAILED: &str = "contract.precondition_failed";
+
+/// Stable category for a failed `ensures` contract clause.
+pub const CONTRACT_DIAGNOSTIC_CATEGORY_POSTCONDITION_FAILED: &str = "contract.postcondition_failed";
+
+/// Stable category for a failed invariant `requires` contract clause.
+pub const CONTRACT_DIAGNOSTIC_CATEGORY_INVARIANT_PRECONDITION_FAILED: &str =
+    "contract.invariant_precondition_failed";
+
+/// Stable category for a failed invariant `ensures` contract clause.
+pub const CONTRACT_DIAGNOSTIC_CATEGORY_INVARIANT_POSTCONDITION_FAILED: &str =
+    "contract.invariant_postcondition_failed";
+
 // ── ContractChecker ───────────────────────────────────────────────────────
 
 /// Pure contract clause evaluator backed by an injected `Solver`.
@@ -81,11 +97,13 @@ impl<'s> ContractChecker<'s> {
                         self.evaluate(predicate, ClauseRole::Requires, &scope)
                     };
                     if entry.state == VerificationState::Failed {
-                        diagnostics.push(
-                            Diagnostic::error(E_CONTRACT_VIOLATED, node.id).with_evidence(format!(
-                                "requires clause failed for '{scope}': {predicate}"
-                            )),
-                        );
+                        diagnostics.push(contract_failure_diagnostic(
+                            node.id,
+                            &scope,
+                            predicate,
+                            ClauseRole::Requires,
+                            is_invariant,
+                        ));
                     }
                     entries.push(entry);
                 }
@@ -96,16 +114,19 @@ impl<'s> ContractChecker<'s> {
                         self.evaluate(predicate, ClauseRole::Ensures, &scope)
                     };
                     if entry.state == VerificationState::Failed {
-                        diagnostics.push(
-                            Diagnostic::error(E_CONTRACT_VIOLATED, node.id).with_evidence(format!(
-                                "ensures clause failed for '{scope}': {predicate}"
-                            )),
-                        );
+                        diagnostics.push(contract_failure_diagnostic(
+                            node.id,
+                            &scope,
+                            predicate,
+                            ClauseRole::Ensures,
+                            is_invariant,
+                        ));
                     }
                     entries.push(entry);
                 }
             }
         }
+        canonicalize_contract_diagnostics(&mut diagnostics);
         VerificationReport {
             entries,
             diagnostics,
@@ -218,4 +239,55 @@ fn role_label(role: ClauseRole) -> &'static str {
         ClauseRole::Requires => "requires",
         ClauseRole::Ensures => "ensures",
     }
+}
+
+fn contract_failure_category(role: ClauseRole, is_invariant: bool) -> &'static str {
+    match (role, is_invariant) {
+        (ClauseRole::Requires, false) => CONTRACT_DIAGNOSTIC_CATEGORY_PRECONDITION_FAILED,
+        (ClauseRole::Ensures, false) => CONTRACT_DIAGNOSTIC_CATEGORY_POSTCONDITION_FAILED,
+        (ClauseRole::Requires, true) => CONTRACT_DIAGNOSTIC_CATEGORY_INVARIANT_PRECONDITION_FAILED,
+        (ClauseRole::Ensures, true) => CONTRACT_DIAGNOSTIC_CATEGORY_INVARIANT_POSTCONDITION_FAILED,
+    }
+}
+
+fn contract_failure_diagnostic(
+    target: ail_core::semantic_graph::NodeRef,
+    scope: &str,
+    predicate: &str,
+    role: ClauseRole,
+    is_invariant: bool,
+) -> Diagnostic {
+    let category = contract_failure_category(role, is_invariant);
+    let predicate = predicate.trim();
+    Diagnostic::error(E_CONTRACT_VIOLATED, target).with_evidence(format!(
+        "category={category}; role={}; scope='{scope}'; predicate={predicate}",
+        role_label(role),
+    ))
+}
+
+fn canonicalize_contract_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.sort_by(|a, b| {
+        contract_diagnostic_category_rank(a)
+            .cmp(&contract_diagnostic_category_rank(b))
+            .then_with(|| a.target.cmp(&b.target))
+            .then_with(|| a.code.cmp(&b.code))
+            .then_with(|| a.evidence.cmp(&b.evidence))
+    });
+    diagnostics.dedup();
+}
+
+fn contract_diagnostic_category_rank(diagnostic: &Diagnostic) -> u8 {
+    match diagnostic.evidence.as_deref().and_then(diagnostic_category) {
+        Some(CONTRACT_DIAGNOSTIC_CATEGORY_PRECONDITION_FAILED) => 0,
+        Some(CONTRACT_DIAGNOSTIC_CATEGORY_POSTCONDITION_FAILED) => 1,
+        Some(CONTRACT_DIAGNOSTIC_CATEGORY_INVARIANT_PRECONDITION_FAILED) => 2,
+        Some(CONTRACT_DIAGNOSTIC_CATEGORY_INVARIANT_POSTCONDITION_FAILED) => 3,
+        _ => 4,
+    }
+}
+
+fn diagnostic_category(evidence: &str) -> Option<&str> {
+    evidence
+        .strip_prefix("category=")
+        .and_then(|rest| rest.split_once(';').map(|(category, _)| category))
 }
