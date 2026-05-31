@@ -6,8 +6,12 @@
 use ail_core::semantic_graph::{
     EdgeKind, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph, TrustLevel, TrustMetadata,
 };
+use ail_verify::diagnostic::{DiagnosticSeverity, RepairOption};
 use ail_verify::report::VerificationState;
-use ail_verify::resource_checker::ResourceChecker;
+use ail_verify::resource_checker::{
+    E_RESOURCE_LIMIT_EXCEEDED, E_RESOURCE_QUOTA_EXCEEDED, RESOURCE_DIAGNOSTIC_CATEGORY_QUOTA_LIMIT,
+    ResourceChecker,
+};
 
 fn resource_node(id: u32, name: &str, level: &str, tags: Vec<&str>) -> GraphNode {
     let mut node = GraphNode::new(NodeRef(id), NodeKind::Type, name);
@@ -316,4 +320,94 @@ fn shared_resource_with_safe_capability_edge_is_proven() {
         VerificationState::Proven,
         "shared resource with SafeCapability edge must be Proven"
     );
+}
+
+#[test]
+fn quota_exceeded_resource_emits_stable_structured_diagnostic() {
+    let g = graph(vec![resource_node(
+        0,
+        "tenant_pool",
+        "resource:shared",
+        vec!["quota-exceeded"],
+    )]);
+
+    let report = ResourceChecker::check(&g);
+
+    assert_eq!(report.entries.len(), 1);
+    assert_eq!(report.entries[0].state, VerificationState::Failed);
+    assert!(
+        report.entries[0]
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains(E_RESOURCE_QUOTA_EXCEEDED)
+    );
+
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == E_RESOURCE_QUOTA_EXCEEDED)
+        .expect("quota violation must produce a stable structured diagnostic");
+
+    assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+    assert_eq!(diagnostic.target, NodeRef(0));
+    assert!(diagnostic.blocking);
+    assert!(
+        diagnostic
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains(RESOURCE_DIAGNOSTIC_CATEGORY_QUOTA_LIMIT),
+        "diagnostic evidence must carry the stable resource category"
+    );
+    assert_eq!(
+        diagnostic.expected.as_deref(),
+        Some("resource usage stays within declared quota")
+    );
+    assert_eq!(diagnostic.actual.as_deref(), Some("quota-exceeded"));
+    assert!(matches!(
+        diagnostic.repair_options.first(),
+        Some(RepairOption::Explanation(_))
+    ));
+}
+
+#[test]
+fn limit_exceeded_resource_emits_stable_structured_diagnostic() {
+    let g = graph(vec![resource_node(
+        0,
+        "worker_pool",
+        "resource:affine",
+        vec!["limit-exceeded"],
+    )]);
+
+    let report = ResourceChecker::check(&g);
+
+    assert_eq!(report.entries.len(), 1);
+    assert_eq!(report.entries[0].state, VerificationState::Failed);
+
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == E_RESOURCE_LIMIT_EXCEEDED)
+        .expect("limit violation must produce a stable structured diagnostic");
+
+    assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+    assert_eq!(diagnostic.target, NodeRef(0));
+    assert!(diagnostic.blocking);
+    assert!(
+        diagnostic
+            .evidence
+            .as_deref()
+            .unwrap_or("")
+            .contains(RESOURCE_DIAGNOSTIC_CATEGORY_QUOTA_LIMIT)
+    );
+    assert_eq!(
+        diagnostic.expected.as_deref(),
+        Some("resource usage stays within configured limit")
+    );
+    assert_eq!(diagnostic.actual.as_deref(), Some("limit-exceeded"));
+    assert!(matches!(
+        diagnostic.repair_options.first(),
+        Some(RepairOption::Explanation(_))
+    ));
 }

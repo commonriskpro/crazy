@@ -27,6 +27,8 @@
 // | `"use-after-release"`    | Use-after-release violation detected      |
 // | `"double-release"`       | Double-release violation detected         |
 // | `"never-consumed"`       | Linear resource never consumed (violation)|
+// | `"quota-exceeded"`       | Resource quota/budget was exceeded        |
+// | `"limit-exceeded"`       | Resource configured limit was exceeded    |
 // | `"safe-capability"`      | Shared resource has safe concurrency cap  |
 // | `"transaction-committed"`| Transaction was committed                 |
 // | `"transaction-rolled-back"` | Transaction was rolled back            |
@@ -46,16 +48,20 @@
 
 use ail_core::semantic_graph::{EdgeKind, NodeRef, SemanticGraph};
 
-use crate::diagnostic::{Diagnostic, DiagnosticSeverity};
+use crate::diagnostic::{Diagnostic, DiagnosticSeverity, RepairOption};
 use crate::report::{SummaryCounts, VerificationEntry, VerificationReport, VerificationState};
 
 // ── Error codes ───────────────────────────────────────────────────────────
+
+pub const RESOURCE_DIAGNOSTIC_CATEGORY_QUOTA_LIMIT: &str = "resource-quota-limit";
 
 pub const E_USE_AFTER_RELEASE: &str = "E_USE_AFTER_RELEASE";
 pub const E_DOUBLE_RELEASE: &str = "E_DOUBLE_RELEASE";
 pub const E_LINEAR_NOT_CONSUMED: &str = "E_LINEAR_NOT_CONSUMED";
 pub const E_SHARED_WITHOUT_SAFE_CAPABILITY: &str = "E_SHARED_WITHOUT_SAFE_CAPABILITY";
 pub const E_RESOURCE_NO_LIFECYCLE_EDGE: &str = "E_RESOURCE_NO_LIFECYCLE_EDGE";
+pub const E_RESOURCE_QUOTA_EXCEEDED: &str = "E_RESOURCE_QUOTA_EXCEEDED";
+pub const E_RESOURCE_LIMIT_EXCEEDED: &str = "E_RESOURCE_LIMIT_EXCEEDED";
 
 // ── ResourceChecker ───────────────────────────────────────────────────────
 
@@ -96,23 +102,7 @@ impl ResourceChecker {
             // Emit diagnostics for blocking violations
             match state {
                 VerificationState::Failed => {
-                    let code = if has_tag(tags, "use-after-release") {
-                        E_USE_AFTER_RELEASE
-                    } else if has_tag(tags, "double-release") {
-                        E_DOUBLE_RELEASE
-                    } else {
-                        E_LINEAR_NOT_CONSUMED
-                    };
-                    diagnostics.push(Diagnostic {
-                        code: code.to_string(),
-                        severity: DiagnosticSeverity::Error,
-                        target: node.id,
-                        evidence: evidence.clone(),
-                        expected: None,
-                        actual: None,
-                        repair_options: vec![],
-                        blocking: true,
-                    });
+                    diagnostics.push(Self::failed_diagnostic(node.id, tags, evidence.clone()));
                 }
                 VerificationState::Unsafe => {
                     diagnostics.push(Diagnostic {
@@ -150,6 +140,58 @@ impl ResourceChecker {
         }
     }
 
+    fn failed_diagnostic(target: NodeRef, tags: &[String], evidence: Option<String>) -> Diagnostic {
+        if has_tag(tags, "quota-exceeded") {
+            return Diagnostic::error(E_RESOURCE_QUOTA_EXCEEDED, target)
+                .with_evidence(format!(
+                    "category={RESOURCE_DIAGNOSTIC_CATEGORY_QUOTA_LIMIT}; {}",
+                    evidence.unwrap_or_else(|| {
+                        "resource quota violation detected via quota-exceeded tag".into()
+                    })
+                ))
+                .with_expected("resource usage stays within declared quota")
+                .with_actual("quota-exceeded")
+                .with_repair(RepairOption::Explanation(
+                    "reduce resource usage, increase the declared quota, or split the workload"
+                        .into(),
+                ));
+        }
+
+        if has_tag(tags, "limit-exceeded") {
+            return Diagnostic::error(E_RESOURCE_LIMIT_EXCEEDED, target)
+                .with_evidence(format!(
+                    "category={RESOURCE_DIAGNOSTIC_CATEGORY_QUOTA_LIMIT}; {}",
+                    evidence.unwrap_or_else(|| {
+                        "resource limit violation detected via limit-exceeded tag".into()
+                    })
+                ))
+                .with_expected("resource usage stays within configured limit")
+                .with_actual("limit-exceeded")
+                .with_repair(RepairOption::Explanation(
+                    "lower peak resource usage, raise the configured limit, or add backpressure"
+                        .into(),
+                ));
+        }
+
+        let code = if has_tag(tags, "use-after-release") {
+            E_USE_AFTER_RELEASE
+        } else if has_tag(tags, "double-release") {
+            E_DOUBLE_RELEASE
+        } else {
+            E_LINEAR_NOT_CONSUMED
+        };
+        Diagnostic {
+            code: code.to_string(),
+            severity: DiagnosticSeverity::Error,
+            target,
+            evidence,
+            expected: None,
+            actual: None,
+            repair_options: vec![],
+            blocking: true,
+        }
+    }
+
     fn classify_resource(
         kind: ResourceKind,
         tags: &[String],
@@ -172,6 +214,24 @@ impl ResourceChecker {
                 VerificationState::Failed,
                 Some(format!(
                     "resource '{}' released twice; double-release is always failed",
+                    scope
+                )),
+            );
+        }
+        if has_tag(tags, "quota-exceeded") {
+            return (
+                VerificationState::Failed,
+                Some(format!(
+                    "{E_RESOURCE_QUOTA_EXCEEDED}: category={RESOURCE_DIAGNOSTIC_CATEGORY_QUOTA_LIMIT}; resource '{}' exceeded its declared quota",
+                    scope
+                )),
+            );
+        }
+        if has_tag(tags, "limit-exceeded") {
+            return (
+                VerificationState::Failed,
+                Some(format!(
+                    "{E_RESOURCE_LIMIT_EXCEEDED}: category={RESOURCE_DIAGNOSTIC_CATEGORY_QUOTA_LIMIT}; resource '{}' exceeded its configured limit",
                     scope
                 )),
             );
