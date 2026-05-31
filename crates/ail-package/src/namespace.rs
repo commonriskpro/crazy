@@ -29,13 +29,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::{
+    export::{ExportDeclaration, ExportVisibility},
+    import::ImportDeclaration,
+};
+
 // ── NamespaceKind ─────────────────────────────────────────────────────────
 
 /// Kind of a qualified namespace segment.
 ///
 /// Matches the prefix conventions from `docs/packages.md`:
 ///   `pkg.*`, `type.*`, `handler.*`, `cap.*`
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum NamespaceKind {
     /// Package root namespace (`pkg.*`).
     Package,
@@ -54,6 +59,305 @@ impl std::fmt::Display for NamespaceKind {
             NamespaceKind::Type => write!(f, "type"),
             NamespaceKind::Handler => write!(f, "handler"),
             NamespaceKind::Capability => write!(f, "cap"),
+        }
+    }
+}
+
+// ── PackageNamespaceDiagnostics ───────────────────────────────────────────
+
+/// Machine-readable production diagnostic class for package namespace ergonomics.
+///
+/// These diagnostics are intentionally redacted: they expose stable field paths
+/// and indexes, never package names, aliases, export names, or imported items.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum PackageNamespaceDiagnosticKind {
+    /// Two namespace ownership records claim the same namespace shape.
+    DuplicateNamespace,
+    /// Two export declarations expose the same symbol name.
+    DuplicateExport,
+    /// Two import declarations target the same stable package identity.
+    DuplicateImport,
+    /// An import target or imported item cannot be resolved from represented surfaces.
+    UnresolvedImport,
+    /// A namespace-like package, owner, or namespace segment is invalid.
+    InvalidNamespaceSegment,
+    /// An import references an export that is represented but not publicly visible.
+    VisibilityMismatch,
+}
+
+impl PackageNamespaceDiagnosticKind {
+    /// Stable machine-readable diagnostic code.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PackageNamespaceDiagnosticKind::DuplicateNamespace => {
+                "package_namespace.duplicate_namespace"
+            }
+            PackageNamespaceDiagnosticKind::DuplicateExport => "package_namespace.duplicate_export",
+            PackageNamespaceDiagnosticKind::DuplicateImport => "package_namespace.duplicate_import",
+            PackageNamespaceDiagnosticKind::UnresolvedImport => {
+                "package_namespace.unresolved_import"
+            }
+            PackageNamespaceDiagnosticKind::InvalidNamespaceSegment => {
+                "package_namespace.invalid_namespace_segment"
+            }
+            PackageNamespaceDiagnosticKind::VisibilityMismatch => {
+                "package_namespace.visibility_mismatch"
+            }
+        }
+    }
+}
+
+/// Stable redacted location for a namespace/import/export diagnostic.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PackageNamespaceDiagnosticDescriptor {
+    /// Stable logical field path such as `exports.name` or `imports.items`.
+    pub path: String,
+    /// Offending collection entry index, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    /// Related entry index, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_index: Option<usize>,
+}
+
+/// Stable redacted production diagnostic for namespace/import/export ergonomics.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PackageNamespaceDiagnostic {
+    /// Machine-readable issue class.
+    pub kind: PackageNamespaceDiagnosticKind,
+    /// Redacted location descriptor. Never includes package or symbol values.
+    pub descriptor: PackageNamespaceDiagnosticDescriptor,
+    /// Human-readable diagnostic. Never includes package or symbol values.
+    pub message: String,
+}
+
+impl PackageNamespaceDiagnostic {
+    fn new(
+        kind: PackageNamespaceDiagnosticKind,
+        path: impl Into<String>,
+        index: Option<usize>,
+        related_index: Option<usize>,
+        message: &'static str,
+    ) -> Self {
+        Self {
+            kind,
+            descriptor: PackageNamespaceDiagnosticDescriptor {
+                path: path.into(),
+                index,
+                related_index,
+            },
+            message: message.to_string(),
+        }
+    }
+}
+
+/// Represented public surface of a package available to import diagnostics.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportedPackageSurface {
+    /// Stable package identity represented by this surface.
+    pub package: String,
+    /// Export declarations available from the package.
+    pub exports: Vec<ExportDeclaration>,
+}
+
+/// Emits stable redacted diagnostics across namespace, import, and export declarations.
+pub struct PackageNamespaceDiagnostics;
+
+impl PackageNamespaceDiagnostics {
+    /// Return all represented namespace/import/export diagnostics in deterministic order.
+    ///
+    /// The returned diagnostics are sorted and de-duplicated by their redacted
+    /// public payload. Raw package identities, namespace segments, export names,
+    /// and imported item names are used only for matching; they are never copied
+    /// into the diagnostic payload.
+    pub fn diagnostics(
+        package_name: &str,
+        namespaces: &[PackageNamespace],
+        imports: &[ImportDeclaration],
+        exports: &[ExportDeclaration],
+        available_packages: &[ImportedPackageSurface],
+    ) -> Vec<PackageNamespaceDiagnostic> {
+        let mut diagnostics = BTreeSet::new();
+
+        push_invalid_namespace_segment_diagnostics(
+            &mut diagnostics,
+            package_name,
+            namespaces,
+            imports,
+        );
+        push_duplicate_namespace_diagnostics(&mut diagnostics, namespaces);
+        push_duplicate_export_diagnostics(&mut diagnostics, exports);
+        push_duplicate_import_diagnostics(&mut diagnostics, imports);
+        push_import_resolution_diagnostics(&mut diagnostics, imports, available_packages);
+
+        diagnostics.into_iter().collect()
+    }
+}
+
+fn push_invalid_namespace_segment_diagnostics(
+    diagnostics: &mut BTreeSet<PackageNamespaceDiagnostic>,
+    package_name: &str,
+    namespaces: &[PackageNamespace],
+    imports: &[ImportDeclaration],
+) {
+    if !is_dotted_lowercase_path(package_name) {
+        diagnostics.insert(PackageNamespaceDiagnostic::new(
+            PackageNamespaceDiagnosticKind::InvalidNamespaceSegment,
+            "package.name",
+            None,
+            None,
+            "package name contains an invalid namespace segment",
+        ));
+    }
+
+    for (index, namespace) in namespaces.iter().enumerate() {
+        if !is_dotted_lowercase_path(&namespace.owner) {
+            diagnostics.insert(PackageNamespaceDiagnostic::new(
+                PackageNamespaceDiagnosticKind::InvalidNamespaceSegment,
+                "namespaces.owner",
+                Some(index),
+                None,
+                "namespace owner contains an invalid segment",
+            ));
+        }
+
+        if !is_dotted_lowercase_path(&namespace.namespace) {
+            diagnostics.insert(PackageNamespaceDiagnostic::new(
+                PackageNamespaceDiagnosticKind::InvalidNamespaceSegment,
+                "namespaces.namespace",
+                Some(index),
+                None,
+                "namespace prefix contains an invalid segment",
+            ));
+        }
+    }
+
+    for (index, import) in imports.iter().enumerate() {
+        if !is_dotted_lowercase_path(&import.source_package) {
+            diagnostics.insert(PackageNamespaceDiagnostic::new(
+                PackageNamespaceDiagnosticKind::InvalidNamespaceSegment,
+                "imports.source_package",
+                Some(index),
+                None,
+                "import source package contains an invalid namespace segment",
+            ));
+        }
+    }
+}
+
+fn push_duplicate_namespace_diagnostics(
+    diagnostics: &mut BTreeSet<PackageNamespaceDiagnostic>,
+    namespaces: &[PackageNamespace],
+) {
+    let mut first_index_by_namespace: BTreeMap<(NamespaceKind, &str), usize> = BTreeMap::new();
+
+    for (index, namespace) in namespaces.iter().enumerate() {
+        let key = (namespace.kind, namespace.namespace.as_str());
+        if let Some(first_index) = first_index_by_namespace.get(&key) {
+            diagnostics.insert(PackageNamespaceDiagnostic::new(
+                PackageNamespaceDiagnosticKind::DuplicateNamespace,
+                "namespaces.namespace",
+                Some(index),
+                Some(*first_index),
+                "namespace declaration duplicates an earlier namespace shape",
+            ));
+        } else {
+            first_index_by_namespace.insert(key, index);
+        }
+    }
+}
+
+fn push_duplicate_export_diagnostics(
+    diagnostics: &mut BTreeSet<PackageNamespaceDiagnostic>,
+    exports: &[ExportDeclaration],
+) {
+    let mut first_index_by_name: BTreeMap<&str, usize> = BTreeMap::new();
+
+    for (index, export) in exports.iter().enumerate() {
+        if let Some(first_index) = first_index_by_name.get(export.name.as_str()) {
+            diagnostics.insert(PackageNamespaceDiagnostic::new(
+                PackageNamespaceDiagnosticKind::DuplicateExport,
+                "exports.name",
+                Some(index),
+                Some(*first_index),
+                "export declaration duplicates an earlier export name",
+            ));
+        } else {
+            first_index_by_name.insert(export.name.as_str(), index);
+        }
+    }
+}
+
+fn push_duplicate_import_diagnostics(
+    diagnostics: &mut BTreeSet<PackageNamespaceDiagnostic>,
+    imports: &[ImportDeclaration],
+) {
+    let mut first_index_by_package: BTreeMap<&str, usize> = BTreeMap::new();
+
+    for (index, import) in imports.iter().enumerate() {
+        if let Some(first_index) = first_index_by_package.get(import.source_package.as_str()) {
+            diagnostics.insert(PackageNamespaceDiagnostic::new(
+                PackageNamespaceDiagnosticKind::DuplicateImport,
+                "imports.source_package",
+                Some(index),
+                Some(*first_index),
+                "import declaration duplicates an earlier source package",
+            ));
+        } else {
+            first_index_by_package.insert(import.source_package.as_str(), index);
+        }
+    }
+}
+
+fn push_import_resolution_diagnostics(
+    diagnostics: &mut BTreeSet<PackageNamespaceDiagnostic>,
+    imports: &[ImportDeclaration],
+    available_packages: &[ImportedPackageSurface],
+) {
+    let surfaces_by_package = available_packages
+        .iter()
+        .map(|surface| (surface.package.as_str(), surface))
+        .collect::<BTreeMap<_, _>>();
+
+    for (import_index, import) in imports.iter().enumerate() {
+        let Some(surface) = surfaces_by_package.get(import.source_package.as_str()) else {
+            diagnostics.insert(PackageNamespaceDiagnostic::new(
+                PackageNamespaceDiagnosticKind::UnresolvedImport,
+                "imports.source_package",
+                Some(import_index),
+                None,
+                "import source package is not represented by the available package surfaces",
+            ));
+            continue;
+        };
+
+        let exports_by_name = surface
+            .exports
+            .iter()
+            .map(|export| (export.name.as_str(), export))
+            .collect::<BTreeMap<_, _>>();
+
+        for (item_index, item) in import.items.iter().enumerate() {
+            let Some(export) = exports_by_name.get(item.as_str()) else {
+                diagnostics.insert(PackageNamespaceDiagnostic::new(
+                    PackageNamespaceDiagnosticKind::UnresolvedImport,
+                    "imports.items",
+                    Some(import_index),
+                    Some(item_index),
+                    "imported item is not represented by the source package surface",
+                ));
+                continue;
+            };
+
+            if export.visibility != ExportVisibility::Public {
+                diagnostics.insert(PackageNamespaceDiagnostic::new(
+                    PackageNamespaceDiagnosticKind::VisibilityMismatch,
+                    "imports.items",
+                    Some(import_index),
+                    Some(item_index),
+                    "imported item is represented but is not publicly visible",
+                ));
+            }
         }
     }
 }
@@ -697,6 +1001,219 @@ mod tests {
                 ..
             } if namespace_owner == "payments.stripe"
         ));
+    }
+
+    fn diagnostic_export(name: &str, visibility: ExportVisibility) -> ExportDeclaration {
+        ExportDeclaration {
+            name: name.to_string(),
+            signature: "Req -> Res".to_string(),
+            effects: vec![],
+            contracts: vec![],
+            visibility,
+            stability: crate::export::ExportStability::Stable,
+            trust_state: None,
+        }
+    }
+
+    // ── namespace_diagnostics_cover_redacted_production_shapes ───────────
+    // Production gate: namespace/import/export diagnostics cover concrete
+    // ergonomics failures without leaking package, export, or import values.
+    #[test]
+    fn namespace_diagnostics_cover_redacted_production_shapes() {
+        let namespaces = vec![
+            PackageNamespace {
+                owner: "payments.stripe".to_string(),
+                namespace: "payments.stripe".to_string(),
+                kind: NamespaceKind::Type,
+            },
+            PackageNamespace {
+                owner: "other.owner".to_string(),
+                namespace: "payments.stripe".to_string(),
+                kind: NamespaceKind::Type,
+            },
+            PackageNamespace {
+                owner: "payments.stripe".to_string(),
+                namespace: "payments.stripe".to_string(),
+                kind: NamespaceKind::Handler,
+            },
+            PackageNamespace {
+                owner: "payments.stripe".to_string(),
+                namespace: "payments..broken".to_string(),
+                kind: NamespaceKind::Package,
+            },
+        ];
+        let exports = vec![
+            diagnostic_export("charge", ExportVisibility::Public),
+            diagnostic_export("charge", ExportVisibility::Public),
+        ];
+        let imports = vec![
+            ImportDeclaration {
+                source_package: "payments.stripe".to_string(),
+                items: vec![
+                    "charge".to_string(),
+                    "secret_refund".to_string(),
+                    "missing_item".to_string(),
+                ],
+                version_constraint: None,
+            },
+            ImportDeclaration {
+                source_package: "payments.stripe".to_string(),
+                items: vec!["charge".to_string()],
+                version_constraint: None,
+            },
+            ImportDeclaration {
+                source_package: "accounts.paypal".to_string(),
+                items: vec!["capture".to_string()],
+                version_constraint: None,
+            },
+        ];
+        let available_packages = vec![ImportedPackageSurface {
+            package: "payments.stripe".to_string(),
+            exports: vec![
+                diagnostic_export("charge", ExportVisibility::Public),
+                diagnostic_export("secret_refund", ExportVisibility::Internal),
+            ],
+        }];
+
+        let diagnostics = PackageNamespaceDiagnostics::diagnostics(
+            "Payments.Root",
+            &namespaces,
+            &imports,
+            &exports,
+            &available_packages,
+        );
+
+        let shapes = diagnostics
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic.kind.clone(),
+                    diagnostic.descriptor.path.as_str(),
+                    diagnostic.descriptor.index,
+                    diagnostic.descriptor.related_index,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            shapes,
+            vec![
+                (
+                    PackageNamespaceDiagnosticKind::DuplicateNamespace,
+                    "namespaces.namespace",
+                    Some(1),
+                    Some(0),
+                ),
+                (
+                    PackageNamespaceDiagnosticKind::DuplicateExport,
+                    "exports.name",
+                    Some(1),
+                    Some(0),
+                ),
+                (
+                    PackageNamespaceDiagnosticKind::DuplicateImport,
+                    "imports.source_package",
+                    Some(1),
+                    Some(0),
+                ),
+                (
+                    PackageNamespaceDiagnosticKind::UnresolvedImport,
+                    "imports.items",
+                    Some(0),
+                    Some(2),
+                ),
+                (
+                    PackageNamespaceDiagnosticKind::UnresolvedImport,
+                    "imports.source_package",
+                    Some(2),
+                    None,
+                ),
+                (
+                    PackageNamespaceDiagnosticKind::InvalidNamespaceSegment,
+                    "namespaces.namespace",
+                    Some(3),
+                    None,
+                ),
+                (
+                    PackageNamespaceDiagnosticKind::InvalidNamespaceSegment,
+                    "package.name",
+                    None,
+                    None,
+                ),
+                (
+                    PackageNamespaceDiagnosticKind::VisibilityMismatch,
+                    "imports.items",
+                    Some(0),
+                    Some(1),
+                ),
+            ]
+        );
+
+        let public_payload = format!("{diagnostics:?}");
+        for raw_value in [
+            "Payments.Root",
+            "payments.stripe",
+            "accounts.paypal",
+            "charge",
+            "secret_refund",
+            "missing_item",
+            "capture",
+        ] {
+            assert!(
+                !public_payload.contains(raw_value),
+                "diagnostic payload must redact {raw_value}"
+            );
+        }
+    }
+
+    // ── namespace_diagnostics_are_deterministic_and_deduplicated ─────────
+    // TRIANGULATE: redacted diagnostics have stable ordering and repeated calls
+    // produce the same public payload.
+    #[test]
+    fn namespace_diagnostics_are_deterministic_and_deduplicated() {
+        let namespaces = vec![PackageNamespace {
+            owner: "Invalid.Owner".to_string(),
+            namespace: "bad..namespace".to_string(),
+            kind: NamespaceKind::Package,
+        }];
+        let imports = vec![ImportDeclaration {
+            source_package: "missing.pkg".to_string(),
+            items: vec!["missing".to_string()],
+            version_constraint: None,
+        }];
+
+        let first = PackageNamespaceDiagnostics::diagnostics(
+            "Invalid.Package",
+            &namespaces,
+            &imports,
+            &[],
+            &[],
+        );
+        let second = PackageNamespaceDiagnostics::diagnostics(
+            "Invalid.Package",
+            &namespaces,
+            &imports,
+            &[],
+            &[],
+        );
+
+        let unique_shapes = first.iter().collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(first, second);
+        assert_eq!(unique_shapes.len(), first.len());
+        assert_eq!(first.len(), 4);
+        assert_eq!(
+            first
+                .iter()
+                .map(|diagnostic| diagnostic.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "package_namespace.unresolved_import",
+                "package_namespace.invalid_namespace_segment",
+                "package_namespace.invalid_namespace_segment",
+                "package_namespace.invalid_namespace_segment",
+            ]
+        );
     }
 
     // ── namespace_kind_display ────────────────────────────────────────────
