@@ -44,6 +44,78 @@ pub(crate) enum PackageInstallResult {
     Blocked(Vec<PackageCompatibilityCliIssue>),
 }
 
+/// Stable, redacted diagnostics for package install failures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PackageInstallFailure {
+    pub(crate) code: &'static str,
+    pub(crate) category: &'static str,
+    pub(crate) message: &'static str,
+}
+
+impl PackageInstallFailure {
+    pub(crate) fn from_error(error: &CliError) -> Self {
+        let rendered = error.to_string().to_ascii_lowercase();
+        if rendered.contains("package install blocked by local advisory policy") {
+            return Self::advisory_blocked();
+        }
+        if matches!(error, CliError::NotFound(_)) {
+            return Self::resolver_not_found();
+        }
+        if rendered.contains("package lock") || rendered.contains("lockfile") {
+            return Self::lockfile_unavailable();
+        }
+        if rendered.contains("package registry")
+            || rendered.contains("signature")
+            || rendered.contains("verified package missing local signature")
+        {
+            return Self::resolver_rejected();
+        }
+        if matches!(error, CliError::Io(_)) {
+            return Self::lockfile_unavailable();
+        }
+        Self::resolver_rejected()
+    }
+
+    pub(crate) fn advisory_blocked() -> Self {
+        Self {
+            code: "install.advisory.blocked",
+            category: "advisory",
+            message: "package install blocked by local advisory policy",
+        }
+    }
+
+    fn resolver_not_found() -> Self {
+        Self {
+            code: "install.resolver.not_found",
+            category: "resolver",
+            message: "package resolver failed; requested package was not found",
+        }
+    }
+
+    fn resolver_rejected() -> Self {
+        Self {
+            code: "install.resolver.rejected",
+            category: "resolver",
+            message: "package resolver rejected the package metadata",
+        }
+    }
+
+    fn lockfile_unavailable() -> Self {
+        Self {
+            code: "install.lockfile.unavailable",
+            category: "lockfile",
+            message: "package lockfile could not be read or written",
+        }
+    }
+
+    pub(crate) fn to_cli_message(self) -> String {
+        format!(
+            "package install failed [code={} category={}]: {}",
+            self.code, self.category, self.message
+        )
+    }
+}
+
 /// A compatibility issue surfaced to the CLI layer.
 #[derive(Clone, Debug)]
 pub(crate) struct PackageCompatibilityCliIssue {
@@ -375,6 +447,18 @@ pub(crate) fn emit_package_compatibility_blocked(
             "error": "package_compatibility_blocked",
             "message": format!("package compatibility blocked: {} blocked issue(s)", issues.len()),
             "compatibility_issues": issues.iter().map(package_compatibility_issue_to_json).collect::<Vec<_>>(),
+        }));
+    }
+}
+
+/// Emit a JSON error response for a redacted install failure diagnostic.
+pub(crate) fn emit_package_install_failure(mode: OutputMode, failure: PackageInstallFailure) {
+    if mode == OutputMode::Json {
+        print_error_response(json!({
+            "error": "package_install_failed",
+            "code": failure.code,
+            "category": failure.category,
+            "message": failure.message,
         }));
     }
 }

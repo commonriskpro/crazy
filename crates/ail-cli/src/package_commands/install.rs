@@ -10,6 +10,15 @@ pub(super) fn install_package_from_registry(
     let (registry, compatibility_metadata) = load_package_registry_with_compatibility(store)?;
     let lookup = trusted_package_lookup(&registry, name, version)?;
     let manifest = &lookup.manifest;
+    let advisory_issues = package_advisory_issues_for_install(store, &registry, manifest)?;
+    if advisory_issues
+        .iter()
+        .any(|issue| issue.status == "blocked")
+    {
+        return Err(CliError::Domain(
+            "package install blocked by local advisory policy".to_string(),
+        ));
+    }
     let hash = manifest
         .blake3_hex()
         .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))?;
@@ -103,4 +112,35 @@ pub(super) fn install_package_from_registry(
             compatibility_issues,
         },
     )))
+}
+
+fn package_advisory_issues_for_install(
+    store: &StoreHandle,
+    registry: &PackageRegistry,
+    manifest: &PackageManifest,
+) -> Result<Vec<PackageAuditIssue>, CliError> {
+    let file = load_local_package_registry_file_for_read(store)?;
+    let mut issues = Vec::new();
+
+    if let Some(yank) = registry
+        .yank_records()
+        .iter()
+        .find(|yank| yank.name == manifest.name && yank.version == manifest.version)
+    {
+        issues.push(PackageAuditIssue::yanked(
+            &manifest.name,
+            &manifest.version,
+            yank,
+        ));
+    }
+
+    issues.extend(
+        AdvisoryChecker::matches(&manifest.name, &manifest.version, &file.advisories)
+            .into_iter()
+            .map(|advisory| {
+                PackageAuditIssue::advisory(&manifest.name, &manifest.version, advisory)
+            }),
+    );
+
+    Ok(issues)
 }
