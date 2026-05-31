@@ -97,6 +97,23 @@ fn formats_source_int_bounds_helpers() {
 }
 
 #[test]
+fn formats_source_pipe_operator_input_canonically() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn cleaned(value:Text)->Text=value |> text_trim() |> text_replace_first(" ", "_")
+fn bounded(value:Int)->Int=value |> int_clamp(0,10)
+"#,
+    )
+    .expect("source pipe operator input must format");
+
+    assert_eq!(item_count, 2);
+    assert!(formatted.contains(
+        "fn cleaned(value: Text) -> Text = text_replace_first(text_trim(value), \" \", \"_\")\n"
+    ));
+    assert!(formatted.contains("fn bounded(value: Int) -> Int = int_clamp(value, 0, 10)\n"));
+}
+
+#[test]
 fn formats_source_text_eq_helper() {
     let (formatted, item_count) =
         format_ail_source("fn same(left:Text,right:Text)->Bool=text.eq(left,right)\n")

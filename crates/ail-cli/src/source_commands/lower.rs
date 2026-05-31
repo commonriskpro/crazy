@@ -28,6 +28,7 @@ pub(super) enum SourceLowerDiagnostic {
     FieldAccess,
     IndexExpression,
     ListLiteral,
+    PipeExpression,
     RecordLiteral,
     TypeShapeMismatch,
     UnaryOperator,
@@ -43,6 +44,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::FieldAccess => "AIL_SOURCE_LOWER_FIELD_ACCESS",
             SourceLowerDiagnostic::IndexExpression => "AIL_SOURCE_LOWER_INDEX_EXPRESSION",
             SourceLowerDiagnostic::ListLiteral => "AIL_SOURCE_LOWER_LIST_LITERAL",
+            SourceLowerDiagnostic::PipeExpression => "AIL_SOURCE_LOWER_PIPE_EXPRESSION",
             SourceLowerDiagnostic::RecordLiteral => "AIL_SOURCE_LOWER_RECORD_LITERAL",
             SourceLowerDiagnostic::TypeShapeMismatch => "AIL_SOURCE_LOWER_TYPE_SHAPE",
             SourceLowerDiagnostic::UnaryOperator => "AIL_SOURCE_LOWER_UNARY_OPERATOR",
@@ -59,6 +61,7 @@ impl SourceLowerDiagnostic {
             | SourceLowerDiagnostic::IndexExpression
             | SourceLowerDiagnostic::ListLiteral
             | SourceLowerDiagnostic::RecordLiteral => "source.lower.collection",
+            SourceLowerDiagnostic::PipeExpression => "source.lower.pipe",
             SourceLowerDiagnostic::TypeShapeMismatch => "source.lower.type",
             SourceLowerDiagnostic::UnaryOperator => "source.lower.operator",
             SourceLowerDiagnostic::UnsupportedConstruct => "source.lower.unsupported",
@@ -379,6 +382,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
             lower_source_expr(record, line_num)?
         ));
     }
+    if let Some((left, right)) = split_top_level_source_binary_str(expr, "|>") {
+        return lower_source_pipe_expr(left, right, line_num);
+    }
     if let Some((left, right)) = split_top_level_source_binary_str(expr, "||") {
         return Ok(format!(
             "or({}, {})",
@@ -504,6 +510,36 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         ));
     }
     Ok(expr.to_string())
+}
+
+fn lower_source_pipe_expr(left: &str, right: &str, line_num: usize) -> Result<String, CliError> {
+    let right = right.trim();
+    if right.is_empty() {
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::PipeExpression,
+            "pipe expression requires a target function",
+        ));
+    }
+
+    let piped_expr = if let Some((func, args)) = parse_source_call(right) {
+        let mut piped_args = Vec::with_capacity(args.len() + 1);
+        piped_args.push(left.trim().to_string());
+        piped_args.extend(args.into_iter().map(|arg| arg.trim().to_string()));
+        format!("{}({})", func, piped_args.join(", "))
+    } else if is_source_ident(right) {
+        format!("{}({})", right, left.trim())
+    } else {
+        return Err(source_lower_expr_error(
+            line_num,
+            SourceLowerDiagnostic::PipeExpression,
+            right,
+            "pipe",
+            "pipe target requires an identifier or function call",
+        ));
+    };
+
+    lower_source_expr(&piped_expr, line_num)
 }
 
 fn lower_source_effect_call_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {

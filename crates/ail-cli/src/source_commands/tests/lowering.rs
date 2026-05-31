@@ -384,6 +384,46 @@ fn lowers_source_infix_arithmetic_with_precedence() {
 }
 
 #[test]
+fn lowers_source_pipe_operator_into_first_argument_calls() {
+    let program = parse_ail_source(
+        r#"
+fn cleaned(value: Text) -> Text = value |> text_trim() |> text_replace_first(" ", "_")
+fn bounded(value: Int) -> Int = value |> int_clamp(0, 10)
+fn custom(value: Int) -> Int = value |> normalize
+"#,
+    )
+    .expect("source pipe operator must parse");
+    let acl = source_program_to_acl(&program, "source_pipe".to_string());
+
+    assert!(acl.contains(
+        r#"op create_function id=fn.cleaned return=Text body=text.replace_first(text.trim(value), " ", "_")"#
+    ));
+    assert!(
+        acl.contains("op create_function id=fn.bounded return=Int body=int.clamp(value, 0, 10)")
+    );
+    assert!(acl.contains("op create_function id=fn.custom return=Int body=normalize(value)"));
+}
+
+#[test]
+fn rejects_pipe_operator_target_shape_with_stable_diagnostic() {
+    let diagnostic = assert_lowering_diagnostic(
+        lower_source_expr("customer_secret |> 42", 24),
+        "AIL_SOURCE_LOWER_PIPE_EXPRESSION",
+        "source.lower.pipe",
+        "pipe target requires an identifier or function call",
+    );
+
+    assert!(
+        diagnostic.contains("descriptor={line=24,construct=pipe,sourceLength=2,sourceHash="),
+        "pipe diagnostic must include a redacted descriptor for the target; got: {diagnostic}"
+    );
+    assert!(
+        !diagnostic.contains("customer_secret"),
+        "pipe diagnostic must not leak the piped value; got: {diagnostic}"
+    );
+}
+
+#[test]
 fn lowers_source_text_concat_operator() {
     let program = parse_ail_source(
         r#"
