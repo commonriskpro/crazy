@@ -2,6 +2,8 @@ mod acl;
 mod source_builtins;
 mod source_syntax;
 
+use std::collections::BTreeSet;
+
 use serde_json::{Value, json};
 
 use super::source_helpers::{is_ail_source_uri, source_module_from_text};
@@ -26,24 +28,112 @@ fn all_symbols() -> impl Iterator<Item = &'static AclSymbol> {
 
 pub(super) fn completion_items(prefix: &str) -> Vec<Value> {
     let prefix = prefix.trim().to_ascii_lowercase();
-    all_symbols()
-        .filter(|symbol| {
-            prefix.is_empty() || symbol.label.to_ascii_lowercase().contains(prefix.as_str())
+    let mut seen_labels = BTreeSet::new();
+    let mut items = all_symbols()
+        .enumerate()
+        .filter_map(|(ordinal, symbol)| {
+            let rank = completion_match_rank(&prefix, symbol.label)?;
+            seen_labels
+                .insert(symbol.label)
+                .then_some((rank, ordinal, symbol))
         })
-        .map(|symbol| {
+        .collect::<Vec<_>>();
+    items.sort_by(
+        |(left_rank, left_ordinal, left), (right_rank, right_ordinal, right)| {
+            left_rank
+                .cmp(right_rank)
+                .then_with(|| {
+                    completion_item_kind_order(left).cmp(&completion_item_kind_order(right))
+                })
+                .then_with(|| {
+                    left.label
+                        .to_ascii_lowercase()
+                        .cmp(&right.label.to_ascii_lowercase())
+                })
+                .then_with(|| left_ordinal.cmp(right_ordinal))
+        },
+    );
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(sort_index, (_, _, symbol))| {
             json!({
                 "label": symbol.label,
-                "kind": 14,
+                "kind": completion_item_kind(symbol),
                 "detail": symbol.detail,
                 "documentation": {
                     "kind": "markdown",
                     "value": symbol.documentation
                 },
+                "filterText": symbol.label,
                 "insertText": symbol.insert_text,
-                "insertTextFormat": 2
+                "insertTextFormat": 2,
+                "sortText": format!("{sort_index:04}:{}", symbol.label)
             })
         })
         .collect()
+}
+
+fn completion_match_rank(prefix: &str, label: &str) -> Option<u8> {
+    let label = label.to_ascii_lowercase();
+    if prefix.is_empty() || label == prefix {
+        Some(0)
+    } else if label.starts_with(prefix) {
+        Some(1)
+    } else if label.contains(prefix) {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+fn completion_item_kind(symbol: &AclSymbol) -> u64 {
+    match completion_item_kind_order(symbol) {
+        0 => 24,
+        1 => 4,
+        2 => 21,
+        3 => 3,
+        _ => 14,
+    }
+}
+
+fn completion_item_kind_order(symbol: &AclSymbol) -> u8 {
+    if is_operator_label(symbol.label) || symbol.detail.contains("operator") {
+        0
+    } else if symbol.detail.contains("constructor") {
+        1
+    } else if symbol.detail.contains("constant") {
+        2
+    } else if symbol.label.starts_with("op ")
+        || symbol.detail.contains("function")
+        || symbol.detail.contains("helper")
+    {
+        3
+    } else {
+        4
+    }
+}
+
+fn is_operator_label(label: &str) -> bool {
+    matches!(
+        label,
+        "+" | "-"
+            | "*"
+            | "/"
+            | "%"
+            | "++"
+            | "=="
+            | "!="
+            | ">"
+            | ">="
+            | "<"
+            | "<="
+            | "&&"
+            | "||"
+            | "!"
+            | "."
+            | "..."
+    )
 }
 
 pub(super) fn workspace_symbol_items(
