@@ -31,15 +31,16 @@
 //
 // # Determinism
 //
-// All checks are pure.  Entries are emitted in graph-node-insertion order
-// within each check tier.  Identical inputs always produce identical output.
+// All checks are pure.  Entries are normalized by check tier and stable machine
+// fields before returning, with exact duplicate entries collapsed.  Identical
+// inputs always produce identical output.
 
 use ail_core::semantic_graph::{NodeKind, SemanticGraph};
 
 use crate::report::{VerificationEntry, VerificationState};
 use crate::tv_obligations::{
     check_effect_obligations, check_evidence_sufficiency, is_critical_like, is_prod_or_stricter,
-    make_entry,
+    make_entry, normalize_translation_entries,
 };
 
 // ── Stable error codes ────────────────────────────────────────────────────
@@ -74,9 +75,10 @@ pub struct TranslationValidator;
 impl TranslationValidator {
     /// Run all profile-appropriate translation validation checks on `graph`.
     ///
-    /// Returns a flat list of `VerificationEntry` values in node-insertion
-    /// order within each check tier.  If no entries are produced (no issues
-    /// and no tracked items), a single summary `Proven` entry is returned.
+    /// Returns a flat list of `VerificationEntry` values normalized by check
+    /// tier, scope, state, evidence, and repair options.  Exact duplicate
+    /// entries are collapsed.  If no entries are produced (no issues and no
+    /// tracked items), a single summary `Proven` entry is returned.
     pub fn check(graph: &SemanticGraph, profile: &str) -> Vec<VerificationEntry> {
         let mut entries = Vec::new();
 
@@ -95,6 +97,8 @@ impl TranslationValidator {
         if is_critical_like(profile) {
             entries.extend(check_evidence_sufficiency(graph));
         }
+
+        normalize_translation_entries(&mut entries);
 
         // Emit a single summary Proven when the graph passes all checks.
         if entries.is_empty() {
@@ -185,7 +189,15 @@ fn check_effect_provenance(graph: &SemanticGraph) -> Vec<VerificationEntry> {
             .iter()
             .filter(|e| !e.contains(':'))
             .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
             .collect();
+        let declared_effect_count = row
+            .effects
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
 
         if malformed.is_empty() {
             entries.push(make_entry(
@@ -194,7 +206,7 @@ fn check_effect_provenance(graph: &SemanticGraph) -> Vec<VerificationEntry> {
                 node.name.clone(),
                 Some(format!(
                     "{} declared effect(s) follow 'name:Provider' format; provenance traceable",
-                    row.effects.len()
+                    declared_effect_count
                 )),
                 vec![],
             ));
@@ -599,6 +611,63 @@ mod tests {
         assert!(
             tv3.is_some(),
             "unknown profile must run TV-3 (strict-by-default)"
+        );
+    }
+
+    // ── Deterministic output ─────────────────────────────────────────────
+
+    #[test]
+    fn check_orders_entries_by_tv_tier_then_scope_and_dedupes_exact_duplicates() {
+        let duplicate_a = fn_node_with_body(0, "fn.alpha", "let x = 1 in x");
+        let duplicate_a_again = fn_node_with_body(1, "fn.alpha", "let x = 1 in x");
+        let zeta = fn_node_with_body(2, "fn.zeta", "let x = 1 in x");
+        let graph = SemanticGraph {
+            nodes: vec![zeta, duplicate_a, duplicate_a_again],
+            edges: vec![],
+        };
+
+        let entries = TranslationValidator::check(&graph, "dev");
+        let shape_scopes: Vec<_> = entries
+            .iter()
+            .filter(|e| e.claim == "translation-validation/shape")
+            .map(|e| e.scope.as_str())
+            .collect();
+
+        assert_eq!(
+            shape_scopes,
+            vec!["fn.alpha", "fn.zeta"],
+            "translation-validation entries must be sorted by stable machine fields and exact duplicate issues deduped"
+        );
+    }
+
+    #[test]
+    fn provenance_malformed_effects_are_sorted_and_deduped_in_evidence() {
+        let node = fn_node_with_effects(
+            0,
+            "fn.bad_effects",
+            &["z_bad", "db:Postgres", "a_bad", "z_bad"],
+        );
+        let graph = single_node_graph(node);
+        let entries = check_effect_provenance(&graph);
+        let e = entries
+            .iter()
+            .find(|e| e.scope == "fn.bad_effects")
+            .unwrap();
+
+        assert_eq!(e.state, VerificationState::Unverified);
+        assert!(
+            e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .starts_with(E_TV_EFFECT_MALFORMED),
+            "malformed-effect evidence must start with the stable issue code"
+        );
+        assert!(
+            e.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("effect(s) [a_bad, z_bad]"),
+            "malformed effect list must be sorted and deduplicated"
         );
     }
 
