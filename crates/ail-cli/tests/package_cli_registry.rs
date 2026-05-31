@@ -24,11 +24,23 @@ fn package_publish_persists_signed_registry_record() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
 
-    ail()
+    let output = ail()
         .args(["package", "publish", "--json"])
         .current_dir(dir.path())
         .assert()
-        .success();
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["published"], true);
+    assert_eq!(v["data"]["preflight"], "passed");
+    assert_eq!(v["data"]["lockfile_reproducibility"], "ok");
+    assert_eq!(v["data"]["locked_package_count"], 0);
+    assert_eq!(
+        v["data"]["lockfile_reproducibility_issues"],
+        Value::Array(vec![])
+    );
 
     let registry = read_package_registry_file(dir.path());
     assert_eq!(registry.signed_packages.len(), 1);
@@ -505,6 +517,69 @@ fn package_install_writes_canonical_lockfile_order() {
     assert_eq!(
         install_json["data"]["lockfile_hash"],
         lockfile.blake3_hex().expect("lockfile hash must compute")
+    );
+}
+
+#[test]
+fn package_publish_rejects_noncanonical_lockfile_preflight_json() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let zeta = test_package_manifest("zeta.pkg", "1.0.0", TrustLevel::Assumed);
+    let alpha = test_package_manifest("alpha.pkg", "1.0.0", TrustLevel::Assumed);
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![],
+            legacy_manifests: vec![zeta.clone(), alpha.clone()],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+
+    let mut lockfile = Lockfile::new();
+    lockfile.add(LockfileEntry {
+        name: zeta.name.clone(),
+        version: zeta.version.clone(),
+        package_hash: zeta.blake3_hex().expect("zeta hash must compute"),
+        trust_level: zeta.trust_level,
+        verification_report_hash: None,
+        accepted_assumptions: vec![],
+    });
+    lockfile.add(LockfileEntry {
+        name: alpha.name.clone(),
+        version: alpha.version.clone(),
+        package_hash: alpha.blake3_hex().expect("alpha hash must compute"),
+        trust_level: alpha.trust_level,
+        verification_report_hash: None,
+        accepted_assumptions: vec![],
+    });
+    write_package_lockfile(dir.path(), &lockfile);
+
+    let output = ail()
+        .args(["package", "publish", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("package publish preflight failed"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["published"], false);
+    assert_eq!(v["data"]["preflight"], "failed");
+    assert_eq!(v["data"]["lockfile_reproducibility"], "failed");
+    assert_eq!(v["data"]["locked_package_count"], 2);
+    let issue = &v["data"]["lockfile_reproducibility_issues"][0];
+    assert_eq!(issue["kind"], "unstable_entry_order");
+    assert_eq!(issue["status"], "blocked");
+    assert_eq!(issue["package"], "alpha.pkg");
+    assert_eq!(issue["previous_package"], "zeta.pkg");
+
+    let registry = read_package_registry_file(dir.path());
+    assert!(
+        registry.signed_packages.is_empty(),
+        "publish preflight must reject before writing signed packages"
     );
 }
 

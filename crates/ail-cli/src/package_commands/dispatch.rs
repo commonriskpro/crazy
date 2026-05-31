@@ -413,13 +413,87 @@ pub(crate) async fn cmd_package(
             let hash = manifest
                 .blake3_hex()
                 .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))?;
+            let lockfile = load_package_lockfile(store)?;
+            let registry = load_package_registry(store)?;
+            let actual = registry
+                .all()
+                .iter()
+                .map(|manifest| {
+                    manifest
+                        .blake3_hex()
+                        .map(|hash| (manifest.name.clone(), manifest.version.clone(), hash))
+                        .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let actual_refs = actual
+                .iter()
+                .map(|(name, version, hash)| (name.as_str(), version.as_str(), hash.as_str()))
+                .collect::<Vec<_>>();
+            let lockfile_reproducibility_issues = lockfile
+                .validate_reproducibility(&actual_refs)
+                .iter()
+                .map(LockfileReproducibilityCliIssue::from_validation_issue)
+                .collect::<Vec<_>>();
+            let lockfile_reproducibility_ok = lockfile_reproducibility_issues.is_empty();
+            let lockfile_reproducibility = if lockfile_reproducibility_ok {
+                "ok"
+            } else {
+                "failed"
+            };
+            let lockfile_hash = lockfile
+                .blake3_hex()
+                .map_err(|e| CliError::Domain(format!("package lock hash failed: {e}")))?;
+            let locked_package_count = lockfile.len();
+            if !lockfile_reproducibility_ok {
+                let message = format!(
+                    "package publish preflight failed: {} lockfile reproducibility issue(s)",
+                    lockfile_reproducibility_issues.len()
+                );
+                let response_data = json!({
+                    "published": false,
+                    "preflight": "failed",
+                    "name": &manifest.name,
+                    "version": &manifest.version,
+                    "package_hash": &hash,
+                    "lockfile_hash": &lockfile_hash,
+                    "locked_package_count": locked_package_count,
+                    "lockfile_reproducibility": lockfile_reproducibility,
+                    "lockfile_reproducibility_issues": lockfile_reproducibility_issues
+                        .iter()
+                        .map(LockfileReproducibilityCliIssue::to_json)
+                        .collect::<Vec<_>>(),
+                });
+                if mode == OutputMode::Json {
+                    let mut error_data = response_data;
+                    if let Some(obj) = error_data.as_object_mut() {
+                        obj.insert(
+                            "error".to_string(),
+                            json!("package_publish_preflight_failed"),
+                        );
+                        obj.insert("message".to_string(), json!(message.clone()));
+                    }
+                    print_error_response(error_data);
+                } else {
+                    let human_msg = format!(
+                        "package publish preflight failed\nname: {}\nversion: {}\npackage_hash: {hash}\nlockfile_reproducibility: {lockfile_reproducibility}\nlockfile_reproducibility_issues: {}\n{}",
+                        manifest.name,
+                        manifest.version,
+                        lockfile_reproducibility_issues.len(),
+                        lockfile_reproducibility_issues
+                            .iter()
+                            .map(LockfileReproducibilityCliIssue::to_human_line)
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    );
+                    print_response(mode, &human_msg, response_data);
+                }
+                return Err(CliError::Domain(message));
+            }
             let keypair = PackageKeypair::from_bytes(&[7u8; 32]);
             let signed = keypair
                 .sign_manifest(manifest.clone())
                 .map_err(|e| CliError::Domain(format!("package signing failed: {e}")))?;
-            let client = LocalRegistryClient {
-                registry: load_package_registry(store)?,
-            };
+            let client = LocalRegistryClient { registry };
             let published = client
                 .publish(PublishRequest {
                     signed_package: signed.clone(),
@@ -442,7 +516,7 @@ pub(crate) async fn cmd_package(
             let repro_evidence_status =
                 reproducible_evidence_status(manifest.reproducible_evidence.is_some());
             let human_msg = format!(
-                "published\nname: {}\nversion: {}\npackage_hash: {hash}\ntrust: {:?}\nsignature: signed\ncapabilities_manifest: attached\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}",
+                "published\nname: {}\nversion: {}\npackage_hash: {hash}\ntrust: {:?}\nsignature: signed\ncapabilities_manifest: attached\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\npreflight: passed\nlockfile_reproducibility: {lockfile_reproducibility}\nlocked_package_count: {locked_package_count}",
                 manifest.name, manifest.version, manifest.trust_level
             );
             print_response(
@@ -457,6 +531,14 @@ pub(crate) async fn cmd_package(
                     "signature_status": "signed",
                     "log_id": published.log_id,
                     "sequence": published.sequence,
+                    "preflight": "passed",
+                    "lockfile_hash": lockfile_hash,
+                    "locked_package_count": locked_package_count,
+                    "lockfile_reproducibility": lockfile_reproducibility,
+                    "lockfile_reproducibility_issues": lockfile_reproducibility_issues
+                        .iter()
+                        .map(LockfileReproducibilityCliIssue::to_json)
+                        .collect::<Vec<_>>(),
                     "capabilities_manifest": manifest.required_capabilities,
                     "verification_report": manifest.verification_report,
                     "verification_report_status": verification_report_status,
