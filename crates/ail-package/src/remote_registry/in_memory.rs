@@ -1,13 +1,14 @@
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::advisory::SecurityAdvisory;
 use crate::manifest::PackageManifest;
 use crate::signing::SignedPackage;
 
 use super::{
-    FetchRequest, FetchResponse, PublishRequest, PublishResponse, RegistryClient, SearchRequest,
-    SearchResponse, SearchResult, VerifyOutcome, VerifyRequest, VerifyResponse,
+    FetchRequest, FetchResponse, PublishRequest, PublishResponse, RegistryClient,
+    RemoteRegistryDiagnostic, RemoteRegistryDiagnosticReport, SearchRequest, SearchResponse,
+    SearchResult, VerifyOutcome, VerifyRequest, VerifyResponse,
 };
 
 /// A fully in-memory `RegistryClient` implementation for testing.
@@ -84,6 +85,59 @@ impl InMemoryRegistryClient {
             .iter()
             .find(|y| y.name == name && y.version == version)
             .map(|y| y.reason.clone())
+    }
+
+    /// Diagnose registry index health without exposing raw package coordinates.
+    ///
+    /// This reports duplicate manifest rows when the backing `PackageRegistry`
+    /// represents them, and stale index rows when metadata exists without a
+    /// matching signed package payload. Public diagnostics carry only stable
+    /// codes, categories, redaction guarantees, and deterministic ordinals.
+    pub fn diagnose_index(&self) -> RemoteRegistryDiagnosticReport {
+        let signed_keys: BTreeSet<(String, String)> = self
+            .signed_packages
+            .borrow()
+            .iter()
+            .map(|signed| {
+                (
+                    signed.manifest.name.clone(),
+                    signed.manifest.version.clone(),
+                )
+            })
+            .chain(self.registry.all_signed().iter().map(|signed| {
+                (
+                    signed.manifest.name.clone(),
+                    signed.manifest.version.clone(),
+                )
+            }))
+            .collect();
+
+        let mut index_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+        for manifest in self.registry.all() {
+            *index_counts
+                .entry((manifest.name.clone(), manifest.version.clone()))
+                .or_default() += 1;
+        }
+
+        let mut diagnostics = Vec::new();
+
+        for (ordinal, _) in index_counts
+            .iter()
+            .filter(|(_, count)| **count > 1)
+            .enumerate()
+        {
+            diagnostics.push(RemoteRegistryDiagnostic::duplicate_publish_version(ordinal));
+        }
+
+        for (ordinal, _) in index_counts
+            .keys()
+            .filter(|key| !signed_keys.contains(*key))
+            .enumerate()
+        {
+            diagnostics.push(RemoteRegistryDiagnostic::stale_index(ordinal));
+        }
+
+        RemoteRegistryDiagnosticReport::from_diagnostics(diagnostics)
     }
 }
 

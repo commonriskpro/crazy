@@ -583,3 +583,112 @@ fn sequence_monotonic_across_unrelated_publishes() {
     assert!(sa < sb, "sequence(a) < sequence(b): {sa} < {sb}");
     assert!(sb < sc, "sequence(b) < sequence(c): {sb} < {sc}");
 }
+
+// ── remote_registry_transport_diagnostics_are_stable_and_redacted ─────
+// Production gate: transport failures expose stable codes without URLs,
+// tokens, malformed bodies, or package coordinates.
+#[test]
+fn remote_registry_transport_diagnostics_are_stable_and_redacted() {
+    let report = RemoteRegistryDiagnosticReport::from_diagnostics(vec![
+        RemoteRegistryDiagnostic::malformed_response(
+            RemoteRegistryOperation::Verify,
+            "https://registry.internal.example/packages/payments.stripe/1.2.0?token=secret",
+            br#"{"name":"payments.stripe","version":"1.2.0","token":"secret"}"#,
+        ),
+        RemoteRegistryDiagnostic::auth_denied(
+            RemoteRegistryOperation::Publish,
+            "https://registry.internal.example/publish/payments.stripe/1.2.0",
+            "Bearer secret-token",
+        ),
+        RemoteRegistryDiagnostic::registry_unavailable(
+            RemoteRegistryOperation::Fetch,
+            "https://registry.internal.example/fetch/payments.stripe/1.2.0",
+        ),
+    ]);
+
+    let codes: Vec<_> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert_eq!(
+        codes,
+        vec![
+            "REMOTE_REGISTRY_AUTH_DENIED",
+            "REMOTE_REGISTRY_MALFORMED_RESPONSE",
+            "REMOTE_REGISTRY_UNAVAILABLE",
+        ]
+    );
+
+    assert!(report.diagnostics.iter().all(|diagnostic| {
+        diagnostic.redaction.registry_url
+            && diagnostic.redaction.auth_token
+            && diagnostic.redaction.package_coordinate
+    }));
+
+    let encoded = serde_json::to_string(&report).expect("serialize diagnostics");
+    for leaked in [
+        "registry.internal.example",
+        "payments.stripe",
+        "1.2.0",
+        "secret-token",
+        "secret",
+        "Bearer",
+    ] {
+        assert!(
+            !encoded.contains(leaked),
+            "remote registry diagnostics must not leak {leaked}: {encoded}"
+        );
+    }
+}
+
+// ── in_memory_index_diagnostics_cover_stale_and_duplicate_redacted ────
+// Production gate: represented duplicate versions and stale index rows are
+// diagnosed with deterministic, redacted issue records.
+#[test]
+fn in_memory_index_diagnostics_cover_stale_and_duplicate_redacted() {
+    let kp = gen_keypair();
+    let mut client = InMemoryRegistryClient::new();
+
+    client
+        .registry
+        .register_signed(
+            kp.sign_manifest(make_manifest("private.alpha", "1.0.0"))
+                .expect("sign indexed package"),
+        )
+        .expect("register signed package");
+    client
+        .registry
+        .register(make_manifest("private.alpha", "1.0.0"));
+    client
+        .registry
+        .register(make_manifest("private.beta", "2.0.0"));
+
+    let report = client.diagnose_index();
+    let codes: Vec<_> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.code.as_str(), diagnostic.ordinal))
+        .collect();
+
+    assert_eq!(
+        codes,
+        vec![
+            ("REMOTE_REGISTRY_DUPLICATE_PUBLISH_VERSION", 0),
+            ("REMOTE_REGISTRY_STALE_INDEX", 0),
+        ]
+    );
+    assert!(report.diagnostics.iter().all(|diagnostic| {
+        diagnostic.redaction.registry_url
+            && diagnostic.redaction.auth_token
+            && diagnostic.redaction.package_coordinate
+    }));
+
+    let encoded = serde_json::to_string(&report).expect("serialize diagnostics");
+    for leaked in ["private.alpha", "private.beta", "1.0.0", "2.0.0"] {
+        assert!(
+            !encoded.contains(leaked),
+            "index diagnostics must not leak package coordinates: {encoded}"
+        );
+    }
+}
