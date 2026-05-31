@@ -319,6 +319,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
     if let Some(lowered) = lower_source_text_trim_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_length_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_text_contains_expr(expr, line_num)? {
         return Ok(lowered);
     }

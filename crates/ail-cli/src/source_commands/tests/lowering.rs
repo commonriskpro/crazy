@@ -543,6 +543,25 @@ fn no_text_named(value: Text) -> Bool = text_is_empty(value)
 }
 
 #[test]
+fn lowers_source_length_alias_helpers() {
+    let program = parse_ail_source(
+        r#"
+fn text_len(value: Text) -> Int = text_length(value)
+fn text_len_dotted(value: Text) -> Int = text.length(value)
+fn list_len(values: List<Int>) -> Int = list_length(values)
+fn list_len_dotted(values: List<Int>) -> Int = list.length(values)
+"#,
+    )
+    .expect("source length aliases must parse");
+    let acl = source_program_to_acl(&program, "source_length_aliases".to_string());
+
+    assert!(acl.contains("op create_function id=fn.text_len return=Int body=len(value)"));
+    assert!(acl.contains("op create_function id=fn.text_len_dotted return=Int body=len(value)"));
+    assert!(acl.contains("op create_function id=fn.list_len return=Int body=len(values)"));
+    assert!(acl.contains("op create_function id=fn.list_len_dotted return=Int body=len(values)"));
+}
+
+#[test]
 fn lowers_source_infix_arithmetic_with_precedence() {
     let program =
         parse_ail_source("test math = 10 - 2 * 3 + 8 / 4 + 7 % 4 == 9").expect("source must parse");

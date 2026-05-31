@@ -482,6 +482,16 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if matches!(func.as_str(), "text.len" | "text.length") && args.len() == 1 {
+        return (
+            format!(
+                "text_length({})",
+                format_source_expr(&args[0], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "log.write" && args.len() == 1 {
         return (
             format!(
@@ -759,6 +769,16 @@ pub(super) fn format_source_expr_node(
         return (
             format!(
                 "list_is_empty({})",
+                format_source_expr(&args[0], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "list.length" && args.len() == 1 {
+        return (
+            format!(
+                "list_length({})",
                 format_source_expr(&args[0], module, constants)
             ),
             CALL_PRECEDENCE,

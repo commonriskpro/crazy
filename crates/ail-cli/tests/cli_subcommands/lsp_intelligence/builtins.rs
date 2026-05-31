@@ -140,6 +140,25 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include AIL source list_get helper; got: {list_get_items:?}"
     );
 
+    let length_completion_output = ail()
+        .args(["lsp", "--complete", "length", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let length_completion = parse_json_output(&length_completion_output);
+    let length_items = length_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        length_items.iter().any(
+            |item| item["label"] == "text_length" && item["detail"] == "AIL source Text helper"
+        ) && length_items.iter().any(
+            |item| item["label"] == "list_length" && item["detail"] == "AIL source List helper"
+        ),
+        "completion must include AIL source length helpers; got: {length_items:?}"
+    );
+
     let is_empty_completion_output = ail()
         .args(["lsp", "--complete", "is_empty", "--json"])
         .assert()

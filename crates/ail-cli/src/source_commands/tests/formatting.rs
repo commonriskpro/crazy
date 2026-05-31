@@ -631,6 +631,21 @@ fn no_text_named(value:Text)->Bool=text.is_empty(value)
 }
 
 #[test]
+fn formats_source_length_alias_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn text_len(value:Text)->Int=text.length(value)
+fn list_len(values:List<Int>)->Int=list.length(values)
+"#,
+    )
+    .expect("source length aliases must format");
+
+    assert_eq!(item_count, 2);
+    assert!(formatted.contains("fn text_len(value: Text) -> Int = text_length(value)\n"));
+    assert!(formatted.contains("fn list_len(values: List<Int>) -> Int = list_length(values)\n"));
+}
+
+#[test]
 fn formats_source_project_fixture_idempotently() {
     let src = r#"
 module app

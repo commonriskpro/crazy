@@ -200,6 +200,18 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "len(${1:value})",
     },
     AclSymbol {
+        label: "text_length",
+        detail: "AIL source Text helper",
+        documentation: "Returns the byte length of a Text value.",
+        insert_text: "text_length(${1:value})",
+    },
+    AclSymbol {
+        label: "list_length",
+        detail: "AIL source List helper",
+        documentation: "Returns the length of a List value.",
+        insert_text: "list_length(${1:list})",
+    },
+    AclSymbol {
         label: "is_empty",
         detail: "AIL source sized predicate",
         documentation: "Returns true when a Text or List value has length 0.",

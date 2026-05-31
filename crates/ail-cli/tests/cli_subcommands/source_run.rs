@@ -194,6 +194,31 @@ fn run_file_executes_ail_source_text_trim_helper() {
         .stdout(predicate::str::contains("module: fn.cleaned"))
         .stdout(predicate::str::contains("result: AIL"));
 }
+
+#[test]
+fn run_file_executes_ail_source_length_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("length_helpers.ail");
+    source
+        .write_str("fn size() -> Int = add(text_length(\"AIL\"), list_length([1, 2, 3]))\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.size",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.size"))
+        .stdout(predicate::str::contains("result: 6"));
+}
+
 #[test]
 fn run_file_executes_ail_source_text_byte_at_or_helper() {
     use assert_fs::prelude::*;

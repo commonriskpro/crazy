@@ -93,6 +93,49 @@ fn compile_file_accepts_source_text_trim_helper() {
         .assert()
         .success();
 }
+
+#[test]
+fn compile_file_accepts_source_text_length_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("text_length.ail");
+    source
+        .write_str(
+            "fn main(value: Text) -> Int = text_length(value)\n\
+             fn dotted(value: Text) -> Int = text.length(value)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_text_length_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_text_length.ail");
+    source
+        .write_str("fn main(values: List<Int>) -> Int = text.length(values)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in text.length argument 1: expected Text, got List<Int>",
+        ));
+}
+
 #[test]
 fn compile_file_rejects_source_text_trim_helper_type_mismatch() {
     use assert_fs::prelude::*;

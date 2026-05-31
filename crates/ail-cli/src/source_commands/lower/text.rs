@@ -43,6 +43,30 @@ pub(super) fn lower_source_text_trim_expr(
     )))
 }
 
+pub(super) fn lower_source_length_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if !matches!(
+        func.as_str(),
+        "text.len" | "text.length" | "text_length" | "list.length" | "list_length"
+    ) {
+        return Ok(None);
+    }
+    if args.len() != 1 {
+        return Err(CliError::ParseError(format!(
+            "line {line_num}: {func} requires `{func}(value)`"
+        )));
+    }
+    Ok(Some(format!(
+        "len({})",
+        lower_source_expr(&args[0], line_num)?
+    )))
+}
+
 pub(super) fn lower_source_text_contains_expr(
     expr: &str,
     line_num: usize,

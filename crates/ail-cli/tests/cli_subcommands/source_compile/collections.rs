@@ -38,6 +38,49 @@ fn compile_file_accepts_source_list_len() {
         .assert()
         .success();
 }
+
+#[test]
+fn compile_file_accepts_source_list_length_helper() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("list_length.ail");
+    source
+        .write_str(
+            "fn main(values: List<Int>) -> Int = list_length(values)\n\
+             fn dotted(values: List<Int>) -> Int = list.length(values)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_list_length_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_list_length.ail");
+    source
+        .write_str("fn main(value: Text) -> Int = list.length(value)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in list.length argument 1: expected List<Unknown>, got Text",
+        ));
+}
+
 #[test]
 fn compile_file_accepts_source_set_and_map_collections() {
     use assert_fs::prelude::*;
