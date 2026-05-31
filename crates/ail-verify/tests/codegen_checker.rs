@@ -189,3 +189,141 @@ fn non_capability_nodes_skipped_in_manifest_check() {
     assert_eq!(report.entries.len(), 1);
     assert_eq!(report.entries[0].state, VerificationState::Proven);
 }
+
+// ── Production diagnostics: artifact mismatch is stable and redacted ─────
+#[test]
+fn artifact_mismatch_emits_redacted_stable_diagnostic() {
+    use ail_verify::codegen_checker::VERIFY_CODEGEN_ARTIFACT_MISMATCH;
+
+    let artifacts = vec![artifact(
+        "wasm",
+        "expected_secret_hash",
+        "actual_secret_hash",
+    )];
+    let report = CodegenChecker::check_artifacts(&artifacts);
+
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|d| d.code == VERIFY_CODEGEN_ARTIFACT_MISMATCH)
+        .expect("artifact mismatch diagnostic");
+
+    assert!(diagnostic.blocking);
+    assert_eq!(diagnostic.expected.as_deref(), Some("hash:<redacted>"));
+    assert_eq!(diagnostic.actual.as_deref(), Some("hash:<redacted>"));
+    assert!(!format!("{diagnostic:?}").contains("expected_secret_hash"));
+    assert!(!format!("{diagnostic:?}").contains("actual_secret_hash"));
+}
+
+// ── Production diagnostics: unsupported backend ──────────────────────────
+#[test]
+fn production_codegen_reports_unsupported_backend() {
+    use ail_verify::codegen_checker::{
+        CodegenVerificationContext, VERIFY_CODEGEN_UNSUPPORTED_BACKEND,
+    };
+
+    let report = CodegenChecker::check_production_codegen(CodegenVerificationContext {
+        backend: "native-object",
+        supported_backends: &["wasm"],
+        artifacts: &[],
+        proof_evidence_present: true,
+        translation_evidence_present: true,
+        output_deterministic: Some(true),
+    });
+
+    assert_eq!(report.diagnostics.len(), 1);
+    assert_eq!(
+        report.diagnostics[0].code,
+        VERIFY_CODEGEN_UNSUPPORTED_BACKEND
+    );
+    assert!(report.diagnostics[0].blocking);
+}
+
+// ── Production diagnostics: proof and translation evidence ───────────────
+#[test]
+fn production_codegen_reports_missing_proof_and_translation_evidence() {
+    use ail_verify::codegen_checker::{
+        CodegenVerificationContext, VERIFY_CODEGEN_MISSING_PROOF_EVIDENCE,
+        VERIFY_CODEGEN_MISSING_TRANSLATION_EVIDENCE,
+    };
+
+    let report = CodegenChecker::check_production_codegen(CodegenVerificationContext {
+        backend: "wasm",
+        supported_backends: &["wasm"],
+        artifacts: &[],
+        proof_evidence_present: false,
+        translation_evidence_present: false,
+        output_deterministic: Some(true),
+    });
+
+    let codes: Vec<&str> = report.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    assert_eq!(
+        codes,
+        vec![
+            VERIFY_CODEGEN_MISSING_PROOF_EVIDENCE,
+            VERIFY_CODEGEN_MISSING_TRANSLATION_EVIDENCE,
+        ]
+    );
+}
+
+// ── Production diagnostics: nondeterministic codegen ─────────────────────
+#[test]
+fn production_codegen_reports_nondeterministic_output_when_represented() {
+    use ail_verify::codegen_checker::{
+        CodegenVerificationContext, VERIFY_CODEGEN_NONDETERMINISTIC_OUTPUT,
+    };
+
+    let report = CodegenChecker::check_production_codegen(CodegenVerificationContext {
+        backend: "wasm",
+        supported_backends: &["wasm"],
+        artifacts: &[],
+        proof_evidence_present: true,
+        translation_evidence_present: true,
+        output_deterministic: Some(false),
+    });
+
+    assert_eq!(report.diagnostics.len(), 1);
+    assert_eq!(
+        report.diagnostics[0].code,
+        VERIFY_CODEGEN_NONDETERMINISTIC_OUTPUT
+    );
+}
+
+// ── Production diagnostics: deterministic ordering and dedup ─────────────
+#[test]
+fn production_codegen_diagnostics_are_sorted_deduped_and_redacted() {
+    use ail_verify::codegen_checker::{
+        CodegenVerificationContext, VERIFY_CODEGEN_ARTIFACT_MISMATCH,
+        VERIFY_CODEGEN_MISSING_PROOF_EVIDENCE, VERIFY_CODEGEN_MISSING_TRANSLATION_EVIDENCE,
+        VERIFY_CODEGEN_NONDETERMINISTIC_OUTPUT, VERIFY_CODEGEN_UNSUPPORTED_BACKEND,
+    };
+
+    let artifacts = vec![
+        artifact("wasm", "expected_secret_hash", "actual_secret_hash"),
+        artifact("wasm", "expected_secret_hash", "actual_secret_hash"),
+    ];
+    let report = CodegenChecker::check_production_codegen(CodegenVerificationContext {
+        backend: "native-object",
+        supported_backends: &["wasm"],
+        artifacts: &artifacts,
+        proof_evidence_present: false,
+        translation_evidence_present: false,
+        output_deterministic: Some(false),
+    });
+
+    let codes: Vec<&str> = report.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    assert_eq!(
+        codes,
+        vec![
+            VERIFY_CODEGEN_ARTIFACT_MISMATCH,
+            VERIFY_CODEGEN_MISSING_PROOF_EVIDENCE,
+            VERIFY_CODEGEN_MISSING_TRANSLATION_EVIDENCE,
+            VERIFY_CODEGEN_NONDETERMINISTIC_OUTPUT,
+            VERIFY_CODEGEN_UNSUPPORTED_BACKEND,
+        ]
+    );
+
+    let rendered = format!("{:?}", report.diagnostics);
+    assert!(!rendered.contains("expected_secret_hash"));
+    assert!(!rendered.contains("actual_secret_hash"));
+}
