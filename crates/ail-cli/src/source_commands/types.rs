@@ -119,6 +119,9 @@ pub(super) fn infer_source_expr_type(
     if is_source_float_literal(expr) {
         return Ok("Float".to_string());
     }
+    if expr == "None" {
+        return Ok("Option<Unknown>".to_string());
+    }
     if let Some(ty) = scope.get(expr) {
         return Ok(ty.clone());
     }
@@ -318,16 +321,16 @@ pub(super) fn infer_source_call_type(
         "field" => infer_source_field_type(args, scope, functions),
         "update" => infer_source_update_type(args, scope, functions),
         "index" => infer_source_index_type(args, scope, functions),
-        "none" => Ok("Option<Unknown>".to_string()),
-        "some" => {
+        "none" | "None" => Ok("Option<Unknown>".to_string()),
+        "some" | "Some" => {
             let payload_ty = infer_source_expr_type(&args[0], scope, functions)?;
             Ok(format!("Option<{payload_ty}>"))
         }
-        "ok" => {
+        "ok" | "Ok" => {
             let payload_ty = infer_source_expr_type(&args[0], scope, functions)?;
             Ok(format!("Result<{payload_ty},Unknown>"))
         }
-        "err" => {
+        "err" | "Err" => {
             let payload_ty = infer_source_expr_type(&args[0], scope, functions)?;
             Ok(format!("Result<Unknown,{payload_ty}>"))
         }

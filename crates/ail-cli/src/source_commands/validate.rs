@@ -735,14 +735,14 @@ pub(super) fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "tuple.get" | "tuple_get" => SourceArity::Exact(2),
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
-        "none" => SourceArity::Exact(0),
+        "none" | "None" => SourceArity::Exact(0),
         "not" | "len" | "print" | "text.trim" | "text_trim" | "Var" | "is_empty"
         | "queue.pop_front" | "queue_pop_front" | "queue.peek_front" | "queue_peek_front"
         | "queue.length" | "queue_length" | "queue.is_empty" | "queue_is_empty" | "set.length"
         | "set_length" | "map.length" | "map_length" | "is_some" | "is_none" | "is_ok"
         | "is_err" | "tuple.length" | "tuple_length" | "tuple.first" | "tuple_first"
         | "tuple.second" | "tuple_second" => SourceArity::Exact(1),
-        "some" | "ok" | "err" => SourceArity::Exact(1),
+        "some" | "Some" | "ok" | "Ok" | "err" | "Err" => SourceArity::Exact(1),
         "if" | "let" | "fold" => SourceArity::Exact(3),
         "let_typed" => SourceArity::Exact(5),
         "effect_call" => SourceArity::Min(2),
@@ -760,6 +760,9 @@ pub(super) fn validate_source_expr_vars(
     constants: &BTreeMap<String, String>,
 ) -> Result<(), CliError> {
     let expr = expr.trim();
+    if expr == "None" {
+        return Ok(());
+    }
     if is_source_literal(expr) {
         return Ok(());
     }

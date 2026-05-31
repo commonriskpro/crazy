@@ -91,6 +91,28 @@ fn compile_file_rejects_source_option_result_type_mismatch() {
             "type mismatch in fn.main: expected Option<Int>, got Option<Bool>",
         ));
 }
+
+#[test]
+fn compile_file_rejects_source_option_result_constructor_arity_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_constructor.ail");
+    source
+        .write_str("fn main() -> Option<Int> = Some()\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "function call `Some` expects 1 argument(s), got 0",
+        ));
+}
+
 #[test]
 fn compile_file_accepts_source_match_expressions() {
     use assert_fs::prelude::*;

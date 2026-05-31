@@ -266,6 +266,30 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_ends_with(${1:haystack}, ${2:suffix})",
     },
     AclSymbol {
+        label: "Some",
+        detail: "AIL source Option constructor",
+        documentation: "Builds Option<T> with a present value.",
+        insert_text: "Some(${1:value})",
+    },
+    AclSymbol {
+        label: "None",
+        detail: "AIL source Option constructor",
+        documentation: "Builds an empty Option<T> value.",
+        insert_text: "None",
+    },
+    AclSymbol {
+        label: "Ok",
+        detail: "AIL source Result constructor",
+        documentation: "Builds a Result<T,E> success value.",
+        insert_text: "Ok(${1:value})",
+    },
+    AclSymbol {
+        label: "Err",
+        detail: "AIL source Result constructor",
+        documentation: "Builds a Result<T,E> error value.",
+        insert_text: "Err(${1:error})",
+    },
+    AclSymbol {
         label: "unwrap_or",
         detail: "AIL source Option helper",
         documentation: "Returns the value inside Option<T>, or a fallback when it is None.",
