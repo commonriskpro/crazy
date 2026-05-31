@@ -241,6 +241,31 @@ fn compile_file_rejects_non_ail_source_imports() {
             "import path `./math.txt` must end with `.ail`",
         ));
 }
+
+#[test]
+fn compile_file_rejects_duplicate_source_imports() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let dep = dir.child("math.ail");
+    dep.write_str("fn helper() -> Int = 1\n")
+        .expect("dep fixture must be written");
+    let source = dir.child("duplicate_import.ail");
+    source
+        .write_str("use \"./math.ail\"\nuse \"./math.ail\"\nfn main() -> Int = helper()\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "line 2: duplicate import declaration `./math.ail`",
+        ));
+}
+
 #[test]
 fn compile_file_rejects_invalid_ail_source_before_lowering() {
     use assert_fs::prelude::*;

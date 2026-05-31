@@ -58,7 +58,13 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
             }
             module = Some(parse_source_module(rest, *line_num)?);
         } else if let Some(rest) = statement.strip_prefix("use ") {
-            imports.push(parse_source_import(rest, *line_num)?);
+            let import = parse_source_import(rest, *line_num)?;
+            if imports.iter().any(|existing| existing == &import) {
+                return Err(CliError::ParseError(format!(
+                    "line {line_num}: duplicate import declaration `{import}`"
+                )));
+            }
+            imports.push(import);
         } else if let Some(rest) = statement.strip_prefix("capability ") {
             capabilities.push(parse_source_capability(rest, *line_num)?);
         } else if let Some(rest) = statement.strip_prefix("const ") {
