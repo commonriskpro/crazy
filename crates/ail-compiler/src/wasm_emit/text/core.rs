@@ -109,3 +109,43 @@ pub(super) fn load_i32_u8_at<'a>(offset: u64, insns: &mut Vec<Instruction<'a>>) 
         memory_index: 0,
     }));
 }
+
+pub(super) fn emit_text_utf8_boundary_test_from_locals<'a>(
+    value_ptr: u32,
+    value_len: u32,
+    offset: u32,
+    insns: &mut Vec<Instruction<'a>>,
+) {
+    insns.push(Instruction::LocalGet(offset));
+    insns.push(Instruction::LocalGet(value_len));
+    insns.push(Instruction::I32GtU);
+    insns.push(Instruction::If(BlockType::Result(ValType::I32)));
+    insns.push(Instruction::I32Const(0));
+    insns.push(Instruction::Else);
+
+    insns.push(Instruction::LocalGet(offset));
+    insns.push(Instruction::I32Eqz);
+    insns.push(Instruction::If(BlockType::Result(ValType::I32)));
+    insns.push(Instruction::I32Const(1));
+    insns.push(Instruction::Else);
+
+    insns.push(Instruction::LocalGet(offset));
+    insns.push(Instruction::LocalGet(value_len));
+    insns.push(Instruction::I32Eq);
+    insns.push(Instruction::If(BlockType::Result(ValType::I32)));
+    insns.push(Instruction::I32Const(1));
+    insns.push(Instruction::Else);
+
+    insns.push(Instruction::LocalGet(value_ptr));
+    insns.push(Instruction::LocalGet(offset));
+    insns.push(Instruction::I32Add);
+    load_i32_u8_at(0, insns);
+    insns.push(Instruction::I32Const(0xC0));
+    insns.push(Instruction::I32And);
+    insns.push(Instruction::I32Const(0x80));
+    insns.push(Instruction::I32Ne);
+
+    insns.push(Instruction::End);
+    insns.push(Instruction::End);
+    insns.push(Instruction::End);
+}
