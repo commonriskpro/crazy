@@ -26,6 +26,48 @@ pub(super) const AIL_SOURCE_SYNTAX_SYMBOLS: &[AclSymbol] = &[
         insert_text: "fn ${1:name}(${2:x}: ${3:Int}) -> ${4:Int} = ${5:add(x, 1)}",
     },
     AclSymbol {
+        label: "Int",
+        detail: "AIL source builtin type",
+        documentation: "Signed integer type used by AIL source arithmetic and comparison helpers.",
+        insert_text: "Int",
+    },
+    AclSymbol {
+        label: "Bool",
+        detail: "AIL source builtin type",
+        documentation: "Boolean type returned by predicates, comparisons, and conditional expressions.",
+        insert_text: "Bool",
+    },
+    AclSymbol {
+        label: "Text",
+        detail: "AIL source builtin type",
+        documentation: "UTF-8 text type used by source string literals and text helpers.",
+        insert_text: "Text",
+    },
+    AclSymbol {
+        label: "List",
+        detail: "AIL source generic type",
+        documentation: "Parameterized list type written as List<T> for ordered homogeneous values.",
+        insert_text: "List<${1:Int}>",
+    },
+    AclSymbol {
+        label: "Record",
+        detail: "AIL source generic type",
+        documentation: "Parameterized record type written as Record<field:Type,...> for named fields.",
+        insert_text: "Record<${1:field}:${2:Int}>",
+    },
+    AclSymbol {
+        label: "Option",
+        detail: "AIL source generic type",
+        documentation: "Parameterized optional type written as Option<T> and constructed with Some(value) or None.",
+        insert_text: "Option<${1:Int}>",
+    },
+    AclSymbol {
+        label: "Result",
+        detail: "AIL source generic type",
+        documentation: "Parameterized success/error type written as Result<T,E> and constructed with Ok(value) or Err(error).",
+        insert_text: "Result<${1:Int}, ${2:Text}>",
+    },
+    AclSymbol {
         label: "const",
         detail: "AIL source constant",
         documentation: "Declares a typed top-level source constant, lowered as a zero-argument semantic function.",

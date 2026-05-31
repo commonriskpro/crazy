@@ -278,6 +278,243 @@ fn lsp_completion_and_hover_cover_ail_source_operators() {
 }
 
 #[test]
+fn lsp_hover_reports_source_type_metadata() {
+    let hover_output = ail()
+        .args(["lsp", "--hover-token", "Int", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let hover = parse_json_output(&hover_output);
+    assert_eq!(hover["status"], "ok");
+    assert_eq!(hover["data"]["hover"]["contents"]["kind"], "markdown");
+    assert!(
+        hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("Signed integer type"),
+        "hover must explain AIL source builtin types; got: {hover}"
+    );
+}
+
+#[test]
+fn lsp_stdio_hover_reports_source_function_detail_from_workspace_import() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let math = dir.child("math.ail");
+    math.write_str("module math\nfn stale() -> Int = 0\n")
+        .expect("stale source fixture must be written");
+    let main = dir.child("main.ail");
+    let main_text = "use \"./math.ail\"\nfn main() -> Int = math.add_pair(20, 22)\n";
+    main.write_str(main_text)
+        .expect("main source fixture must be written");
+    let math_uri = format!("file://{}", math.path().display());
+    let main_uri = format!("file://{}", main.path().display());
+    let open_main = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": main_uri,
+                "languageId": "ail",
+                "version": 1,
+                "text": main_text,
+            }
+        }
+    })
+    .to_string();
+    let open_math = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": math_uri,
+                "languageId": "ail",
+                "version": 2,
+                "text": "module math\nfn add_pair(x: Int, y: Int) -> Int = x + y\n",
+            }
+        }
+    })
+    .to_string();
+    let hover = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 21,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": format!("file://{}", main.path().display()) },
+            "position": { "line": 1, "character": 25 }
+        }
+    })
+    .to_string();
+    let input = format!(
+        "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+        open_main.len(),
+        open_main,
+        open_math.len(),
+        open_math,
+        hover.len(),
+        hover
+    );
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 21)
+        .expect("hover response must be emitted");
+
+    assert_eq!(response["result"]["contents"]["kind"], "markdown");
+    assert!(
+        response["result"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("fn add_pair(x: Int, y: Int) -> Int"),
+        "hover must show imported source function signature; got: {response}"
+    );
+    assert_eq!(response["result"]["data"]["kind"], "function");
+    assert_eq!(response["result"]["data"]["label"], "math.add_pair");
+}
+
+#[test]
+fn lsp_stdio_hover_reports_source_import_detail() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    let text = "use \"./math.ail\"\nfn main() -> Int = 0\n";
+    source
+        .write_str(text)
+        .expect("source fixture must be written");
+    let uri = format!("file://{}", source.path().display());
+    let open = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "ail",
+                "version": 1,
+                "text": text,
+            }
+        }
+    })
+    .to_string();
+    let hover = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 22,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": format!("file://{}", source.path().display()) },
+            "position": { "line": 0, "character": 8 }
+        }
+    })
+    .to_string();
+    let input = format!(
+        "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+        open.len(),
+        open,
+        hover.len(),
+        hover
+    );
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 22)
+        .expect("hover response must be emitted");
+
+    assert_eq!(response["result"]["data"]["kind"], "import");
+    assert!(
+        response["result"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("use \"./math.ail\""),
+        "hover must show deterministic import markdown; got: {response}"
+    );
+}
+
+#[test]
+fn lsp_stdio_hover_returns_null_for_ambiguous_imported_source_symbols() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let left = dir.child("left.ail");
+    left.write_str("module left\nfn helper() -> Int = 1\n")
+        .expect("left source fixture must be written");
+    let right = dir.child("right.ail");
+    right
+        .write_str("module right\nfn helper() -> Int = 2\n")
+        .expect("right source fixture must be written");
+    let main = dir.child("main.ail");
+    let main_text = "use \"./left.ail\"\nuse \"./right.ail\"\nfn main() -> Int = helper()\n";
+    main.write_str(main_text)
+        .expect("main source fixture must be written");
+    let main_uri = format!("file://{}", main.path().display());
+    let open_main = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": main_uri,
+                "languageId": "ail",
+                "version": 1,
+                "text": main_text,
+            }
+        }
+    })
+    .to_string();
+    let hover = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 23,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": format!("file://{}", main.path().display()) },
+            "position": { "line": 2, "character": 21 }
+        }
+    })
+    .to_string();
+    let input = format!(
+        "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+        open_main.len(),
+        open_main,
+        hover.len(),
+        hover
+    );
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 23)
+        .expect("hover response must be emitted");
+
+    assert!(
+        response["result"].is_null(),
+        "ambiguous imported source hover must stay empty; got: {response}"
+    );
+}
+
+#[test]
 fn lsp_stdio_completion_uses_cursor_prefix_to_filter_items() {
     use assert_fs::prelude::*;
 
