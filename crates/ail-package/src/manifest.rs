@@ -19,6 +19,7 @@
 use blake3::Hasher;
 use ciborium::ser::into_writer;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::assumption::PackageAssumption;
 use crate::export::ExportDeclaration;
@@ -300,6 +301,69 @@ impl std::fmt::Display for PackageValidationError {
 
 impl std::error::Error for PackageValidationError {}
 
+// ── PackageManifestIssue ─────────────────────────────────────────────────
+
+/// Stable, redacted validation diagnostic produced for production publishing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageManifestIssue {
+    /// Machine-readable issue class.
+    pub kind: PackageManifestIssueKind,
+    /// Redacted location descriptor. Never includes user-provided manifest values.
+    pub descriptor: PackageManifestIssueDescriptor,
+    /// Human-readable diagnostic. Never includes user-provided manifest values.
+    pub message: String,
+}
+
+/// Machine-readable production manifest diagnostic class.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PackageManifestIssueKind {
+    InvalidPackageName,
+    InvalidVersion,
+    UnsafeWithoutSurface,
+    ExportNameEmpty,
+    HandlerFieldEmpty,
+    ImportSourceEmpty,
+    MissingLicense,
+    MissingEntryMetadata,
+    DuplicateDependency,
+    DuplicateCapability,
+    DuplicateExport,
+}
+
+/// Redacted manifest location for a production validation issue.
+///
+/// `path` is a stable manifest field path such as `manifest.exports.name`.
+/// `index` identifies the offending collection entry when applicable.
+/// `duplicate_of` identifies the first matching entry for duplicate issues.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageManifestIssueDescriptor {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duplicate_of: Option<usize>,
+}
+
+impl PackageManifestIssue {
+    fn new(
+        kind: PackageManifestIssueKind,
+        path: &'static str,
+        index: Option<usize>,
+        duplicate_of: Option<usize>,
+        message: &'static str,
+    ) -> Self {
+        Self {
+            kind,
+            descriptor: PackageManifestIssueDescriptor {
+                path: path.to_string(),
+                index,
+                duplicate_of,
+            },
+            message: message.to_string(),
+        }
+    }
+}
+
 // ── PackageError ──────────────────────────────────────────────────────────
 
 /// Errors returned by [`PackageManifest::blake3_hex`].
@@ -473,6 +537,246 @@ impl PackageManifest {
             }
         }
         Ok(())
+    }
+
+    /// Return all production-publish validation diagnostics in deterministic order.
+    ///
+    /// Diagnostics use stable redacted descriptors: issue paths and indexes are
+    /// reported, but manifest values are never copied into the descriptor or
+    /// message. This keeps local paths, bearer tokens, and other accidental
+    /// secrets out of package workflow errors.
+    pub fn production_validation_issues(&self) -> Vec<PackageManifestIssue> {
+        let mut issues = Vec::new();
+
+        if !is_valid_package_name(&self.name) {
+            issues.push(PackageManifestIssue::new(
+                PackageManifestIssueKind::InvalidPackageName,
+                "manifest.name",
+                None,
+                None,
+                "package name must be non-empty lowercase package coordinates",
+            ));
+        }
+
+        if semver::Version::parse(&self.version).is_err() {
+            issues.push(PackageManifestIssue::new(
+                PackageManifestIssueKind::InvalidVersion,
+                "manifest.version",
+                None,
+                None,
+                "package version must be valid semantic version metadata",
+            ));
+        }
+
+        if self.trust_level == TrustLevel::Unsafe && self.unsafe_surface.is_empty() {
+            issues.push(PackageManifestIssue::new(
+                PackageManifestIssueKind::UnsafeWithoutSurface,
+                "manifest.unsafe_surface",
+                None,
+                None,
+                "unsafe packages must declare at least one unsafe surface entry",
+            ));
+        }
+
+        if self
+            .license
+            .as_ref()
+            .map_or(true, |license| license.trim().is_empty())
+        {
+            issues.push(PackageManifestIssue::new(
+                PackageManifestIssueKind::MissingLicense,
+                "manifest.license",
+                None,
+                None,
+                "production package manifests must declare license metadata",
+            ));
+        }
+
+        push_duplicate_string_issues(
+            &mut issues,
+            &self.required_capabilities,
+            PackageManifestIssueKind::DuplicateCapability,
+            "manifest.required_capabilities",
+            "required capability entries must be unique",
+        );
+        push_duplicate_string_issues(
+            &mut issues,
+            &self.exported_capabilities,
+            PackageManifestIssueKind::DuplicateCapability,
+            "manifest.exported_capabilities",
+            "exported capability entries must be unique",
+        );
+        push_duplicate_import_issues(&mut issues, &self.imports);
+
+        for (index, export) in self.exports.iter().enumerate() {
+            if export.name.trim().is_empty() {
+                issues.push(PackageManifestIssue::new(
+                    PackageManifestIssueKind::ExportNameEmpty,
+                    "manifest.exports.name",
+                    Some(index),
+                    None,
+                    "export declarations must include an export name",
+                ));
+            }
+            if export.signature.trim().is_empty() {
+                issues.push(PackageManifestIssue::new(
+                    PackageManifestIssueKind::MissingEntryMetadata,
+                    "manifest.exports.signature",
+                    Some(index),
+                    None,
+                    "export declarations must include entry signature metadata",
+                ));
+            }
+        }
+        push_duplicate_export_issues(&mut issues, &self.exports);
+
+        for (index, handler) in self.handlers.iter().enumerate() {
+            if handler.capability.trim().is_empty() || handler.handler_name.trim().is_empty() {
+                issues.push(PackageManifestIssue::new(
+                    PackageManifestIssueKind::HandlerFieldEmpty,
+                    "manifest.handlers",
+                    Some(index),
+                    None,
+                    "handler exports must include capability and handler metadata",
+                ));
+            }
+        }
+
+        for (index, import) in self.imports.iter().enumerate() {
+            if import.source_package.trim().is_empty() {
+                issues.push(PackageManifestIssue::new(
+                    PackageManifestIssueKind::ImportSourceEmpty,
+                    "manifest.imports.source_package",
+                    Some(index),
+                    None,
+                    "import declarations must include source package metadata",
+                ));
+            }
+        }
+
+        issues
+    }
+
+    /// Validate a manifest for the production package publishing workflow.
+    ///
+    /// Unlike [`PackageManifest::validate`], this returns every publish-facing
+    /// diagnostic instead of only the first structural invariant failure.
+    pub fn validate_for_publish(&self) -> Result<(), Vec<PackageManifestIssue>> {
+        let issues = self.production_validation_issues();
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(issues)
+        }
+    }
+}
+
+fn is_valid_package_name(name: &str) -> bool {
+    if name.is_empty() || name.starts_with('.') || name.ends_with('.') || name.contains("..") {
+        return false;
+    }
+
+    name.bytes().all(|byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+    })
+}
+
+fn push_duplicate_string_issues(
+    issues: &mut Vec<PackageManifestIssue>,
+    values: &[String],
+    kind: PackageManifestIssueKind,
+    path: &'static str,
+    message: &'static str,
+) {
+    let mut first_indexes: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut duplicates = Vec::new();
+
+    for (index, value) in values.iter().enumerate() {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+
+        if let Some(first_index) = first_indexes.get(value) {
+            duplicates.push((index, *first_index));
+        } else {
+            first_indexes.insert(value, index);
+        }
+    }
+
+    duplicates.sort_by_key(|(index, first_index)| (*index, *first_index));
+    for (index, first_index) in duplicates {
+        issues.push(PackageManifestIssue::new(
+            kind.clone(),
+            path,
+            Some(index),
+            Some(first_index),
+            message,
+        ));
+    }
+}
+
+fn push_duplicate_import_issues(
+    issues: &mut Vec<PackageManifestIssue>,
+    imports: &[ImportDeclaration],
+) {
+    let mut first_indexes: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut duplicates = Vec::new();
+
+    for (index, import) in imports.iter().enumerate() {
+        let source_package = import.source_package.trim();
+        if source_package.is_empty() {
+            continue;
+        }
+
+        if let Some(first_index) = first_indexes.get(source_package) {
+            duplicates.push((index, *first_index));
+        } else {
+            first_indexes.insert(source_package, index);
+        }
+    }
+
+    duplicates.sort_by_key(|(index, first_index)| (*index, *first_index));
+    for (index, first_index) in duplicates {
+        issues.push(PackageManifestIssue::new(
+            PackageManifestIssueKind::DuplicateDependency,
+            "manifest.imports.source_package",
+            Some(index),
+            Some(first_index),
+            "dependency imports must be unique by source package",
+        ));
+    }
+}
+
+fn push_duplicate_export_issues(
+    issues: &mut Vec<PackageManifestIssue>,
+    exports: &[ExportDeclaration],
+) {
+    let mut first_indexes: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut duplicates = Vec::new();
+
+    for (index, export) in exports.iter().enumerate() {
+        let name = export.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+
+        if let Some(first_index) = first_indexes.get(name) {
+            duplicates.push((index, *first_index));
+        } else {
+            first_indexes.insert(name, index);
+        }
+    }
+
+    duplicates.sort_by_key(|(index, first_index)| (*index, *first_index));
+    for (index, first_index) in duplicates {
+        issues.push(PackageManifestIssue::new(
+            PackageManifestIssueKind::DuplicateExport,
+            "manifest.exports.name",
+            Some(index),
+            Some(first_index),
+            "export declarations must be unique by export name",
+        ));
     }
 }
 
@@ -911,5 +1215,113 @@ mod tests {
             m2.blake3_hex().unwrap(),
             "reproducible_evidence presence must change manifest hash"
         );
+    }
+
+    // ── production diagnostics ───────────────────────────────────────────
+    // Spec scenario: "Production package manifest diagnostics are stable"
+    //   GIVEN a manifest with invalid metadata and duplicate declarations
+    //   WHEN production_validation_issues() is called
+    //   THEN every issue is returned in deterministic order with redacted descriptors
+    #[test]
+    fn production_validation_issues_are_stable_and_redacted() {
+        use crate::export::{ExportDeclaration, ExportStability, ExportVisibility};
+        use crate::import::ImportDeclaration;
+
+        let secret_path = "/tmp/private/token-abc123";
+        let mut def = minimal_def(TrustLevel::Verified);
+        def.name = secret_path.to_string();
+        def.version = "not-semver".to_string();
+        def.required_capabilities = vec!["pay.charge".to_string(), "pay.charge".to_string()];
+        def.exported_capabilities = vec!["pay.refund".to_string(), "pay.refund".to_string()];
+        def.exports = vec![
+            ExportDeclaration {
+                name: "charge".to_string(),
+                signature: "".to_string(),
+                effects: vec![],
+                contracts: vec![],
+                visibility: ExportVisibility::Public,
+                stability: ExportStability::Stable,
+                trust_state: None,
+            },
+            ExportDeclaration {
+                name: "charge".to_string(),
+                signature: "Req -> Res".to_string(),
+                effects: vec![],
+                contracts: vec![],
+                visibility: ExportVisibility::Public,
+                stability: ExportStability::Stable,
+                trust_state: None,
+            },
+        ];
+        def.imports = vec![
+            ImportDeclaration {
+                source_package: "utils.core".to_string(),
+                items: vec![],
+                version_constraint: None,
+            },
+            ImportDeclaration {
+                source_package: "utils.core".to_string(),
+                items: vec![],
+                version_constraint: Some("^1.0".to_string()),
+            },
+        ];
+
+        let manifest = PackageManifest::from_def(def);
+        let issues = manifest.production_validation_issues();
+        let kinds: Vec<_> = issues.iter().map(|issue| issue.kind.clone()).collect();
+
+        assert_eq!(
+            kinds,
+            vec![
+                PackageManifestIssueKind::InvalidPackageName,
+                PackageManifestIssueKind::InvalidVersion,
+                PackageManifestIssueKind::MissingLicense,
+                PackageManifestIssueKind::DuplicateCapability,
+                PackageManifestIssueKind::DuplicateCapability,
+                PackageManifestIssueKind::DuplicateDependency,
+                PackageManifestIssueKind::MissingEntryMetadata,
+                PackageManifestIssueKind::DuplicateExport,
+            ],
+            "production diagnostics must have a stable order"
+        );
+
+        assert_eq!(issues[0].descriptor.path, "manifest.name");
+        assert_eq!(issues[3].descriptor.index, Some(1));
+        assert_eq!(issues[3].descriptor.duplicate_of, Some(0));
+        assert_eq!(issues[5].descriptor.path, "manifest.imports.source_package");
+        assert_eq!(issues[6].descriptor.path, "manifest.exports.signature");
+
+        let encoded = serde_json::to_string(&issues).expect("issues must serialize");
+        assert!(
+            !encoded.contains(secret_path),
+            "diagnostics must not leak local paths or token-shaped values"
+        );
+        assert!(
+            !encoded.contains("pay.charge") && !encoded.contains("utils.core"),
+            "diagnostics must not leak manifest values"
+        );
+    }
+
+    // ── production diagnostics accepts publish-ready manifest ─────────────
+    // TRIANGULATE: publish diagnostics accept valid package metadata.
+    #[test]
+    fn validate_for_publish_accepts_manifest_with_required_metadata() {
+        use crate::export::{ExportDeclaration, ExportStability, ExportVisibility};
+
+        let mut def = minimal_def(TrustLevel::Verified);
+        def.license = Some("Apache-2.0".to_string());
+        def.exports.push(ExportDeclaration {
+            name: "charge".to_string(),
+            signature: "Req -> Res".to_string(),
+            effects: vec![],
+            contracts: vec![],
+            visibility: ExportVisibility::Public,
+            stability: ExportStability::Stable,
+            trust_state: None,
+        });
+
+        let manifest = PackageManifest::from_def(def);
+
+        assert_eq!(manifest.validate_for_publish(), Ok(()));
     }
 }
