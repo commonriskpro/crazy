@@ -403,6 +403,53 @@ fn no_text(value:Text)->Bool=eq(0,len(value))
 }
 
 #[test]
+fn formats_source_project_fixture_idempotently() {
+    let src = r#"
+module app
+use "./math.ail"
+use "./types.ail"
+capability log.write
+const fallback:Int=0
+fn person()->Record<name:Text,age:Int>=record(name,"Ada",age,42)
+fn older()->Record<name:Text,age:Int>=update(person(),age,43)
+fn chosen(status:Result<Int,Text>)->Int=match status { Ok(v) => int.bit_or(v, fallback()), Err(_) => fallback() }
+fn main(input:Option<Int>)->Int{
+let base:Int=unwrap_or(input,fallback())
+let profile:Record<name:Text,age:Int>={ name: "Grace", age: base }
+return if is_some(input) { add(profile.age, chosen(Ok(1))) } else { fallback() }
+}
+test main_missing=eq(main(None),0)
+grant main log.write
+"#;
+
+    let (formatted, item_count) = format_ail_source(src).expect("project fixture must format");
+    let (formatted_again, item_count_again) =
+        format_ail_source(&formatted).expect("formatted source must format again");
+
+    assert_eq!(item_count, 11);
+    assert_eq!(item_count_again, item_count);
+    assert_eq!(formatted_again, formatted);
+    assert_eq!(
+        formatted,
+        "module app\n\
+use \"./math.ail\"\n\
+use \"./types.ail\"\n\
+capability log.write\n\
+const fallback: Int = 0\n\
+fn person() -> Record<name:Text,age:Int> = { age: 42, name: \"Ada\" }\n\
+fn older() -> Record<name:Text,age:Int> = { ...person(), age: 43 }\n\
+fn chosen(status: Result<Int,Text>) -> Int = match status { Ok(v) => int_bit_or(v, fallback), Err(_) => fallback }\n\
+fn main(input: Option<Int>) -> Int {\n\
+  let base: Int = unwrap_or(input, fallback)\n\
+  let profile: Record<name:Text,age:Int> = { age: base, name: \"Grace\" }\n\
+  return if is_some(input) { profile.age + chosen(Ok(1)) } else { fallback }\n\
+}\n\
+test main_missing = main(None) == 0\n\
+grant main log.write\n"
+    );
+}
+
+#[test]
 fn formats_source_strings_without_treating_slashes_as_comments() {
     let src = r#"
 fn message()->Text=concat("https://ail.local", " {ok}") // trailing comment

@@ -562,15 +562,19 @@ pub(super) fn format_source_expr_node(
             .chunks_exact(2)
             .all(|pair| is_source_local_ident(&pair[0]))
     {
-        let fields = args
+        let mut fields = args
             .chunks_exact(2)
             .map(|pair| {
-                format!(
-                    "{}: {}",
-                    pair[0].trim(),
-                    format_source_expr(&pair[1], module, constants)
+                (
+                    pair[0].trim().to_string(),
+                    format_source_expr(&pair[1], module, constants),
                 )
             })
+            .collect::<Vec<_>>();
+        fields.sort_by(|left, right| left.0.cmp(&right.0));
+        let fields = fields
+            .into_iter()
+            .map(|(field, value)| format!("{field}: {value}"))
             .collect::<Vec<_>>()
             .join(", ");
         return (
