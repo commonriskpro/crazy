@@ -78,6 +78,7 @@ impl AbiDescriptor {
             }
             descriptor.collect_validation_issues(export, &mut issues);
         }
+        issues.sort();
         issues
     }
 
@@ -91,7 +92,7 @@ impl AbiDescriptor {
 // ── WasmTypeDescriptor ───────────────────────────────────────────────────
 
 /// Stable validation issue for an ABI descriptor.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum AbiDescriptorIssue {
     IncompatibleVersion { expected: u32, actual: u32 },
     EmptyExportName,
