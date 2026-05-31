@@ -24,13 +24,18 @@ pub(super) fn references_for_token_with_workspace(
     }
 
     if is_ail_source_uri(uri) {
-        return references_for_ail_source_token(uri, text, token);
+        return references_for_ail_source_token(uri, text, token, workspace_documents);
     }
 
     references_in_text(uri, text, token)
 }
 
-fn references_for_ail_source_token(uri: &str, text: &str, token: &str) -> Vec<Value> {
+fn references_for_ail_source_token(
+    uri: &str,
+    text: &str,
+    token: &str,
+    workspace_documents: &BTreeMap<String, String>,
+) -> Vec<Value> {
     let mut refs = source_references_in_text(uri, text, token);
     let Some(root_path) = file_path_from_uri(uri) else {
         return refs;

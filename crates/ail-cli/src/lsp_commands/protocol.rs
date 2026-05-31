@@ -8,7 +8,7 @@ use crate::error::CliError;
 use super::definition::definition_for_token_with_workspace;
 use super::diagnostics::diagnostics_for_document;
 use super::references::references_for_token_with_workspace;
-use super::symbols::{completion_items, hover_for_token};
+use super::symbols::{completion_items, hover_for_token, workspace_symbol_items};
 use super::tokens::token_at_position;
 
 pub(super) fn run_stdio_lsp() -> Result<(), CliError> {
@@ -90,7 +90,8 @@ impl LspSession {
                         },
                         "hoverProvider": true,
                         "definitionProvider": true,
-                        "referencesProvider": true
+                        "referencesProvider": true,
+                        "workspaceSymbolProvider": true
                     },
                     "serverInfo": {
                         "name": "ail-lsp",
@@ -157,6 +158,14 @@ impl LspSession {
                     })
                     .unwrap_or(Value::Null);
                 vec![lsp_response(message, result)]
+            }
+
+            "workspace/symbol" => {
+                let query = message["params"]["query"].as_str().unwrap_or_default();
+                vec![lsp_response(
+                    message,
+                    Value::Array(workspace_symbol_items(query, &self.documents)),
+                )]
             }
             "textDocument/references" => {
                 let params = &message["params"];
