@@ -474,11 +474,14 @@ fn package_install_writes_canonical_lockfile_order() {
         .current_dir(dir.path())
         .assert()
         .success();
-    ail()
-        .args(["package", "install", "alpha.pkg@1.0.0"])
+    let install_output = ail()
+        .args(["package", "install", "alpha.pkg@1.0.0", "--json"])
         .current_dir(dir.path())
         .assert()
-        .success();
+        .success()
+        .get_output()
+        .clone();
+    let install_json = parse_json_output(&install_output);
 
     let lockfile_bytes = fs::read(package_lockfile_path(dir.path())).expect("lockfile must exist");
     let lockfile: Lockfile =
@@ -492,6 +495,16 @@ fn package_install_writes_canonical_lockfile_order() {
         names,
         vec!["alpha.pkg", "zeta.pkg"],
         "package install must persist canonical lockfile order"
+    );
+    assert_eq!(install_json["data"]["lockfile_reproducibility"], "ok");
+    assert_eq!(install_json["data"]["installed_package_count"], 2);
+    assert_eq!(
+        install_json["data"]["lockfile_reproducibility_issues"],
+        Value::Array(vec![])
+    );
+    assert_eq!(
+        install_json["data"]["lockfile_hash"],
+        lockfile.blake3_hex().expect("lockfile hash must compute")
     );
 }
 

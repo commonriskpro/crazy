@@ -53,11 +53,13 @@ pub(crate) async fn cmd_package(
             let repro_evidence_status =
                 reproducible_evidence_status(installed.reproducible_evidence.is_some());
             let human_msg = format!(
-                "added: {package}\nname: {}\nversion: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\ncapabilities: []\nassumptions: []\nunsafe_surface: []\nadvisories: []\nnote: package install does not grant capabilities{}",
+                "added: {package}\nname: {}\nversion: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\ncapabilities: []\nassumptions: []\nunsafe_surface: []\nadvisories: []\nnote: package install does not grant capabilities{}",
                 entry.name,
                 entry.version,
                 entry.trust_level,
                 installed.signature_status,
+                installed.lockfile_reproducibility,
+                installed.installed_package_count,
                 format_warnings_for_human(&installed.warnings)
             );
             print_response(
@@ -73,6 +75,10 @@ pub(crate) async fn cmd_package(
                     "verification_report_hash": entry.verification_report_hash,
                     "verification_report_status": verification_report_status,
                     "reproducible_evidence_status": repro_evidence_status,
+                    "lockfile_hash": installed.lockfile_hash,
+                    "installed_package_count": installed.installed_package_count,
+                    "lockfile_reproducibility": installed.lockfile_reproducibility,
+                    "lockfile_reproducibility_issues": installed.lockfile_reproducibility_issues.iter().map(LockfileReproducibilityCliIssue::to_json).collect::<Vec<_>>(),
                     "capabilities": [],
                     "assumptions": [],
                     "unsafe_surface": [],
@@ -101,12 +107,14 @@ pub(crate) async fn cmd_package(
             let repro_evidence_status =
                 reproducible_evidence_status(installed.reproducible_evidence.is_some());
             let human_msg = format!(
-                "installed: {}@{}\ntrust: {:?}\npackage_hash: {}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nnote: package install does not grant capabilities{}",
+                "installed: {}@{}\ntrust: {:?}\npackage_hash: {}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\nnote: package install does not grant capabilities{}",
                 entry.name,
                 entry.version,
                 entry.trust_level,
                 entry.package_hash,
                 installed.signature_status,
+                installed.lockfile_reproducibility,
+                installed.installed_package_count,
                 format_warnings_for_human(&installed.warnings)
             );
             print_response(
@@ -123,6 +131,10 @@ pub(crate) async fn cmd_package(
                     "verification_report_hash": entry.verification_report_hash,
                     "verification_report_status": verification_report_status,
                     "reproducible_evidence_status": repro_evidence_status,
+                    "lockfile_hash": installed.lockfile_hash,
+                    "installed_package_count": installed.installed_package_count,
+                    "lockfile_reproducibility": installed.lockfile_reproducibility,
+                    "lockfile_reproducibility_issues": installed.lockfile_reproducibility_issues.iter().map(LockfileReproducibilityCliIssue::to_json).collect::<Vec<_>>(),
                     "capabilities_granted": false,
                     "warnings": installed.warnings,
                     "compatibility_issues": installed.compatibility_issues.iter().map(package_compatibility_issue_to_json).collect::<Vec<_>>(),
