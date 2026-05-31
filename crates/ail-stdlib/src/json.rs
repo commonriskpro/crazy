@@ -311,6 +311,65 @@ impl std::fmt::Display for JsonShapeError {
 
 impl std::error::Error for JsonShapeError {}
 
+/// Stable JSON contract issue kinds for production diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum JsonContractIssueKind {
+    MissingField,
+    TypeMismatch,
+}
+
+impl JsonContractIssueKind {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::MissingField => "JSON_CONTRACT_MISSING_FIELD",
+            Self::TypeMismatch => "JSON_CONTRACT_TYPE_MISMATCH",
+        }
+    }
+
+    pub const fn category(self) -> &'static str {
+        match self {
+            Self::MissingField => "object-shape",
+            Self::TypeMismatch => "type-shape",
+        }
+    }
+}
+
+/// Redacted, machine-readable JSON contract issue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JsonContractIssue {
+    pub kind: JsonContractIssueKind,
+    pub code: &'static str,
+    pub category: &'static str,
+    pub path_shape: String,
+    pub expected_shape: String,
+    pub actual_shape: String,
+}
+
+impl JsonContractIssue {
+    fn new(
+        kind: JsonContractIssueKind,
+        path_shape: impl Into<String>,
+        expected_shape: impl Into<String>,
+        actual_shape: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            code: kind.code(),
+            category: kind.category(),
+            path_shape: path_shape.into(),
+            expected_shape: expected_shape.into(),
+            actual_shape: actual_shape.into(),
+        }
+    }
+
+    pub fn diagnostic_key(&self) -> String {
+        format!(
+            "std.json.contract:{}:{}:{}",
+            self.category, self.code, self.path_shape
+        )
+    }
+}
+
 /// Return a deterministic shape descriptor for diagnostics and registry checks.
 pub fn shape_descriptor(v: &Json) -> String {
     match v {
@@ -343,6 +402,161 @@ pub fn shape_descriptor(v: &Json) -> String {
                 .join(",");
             format!("object{{{fields}}}")
         }
+    }
+}
+
+/// Return every contract issue using stable, redacted descriptors.
+pub fn diagnose_contract(value: &Json, contract: &JsonContract) -> Vec<JsonContractIssue> {
+    let mut issues = Vec::new();
+    diagnose_contract_at(value, contract, "$", &mut issues);
+    sort_contract_issues(&mut issues);
+    issues
+}
+
+fn diagnose_contract_at(
+    value: &Json,
+    contract: &JsonContract,
+    path_shape: &str,
+    issues: &mut Vec<JsonContractIssue>,
+) {
+    match contract {
+        JsonContract::Any => {}
+        JsonContract::Null => diagnose_kind(value, JsonKind::Null, contract, path_shape, issues),
+        JsonContract::Bool => diagnose_kind(value, JsonKind::Bool, contract, path_shape, issues),
+        JsonContract::Number => {
+            diagnose_kind(value, JsonKind::Number, contract, path_shape, issues)
+        }
+        JsonContract::String => {
+            diagnose_kind(value, JsonKind::String, contract, path_shape, issues)
+        }
+        JsonContract::Array(item_contract) => match value {
+            Json::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    diagnose_contract_at(
+                        item,
+                        item_contract,
+                        &format!("{path_shape}[{index}]"),
+                        issues,
+                    );
+                }
+            }
+            _ => issues.push(contract_issue(
+                JsonContractIssueKind::TypeMismatch,
+                path_shape,
+                contract,
+                value,
+            )),
+        },
+        JsonContract::Object(fields) => match value {
+            Json::Object(map) => {
+                for (ordinal, field) in fields.iter().enumerate() {
+                    let field_path = format!("{path_shape}.field#{ordinal}");
+                    match map.get(&field.name) {
+                        Some(field_value) => {
+                            diagnose_contract_at(field_value, &field.contract, &field_path, issues);
+                        }
+                        None if field.required => issues.push(JsonContractIssue::new(
+                            JsonContractIssueKind::MissingField,
+                            field_path,
+                            contract_shape_label(&field.contract),
+                            "missing",
+                        )),
+                        None => {}
+                    }
+                }
+            }
+            _ => issues.push(contract_issue(
+                JsonContractIssueKind::TypeMismatch,
+                path_shape,
+                contract,
+                value,
+            )),
+        },
+    }
+}
+
+fn diagnose_kind(
+    value: &Json,
+    expected: JsonKind,
+    contract: &JsonContract,
+    path_shape: &str,
+    issues: &mut Vec<JsonContractIssue>,
+) {
+    if kind_of(value) != expected {
+        issues.push(contract_issue(
+            JsonContractIssueKind::TypeMismatch,
+            path_shape,
+            contract,
+            value,
+        ));
+    }
+}
+
+fn contract_issue(
+    kind: JsonContractIssueKind,
+    path_shape: &str,
+    contract: &JsonContract,
+    value: &Json,
+) -> JsonContractIssue {
+    JsonContractIssue::new(
+        kind,
+        path_shape,
+        contract_shape_label(contract),
+        value_shape_label(value),
+    )
+}
+
+fn sort_contract_issues(issues: &mut Vec<JsonContractIssue>) {
+    issues.sort_by(|a, b| {
+        (
+            a.path_shape.as_str(),
+            a.kind,
+            a.expected_shape.as_str(),
+            a.actual_shape.as_str(),
+        )
+            .cmp(&(
+                b.path_shape.as_str(),
+                b.kind,
+                b.expected_shape.as_str(),
+                b.actual_shape.as_str(),
+            ))
+    });
+    issues.dedup();
+}
+
+fn contract_shape_label(contract: &JsonContract) -> String {
+    match contract {
+        JsonContract::Any => "any".to_string(),
+        JsonContract::Null => "null".to_string(),
+        JsonContract::Bool => "bool".to_string(),
+        JsonContract::Number => "number".to_string(),
+        JsonContract::String => "string".to_string(),
+        JsonContract::Array(item) => format!("array<{}>", contract_shape_label(item)),
+        JsonContract::Object(fields) => format!("object<fields:{}>", fields.len()),
+    }
+}
+
+fn value_shape_label(value: &Json) -> String {
+    match value {
+        Json::Array(items) => {
+            if items.is_empty() {
+                "array<empty>".to_string()
+            } else {
+                let shapes = items
+                    .iter()
+                    .map(value_shape_label)
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                if shapes.len() == 1 {
+                    format!("array<{}>", shapes[0])
+                } else {
+                    "array<mixed>".to_string()
+                }
+            }
+        }
+        Json::Object(map) => format!("object<fields:{}>", map.len()),
+        _ => kind_of(value).as_str().to_string(),
     }
 }
 
@@ -712,6 +926,60 @@ mod tests {
                 actual: "number".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn diagnose_contract_reports_all_issues_without_field_names() {
+        let value = object(&[
+            ("secret_name", Json::Number(42.0)),
+            (
+                "token",
+                Json::Array(vec![Json::Bool(true), Json::Number(9.0)]),
+            ),
+        ]);
+        let contract = JsonContract::object(vec![
+            JsonFieldContract::required("secret_name", JsonContract::String),
+            JsonFieldContract::required("missing_password", JsonContract::Bool),
+            JsonFieldContract::required("token", JsonContract::array(JsonContract::String)),
+        ]);
+
+        let issues = diagnose_contract(&value, &contract);
+        let keys = issues
+            .iter()
+            .map(JsonContractIssue::diagnostic_key)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            keys,
+            vec![
+                "std.json.contract:type-shape:JSON_CONTRACT_TYPE_MISMATCH:$.field#0",
+                "std.json.contract:object-shape:JSON_CONTRACT_MISSING_FIELD:$.field#1",
+                "std.json.contract:type-shape:JSON_CONTRACT_TYPE_MISMATCH:$.field#2[0]",
+                "std.json.contract:type-shape:JSON_CONTRACT_TYPE_MISMATCH:$.field#2[1]",
+            ]
+        );
+        assert!(keys.iter().all(|key| !key.contains("secret_name")));
+        assert!(keys.iter().all(|key| !key.contains("missing_password")));
+        assert!(keys.iter().all(|key| !key.contains("token")));
+        assert_eq!(issues[1].expected_shape, "bool");
+        assert_eq!(issues[1].actual_shape, "missing");
+    }
+
+    #[test]
+    fn diagnose_contract_redacts_object_shapes() {
+        let value = object(&[("api_key", Json::Null), ("secret", Json::Bool(true))]);
+        let contract = JsonContract::String;
+
+        let issues = diagnose_contract(&value, &contract);
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, "JSON_CONTRACT_TYPE_MISMATCH");
+        assert_eq!(issues[0].category, "type-shape");
+        assert_eq!(issues[0].path_shape, "$".to_string());
+        assert_eq!(issues[0].expected_shape, "string");
+        assert_eq!(issues[0].actual_shape, "object<fields:2>");
+        assert!(!issues[0].diagnostic_key().contains("api_key"));
+        assert!(!issues[0].diagnostic_key().contains("secret"));
     }
 
     #[test]
