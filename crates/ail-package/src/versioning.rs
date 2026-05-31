@@ -163,7 +163,7 @@ impl VersionRequirement {
             ));
         }
 
-        let parse_target = exact_requirement(trimmed).unwrap_or_else(|| trimmed.to_string());
+        let parse_target = exact_requirement(trimmed).unwrap_or_else(|| range_requirement(trimmed));
         VersionReq::parse(&parse_target)
             .map(|requirement| Self { requirement })
             .map_err(|_| {
@@ -672,6 +672,22 @@ fn exact_requirement(requirement: &str) -> Option<String> {
     normalize_version(requirement)
         .ok()
         .map(|version| format!("={version}"))
+}
+
+fn range_requirement(requirement: &str) -> String {
+    let trimmed = requirement.trim();
+    if trimmed.contains(',') || !is_comparator_requirement(trimmed) {
+        return trimmed.to_string();
+    }
+
+    trimmed
+        .replace(" <", ", <")
+        .replace(" >", ", >")
+        .replace(" =", ", =")
+}
+
+fn is_comparator_requirement(requirement: &str) -> bool {
+    requirement.starts_with('<') || requirement.starts_with('>') || requirement.starts_with('=')
 }
 
 fn version_requirement_error(
@@ -1184,6 +1200,16 @@ mod tests {
             VersionRequirement::parse(">=1.2.0, <2.0.0").expect("comparator requirement parses");
         assert!(comparator.matches("1.5.0").expect("version parses"));
         assert!(!comparator.matches("2.0.0").expect("version parses"));
+    }
+
+    #[test]
+    fn version_requirement_supports_space_separated_comparators() {
+        let requirement = VersionRequirement::parse(">=1.2.0 <2.0.0")
+            .expect("space-separated comparator requirement parses");
+
+        assert!(requirement.matches("1.5.0").expect("version parses"));
+        assert!(!requirement.matches("2.0.0").expect("version parses"));
+        assert_eq!(requirement.to_string(), ">=1.2.0, <2.0.0");
     }
 
     #[test]

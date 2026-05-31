@@ -85,6 +85,7 @@ pub use verification::{
 pub use versioning::{
     CompatibilityClass, CompatibilityEngine, CompatibilityError, LocalCompatibilityIssue,
     LocalCompatibilityIssueKind, MigrationRecord, MigrationStep, PackageCompatibilityMetadata,
-    PackageVersioning,
+    PackageVersioning, VersionRequirement, VersionRequirementError, VersionRequirementIssue,
+    VersionRequirementIssueCode, VersionRequirementIssueKind, VersionRequirementShape,
 };
 pub use yank::YankRecord;

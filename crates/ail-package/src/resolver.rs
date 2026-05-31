@@ -18,11 +18,11 @@
 //   per-call.
 // - Resolution order: NotFound → Yanked → Advisory → TrustViolation →
 //   ProfilePolicy → LicensePolicy → CapabilityConflict → HandlerConflict → Ok.
-// - Version matching uses semver VersionReq for range constraints.
+// - Version matching uses VersionRequirement so exact, shorthand, caret, tilde, and comparator constraints share one parser.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use semver::{Version, VersionReq};
+use semver::Version;
 
 use crate::advisory::SecurityAdvisory;
 use crate::manifest::PackageManifest;
@@ -31,6 +31,7 @@ use crate::policy::TrustGate;
 use crate::policy::TrustGateVerdict;
 use crate::registry::PackageRegistry;
 use crate::trust::TrustLevel;
+use crate::versioning::{VersionRequirement, VersionRequirementIssue};
 use crate::yank::YankRecord;
 
 // ── DependencySpec ────────────────────────────────────────────────────────
@@ -73,6 +74,13 @@ pub struct DependencySpec {
 /// Errors returned by [`DependencyResolver::resolve`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResolverError {
+    /// The dependency version requirement is not valid semantic-version syntax.
+    InvalidVersionRequirement {
+        /// Package name whose requirement could not be parsed.
+        name: String,
+        /// Stable redacted requirement issue.
+        issue: VersionRequirementIssue,
+    },
     /// No package with the requested name and version was found in the registry.
     NotFound {
         /// Package name that was not found.
@@ -140,6 +148,13 @@ pub enum ResolverError {
 impl std::fmt::Display for ResolverError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ResolverError::InvalidVersionRequirement { name, issue } => {
+                write!(
+                    f,
+                    "invalid version requirement for package {name}: {} ({})",
+                    issue.code, issue.reason
+                )
+            }
             ResolverError::NotFound {
                 name,
                 version_constraint,
@@ -218,6 +233,8 @@ pub enum ResolverDiagnosticKind {
     IncompatibleVersionRange,
     /// No registry entry exists for the requested package name.
     MissingPackage,
+    /// A dependency version requirement cannot be parsed safely.
+    InvalidVersionRequirement,
     /// The package exists, but no registered version satisfies the constraint.
     MissingVersion,
     /// Manifest import metadata forms a package dependency cycle.
@@ -303,6 +320,27 @@ impl ResolverDiagnostic {
         }
     }
 
+    fn invalid_version_requirement(package: String, issue: VersionRequirementIssue) -> Self {
+        Self {
+            kind: ResolverDiagnosticKind::InvalidVersionRequirement,
+            message: format!(
+                "package '{package}' has invalid version requirement shape '{}' ({})",
+                issue.shape, issue.code
+            ),
+            package,
+            version: None,
+            constraints: vec![],
+            versions: vec![],
+            related_packages: vec![format!(
+                "shape={};char_len={};category={}",
+                issue.shape,
+                issue.char_len,
+                issue.category()
+            )],
+            redacted: true,
+        }
+    }
+
     fn missing_version(package: String, constraint: String, versions: Vec<String>) -> Self {
         Self {
             kind: ResolverDiagnosticKind::MissingVersion,
@@ -356,49 +394,44 @@ impl ResolverDiagnostic {
 pub struct DependencyResolver;
 
 impl DependencyResolver {
-    /// Resolve a `VersionReq` string against all manifests in the registry
-    /// for the named package, returning the best (highest) matching version.
+    /// Resolve a semantic version requirement against all manifests in the
+    /// registry for the named package, returning the best (highest) matching
+    /// version.
     fn find_best_match<'a>(
         name: &str,
         version_constraint: &str,
         registry: &'a PackageRegistry,
-    ) -> Option<&'a PackageManifest> {
-        // Parse as VersionReq; fall back to exact match.
-        let req = VersionReq::parse(version_constraint).ok();
+    ) -> Result<Option<&'a PackageManifest>, VersionRequirementIssue> {
+        let requirement =
+            VersionRequirement::parse(version_constraint).map_err(|error| error.issue)?;
 
         let mut best: Option<&PackageManifest> = None;
         let mut best_ver: Option<Version> = None;
 
-        for m in registry.all() {
-            if m.name != name {
+        for manifest in registry.all() {
+            if manifest.name != name {
                 continue;
             }
-            let Ok(ver) = Version::parse(&m.version) else {
-                // Not a valid semver — treat as exact match fallback.
-                if version_constraint == m.version {
-                    return Some(m);
-                }
+            let Ok(version) = Version::parse(&manifest.version) else {
                 continue;
             };
-            let matches = match &req {
-                Some(r) => r.matches(&ver),
-                None => version_constraint == m.version,
-            };
-            if matches {
-                match &best_ver {
-                    None => {
-                        best = Some(m);
-                        best_ver = Some(ver);
-                    }
-                    Some(prev) if ver > *prev => {
-                        best = Some(m);
-                        best_ver = Some(ver);
-                    }
-                    _ => {}
+            if !requirement.matches_version(&version) {
+                continue;
+            }
+
+            match &best_ver {
+                None => {
+                    best = Some(manifest);
+                    best_ver = Some(version);
                 }
+                Some(prev) if version > *prev => {
+                    best = Some(manifest);
+                    best_ver = Some(version);
+                }
+                _ => {}
             }
         }
-        best
+        Ok(best)
     }
 
     /// Return conflict versions in canonical order so diagnostics do not depend
@@ -414,12 +447,13 @@ impl DependencyResolver {
 
     fn version_matches_constraint(version: &str, constraint: &str) -> bool {
         let Ok(parsed_version) = Version::parse(version) else {
-            return version == constraint;
+            return false;
+        };
+        let Ok(requirement) = VersionRequirement::parse(constraint) else {
+            return false;
         };
 
-        VersionReq::parse(constraint)
-            .map(|req| req.matches(&parsed_version))
-            .unwrap_or_else(|_| version == constraint)
+        requirement.matches_version(&parsed_version)
     }
 
     fn registry_versions_for(package: &str, registry: &PackageRegistry) -> Vec<String> {
@@ -511,6 +545,14 @@ impl DependencyResolver {
                 continue;
             }
 
+            if let Err(error) = VersionRequirement::parse(&spec.version_constraint) {
+                diagnostics.push(ResolverDiagnostic::invalid_version_requirement(
+                    spec.name.clone(),
+                    error.issue,
+                ));
+                continue;
+            }
+
             if versions.is_empty() {
                 diagnostics.push(ResolverDiagnostic::missing_package(
                     spec.name.clone(),
@@ -553,6 +595,13 @@ impl DependencyResolver {
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect::<Vec<_>>();
+
+            if constraints
+                .iter()
+                .any(|constraint| VersionRequirement::parse(constraint).is_err())
+            {
+                continue;
+            }
 
             let has_common_version = versions.iter().any(|version| {
                 constraints
@@ -755,16 +804,17 @@ impl DependencyResolver {
     /// yank records, enforcing the full policy chain from `docs/packages.md`.
     ///
     /// Resolution order:
-    /// 1. Semver lookup: find best matching manifest → `ResolverError::NotFound`
-    /// 2. Yank check → `ResolverError::Yanked`
-    /// 3. Advisory check → `ResolverError::Advisory`
-    /// 4. Trust level check → `ResolverError::TrustViolation`
-    /// 5. Profile trust gate → `ResolverError::ProfilePolicyViolation`
-    /// 6. Schema compatibility → `ResolverError::SchemaIncompatible`
-    /// 7. License policy → `ResolverError::LicenseViolation`
-    /// 8. Capability conflicts → `ResolverError::CapabilityConflict`
-    /// 9. Handler conflicts → `ResolverError::HandlerConflict`
-    /// 10. Otherwise → `Ok(&PackageManifest)`
+    /// 1. Version requirement parse → `ResolverError::InvalidVersionRequirement`
+    /// 2. Semver lookup: find best matching manifest → `ResolverError::NotFound`
+    /// 3. Yank check → `ResolverError::Yanked`
+    /// 4. Advisory check → `ResolverError::Advisory`
+    /// 5. Trust level check → `ResolverError::TrustViolation`
+    /// 6. Profile trust gate → `ResolverError::ProfilePolicyViolation`
+    /// 7. Schema compatibility → `ResolverError::SchemaIncompatible`
+    /// 8. License policy → `ResolverError::LicenseViolation`
+    /// 9. Capability conflicts → `ResolverError::CapabilityConflict`
+    /// 10. Handler conflicts → `ResolverError::HandlerConflict`
+    /// 11. Otherwise → `Ok(&PackageManifest)`
     ///
     /// # Errors
     ///
@@ -775,8 +825,12 @@ impl DependencyResolver {
         advisories: &[SecurityAdvisory],
         yanks: &[YankRecord],
     ) -> Result<&'a PackageManifest, ResolverError> {
-        // Step 1: semver lookup — find best matching manifest
+        // Step 1: version requirement parse + semver lookup
         let manifest = Self::find_best_match(&spec.name, &spec.version_constraint, registry)
+            .map_err(|issue| ResolverError::InvalidVersionRequirement {
+                name: spec.name.clone(),
+                issue,
+            })?
             .ok_or_else(|| ResolverError::NotFound {
                 name: spec.name.clone(),
                 version_constraint: spec.version_constraint.clone(),
@@ -1164,6 +1218,51 @@ mod tests {
     //   WHEN resolve called with constraint "^1.2"
     //   THEN returns the highest matching version (1.5.0)
     #[test]
+    fn exact_short_requirement_resolves_canonical_patch_version() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg", "1.2.0", TrustLevel::Verified));
+        reg.register(make_manifest("pkg", "1.2.1", TrustLevel::Verified));
+
+        let result = DependencyResolver::resolve(
+            &spec("pkg", "1.2", TrustLevel::Unverified),
+            &reg,
+            &[],
+            &[],
+        )
+        .expect("short exact requirement should resolve");
+
+        assert_eq!(
+            result.version, "1.2.0",
+            "bare short requirements are exact after canonicalization, not ranges"
+        );
+    }
+
+    #[test]
+    fn invalid_requirement_fails_before_registry_matching_with_redacted_issue() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg", "1.0.0", TrustLevel::Verified));
+
+        let result = DependencyResolver::resolve(
+            &spec("pkg", "customer-secret", TrustLevel::Unverified),
+            &reg,
+            &[],
+            &[],
+        );
+
+        let Err(ResolverError::InvalidVersionRequirement { name, issue }) = result else {
+            panic!("invalid requirement should fail as InvalidVersionRequirement");
+        };
+        assert_eq!(name, "pkg");
+        assert_eq!(issue.category(), "requirement");
+        assert_eq!(issue.shape.as_str(), "other");
+        assert_eq!(issue.char_len, "customer-secret".chars().count());
+        assert!(
+            !format!("{issue:?}").contains("customer-secret"),
+            "invalid requirement issue must not echo raw input"
+        );
+    }
+
+    #[test]
     fn semver_range_resolves_best_matching_version() {
         let mut reg = PackageRegistry::new();
         reg.register(make_manifest("pkg", "1.2.0", TrustLevel::Verified));
@@ -1512,6 +1611,42 @@ mod tests {
     }
 
     // ── conflict_diagnostics ──────────────────────────────────────────────
+
+    #[test]
+    fn conflict_diagnostics_report_invalid_requirements_without_raw_input_leakage() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg.secret", "1.0.0", TrustLevel::Verified));
+
+        let diagnostics = DependencyResolver::conflict_diagnostics(
+            &[spec(
+                "pkg.secret",
+                "token-secret-not-a-version",
+                TrustLevel::Unverified,
+            )],
+            &reg,
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+        let diagnostic = &diagnostics[0];
+        assert_eq!(
+            diagnostic.kind,
+            ResolverDiagnosticKind::InvalidVersionRequirement
+        );
+        assert!(diagnostic.redacted);
+        assert_eq!(diagnostic.package, "pkg.secret");
+        assert_eq!(diagnostic.versions, Vec::<String>::new());
+        assert!(
+            diagnostic
+                .related_packages
+                .iter()
+                .any(|item| item.contains("shape=other")),
+            "invalid requirement diagnostic should expose only stable redacted shape metadata"
+        );
+        assert!(
+            !format!("{diagnostic:?}").contains("token-secret-not-a-version"),
+            "diagnostic must not leak raw invalid requirement"
+        );
+    }
 
     #[test]
     fn conflict_diagnostics_reports_duplicate_incompatible_and_missing_inputs() {
