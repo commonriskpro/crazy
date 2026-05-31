@@ -180,6 +180,82 @@ fn lsp_definition_resolves_ail_source_test() {
 }
 
 #[test]
+fn lsp_definition_resolves_kind_qualified_source_test_without_function_collision() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn smoke() -> Int = 0\n\
+test smoke = eq(smoke(), 0)\n\
+fn main() -> Int = smoke()\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args([
+            "lsp",
+            "--definition-token",
+            "test.smoke",
+            "--definition-file",
+        ])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["token"], "test.smoke");
+    assert_eq!(v["data"]["definition"]["range"]["start"]["line"], 1);
+    assert_eq!(v["data"]["definition"]["range"]["start"]["character"], 5);
+}
+
+#[test]
+fn lsp_definition_returns_empty_result_for_ambiguous_imported_source_symbols() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let left = dir.child("left.ail");
+    left.write_str("module left\nfn helper() -> Int = 1\n")
+        .expect("left source fixture must be written");
+    let right = dir.child("right.ail");
+    right
+        .write_str("module right\nfn helper() -> Int = 2\n")
+        .expect("right source fixture must be written");
+    let main = dir.child("main.ail");
+    main.write_str(
+        "use \"./left.ail\"\n\
+use \"./right.ail\"\n\
+fn main() -> Int = helper()\n",
+    )
+    .expect("main source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--definition-token", "helper", "--definition-file"])
+        .arg(main.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["token"], "helper");
+    assert_eq!(
+        v["data"]["definition"]
+            .as_array()
+            .expect("ambiguous definition result must be an empty array")
+            .len(),
+        0
+    );
+}
+
+#[test]
 fn lsp_stdio_definition_uses_open_workspace_import_text() {
     use assert_fs::prelude::*;
 

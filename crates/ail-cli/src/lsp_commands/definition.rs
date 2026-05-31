@@ -45,34 +45,40 @@ pub(super) fn definition_for_token_with_workspace(
 }
 
 fn definition_for_ail_source_token(uri: &str, text: &str, token: &str) -> Option<Value> {
-    let token = token
-        .strip_prefix("fn.")
-        .or_else(|| token.strip_prefix("test."))
-        .unwrap_or(token);
-    if let Some(definition) = source_definition_in_text(uri, text, token) {
-        return Some(definition);
+    let query = SourceDefinitionQuery::from_token(token);
+    match definition_lookup_from_matches(source_definitions_in_text(uri, text, &query)) {
+        DefinitionLookup::Found(definition) => return Some(definition),
+        DefinitionLookup::Ambiguous => return Some(empty_definition_result()),
+        DefinitionLookup::NotFound => {}
     }
 
     let root_path = file_path_from_uri(uri)?;
     let canonical_root = std::fs::canonicalize(&root_path).ok()?;
     let mut visited = BTreeSet::new();
     visited.insert(canonical_root.clone());
-    definition_for_ail_source_imports(
+    match definition_for_ail_source_imports(
         &canonical_root,
         text,
-        token,
+        &query,
         workspace_documents,
         &mut visited,
-    )
+    ) {
+        DefinitionLookup::Found(definition) => Some(definition),
+        DefinitionLookup::Ambiguous => Some(empty_definition_result()),
+        DefinitionLookup::NotFound => None,
+    }
 }
 
 fn definition_for_ail_source_imports(
     source_path: &Path,
     text: &str,
-    token: &str,
+    query: &SourceDefinitionQuery<'_>,
     workspace_documents: &BTreeMap<String, String>,
     visited: &mut BTreeSet<PathBuf>,
-) -> Option<Value> {
+) -> DefinitionLookup {
+    let mut definitions = Vec::new();
+    let mut ambiguous = false;
+
     for import in source_imports_from_text(text) {
         let path = resolve_lsp_source_import(source_path, &import);
         let Ok(canonical) = std::fs::canonicalize(&path) else {
@@ -90,20 +96,35 @@ fn definition_for_ail_source_imports(
                     Err(_) => continue,
                 },
             };
-        if let Some(definition) = source_definition_in_text(&imported_uri, &imported_text, token) {
-            return Some(definition);
+
+        match definition_lookup_from_matches(source_definitions_in_text(
+            &imported_uri,
+            &imported_text,
+            query,
+        )) {
+            DefinitionLookup::Found(definition) => definitions.push(definition),
+            DefinitionLookup::Ambiguous => ambiguous = true,
+            DefinitionLookup::NotFound => {}
         }
-        if let Some(definition) = definition_for_ail_source_imports(
+
+        match definition_for_ail_source_imports(
             &canonical,
             &imported_text,
-            token,
+            query,
             workspace_documents,
             visited,
         ) {
-            return Some(definition);
+            DefinitionLookup::Found(definition) => definitions.push(definition),
+            DefinitionLookup::Ambiguous => ambiguous = true,
+            DefinitionLookup::NotFound => {}
         }
     }
-    None
+
+    if ambiguous || definitions.len() > 1 {
+        DefinitionLookup::Ambiguous
+    } else {
+        definition_lookup_from_matches(definitions)
+    }
 }
 
 fn workspace_document_text<'a>(
@@ -123,15 +144,88 @@ fn workspace_document_text<'a>(
         })
 }
 
-fn source_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
-    source_function_definition_in_text(uri, text, token)
-        .or_else(|| source_const_definition_in_text(uri, text, token))
-        .or_else(|| source_test_definition_in_text(uri, text, token))
-        .or_else(|| source_capability_definition_in_text(uri, text, token))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceDefinitionKind {
+    Function,
+    Const,
+    Test,
+    Capability,
 }
 
-fn source_function_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
+#[derive(Debug, Clone, Copy)]
+struct SourceDefinitionQuery<'a> {
+    token: &'a str,
+    kind: Option<SourceDefinitionKind>,
+}
+
+impl<'a> SourceDefinitionQuery<'a> {
+    fn from_token(token: &'a str) -> Self {
+        if let Some(token) = token.strip_prefix("fn.") {
+            Self {
+                token,
+                kind: Some(SourceDefinitionKind::Function),
+            }
+        } else if let Some(token) = token.strip_prefix("test.") {
+            Self {
+                token,
+                kind: Some(SourceDefinitionKind::Test),
+            }
+        } else {
+            Self { token, kind: None }
+        }
+    }
+
+    fn allows(self, kind: SourceDefinitionKind) -> bool {
+        self.kind.map_or(true, |expected| expected == kind)
+    }
+}
+
+enum DefinitionLookup {
+    Found(Value),
+    Ambiguous,
+    NotFound,
+}
+
+fn definition_lookup_from_matches(mut definitions: Vec<Value>) -> DefinitionLookup {
+    match definitions.len() {
+        0 => DefinitionLookup::NotFound,
+        1 => DefinitionLookup::Found(definitions.remove(0)),
+        _ => DefinitionLookup::Ambiguous,
+    }
+}
+
+fn empty_definition_result() -> Value {
+    Value::Array(Vec::new())
+}
+
+fn source_definitions_in_text(
+    uri: &str,
+    text: &str,
+    query: &SourceDefinitionQuery<'_>,
+) -> Vec<Value> {
+    let mut definitions = Vec::new();
+    if query.allows(SourceDefinitionKind::Function) {
+        definitions.extend(source_function_definitions_in_text(uri, text, query.token));
+    }
+    if query.allows(SourceDefinitionKind::Const) {
+        definitions.extend(source_const_definitions_in_text(uri, text, query.token));
+    }
+    if query.allows(SourceDefinitionKind::Test) {
+        definitions.extend(source_test_definitions_in_text(uri, text, query.token));
+    }
+    if query.allows(SourceDefinitionKind::Capability) {
+        definitions.extend(source_capability_definitions_in_text(
+            uri,
+            text,
+            query.token,
+        ));
+    }
+    definitions
+}
+
+fn source_function_definitions_in_text(uri: &str, text: &str, token: &str) -> Vec<Value> {
     let module = source_module_from_text(text);
+    let mut definitions = Vec::new();
     for (line_idx, line) in text.lines().enumerate() {
         let trimmed = line.trim_start();
         let Some(rest) = trimmed.strip_prefix("fn ") else {
@@ -144,7 +238,7 @@ fn source_function_definition_in_text(uri: &str, text: &str, token: &str) -> Opt
         if source_decl_name_matches_token(name, module.as_deref(), token, "fn.") {
             let leading = line.len() - trimmed.len();
             let start = leading + "fn ".len();
-            return Some(json!({
+            definitions.push(json!({
                 "uri": uri,
                 "range": {
                     "start": { "line": line_idx, "character": start },
@@ -153,11 +247,12 @@ fn source_function_definition_in_text(uri: &str, text: &str, token: &str) -> Opt
             }));
         }
     }
-    None
+    definitions
 }
 
-fn source_const_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
+fn source_const_definitions_in_text(uri: &str, text: &str, token: &str) -> Vec<Value> {
     let module = source_module_from_text(text);
+    let mut definitions = Vec::new();
     for (line_idx, line) in text.lines().enumerate() {
         let trimmed = line.trim_start();
         let Some(rest) = trimmed.strip_prefix("const ") else {
@@ -170,7 +265,7 @@ fn source_const_definition_in_text(uri: &str, text: &str, token: &str) -> Option
         if source_decl_name_matches_token(name, module.as_deref(), token, "fn.") {
             let leading = line.len() - trimmed.len();
             let start = leading + "const ".len();
-            return Some(json!({
+            definitions.push(json!({
                 "uri": uri,
                 "range": {
                     "start": { "line": line_idx, "character": start },
@@ -179,11 +274,12 @@ fn source_const_definition_in_text(uri: &str, text: &str, token: &str) -> Option
             }));
         }
     }
-    None
+    definitions
 }
 
-fn source_test_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
+fn source_test_definitions_in_text(uri: &str, text: &str, token: &str) -> Vec<Value> {
     let module = source_module_from_text(text);
+    let mut definitions = Vec::new();
     for (line_idx, line) in text.lines().enumerate() {
         let trimmed = line.trim_start();
         let Some(rest) = trimmed.strip_prefix("test ") else {
@@ -200,7 +296,7 @@ fn source_test_definition_in_text(uri: &str, text: &str, token: &str) -> Option<
         if source_decl_name_matches_token(name, module.as_deref(), token, "test.") {
             let leading = line.len() - trimmed.len();
             let start = leading + "test ".len();
-            return Some(json!({
+            definitions.push(json!({
                 "uri": uri,
                 "range": {
                     "start": { "line": line_idx, "character": start },
@@ -209,7 +305,7 @@ fn source_test_definition_in_text(uri: &str, text: &str, token: &str) -> Option<
             }));
         }
     }
-    None
+    definitions
 }
 
 fn source_decl_name_matches_token(
@@ -228,7 +324,8 @@ fn source_decl_name_matches_token(
     token == format!("{module}.{bare_name}")
 }
 
-fn source_capability_definition_in_text(uri: &str, text: &str, token: &str) -> Option<Value> {
+fn source_capability_definitions_in_text(uri: &str, text: &str, token: &str) -> Vec<Value> {
+    let mut definitions = Vec::new();
     for (line_idx, line) in text.lines().enumerate() {
         let trimmed = line.trim_start();
         let Some(rest) = trimmed.strip_prefix("capability ") else {
@@ -238,7 +335,7 @@ fn source_capability_definition_in_text(uri: &str, text: &str, token: &str) -> O
         if name == token {
             let leading = line.len() - trimmed.len();
             let start = leading + "capability ".len();
-            return Some(json!({
+            definitions.push(json!({
                 "uri": uri,
                 "range": {
                     "start": { "line": line_idx, "character": start },
@@ -247,5 +344,5 @@ fn source_capability_definition_in_text(uri: &str, text: &str, token: &str) -> O
             }));
         }
     }
-    None
+    definitions
 }
