@@ -28,7 +28,9 @@ pub use client::RegistryClient;
 pub use in_memory::{InMemoryError, InMemoryRegistryClient};
 pub use signed_publish::publish_signed;
 pub use types::{
-    FetchRequest, FetchResponse, PublishRequest, PublishResponse, SearchRequest, SearchResponse,
+    FetchRequest, FetchResponse, PublishRequest, PublishResponse, RemoteRegistryDiagnostic,
+    RemoteRegistryDiagnosticKind, RemoteRegistryDiagnosticRedaction,
+    RemoteRegistryDiagnosticReport, RemoteRegistryOperation, SearchRequest, SearchResponse,
     SearchResult, VerifyOutcome, VerifyRequest, VerifyResponse,
 };
 

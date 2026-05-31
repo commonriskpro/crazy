@@ -70,8 +70,10 @@ pub use policy::{
 pub use registry::PackageRegistry;
 pub use remote_registry::{
     FetchRequest, FetchResponse, InMemoryError, InMemoryRegistryClient, PublishRequest,
-    PublishResponse, RegistryClient, SearchRequest, SearchResponse, SearchResult, VerifyOutcome,
-    VerifyRequest, VerifyResponse, publish_signed,
+    PublishResponse, RegistryClient, RemoteRegistryDiagnostic, RemoteRegistryDiagnosticKind,
+    RemoteRegistryDiagnosticRedaction, RemoteRegistryDiagnosticReport, RemoteRegistryOperation,
+    SearchRequest, SearchResponse, SearchResult, VerifyOutcome, VerifyRequest, VerifyResponse,
+    publish_signed,
 };
 pub use resolver::{DependencyResolver, DependencySpec, ResolverError};
 pub use signing::{PackageKeypair, PackageSignature, SignedPackage, SigningError};
