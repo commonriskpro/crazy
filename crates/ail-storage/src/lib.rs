@@ -45,7 +45,11 @@ pub use backends::postgres::PostgresGraphStore;
 pub use branch::{Branch, BranchRegistry, BranchStore};
 pub use diff::{ObjectBackedStructuralDiffStore, StructuralDiff, StructuralDiffStore};
 pub use export::{ExportBundle, ExportScope, build_export_bundle};
-pub use graph::{ChangeSetLogEntry, GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
+pub use graph::{
+    ChangeSetLogEntry, GraphStore, ObjectBackedGraphStore, SnapshotDiagnosticsInput,
+    SnapshotDiagnosticsIssue, SnapshotDiagnosticsReport, SnapshotEnvelope, SnapshotIndexEntry,
+    SnapshotIssueDescriptor, SnapshotManifestEntry, diagnose_snapshot_store,
+};
 pub use integrity::{
     IntegrityInput, IntegrityIssue, IntegrityIssueDescriptor, IntegrityReport,
     ObjectIntegrityReport, verify_decodable_object_store_integrity, verify_integrity,
