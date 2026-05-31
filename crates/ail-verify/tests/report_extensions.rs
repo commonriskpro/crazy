@@ -33,6 +33,10 @@ fn new_report_fields_default_to_empty() {
         report.artifact_hashes.is_empty(),
         "artifact_hashes must default to empty"
     );
+    assert!(
+        report.profile_diagnostics.is_empty(),
+        "profile_diagnostics must default to empty"
+    );
 }
 
 // ── Scenario: artifact_hashes round-trip through CBOR ────────────────────
@@ -142,6 +146,10 @@ fn old_report_without_new_fields_deserializes_cleanly() {
     assert!(
         report.artifact_hashes.is_empty(),
         "artifact_hashes must default to empty for old reports"
+    );
+    assert!(
+        report.profile_diagnostics.is_empty(),
+        "profile_diagnostics must default to empty for old reports"
     );
 }
 

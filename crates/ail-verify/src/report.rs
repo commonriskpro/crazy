@@ -41,6 +41,13 @@ use crate::diagnostic::Diagnostic;
 use crate::policy::{ApprovalRecord, PolicyAudit, PolicyDecision, StructuralDiff};
 use crate::proof::ObligationLedgerEntry;
 
+/// Stable verifier diagnostic code for a mismatch between the requested
+/// verification profile and the policy profile gate that was evaluated.
+///
+/// This is blocking because a weaker `ProfileGate` can otherwise silently
+/// downgrade the policy portion of a stricter verification run.
+pub const VERIFY_PROFILE_RULE_MISMATCH: &str = "VERIFY_PROFILE_RULE_MISMATCH";
+
 // Re-export PolicyAudit sub-types so callers can import from `report` module.
 pub use crate::policy::PolicyAuditEntry;
 
@@ -404,6 +411,45 @@ fn solver_diagnostic_repair_options(status: SolverDiagnosticStatus) -> Vec<Strin
     }
 }
 
+// ── ProfileDiagnostic ────────────────────────────────────────────────────
+
+/// Stable machine-readable diagnostic for verifier profile invariants.
+///
+/// Profile diagnostics cover cross-layer mismatches that are not owned by a
+/// single verification entry, for example when the pipeline is requested with
+/// `prod` but the policy rules evaluate `ProfileGate("dev")`.  These records
+/// are serialized into reports so apply gates and audit tooling do not have to
+/// infer profile downgrades from prose.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileDiagnostic {
+    /// Stable diagnostic code, e.g. [`VERIFY_PROFILE_RULE_MISMATCH`].
+    pub code: String,
+    /// Profile requested by the verifier pipeline.
+    pub requested_profile: String,
+    /// Profile used by the policy gate.
+    pub policy_profile: String,
+    /// Human-readable explanation for humans and logs.
+    pub message: String,
+    /// Whether this diagnostic must block acceptance.
+    pub blocking: bool,
+}
+
+impl ProfileDiagnostic {
+    /// Construct a blocking profile-rule mismatch diagnostic.
+    pub fn rule_mismatch(requested_profile: &str, policy_profile: &str) -> Self {
+        Self {
+            code: VERIFY_PROFILE_RULE_MISMATCH.to_string(),
+            requested_profile: requested_profile.to_string(),
+            policy_profile: policy_profile.to_string(),
+            message: format!(
+                "verification profile '{requested_profile}' does not match policy gate profile \
+                 '{policy_profile}'"
+            ),
+            blocking: true,
+        }
+    }
+}
+
 // ── VerificationReport ────────────────────────────────────────────────────
 
 /// Ordered collection of verification entries and structured diagnostics for
@@ -465,6 +511,12 @@ pub struct VerificationReport {
     /// solver attempt classifies as timeout, resource-limited, or unsupported.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub solver_diagnostics: Vec<SolverDiagnostic>,
+    /// Stable profile-level diagnostics such as requested-policy profile mismatches.
+    ///
+    /// Empty for reports without profile invariant violations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profile_diagnostics: Vec<ProfileDiagnostic>,
+
     /// Recorded degradation events: every state downgrade with reason and repair options.
     ///
     /// Empty for reports produced before degradation tracking was introduced.

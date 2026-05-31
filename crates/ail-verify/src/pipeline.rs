@@ -61,12 +61,13 @@ use crate::contract_checker::ContractChecker;
 use crate::effect_checker::EffectChecker;
 use crate::package_checker::PackageTrustChecker;
 use crate::policy::{
-    ApprovalRecord, CapabilityGrant, PackageTrustEntry, PolicyEngine, PolicyInput, PolicyRule,
-    PublicApiChange, StructuralDiff,
+    ApprovalRecord, CapabilityGrant, PackageTrustEntry, PolicyDecision, PolicyEngine, PolicyInput,
+    PolicyRule, PolicyViolation, PublicApiChange, StructuralDiff,
 };
 use crate::proof::ProofObligationPipeline;
 use crate::report::{
-    DegradationEvent, SolverDiagnostic, VerificationEntry, VerificationReport, VerificationState,
+    DegradationEvent, ProfileDiagnostic, SolverDiagnostic, VerificationEntry, VerificationReport,
+    VerificationState,
 };
 use crate::resource_checker::ResourceChecker;
 use crate::solver::Solver;
@@ -402,6 +403,8 @@ impl VerificationPipeline {
             .filter_map(SolverDiagnostic::from_ledger_entry)
             .collect();
 
+        let profile_diagnostics = profile_rule_diagnostics(ctx.profile, ctx.rules);
+
         // ── Snapshot IDs from graph structure ─────────────────────────────
         // Derive a stable snapshot identifier from node names + IDs so the
         // report is self-describing without adding new PipelineContext fields.
@@ -416,12 +419,14 @@ impl VerificationPipeline {
             summary_counts,
             proof_obligations,
             solver_diagnostics,
+            profile_diagnostics: profile_diagnostics.clone(),
             degradation_events,
             artifact_hashes: vec![],
             base_snapshot,
             target_snapshot,
             structural_diff: ctx.structural_diff.cloned(),
             approvals: ctx.approvals.to_vec(),
+            verified_profile: Some(ctx.profile.to_string()),
             ..Default::default()
         };
 
@@ -436,6 +441,7 @@ impl VerificationPipeline {
             package_trust_metadata: ctx.package_trust_metadata,
         };
         let (policy_decision, policy_audit) = PolicyEngine::evaluate_with_audit(&policy_input);
+        let policy_decision = enforce_profile_diagnostics(policy_decision, &profile_diagnostics);
 
         pre_policy.entries.push(stage_entry(
             "17-check-policy-gates",
@@ -549,6 +555,48 @@ impl VerificationPipeline {
 }
 
 // ── Pipeline utilities ────────────────────────────────────────────────────
+
+fn profile_rule_diagnostics(
+    requested_profile: &str,
+    rules: &[PolicyRule],
+) -> Vec<ProfileDiagnostic> {
+    rules
+        .iter()
+        .filter_map(|rule| match rule {
+            PolicyRule::ProfileGate(policy_profile) if policy_profile != requested_profile => Some(
+                ProfileDiagnostic::rule_mismatch(requested_profile, policy_profile),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+fn enforce_profile_diagnostics(
+    decision: PolicyDecision,
+    diagnostics: &[ProfileDiagnostic],
+) -> PolicyDecision {
+    let mut violations: Vec<PolicyViolation> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.blocking)
+        .map(|diagnostic| PolicyViolation {
+            code: diagnostic.code.clone(),
+            scope: "profile".to_string(),
+            message: diagnostic.message.clone(),
+        })
+        .collect();
+
+    if violations.is_empty() {
+        return decision;
+    }
+
+    match decision {
+        PolicyDecision::Failed(mut existing) => {
+            existing.append(&mut violations);
+            PolicyDecision::Failed(existing)
+        }
+        _ => PolicyDecision::Failed(violations),
+    }
+}
 
 /// Compute a BLAKE3 content hash for a `CanonicalChangeSet`.
 ///
