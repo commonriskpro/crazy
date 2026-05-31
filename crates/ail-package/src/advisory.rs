@@ -20,6 +20,155 @@
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
+// ── AdvisoryPolicyAction / AdvisoryPolicyIssue ────────────────────────────
+
+/// Policy action produced by the package advisory gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdvisoryPolicyAction {
+    /// The package is allowed, but the issue should be surfaced.
+    Warn,
+    /// The package must be blocked by policy.
+    Block,
+}
+
+/// Stable package policy issue code.
+///
+/// Codes are intentionally explicit strings so callers can key CI gates, audit
+/// output, and UI affordances without depending on prose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AdvisoryPolicyIssueCode {
+    /// The exact package version has been yanked.
+    #[serde(rename = "package.yanked")]
+    PackageYanked,
+    /// A matching critical security advisory blocks the package.
+    #[serde(rename = "package.advisory.critical")]
+    AdvisoryCritical,
+    /// A matching high security advisory blocks the package.
+    #[serde(rename = "package.advisory.high")]
+    AdvisoryHigh,
+    /// A matching medium or low advisory warns but does not block.
+    #[serde(rename = "package.advisory.warning")]
+    AdvisoryWarning,
+}
+
+impl AdvisoryPolicyIssueCode {
+    /// Return the stable machine-readable issue code.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AdvisoryPolicyIssueCode::PackageYanked => "package.yanked",
+            AdvisoryPolicyIssueCode::AdvisoryCritical => "package.advisory.critical",
+            AdvisoryPolicyIssueCode::AdvisoryHigh => "package.advisory.high",
+            AdvisoryPolicyIssueCode::AdvisoryWarning => "package.advisory.warning",
+        }
+    }
+}
+
+impl std::fmt::Display for AdvisoryPolicyIssueCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One issue emitted by the advisory policy gate.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvisoryPolicyIssue {
+    /// Stable machine-readable issue code.
+    pub code: AdvisoryPolicyIssueCode,
+    /// Whether this issue warns or blocks.
+    pub action: AdvisoryPolicyAction,
+    /// Advisory ID when the issue came from an advisory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub advisory_id: Option<String>,
+    /// Advisory severity when the issue came from an advisory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<AdvisorySeverity>,
+    /// Stable human-readable reason.
+    pub reason: String,
+}
+
+/// Deterministic advisory policy decision for a package version.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvisoryPolicyDecision {
+    /// Issues in policy priority order: yank, critical, high, then warnings.
+    pub issues: Vec<AdvisoryPolicyIssue>,
+}
+
+impl AdvisoryPolicyDecision {
+    /// Return true when at least one issue blocks the package.
+    pub fn is_blocked(&self) -> bool {
+        self.issues
+            .iter()
+            .any(|issue| issue.action == AdvisoryPolicyAction::Block)
+    }
+
+    /// Return blocking issue codes in deterministic policy order.
+    pub fn blocking_codes(&self) -> Vec<&'static str> {
+        self.issues
+            .iter()
+            .filter(|issue| issue.action == AdvisoryPolicyAction::Block)
+            .map(|issue| issue.code.as_str())
+            .collect()
+    }
+}
+
+/// Package policy gate for yanks and matching security advisories.
+pub struct AdvisoryPolicyGate;
+
+impl AdvisoryPolicyGate {
+    /// Evaluate policy for a package version.
+    ///
+    /// Blocking order is deterministic and independent of registry insertion
+    /// order: yank first, then critical advisories, high advisories, and
+    /// finally medium/low advisory warnings. A yanked package with advisories
+    /// reports both conditions instead of hiding the advisory behind the yank.
+    pub fn evaluate(
+        name: &str,
+        version: &str,
+        yanked_reason: Option<&str>,
+        advisories: &[SecurityAdvisory],
+    ) -> AdvisoryPolicyDecision {
+        let mut issues = Vec::new();
+
+        if let Some(reason) = yanked_reason {
+            issues.push(AdvisoryPolicyIssue {
+                code: AdvisoryPolicyIssueCode::PackageYanked,
+                action: AdvisoryPolicyAction::Block,
+                advisory_id: None,
+                severity: None,
+                reason: reason.to_string(),
+            });
+        }
+
+        for advisory in AdvisoryChecker::matches(name, version, advisories) {
+            let (code, action) = match advisory.severity {
+                AdvisorySeverity::Critical => (
+                    AdvisoryPolicyIssueCode::AdvisoryCritical,
+                    AdvisoryPolicyAction::Block,
+                ),
+                AdvisorySeverity::High => (
+                    AdvisoryPolicyIssueCode::AdvisoryHigh,
+                    AdvisoryPolicyAction::Block,
+                ),
+                AdvisorySeverity::Medium | AdvisorySeverity::Low => (
+                    AdvisoryPolicyIssueCode::AdvisoryWarning,
+                    AdvisoryPolicyAction::Warn,
+                ),
+            };
+
+            issues.push(AdvisoryPolicyIssue {
+                code,
+                action,
+                advisory_id: Some(advisory.id.clone()),
+                severity: Some(advisory.severity),
+                reason: advisory.reason.clone(),
+            });
+        }
+
+        AdvisoryPolicyDecision { issues }
+    }
+}
+
 // ── AdvisorySeverity ──────────────────────────────────────────────────────
 
 /// The severity level of a security advisory.
@@ -56,8 +205,7 @@ impl std::fmt::Display for AdvisorySeverity {
 ///
 /// The `affected_constraint` field records a version constraint string
 /// (e.g., `"<1.2.3"` or `"1.0.0"`).  The `AdvisoryChecker` performs
-/// exact-string matching on this field for the initial implementation.
-/// Semver range resolution is tracked as an open design question.
+/// semver range matching with exact-string fallback for unparseable values.
 ///
 /// See `docs/packages.md` §Revocation and advisories.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -493,5 +641,198 @@ mod tests {
             "1.0.1",
             &advisories
         ));
+    }
+
+    #[test]
+    fn policy_issue_codes_are_stable_strings() {
+        let encoded = serde_json::to_string(&AdvisoryPolicyIssueCode::AdvisoryCritical)
+            .expect("policy issue code must serialize");
+
+        assert_eq!(encoded, "\"package.advisory.critical\"");
+        assert_eq!(
+            AdvisoryPolicyIssueCode::PackageYanked.as_str(),
+            "package.yanked"
+        );
+        assert_eq!(
+            AdvisoryPolicyIssueCode::AdvisoryCritical.as_str(),
+            "package.advisory.critical"
+        );
+        assert_eq!(
+            AdvisoryPolicyIssueCode::AdvisoryHigh.as_str(),
+            "package.advisory.high"
+        );
+        assert_eq!(
+            AdvisoryPolicyIssueCode::AdvisoryWarning.as_str(),
+            "package.advisory.warning"
+        );
+    }
+
+    #[test]
+    fn advisory_policy_blocks_critical_and_high_advisories_in_stable_order() {
+        let advisories = vec![
+            SecurityAdvisory {
+                id: "adv_low".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::Low,
+                reason: "low signal".to_string(),
+            },
+            SecurityAdvisory {
+                id: "adv_high_b".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::High,
+                reason: "high b".to_string(),
+            },
+            SecurityAdvisory {
+                id: "adv_critical".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::Critical,
+                reason: "critical".to_string(),
+            },
+            SecurityAdvisory {
+                id: "adv_high_a".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::High,
+                reason: "high a".to_string(),
+            },
+        ];
+
+        let decision = AdvisoryPolicyGate::evaluate("payments.stripe", "1.5.0", None, &advisories);
+
+        assert!(decision.is_blocked());
+        assert_eq!(
+            decision.blocking_codes(),
+            vec![
+                "package.advisory.critical",
+                "package.advisory.high",
+                "package.advisory.high"
+            ]
+        );
+        assert_eq!(
+            decision
+                .issues
+                .iter()
+                .map(|issue| issue.advisory_id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![
+                Some("adv_critical"),
+                Some("adv_high_a"),
+                Some("adv_high_b"),
+                Some("adv_low")
+            ]
+        );
+        assert_eq!(
+            decision
+                .issues
+                .iter()
+                .map(|issue| issue.action)
+                .collect::<Vec<_>>(),
+            vec![
+                AdvisoryPolicyAction::Block,
+                AdvisoryPolicyAction::Block,
+                AdvisoryPolicyAction::Block,
+                AdvisoryPolicyAction::Warn
+            ]
+        );
+    }
+
+    #[test]
+    fn advisory_policy_reports_yanked_and_advisory_without_order_flapping() {
+        let advisories = vec![
+            SecurityAdvisory {
+                id: "adv_high".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "1.0.0".to_string(),
+                severity: AdvisorySeverity::High,
+                reason: "credential leak".to_string(),
+            },
+            SecurityAdvisory {
+                id: "adv_critical".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "1.0.0".to_string(),
+                severity: AdvisorySeverity::Critical,
+                reason: "remote execution".to_string(),
+            },
+        ];
+
+        let decision = AdvisoryPolicyGate::evaluate(
+            "payments.stripe",
+            "1.0.0",
+            Some("compromised release"),
+            &advisories,
+        );
+
+        assert!(decision.is_blocked());
+        assert_eq!(
+            decision.blocking_codes(),
+            vec![
+                "package.yanked",
+                "package.advisory.critical",
+                "package.advisory.high"
+            ]
+        );
+        assert_eq!(
+            decision
+                .issues
+                .iter()
+                .map(|issue| (issue.code.as_str(), issue.advisory_id.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("package.yanked", None),
+                ("package.advisory.critical", Some("adv_critical")),
+                ("package.advisory.high", Some("adv_high"))
+            ]
+        );
+    }
+
+    #[test]
+    fn advisory_policy_warns_without_blocking_for_medium_and_low_only() {
+        let advisories = vec![
+            SecurityAdvisory {
+                id: "adv_medium".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "1.0.0".to_string(),
+                severity: AdvisorySeverity::Medium,
+                reason: "medium issue".to_string(),
+            },
+            SecurityAdvisory {
+                id: "adv_low".to_string(),
+                package: "payments.stripe".to_string(),
+                affected_constraint: "1.0.0".to_string(),
+                severity: AdvisorySeverity::Low,
+                reason: "low issue".to_string(),
+            },
+        ];
+
+        let decision = AdvisoryPolicyGate::evaluate("payments.stripe", "1.0.0", None, &advisories);
+
+        assert!(!decision.is_blocked());
+        assert!(decision.blocking_codes().is_empty());
+        assert_eq!(
+            decision
+                .issues
+                .iter()
+                .map(|issue| (
+                    issue.code.as_str(),
+                    issue.action,
+                    issue.advisory_id.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "package.advisory.warning",
+                    AdvisoryPolicyAction::Warn,
+                    Some("adv_medium")
+                ),
+                (
+                    "package.advisory.warning",
+                    AdvisoryPolicyAction::Warn,
+                    Some("adv_low")
+                )
+            ]
+        );
     }
 }
