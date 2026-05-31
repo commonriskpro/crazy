@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 
 // ── ABI versioning ────────────────────────────────────────────────────────
 
@@ -46,9 +47,55 @@ impl AbiDescriptor {
             .map(|(name, descriptor)| (name.clone(), descriptor.wire_shape()))
             .collect()
     }
+
+    /// Validate this descriptor before handing it to a runtime or release gate.
+    ///
+    /// This catches ABI drift that is otherwise easy to miss in backend parity
+    /// tests: version skew, legacy graph-style export names, and ambiguous
+    /// structured descriptors that a runtime cannot decode deterministically.
+    pub fn validation_issues(&self) -> Vec<AbiDescriptorIssue> {
+        let mut issues = Vec::new();
+        if self.abi_version != ABI_VERSION {
+            issues.push(AbiDescriptorIssue::IncompatibleVersion {
+                expected: ABI_VERSION,
+                actual: self.abi_version,
+            });
+        }
+
+        for (export, descriptor) in &self.exports {
+            if export.trim().is_empty() {
+                issues.push(AbiDescriptorIssue::EmptyExportName);
+            }
+            if export.starts_with("fn.") || export.starts_with("test.") {
+                issues.push(AbiDescriptorIssue::LegacyGraphExportName {
+                    export: export.clone(),
+                });
+            }
+            descriptor.collect_validation_issues(export, &mut issues);
+        }
+        issues
+    }
+
+    /// Returns `true` when the descriptor is version-compatible and has no
+    /// structural ABI validation issues.
+    pub fn is_valid_for_runtime(&self) -> bool {
+        self.validation_issues().is_empty()
+    }
 }
 
 // ── WasmTypeDescriptor ───────────────────────────────────────────────────
+
+/// Stable validation issue for an ABI descriptor.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AbiDescriptorIssue {
+    IncompatibleVersion { expected: u32, actual: u32 },
+    EmptyExportName,
+    LegacyGraphExportName { export: String },
+    EmptyRecordFields { export: String },
+    DuplicateRecordField { export: String, field: String },
+    EmptyVariantTags { export: String },
+    DuplicateVariantTag { export: String, tag: String },
+}
 
 /// Scalar WASM primitive types used in the type descriptor.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -123,6 +170,59 @@ impl WasmTypeDescriptor {
             | WasmTypeDescriptor::Option(_)
             | WasmTypeDescriptor::Result { .. } => WasmWireShape::StructuredResultBuffer,
             WasmTypeDescriptor::Handle => WasmWireShape::HandleSlot,
+        }
+    }
+
+    fn collect_validation_issues(&self, export: &str, issues: &mut Vec<AbiDescriptorIssue>) {
+        match self {
+            WasmTypeDescriptor::Record { fields } => {
+                if fields.is_empty() {
+                    issues.push(AbiDescriptorIssue::EmptyRecordFields {
+                        export: export.to_string(),
+                    });
+                }
+                let mut seen = BTreeSet::new();
+                for field in fields {
+                    if !seen.insert(field) {
+                        issues.push(AbiDescriptorIssue::DuplicateRecordField {
+                            export: export.to_string(),
+                            field: field.clone(),
+                        });
+                    }
+                }
+            }
+            WasmTypeDescriptor::Variant { tags } => {
+                if tags.is_empty() {
+                    issues.push(AbiDescriptorIssue::EmptyVariantTags {
+                        export: export.to_string(),
+                    });
+                }
+                let mut seen = BTreeSet::new();
+                for tag in tags {
+                    if !seen.insert(tag) {
+                        issues.push(AbiDescriptorIssue::DuplicateVariantTag {
+                            export: export.to_string(),
+                            tag: tag.clone(),
+                        });
+                    }
+                }
+            }
+            WasmTypeDescriptor::Tuple(items) => {
+                for item in items {
+                    item.collect_validation_issues(export, issues);
+                }
+            }
+            WasmTypeDescriptor::List(item) | WasmTypeDescriptor::Option(item) => {
+                item.collect_validation_issues(export, issues);
+            }
+            WasmTypeDescriptor::Result { ok, err } => {
+                ok.collect_validation_issues(export, issues);
+                err.collect_validation_issues(export, issues);
+            }
+            WasmTypeDescriptor::Scalar(_)
+            | WasmTypeDescriptor::Text
+            | WasmTypeDescriptor::Bytes
+            | WasmTypeDescriptor::Handle => {}
         }
     }
 }
