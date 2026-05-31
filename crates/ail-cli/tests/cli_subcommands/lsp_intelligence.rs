@@ -4,4 +4,5 @@ mod completion_hover;
 mod definitions;
 mod references;
 mod rename;
+mod semantic_tokens;
 mod workspace_symbols;

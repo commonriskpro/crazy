@@ -12,9 +12,9 @@ use super::rename::{
     prepare_rename_at_position, rename_candidate_at_position, rename_edits_at_position,
     rename_workspace_edit_at_position,
 };
-use super::source_helpers::is_acl_token_char;
+use super::source_helpers::{is_acl_token_char, is_ail_source_uri};
 use super::symbols::{completion_items, hover_for_token, workspace_symbol_items};
-use super::tokens::token_at_position;
+use super::tokens::{SEMANTIC_TOKEN_TYPES, semantic_token_data_for_source, token_at_position};
 
 pub(super) fn run_stdio_lsp() -> Result<(), CliError> {
     let stdin = io::stdin();
@@ -99,7 +99,14 @@ impl LspSession {
                         "renameProvider": {
                             "prepareProvider": true
                         },
-                        "workspaceSymbolProvider": true
+                        "workspaceSymbolProvider": true,
+                        "semanticTokensProvider": {
+                            "legend": {
+                                "tokenTypes": SEMANTIC_TOKEN_TYPES,
+                                "tokenModifiers": []
+                            },
+                            "full": true
+                        }
                     },
                     "serverInfo": {
                         "name": "ail-lsp",
@@ -259,6 +266,17 @@ impl LspSession {
                         })
                     });
                 vec![lsp_response(message, result)]
+            }
+            "textDocument/semanticTokens/full" => {
+                let params = &message["params"];
+                let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+                let data = self
+                    .documents
+                    .get(uri)
+                    .filter(|_| is_ail_source_uri(uri))
+                    .map(|text| semantic_token_data_for_source(text))
+                    .unwrap_or_default();
+                vec![lsp_response(message, json!({ "data": data }))]
             }
             "textDocument/references" => {
                 let params = &message["params"];
