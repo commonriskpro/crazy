@@ -530,3 +530,38 @@ fn derive_wasm_type_int_literal_explicit_arm() {
         WasmTypeDescriptor::Scalar(WasmScalarType::I64),
     );
 }
+
+#[test]
+fn emitted_text_export_abi_descriptor_accepts_matching_module_boundary() {
+    let anf = sealed_anf(vec![AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.greeting".to_string(),
+        expr: AnfExpr::Literal(LiteralValue::Text("hello".to_string())),
+    }]);
+
+    let artifact = emit_wasm(&anf).unwrap();
+    wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+    let mut module = crate::wasm_abi::AbiModuleShape::new(std::collections::BTreeMap::from([(
+        "greeting".to_string(),
+        crate::wasm_abi::AbiFunctionSignature::new(vec![], Some(WasmScalarType::I64)),
+    )]));
+    module.memory_exported = true;
+
+    assert_eq!(
+        artifact.export_types.get("greeting"),
+        Some(&WasmTypeDescriptor::Text)
+    );
+    assert_eq!(
+        artifact
+            .abi_descriptor
+            .validation_issues_for_module(&module),
+        vec![]
+    );
+    assert_eq!(
+        artifact
+            .abi_descriptor
+            .validation_diagnostics_for_module(&module),
+        vec![]
+    );
+}
