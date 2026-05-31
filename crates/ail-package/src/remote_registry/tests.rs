@@ -378,6 +378,72 @@ fn publish_signed_rejects_tampered() {
     assert!(registry.is_empty());
 }
 
+// ── publish_signed_audit_rejects_tampered_with_stable_code ────────────
+// Production gate: rejected signed publishes expose stable, redacted issue codes.
+#[test]
+fn publish_signed_audit_rejects_tampered_with_stable_code() {
+    let kp = gen_keypair();
+    let manifest = make_manifest("payments.stripe", "1.2.0");
+    let mut signed = kp.sign_manifest(manifest).expect("sign");
+    signed.manifest.version = "9.9.9".to_string(); // tamper after signing
+
+    let mut registry = PackageRegistry::new();
+    let result = super::signed_publish::publish_signed_audited(&mut registry, &signed);
+
+    assert!(!result.accepted());
+    assert!(registry.is_empty());
+
+    let audit = result.audit();
+    assert!(!audit.accepted);
+    assert_eq!(audit.package_name, "payments.stripe");
+    assert_eq!(audit.package_version, "9.9.9");
+    assert_eq!(audit.issues.len(), 1);
+
+    let issue = &audit.issues[0];
+    assert_eq!(
+        issue.kind,
+        super::signed_publish::SignedPublishIssueKind::SignatureInvalid
+    );
+    assert_eq!(issue.code, "SIGNED_PUBLISH_SIGNATURE_INVALID");
+    assert_eq!(issue.category, "signature_integrity");
+    assert_eq!(issue.signer_key.algorithm, "ed25519");
+    assert_eq!(issue.signer_key.byte_len, 32);
+    assert!(issue.signer_key.redacted);
+}
+
+// ── signed_publish_validation_orders_identity_before_signature ────────
+// Production gate: audit issues are deterministic and do not leak raw keys.
+#[test]
+fn signed_publish_validation_orders_identity_before_signature() {
+    let kp = gen_keypair();
+    let manifest = make_manifest("payments.stripe", "1.2.0");
+    let mut signed = kp.sign_manifest(manifest).expect("sign");
+    signed.sig.signer = [0; 32];
+
+    let audit = super::signed_publish::validate_signed_publish(&signed);
+
+    assert!(!audit.accepted);
+    let codes: Vec<_> = audit
+        .issues
+        .iter()
+        .map(|issue| issue.code.as_str())
+        .collect();
+    assert_eq!(
+        codes,
+        vec![
+            "SIGNED_PUBLISH_MISSING_KEY_ID",
+            "SIGNED_PUBLISH_SIGNATURE_INVALID",
+        ]
+    );
+    assert!(audit.issues.iter().all(|issue| issue.signer_key.redacted));
+    assert!(
+        audit
+            .issues
+            .iter()
+            .all(|issue| issue.signer_key.byte_len == 32)
+    );
+}
+
 // ── fetch_response_cbor_round_trip ────────────────────────────────────
 // TRIANGULATE: FetchResponse with no signed_package round-trips through CBOR
 #[test]
