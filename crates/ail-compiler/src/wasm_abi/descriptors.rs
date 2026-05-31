@@ -34,6 +34,18 @@ impl AbiDescriptor {
     pub fn is_compatible(&self) -> bool {
         self.abi_version == ABI_VERSION
     }
+
+    /// Return each export's stable wire shape in canonical export-name order.
+    ///
+    /// This is intentionally descriptor-derived rather than backend-derived so
+    /// release gates can compare ABI compatibility without decoding a concrete
+    /// WASM module or native object.
+    pub fn export_wire_shapes(&self) -> BTreeMap<String, WasmWireShape> {
+        self.exports
+            .iter()
+            .map(|(name, descriptor)| (name.clone(), descriptor.wire_shape()))
+            .collect()
+    }
 }
 
 // ── WasmTypeDescriptor ───────────────────────────────────────────────────
@@ -44,6 +56,23 @@ pub enum WasmScalarType {
     I64,
     F64,
     I32,
+}
+
+/// Stable ABI-level transport shape for a [`WasmTypeDescriptor`].
+///
+/// This is coarser than the semantic type descriptor.  It captures how a value
+/// crosses the backend boundary, which is the compatibility contract runtimes,
+/// native parity checks, and release gates need to compare.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WasmWireShape {
+    /// Value is returned directly in one scalar result slot.
+    ScalarSlot,
+    /// Text/bytes are packed as `(len << 32) | ptr` in one `i64` slot.
+    PackedPtrLen,
+    /// Structured values are written via the host-call result buffer.
+    StructuredResultBuffer,
+    /// Opaque runtime resource handle returned in one scalar slot.
+    HandleSlot,
 }
 
 /// Describes the return type of an exported WASM function for use by the
@@ -79,4 +108,21 @@ pub enum WasmTypeDescriptor {
         err: Box<WasmTypeDescriptor>,
     },
     Handle,
+}
+
+impl WasmTypeDescriptor {
+    /// Return the stable backend wire shape used to transport this descriptor.
+    pub fn wire_shape(&self) -> WasmWireShape {
+        match self {
+            WasmTypeDescriptor::Scalar(_) => WasmWireShape::ScalarSlot,
+            WasmTypeDescriptor::Text | WasmTypeDescriptor::Bytes => WasmWireShape::PackedPtrLen,
+            WasmTypeDescriptor::Record { .. }
+            | WasmTypeDescriptor::Variant { .. }
+            | WasmTypeDescriptor::Tuple(_)
+            | WasmTypeDescriptor::List(_)
+            | WasmTypeDescriptor::Option(_)
+            | WasmTypeDescriptor::Result { .. } => WasmWireShape::StructuredResultBuffer,
+            WasmTypeDescriptor::Handle => WasmWireShape::HandleSlot,
+        }
+    }
 }
