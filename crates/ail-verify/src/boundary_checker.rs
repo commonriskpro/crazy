@@ -26,6 +26,8 @@
 // - `"approved"`          — explicit approval record exists
 // - `"expired-assumption"`— the boundary's assumption has expired
 // - `"no-contract"`       — boundary explicitly has no contract
+// - `"adapter-mismatch"`  — handler/adapter shape does not match contract
+// - `"ffi-host-type-mismatch"` or `"host-type-mismatch"` — FFI host type drift
 //
 // # Verification states
 //
@@ -33,14 +35,18 @@
 // |-------------------------------------------------|-------------|
 // | `"expired-assumption"` tag                      | Failed      |
 // | `"no-contract"` tag                             | Failed      |
+// | adapter/FFI host mismatch tag                   | Failed      |
+// | `TrustLevel::Unsafe` without `"approved"` tag   | Unsafe      |
 // | `"unsafe-ffi"` without `"approved"` tag        | Unsafe      |
 // | all required tags present                       | Assumed     |
 // | some required tags missing                      | Unverified  |
 // | no `trust_metadata` at all                      | Unverified  |
 
-use ail_core::semantic_graph::{NodeKind, SemanticGraph};
+use std::cmp::Ordering;
 
-use crate::diagnostic::{Diagnostic, DiagnosticSeverity};
+use ail_core::semantic_graph::{NodeKind, SemanticGraph, TrustLevel, TrustMetadata};
+
+use crate::diagnostic::{Diagnostic, DiagnosticSeverity, RepairOption};
 use crate::report::{SummaryCounts, VerificationEntry, VerificationReport, VerificationState};
 
 // ── Error codes ───────────────────────────────────────────────────────────
@@ -48,6 +54,9 @@ use crate::report::{SummaryCounts, VerificationEntry, VerificationReport, Verifi
 pub const E_BOUNDARY_EXPIRED_ASSUMPTION: &str = "E_BOUNDARY_EXPIRED_ASSUMPTION";
 pub const E_BOUNDARY_NO_CONTRACT: &str = "E_BOUNDARY_NO_CONTRACT";
 pub const E_BOUNDARY_UNCHECKED_FFI: &str = "E_BOUNDARY_UNCHECKED_FFI";
+pub const E_BOUNDARY_UNSAFE_TRUST: &str = "E_BOUNDARY_UNSAFE_TRUST";
+pub const E_BOUNDARY_ADAPTER_MISMATCH: &str = "E_BOUNDARY_ADAPTER_MISMATCH";
+pub const E_BOUNDARY_FFI_HOST_TYPE_MISMATCH: &str = "E_BOUNDARY_FFI_HOST_TYPE_MISMATCH";
 pub const E_BOUNDARY_INCOMPLETE: &str = "E_BOUNDARY_INCOMPLETE";
 pub const E_BOUNDARY_ASSUMPTION_REVOKED: &str = "E_BOUNDARY_ASSUMPTION_REVOKED";
 
@@ -127,63 +136,22 @@ impl BoundaryChecker {
                         scope
                     )),
                 ),
-                Some(tm) => Self::classify_boundary(&tm.tags, &scope, config),
+                Some(tm) => Self::classify_boundary(tm, &scope, config),
             };
 
-            // Emit diagnostics for blocking conditions
-            match state {
-                VerificationState::Failed => {
-                    let tags = node
-                        .trust_metadata
-                        .as_ref()
-                        .map(|tm| tm.tags.as_slice())
-                        .unwrap_or(&[]);
-                    let code = if has_tag(tags, "has-assumption-expired")
-                        || has_tag(tags, "has-assumption-revoked")
-                    {
-                        E_BOUNDARY_ASSUMPTION_REVOKED
-                    } else if has_tag(tags, "expired-assumption") {
-                        E_BOUNDARY_EXPIRED_ASSUMPTION
-                    } else {
-                        E_BOUNDARY_NO_CONTRACT
-                    };
-                    diagnostics.push(Diagnostic {
-                        code: code.to_string(),
-                        severity: DiagnosticSeverity::Error,
-                        target: node.id,
-                        evidence: evidence.clone(),
-                        expected: None,
-                        actual: None,
-                        repair_options: vec![],
-                        blocking: true,
-                    });
-                }
-                VerificationState::Unsafe => {
-                    diagnostics.push(Diagnostic {
-                        code: E_BOUNDARY_UNCHECKED_FFI.to_string(),
-                        severity: DiagnosticSeverity::Error,
-                        target: node.id,
-                        evidence: evidence.clone(),
-                        expected: None,
-                        actual: None,
-                        repair_options: vec![],
-                        blocking: true,
-                    });
-                }
-                VerificationState::Unverified => {
-                    // Emit warning for incomplete declarations
-                    diagnostics.push(Diagnostic {
-                        code: E_BOUNDARY_INCOMPLETE.to_string(),
-                        severity: DiagnosticSeverity::Warning,
-                        target: node.id,
-                        evidence: evidence.clone(),
-                        expected: None,
-                        actual: None,
-                        repair_options: vec![],
-                        blocking: false,
-                    });
-                }
-                _ => {}
+            // Emit stable, redacted production diagnostics for non-accepted states.
+            if matches!(
+                state,
+                VerificationState::Failed
+                    | VerificationState::Unsafe
+                    | VerificationState::Unverified
+            ) {
+                let issue = boundary_issue(
+                    node.trust_metadata.as_ref(),
+                    state,
+                    evidence.as_deref().unwrap_or(""),
+                );
+                diagnostics.push(boundary_diagnostic(node.id, issue));
             }
 
             let blocking = matches!(state, VerificationState::Failed | VerificationState::Unsafe);
@@ -197,6 +165,8 @@ impl BoundaryChecker {
             });
         }
 
+        canonicalize_boundary_diagnostics(&mut diagnostics);
+
         let summary_counts = compute_counts(&entries);
         VerificationReport {
             entries,
@@ -208,10 +178,11 @@ impl BoundaryChecker {
     }
 
     fn classify_boundary(
-        tags: &[String],
+        trust_metadata: &TrustMetadata,
         scope: &str,
         config: &BoundaryCheckerConfig,
     ) -> (VerificationState, Option<String>) {
+        let tags = trust_metadata.tags.as_slice();
         // AET-4 / AET-5 / AET-6: expires tag check BEFORE all other checks.
         // Only runs when config.reference_date is Some (AET-3 / backward compat).
         if let Some(ref ref_date) = config.reference_date {
@@ -297,6 +268,39 @@ impl BoundaryChecker {
             );
         }
 
+        // Adapter shape mismatch → Failed
+        if has_tag(tags, "adapter-mismatch") {
+            return (
+                VerificationState::Failed,
+                Some(format!(
+                    "{E_BOUNDARY_ADAPTER_MISMATCH}: boundary '{}' adapter shape does not match the declared contract",
+                    scope
+                )),
+            );
+        }
+
+        // FFI/host type drift → Failed
+        if has_tag(tags, "ffi-host-type-mismatch") || has_tag(tags, "host-type-mismatch") {
+            return (
+                VerificationState::Failed,
+                Some(format!(
+                    "{E_BOUNDARY_FFI_HOST_TYPE_MISMATCH}: boundary '{}' FFI host type does not match the declared boundary schema",
+                    scope
+                )),
+            );
+        }
+
+        // Unsafe trust level without approval → Unsafe
+        if trust_metadata.level == TrustLevel::Unsafe && !has_tag(tags, "approved") {
+            return (
+                VerificationState::Unsafe,
+                Some(format!(
+                    "{E_BOUNDARY_UNSAFE_TRUST}: boundary '{}' has TrustLevel::Unsafe without explicit approval",
+                    scope
+                )),
+            );
+        }
+
         // Unsafe FFI without approval → Unsafe
         if has_tag(tags, "unsafe-ffi") && !has_tag(tags, "approved") {
             return (
@@ -340,19 +344,58 @@ mod tests {
         GraphNode, NodeKind, NodeRef, SemanticGraph, TrustLevel, TrustMetadata,
     };
 
-    use super::{BoundaryChecker, BoundaryCheckerConfig, E_BOUNDARY_EXPIRED_ASSUMPTION};
-    use crate::report::VerificationState;
+    use super::{
+        BoundaryChecker, BoundaryCheckerConfig, E_BOUNDARY_ADAPTER_MISMATCH,
+        E_BOUNDARY_EXPIRED_ASSUMPTION, E_BOUNDARY_FFI_HOST_TYPE_MISMATCH, E_BOUNDARY_NO_CONTRACT,
+        E_BOUNDARY_UNSAFE_TRUST,
+    };
+    use crate::report::{VerificationReport, VerificationState};
 
     fn boundary_graph(tags: Vec<&str>) -> SemanticGraph {
-        let mut node = GraphNode::new(NodeRef(0), NodeKind::Boundary, "test_boundary");
-        node.trust_metadata = Some(TrustMetadata {
-            level: TrustLevel::Verified,
-            tags: tags.into_iter().map(|s| s.to_string()).collect(),
-        });
+        let node = boundary_node(0, "test_boundary", TrustLevel::Verified, tags);
         SemanticGraph {
             nodes: vec![node],
             edges: vec![],
         }
+    }
+
+    fn boundary_node(id: u32, name: &str, level: TrustLevel, tags: Vec<&str>) -> GraphNode {
+        let mut node = GraphNode::new(NodeRef(id), NodeKind::Boundary, name);
+        node.trust_metadata = Some(TrustMetadata {
+            level,
+            tags: tags.into_iter().map(|s| s.to_string()).collect(),
+        });
+        node
+    }
+
+    fn complete_tags<'a>(extra: Vec<&'a str>) -> Vec<&'a str> {
+        let mut tags = vec![
+            "has-trust-level",
+            "has-contract",
+            "has-handler",
+            "has-owner",
+            "has-review-policy",
+        ];
+        tags.extend(extra);
+        tags
+    }
+
+    fn diagnostic_text(report: &VerificationReport) -> String {
+        report
+            .diagnostics
+            .iter()
+            .map(|diagnostic| {
+                format!(
+                    "{} {:?} {:?} {:?} {:?}",
+                    diagnostic.code,
+                    diagnostic.evidence,
+                    diagnostic.expected,
+                    diagnostic.actual,
+                    diagnostic.repair_options
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     // ── T-15 / T-16: expires tag ─────────────────────────────────────────
@@ -467,12 +510,272 @@ mod tests {
         // Without config, expires tag ignored → Assumed
         assert_eq!(report.entries[0].state, VerificationState::Assumed);
     }
+
+    #[test]
+    fn unsafe_trust_boundary_emits_redacted_production_diagnostic() {
+        let graph = SemanticGraph {
+            nodes: vec![boundary_node(
+                7,
+                "secret_payments_ffi_boundary",
+                TrustLevel::Unsafe,
+                complete_tags(vec![]),
+            )],
+            edges: vec![],
+        };
+
+        let report = BoundaryChecker::check(&graph);
+
+        assert_eq!(report.entries[0].state, VerificationState::Unsafe);
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics[0].code.as_str(), E_BOUNDARY_UNSAFE_TRUST);
+
+        let text = diagnostic_text(&report);
+        assert!(
+            !text.contains("secret_payments_ffi_boundary"),
+            "production diagnostics must redact raw boundary names, got:\n{text}"
+        );
+        assert!(
+            text.contains("unsafe-trust-boundary"),
+            "diagnostic should expose a stable redacted detail, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn boundary_diagnostics_are_sorted_deduped_and_redacted() {
+        let graph = SemanticGraph {
+            // Deliberately reverse of expected diagnostic order.
+            nodes: vec![
+                boundary_node(
+                    40,
+                    "private_unsafe_trust_boundary",
+                    TrustLevel::Unsafe,
+                    complete_tags(vec![]),
+                ),
+                boundary_node(
+                    30,
+                    "private_ffi_host_type_boundary",
+                    TrustLevel::Verified,
+                    complete_tags(vec!["ffi-host-type-mismatch"]),
+                ),
+                boundary_node(
+                    20,
+                    "private_adapter_boundary",
+                    TrustLevel::Verified,
+                    complete_tags(vec!["adapter-mismatch", "adapter-mismatch"]),
+                ),
+                // Exact duplicate diagnostic shape: production diagnostics must dedup it.
+                boundary_node(
+                    20,
+                    "private_adapter_boundary",
+                    TrustLevel::Verified,
+                    complete_tags(vec!["adapter-mismatch", "adapter-mismatch"]),
+                ),
+                boundary_node(
+                    10,
+                    "private_missing_contract_boundary",
+                    TrustLevel::Verified,
+                    vec![
+                        "has-trust-level",
+                        "has-handler",
+                        "has-owner",
+                        "has-review-policy",
+                        "no-contract",
+                    ],
+                ),
+            ],
+            edges: vec![],
+        };
+
+        let report = BoundaryChecker::check(&graph);
+        let codes: Vec<_> = report
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect();
+
+        assert_eq!(
+            codes,
+            vec![
+                E_BOUNDARY_NO_CONTRACT,
+                E_BOUNDARY_ADAPTER_MISMATCH,
+                E_BOUNDARY_FFI_HOST_TYPE_MISMATCH,
+                E_BOUNDARY_UNSAFE_TRUST,
+            ],
+            "diagnostics must use deterministic production order"
+        );
+        assert_eq!(
+            report
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code.as_str() == E_BOUNDARY_ADAPTER_MISMATCH)
+                .count(),
+            1,
+            "duplicate adapter-mismatch tags must not duplicate diagnostics"
+        );
+
+        let text = diagnostic_text(&report);
+        for secret in [
+            "private_unsafe_trust_boundary",
+            "private_ffi_host_type_boundary",
+            "private_adapter_boundary",
+            "private_missing_contract_boundary",
+            "adapter-mismatch, adapter-mismatch",
+        ] {
+            assert!(
+                !text.contains(secret),
+                "production diagnostics must redact descriptor {secret:?}; got:\n{text}"
+            );
+        }
+    }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
 fn has_tag(tags: &[String], tag: &str) -> bool {
     tags.iter().any(|t| t == tag)
+}
+
+#[derive(Clone, Copy)]
+struct BoundaryIssue {
+    code: &'static str,
+    detail: &'static str,
+    severity: DiagnosticSeverity,
+    blocking: bool,
+}
+
+fn boundary_issue(
+    trust_metadata: Option<&TrustMetadata>,
+    state: VerificationState,
+    evidence: &str,
+) -> BoundaryIssue {
+    let tags = trust_metadata.map(|tm| tm.tags.as_slice()).unwrap_or(&[]);
+
+    let (code, detail) = if has_tag(tags, "has-assumption-expired")
+        || has_tag(tags, "has-assumption-revoked")
+    {
+        (E_BOUNDARY_ASSUMPTION_REVOKED, "assumption-revoked")
+    } else if evidence.contains(E_BOUNDARY_EXPIRED_ASSUMPTION)
+        || has_tag(tags, "expired-assumption")
+    {
+        (E_BOUNDARY_EXPIRED_ASSUMPTION, "assumption-expired")
+    } else if evidence.contains(E_BOUNDARY_ADAPTER_MISMATCH) || has_tag(tags, "adapter-mismatch") {
+        (E_BOUNDARY_ADAPTER_MISMATCH, "adapter-mismatch")
+    } else if evidence.contains(E_BOUNDARY_FFI_HOST_TYPE_MISMATCH)
+        || has_tag(tags, "ffi-host-type-mismatch")
+        || has_tag(tags, "host-type-mismatch")
+    {
+        (E_BOUNDARY_FFI_HOST_TYPE_MISMATCH, "ffi-host-type-mismatch")
+    } else if evidence.contains(E_BOUNDARY_UNSAFE_TRUST)
+        || matches!(trust_metadata, Some(tm) if tm.level == TrustLevel::Unsafe)
+    {
+        (E_BOUNDARY_UNSAFE_TRUST, "unsafe-trust-boundary")
+    } else if has_tag(tags, "unsafe-ffi") {
+        (E_BOUNDARY_UNCHECKED_FFI, "unchecked-ffi")
+    } else if trust_metadata.is_none() {
+        (E_BOUNDARY_INCOMPLETE, "incomplete-boundary-declaration")
+    } else if has_tag(tags, "no-contract") || !has_tag(tags, "has-contract") {
+        (E_BOUNDARY_NO_CONTRACT, "missing-contract")
+    } else {
+        (E_BOUNDARY_INCOMPLETE, "incomplete-boundary-declaration")
+    };
+
+    BoundaryIssue {
+        code,
+        detail,
+        severity: severity_for_state(state),
+        blocking: matches!(state, VerificationState::Failed | VerificationState::Unsafe),
+    }
+}
+
+fn severity_for_state(state: VerificationState) -> DiagnosticSeverity {
+    match state {
+        VerificationState::Failed | VerificationState::Unsafe => DiagnosticSeverity::Error,
+        VerificationState::Unverified => DiagnosticSeverity::Warning,
+        _ => DiagnosticSeverity::Info,
+    }
+}
+
+fn boundary_diagnostic(
+    target: ail_core::semantic_graph::NodeRef,
+    issue: BoundaryIssue,
+) -> Diagnostic {
+    Diagnostic {
+        code: issue.code.to_string(),
+        severity: issue.severity,
+        target,
+        evidence: Some(format!(
+            "category=boundary; code={}; target=node#{}; detail={}",
+            issue.code, target.0, issue.detail
+        )),
+        expected: Some(expected_boundary_descriptor(issue.detail).into()),
+        actual: Some(format!(
+            "boundary issue redacted; boundary#{}; detail={}",
+            target.0, issue.detail
+        )),
+        repair_options: vec![RepairOption::Explanation(
+            repair_boundary_descriptor(issue.detail).into(),
+        )],
+        blocking: issue.blocking,
+    }
+}
+
+fn expected_boundary_descriptor(detail: &str) -> &'static str {
+    match detail {
+        "missing-contract" => "declared boundary contract",
+        "adapter-mismatch" => "adapter signature matching declared boundary contract",
+        "ffi-host-type-mismatch" => "FFI host type matching declared boundary schema",
+        "unsafe-trust-boundary" => "approved safe boundary trust posture",
+        "unchecked-ffi" => "approved FFI boundary with checked contract",
+        "assumption-expired" | "assumption-revoked" => "active boundary assumption",
+        _ => "complete boundary declaration set",
+    }
+}
+
+fn repair_boundary_descriptor(detail: &str) -> &'static str {
+    match detail {
+        "missing-contract" => "add a formal boundary contract before production verification",
+        "adapter-mismatch" => "align the adapter shape with the boundary contract",
+        "ffi-host-type-mismatch" => "align the FFI host type with the boundary schema",
+        "unsafe-trust-boundary" => {
+            "downgrade the unsafe trust posture or attach explicit production approval"
+        }
+        "unchecked-ffi" => "add explicit approval and a checked FFI boundary contract",
+        "assumption-expired" | "assumption-revoked" => {
+            "refresh, replace, or remove the expired boundary assumption"
+        }
+        _ => "complete trust level, contract, handler, owner, and review policy declarations",
+    }
+}
+
+fn canonicalize_boundary_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.sort_by(cmp_boundary_diagnostic);
+    diagnostics.dedup();
+}
+
+fn cmp_boundary_diagnostic(a: &Diagnostic, b: &Diagnostic) -> Ordering {
+    boundary_diagnostic_rank(a)
+        .cmp(&boundary_diagnostic_rank(b))
+        .then_with(|| a.code.cmp(&b.code))
+        .then_with(|| a.target.cmp(&b.target))
+        .then_with(|| a.blocking.cmp(&b.blocking).reverse())
+        .then_with(|| a.evidence.cmp(&b.evidence))
+        .then_with(|| a.expected.cmp(&b.expected))
+        .then_with(|| a.actual.cmp(&b.actual))
+        .then_with(|| format!("{:?}", a.repair_options).cmp(&format!("{:?}", b.repair_options)))
+}
+
+fn boundary_diagnostic_rank(diagnostic: &Diagnostic) -> u8 {
+    match diagnostic.code.as_str() {
+        E_BOUNDARY_NO_CONTRACT => 0,
+        E_BOUNDARY_ADAPTER_MISMATCH => 1,
+        E_BOUNDARY_FFI_HOST_TYPE_MISMATCH => 2,
+        E_BOUNDARY_UNSAFE_TRUST => 3,
+        E_BOUNDARY_UNCHECKED_FFI => 4,
+        E_BOUNDARY_ASSUMPTION_REVOKED => 5,
+        E_BOUNDARY_EXPIRED_ASSUMPTION => 6,
+        E_BOUNDARY_INCOMPLETE => 7,
+        _ => 8,
+    }
 }
 
 fn compute_counts(entries: &[VerificationEntry]) -> SummaryCounts {
