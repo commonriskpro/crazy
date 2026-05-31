@@ -5,13 +5,17 @@
 // EffectChecker rules:
 //   R1: Inferred effects NOT in declared → Failed (E_EFFECT_UNDECLARED)
 //   R2: Declared effects but no inferred → Assumed (E_EFFECT_UNUSED)
-//   R3: Declared covers inferred → Proven
+//   R3: Declared and inferred effects match exactly → Proven
 //   R4: Neither declared nor inferred → Proven
 
 use ail_core::semantic_graph::{
     EdgeKind, EffectRow, GraphEdge, GraphNode, NodeKind, NodeRef, SemanticGraph,
 };
-use ail_verify::effect_checker::EffectChecker;
+use ail_verify::diagnostic::{E_EFFECT_UNDECLARED, E_EFFECT_UNUSED};
+use ail_verify::effect_checker::{
+    EFFECT_DIAGNOSTIC_CATEGORY_EXTRA_EFFECT, EFFECT_DIAGNOSTIC_CATEGORY_MISSING_EFFECT,
+    EffectChecker,
+};
 use ail_verify::report::VerificationState;
 
 fn node(id: u32, kind: NodeKind, name: &str) -> GraphNode {
@@ -20,6 +24,10 @@ fn node(id: u32, kind: NodeKind, name: &str) -> GraphNode {
 
 fn emits_edge(source: u32, target: u32) -> GraphEdge {
     GraphEdge::new(NodeRef(source), NodeRef(target), EdgeKind::Emits)
+}
+
+fn evidence_text<'a>(entry: &'a ail_verify::report::VerificationEntry) -> &'a str {
+    entry.evidence.as_deref().unwrap_or("")
 }
 
 // ── Scenario R4: Pure node (no effects) → Proven ─────────────────────────
@@ -39,7 +47,7 @@ fn pure_node_no_effects_is_proven() {
     assert_eq!(report.entries[0].scope, "pure_fn");
 }
 
-// ── Scenario R3: Declared covers inferred → Proven ───────────────────────
+// ── Scenario R3: Declared and inferred effects match exactly → Proven ─────
 // GIVEN a Function node with EffectRow { effects: ["IO"] }
 // AND an Emits edge from that function to a node named "IO"
 // WHEN EffectChecker::check is called
@@ -81,12 +89,16 @@ fn undeclared_inferred_effect_is_failed() {
     assert_eq!(fn_entry.state, VerificationState::Failed);
     let evidence = fn_entry.evidence.as_deref().unwrap_or("");
     assert!(
-        evidence.contains("E_EFFECT_UNDECLARED"),
+        evidence.contains(E_EFFECT_UNDECLARED),
         "evidence must contain E_EFFECT_UNDECLARED, got: {evidence}"
     );
     assert!(
-        evidence.contains("Database"),
-        "evidence must name the undeclared effect"
+        evidence.contains(EFFECT_DIAGNOSTIC_CATEGORY_MISSING_EFFECT),
+        "evidence must include the stable missing-effect category"
+    );
+    assert!(
+        !evidence.contains("Database"),
+        "evidence must redact raw effect descriptors"
     );
 }
 
@@ -112,8 +124,12 @@ fn declared_but_unused_effect_is_assumed() {
     assert_eq!(entry.state, VerificationState::Assumed);
     let evidence = entry.evidence.as_deref().unwrap_or("");
     assert!(
-        evidence.contains("E_EFFECT_UNUSED"),
+        evidence.contains(E_EFFECT_UNUSED),
         "evidence must contain E_EFFECT_UNUSED, got: {evidence}"
+    );
+    assert!(
+        evidence.contains(EFFECT_DIAGNOSTIC_CATEGORY_EXTRA_EFFECT),
+        "evidence must include the stable extra-effect category"
     );
 }
 
@@ -141,8 +157,94 @@ fn partial_undeclared_is_failed() {
         .unwrap();
     assert_eq!(fn_entry.state, VerificationState::Failed);
     let evidence = fn_entry.evidence.as_deref().unwrap_or("");
-    assert!(evidence.contains("E_EFFECT_UNDECLARED"));
-    assert!(evidence.contains("Network"));
+    assert!(evidence.contains(E_EFFECT_UNDECLARED));
+    assert!(evidence.contains(EFFECT_DIAGNOSTIC_CATEGORY_MISSING_EFFECT));
+    assert!(
+        !evidence.contains("Network"),
+        "evidence must redact raw effect descriptors"
+    );
+}
+
+#[test]
+fn partial_extra_declared_effect_is_assumed() {
+    let mut fn_node = node(0, NodeKind::Function, "partial_extra_fn");
+    fn_node.effect_row = Some(EffectRow {
+        effects: vec!["IO".into(), "Network".into()],
+    });
+    let io_node = node(1, NodeKind::Effect, "IO");
+    let graph = SemanticGraph {
+        nodes: vec![fn_node, io_node],
+        edges: vec![emits_edge(0, 1)],
+    };
+
+    let report = EffectChecker::check(&graph);
+    let fn_entry = report
+        .entries
+        .iter()
+        .find(|e| e.scope == "partial_extra_fn")
+        .unwrap();
+
+    assert_eq!(fn_entry.state, VerificationState::Assumed);
+    let evidence = evidence_text(fn_entry);
+    assert!(evidence.contains(E_EFFECT_UNUSED));
+    assert!(evidence.contains(EFFECT_DIAGNOSTIC_CATEGORY_EXTRA_EFFECT));
+    assert!(
+        !evidence.contains("Network"),
+        "extra-effect evidence must redact raw effect descriptors"
+    );
+}
+
+#[test]
+fn effect_entries_are_sorted_deduped_and_redacted() {
+    let mut zeta = node(0, NodeKind::Function, "zeta_fn");
+    zeta.effect_row = Some(EffectRow {
+        effects: vec!["BSecret".into(), "ASecret".into(), "ASecret".into()],
+    });
+    let alpha = node(1, NodeKind::Function, "alpha_fn");
+    let alpha_duplicate = node(2, NodeKind::Function, "alpha_fn");
+    let db = node(3, NodeKind::Effect, "DatabaseSecret");
+    let net = node(4, NodeKind::Effect, "NetworkSecret");
+    let graph = SemanticGraph {
+        nodes: vec![zeta, alpha, alpha_duplicate, db, net],
+        edges: vec![
+            emits_edge(1, 4),
+            emits_edge(1, 3),
+            emits_edge(1, 3),
+            emits_edge(2, 4),
+            emits_edge(2, 3),
+        ],
+    };
+
+    let report = EffectChecker::check(&graph);
+    let issue_scopes: Vec<_> = report
+        .entries
+        .iter()
+        .filter(|entry| entry.evidence.is_some())
+        .map(|entry| entry.scope.as_str())
+        .collect();
+
+    assert_eq!(
+        issue_scopes,
+        vec!["alpha_fn", "zeta_fn"],
+        "effect issues must be sorted by stable fields and exact duplicates deduped"
+    );
+
+    let text = report
+        .entries
+        .iter()
+        .filter_map(|entry| entry.evidence.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for secret in ["DatabaseSecret", "NetworkSecret", "ASecret", "BSecret"] {
+        assert!(
+            !text.contains(secret),
+            "effect evidence must redact descriptor {secret:?}; got:\n{text}"
+        );
+    }
+    assert!(
+        text.contains("descriptors=[effect#0, effect#1]"),
+        "redacted descriptors must remain deterministic and count-preserving"
+    );
 }
 
 // ── Triangulation: empty graph → empty report ────────────────────────────
