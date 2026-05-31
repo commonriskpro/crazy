@@ -5,7 +5,10 @@
 // All stable JSON field names and human-readable status strings live here
 // so that the JSON contract surface is easy to audit in one place.
 
-use ail_package::{AdvisorySeverity, LockfileEntry, PackageManifest, SecurityAdvisory, YankRecord};
+use ail_package::{
+    AdvisorySeverity, LockfileEntry, LockfileValidationIssue, PackageManifest, SecurityAdvisory,
+    YankRecord,
+};
 use serde_json::{Value, json};
 
 use crate::error::CliError;
@@ -66,6 +69,118 @@ pub(crate) struct PackageAuditIssue {
 /// Cached hash data for a registry package, used during verify.
 pub(crate) struct RegistryPackageIntegrity {
     pub(crate) verification_report_hash: Option<String>,
+}
+
+/// CLI-facing lockfile reproducibility issue.
+pub(crate) struct LockfileReproducibilityCliIssue {
+    pub(crate) kind: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) package: Option<String>,
+    pub(crate) version: Option<String>,
+    pub(crate) previous_package: Option<String>,
+    pub(crate) previous_version: Option<String>,
+    pub(crate) expected_hash: Option<String>,
+    pub(crate) actual_hash: Option<String>,
+    pub(crate) reason: String,
+}
+
+impl LockfileReproducibilityCliIssue {
+    pub(crate) fn from_validation_issue(issue: &LockfileValidationIssue) -> Self {
+        match issue {
+            LockfileValidationIssue::UnstableEntryOrder {
+                previous_name,
+                previous_version,
+                name,
+                version,
+            } => Self {
+                kind: "unstable_entry_order",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: Some(previous_name.clone()),
+                previous_version: Some(previous_version.clone()),
+                expected_hash: None,
+                actual_hash: None,
+                reason: format!(
+                    "lockfile entries are not in canonical order: {previous_name}@{previous_version} appears before {name}@{version}"
+                ),
+            },
+            LockfileValidationIssue::DuplicatePackageEntry { name, version } => Self {
+                kind: "duplicate_lockfile_entry",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: None,
+                actual_hash: None,
+                reason: format!("lockfile contains duplicate entry for {name}@{version}"),
+            },
+            LockfileValidationIssue::DuplicateActualPackage { name, version } => Self {
+                kind: "duplicate_actual_package",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: None,
+                actual_hash: None,
+                reason: format!(
+                    "registry produced duplicate actual package coordinate {name}@{version}"
+                ),
+            },
+            LockfileValidationIssue::MissingPackage { name, version } => Self {
+                kind: "missing_package",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: None,
+                actual_hash: None,
+                reason: format!("locked package {name}@{version} is missing from registry"),
+            },
+            LockfileValidationIssue::PackageHashMismatch {
+                name,
+                version,
+                expected,
+                actual,
+            } => Self {
+                kind: "package_hash_mismatch",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: Some(expected.clone()),
+                actual_hash: Some(actual.clone()),
+                reason: format!("locked package {name}@{version} digest differs from registry"),
+            },
+        }
+    }
+
+    pub(crate) fn to_json(&self) -> Value {
+        json!({
+            "kind": self.kind,
+            "status": self.status,
+            "package": &self.package,
+            "version": &self.version,
+            "previous_package": &self.previous_package,
+            "previous_version": &self.previous_version,
+            "expected_hash": &self.expected_hash,
+            "actual_hash": &self.actual_hash,
+            "reason": &self.reason,
+        })
+    }
+
+    pub(crate) fn to_human_line(&self) -> String {
+        match (&self.package, &self.version) {
+            (Some(package), Some(version)) => {
+                format!("- {} {}@{}: {}", self.kind, package, version, self.reason)
+            }
+            _ => format!("- {}: {}", self.kind, self.reason),
+        }
+    }
 }
 
 /// A mismatch between lockfile and registry verification-report hashes.

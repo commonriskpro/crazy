@@ -462,6 +462,89 @@ fn package_legacy_unsigned_explain_is_explicit() {
 // ── install / verify happy path ───────────────────────────────────────────────
 
 #[test]
+fn package_install_writes_canonical_lockfile_order() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let zeta = test_package_manifest("zeta.pkg", "1.0.0", TrustLevel::Assumed);
+    let alpha = test_package_manifest("alpha.pkg", "1.0.0", TrustLevel::Assumed);
+    write_legacy_package_registry(dir.path(), &[zeta.clone(), alpha.clone()]);
+
+    ail()
+        .args(["package", "install", "zeta.pkg@1.0.0"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    ail()
+        .args(["package", "install", "alpha.pkg@1.0.0"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let lockfile_bytes = fs::read(package_lockfile_path(dir.path())).expect("lockfile must exist");
+    let lockfile: Lockfile =
+        ciborium::from_reader(lockfile_bytes.as_slice()).expect("decode lockfile");
+    let names = lockfile
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        vec!["alpha.pkg", "zeta.pkg"],
+        "package install must persist canonical lockfile order"
+    );
+}
+
+#[test]
+fn package_verify_rejects_noncanonical_lockfile_order_json() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let zeta = test_package_manifest("zeta.pkg", "1.0.0", TrustLevel::Assumed);
+    let alpha = test_package_manifest("alpha.pkg", "1.0.0", TrustLevel::Assumed);
+    write_legacy_package_registry(dir.path(), &[zeta.clone(), alpha.clone()]);
+
+    let mut lockfile = Lockfile::new();
+    lockfile.add(LockfileEntry {
+        name: zeta.name.clone(),
+        version: zeta.version.clone(),
+        package_hash: zeta.blake3_hex().expect("zeta hash must compute"),
+        trust_level: zeta.trust_level,
+        verification_report_hash: None,
+        accepted_assumptions: vec![],
+    });
+    lockfile.add(LockfileEntry {
+        name: alpha.name.clone(),
+        version: alpha.version.clone(),
+        package_hash: alpha.blake3_hex().expect("alpha hash must compute"),
+        trust_level: alpha.trust_level,
+        verification_report_hash: None,
+        accepted_assumptions: vec![],
+    });
+    write_package_lockfile(dir.path(), &lockfile);
+
+    let output = ail()
+        .args(["package", "verify", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("lockfile reproducibility"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["verified"], false);
+    assert_eq!(v["data"]["lockfile_reproducibility"], "failed");
+    let issue = &v["data"]["lockfile_reproducibility_issues"][0];
+    assert_eq!(issue["kind"], "unstable_entry_order");
+    assert_eq!(issue["status"], "blocked");
+    assert_eq!(issue["package"], "alpha.pkg");
+    assert_eq!(issue["version"], "1.0.0");
+    assert_eq!(issue["previous_package"], "zeta.pkg");
+    assert_eq!(issue["previous_version"], "1.0.0");
+}
+
+#[test]
 fn package_publish_install_verify_happy_path() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
