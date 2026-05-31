@@ -296,6 +296,35 @@ fn pair_get()->Option<Text>=tuple.get(pair(),1)
 }
 
 #[test]
+fn formats_source_map_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn labels()->Map<Text,Int>=map("one",1)
+fn maybe()->Option<Int>=map.get(labels(),"one")
+fn has()->Bool=map.contains_key(labels(),"one")
+fn count()->Int=map.length(labels())
+fn updated()->Map<Text,Int>=map.insert(labels(),"two",2)
+"#,
+    )
+    .expect("source map helpers must format");
+
+    assert_eq!(item_count, 5);
+    assert!(formatted.contains(
+        r#"fn maybe() -> Option<Int> = map_get(labels(), "one")
+"#
+    ));
+    assert!(formatted.contains(
+        r#"fn has() -> Bool = map_contains_key(labels(), "one")
+"#
+    ));
+    assert!(formatted.contains("fn count() -> Int = map_length(labels())\n"));
+    assert!(formatted.contains(
+        r#"fn updated() -> Map<Text,Int> = map_insert(labels(), "two", 2)
+"#
+    ));
+}
+
+#[test]
 fn formats_source_record_types() {
     let (formatted, item_count) = format_ail_source(
         r#"

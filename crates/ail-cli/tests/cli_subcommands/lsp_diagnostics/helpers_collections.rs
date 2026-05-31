@@ -503,6 +503,39 @@ fn labels() -> Map<Text, Int> = map(\"one\", 1, \"two\", 2)\n",
     assert_eq!(v["data"]["diagnostic_count"], 0);
     assert_eq!(v["data"]["error_count"], 0);
 }
+
+#[test]
+fn lsp_diagnose_accepts_source_map_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            r#"fn labels() -> Map<Text, Int> = map("one", 1)
+fn maybe() -> Option<Int> = map_get(labels(), "one")
+fn has() -> Bool = map_contains_key(labels(), "one")
+fn count() -> Int = map_length(labels())
+fn updated() -> Map<Text, Int> = map_insert(labels(), "two", 2)
+"#,
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
 #[test]
 fn lsp_diagnose_accepts_source_tuple_collections() {
     use assert_fs::prelude::*;

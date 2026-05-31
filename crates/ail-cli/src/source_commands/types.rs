@@ -290,6 +290,12 @@ pub(super) fn infer_source_call_type(
         }
         "set" => infer_source_set_type(args, scope, functions),
         "map" => infer_source_map_type(args, scope, functions),
+        "map.get" | "map_get" => infer_source_map_get_type(args, scope, functions),
+        "map.contains_key" | "map_contains_key" => {
+            infer_source_map_contains_key_type(args, scope, functions)
+        }
+        "map.length" | "map_length" => infer_source_map_length_type(args, scope, functions),
+        "map.insert" | "map_insert" => infer_source_map_insert_type(args, scope, functions),
         "record" => infer_source_record_type(args, scope, functions),
         "field" => infer_source_field_type(args, scope, functions),
         "update" => infer_source_update_type(args, scope, functions),
@@ -546,6 +552,76 @@ pub(super) fn infer_source_map_type(
         validate_source_type_match(&first_value_ty, &value_ty, "map value")?;
     }
     Ok(format!("Map<{first_key_ty},{first_value_ty}>"))
+}
+
+pub(super) fn infer_source_map_get_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let map_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let key_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    let value_ty =
+        require_source_map_text_key_type(&map_ty, "map.get argument 1")?.unwrap_or("Unknown");
+    validate_source_type_match("Text", &key_ty, "map.get argument 2")?;
+    Ok(format!("Option<{value_ty}>"))
+}
+
+pub(super) fn infer_source_map_contains_key_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let map_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let key_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    require_source_map_text_key_type(&map_ty, "map.contains_key argument 1")?;
+    validate_source_type_match("Text", &key_ty, "map.contains_key argument 2")?;
+    Ok("Bool".to_string())
+}
+
+pub(super) fn infer_source_map_length_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let map_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    require_source_map_text_key_type(&map_ty, "map.length argument 1")?;
+    Ok("Int".to_string())
+}
+
+pub(super) fn infer_source_map_insert_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let map_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    let key_ty = infer_source_expr_type(&args[1], scope, functions)?;
+    let value_ty = infer_source_expr_type(&args[2], scope, functions)?;
+    let expected_value_ty =
+        require_source_map_text_key_type(&map_ty, "map.insert argument 1")?.unwrap_or("Unknown");
+    validate_source_type_match("Text", &key_ty, "map.insert argument 2")?;
+    validate_source_type_match(expected_value_ty, &value_ty, "map.insert argument 3")?;
+    Ok(map_ty)
+}
+
+fn require_source_map_text_key_type<'a>(
+    ty: &'a str,
+    context: &str,
+) -> Result<Option<&'a str>, CliError> {
+    if ty == "Unknown" {
+        return Ok(None);
+    }
+    let Some((key_ty, value_ty)) = source_map_types(ty) else {
+        return Err(CliError::ParseError(format!(
+            "type mismatch in {context}: expected Map<Text,Unknown>, got {ty}"
+        )));
+    };
+    if !source_type_matches("Text", key_ty) {
+        return Err(CliError::ParseError(format!(
+            "type mismatch in {context}: expected Map<Text,Unknown>, got {ty}"
+        )));
+    }
+    Ok(Some(value_ty))
 }
 
 pub(super) fn infer_source_record_type(

@@ -156,6 +156,76 @@ fn compile_file_rejects_source_map_value_type_mismatch() {
             "type mismatch in map value: expected Int, got Bool",
         ));
 }
+
+#[test]
+fn compile_file_accepts_source_map_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("map_helpers.ail");
+    source
+        .write_str(
+            r#"fn labels() -> Map<Text, Int> = map("one", 1)
+fn maybe() -> Option<Int> = map_get(labels(), "one")
+fn has() -> Bool = map_contains_key(labels(), "one")
+fn count() -> Int = map_length(labels())
+fn updated() -> Map<Text, Int> = map_insert(labels(), "two", 2)
+"#,
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_map_helper_key_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_map_get_key.ail");
+    source
+        .write_str("fn item(labels: Map<Text, Int>) -> Option<Int> = map_get(labels, 1)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in map.get argument 2: expected Text, got Int",
+        ));
+}
+
+#[test]
+fn compile_file_rejects_source_map_insert_value_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_map_insert_value.ail");
+    source
+        .write_str(
+            r#"fn updated(labels: Map<Text, Int>) -> Map<Text, Int> = map_insert(labels, "two", true)
+"#,
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in map.insert argument 3: expected Int, got Bool",
+        ));
+}
 #[test]
 fn compile_file_rejects_source_tuple_item_type_mismatch() {
     use assert_fs::prelude::*;

@@ -234,6 +234,30 @@ fn pair_get() -> Option<Text> = tuple_get(pair(), 1)
 }
 
 #[test]
+fn lowers_source_map_helpers_to_core_calls() {
+    let program = parse_ail_source(
+        r#"
+fn labels() -> Map<Text, Int> = map("one", 1)
+fn maybe() -> Option<Int> = map_get(labels(), "one")
+fn has() -> Bool = map_contains_key(labels(), "one")
+fn count() -> Int = map_length(labels())
+fn updated() -> Map<Text, Int> = map_insert(labels(), "two", 2)
+"#,
+    )
+    .expect("source map helpers must parse");
+    let acl = source_program_to_acl(&program, "source_map_helpers".to_string());
+
+    assert!(acl.contains(
+        r#"op create_function id=fn.maybe return=Option<Int> body=map.get(labels(), "one")"#
+    ));
+    assert!(acl.contains(
+        r#"op create_function id=fn.has return=Bool body=map.contains_key(labels(), "one")"#
+    ));
+    assert!(acl.contains("op create_function id=fn.count return=Int body=map.length(labels())"));
+    assert!(acl.contains(r#"op create_function id=fn.updated return=Map<Text,Int> body=map.insert(labels(), "two", 2)"#));
+}
+
+#[test]
 fn lowers_source_record_field_access_and_update() {
     let program = parse_ail_source(
         r#"

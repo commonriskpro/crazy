@@ -724,17 +724,21 @@ pub(super) fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "text.byte_at_or" | "text_byte_at_or" | "text.replace_first" | "text_replace_first"
         | "text.slice" | "text_slice" | "int.clamp" | "int.add_or" | "int.div_or"
         | "int.rem_or" | "int.sub_or" | "int.mul_or" | "int_clamp" | "int_add_or"
-        | "int_sub_or" | "int_mul_or" | "int_div_or" | "int_rem_or" => SourceArity::Exact(3),
-        "field" | "index" | "list.get" | "list_get" | "unwrap_or" | "option.unwrap_or"
+        | "int_sub_or" | "int_mul_or" | "int_div_or" | "int_rem_or" | "map.insert"
+        | "map_insert" => SourceArity::Exact(3),
+        "field" | "index" | "list.get" | "list_get" | "map.get" | "map_get"
+        | "map.contains_key" | "map_contains_key" | "unwrap_or" | "option.unwrap_or"
         | "option_unwrap_or" | "result.unwrap_or" | "result_unwrap_or" | "ok_or"
         | "option.ok_or" | "option_ok_or" | "first_or" | "last_or" => SourceArity::Exact(2),
         "tuple.get" | "tuple_get" => SourceArity::Exact(2),
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
         "none" => SourceArity::Exact(0),
-        "not" | "len" | "print" | "text.trim" | "text_trim" | "Var" | "is_empty" | "is_some"
-        | "is_none" | "is_ok" | "is_err" | "tuple.length" | "tuple_length" | "tuple.first"
-        | "tuple_first" | "tuple.second" | "tuple_second" => SourceArity::Exact(1),
+        "not" | "len" | "print" | "text.trim" | "text_trim" | "Var" | "is_empty" | "map.length"
+        | "map_length" | "is_some" | "is_none" | "is_ok" | "is_err" | "tuple.length"
+        | "tuple_length" | "tuple.first" | "tuple_first" | "tuple.second" | "tuple_second" => {
+            SourceArity::Exact(1)
+        }
         "some" | "ok" | "err" => SourceArity::Exact(1),
         "if" | "let" | "fold" => SourceArity::Exact(3),
         "let_typed" => SourceArity::Exact(5),

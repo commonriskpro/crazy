@@ -161,6 +161,40 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include AIL source result_unwrap_or helper; got: {result_unwrap_items:?}"
     );
 
+    let map_get_completion_output = ail()
+        .args(["lsp", "--complete", "map_get", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let map_get_completion = parse_json_output(&map_get_completion_output);
+    let map_get_items = map_get_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        map_get_items
+            .iter()
+            .any(|item| item["label"] == "map_get" && item["detail"] == "AIL source Map helper"),
+        "completion must include AIL source map_get helper; got: {map_get_items:?}"
+    );
+
+    let map_insert_completion_output = ail()
+        .args(["lsp", "--complete", "map_insert", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let map_insert_completion = parse_json_output(&map_insert_completion_output);
+    let map_insert_items = map_insert_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        map_insert_items
+            .iter()
+            .any(|item| item["label"] == "map_insert" && item["detail"] == "AIL source Map helper"),
+        "completion must include AIL source map_insert helper; got: {map_insert_items:?}"
+    );
+
     let text_eq_completion_output = ail()
         .args(["lsp", "--complete", "text_eq", "--json"])
         .assert()

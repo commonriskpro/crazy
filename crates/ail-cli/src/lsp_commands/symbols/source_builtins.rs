@@ -350,6 +350,30 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "map(${1:key}, ${2:value})",
     },
     AclSymbol {
+        label: "map_get",
+        detail: "AIL source Map helper",
+        documentation: "Returns Option<V> for a Text key in Map<Text,V>; None when absent.",
+        insert_text: "map_get(${1:map}, ${2:key})",
+    },
+    AclSymbol {
+        label: "map_contains_key",
+        detail: "AIL source Map helper",
+        documentation: "Returns true when Map<Text,V> contains the Text key.",
+        insert_text: "map_contains_key(${1:map}, ${2:key})",
+    },
+    AclSymbol {
+        label: "map_length",
+        detail: "AIL source Map helper",
+        documentation: "Returns the number of key/value entries in a Map<Text,V>.",
+        insert_text: "map_length(${1:map})",
+    },
+    AclSymbol {
+        label: "map_insert",
+        detail: "AIL source Map helper",
+        documentation: "Returns a Map<Text,V> with the Text key set to the supplied value.",
+        insert_text: "map_insert(${1:map}, ${2:key}, ${3:value})",
+    },
+    AclSymbol {
         label: "record",
         detail: "AIL source Record builtin",
         documentation: "Constructs a typed Record<field:Type,...> from field/value pairs.",

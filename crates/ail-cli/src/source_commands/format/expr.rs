@@ -606,6 +606,29 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if matches!(
+        func.as_str(),
+        "map.get" | "map.contains_key" | "map.length" | "map.insert"
+    ) {
+        let helper = match func.as_str() {
+            "map.get" => "map_get",
+            "map.contains_key" => "map_contains_key",
+            "map.length" => "map_length",
+            "map.insert" => "map_insert",
+            _ => unreachable!("checked map helper"),
+        };
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "list.get" && args.len() == 2 {
         return (
             format!(

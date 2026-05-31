@@ -124,6 +124,40 @@ pub(super) fn lower_source_unwrap_or_expr(
     )))
 }
 
+pub(super) fn lower_source_map_helper_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    let Some((lowered_func, arity, usage)) = (match func.as_str() {
+        "map.get" | "map_get" => Some(("map.get", 2, "map_get(map, key)")),
+        "map.contains_key" | "map_contains_key" => {
+            Some(("map.contains_key", 2, "map_contains_key(map, key)"))
+        }
+        "map.length" | "map_length" => Some(("map.length", 1, "map_length(map)")),
+        "map.insert" | "map_insert" => Some(("map.insert", 3, "map_insert(map, key, value)")),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    if args.len() != arity {
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::CollectionArity,
+            format!("{func} requires `{usage}`"),
+        ));
+    }
+    Ok(Some(format!(
+        "{lowered_func}({})",
+        args.iter()
+            .map(|arg| lower_source_expr(arg, line_num))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(", ")
+    )))
+}
+
 pub(super) fn parse_source_list_literal(
     expr: &str,
     line_num: usize,
