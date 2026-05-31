@@ -306,6 +306,10 @@ pub(super) fn infer_source_call_type(
         "result.unwrap_or" | "result_unwrap_or" => {
             infer_source_result_unwrap_or_type(args, scope, functions)
         }
+        "is_some" | "is_none" | "option.is_some" | "option_is_some" | "option.is_none"
+        | "option_is_none" => infer_source_option_predicate_type(args, scope, functions, func),
+        "is_ok" | "is_err" | "result.is_ok" | "result_is_ok" | "result.is_err"
+        | "result_is_err" => infer_source_result_predicate_type(args, scope, functions, func),
         "set" => infer_source_set_type(args, scope, functions),
         "set.contains" | "set_contains" => infer_source_set_contains_type(args, scope, functions),
         "set.length" | "set_length" => infer_source_set_length_type(args, scope, functions),
@@ -597,6 +601,28 @@ pub(super) fn infer_source_result_unwrap_or_type(
     } else {
         ok_ty.to_string()
     })
+}
+
+pub(super) fn infer_source_option_predicate_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+    context: &str,
+) -> Result<String, CliError> {
+    let option_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    require_source_option_type(&option_ty, &format!("{context} argument 1"))?;
+    Ok("Bool".to_string())
+}
+
+pub(super) fn infer_source_result_predicate_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+    context: &str,
+) -> Result<String, CliError> {
+    let result_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    require_source_result_type(&result_ty, &format!("{context} argument 1"))?;
+    Ok("Bool".to_string())
 }
 
 fn require_source_option_type<'a>(ty: &'a str, context: &str) -> Result<Option<&'a str>, CliError> {

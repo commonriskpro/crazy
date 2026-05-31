@@ -146,6 +146,18 @@ pub(super) const AIL_SOURCE_SYNTAX_SYMBOLS: &[AclSymbol] = &[
         insert_text: "is_none(${1:option})",
     },
     AclSymbol {
+        label: "option_is_some",
+        detail: "AIL source Option predicate",
+        documentation: "Namespaced alias for is_some(option).",
+        insert_text: "option_is_some(${1:option})",
+    },
+    AclSymbol {
+        label: "option_is_none",
+        detail: "AIL source Option predicate",
+        documentation: "Namespaced alias for is_none(option).",
+        insert_text: "option_is_none(${1:option})",
+    },
+    AclSymbol {
         label: "is_ok",
         detail: "AIL source Result predicate",
         documentation: "Returns true when a Result value is Ok(_), false when it is Err(_).",
@@ -156,6 +168,18 @@ pub(super) const AIL_SOURCE_SYNTAX_SYMBOLS: &[AclSymbol] = &[
         detail: "AIL source Result predicate",
         documentation: "Returns true when a Result value is Err(_), false when it is Ok(_).",
         insert_text: "is_err(${1:result})",
+    },
+    AclSymbol {
+        label: "result_is_ok",
+        detail: "AIL source Result predicate",
+        documentation: "Namespaced alias for is_ok(result).",
+        insert_text: "result_is_ok(${1:result})",
+    },
+    AclSymbol {
+        label: "result_is_err",
+        detail: "AIL source Result predicate",
+        documentation: "Namespaced alias for is_err(result).",
+        insert_text: "result_is_err(${1:result})",
     },
     AclSymbol {
         label: "+",

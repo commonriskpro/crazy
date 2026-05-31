@@ -515,13 +515,17 @@ fn formats_source_option_predicate_helpers() {
         r#"
 fn has_value(input:Option<Int>)->Bool=match(input,Some(_),true,None,false)
 fn missing(input:Option<Int>)->Bool=match(input,Some(_),false,None,true)
+fn namespaced(input:Option<Int>)->Bool=option.is_some(input)
 "#,
     )
     .expect("source option predicates must format");
 
-    assert_eq!(item_count, 2);
+    assert_eq!(item_count, 3);
     assert!(formatted.contains("fn has_value(input: Option<Int>) -> Bool = is_some(input)\n"));
     assert!(formatted.contains("fn missing(input: Option<Int>) -> Bool = is_none(input)\n"));
+    assert!(
+        formatted.contains("fn namespaced(input: Option<Int>) -> Bool = option_is_some(input)\n")
+    );
 }
 
 #[test]
@@ -530,13 +534,18 @@ fn formats_source_result_predicate_helpers() {
         r#"
 fn succeeded(input:Result<Int,Text>)->Bool=match(input,Ok(_),true,Err(_),false)
 fn failed(input:Result<Int,Text>)->Bool=match(input,Ok(_),false,Err(_),true)
+fn namespaced(input:Result<Int,Text>)->Bool=result.is_err(input)
 "#,
     )
     .expect("source result predicates must format");
 
-    assert_eq!(item_count, 2);
+    assert_eq!(item_count, 3);
     assert!(formatted.contains("fn succeeded(input: Result<Int,Text>) -> Bool = is_ok(input)\n"));
     assert!(formatted.contains("fn failed(input: Result<Int,Text>) -> Bool = is_err(input)\n"));
+    assert!(
+        formatted
+            .contains("fn namespaced(input: Result<Int,Text>) -> Bool = result_is_err(input)\n")
+    );
 }
 
 #[test]

@@ -179,7 +179,8 @@ fn compile_file_accepts_source_option_predicate_helpers() {
     source
         .write_str(
             "fn has_value(input: Option<Int>) -> Bool = is_some(input)\n\
-fn missing(input: Option<Int>) -> Bool = is_none(input)\n",
+fn missing(input: Option<Int>) -> Bool = option_is_none(input)\n\
+fn namespaced(input: Option<Int>) -> Bool = option.is_some(input)\n",
         )
         .expect("source fixture must be written");
 
@@ -207,7 +208,7 @@ fn compile_file_rejects_source_option_predicate_type_mismatch() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "type mismatch in match pattern `Some(_)`: expected Option<Unknown>",
+            "type mismatch in is_some argument 1: expected Option<Unknown>, got Result<Int,Text>",
         ));
 }
 #[test]
@@ -219,7 +220,8 @@ fn compile_file_accepts_source_result_predicate_helpers() {
     source
         .write_str(
             "fn succeeded(input: Result<Int, Text>) -> Bool = is_ok(input)\n\
-fn failed(input: Result<Int, Text>) -> Bool = is_err(input)\n",
+fn failed(input: Result<Int, Text>) -> Bool = result_is_err(input)\n\
+fn namespaced(input: Result<Int, Text>) -> Bool = result.is_ok(input)\n",
         )
         .expect("source fixture must be written");
 
@@ -247,7 +249,7 @@ fn compile_file_rejects_source_result_predicate_type_mismatch() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "type mismatch in match pattern `Ok(_)`: expected Result<Unknown,Unknown>",
+            "type mismatch in is_ok argument 1: expected Result<Unknown,Unknown>, got Option<Int>",
         ));
 }
 #[test]

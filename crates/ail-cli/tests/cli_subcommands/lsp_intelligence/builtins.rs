@@ -1030,6 +1030,10 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             && option_predicate_items
                 .iter()
                 .any(|item| item["label"] == "is_none"
+                    && item["detail"] == "AIL source Option predicate")
+            && option_predicate_items
+                .iter()
+                .any(|item| item["label"] == "option_is_some"
                     && item["detail"] == "AIL source Option predicate"),
         "completion must include AIL source Option predicates; got: {option_predicate_items:?}"
     );
@@ -1051,6 +1055,10 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             && result_predicate_items
                 .iter()
                 .any(|item| item["label"] == "is_err"
+                    && item["detail"] == "AIL source Result predicate")
+            && result_predicate_items
+                .iter()
+                .any(|item| item["label"] == "result_is_ok"
                     && item["detail"] == "AIL source Result predicate"),
         "completion must include AIL source Result predicates; got: {result_predicate_items:?}"
     );

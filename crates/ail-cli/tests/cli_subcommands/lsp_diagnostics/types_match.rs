@@ -156,7 +156,8 @@ fn lsp_diagnose_accepts_source_option_predicate_helpers() {
     source
         .write_str(
             "fn has_value(input: Option<Int>) -> Bool = is_some(input)\n\
-fn missing(input: Option<Int>) -> Bool = is_none(input)\n",
+fn missing(input: Option<Int>) -> Bool = option_is_none(input)\n\
+fn namespaced(input: Option<Int>) -> Bool = option.is_some(input)\n",
         )
         .expect("source fixture must be written");
 
@@ -175,6 +176,41 @@ fn missing(input: Option<Int>) -> Bool = is_none(input)\n",
     assert_eq!(v["data"]["diagnostic_count"], 0);
     assert_eq!(v["data"]["error_count"], 0);
 }
+
+#[test]
+fn lsp_diagnose_reports_source_option_predicate_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn has_value(input: Result<Int, Text>) -> Bool = option.is_some(input)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains(
+                "type mismatch in option.is_some argument 1: expected Option<Unknown>, got Result<Int,Text>"
+            )
+    );
+}
+
 #[test]
 fn lsp_diagnose_accepts_source_result_predicate_helpers() {
     use assert_fs::prelude::*;
@@ -184,7 +220,8 @@ fn lsp_diagnose_accepts_source_result_predicate_helpers() {
     source
         .write_str(
             "fn succeeded(input: Result<Int, Text>) -> Bool = is_ok(input)\n\
-fn failed(input: Result<Int, Text>) -> Bool = is_err(input)\n",
+fn failed(input: Result<Int, Text>) -> Bool = result_is_err(input)\n\
+fn namespaced(input: Result<Int, Text>) -> Bool = result.is_ok(input)\n",
         )
         .expect("source fixture must be written");
 
@@ -203,6 +240,41 @@ fn failed(input: Result<Int, Text>) -> Bool = is_err(input)\n",
     assert_eq!(v["data"]["diagnostic_count"], 0);
     assert_eq!(v["data"]["error_count"], 0);
 }
+
+#[test]
+fn lsp_diagnose_reports_source_result_predicate_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn succeeded(input: Option<Int>) -> Bool = result.is_ok(input)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains(
+                "type mismatch in result.is_ok argument 1: expected Result<Unknown,Unknown>, got Option<Int>"
+            )
+    );
+}
+
 #[test]
 fn lsp_diagnose_reports_nested_source_match_pattern() {
     use assert_fs::prelude::*;

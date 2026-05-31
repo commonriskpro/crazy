@@ -426,7 +426,7 @@ fn lowers_source_option_predicate_helpers() {
     let program = parse_ail_source(
         r#"
 fn has_value(input: Option<Int>) -> Bool = is_some(input)
-fn missing(input: Option<Int>) -> Bool = is_none(input)
+fn missing(input: Option<Int>) -> Bool = option_is_none(input)
 "#,
     )
     .expect("source option predicates must parse");
@@ -445,7 +445,7 @@ fn lowers_source_result_predicate_helpers() {
     let program = parse_ail_source(
         r#"
 fn succeeded(input: Result<Int, Text>) -> Bool = is_ok(input)
-fn failed(input: Result<Int, Text>) -> Bool = is_err(input)
+fn failed(input: Result<Int, Text>) -> Bool = result.is_err(input)
 "#,
     )
     .expect("source result predicates must parse");

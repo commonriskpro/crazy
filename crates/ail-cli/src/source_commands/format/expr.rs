@@ -595,12 +595,42 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if matches!(func.as_str(), "option.is_some" | "option.is_none") && args.len() == 1 {
+        let helper = if func == "option.is_some" {
+            "option_is_some"
+        } else {
+            "option_is_none"
+        };
+        return (
+            format!(
+                "{helper}({})",
+                format_source_expr(&args[0], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "result.unwrap_or" && args.len() == 2 {
         return (
             format!(
                 "result_unwrap_or({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if matches!(func.as_str(), "result.is_ok" | "result.is_err") && args.len() == 1 {
+        let helper = if func == "result.is_ok" {
+            "result_is_ok"
+        } else {
+            "result_is_err"
+        };
+        return (
+            format!(
+                "{helper}({})",
+                format_source_expr(&args[0], module, constants)
             ),
             CALL_PRECEDENCE,
         );

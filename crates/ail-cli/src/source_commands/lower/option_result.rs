@@ -43,8 +43,8 @@ pub(super) fn lower_source_option_predicate_expr(
         return Ok(None);
     };
     let (some_body, none_body) = match func.as_str() {
-        "is_some" => ("true", "false"),
-        "is_none" => ("false", "true"),
+        "is_some" | "option.is_some" | "option_is_some" => ("true", "false"),
+        "is_none" | "option.is_none" | "option_is_none" => ("false", "true"),
         _ => return Ok(None),
     };
     if args.len() != 1 {
@@ -66,8 +66,8 @@ pub(super) fn lower_source_result_predicate_expr(
         return Ok(None);
     };
     let (ok_body, err_body) = match func.as_str() {
-        "is_ok" => ("true", "false"),
-        "is_err" => ("false", "true"),
+        "is_ok" | "result.is_ok" | "result_is_ok" => ("true", "false"),
+        "is_err" | "result.is_err" | "result_is_err" => ("false", "true"),
         _ => return Ok(None),
     };
     if args.len() != 1 {

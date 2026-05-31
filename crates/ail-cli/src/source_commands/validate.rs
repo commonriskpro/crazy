@@ -740,8 +740,11 @@ pub(super) fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         | "queue.pop_front" | "queue_pop_front" | "queue.peek_front" | "queue_peek_front"
         | "queue.length" | "queue_length" | "queue.is_empty" | "queue_is_empty" | "set.length"
         | "set_length" | "map.length" | "map_length" | "is_some" | "is_none" | "is_ok"
-        | "is_err" | "tuple.length" | "tuple_length" | "tuple.first" | "tuple_first"
-        | "tuple.second" | "tuple_second" => SourceArity::Exact(1),
+        | "is_err" | "option.is_some" | "option_is_some" | "option.is_none" | "option_is_none"
+        | "result.is_ok" | "result_is_ok" | "result.is_err" | "result_is_err" | "tuple.length"
+        | "tuple_length" | "tuple.first" | "tuple_first" | "tuple.second" | "tuple_second" => {
+            SourceArity::Exact(1)
+        }
         "some" | "Some" | "ok" | "Ok" | "err" | "Err" => SourceArity::Exact(1),
         "if" | "let" | "fold" => SourceArity::Exact(3),
         "let_typed" => SourceArity::Exact(5),
