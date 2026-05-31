@@ -52,17 +52,23 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
 
         if let Some(rest) = statement.strip_prefix("module ") {
             if module.is_some() {
-                return Err(CliError::ParseError(format!(
-                    "line {line_num}: module declaration may appear only once"
-                )));
+                return Err(source_parse_error_for_fragment(
+                    *line_num,
+                    SourceParseDiagnostic::InvalidDeclaration,
+                    statement,
+                    "module declaration may appear only once",
+                ));
             }
             module = Some(parse_source_module(rest, *line_num)?);
         } else if let Some(rest) = statement.strip_prefix("use ") {
             let import = parse_source_import(rest, *line_num)?;
             if imports.iter().any(|existing| existing == &import) {
-                return Err(CliError::ParseError(format!(
-                    "line {line_num}: duplicate import declaration `{import}`"
-                )));
+                return Err(source_parse_error_for_fragment(
+                    *line_num,
+                    SourceParseDiagnostic::InvalidDeclaration,
+                    statement,
+                    format!("duplicate import declaration `{import}`"),
+                ));
             }
             imports.push(import);
         } else if let Some(rest) = statement.strip_prefix("capability ") {
@@ -84,13 +90,22 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
         } else if let Some(rest) = statement.strip_prefix("grant ") {
             grants.push(parse_source_grant(rest, *line_num)?);
         } else if statement == "export" || statement.starts_with("export ") {
-            return Err(CliError::ParseError(format!(
-                "line {line_num}: unsupported source export syntax `{statement}`; imported `.ail` files expose declarations by name automatically"
-            )));
+            return Err(source_parse_error_for_fragment(
+                *line_num,
+                SourceParseDiagnostic::InvalidDeclaration,
+                statement,
+                "unsupported source export syntax; imported `.ail` files expose declarations by name automatically",
+            ));
         } else {
-            return Err(CliError::ParseError(format!(
-                "line {line_num}: expected `module`, `use`, `capability`, `const`, `fn`, `test`, or `grant`, got `{statement}`"
-            )));
+            let token = statement.split_whitespace().next().unwrap_or(statement);
+            return Err(source_parse_error_for_fragment(
+                *line_num,
+                SourceParseDiagnostic::UnexpectedToken,
+                statement,
+                format!(
+                    "expected `module`, `use`, `capability`, `const`, `fn`, `test`, or `grant`, got `{token}`"
+                ),
+            ));
         }
         idx += 1;
     }
@@ -103,8 +118,10 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
         && tests.is_empty()
         && grants.is_empty()
     {
-        return Err(CliError::ParseError(
-            "AIL source file has no declarations".to_string(),
+        return Err(source_parse_error(
+            1,
+            SourceParseDiagnostic::InvalidDeclaration,
+            "AIL source file has no declarations",
         ));
     }
 

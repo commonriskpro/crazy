@@ -1,5 +1,142 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(super) enum SourceParseDiagnostic {
+    InvalidDeclaration,
+    InvalidName,
+    InvalidPattern,
+    InvalidType,
+    MissingDelimiter,
+    UnexpectedToken,
+}
+
+pub(super) struct SourceParseDiagnosticDescriptor {
+    pub(super) code: &'static str,
+    pub(super) category: &'static str,
+}
+
+impl SourceParseDiagnostic {
+    pub(super) fn descriptor(self) -> SourceParseDiagnosticDescriptor {
+        match self {
+            SourceParseDiagnostic::InvalidDeclaration => SourceParseDiagnosticDescriptor {
+                code: "AIL_SOURCE_PARSE_INVALID_DECLARATION",
+                category: "source.parse.declaration",
+            },
+            SourceParseDiagnostic::InvalidName => SourceParseDiagnosticDescriptor {
+                code: "AIL_SOURCE_PARSE_INVALID_NAME",
+                category: "source.parse.name",
+            },
+            SourceParseDiagnostic::InvalidPattern => SourceParseDiagnosticDescriptor {
+                code: "AIL_SOURCE_PARSE_INVALID_PATTERN",
+                category: "source.parse.pattern",
+            },
+            SourceParseDiagnostic::InvalidType => SourceParseDiagnosticDescriptor {
+                code: "AIL_SOURCE_PARSE_INVALID_TYPE",
+                category: "source.parse.type",
+            },
+            SourceParseDiagnostic::MissingDelimiter => SourceParseDiagnosticDescriptor {
+                code: "AIL_SOURCE_PARSE_MISSING_DELIMITER",
+                category: "source.parse.delimiter",
+            },
+            SourceParseDiagnostic::UnexpectedToken => SourceParseDiagnosticDescriptor {
+                code: "AIL_SOURCE_PARSE_UNEXPECTED_TOKEN",
+                category: "source.parse.token",
+            },
+        }
+    }
+}
+
+pub(super) fn source_parse_error(
+    line_num: usize,
+    diagnostic: SourceParseDiagnostic,
+    message: impl AsRef<str>,
+) -> CliError {
+    source_parse_error_at(line_num, 1, 1, diagnostic, "", message)
+}
+
+pub(super) fn source_parse_error_for_fragment(
+    line_num: usize,
+    diagnostic: SourceParseDiagnostic,
+    fragment: &str,
+    message: impl AsRef<str>,
+) -> CliError {
+    let width = fragment.chars().count().max(1);
+    source_parse_error_at(line_num, 1, width, diagnostic, fragment, message)
+}
+
+pub(super) fn source_parse_error_at(
+    line_num: usize,
+    column: usize,
+    width: usize,
+    diagnostic: SourceParseDiagnostic,
+    snippet: &str,
+    message: impl AsRef<str>,
+) -> CliError {
+    let descriptor = diagnostic.descriptor();
+    let end_column = column.saturating_add(width.max(1));
+    CliError::ParseError(format!(
+        "line {line_num}: {} [{}] category={} span={line_num}:{column}..{line_num}:{end_column} snippet={:?}",
+        message.as_ref(),
+        descriptor.code,
+        descriptor.category,
+        redact_source_parse_snippet(snippet)
+    ))
+}
+
+pub(super) fn source_parse_error_unlocated(
+    diagnostic: SourceParseDiagnostic,
+    snippet: &str,
+    message: impl AsRef<str>,
+) -> CliError {
+    let descriptor = diagnostic.descriptor();
+    CliError::ParseError(format!(
+        "{} [{}] category={} span=<unknown> snippet={:?}",
+        message.as_ref(),
+        descriptor.code,
+        descriptor.category,
+        redact_source_parse_snippet(snippet)
+    ))
+}
+
+fn redact_source_parse_snippet(snippet: &str) -> String {
+    const MAX_CHARS: usize = 96;
+    let mut out = String::new();
+    let mut in_string = false;
+    let mut string_redacted = false;
+    let mut prev_was_escape = false;
+
+    for ch in snippet.chars() {
+        if out.chars().count() >= MAX_CHARS {
+            out.push('…');
+            break;
+        }
+        if in_string {
+            if !string_redacted {
+                out.push_str("<redacted>");
+                string_redacted = true;
+            }
+            if ch == '"' && !prev_was_escape {
+                out.push('"');
+                in_string = false;
+                string_redacted = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+        match ch {
+            '"' => {
+                out.push('"');
+                in_string = true;
+                prev_was_escape = false;
+            }
+            ch if ch.is_control() => out.push(' '),
+            ch => out.push(ch),
+        }
+    }
+
+    out.trim().to_string()
+}
+
 pub(super) fn parse_source_call(expr: &str) -> Option<(String, Vec<String>)> {
     let expr = expr.trim();
     let open = expr.find('(')?;
@@ -133,14 +270,18 @@ pub(super) fn is_source_local_ident(name: &str) -> bool {
 
 pub(super) fn validate_source_local_expr_name(name: &str) -> Result<(), CliError> {
     if !is_source_ident(name) {
-        return Err(CliError::ParseError(format!(
-            "local binding name `{name}` is not a valid identifier"
-        )));
+        return Err(source_parse_error_unlocated(
+            SourceParseDiagnostic::InvalidName,
+            name,
+            format!("local binding name `{name}` is not a valid identifier"),
+        ));
     }
     if name.contains('.') {
-        return Err(CliError::ParseError(format!(
-            "local binding name `{name}` must not contain `.`"
-        )));
+        return Err(source_parse_error_unlocated(
+            SourceParseDiagnostic::InvalidName,
+            name,
+            format!("local binding name `{name}` must not contain `.`"),
+        ));
     }
     Ok(())
 }

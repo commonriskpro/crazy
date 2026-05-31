@@ -19,11 +19,17 @@ pub(super) fn validate_source_match_pattern(pattern: &str) -> Result<(), CliErro
         return Ok(());
     }
     if let Some(message) = unsupported_source_constructor_pattern_message(pattern)? {
-        return Err(CliError::ParseError(message));
+        return Err(source_parse_error_unlocated(
+            SourceParseDiagnostic::InvalidPattern,
+            pattern,
+            message,
+        ));
     }
-    Err(CliError::ParseError(format!(
-        "unsupported source match pattern `{pattern}`"
-    )))
+    Err(source_parse_error_unlocated(
+        SourceParseDiagnostic::InvalidPattern,
+        pattern,
+        format!("unsupported source match pattern `{pattern}`"),
+    ))
 }
 
 fn validate_source_constructor_pattern_binding_shape(
@@ -31,7 +37,11 @@ fn validate_source_constructor_pattern_binding_shape(
     binding: &str,
 ) -> Result<(), CliError> {
     if let Some(message) = unsupported_source_constructor_binding_message(pattern, binding) {
-        return Err(CliError::ParseError(message));
+        return Err(source_parse_error_unlocated(
+            SourceParseDiagnostic::InvalidPattern,
+            pattern,
+            message,
+        ));
     }
     Ok(())
 }
@@ -95,14 +105,22 @@ fn unsupported_source_constructor_pattern_parts(
         return Ok(None);
     }
     let Some(close) = matching_paren(trimmed, open) else {
-        return Err(CliError::ParseError(format!(
-            "unsupported source match pattern `{pattern}`: constructor pattern has unclosed `)`"
-        )));
+        return Err(source_parse_error_unlocated(
+            SourceParseDiagnostic::MissingDelimiter,
+            pattern,
+            format!(
+                "unsupported source match pattern `{pattern}`: constructor pattern has unclosed `)`"
+            ),
+        ));
     };
     if close != trimmed.len() - 1 {
-        return Err(CliError::ParseError(format!(
-            "unsupported source match pattern `{pattern}`: unexpected tokens after constructor pattern"
-        )));
+        return Err(source_parse_error_unlocated(
+            SourceParseDiagnostic::UnexpectedToken,
+            pattern,
+            format!(
+                "unsupported source match pattern `{pattern}`: unexpected tokens after constructor pattern"
+            ),
+        ));
     }
     Ok(Some((tag, trimmed[open + 1..close].trim())))
 }
@@ -111,9 +129,11 @@ pub(super) fn validate_source_constructor_tag(tag: &str) -> Result<(), CliError>
     if matches!(tag, "Some" | "None" | "Ok" | "Err") {
         return Ok(());
     }
-    Err(CliError::ParseError(format!(
-        "unsupported source match constructor `{tag}`"
-    )))
+    Err(source_parse_error_unlocated(
+        SourceParseDiagnostic::InvalidPattern,
+        tag,
+        format!("unsupported source match constructor `{tag}`"),
+    ))
 }
 
 pub(super) fn source_match_pattern_binding(pattern: &str) -> Option<&str> {
@@ -312,6 +332,20 @@ pub(super) fn normalize_source_match_pattern(
         pattern.to_string()
     };
     validate_source_match_pattern(&normalized)
-        .map_err(|err| source_error_at_line(err, line_num))?;
+        .map_err(|err| source_pattern_error_at_line(err, line_num, &normalized))?;
     Ok(normalized)
+}
+
+fn source_pattern_error_at_line(err: CliError, line_num: usize, pattern: &str) -> CliError {
+    let width = pattern.chars().count().max(1);
+    match err {
+        CliError::ParseError(message) if message.contains("span=<unknown>") => {
+            let message = message.replace(
+                "span=<unknown>",
+                &format!("span={line_num}:1..{line_num}:{}", 1 + width),
+            );
+            CliError::ParseError(format!("line {line_num}: {message}"))
+        }
+        other => source_error_at_line(other, line_num),
+    }
 }

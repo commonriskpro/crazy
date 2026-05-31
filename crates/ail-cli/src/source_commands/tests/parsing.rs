@@ -1,5 +1,33 @@
 use super::*;
 
+fn assert_source_parse_diagnostic(src: &str, code: &str, category: &str, detail: &str) -> String {
+    let err = parse_ail_source(src).expect_err("source parser must reject invalid input");
+    let CliError::ParseError(message) = err else {
+        panic!("source parser must return ParseError");
+    };
+    assert!(
+        message.contains(code),
+        "parse diagnostic must include stable code `{code}`; got: {message}"
+    );
+    assert!(
+        message.contains(&format!("category={category}")),
+        "parse diagnostic must include category `{category}`; got: {message}"
+    );
+    assert!(
+        message.contains("span="),
+        "parse diagnostic must include a span; got: {message}"
+    );
+    assert!(
+        message.contains("snippet="),
+        "parse diagnostic must include a redacted snippet; got: {message}"
+    );
+    assert!(
+        message.contains(detail),
+        "parse diagnostic must keep actionable detail `{detail}`; got: {message}"
+    );
+    message
+}
+
 #[test]
 fn parses_functions_and_tests_from_ail_source() {
     let program = parse_ail_source(
@@ -30,6 +58,77 @@ test main_addition = eq(add(20, 22), 42);
     );
     assert_eq!(program.tests[0].name, "test.main_addition");
     assert_eq!(program.tests[0].return_type, "Bool");
+}
+
+#[test]
+fn rejects_source_parser_failures_with_stable_diagnostic_catalog() {
+    let cases = [
+        (
+            r#"
+fn broken(x: Int -> Int = x
+"#,
+            "AIL_SOURCE_PARSE_MISSING_DELIMITER",
+            "source.parse.delimiter",
+            "function declaration requires closing `)`",
+        ),
+        (
+            r#"
+whatever "customer-secret"
+"#,
+            "AIL_SOURCE_PARSE_UNEXPECTED_TOKEN",
+            "source.parse.token",
+            "expected `module`, `use`, `capability`, `const`, `fn`, `test`, or `grant`, got `whatever`",
+        ),
+        (
+            r#"
+fn 9bad() -> Int = 1
+"#,
+            "AIL_SOURCE_PARSE_INVALID_NAME",
+            "source.parse.name",
+            "declaration name `9bad` segment `9bad` must start with a letter or `_`",
+        ),
+        (
+            r#"
+fn bad(input: List<Map<Int,Bool>) -> Int = 1
+"#,
+            "AIL_SOURCE_PARSE_INVALID_TYPE",
+            "source.parse.type",
+            "unbalanced angle brackets in source type `List<Map<Int,Bool>`",
+        ),
+        (
+            r#"
+fn bad(input: Option<Int>) -> Int = match input { Some() => 1, None => 0 }
+"#,
+            "AIL_SOURCE_PARSE_INVALID_PATTERN",
+            "source.parse.pattern",
+            "unsupported empty source match pattern `Some()`",
+        ),
+    ];
+
+    for (src, code, category, detail) in cases {
+        assert_source_parse_diagnostic(src, code, category, detail);
+    }
+}
+
+#[test]
+fn redacts_source_parser_diagnostic_snippets() {
+    let message = assert_source_parse_diagnostic(
+        r#"
+fn leak() -> Text "do-not-leak"
+"#,
+        "AIL_SOURCE_PARSE_INVALID_DECLARATION",
+        "source.parse.declaration",
+        "function declaration requires `= body`",
+    );
+
+    assert!(
+        message.contains("<redacted>"),
+        "parser diagnostic snippet must redact string literals; got: {message}"
+    );
+    assert!(
+        !message.contains("do-not-leak"),
+        "parser diagnostic must not leak string literal contents; got: {message}"
+    );
 }
 
 #[test]

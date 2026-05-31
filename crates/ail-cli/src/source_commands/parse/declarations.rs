@@ -9,52 +9,79 @@ pub(super) fn parse_source_module(rest: &str, line_num: usize) -> Result<String,
 pub(super) fn parse_source_import(rest: &str, line_num: usize) -> Result<String, CliError> {
     let import = rest.trim();
     let Some(import) = import.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: import declaration requires `use \"relative/path.ail\"`"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            rest,
+            "import declaration requires `use \"relative/path.ail\"`",
+        ));
     };
     if import.is_empty() || import.contains('\0') || Path::new(import).is_absolute() {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: import path must be a non-empty relative path"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            import,
+            "import path must be a non-empty relative path",
+        ));
     }
     if import.contains('\\') {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: import path `{import}` must use `/` separators"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            import,
+            format!("import path `{import}` must use `/` separators"),
+        ));
     }
     if import.contains(':') {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: import path `{import}` must not contain `:`"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            import,
+            format!("import path `{import}` must not contain `:`"),
+        ));
     }
     if import.contains("//") {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: import path `{import}` must not contain empty path segments"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            import,
+            format!("import path `{import}` must not contain empty path segments"),
+        ));
     }
     if import.chars().any(char::is_whitespace) {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: import path `{import}` must not contain whitespace"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            import,
+            format!("import path `{import}` must not contain whitespace"),
+        ));
     }
     if Path::new(import)
         .components()
         .any(|component| matches!(component, Component::ParentDir))
     {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: import path `{import}` must not contain `..`"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            import,
+            format!("import path `{import}` must not contain `..`"),
+        ));
     }
     if !import.starts_with("./") {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: local import path `{import}` must start with `./`"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            import,
+            format!("local import path `{import}` must start with `./`"),
+        ));
     }
     if Path::new(import).extension().and_then(|ext| ext.to_str()) != Some("ail") {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: import path `{import}` must end with `.ail`"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            import,
+            format!("import path `{import}` must end with `.ail`"),
+        ));
     }
     Ok(import.to_string())
 }
@@ -67,14 +94,20 @@ pub(super) fn parse_source_capability(rest: &str, line_num: usize) -> Result<Str
 
 pub(super) fn parse_source_const(rest: &str, line_num: usize) -> Result<SourceConst, CliError> {
     let (head, body) = rest.split_once('=').ok_or_else(|| {
-        CliError::ParseError(format!(
-            "line {line_num}: const declaration requires `= body`"
-        ))
+        source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            rest,
+            "const declaration requires `= body`",
+        )
     })?;
     let (name, return_type) = head.split_once(':').ok_or_else(|| {
-        CliError::ParseError(format!(
-            "line {line_num}: const declaration requires `name: Type`"
-        ))
+        source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            head,
+            "const declaration requires `name: Type`",
+        )
     })?;
     let name = name.trim();
     let return_type = return_type.trim();
@@ -83,9 +116,12 @@ pub(super) fn parse_source_const(rest: &str, line_num: usize) -> Result<SourceCo
     validate_source_type_name(return_type, line_num)?;
     let return_type = normalize_source_type_name(return_type);
     if body.is_empty() {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: const body must be non-empty"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            rest,
+            "const body must be non-empty",
+        ));
     }
     Ok(SourceConst {
         name: normalize_function_name(name),
@@ -102,9 +138,12 @@ pub(super) fn parse_source_function(
 ) -> Result<SourceFunction, CliError> {
     let (name, params, return_and_body) = parse_source_function_signature(rest, line_num)?;
     let (return_type, body) = return_and_body.split_once('=').ok_or_else(|| {
-        CliError::ParseError(format!(
-            "line {line_num}: function declaration requires `= body`"
-        ))
+        source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            return_and_body,
+            "function declaration requires `= body`",
+        )
     })?;
 
     build_source_function(name, params, return_type.trim(), body.trim(), line_num)
@@ -124,18 +163,24 @@ pub(super) fn parse_source_function_signature(
     line_num: usize,
 ) -> Result<(String, Vec<SourceParam>, String), CliError> {
     let open_paren = rest.find('(').ok_or_else(|| {
-        CliError::ParseError(format!(
-            "line {line_num}: function declaration requires `()`"
-        ))
+        source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::MissingDelimiter,
+            rest,
+            "function declaration requires `()`",
+        )
     })?;
     let raw_name = rest[..open_paren].trim();
     validate_source_name(raw_name, line_num)?;
 
     let params_start = open_paren + 1;
     let close_paren = rest[params_start..].find(')').ok_or_else(|| {
-        CliError::ParseError(format!(
-            "line {line_num}: function declaration requires closing `)`"
-        ))
+        source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::MissingDelimiter,
+            rest,
+            "function declaration requires closing `)`",
+        )
     })? + params_start;
     let params = parse_source_params(&rest[params_start..close_paren], line_num)?;
     let after_params = &rest[close_paren + 1..];
@@ -143,9 +188,12 @@ pub(super) fn parse_source_function_signature(
         .trim_start()
         .strip_prefix("->")
         .ok_or_else(|| {
-            CliError::ParseError(format!(
-                "line {line_num}: function declaration requires `-> Type`"
-            ))
+            source_parse_error_for_fragment(
+                line_num,
+                SourceParseDiagnostic::InvalidDeclaration,
+                after_params,
+                "function declaration requires `-> Type`",
+            )
         })?;
     Ok((
         normalize_function_name(raw_name),
@@ -162,9 +210,12 @@ pub(super) fn build_source_function(
     line_num: usize,
 ) -> Result<SourceFunction, CliError> {
     if return_type.is_empty() || body.is_empty() {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: function return type and body must be non-empty"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            body,
+            "function return type and body must be non-empty",
+        ));
     }
     validate_source_type_name(return_type, line_num)?;
     let return_type = normalize_source_type_name(return_type);
@@ -194,22 +245,31 @@ pub(super) fn parse_source_params(
         .map(|raw| {
             let param = raw.trim();
             let (name, ty) = param.split_once(':').ok_or_else(|| {
-                CliError::ParseError(format!(
-                    "line {line_num}: function parameters must use `name: Type`"
-                ))
+                source_parse_error_for_fragment(
+                    line_num,
+                    SourceParseDiagnostic::InvalidDeclaration,
+                    param,
+                    "function parameters must use `name: Type`",
+                )
             })?;
             let name = name.trim();
             let ty = ty.trim();
             validate_source_local_name(name, line_num)?;
             if !seen.insert(name.to_string()) {
-                return Err(CliError::ParseError(format!(
-                    "line {line_num}: duplicate parameter `{name}`"
-                )));
+                return Err(source_parse_error_for_fragment(
+                    line_num,
+                    SourceParseDiagnostic::InvalidDeclaration,
+                    param,
+                    format!("duplicate parameter `{name}`"),
+                ));
             }
             if ty.is_empty() {
-                return Err(CliError::ParseError(format!(
-                    "line {line_num}: parameter `{name}` requires a type"
-                )));
+                return Err(source_parse_error_for_fragment(
+                    line_num,
+                    SourceParseDiagnostic::InvalidType,
+                    param,
+                    format!("parameter `{name}` requires a type"),
+                ));
             }
             validate_source_type_name(ty, line_num)?;
             let ty = normalize_source_type_name(ty);
@@ -233,23 +293,30 @@ pub(super) fn collect_braced_body(
             return Ok((body, idx + 1));
         }
         if statement.ends_with('{') {
-            return Err(CliError::ParseError(format!(
-                "line {line_num}: nested source blocks are not supported yet"
-            )));
+            return Err(source_parse_error_for_fragment(
+                *line_num,
+                SourceParseDiagnostic::InvalidDeclaration,
+                statement,
+                "nested source blocks are not supported yet",
+            ));
         }
         body.push((*line_num, statement.clone()));
         idx += 1;
     }
 
-    Err(CliError::ParseError(format!(
-        "line {opener_line}: function block requires closing `}}`"
-    )))
+    Err(source_parse_error(
+        opener_line,
+        SourceParseDiagnostic::MissingDelimiter,
+        "function block requires closing `}`",
+    ))
 }
 
 pub(super) fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, CliError> {
     let Some((last_line, last_statement)) = lines.last() else {
-        return Err(CliError::ParseError(
-            "function block body cannot be empty".to_string(),
+        return Err(source_parse_error(
+            1,
+            SourceParseDiagnostic::InvalidDeclaration,
+            "function block body cannot be empty",
         ));
     };
     let mut final_expr = last_statement.as_str();
@@ -257,22 +324,31 @@ pub(super) fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, 
         final_expr = rest.trim();
     }
     if final_expr.starts_with("let ") {
-        return Err(CliError::ParseError(format!(
-            "line {last_line}: function block must end with an expression or `return expression`"
-        )));
+        return Err(source_parse_error_for_fragment(
+            *last_line,
+            SourceParseDiagnostic::InvalidDeclaration,
+            final_expr,
+            "function block must end with an expression or `return expression`",
+        ));
     }
 
     let mut body = lower_source_expr(final_expr, *last_line)?;
     for (line_num, statement) in lines[..lines.len().saturating_sub(1)].iter().rev() {
         let Some(rest) = statement.strip_prefix("let ") else {
-            return Err(CliError::ParseError(format!(
-                "line {line_num}: only `let name = expression` statements may precede the final expression"
-            )));
+            return Err(source_parse_error_for_fragment(
+                *line_num,
+                SourceParseDiagnostic::InvalidDeclaration,
+                statement,
+                "only `let name = expression` statements may precede the final expression",
+            ));
         };
         let (binding, value) = rest.split_once('=').ok_or_else(|| {
-            CliError::ParseError(format!(
-                "line {line_num}: let statement requires `let name = expression`"
-            ))
+            source_parse_error_for_fragment(
+                *line_num,
+                SourceParseDiagnostic::InvalidDeclaration,
+                statement,
+                "let statement requires `let name = expression`",
+            )
         })?;
         let binding = binding.trim();
         let value = value.trim();
@@ -280,9 +356,12 @@ pub(super) fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, 
             let name = name.trim();
             let ty = ty.trim();
             if ty.is_empty() {
-                return Err(CliError::ParseError(format!(
-                    "line {line_num}: typed let statement requires a type annotation"
-                )));
+                return Err(source_parse_error_for_fragment(
+                    *line_num,
+                    SourceParseDiagnostic::InvalidType,
+                    statement,
+                    "typed let statement requires a type annotation",
+                ));
             }
             validate_source_type_name(ty, *line_num)?;
             (name, Some(normalize_source_type_name(ty)))
@@ -291,9 +370,12 @@ pub(super) fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, 
         };
         validate_source_local_name(name, *line_num)?;
         if value.is_empty() {
-            return Err(CliError::ParseError(format!(
-                "line {line_num}: let statement requires a value expression"
-            )));
+            return Err(source_parse_error_for_fragment(
+                *line_num,
+                SourceParseDiagnostic::InvalidDeclaration,
+                statement,
+                "let statement requires a value expression",
+            ));
         }
         let lowered_value = lower_source_expr(value, *line_num)?;
         body = if let Some(ty) = ty.as_deref() {
@@ -308,9 +390,12 @@ pub(super) fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, 
 
 pub(super) fn parse_source_test(rest: &str, line_num: usize) -> Result<SourceTest, CliError> {
     let (head, body) = rest.split_once('=').ok_or_else(|| {
-        CliError::ParseError(format!(
-            "line {line_num}: test declaration requires `= body`"
-        ))
+        source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            rest,
+            "test declaration requires `= body`",
+        )
     })?;
     let (raw_name, return_type) = if let Some((name, ty)) = head.split_once("->") {
         (name.trim(), ty.trim())
@@ -321,9 +406,12 @@ pub(super) fn parse_source_test(rest: &str, line_num: usize) -> Result<SourceTes
 
     let body = body.trim();
     if return_type.is_empty() || body.is_empty() {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: test return type and body must be non-empty"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            rest,
+            "test return type and body must be non-empty",
+        ));
     }
     validate_source_type_name(return_type, line_num)?;
     let return_type = normalize_source_type_name(return_type);
@@ -340,9 +428,12 @@ pub(super) fn parse_source_test(rest: &str, line_num: usize) -> Result<SourceTes
 pub(super) fn parse_source_grant(rest: &str, line_num: usize) -> Result<SourceGrant, CliError> {
     let parts = rest.split_whitespace().collect::<Vec<_>>();
     if parts.len() != 2 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: grant declaration requires `grant target capability`"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            rest,
+            "grant declaration requires `grant target capability`",
+        ));
     }
     let target = normalize_grant_target(parts[0]);
     let capability = parts[1].to_string();
