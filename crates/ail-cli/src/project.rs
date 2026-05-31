@@ -15,7 +15,7 @@
 //   native/       ← compiled native object artifacts
 // ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::CliError;
 
@@ -34,6 +34,85 @@ pub enum ArtifactKind {
     Wasm,
     /// Compiled native object artifact (ELF / Mach-O / COFF).
     Native,
+}
+
+// ── ProjectScaffoldNames ─────────────────────────────────────────────────
+
+/// User-visible project name plus compiler/tooling-safe scaffold identifiers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectScaffoldNames {
+    /// Name persisted in `.ail/project.toml`.
+    pub manifest_name: String,
+    /// Identifier-safe prefix used by generated starter ACL/source artifacts.
+    pub scaffold_ident: String,
+}
+
+/// Derive deterministic project scaffold names from a target path.
+///
+/// `ail new` writes the directory basename into TOML and also injects it into
+/// generated starter ACL.  Keeping validation here gives project lifecycle
+/// commands one shared invariant: generated projects must be manifest-safe and
+/// starter files must be immediately usable by follow-up tooling.
+pub(crate) fn project_scaffold_names(path: &Path) -> Result<ProjectScaffoldNames, CliError> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            CliError::Domain(format!(
+                "invalid project name for {}: expected a UTF-8 directory name",
+                path.display()
+            ))
+        })?;
+
+    validate_project_manifest_name(name).map_err(|reason| {
+        CliError::Domain(format!(
+            "invalid project name '{name}': {reason}. Use ASCII letters, digits, '.', '_' or '-', starting with a letter or digit"
+        ))
+    })?;
+
+    Ok(ProjectScaffoldNames {
+        manifest_name: name.to_string(),
+        scaffold_ident: scaffold_ident_from_project_name(name),
+    })
+}
+
+fn validate_project_manifest_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("name must not be empty");
+    }
+    if matches!(name, "." | "..") {
+        return Err("name must not be '.' or '..'");
+    }
+    let mut chars = name.chars();
+    let first = chars
+        .next()
+        .expect("non-empty project names have first char");
+    if !first.is_ascii_alphanumeric() {
+        return Err("name must start with a letter or digit");
+    }
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        return Err("name contains unsupported characters");
+    }
+    Ok(())
+}
+
+fn scaffold_ident_from_project_name(name: &str) -> String {
+    let mut ident = String::new();
+    if matches!(name.chars().next(), Some(ch) if ch.is_ascii_digit()) {
+        ident.push_str("project_");
+    }
+
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            ident.push(ch);
+        } else {
+            ident.push('_');
+        }
+    }
+    ident
 }
 
 // ── ProjectContext ────────────────────────────────────────────────────────
@@ -147,6 +226,54 @@ mod tests {
         assert_eq!(
             ctx.artifact_name(ArtifactKind::Native, id),
             PathBuf::from("/proj/.ail/native/testid")
+        );
+    }
+
+    // Scenario: project scaffold names preserve the manifest name but create
+    // tooling-safe identifiers for generated starter ACL.
+    //   GIVEN a project directory with package-style punctuation
+    //   WHEN scaffold names are derived
+    //   THEN TOML keeps the user-facing name and ACL uses an identifier-safe slug
+    #[test]
+    fn project_scaffold_names_sanitize_generated_identifier() {
+        let names = project_scaffold_names(Path::new("my-app.v1"))
+            .expect("package-style project names must be accepted");
+
+        assert_eq!(names.manifest_name, "my-app.v1");
+        assert_eq!(names.scaffold_ident, "my_app_v1");
+    }
+
+    // Scenario: numeric package-style names remain manifest-safe and get a
+    // valid generated identifier prefix.
+    //   GIVEN a project name that starts with a digit
+    //   WHEN scaffold names are derived
+    //   THEN generated ACL identifiers do not start with a digit
+    #[test]
+    fn project_scaffold_names_prefix_numeric_generated_identifier() {
+        let names = project_scaffold_names(Path::new("2026-tool"))
+            .expect("numeric-leading project names are valid manifest names");
+
+        assert_eq!(names.manifest_name, "2026-tool");
+        assert_eq!(names.scaffold_ident, "project_2026_tool");
+    }
+
+    // Scenario: unsafe names fail before project creation can write invalid TOML.
+    //   GIVEN a project directory containing spaces
+    //   WHEN scaffold names are derived
+    //   THEN a clear domain error is returned
+    #[test]
+    fn project_scaffold_names_reject_unsafe_manifest_name() {
+        let err = project_scaffold_names(Path::new("bad name"))
+            .expect_err("spaces would make generated project metadata unsafe");
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("invalid project name 'bad name'"),
+            "error must name the invalid project; got: {msg}"
+        );
+        assert!(
+            msg.contains("Use ASCII letters"),
+            "error must explain the safe project-name contract; got: {msg}"
         );
     }
 
