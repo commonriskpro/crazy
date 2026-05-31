@@ -20,5 +20,8 @@ pub mod graph_self_model;
 /// Builder for a self-referential `ChangeSet` describing itself.
 pub mod changeset_self;
 
+/// Stable metadata contracts for dogfood fixtures and example programs.
+pub mod fixture_contracts;
+
 /// Projects the stdlib registry into a `SemanticGraph`.
 pub mod stdlib_projection;
