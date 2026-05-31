@@ -292,29 +292,136 @@ fn handle_connection(stream: &mut TcpStream, client: &InMemoryRegistryClient) {
 
 // ── HttpClientError ───────────────────────────────────────────────────────
 
+/// Stable diagnostic key for HTTP registry request failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpRegistryDiagnosticKey {
+    /// Registry endpoint is not a plain `host:port` address.
+    RegistryUrlInvalid,
+    /// Registry endpoint embeds unsupported auth/userinfo.
+    RegistryAuthUnsupported,
+    /// Registry endpoint embeds token-like material that must not be echoed.
+    RegistryTokenRedacted,
+    /// TCP-level transport failure.
+    RegistryTransport,
+    /// HTTP framing or protocol failure.
+    RegistryProtocol,
+    /// JSON serialization or deserialization failure.
+    RegistryJson,
+    /// Registry server returned a non-success HTTP status.
+    RegistryServer,
+}
+
+impl HttpRegistryDiagnosticKey {
+    /// Stable machine-readable diagnostic key.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HttpRegistryDiagnosticKey::RegistryUrlInvalid => "registry.url.invalid",
+            HttpRegistryDiagnosticKey::RegistryAuthUnsupported => "registry.auth.unsupported",
+            HttpRegistryDiagnosticKey::RegistryTokenRedacted => "registry.token.redacted",
+            HttpRegistryDiagnosticKey::RegistryTransport => "registry.transport",
+            HttpRegistryDiagnosticKey::RegistryProtocol => "registry.protocol",
+            HttpRegistryDiagnosticKey::RegistryJson => "registry.json",
+            HttpRegistryDiagnosticKey::RegistryServer => "registry.server",
+        }
+    }
+}
+
+/// Redacted, stable diagnostic metadata for an HTTP registry request failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpRegistryDiagnostic {
+    /// Machine-readable failure key.
+    pub key: HttpRegistryDiagnosticKey,
+    /// Registry endpoint shape with auth, query, fragment, and path redacted.
+    pub registry: Option<String>,
+    /// HTTP request path, never a full registry URL.
+    pub request_path: Option<String>,
+}
+
+impl HttpRegistryDiagnostic {
+    fn new(key: HttpRegistryDiagnosticKey, registry: Option<String>, path: Option<&str>) -> Self {
+        Self {
+            key,
+            registry,
+            request_path: path.map(str::to_string),
+        }
+    }
+}
+
 /// Error type returned by `HttpRegistryClient` operations.
 #[derive(Debug)]
 pub enum HttpClientError {
     /// TCP-level I/O error.
-    Transport(String),
+    Transport {
+        diagnostic: HttpRegistryDiagnostic,
+        message: String,
+    },
     /// HTTP framing or protocol error.
-    Protocol(String),
+    Protocol {
+        diagnostic: HttpRegistryDiagnostic,
+        message: String,
+    },
     /// JSON serialization / deserialization error.
-    Json(String),
+    Json {
+        diagnostic: HttpRegistryDiagnostic,
+        message: String,
+    },
     /// Server returned a non-2xx HTTP status code.
-    Server { status: u16, body: String },
+    Server {
+        status: u16,
+        body: String,
+        diagnostic: HttpRegistryDiagnostic,
+    },
+}
+
+impl HttpClientError {
+    /// Stable machine-readable diagnostic key for this error.
+    pub fn diagnostic_key(&self) -> &'static str {
+        self.diagnostic().key.as_str()
+    }
+
+    /// Redacted diagnostic metadata for this error.
+    pub fn diagnostic(&self) -> &HttpRegistryDiagnostic {
+        match self {
+            HttpClientError::Transport { diagnostic, .. }
+            | HttpClientError::Protocol { diagnostic, .. }
+            | HttpClientError::Json { diagnostic, .. }
+            | HttpClientError::Server { diagnostic, .. } => diagnostic,
+        }
+    }
+
+    /// Redacted registry endpoint shape, when the error is tied to one.
+    pub fn redacted_registry(&self) -> Option<&str> {
+        self.diagnostic().registry.as_deref()
+    }
+
+    /// Human-readable message that never includes auth tokens or full registry URLs.
+    pub fn safe_message(&self) -> String {
+        let key = self.diagnostic_key();
+        let registry = self
+            .redacted_registry()
+            .map(|registry| format!(" registry={registry}"))
+            .unwrap_or_default();
+
+        match self {
+            HttpClientError::Transport { message, .. } => {
+                format!("{key}:{registry} transport failed: {message}")
+            }
+            HttpClientError::Protocol { message, .. } => {
+                format!("{key}:{registry} protocol failed: {message}")
+            }
+            HttpClientError::Json { message, .. } => {
+                format!("{key}: JSON processing failed: {message}")
+            }
+            HttpClientError::Server { status, .. } => {
+                format!("{key}:{registry} server returned HTTP {status}")
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for HttpClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HttpClientError::Transport(m) => write!(f, "transport: {m}"),
-            HttpClientError::Protocol(m) => write!(f, "protocol: {m}"),
-            HttpClientError::Json(m) => write!(f, "json: {m}"),
-            HttpClientError::Server { status, body } => {
-                write!(f, "server error {status}: {body}")
-            }
-        }
+        f.write_str(&self.safe_message())
     }
 }
 
@@ -343,10 +450,74 @@ impl HttpRegistryClient {
         HttpRegistryClient { addr: addr.into() }
     }
 
+    fn diagnostic(
+        &self,
+        key: HttpRegistryDiagnosticKey,
+        path: Option<&str>,
+    ) -> HttpRegistryDiagnostic {
+        HttpRegistryDiagnostic::new(key, Some(redacted_registry_endpoint(&self.addr)), path)
+    }
+
+    fn validate_addr_for_request(&self, path: &str) -> Result<(), HttpClientError> {
+        let addr = self.addr.trim();
+        let diagnostic_key = if addr.is_empty() || addr != self.addr {
+            Some(HttpRegistryDiagnosticKey::RegistryUrlInvalid)
+        } else if addr.contains('@') {
+            Some(HttpRegistryDiagnosticKey::RegistryAuthUnsupported)
+        } else if contains_token_like_material(addr) {
+            Some(HttpRegistryDiagnosticKey::RegistryTokenRedacted)
+        } else if addr.contains("://")
+            || addr.contains('/')
+            || addr.contains('?')
+            || addr.contains('#')
+        {
+            Some(HttpRegistryDiagnosticKey::RegistryUrlInvalid)
+        } else {
+            None
+        };
+
+        if let Some(key) = diagnostic_key {
+            return Err(HttpClientError::Protocol {
+                diagnostic: self.diagnostic(key, Some(path)),
+                message: "registry address must be plain host:port without auth, token, path, query, or fragment"
+                    .to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn transport_error(&self, path: &str, error: impl std::fmt::Display) -> HttpClientError {
+        HttpClientError::Transport {
+            diagnostic: self.diagnostic(HttpRegistryDiagnosticKey::RegistryTransport, Some(path)),
+            message: error.to_string(),
+        }
+    }
+
+    fn protocol_error(&self, path: &str, message: impl Into<String>) -> HttpClientError {
+        HttpClientError::Protocol {
+            diagnostic: self.diagnostic(HttpRegistryDiagnosticKey::RegistryProtocol, Some(path)),
+            message: message.into(),
+        }
+    }
+
+    fn json_error(&self, path: Option<&str>, message: impl Into<String>) -> HttpClientError {
+        HttpClientError::Json {
+            diagnostic: HttpRegistryDiagnostic::new(
+                HttpRegistryDiagnosticKey::RegistryJson,
+                path.map(|_| redacted_registry_endpoint(&self.addr)),
+                path,
+            ),
+            message: message.into(),
+        }
+    }
+
     /// Open a new TCP connection, POST `body` to `path`, return the response body.
     fn post_json(&self, path: &str, body: &[u8]) -> Result<Vec<u8>, HttpClientError> {
-        let mut stream = TcpStream::connect(&self.addr)
-            .map_err(|e| HttpClientError::Transport(e.to_string()))?;
+        self.validate_addr_for_request(path)?;
+
+        let mut stream =
+            TcpStream::connect(&self.addr).map_err(|e| self.transport_error(path, e))?;
         let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
         let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
 
@@ -363,10 +534,10 @@ impl HttpRegistryClient {
         );
         stream
             .write_all(header.as_bytes())
-            .map_err(|e| HttpClientError::Transport(e.to_string()))?;
+            .map_err(|e| self.transport_error(path, e))?;
         stream
             .write_all(body)
-            .map_err(|e| HttpClientError::Transport(e.to_string()))?;
+            .map_err(|e| self.transport_error(path, e))?;
 
         // Read response headers.
         let mut resp_buf: Vec<u8> = Vec::new();
@@ -374,20 +545,18 @@ impl HttpRegistryClient {
         loop {
             stream
                 .read_exact(&mut byte)
-                .map_err(|e| HttpClientError::Transport(e.to_string()))?;
+                .map_err(|e| self.transport_error(path, e))?;
             resp_buf.push(byte[0]);
             if resp_buf.ends_with(b"\r\n\r\n") {
                 break;
             }
             if resp_buf.len() > 16_384 {
-                return Err(HttpClientError::Protocol(
-                    "response headers too large".into(),
-                ));
+                return Err(self.protocol_error(path, "response headers too large"));
             }
         }
 
         let header_text = std::str::from_utf8(&resp_buf)
-            .map_err(|_| HttpClientError::Protocol("non-UTF-8 response headers".into()))?;
+            .map_err(|_| self.protocol_error(path, "non-UTF-8 response headers"))?;
 
         // Parse HTTP status code from the response line: "HTTP/1.1 NNN Reason".
         let resp_status: u16 = header_text
@@ -408,14 +577,14 @@ impl HttpRegistryClient {
 
         // Reject excessively large response bodies before allocating.
         if content_length > MAX_BODY_SIZE {
-            return Err(HttpClientError::Protocol("response body too large".into()));
+            return Err(self.protocol_error(path, "response body too large"));
         }
 
         // Read response body.
         let mut body_buf = vec![0u8; content_length];
         stream
             .read_exact(&mut body_buf)
-            .map_err(|e| HttpClientError::Transport(e.to_string()))?;
+            .map_err(|e| self.transport_error(path, e))?;
 
         // Non-2xx → surface as a distinct error, not a JSON decode failure.
         if !(200..300).contains(&resp_status) {
@@ -423,6 +592,7 @@ impl HttpRegistryClient {
             return Err(HttpClientError::Server {
                 status: resp_status,
                 body,
+                diagnostic: self.diagnostic(HttpRegistryDiagnosticKey::RegistryServer, Some(path)),
             });
         }
 
@@ -434,31 +604,78 @@ impl RegistryClient for HttpRegistryClient {
     type Error = HttpClientError;
 
     fn publish(&self, request: PublishRequest) -> Result<PublishResponse, Self::Error> {
-        let body =
-            serde_json::to_vec(&request).map_err(|e| HttpClientError::Json(e.to_string()))?;
-        let resp = self.post_json("/api/v1/publish", &body)?;
-        serde_json::from_slice(&resp).map_err(|e| HttpClientError::Json(e.to_string()))
+        let path = "/api/v1/publish";
+        let body = serde_json::to_vec(&request).map_err(|e| self.json_error(None, e))?;
+        let resp = self.post_json(path, &body)?;
+        serde_json::from_slice(&resp).map_err(|e| self.json_error(Some(path), e))
     }
 
     fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, Self::Error> {
-        let body =
-            serde_json::to_vec(&request).map_err(|e| HttpClientError::Json(e.to_string()))?;
-        let resp = self.post_json("/api/v1/fetch", &body)?;
-        serde_json::from_slice(&resp).map_err(|e| HttpClientError::Json(e.to_string()))
+        let path = "/api/v1/fetch";
+        let body = serde_json::to_vec(&request).map_err(|e| self.json_error(None, e))?;
+        let resp = self.post_json(path, &body)?;
+        serde_json::from_slice(&resp).map_err(|e| self.json_error(Some(path), e))
     }
 
     fn search(&self, request: SearchRequest) -> Result<SearchResponse, Self::Error> {
-        let body =
-            serde_json::to_vec(&request).map_err(|e| HttpClientError::Json(e.to_string()))?;
-        let resp = self.post_json("/api/v1/search", &body)?;
-        serde_json::from_slice(&resp).map_err(|e| HttpClientError::Json(e.to_string()))
+        let path = "/api/v1/search";
+        let body = serde_json::to_vec(&request).map_err(|e| self.json_error(None, e))?;
+        let resp = self.post_json(path, &body)?;
+        serde_json::from_slice(&resp).map_err(|e| self.json_error(Some(path), e))
     }
 
     fn verify(&self, request: VerifyRequest) -> Result<VerifyResponse, Self::Error> {
-        let body =
-            serde_json::to_vec(&request).map_err(|e| HttpClientError::Json(e.to_string()))?;
-        let resp = self.post_json("/api/v1/verify", &body)?;
-        serde_json::from_slice(&resp).map_err(|e| HttpClientError::Json(e.to_string()))
+        let path = "/api/v1/verify";
+        let body = serde_json::to_vec(&request).map_err(|e| self.json_error(None, e))?;
+        let resp = self.post_json(path, &body)?;
+        serde_json::from_slice(&resp).map_err(|e| self.json_error(Some(path), e))
+    }
+}
+
+fn contains_token_like_material(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("token=")
+        || lower.contains("access_token=")
+        || lower.contains("auth=")
+        || lower.contains("authorization=")
+        || lower.contains("api_key=")
+        || lower.contains("apikey=")
+        || lower.contains("secret=")
+        || lower.contains("bearer ")
+}
+
+fn redacted_registry_endpoint(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "<empty>".to_string();
+    }
+
+    let (scheme, rest) = if let Some(index) = trimmed.find("://") {
+        (&trimmed[..index + 3], &trimmed[index + 3..])
+    } else {
+        ("", trimmed)
+    };
+
+    let mut authority_end = rest.len();
+    let mut redacted_tail = false;
+    for delimiter in ['/', '?', '#'] {
+        if let Some(index) = rest.find(delimiter) {
+            authority_end = authority_end.min(index);
+            redacted_tail = true;
+        }
+    }
+
+    let authority = &rest[..authority_end];
+    let authority = if let Some(index) = authority.rfind('@') {
+        format!("<redacted>@{}", &authority[index + 1..])
+    } else {
+        authority.to_string()
+    };
+
+    if redacted_tail {
+        format!("{scheme}{authority}/<redacted>")
+    } else {
+        format!("{scheme}{authority}")
     }
 }
 
@@ -789,7 +1006,7 @@ mod tests {
         let client = HttpRegistryClient::new(&bad_addr);
         let result = client.post_json("/api/v1/publish", b"{}");
         match result {
-            Err(HttpClientError::Server { status, body }) => {
+            Err(HttpClientError::Server { status, body, .. }) => {
                 assert_eq!(status, 500, "forced 500 must yield a 500 server error");
                 assert!(
                     body.contains("forced"),
@@ -798,6 +1015,100 @@ mod tests {
             }
             other => panic!("expected Server error, got {other:?}"),
         }
+    }
+
+    // ── registry_url_auth_is_rejected_with_redacted_diagnostics ──────────
+    // Production gate: client diagnostics expose stable auth failure keys while
+    // redacting userinfo, path, query, and token-like URL material.
+    #[test]
+    fn registry_url_auth_is_rejected_with_redacted_diagnostics() {
+        let client = HttpRegistryClient::new(
+            "https://alice:super-secret@registry.example.test:443/api/v1?token=secret-token",
+        );
+
+        let err = client
+            .post_json("/api/v1/search", b"{}")
+            .expect_err("userinfo registry URL must be rejected before connect");
+
+        assert_eq!(err.diagnostic_key(), "registry.auth.unsupported");
+        assert_eq!(
+            err.redacted_registry(),
+            Some("https://<redacted>@registry.example.test:443/<redacted>")
+        );
+
+        let rendered = format!("{err:?} {err} {}", err.safe_message());
+        for secret in [
+            "alice",
+            "super-secret",
+            "secret-token",
+            "token=secret-token",
+            "https://alice:super-secret@registry.example.test:443/api/v1?token=secret-token",
+        ] {
+            assert!(
+                !rendered.contains(secret),
+                "diagnostic output must not leak {secret}: {rendered}"
+            );
+        }
+    }
+
+    // ── registry_url_token_query_is_rejected_with_redacted_diagnostics ───
+    // Production gate: token-like registry URL material gets a stable key and
+    // is never echoed in safe messages.
+    #[test]
+    fn registry_url_token_query_is_rejected_with_redacted_diagnostics() {
+        let client = HttpRegistryClient::new(
+            "https://registry.example.test:443/packages?access_token=secret-token-123",
+        );
+
+        let err = client
+            .post_json("/api/v1/fetch", b"{}")
+            .expect_err("token-bearing registry URL must be rejected before connect");
+
+        assert_eq!(err.diagnostic_key(), "registry.token.redacted");
+        assert_eq!(
+            err.redacted_registry(),
+            Some("https://registry.example.test:443/<redacted>")
+        );
+
+        let rendered = format!("{err:?} {err} {}", err.safe_message());
+        for secret in [
+            "secret-token-123",
+            "access_token=secret-token-123",
+            "/packages?access_token",
+        ] {
+            assert!(
+                !rendered.contains(secret),
+                "diagnostic output must not leak {secret}: {rendered}"
+            );
+        }
+    }
+
+    // ── registry_url_path_is_rejected_with_redacted_diagnostics ──────────
+    // Production gate: full registry URLs are rejected with a URL-specific key
+    // and only a redacted endpoint shape is exposed.
+    #[test]
+    fn registry_url_path_is_rejected_with_redacted_diagnostics() {
+        let client = HttpRegistryClient::new("https://registry.example.test:443/api/v1");
+
+        let err = client
+            .post_json("/api/v1/verify", b"{}")
+            .expect_err("full registry URL must be rejected before connect");
+
+        assert_eq!(err.diagnostic_key(), "registry.url.invalid");
+        assert_eq!(
+            err.redacted_registry(),
+            Some("https://registry.example.test:443/<redacted>")
+        );
+        assert_eq!(
+            err.diagnostic().request_path.as_deref(),
+            Some("/api/v1/verify")
+        );
+
+        let rendered = format!("{err:?} {err} {}", err.safe_message());
+        assert!(
+            !rendered.contains("https://registry.example.test:443/api/v1"),
+            "diagnostic output must not leak full registry URL: {rendered}"
+        );
     }
 
     // ── http_publish_sequence_numbers ─────────────────────────────────────
