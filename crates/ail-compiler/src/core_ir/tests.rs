@@ -1,3 +1,5 @@
+#[path = "tests/diagnostics.rs"]
+mod diagnostics;
 #[path = "tests/exprs.rs"]
 mod exprs;
 #[path = "tests/hashes.rs"]

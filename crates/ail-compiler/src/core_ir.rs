@@ -21,6 +21,7 @@
 
 // ── Submodules ────────────────────────────────────────────────────────────
 
+pub(crate) mod diagnostics;
 pub(crate) mod expr;
 pub(crate) mod nodes;
 pub(crate) mod primitives;
@@ -28,6 +29,9 @@ pub(crate) mod types;
 
 // ── Re-exports — public API surface is unchanged ─────────────────────────
 
+pub use diagnostics::{
+    CoreIrDiagnostic, CoreIrDiagnosticIssue, CoreIrIssueCategory, CoreIrIssueCode,
+};
 pub use expr::{CoreExpr, MatchArm, SelectClause};
 pub use nodes::{CoreIr, CoreNode, StageHashes};
 pub use primitives::{CoreNodeKind, LiteralValue, LoopTermination, ResourceMode};
