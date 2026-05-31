@@ -26,6 +26,22 @@ use crate::audit::{
     TRANSACTION_CATEGORY_ROLLBACK_ALREADY_ROLLED_BACK, TRANSACTION_CATEGORY_ROLLED_BACK,
 };
 use crate::profile::CapabilityId;
+use std::collections::HashSet;
+
+// ── Transaction readiness categories ─────────────────────────────────────
+
+/// Transaction preflight found no readiness issues.
+pub const TRANSACTION_PREFLIGHT_CATEGORY_READY: &str = "transaction.preflight.ready";
+/// Transaction preflight found at least one readiness issue.
+pub const TRANSACTION_PREFLIGHT_CATEGORY_BLOCKED: &str = "transaction.preflight.blocked";
+/// Transaction group has no capability entries.
+pub const TRANSACTION_READINESS_CATEGORY_EMPTY_GROUP: &str = "transaction.readiness.empty_group";
+/// Non-rollbackable entries must declare explicit compensation/idempotency.
+pub const TRANSACTION_READINESS_CATEGORY_MISSING_COMPENSATION: &str =
+    "transaction.readiness.missing_compensation";
+/// The same capability appears more than once in the transaction group.
+pub const TRANSACTION_READINESS_CATEGORY_DUPLICATE_CAPABILITY: &str =
+    "transaction.readiness.duplicate_capability";
 
 // ── TransactionPolicy ─────────────────────────────────────────────────────
 
@@ -150,6 +166,52 @@ pub struct TransactionAuditRecord {
     pub compensation_required_count: usize,
 }
 
+// ── TransactionPreflightReport ───────────────────────────────────────────
+
+/// Redacted deterministic readiness report for a transaction group.
+///
+/// The report exposes only stable categories and counts. It intentionally
+/// avoids raw group names, capability names, refund capability IDs, and
+/// idempotency keys so it can be persisted before commit/rollback without
+/// leaking tenant or provider details.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransactionPreflightReport {
+    /// Redacted shape of the transaction group name.
+    pub group_name_shape: String,
+    /// Current lifecycle status.
+    pub status: &'static str,
+    /// Stable summary category for the report.
+    pub category: &'static str,
+    /// Number of capability entries tracked by the transaction.
+    pub entry_count: usize,
+    /// Number of entries marked non-rollbackable.
+    pub non_rollbackable_count: usize,
+    /// Number of non-rollbackable entries with explicit compensation.
+    pub compensation_required_count: usize,
+    /// Number of non-rollbackable entries missing explicit compensation.
+    pub missing_compensation_count: usize,
+    /// Number of repeated capability entries beyond their first occurrence.
+    pub duplicate_capability_count: usize,
+    /// Stable readiness issues, ordered by category priority.
+    pub issues: Vec<TransactionReadinessIssue>,
+}
+
+impl TransactionPreflightReport {
+    /// `true` when the transaction has no readiness issues.
+    pub fn is_ready(&self) -> bool {
+        self.issues.is_empty()
+    }
+}
+
+/// One redacted transaction readiness issue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransactionReadinessIssue {
+    /// Stable machine-readable readiness category.
+    pub category: &'static str,
+    /// Number of entries represented by this issue.
+    pub count: usize,
+}
+
 // ── TransactionEntry ──────────────────────────────────────────────────────
 
 /// One capability in a [`TransactionGroup`], with its rollback and compensation
@@ -242,6 +304,37 @@ impl TransactionGroup {
     /// Current lifecycle status.
     pub fn status(&self) -> TransactionStatus {
         self.status.clone()
+    }
+
+    /// Return a redacted deterministic readiness report before commit/rollback.
+    ///
+    /// This is a reporting helper only: it does not mutate the transaction and
+    /// does not change the existing `commit()` or `rollback()` behavior. Use it
+    /// to surface production-safety issues before finalizing a transaction.
+    pub fn preflight_report(&self) -> TransactionPreflightReport {
+        let missing_compensation_count = self.missing_compensation_count();
+        let duplicate_capability_count = self.duplicate_capability_count();
+        let issues = readiness_issues(
+            self.entries.len(),
+            missing_compensation_count,
+            duplicate_capability_count,
+        );
+
+        TransactionPreflightReport {
+            group_name_shape: redacted_group_name_shape(&self.name).to_string(),
+            status: self.status.as_str(),
+            category: if issues.is_empty() {
+                TRANSACTION_PREFLIGHT_CATEGORY_READY
+            } else {
+                TRANSACTION_PREFLIGHT_CATEGORY_BLOCKED
+            },
+            entry_count: self.entries.len(),
+            non_rollbackable_count: self.non_rollbackable_count(),
+            compensation_required_count: self.compensation_required_count(),
+            missing_compensation_count,
+            duplicate_capability_count,
+            issues,
+        }
     }
 
     /// Add a capability with the given rollback policy to this group.
@@ -380,6 +473,55 @@ impl TransactionGroup {
             })
             .count()
     }
+
+    fn missing_compensation_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry.policy == TransactionPolicy::NonRollbackable
+                    && entry.compensation == CompensationPolicy::None
+            })
+            .count()
+    }
+
+    fn duplicate_capability_count(&self) -> usize {
+        let mut seen = HashSet::new();
+        self.entries
+            .iter()
+            .filter(|entry| !seen.insert(entry.capability.as_str()))
+            .count()
+    }
+}
+
+fn readiness_issues(
+    entry_count: usize,
+    missing_compensation_count: usize,
+    duplicate_capability_count: usize,
+) -> Vec<TransactionReadinessIssue> {
+    let mut issues = Vec::new();
+
+    if entry_count == 0 {
+        issues.push(TransactionReadinessIssue {
+            category: TRANSACTION_READINESS_CATEGORY_EMPTY_GROUP,
+            count: 1,
+        });
+    }
+
+    if missing_compensation_count > 0 {
+        issues.push(TransactionReadinessIssue {
+            category: TRANSACTION_READINESS_CATEGORY_MISSING_COMPENSATION,
+            count: missing_compensation_count,
+        });
+    }
+
+    if duplicate_capability_count > 0 {
+        issues.push(TransactionReadinessIssue {
+            category: TRANSACTION_READINESS_CATEGORY_DUPLICATE_CAPABILITY,
+            count: duplicate_capability_count,
+        });
+    }
+
+    issues
 }
 
 fn transaction_audit_category(action: &str, status_before: &TransactionStatus) -> &'static str {
@@ -422,4 +564,102 @@ fn redacted_group_name_shape(name: &str) -> &'static str {
         return "safe_label";
     }
     "other"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preflight_reports_empty_group_without_mutating_status() {
+        let group = TransactionGroup::new("checkout_tx");
+
+        let report = group.preflight_report();
+
+        assert_eq!(group.status(), TransactionStatus::Pending);
+        assert_eq!(report.group_name_shape, "safe_label");
+        assert_eq!(report.status, "pending");
+        assert_eq!(report.category, TRANSACTION_PREFLIGHT_CATEGORY_BLOCKED);
+        assert_eq!(report.entry_count, 0);
+        assert_eq!(
+            report.issues,
+            vec![TransactionReadinessIssue {
+                category: TRANSACTION_READINESS_CATEGORY_EMPTY_GROUP,
+                count: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn preflight_reports_missing_compensation_and_duplicate_counts() {
+        let mut group = TransactionGroup::new("tenant/order:123");
+        group.add(
+            CapabilityId::new("payment.charge:Provider"),
+            TransactionPolicy::NonRollbackable,
+        );
+        group.add(
+            CapabilityId::new("payment.charge:Provider"),
+            TransactionPolicy::NonRollbackable,
+        );
+        group.add_with_compensation(
+            CapabilityId::new("event.emit:OrderPaid"),
+            TransactionPolicy::NonRollbackable,
+            CompensationPolicy::IdempotentRetry {
+                idempotency_key: "tenant-order-123".to_string(),
+            },
+        );
+
+        let report = group.preflight_report();
+
+        assert_eq!(report.group_name_shape, "contains_separator");
+        assert_eq!(report.category, TRANSACTION_PREFLIGHT_CATEGORY_BLOCKED);
+        assert_eq!(report.entry_count, 3);
+        assert_eq!(report.non_rollbackable_count, 3);
+        assert_eq!(report.compensation_required_count, 1);
+        assert_eq!(report.missing_compensation_count, 2);
+        assert_eq!(report.duplicate_capability_count, 1);
+        assert_eq!(
+            report.issues,
+            vec![
+                TransactionReadinessIssue {
+                    category: TRANSACTION_READINESS_CATEGORY_MISSING_COMPENSATION,
+                    count: 2,
+                },
+                TransactionReadinessIssue {
+                    category: TRANSACTION_READINESS_CATEGORY_DUPLICATE_CAPABILITY,
+                    count: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn preflight_ready_report_preserves_rollback_behavior() {
+        let mut group = TransactionGroup::new("checkout_tx");
+        group.add(
+            CapabilityId::new("database.write:Order"),
+            TransactionPolicy::Transactional,
+        );
+        group.add_with_compensation(
+            CapabilityId::new("payment.charge:Provider"),
+            TransactionPolicy::NonRollbackable,
+            CompensationPolicy::ExplicitRefund {
+                refund_capability: CapabilityId::new("payment.refund:Provider"),
+            },
+        );
+
+        let report = group.preflight_report();
+
+        assert!(report.is_ready());
+        assert_eq!(report.category, TRANSACTION_PREFLIGHT_CATEGORY_READY);
+        assert_eq!(report.entry_count, 2);
+        assert_eq!(report.non_rollbackable_count, 1);
+        assert_eq!(report.compensation_required_count, 1);
+        assert_eq!(report.missing_compensation_count, 0);
+        assert_eq!(report.duplicate_capability_count, 0);
+
+        let compensation = group.rollback_with_compensation();
+        assert_eq!(compensation.len(), 1);
+        assert_eq!(group.status(), TransactionStatus::RolledBack);
+    }
 }
