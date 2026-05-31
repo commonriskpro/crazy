@@ -32,6 +32,144 @@ use ail_package::{AdvisoryChecker, AssumptionState};
 
 // ── Private helpers ───────────────────────────────────────────────────────
 
+const DOCTOR_CHECK_CONTRACTS: [(&str, &str, &str, usize); 7] = [
+    ("graph_integrity", "AIL_DOCTOR_GRAPH_INTEGRITY", "graph", 0),
+    (
+        "index_freshness",
+        "AIL_DOCTOR_INDEX_FRESHNESS",
+        "storage",
+        1,
+    ),
+    (
+        "schema_compatibility",
+        "AIL_DOCTOR_SCHEMA_COMPATIBILITY",
+        "storage",
+        2,
+    ),
+    (
+        "artifact_hash_consistency",
+        "AIL_DOCTOR_ARTIFACT_HASH_CONSISTENCY",
+        "artifacts",
+        3,
+    ),
+    (
+        "runtime_profile_validity",
+        "AIL_DOCTOR_RUNTIME_PROFILE_VALIDITY",
+        "runtime",
+        4,
+    ),
+    (
+        "package_advisories",
+        "AIL_DOCTOR_PACKAGE_ADVISORIES",
+        "security",
+        5,
+    ),
+    (
+        "assumption_expirations",
+        "AIL_DOCTOR_ASSUMPTION_EXPIRATIONS",
+        "assumptions",
+        6,
+    ),
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DoctorDiagnosticCheck {
+    pub(crate) name: &'static str,
+    pub(crate) code: &'static str,
+    pub(crate) category: &'static str,
+    pub(crate) status: String,
+    pub(crate) message: String,
+    pub(crate) redacted: bool,
+}
+
+impl DoctorDiagnosticCheck {
+    pub(crate) fn new(
+        name: &'static str,
+        status: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        let (code, category, _order) = doctor_check_contract(name);
+        Self {
+            name,
+            code,
+            category,
+            status: status.into(),
+            message: message.into(),
+            redacted: false,
+        }
+    }
+
+    fn human_line(&self) -> String {
+        format!(
+            "{}: {} code={} category={} redacted={}",
+            self.name, self.status, self.code, self.category, self.redacted
+        )
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        json!({
+            "name": self.name,
+            "code": self.code,
+            "category": self.category,
+            "status": self.status.as_str(),
+            "message": self.message.as_str(),
+            "redacted": self.redacted,
+        })
+    }
+}
+
+fn doctor_check_contract(name: &str) -> (&'static str, &'static str, usize) {
+    DOCTOR_CHECK_CONTRACTS
+        .iter()
+        .find(|(contract_name, _, _, _)| *contract_name == name)
+        .map(|(_, code, category, order)| (*code, *category, *order))
+        .unwrap_or(("AIL_DOCTOR_UNKNOWN", "unknown", usize::MAX))
+}
+
+pub(crate) fn sort_doctor_checks(checks: &mut [DoctorDiagnosticCheck]) {
+    checks.sort_by(|a, b| {
+        let (_, _, a_order) = doctor_check_contract(a.name);
+        let (_, _, b_order) = doctor_check_contract(b.name);
+        a_order.cmp(&b_order).then_with(|| a.name.cmp(b.name))
+    });
+}
+
+fn doctor_all_ok(checks: &[DoctorDiagnosticCheck]) -> bool {
+    checks.iter().all(|check| check.status == "ok")
+}
+
+pub(crate) fn format_doctor_human_message(
+    checks: &[DoctorDiagnosticCheck],
+    storage_msg: &str,
+) -> String {
+    let human_lines: Vec<String> = checks
+        .iter()
+        .map(DoctorDiagnosticCheck::human_line)
+        .collect();
+    format!(
+        "{}\n{}\noverall: {}",
+        human_lines.join("\n"),
+        storage_msg,
+        if doctor_all_ok(checks) {
+            "healthy"
+        } else {
+            "issues found"
+        }
+    )
+}
+
+pub(crate) fn doctor_checks_json(checks: &[DoctorDiagnosticCheck]) -> Vec<serde_json::Value> {
+    checks.iter().map(DoctorDiagnosticCheck::to_json).collect()
+}
+
+fn doctor_overall_json(checks: &[DoctorDiagnosticCheck]) -> &'static str {
+    if doctor_all_ok(checks) {
+        "healthy"
+    } else {
+        "issues_found"
+    }
+}
+
 /// Check whether the snapshot index is fresh relative to stored objects.
 ///
 /// - "ok"   — no objects in store (nothing to be stale against), OR index exists and
@@ -516,50 +654,46 @@ pub(crate) async fn cmd_doctor(mode: OutputMode, store: &StoreHandle) -> Result<
     let (assumption_expirations_status, assumption_expirations_msg) =
         doctor_assumption_expirations(store);
 
-    // Build the checks list.
-    let checks: Vec<(&str, &str, &str)> = vec![
-        (
+    // Build the checks list through the stable diagnostic output contract.
+    let mut checks = vec![
+        DoctorDiagnosticCheck::new(
             "graph_integrity",
             graph_integrity_status,
-            &graph_integrity_msg,
+            graph_integrity_msg,
         ),
-        (
+        DoctorDiagnosticCheck::new(
             "index_freshness",
             index_freshness_status,
             index_freshness_msg,
         ),
-        (
+        DoctorDiagnosticCheck::new(
             "schema_compatibility",
             schema_compat_status,
             schema_compat_msg,
         ),
-        (
+        DoctorDiagnosticCheck::new(
             "artifact_hash_consistency",
-            &artifact_hash_status,
-            &artifact_hash_msg,
+            artifact_hash_status,
+            artifact_hash_msg,
         ),
-        (
+        DoctorDiagnosticCheck::new(
             "runtime_profile_validity",
-            &runtime_profile_status,
-            &runtime_profile_msg,
+            runtime_profile_status,
+            runtime_profile_msg,
         ),
-        (
+        DoctorDiagnosticCheck::new(
             "package_advisories",
-            &package_advisories_status,
-            &package_advisories_msg,
+            package_advisories_status,
+            package_advisories_msg,
         ),
-        (
+        DoctorDiagnosticCheck::new(
             "assumption_expirations",
-            &assumption_expirations_status,
-            &assumption_expirations_msg,
+            assumption_expirations_status,
+            assumption_expirations_msg,
         ),
     ];
+    sort_doctor_checks(&mut checks);
 
-    let all_ok = checks.iter().all(|(_, status, _)| *status == "ok");
-    let human_lines: Vec<String> = checks
-        .iter()
-        .map(|(name, status, _msg)| format!("{name}: {status}"))
-        .collect();
     let storage_msg = storage_report
         .as_ref()
         .map(|report| {
@@ -572,29 +706,15 @@ pub(crate) async fn cmd_doctor(mode: OutputMode, store: &StoreHandle) -> Result<
             )
         })
         .unwrap_or_else(|| "objects: file store not active".to_string());
-    let human_msg = format!(
-        "{}\n{}\noverall: {}",
-        human_lines.join("\n"),
-        storage_msg,
-        if all_ok { "healthy" } else { "issues found" }
-    );
-
-    let json_checks: Vec<serde_json::Value> = checks
-        .iter()
-        .map(|(name, status, message)| {
-            json!({
-                "name": name,
-                "status": status,
-                "message": message,
-            })
-        })
-        .collect();
+    let human_msg = format_doctor_human_message(&checks, &storage_msg);
+    let json_checks = doctor_checks_json(&checks);
+    let overall = doctor_overall_json(&checks);
 
     print_response(
         mode,
         &human_msg,
         json!({
-            "overall": if all_ok { "healthy" } else { "issues_found" },
+            "overall": overall,
             "checks": json_checks,
             "objects": storage_report.map(|report| json!({
                 "total": report.total_objects,

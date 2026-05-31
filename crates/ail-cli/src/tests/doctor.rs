@@ -1,9 +1,75 @@
 use super::*;
 use crate::diagnostic_commands::{
-    doctor_artifact_hash_consistency, doctor_assumption_expirations, doctor_index_freshness,
-    doctor_package_advisories, doctor_runtime_profile_validity, doctor_schema_compatibility,
+    DoctorDiagnosticCheck, doctor_artifact_hash_consistency, doctor_assumption_expirations,
+    doctor_checks_json, doctor_index_freshness, doctor_package_advisories,
+    doctor_runtime_profile_validity, doctor_schema_compatibility, format_doctor_human_message,
+    sort_doctor_checks,
 };
 use crate::package_registry_io::save_package_registry;
+
+// Scenario: doctor diagnostic JSON has a stable production contract.
+//   GIVEN checks built out of declaration order
+//   WHEN they are sorted and serialized through the contract helper
+//   THEN every diagnostic has code/category/redacted fields in deterministic order
+#[test]
+fn doctor_diagnostic_json_contract_has_stable_fields_and_order() {
+    let mut checks = vec![
+        DoctorDiagnosticCheck::new("schema_compatibility", "warn", "schema drift"),
+        DoctorDiagnosticCheck::new("graph_integrity", "ok", "graph ok"),
+        DoctorDiagnosticCheck::new("index_freshness", "ok", "index ok"),
+    ];
+
+    sort_doctor_checks(&mut checks);
+    let json_checks = doctor_checks_json(&checks);
+    let names: Vec<&str> = json_checks
+        .iter()
+        .map(|check| check["name"].as_str().expect("name must be string"))
+        .collect();
+
+    assert_eq!(
+        names,
+        vec!["graph_integrity", "index_freshness", "schema_compatibility"],
+        "doctor checks must keep the documented stable order"
+    );
+
+    assert_eq!(json_checks[0]["code"], "AIL_DOCTOR_GRAPH_INTEGRITY");
+    assert_eq!(json_checks[0]["category"], "graph");
+    assert_eq!(json_checks[0]["redacted"], false);
+
+    for check in &json_checks {
+        assert!(check["code"].is_string(), "code is required: {check}");
+        assert!(
+            check["category"].is_string(),
+            "category is required: {check}"
+        );
+        assert!(
+            check["redacted"].is_boolean(),
+            "redacted flag is required: {check}"
+        );
+        assert!(check["message"].is_string(), "message is required: {check}");
+        assert!(check["status"].is_string(), "status is required: {check}");
+    }
+}
+
+// TRIANGULATE: human doctor output mirrors the machine contract fields.
+//   GIVEN one warning diagnostic
+//   WHEN formatted for text output
+//   THEN code/category/redacted are visible and overall reports issues
+#[test]
+fn doctor_diagnostic_human_contract_includes_code_category_and_redaction() {
+    let checks = vec![DoctorDiagnosticCheck::new(
+        "schema_compatibility",
+        "warn",
+        "schema drift",
+    )];
+
+    let output = format_doctor_human_message(&checks, "objects: file store not active");
+
+    assert_eq!(
+        output,
+        "schema_compatibility: warn code=AIL_DOCTOR_SCHEMA_COMPATIBILITY category=storage redacted=false\nobjects: file store not active\noverall: issues found"
+    );
+}
 
 // Scenario: cmd_doctor returns all seven checks with status.
 #[tokio::test]

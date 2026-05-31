@@ -23,8 +23,7 @@ fn doctor_json_has_overall_and_all_check_names() {
         .as_array()
         .expect("checks must be array");
     let check_names: Vec<&str> = checks.iter().filter_map(|c| c["name"].as_str()).collect();
-
-    for required_name in &[
+    let expected_names = vec![
         "graph_integrity",
         "index_freshness",
         "schema_compatibility",
@@ -32,12 +31,31 @@ fn doctor_json_has_overall_and_all_check_names() {
         "runtime_profile_validity",
         "package_advisories",
         "assumption_expirations",
-    ] {
+    ];
+
+    assert_eq!(
+        check_names, expected_names,
+        "doctor checks must preserve deterministic contract order"
+    );
+
+    for check in checks {
         assert!(
-            check_names.contains(required_name),
-            "doctor must include check '{required_name}'; got: {check_names:?}"
+            check["code"].is_string(),
+            "check code must be present: {check}"
+        );
+        assert!(
+            check["category"].is_string(),
+            "check category must be present: {check}"
+        );
+        assert!(
+            check["redacted"].is_boolean(),
+            "check redacted flag must be present: {check}"
         );
     }
+
+    assert_eq!(checks[0]["code"], "AIL_DOCTOR_GRAPH_INTEGRITY");
+    assert_eq!(checks[0]["category"], "graph");
+    assert_eq!(checks[0]["redacted"], false);
 }
 
 // ── T7d: LLM agent loop E2E test ─────────────────────────────────────────
