@@ -926,6 +926,93 @@ pub(super) fn iter_filter_exec(args: &[StdlibValue]) -> Result<StdlibValue, Stdl
     Ok(StdlibValue::List(kept))
 }
 
+pub(super) fn iter_any_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::Function(f) = args[1] else {
+        return Err(StdlibExecError::Type {
+            expected: "Function",
+        });
+    };
+    for item in items.clone() {
+        match f(item)? {
+            StdlibValue::Bool(true) => return Ok(StdlibValue::Bool(true)),
+            StdlibValue::Bool(false) => {}
+            _ => return Err(StdlibExecError::Type { expected: "Bool" }),
+        }
+    }
+    Ok(StdlibValue::Bool(false))
+}
+
+pub(super) fn iter_all_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::Function(f) = args[1] else {
+        return Err(StdlibExecError::Type {
+            expected: "Function",
+        });
+    };
+    for item in items.clone() {
+        match f(item)? {
+            StdlibValue::Bool(true) => {}
+            StdlibValue::Bool(false) => return Ok(StdlibValue::Bool(false)),
+            _ => return Err(StdlibExecError::Type { expected: "Bool" }),
+        }
+    }
+    Ok(StdlibValue::Bool(true))
+}
+
+pub(super) fn iter_find_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::Function(f) = args[1] else {
+        return Err(StdlibExecError::Type {
+            expected: "Function",
+        });
+    };
+    for item in items.clone() {
+        match f(item.clone())? {
+            StdlibValue::Bool(true) => {
+                return Ok(StdlibValue::Option(Some(Box::new(item))));
+            }
+            StdlibValue::Bool(false) => {}
+            _ => return Err(StdlibExecError::Type { expected: "Bool" }),
+        }
+    }
+    Ok(StdlibValue::Option(None))
+}
+
+pub(super) fn iter_position_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::List(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "List" });
+    };
+    let StdlibValue::Function(f) = args[1] else {
+        return Err(StdlibExecError::Type {
+            expected: "Function",
+        });
+    };
+    for (index, item) in items.clone().into_iter().enumerate() {
+        match f(item)? {
+            StdlibValue::Bool(true) => {
+                let index = i64::try_from(index).map_err(|_| {
+                    StdlibExecError::Message("matching index overflows i64".to_string())
+                })?;
+                return Ok(StdlibValue::Option(Some(Box::new(StdlibValue::Int(index)))));
+            }
+            StdlibValue::Bool(false) => {}
+            _ => return Err(StdlibExecError::Type { expected: "Bool" }),
+        }
+    }
+    Ok(StdlibValue::Option(None))
+}
+
 pub(super) fn iter_fold_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 3)?;
     let StdlibValue::List(items) = &args[0] else {

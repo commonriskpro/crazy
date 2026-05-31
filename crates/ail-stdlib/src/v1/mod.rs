@@ -22,7 +22,8 @@
 //
 // `v1_registry_with_functions()` extends the base module registry with
 // `NodeKind::Function` entries for each semantic function implementation
-// in the std.numeric, std.option, std.result, std.text, and std.iter modules.
+// in the std.numeric, std.option, std.result, std.text, std.iter,
+// std.collections, std.bytes, std.time, and capability-backed modules.
 // The base `v1_registry()` is preserved unchanged for backward compatibility.
 
 mod function_entries;

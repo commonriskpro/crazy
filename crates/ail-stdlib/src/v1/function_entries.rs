@@ -26,7 +26,8 @@ mod time;
 /// - `std.core.result`: `map`, `and_then`, `unwrap_or`, `transpose`
 /// - `std.text`: `trim`, `split`, `join`, `length_graphemes`,
 ///   `to_bytes`, `from_bytes`, `starts_with`, `ends_with`, `contains`, `replace`
-/// - `std.iter`: `map`, `filter`, `fold`, `traverse`
+/// - `std.iter`: `map`, `filter`, `any`, `all`, `find`, `position`, `fold`,
+///   `traverse`
 ///
 /// The returned registry is guaranteed to pass `validate()`.
 pub fn v1_registry_with_functions() -> StdlibRegistry {

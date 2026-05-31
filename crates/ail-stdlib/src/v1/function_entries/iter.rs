@@ -58,6 +58,108 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
     });
 
     reg.entries.push(StdlibEntry {
+        id: StdlibId("std.iter.any".to_string()),
+        module_path: "std::iter".to_string(),
+        name: "any".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Bool".to_string(),
+            generics: vec!["T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec![
+                "input is List<T>".to_string(),
+                "pred is a total predicate T -> Bool".to_string(),
+            ],
+            ensures: vec![
+                "returns true when at least one element satisfies pred".to_string(),
+                "returns false for empty input".to_string(),
+                "short-circuits after the first true predicate result".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.iter.all".to_string()),
+        module_path: "std::iter".to_string(),
+        name: "all".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Bool".to_string(),
+            generics: vec!["T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec![
+                "input is List<T>".to_string(),
+                "pred is a total predicate T -> Bool".to_string(),
+            ],
+            ensures: vec![
+                "returns true when every element satisfies pred".to_string(),
+                "returns true for empty input".to_string(),
+                "short-circuits after the first false predicate result".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.iter.find".to_string()),
+        module_path: "std::iter".to_string(),
+        name: "find".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec![
+                "input is List<T>".to_string(),
+                "pred is a total predicate T -> Bool".to_string(),
+            ],
+            ensures: vec![
+                "returns Some(first matching element) when pred succeeds".to_string(),
+                "returns None when no element satisfies pred".to_string(),
+                "input order defines the first matching element".to_string(),
+                "short-circuits after the first true predicate result".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.iter.position".to_string()),
+        module_path: "std::iter".to_string(),
+        name: "position".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["Int".to_string(), "T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec![
+                "input is List<T>".to_string(),
+                "pred is a total predicate T -> Bool".to_string(),
+            ],
+            ensures: vec![
+                "returns Some(index) for the first element satisfying pred".to_string(),
+                "returns None when no element satisfies pred".to_string(),
+                "index is zero-based and non-negative".to_string(),
+                "short-circuits after the first true predicate result".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
         id: StdlibId("std.iter.fold".to_string()),
         module_path: "std::iter".to_string(),
         name: "fold".to_string(),

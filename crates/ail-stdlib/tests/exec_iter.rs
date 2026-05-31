@@ -6,7 +6,7 @@
 // fold convention: fn receives List([acc, item]) as single arg (binary encoding).
 
 use ail_core::semantic_graph::NodeKind;
-use ail_stdlib::exec::{StdlibExecError, StdlibValue, call_pure_stdlib};
+use ail_stdlib::exec::{StdlibExecError, StdlibValue, call_pure_stdlib, find_function_entry};
 use ail_stdlib::v1_registry_with_functions;
 
 // Helper: function that doubles an Int
@@ -21,6 +21,14 @@ fn double(v: StdlibValue) -> Result<StdlibValue, StdlibExecError> {
 fn is_even(v: StdlibValue) -> Result<StdlibValue, StdlibExecError> {
     match v {
         StdlibValue::Int(n) => Ok(StdlibValue::Bool(n % 2 == 0)),
+        _ => Err(StdlibExecError::Type { expected: "Int" }),
+    }
+}
+
+// Helper: returns a non-Bool so predicate consumers reject dishonest callbacks.
+fn int_identity(v: StdlibValue) -> Result<StdlibValue, StdlibExecError> {
+    match v {
+        StdlibValue::Int(n) => Ok(StdlibValue::Int(n)),
         _ => Err(StdlibExecError::Type { expected: "Int" }),
     }
 }
@@ -108,6 +116,91 @@ fn iter_filter_removes_all_odd_elements() {
     assert_eq!(result, Ok(StdlibValue::List(vec![])));
 }
 
+#[test]
+fn iter_any_returns_true_for_first_match() {
+    let list = StdlibValue::List(vec![
+        StdlibValue::Int(1),
+        StdlibValue::Int(2),
+        StdlibValue::Int(3),
+    ]);
+    let result = call_pure_stdlib("std.iter.any", &[list, StdlibValue::Function(is_even)]);
+    assert_eq!(result, Ok(StdlibValue::Bool(true)));
+}
+
+#[test]
+fn iter_any_empty_list_returns_false() {
+    let result = call_pure_stdlib(
+        "std.iter.any",
+        &[StdlibValue::List(vec![]), StdlibValue::Function(is_even)],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(false)));
+}
+
+#[test]
+fn iter_all_returns_true_for_empty_list() {
+    let result = call_pure_stdlib(
+        "std.iter.all",
+        &[StdlibValue::List(vec![]), StdlibValue::Function(is_even)],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(true)));
+}
+
+#[test]
+fn iter_all_returns_false_for_first_non_match() {
+    let list = StdlibValue::List(vec![StdlibValue::Int(2), StdlibValue::Int(3)]);
+    let result = call_pure_stdlib("std.iter.all", &[list, StdlibValue::Function(is_even)]);
+    assert_eq!(result, Ok(StdlibValue::Bool(false)));
+}
+
+#[test]
+fn iter_find_returns_first_matching_element() {
+    let list = StdlibValue::List(vec![
+        StdlibValue::Int(1),
+        StdlibValue::Int(2),
+        StdlibValue::Int(4),
+    ]);
+    let result = call_pure_stdlib("std.iter.find", &[list, StdlibValue::Function(is_even)]);
+    assert_eq!(
+        result,
+        Ok(StdlibValue::Option(Some(Box::new(StdlibValue::Int(2)))))
+    );
+}
+
+#[test]
+fn iter_find_returns_none_on_miss() {
+    let list = StdlibValue::List(vec![StdlibValue::Int(1), StdlibValue::Int(3)]);
+    let result = call_pure_stdlib("std.iter.find", &[list, StdlibValue::Function(is_even)]);
+    assert_eq!(result, Ok(StdlibValue::Option(None)));
+}
+
+#[test]
+fn iter_position_returns_zero_based_first_match() {
+    let list = StdlibValue::List(vec![
+        StdlibValue::Int(1),
+        StdlibValue::Int(2),
+        StdlibValue::Int(4),
+    ]);
+    let result = call_pure_stdlib("std.iter.position", &[list, StdlibValue::Function(is_even)]);
+    assert_eq!(
+        result,
+        Ok(StdlibValue::Option(Some(Box::new(StdlibValue::Int(1)))))
+    );
+}
+
+#[test]
+fn iter_position_returns_none_on_miss() {
+    let list = StdlibValue::List(vec![StdlibValue::Int(1), StdlibValue::Int(3)]);
+    let result = call_pure_stdlib("std.iter.position", &[list, StdlibValue::Function(is_even)]);
+    assert_eq!(result, Ok(StdlibValue::Option(None)));
+}
+
+#[test]
+fn iter_search_helpers_reject_non_bool_predicate_result() {
+    let list = StdlibValue::List(vec![StdlibValue::Int(1)]);
+    let result = call_pure_stdlib("std.iter.any", &[list, StdlibValue::Function(int_identity)]);
+    assert_eq!(result, Err(StdlibExecError::Type { expected: "Bool" }));
+}
+
 // ── STDLIB-EXEC-ITER-3: fold sums elements ───────────────────────────────
 
 #[test]
@@ -179,6 +272,21 @@ fn iter_map_non_list_arg_returns_type_error() {
     assert_eq!(result, Err(StdlibExecError::Type { expected: "List" }));
 }
 
+#[test]
+fn iter_search_helpers_are_registered_in_exec_table() {
+    for id in [
+        "std.iter.any",
+        "std.iter.all",
+        "std.iter.find",
+        "std.iter.position",
+    ] {
+        assert!(
+            find_function_entry(id).is_some(),
+            "{id} must be registered in executable stdlib table"
+        );
+    }
+}
+
 // ── STDLIB-ITER-CONTRACT-1..4: v1 contract_clauses content ──────────────
 //
 // Prove that all four std.iter.* function entries carry honest, non-empty
@@ -216,6 +324,21 @@ fn v1_iter_filter_has_function_entry_with_contracts() {
         "std.iter.filter requires must be non-empty"
     );
     assert!(!ens.is_empty(), "std.iter.filter ensures must be non-empty");
+}
+
+#[test]
+fn v1_iter_search_helpers_have_function_entries_with_contracts() {
+    for id in [
+        "std.iter.any",
+        "std.iter.all",
+        "std.iter.find",
+        "std.iter.position",
+    ] {
+        let (req, ens) = iter_entry_contracts(id)
+            .unwrap_or_else(|| panic!("{id} must be a Function entry with contract_clauses"));
+        assert!(!req.is_empty(), "{id} requires must be non-empty");
+        assert!(!ens.is_empty(), "{id} ensures must be non-empty");
+    }
 }
 
 // STDLIB-ITER-CONTRACT-3: also verifies fold's binary-pair calling convention
