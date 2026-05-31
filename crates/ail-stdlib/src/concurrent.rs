@@ -15,6 +15,95 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+// ── Channel diagnostics ──────────────────────────────────────────────────
+
+/// Stable operation names for `std.concurrent.Channel` diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChannelOperation {
+    Send,
+    Recv,
+    Len,
+}
+
+impl ChannelOperation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Send => "send",
+            Self::Recv => "recv",
+            Self::Len => "len",
+        }
+    }
+}
+
+/// Stable, redacted issue kinds for bounded channels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChannelIssueKind {
+    Full,
+    Poisoned,
+}
+
+impl ChannelIssueKind {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Full => "std.concurrent.channel.full",
+            Self::Poisoned => "std.concurrent.channel.poisoned",
+        }
+    }
+
+    pub const fn category(self) -> &'static str {
+        match self {
+            Self::Full => "capacity",
+            Self::Poisoned => "runtime-state",
+        }
+    }
+}
+
+/// Machine-readable channel issue descriptor.
+///
+/// It intentionally exposes capacity/length shape, not queued values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelIssue {
+    pub operation: ChannelOperation,
+    pub kind: ChannelIssueKind,
+    pub capacity: usize,
+    pub len: Option<usize>,
+}
+
+impl ChannelIssue {
+    pub const fn code(&self) -> &'static str {
+        self.kind.code()
+    }
+
+    pub const fn category(&self) -> &'static str {
+        self.kind.category()
+    }
+
+    pub const fn operation_name(&self) -> &'static str {
+        self.operation.as_str()
+    }
+}
+
+/// Send failure that preserves the unsent value while keeping diagnostics redacted.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ChannelSendError<T> {
+    Full { value: T, issue: ChannelIssue },
+    Issue { value: T, issue: ChannelIssue },
+}
+
+impl<T> ChannelSendError<T> {
+    pub const fn issue(&self) -> &ChannelIssue {
+        match self {
+            Self::Full { issue, .. } | Self::Issue { issue, .. } => issue,
+        }
+    }
+
+    pub fn into_value(self) -> T {
+        match self {
+            Self::Full { value, .. } | Self::Issue { value, .. } => value,
+        }
+    }
+}
+
 // ── CancellationToken ─────────────────────────────────────────────────────
 
 /// A token that can be used to request cancellation of a task or group.
@@ -92,25 +181,70 @@ impl<T> Channel<T> {
         }
     }
 
-    /// Send a value. Returns `Err(value)` if the channel is full.
+    fn issue(
+        &self,
+        operation: ChannelOperation,
+        kind: ChannelIssueKind,
+        len: Option<usize>,
+    ) -> ChannelIssue {
+        ChannelIssue {
+            operation,
+            kind,
+            capacity: self.capacity,
+            len,
+        }
+    }
+
+    /// Send a value. Returns `Err(value)` if the channel is full or poisoned.
     pub fn send(&self, value: T) -> Result<(), T> {
-        let mut q = self.queue.lock().unwrap();
+        self.try_send(value).map_err(ChannelSendError::into_value)
+    }
+
+    /// Send a value with a machine-readable, redacted failure descriptor.
+    pub fn try_send(&self, value: T) -> Result<(), ChannelSendError<T>> {
+        let mut q = self.queue.lock().map_err(|_| ChannelSendError::Issue {
+            value,
+            issue: self.issue(ChannelOperation::Send, ChannelIssueKind::Poisoned, None),
+        })?;
         if q.len() >= self.capacity {
-            return Err(value);
+            return Err(ChannelSendError::Full {
+                value,
+                issue: self.issue(
+                    ChannelOperation::Send,
+                    ChannelIssueKind::Full,
+                    Some(q.len()),
+                ),
+            });
         }
         q.push_back(value);
         Ok(())
     }
 
-    /// Receive a value. Returns `None` if the channel is empty.
+    /// Receive a value. Returns `None` if the channel is empty or poisoned.
     pub fn recv(&self) -> Option<T> {
-        let mut q = self.queue.lock().unwrap();
-        q.pop_front()
+        self.try_recv().ok().flatten()
+    }
+
+    /// Receive a value with a machine-readable poison diagnostic.
+    pub fn try_recv(&self) -> Result<Option<T>, ChannelIssue> {
+        let mut q = self
+            .queue
+            .lock()
+            .map_err(|_| self.issue(ChannelOperation::Recv, ChannelIssueKind::Poisoned, None))?;
+        Ok(q.pop_front())
     }
 
     /// Return the number of items currently in the channel.
     pub fn len(&self) -> usize {
-        self.queue.lock().unwrap().len()
+        self.try_len().unwrap_or(0)
+    }
+
+    /// Return the number of items with a machine-readable poison diagnostic.
+    pub fn try_len(&self) -> Result<usize, ChannelIssue> {
+        self.queue
+            .lock()
+            .map(|q| q.len())
+            .map_err(|_| self.issue(ChannelOperation::Len, ChannelIssueKind::Poisoned, None))
     }
 
     /// Return `true` if the channel is empty.
@@ -142,5 +276,52 @@ impl Timeout {
     }
     pub fn from_secs(s: u64) -> Self {
         Self { millis: s * 1000 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_channel_returns_redacted_capacity_issue() {
+        let channel = Channel::new(1);
+        assert_eq!(channel.try_send("first"), Ok(()));
+
+        let err = channel.try_send("secret-payload").unwrap_err();
+        let issue = *err.issue();
+
+        assert_eq!(err.into_value(), "secret-payload");
+        assert_eq!(issue.code(), "std.concurrent.channel.full");
+        assert_eq!(issue.category(), "capacity");
+        assert_eq!(issue.operation_name(), "send");
+        assert_eq!(issue.capacity, 1);
+        assert_eq!(issue.len, Some(1));
+    }
+
+    #[test]
+    fn poisoned_channel_returns_stable_issue_without_payload_leak() {
+        let channel = Channel::new(2);
+        let queue = Arc::clone(&channel.queue);
+
+        let _ = std::thread::spawn(move || {
+            let _guard = queue.lock().unwrap();
+            panic!("poison channel for diagnostic test");
+        })
+        .join();
+
+        let err = channel.try_send("classified").unwrap_err();
+        let issue = *err.issue();
+
+        assert_eq!(err.into_value(), "classified");
+        assert_eq!(issue.code(), "std.concurrent.channel.poisoned");
+        assert_eq!(issue.category(), "runtime-state");
+        assert_eq!(issue.operation_name(), "send");
+        assert_eq!(issue.capacity, 2);
+        assert_eq!(issue.len, None);
+
+        let len_issue = channel.try_len().unwrap_err();
+        assert_eq!(len_issue.operation_name(), "len");
+        assert_eq!(len_issue.code(), "std.concurrent.channel.poisoned");
     }
 }
