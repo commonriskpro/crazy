@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use ail_stdlib::exec::{StdlibExecError, StdlibValue, call_pure_stdlib};
+use ail_stdlib::exec::{StdlibExecError, StdlibValue, call_pure_stdlib, find_function_entry};
 
 // ── STDLIB-EXEC-COL-BASIC-1: list.push ───────────────────────────────────
 
@@ -110,6 +110,22 @@ fn list_length_two_elements() {
     assert_eq!(result, Ok(StdlibValue::Int(2)));
 }
 
+#[test]
+fn list_is_empty_reports_true_for_empty_list() {
+    let result = call_pure_stdlib(
+        "std.collections.list.is_empty",
+        &[StdlibValue::List(vec![])],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(true)));
+}
+
+#[test]
+fn list_is_empty_reports_false_for_non_empty_list() {
+    let list = StdlibValue::List(vec![StdlibValue::Text("x".to_string())]);
+    let result = call_pure_stdlib("std.collections.list.is_empty", &[list]);
+    assert_eq!(result, Ok(StdlibValue::Bool(false)));
+}
+
 // ── STDLIB-EXEC-COL-BASIC-4: map.insert ──────────────────────────────────
 
 #[test]
@@ -175,6 +191,37 @@ fn map_get_missing_key_returns_none() {
         &[map, StdlibValue::Text("missing".to_string())],
     );
     assert_eq!(result, Ok(StdlibValue::Option(None)));
+}
+
+#[test]
+fn map_contains_key_present_returns_true_without_exposing_value() {
+    let mut m = BTreeMap::new();
+    m.insert("secret".to_string(), StdlibValue::Text("token".to_string()));
+    let map = StdlibValue::Map(m);
+    let result = call_pure_stdlib(
+        "std.collections.map.contains_key",
+        &[map, StdlibValue::Text("secret".to_string())],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(true)));
+}
+
+#[test]
+fn map_contains_key_missing_returns_false() {
+    let map = StdlibValue::Map(BTreeMap::new());
+    let result = call_pure_stdlib(
+        "std.collections.map.contains_key",
+        &[map, StdlibValue::Text("missing".to_string())],
+    );
+    assert_eq!(result, Ok(StdlibValue::Bool(false)));
+}
+
+#[test]
+fn map_length_counts_unique_keys() {
+    let mut m = BTreeMap::new();
+    m.insert("a".to_string(), StdlibValue::Int(1));
+    m.insert("b".to_string(), StdlibValue::Int(2));
+    let result = call_pure_stdlib("std.collections.map.length", &[StdlibValue::Map(m)]);
+    assert_eq!(result, Ok(StdlibValue::Int(2)));
 }
 
 // ── STDLIB-EXEC-COL-BASIC-6: set.insert (idempotency) ────────────────────
@@ -251,6 +298,31 @@ fn set_contains_empty_set_returns_false() {
     assert_eq!(result, Ok(StdlibValue::Bool(false)));
 }
 
+#[test]
+fn set_length_counts_set_representation_entries() {
+    let set = StdlibValue::List(vec![
+        StdlibValue::Text("a".to_string()),
+        StdlibValue::Text("b".to_string()),
+    ]);
+    let result = call_pure_stdlib("std.collections.set.length", &[set]);
+    assert_eq!(result, Ok(StdlibValue::Int(2)));
+}
+
+#[test]
+fn collection_observability_helpers_are_registered_in_exec_table() {
+    for id in [
+        "std.collections.list.is_empty",
+        "std.collections.map.contains_key",
+        "std.collections.map.length",
+        "std.collections.set.length",
+    ] {
+        assert!(
+            find_function_entry(id).is_some(),
+            "{id} must be registered in executable stdlib table"
+        );
+    }
+}
+
 // ── Type-error paths ──────────────────────────────────────────────────────
 
 // list.push rejects a non-List first arg
@@ -271,6 +343,15 @@ fn map_get_non_map_returns_type_error() {
         &[StdlibValue::Int(0), StdlibValue::Text("k".to_string())],
     );
     assert_eq!(result, Err(StdlibExecError::Type { expected: "Map" }));
+}
+
+#[test]
+fn map_contains_key_non_text_key_returns_type_error() {
+    let result = call_pure_stdlib(
+        "std.collections.map.contains_key",
+        &[StdlibValue::Map(BTreeMap::new()), StdlibValue::Int(42)],
+    );
+    assert_eq!(result, Err(StdlibExecError::Type { expected: "Text" }));
 }
 
 // set.contains rejects a non-List first arg

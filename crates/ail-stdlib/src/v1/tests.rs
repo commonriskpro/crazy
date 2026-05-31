@@ -171,6 +171,14 @@ fn v1_list_length_has_contract_clauses() {
 }
 
 #[test]
+fn v1_list_is_empty_has_contract_clauses() {
+    assert!(
+        has_contract_clauses("std.collections.list.is_empty"),
+        "std.collections.list.is_empty must have contract_clauses"
+    );
+}
+
+#[test]
 fn v1_list_push_has_contract_clauses() {
     assert!(
         has_contract_clauses("std.collections.list.push"),
@@ -227,6 +235,22 @@ fn v1_map_get_has_contract_clauses() {
 }
 
 #[test]
+fn v1_map_contains_key_has_contract_clauses() {
+    assert!(
+        has_contract_clauses("std.collections.map.contains_key"),
+        "std.collections.map.contains_key must have contract_clauses"
+    );
+}
+
+#[test]
+fn v1_map_length_has_contract_clauses() {
+    assert!(
+        has_contract_clauses("std.collections.map.length"),
+        "std.collections.map.length must have contract_clauses"
+    );
+}
+
+#[test]
 fn v1_map_insert_has_contract_clauses() {
     assert!(
         has_contract_clauses("std.collections.map.insert"),
@@ -239,6 +263,14 @@ fn v1_set_contains_has_contract_clauses() {
     assert!(
         has_contract_clauses("std.collections.set.contains"),
         "std.collections.set.contains must have contract_clauses"
+    );
+}
+
+#[test]
+fn v1_set_length_has_contract_clauses() {
+    assert!(
+        has_contract_clauses("std.collections.set.length"),
+        "std.collections.set.length must have contract_clauses"
     );
 }
 

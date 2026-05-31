@@ -28,6 +28,28 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
     });
 
     reg.entries.push(StdlibEntry {
+        id: StdlibId("std.collections.list.is_empty".to_string()),
+        module_path: "std::collections".to_string(),
+        name: "is_empty".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Bool".to_string(),
+            generics: vec!["T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["first arg is List<T>".to_string()],
+            ensures: vec![
+                "true when list length is zero".to_string(),
+                "false when list contains one or more elements".to_string(),
+                "original list is not mutated".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
         id: StdlibId("std.collections.list.push".to_string()),
         module_path: "std::collections".to_string(),
         name: "push".to_string(),
@@ -201,6 +223,53 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
     });
 
     reg.entries.push(StdlibEntry {
+        id: StdlibId("std.collections.map.contains_key".to_string()),
+        module_path: "std::collections".to_string(),
+        name: "contains_key".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Bool".to_string(),
+            generics: vec!["Text".to_string(), "V".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec![
+                "first arg is Map<Text, V>".to_string(),
+                "second arg is Text (key)".to_string(),
+            ],
+            ensures: vec![
+                "true when key exists in the map".to_string(),
+                "false when key is absent".to_string(),
+                "stored values are not exposed by the predicate".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.collections.map.length".to_string()),
+        module_path: "std::collections".to_string(),
+        name: "length".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "UInt".to_string(),
+            generics: vec!["Text".to_string(), "V".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["first arg is Map<Text, V>".to_string()],
+            ensures: vec![
+                "result >= 0".to_string(),
+                "result equals the number of unique keys in the map".to_string(),
+                "stored keys and values are not exposed by the count".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
         id: StdlibId("std.collections.map.insert".to_string()),
         module_path: "std::collections".to_string(),
         name: "insert".to_string(),
@@ -248,6 +317,28 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
             ensures: vec![
                 "true when element is equal to at least one entry".to_string(),
                 "false when no entry matches".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.collections.set.length".to_string()),
+        module_path: "std::collections".to_string(),
+        name: "length".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "UInt".to_string(),
+            generics: vec!["T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["first arg is List<T> (set representation)".to_string()],
+            ensures: vec![
+                "result >= 0".to_string(),
+                "result equals the number of entries in the set representation".to_string(),
+                "original set is not mutated".to_string(),
             ],
         }),
     });

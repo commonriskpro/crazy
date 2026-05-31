@@ -209,6 +209,14 @@ pub(super) fn list_length(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExe
     }
 }
 
+pub(super) fn list_is_empty(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::List(items) => Ok(StdlibValue::Bool(items.is_empty())),
+        _ => Err(StdlibExecError::Type { expected: "List" }),
+    }
+}
+
 pub(super) fn list_push(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 2)?;
     let StdlibValue::List(mut items) = args[0].clone() else {
@@ -244,6 +252,25 @@ pub(super) fn map_get(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecErr
     Ok(StdlibValue::Option(map.get(key).cloned().map(Box::new)))
 }
 
+pub(super) fn map_contains_key(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::Map(map) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Map" });
+    };
+    let StdlibValue::Text(key) = &args[1] else {
+        return Err(StdlibExecError::Type { expected: "Text" });
+    };
+    Ok(StdlibValue::Bool(map.contains_key(key)))
+}
+
+pub(super) fn map_length(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Map(map) => Ok(StdlibValue::Int(map.len() as i64)),
+        _ => Err(StdlibExecError::Type { expected: "Map" }),
+    }
+}
+
 pub(super) fn map_insert(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 3)?;
     let StdlibValue::Map(mut map) = args[0].clone() else {
@@ -262,6 +289,14 @@ pub(super) fn set_contains(args: &[StdlibValue]) -> Result<StdlibValue, StdlibEx
         return Err(StdlibExecError::Type { expected: "List" });
     };
     Ok(StdlibValue::Bool(items.contains(&args[1])))
+}
+
+pub(super) fn set_length(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::List(items) => Ok(StdlibValue::Int(items.len() as i64)),
+        _ => Err(StdlibExecError::Type { expected: "List" }),
+    }
 }
 
 pub(super) fn set_insert(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
