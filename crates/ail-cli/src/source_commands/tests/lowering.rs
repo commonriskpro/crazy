@@ -525,6 +525,8 @@ fn lowers_source_is_empty_helper() {
         r#"
 fn no_items(values: List<Int>) -> Bool = is_empty(values)
 fn no_text(value: Text) -> Bool = is_empty(value)
+fn no_items_named(values: List<Int>) -> Bool = list.is_empty(values)
+fn no_text_named(value: Text) -> Bool = text_is_empty(value)
 "#,
     )
     .expect("source is_empty must parse");
@@ -532,6 +534,12 @@ fn no_text(value: Text) -> Bool = is_empty(value)
 
     assert!(acl.contains("op create_function id=fn.no_items return=Bool body=eq(len(values), 0)"));
     assert!(acl.contains("op create_function id=fn.no_text return=Bool body=eq(len(value), 0)"));
+    assert!(
+        acl.contains("op create_function id=fn.no_items_named return=Bool body=eq(len(values), 0)")
+    );
+    assert!(
+        acl.contains("op create_function id=fn.no_text_named return=Bool body=eq(len(value), 0)")
+    );
 }
 
 #[test]

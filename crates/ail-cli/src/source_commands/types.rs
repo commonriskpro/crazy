@@ -235,6 +235,9 @@ pub(super) fn infer_source_call_type(
             }
             Ok("Int".to_string())
         }
+        "is_empty" | "text.is_empty" | "text_is_empty" | "list.is_empty" | "list_is_empty" => {
+            infer_source_is_empty_type(func, args, scope, functions)
+        }
         "concat" => {
             validate_source_arg_types(func, args, scope, functions, &["Text", "Text"])?;
             Ok("Text".to_string())
@@ -389,6 +392,30 @@ pub(super) fn infer_source_list_type(
         validate_source_type_match(&element_ty, &actual, "list element")?;
     }
     Ok(format!("List<{element_ty}>"))
+}
+
+pub(super) fn infer_source_is_empty_type(
+    func: &str,
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let arg_ty = infer_source_expr_type(&args[0], scope, functions)?;
+    match func {
+        "text.is_empty" | "text_is_empty" => {
+            validate_source_type_match("Text", &arg_ty, &format!("{func} argument 1"))?;
+        }
+        "list.is_empty" | "list_is_empty" => {
+            require_source_list_type(&arg_ty, &format!("{func} argument 1"))?;
+        }
+        _ if arg_ty != "Text" && source_list_element_type(&arg_ty).is_none() => {
+            return Err(CliError::ParseError(format!(
+                "type mismatch in {func} argument 1: expected Text or List<Unknown>, got {arg_ty}"
+            )));
+        }
+        _ => {}
+    }
+    Ok("Bool".to_string())
 }
 
 pub(super) fn infer_source_list_push_type(

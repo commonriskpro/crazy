@@ -456,7 +456,9 @@ fn lsp_diagnose_accepts_source_is_empty_helper() {
     source
         .write_str(
             "fn no_items(values: List<Int>) -> Bool = is_empty(values)\n\
-             fn no_text(value: Text) -> Bool = is_empty(value)\n",
+             fn no_text(value: Text) -> Bool = is_empty(value)\n\
+             fn no_items_named(values: List<Int>) -> Bool = list_is_empty(values)\n\
+             fn no_text_named(value: Text) -> Bool = text.is_empty(value)\n",
         )
         .expect("source fixture must be written");
 
@@ -474,6 +476,40 @@ fn lsp_diagnose_accepts_source_is_empty_helper() {
     assert_eq!(v["data"]["language"], "ail-source");
     assert_eq!(v["data"]["diagnostic_count"], 0);
     assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
+fn lsp_diagnose_reports_source_is_empty_alias_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn empty(value: Text) -> Bool = list.is_empty(value)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains(
+                "type mismatch in list.is_empty argument 1: expected List<Unknown>, got Text"
+            )
+    );
 }
 #[test]
 fn lsp_diagnose_accepts_source_set_and_map_collections() {

@@ -726,7 +726,9 @@ fn compile_file_accepts_source_is_empty_helper() {
     source
         .write_str(
             "fn no_items(values: List<Int>) -> Bool = is_empty(values)\n\
-             fn no_text(value: Text) -> Bool = is_empty(value)\n",
+             fn no_text(value: Text) -> Bool = is_empty(value)\n\
+             fn no_items_named(values: List<Int>) -> Bool = list_is_empty(values)\n\
+             fn no_text_named(value: Text) -> Bool = text.is_empty(value)\n",
         )
         .expect("source fixture must be written");
 
@@ -754,7 +756,28 @@ fn compile_file_rejects_source_is_empty_type_mismatch() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "type mismatch in len argument 1: expected Text or List<Unknown>, got Bool",
+            "type mismatch in is_empty argument 1: expected Text or List<Unknown>, got Bool",
+        ));
+}
+
+#[test]
+fn compile_file_rejects_source_is_empty_alias_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_is_empty_alias.ail");
+    source
+        .write_str("fn empty(value: Text) -> Bool = list.is_empty(value)\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in list.is_empty argument 1: expected List<Unknown>, got Text",
         ));
 }
 #[test]

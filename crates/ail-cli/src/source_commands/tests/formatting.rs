@@ -615,13 +615,19 @@ fn formats_source_is_empty_helper() {
         r#"
 fn no_items(values:List<Int>)->Bool=eq(len(values),0)
 fn no_text(value:Text)->Bool=eq(0,len(value))
+fn no_list_named(values:List<Int>)->Bool=list.is_empty(values)
+fn no_text_named(value:Text)->Bool=text.is_empty(value)
 "#,
     )
     .expect("source is_empty must format");
 
-    assert_eq!(item_count, 2);
+    assert_eq!(item_count, 4);
     assert!(formatted.contains("fn no_items(values: List<Int>) -> Bool = is_empty(values)\n"));
     assert!(formatted.contains("fn no_text(value: Text) -> Bool = is_empty(value)\n"));
+    assert!(
+        formatted.contains("fn no_list_named(values: List<Int>) -> Bool = list_is_empty(values)\n")
+    );
+    assert!(formatted.contains("fn no_text_named(value: Text) -> Bool = text_is_empty(value)\n"));
 }
 
 #[test]

@@ -482,6 +482,16 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if func == "text.is_empty" && args.len() == 1 {
+        return (
+            format!(
+                "text_is_empty({})",
+                format_source_expr(&args[0], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "text.contains" && args.len() == 2 {
         return (
             format!(
@@ -730,6 +740,16 @@ pub(super) fn format_source_expr_node(
                 "list_get({}, {})",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if func == "list.is_empty" && args.len() == 1 {
+        return (
+            format!(
+                "list_is_empty({})",
+                format_source_expr(&args[0], module, constants)
             ),
             CALL_PRECEDENCE,
         );

@@ -737,6 +737,7 @@ pub(super) fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "update" => SourceArity::Exact(3),
         "none" | "None" => SourceArity::Exact(0),
         "not" | "len" | "print" | "text.trim" | "text_trim" | "Var" | "is_empty"
+        | "text.is_empty" | "text_is_empty" | "list.is_empty" | "list_is_empty"
         | "queue.pop_front" | "queue_pop_front" | "queue.peek_front" | "queue_peek_front"
         | "queue.length" | "queue_length" | "queue.is_empty" | "queue_is_empty" | "set.length"
         | "set_length" | "map.length" | "map_length" | "is_some" | "is_none" | "is_ok"

@@ -122,7 +122,15 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         is_empty_items
             .iter()
             .any(|item| item["label"] == "is_empty"
-                && item["detail"] == "AIL source sized predicate"),
+                && item["detail"] == "AIL source sized predicate")
+            && is_empty_items
+                .iter()
+                .any(|item| item["label"] == "list_is_empty"
+                    && item["detail"] == "AIL source List predicate")
+            && is_empty_items
+                .iter()
+                .any(|item| item["label"] == "text_is_empty"
+                    && item["detail"] == "AIL source Text predicate"),
         "completion must include AIL source is_empty helper; got: {is_empty_items:?}"
     );
 

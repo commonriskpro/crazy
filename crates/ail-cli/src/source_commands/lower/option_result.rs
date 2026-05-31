@@ -132,7 +132,10 @@ pub(super) fn lower_source_is_empty_expr(
     let Some((func, args)) = parse_source_call(expr) else {
         return Ok(None);
     };
-    if func != "is_empty" {
+    if !matches!(
+        func.as_str(),
+        "is_empty" | "text.is_empty" | "text_is_empty" | "list.is_empty" | "list_is_empty"
+    ) {
         return Ok(None);
     }
     if args.len() != 1 {

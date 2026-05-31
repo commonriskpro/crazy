@@ -206,6 +206,18 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "is_empty(${1:value})",
     },
     AclSymbol {
+        label: "text_is_empty",
+        detail: "AIL source Text predicate",
+        documentation: "Returns true when a Text value has length 0.",
+        insert_text: "text_is_empty(${1:value})",
+    },
+    AclSymbol {
+        label: "list_is_empty",
+        detail: "AIL source List predicate",
+        documentation: "Returns true when a List value has length 0.",
+        insert_text: "list_is_empty(${1:list})",
+    },
+    AclSymbol {
         label: "text_eq",
         detail: "AIL source Text predicate",
         documentation: "Compares two Text values by content.",
