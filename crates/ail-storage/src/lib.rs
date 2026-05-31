@@ -47,7 +47,8 @@ pub use diff::{ObjectBackedStructuralDiffStore, StructuralDiff, StructuralDiffSt
 pub use export::{ExportBundle, ExportScope, build_export_bundle};
 pub use graph::{ChangeSetLogEntry, GraphStore, ObjectBackedGraphStore, SnapshotEnvelope};
 pub use integrity::{
-    IntegrityInput, IntegrityIssue, IntegrityReport, ObjectIntegrityReport, verify_integrity,
+    IntegrityInput, IntegrityIssue, IntegrityIssueDescriptor, IntegrityReport,
+    ObjectIntegrityReport, verify_decodable_object_store_integrity, verify_integrity,
     verify_object_store_integrity,
 };
 pub use migration::{

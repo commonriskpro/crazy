@@ -26,6 +26,13 @@ impl FaultyObjectStore {
             objects: std::collections::BTreeMap::from([(id, raw)]),
         }
     }
+
+    fn with_object(id: ObjectId, raw: RawObject) -> Self {
+        Self {
+            ids: std::collections::BTreeSet::from([id]),
+            objects: std::collections::BTreeMap::from([(id, raw)]),
+        }
+    }
 }
 
 impl ObjectStore for FaultyObjectStore {
@@ -39,6 +46,36 @@ impl ObjectStore for FaultyObjectStore {
 
     async fn exists(&self, id: &ObjectId) -> StorageResult<bool> {
         Ok(self.objects.contains_key(id))
+    }
+}
+
+#[derive(Default)]
+struct DuplicateListingObjectStore {
+    ids: Vec<ObjectId>,
+    objects: std::collections::BTreeMap<ObjectId, RawObject>,
+}
+
+impl ObjectStore for DuplicateListingObjectStore {
+    async fn put(&self, object: RawObject) -> StorageResult<ObjectId> {
+        Ok(ObjectId::from_bytes(&object.0))
+    }
+
+    async fn get(&self, id: &ObjectId) -> StorageResult<Option<RawObject>> {
+        Ok(self.objects.get(id).cloned())
+    }
+
+    async fn exists(&self, id: &ObjectId) -> StorageResult<bool> {
+        Ok(self.objects.contains_key(id))
+    }
+}
+
+impl EnumerableObjectStore for DuplicateListingObjectStore {
+    async fn get(&self, id: &ObjectId) -> StorageResult<Option<RawObject>> {
+        Ok(self.objects.get(id).cloned())
+    }
+
+    async fn list_object_ids(&self) -> StorageResult<Vec<ObjectId>> {
+        Ok(self.ids.clone())
     }
 }
 
@@ -181,6 +218,108 @@ async fn object_store_integrity_reports_hash_mismatch() {
     assert!(matches!(
         report.issues.as_slice(),
         [IntegrityIssue::HashMismatch { id }] if *id == declared_id
+    ));
+}
+
+#[tokio::test]
+async fn object_store_integrity_reports_duplicate_object_entry_once() {
+    let raw = RawObject(b"duplicate object".to_vec());
+    let id = ObjectId::from_bytes(&raw.0);
+    let obj_store = DuplicateListingObjectStore {
+        ids: vec![id, id],
+        objects: std::collections::BTreeMap::from([(id, raw)]),
+    };
+
+    let report = verify_object_store_integrity(&obj_store)
+        .await
+        .expect("verify object store");
+
+    assert!(!report.passed);
+    assert_eq!(report.objects_checked, 2);
+    assert!(matches!(
+        report.issues.as_slice(),
+        [IntegrityIssue::DuplicateObjectEntry { id: duplicate_id }]
+            if *duplicate_id == id
+    ));
+}
+
+#[tokio::test]
+async fn decodable_object_store_integrity_reports_corrupt_object_without_hash_mismatch() {
+    let raw = RawObject(b"not valid cbor".to_vec());
+    let id = ObjectId::from_bytes(&raw.0);
+    let obj_store = FaultyObjectStore::with_object(id, raw);
+
+    let report = verify_decodable_object_store_integrity::<_, SnapshotEnvelope>(&obj_store)
+        .await
+        .expect("verify decodable object store");
+
+    assert!(!report.passed);
+    assert_eq!(report.objects_checked, 1);
+    assert!(matches!(
+        report.issues.as_slice(),
+        [IntegrityIssue::CorruptObject { id: corrupt_id }] if *corrupt_id == id
+    ));
+}
+
+#[tokio::test]
+async fn object_store_integrity_emits_stable_redacted_diagnostics() {
+    let missing_id = make_id(99);
+    let obj_store = FaultyObjectStore::with_listed_missing(missing_id);
+
+    let first = verify_object_store_integrity(&obj_store)
+        .await
+        .expect("first verify object store");
+    let second = verify_object_store_integrity(&obj_store)
+        .await
+        .expect("second verify object store");
+
+    assert_eq!(first.diagnostics, second.diagnostics);
+    assert_eq!(first.diagnostics.len(), 1);
+    let diagnostic = &first.diagnostics[0];
+    assert_eq!(diagnostic.code, "storage.cas.missing_object");
+    assert_eq!(diagnostic.subject, "cas_object");
+    assert!(diagnostic.fingerprint.starts_with("blake3:"));
+    assert!(
+        !format!("{diagnostic:?}").contains(&missing_id.to_hex()),
+        "diagnostics must not expose the full object id"
+    );
+}
+
+#[tokio::test]
+async fn object_store_integrity_orders_issues_deterministically() {
+    let missing_id = make_id(99);
+    let mismatched_id = make_id(3);
+    let obj_store = DuplicateListingObjectStore {
+        ids: vec![mismatched_id, missing_id, mismatched_id],
+        objects: std::collections::BTreeMap::from([(
+            mismatched_id,
+            RawObject(b"different bytes than declared id".to_vec()),
+        )]),
+    };
+
+    let report = verify_object_store_integrity(&obj_store)
+        .await
+        .expect("verify object store");
+
+    assert_eq!(
+        report
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "storage.cas.missing_object",
+            "storage.cas.hash_mismatch",
+            "storage.cas.duplicate_object_entry",
+        ]
+    );
+    assert!(matches!(
+        report.issues.as_slice(),
+        [
+            IntegrityIssue::MissingObject { id: first },
+            IntegrityIssue::HashMismatch { id: second },
+            IntegrityIssue::DuplicateObjectEntry { id: third },
+        ] if *first == missing_id && *second == mismatched_id && *third == mismatched_id
     ));
 }
 
@@ -609,6 +748,40 @@ async fn stale_index_produces_issue() {
         .iter()
         .any(|i| matches!(i, IntegrityIssue::StaleIndex { id } if *id == index_id));
     assert!(has_stale, "must have StaleIndex issue");
+}
+
+#[tokio::test]
+async fn duplicate_index_entry_produces_redacted_diagnostic() {
+    let obj_store = MemoryObjectStore::new();
+    let graph_store = ObjectBackedGraphStore::new(MemoryObjectStore::new());
+    let index_id = make_id(200);
+    let index_root = make_id(99);
+
+    let input = IntegrityInput {
+        index_entries: vec![(index_id, index_root), (index_id, index_root)],
+        ..Default::default()
+    };
+
+    let report = verify_integrity(&graph_store, &obj_store, input)
+        .await
+        .expect("verify");
+
+    assert!(!report.passed);
+    assert!(matches!(
+        report.issues.as_slice(),
+        [IntegrityIssue::DuplicateIndexEntry { id }, IntegrityIssue::StaleIndex { .. }]
+            if *id == index_id
+    ));
+    let duplicate = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "storage.index.duplicate_entry")
+        .expect("duplicate index diagnostic");
+    assert_eq!(duplicate.subject, "index_entry");
+    assert!(
+        !format!("{duplicate:?}").contains(&index_id.to_hex()),
+        "diagnostics must not expose the full index id"
+    );
 }
 
 // Scenario: index marked as stale is exempt from StaleIndex check.

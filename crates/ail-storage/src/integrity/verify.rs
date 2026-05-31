@@ -2,6 +2,7 @@ use crate::error::StorageResult;
 use crate::graph::GraphStore;
 use crate::object::{ObjectId, ObjectStore};
 
+use super::issue::{issue_descriptors, sort_issues};
 use super::{IntegrityInput, IntegrityIssue, IntegrityReport};
 
 /// Run integrity checks on `graph_store` against `object_store`.
@@ -10,12 +11,14 @@ use super::{IntegrityInput, IntegrityIssue, IntegrityReport};
 ///
 /// 1. **MissingObject**           — `graph_root_hash` does not exist in object store.
 /// 2. **HashMismatch**            — Stored bytes do not hash to declared id.
-/// 3. **OrphanedSnapshot**        — `parent_id` points to non-existent snapshot.
-/// 4. **ChangeMissingReport**     — ChangeSet has no linked verification report.
-/// 5. **ReportMissingArtifact**   — Verification report has no artifact hash.
-/// 6. **ApprovalOrphanedChange**  — Approval references unknown ChangeSet.
-/// 7. **AssumptionOrphanedBoundary** — Assumption references unknown boundary.
-/// 8. **StaleIndex**              — Index entry does not match snapshot root.
+/// 3. **DuplicateObjectEntry**    — object verification input repeats an id.
+/// 4. **DuplicateIndexEntry**     — index verification input repeats an id.
+/// 5. **OrphanedSnapshot**        — `parent_id` points to non-existent snapshot.
+/// 6. **ChangeMissingReport**     — ChangeSet has no linked verification report.
+/// 7. **ReportMissingArtifact**   — Verification report has no artifact hash.
+/// 8. **ApprovalOrphanedChange**  — Approval references unknown ChangeSet.
+/// 9. **AssumptionOrphanedBoundary** — Assumption references unknown boundary.
+/// 10. **StaleIndex**             — Index entry does not match snapshot root.
 ///
 /// # Returns
 ///
@@ -46,19 +49,41 @@ where
         .filter_map(|s| s.applied_change_id)
         .collect();
 
+    let mut issues = Vec::new();
+
+    let mut seen_objects_to_verify = std::collections::BTreeSet::new();
+    let mut unique_objects_to_verify = std::collections::BTreeMap::new();
+    for (declared_id, _) in &input.objects_to_verify {
+        if !seen_objects_to_verify.insert(*declared_id) {
+            issues.push(IntegrityIssue::DuplicateObjectEntry { id: *declared_id });
+        }
+    }
+    for (declared_id, raw) in &input.objects_to_verify {
+        unique_objects_to_verify.entry(*declared_id).or_insert(raw);
+    }
+
+    let mut seen_index_entries = std::collections::BTreeSet::new();
+    let mut unique_index_entries = std::collections::BTreeMap::new();
+    for (index_id, _) in &input.index_entries {
+        if !seen_index_entries.insert(*index_id) {
+            issues.push(IntegrityIssue::DuplicateIndexEntry { id: *index_id });
+        }
+    }
+    for (index_id, index_root) in &input.index_entries {
+        unique_index_entries.entry(*index_id).or_insert(*index_root);
+    }
+
     // Build change→report and report→artifact lookup sets.
     let change_report_map: std::collections::BTreeMap<ObjectId, ObjectId> =
-        input.change_report_index.into_iter().collect();
+        input.change_report_index.iter().copied().collect();
     let report_artifact_map: std::collections::BTreeMap<ObjectId, ObjectId> =
-        input.report_artifact_index.into_iter().collect();
+        input.report_artifact_index.iter().copied().collect();
 
     let known_boundary_set: std::collections::BTreeSet<ObjectId> =
         input.known_boundary_ids.into_iter().collect();
 
     let stale_set: std::collections::BTreeSet<ObjectId> =
         input.stale_index_ids.into_iter().collect();
-
-    let mut issues = Vec::new();
 
     // ── Check 1 & 3: snapshot root exists, parent link valid ──────────────
     for snap in &snapshots {
@@ -79,10 +104,10 @@ where
     }
 
     // ── Check 2: object hashes match content ──────────────────────────────
-    for (declared_id, raw) in &input.objects_to_verify {
+    for (declared_id, raw) in unique_objects_to_verify {
         let actual_id = ObjectId::from_bytes(&raw.0);
-        if actual_id != *declared_id {
-            issues.push(IntegrityIssue::HashMismatch { id: *declared_id });
+        if actual_id != declared_id {
+            issues.push(IntegrityIssue::HashMismatch { id: declared_id });
         }
     }
 
@@ -121,34 +146,32 @@ where
         .max_by_key(|s| s.created_at)
         .map(|s| s.graph_root_hash);
 
-    for (index_id, index_root) in &input.index_entries {
+    for (index_id, index_root) in unique_index_entries {
         // If index is in the stale set, it is exempt from this check.
-        if stale_set.contains(index_id) {
+        if stale_set.contains(&index_id) {
             continue;
         }
         // If no snapshot exists, no index can be valid.
         match current_root {
             None => {
-                issues.push(IntegrityIssue::StaleIndex { id: *index_id });
+                issues.push(IntegrityIssue::StaleIndex { id: index_id });
             }
             Some(root) => {
-                if *index_root != root {
-                    issues.push(IntegrityIssue::StaleIndex { id: *index_id });
+                if index_root != root {
+                    issues.push(IntegrityIssue::StaleIndex { id: index_id });
                 }
             }
         }
     }
 
     // Sort issues for determinism: by kind first, then by id bytes.
-    issues.sort_by(|a, b| {
-        a.kind_ord()
-            .cmp(&b.kind_ord())
-            .then(a.id().as_bytes().cmp(b.id().as_bytes()))
-    });
+    sort_issues(&mut issues);
+    let diagnostics = issue_descriptors(&issues);
 
     let passed = issues.is_empty();
     Ok(IntegrityReport {
         issues,
+        diagnostics,
         snapshots_checked,
         passed,
     })
