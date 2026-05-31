@@ -11,24 +11,30 @@
 // 1. **MissingObject**   — `graph_root_hash` in a snapshot does not exist in the
 //    object store.
 // 2. **HashMismatch**    — A raw object's stored bytes do not hash to its declared
-//    `ObjectId`.  This is now actively checked via `check_object_hashes`.
-// 3. **OrphanedSnapshot** — `parent_id` points to a non-existent snapshot.
-// 4. **ChangeMissingReport** — A ChangeSet id declared by a snapshot
+//    `ObjectId`.
+// 3. **CorruptObject** — A raw object's stored bytes cannot be decoded as the
+//    expected CBOR type during an opt-in typed object scan.
+// 4. **DuplicateObjectEntry / DuplicateIndexEntry** — An enumerable object store
+//    or supplied integrity input repeated an object or index id.
+// 5. **OrphanedSnapshot** — `parent_id` points to a non-existent snapshot.
+// 6. **ChangeMissingReport** — A ChangeSet id declared by a snapshot
 //    (`applied_change_id`) is not linked to any verification report id in the
 //    provided `change_report_index`.
-// 5. **ReportMissingArtifact** — A verification report hash is not backed by a
+// 7. **ReportMissingArtifact** — A verification report hash is not backed by a
 //    corresponding artifact hash in the `report_artifact_index`.
-// 6. **ApprovalOrphanedChange** — An approval record references a
+// 8. **ApprovalOrphanedChange** — An approval record references a
 //    `subject_change_id` that is not present in the ChangeSet id set.
-// 7. **AssumptionOrphanedBoundary** — An assumption record references a
+// 9. **AssumptionOrphanedBoundary** — An assumption record references a
 //    `boundary_id` that is not in the set of known boundary ids.
-// 8. **StaleIndex** — An index record does not match the current snapshot root
+// 10. **StaleIndex** — An index record does not match the current snapshot root
 //    and has not been explicitly marked as stale.
 //
 // # Report semantics
 //
 // `IntegrityReport.passed` is `true` iff `issues` is empty.  `issues` is
 // sorted by kind first, then by the primary `ObjectId` within the same kind.
+// `diagnostics` mirrors that order with stable, redacted descriptors for
+// production logs and health endpoints.
 //
 // # Determinism
 //
@@ -42,8 +48,8 @@ mod report;
 mod verify;
 
 pub use input::IntegrityInput;
-pub use issue::IntegrityIssue;
-pub use object::verify_object_store_integrity;
+pub use issue::{IntegrityIssue, IntegrityIssueDescriptor};
+pub use object::{verify_decodable_object_store_integrity, verify_object_store_integrity};
 pub use report::{IntegrityReport, ObjectIntegrityReport};
 pub use verify::verify_integrity;
 
