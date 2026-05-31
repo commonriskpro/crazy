@@ -13,7 +13,10 @@ use super::diagnostics::{
     LSP_DIAGNOSTIC_ACL_PARSER, LSP_DIAGNOSTIC_ACL_SCHEMA, LSP_DIAGNOSTIC_SOURCE_IMPORT,
     LSP_DIAGNOSTIC_SOURCE_PARSER, diagnostics_for_document,
 };
-use super::references::references_for_token_with_workspace;
+use super::references::{
+    missing_document_references_failure, references_diagnostic_at_position,
+    references_for_token_with_workspace,
+};
 use super::rename::{
     missing_document_rename_failure, prepare_rename_at_position, rename_candidate_at_position,
     rename_edits_at_position, rename_workspace_edit_at_position,
@@ -340,6 +343,26 @@ impl LspSession {
                         })
                     })
                     .unwrap_or_else(|| Value::Array(vec![]));
+                vec![lsp_response(message, result)]
+            }
+            "ail/references" => {
+                let params = &message["params"];
+                let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+                let line = params["position"]["line"].as_u64().unwrap_or(0) as usize;
+                let character = params["position"]["character"].as_u64().unwrap_or(0) as usize;
+                let result = self
+                    .documents
+                    .get(uri)
+                    .map(|text| {
+                        references_diagnostic_at_position(
+                            uri,
+                            text,
+                            line,
+                            character,
+                            &self.documents,
+                        )
+                    })
+                    .unwrap_or_else(missing_document_references_failure);
                 vec![lsp_response(message, result)]
             }
             "exit" => vec![],

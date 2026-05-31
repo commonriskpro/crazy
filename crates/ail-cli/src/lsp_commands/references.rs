@@ -7,6 +7,11 @@ use super::source_helpers::{
     file_path_from_uri, is_acl_token_char, is_ail_source_uri, resolve_lsp_source_import,
     source_imports_from_text, source_module_from_text,
 };
+use super::tokens::token_range_at_position;
+
+const CATEGORY_DOCUMENT_STATE: &str = "document_state";
+const CATEGORY_SYMBOL_RESOLUTION: &str = "symbol_resolution";
+const CATEGORY_UNSUPPORTED: &str = "unsupported";
 
 pub(super) fn references_for_token(uri: &str, text: &str, token: &str) -> Vec<Value> {
     references_for_token_with_workspace(uri, text, token, &BTreeMap::new())
@@ -18,16 +23,132 @@ pub(super) fn references_for_token_with_workspace(
     token: &str,
     workspace_documents: &BTreeMap<String, String>,
 ) -> Vec<Value> {
+    reference_lookup_for_token_with_workspace(uri, text, token, workspace_documents).references
+}
+
+pub(super) fn references_diagnostic_at_position(
+    uri: &str,
+    text: &str,
+    line: usize,
+    character: usize,
+    workspace_documents: &BTreeMap<String, String>,
+) -> Value {
+    if !is_ail_source_uri(uri) {
+        return blocked(
+            "unsupported_target",
+            "AIL_REFERENCES_UNSUPPORTED_TARGET",
+            CATEGORY_UNSUPPORTED,
+            "reference diagnostics are currently available for .ail source documents only",
+            json!({
+                "language": "unsupported",
+                "documentUriRedacted": true,
+            }),
+        );
+    }
+
+    let Some(token_range) = token_range_at_position(text, line, character) else {
+        return blocked(
+            "missing_token",
+            "AIL_REFERENCES_MISSING_TOKEN",
+            CATEGORY_SYMBOL_RESOLUTION,
+            "position is not on an identifier token",
+            json!({ "line": line, "character": character }),
+        );
+    };
+    let token = token_range.token.trim();
+    if !is_reference_identifier(token) {
+        return blocked(
+            "unsupported_target",
+            "AIL_REFERENCES_UNSUPPORTED_TARGET",
+            CATEGORY_UNSUPPORTED,
+            "reference target is not a supported .ail identifier",
+            json!({
+                "target": token_descriptor(token),
+                "range": token_range_json(line, token_range.start, token_range.end),
+            }),
+        );
+    }
+
+    let result = reference_lookup_for_token_with_workspace(uri, text, token, workspace_documents);
+    let mut diagnostics = result.diagnostics;
+    if result.definition_count > 1 {
+        diagnostics.push(reference_diagnostic(
+            "ambiguous_symbol",
+            "AIL_REFERENCES_AMBIGUOUS_SYMBOL",
+            CATEGORY_SYMBOL_RESOLUTION,
+            "token resolves to multiple reference targets",
+            json!({
+                "token": token_descriptor(token),
+                "candidateCount": result.definition_count,
+                "candidateLocationsRedacted": true,
+            }),
+        ));
+    } else if result.definition_count == 0 {
+        diagnostics.push(reference_diagnostic(
+            "unresolved_symbol",
+            "AIL_REFERENCES_UNRESOLVED_SYMBOL",
+            CATEGORY_SYMBOL_RESOLUTION,
+            "token does not resolve to a reference target",
+            json!({
+                "token": token_descriptor(token),
+                "importDiagnosticCount": diagnostics.len(),
+            }),
+        ));
+    }
+    sort_reference_diagnostics(&mut diagnostics);
+    let diagnostic_count = diagnostics.len();
+    let reference_count = result.references.len();
+    json!({
+        "ok": !has_error_diagnostic(&diagnostics),
+        "references": result.references,
+        "referenceCount": reference_count,
+        "diagnostics": diagnostics,
+        "diagnosticCount": diagnostic_count,
+    })
+}
+
+pub(super) fn missing_document_references_failure() -> Value {
+    blocked(
+        "missing_document",
+        "AIL_REFERENCES_MISSING_DOCUMENT",
+        CATEGORY_DOCUMENT_STATE,
+        "document is not open in this LSP session",
+        json!({ "documentState": "not_open", "documentUriRedacted": true }),
+    )
+}
+
+struct ReferenceResult {
+    references: Vec<Value>,
+    diagnostics: Vec<Value>,
+    definition_count: usize,
+}
+
+impl ReferenceResult {
+    fn new(references: Vec<Value>, diagnostics: Vec<Value>, definition_count: usize) -> Self {
+        Self {
+            references,
+            diagnostics,
+            definition_count,
+        }
+    }
+}
+
+fn reference_lookup_for_token_with_workspace(
+    uri: &str,
+    text: &str,
+    token: &str,
+    workspace_documents: &BTreeMap<String, String>,
+) -> ReferenceResult {
     let token = token.trim();
     if token.is_empty() {
-        return vec![];
+        return ReferenceResult::new(Vec::new(), Vec::new(), 0);
     }
 
     if is_ail_source_uri(uri) {
         return references_for_ail_source_token(uri, text, token, workspace_documents);
     }
 
-    references_in_text(uri, text, token)
+    ReferenceResult::new(references_in_text(uri, text, token), Vec::new(), 1)
 }
 
 fn references_for_ail_source_token(
@@ -35,19 +156,20 @@ fn references_for_ail_source_token(
     text: &str,
     token: &str,
     workspace_documents: &BTreeMap<String, String>,
-) -> Vec<Value> {
+) -> ReferenceResult {
     let query = SourceReferenceQuery::from_token(token);
     let mut refs = source_references_in_text(uri, text, &query);
+    let mut definition_count = source_definitions_in_text(text, &query);
     let Some(root_path) = file_path_from_uri(uri) else {
-        return refs;
+        return ReferenceResult::new(refs, Vec::new(), definition_count);
     };
     let Ok(canonical_root) = std::fs::canonicalize(&root_path) else {
-        return refs;
+        return ReferenceResult::new(refs, Vec::new(), definition_count);
     };
 
+    let mut diagnostics = Vec::new();
     let mut visited = BTreeSet::new();
     visited.insert(canonical_root.clone());
-    let mut definition_count = source_definitions_in_text(text, &query);
     collect_ail_source_import_definition_count(
         &canonical_root,
         text,
@@ -55,9 +177,10 @@ fn references_for_ail_source_token(
         workspace_documents,
         &mut visited,
         &mut definition_count,
+        &mut diagnostics,
     );
     if definition_count > 1 {
-        return Vec::new();
+        return ReferenceResult::new(Vec::new(), diagnostics, definition_count);
     }
 
     let mut visited = BTreeSet::new();
@@ -70,7 +193,9 @@ fn references_for_ail_source_token(
         &mut visited,
         &mut refs,
     );
-    refs
+    sort_locations(&mut refs);
+    refs.dedup_by(|left, right| location_sort_key(left) == location_sort_key(right));
+    ReferenceResult::new(refs, diagnostics, definition_count)
 }
 
 fn collect_ail_source_import_definition_count(
@@ -80,22 +205,31 @@ fn collect_ail_source_import_definition_count(
     workspace_documents: &BTreeMap<String, String>,
     visited: &mut BTreeSet<PathBuf>,
     definition_count: &mut usize,
+    diagnostics: &mut Vec<Value>,
 ) {
-    for import in source_imports_from_text(text) {
+    for import in sorted_source_imports(text) {
         let path = resolve_lsp_source_import(source_path, &import);
         let Ok(canonical) = std::fs::canonicalize(&path) else {
+            diagnostics.push(skipped_import_diagnostic(&import, "unresolved_import"));
             continue;
         };
         if !visited.insert(canonical.clone()) {
             continue;
         }
         let imported_uri = format!("file://{}", canonical.display());
+        if !is_ail_source_uri(&imported_uri) {
+            diagnostics.push(skipped_import_diagnostic(&import, "unsupported_language"));
+            continue;
+        }
         let imported_text =
             match workspace_document_text(workspace_documents, &imported_uri, &canonical) {
                 Some(text) => text.to_string(),
                 None => match std::fs::read_to_string(&canonical) {
                     Ok(text) => text,
-                    Err(_) => continue,
+                    Err(_) => {
+                        diagnostics.push(skipped_import_diagnostic(&import, "unreadable_import"));
+                        continue;
+                    }
                 },
             };
         *definition_count += source_definitions_in_text(&imported_text, query);
@@ -106,6 +240,7 @@ fn collect_ail_source_import_definition_count(
             workspace_documents,
             visited,
             definition_count,
+            diagnostics,
         );
     }
 }
@@ -118,7 +253,7 @@ fn collect_ail_source_import_references(
     visited: &mut BTreeSet<PathBuf>,
     refs: &mut Vec<Value>,
 ) {
-    for import in source_imports_from_text(text) {
+    for import in sorted_source_imports(text) {
         let path = resolve_lsp_source_import(source_path, &import);
         let Ok(canonical) = std::fs::canonicalize(&path) else {
             continue;
@@ -127,6 +262,9 @@ fn collect_ail_source_import_references(
             continue;
         }
         let imported_uri = format!("file://{}", canonical.display());
+        if !is_ail_source_uri(&imported_uri) {
+            continue;
+        }
         let imported_text =
             match workspace_document_text(workspace_documents, &imported_uri, &canonical) {
                 Some(text) => text.to_string(),
@@ -149,6 +287,13 @@ fn collect_ail_source_import_references(
             refs,
         );
     }
+}
+
+fn sorted_source_imports(text: &str) -> Vec<String> {
+    let mut imports = source_imports_from_text(text);
+    imports.sort();
+    imports.dedup();
+    imports
 }
 
 fn workspace_document_text<'a>(
@@ -244,19 +389,9 @@ fn source_references_in_text(
         .iter()
         .flat_map(|needle| source_references_for_needle_in_text(uri, text, query, needle))
         .collect();
-    refs.sort_by_key(reference_sort_key);
-    refs.dedup_by(|left, right| reference_sort_key(left) == reference_sort_key(right));
+    sort_locations(&mut refs);
+    refs.dedup_by(|left, right| location_sort_key(left) == location_sort_key(right));
     refs
-}
-
-fn reference_sort_key(reference: &Value) -> (u64, u64, u64) {
-    (
-        reference["range"]["start"]["line"].as_u64().unwrap_or(0),
-        reference["range"]["start"]["character"]
-            .as_u64()
-            .unwrap_or(0),
-        reference["range"]["end"]["character"].as_u64().unwrap_or(0),
-    )
 }
 
 fn source_reference_needles_for_text(
@@ -356,7 +491,7 @@ fn source_definitions_in_text(text: &str, query: &SourceReferenceQuery<'_>) -> u
     let module = source_module_from_text(text);
     text.lines()
         .filter_map(source_declaration_in_line)
-        .filter(|(kind, name)| {
+        .filter(|(kind, name, _)| {
             query.allows(*kind)
                 && source_decl_name_matches_query(name, module.as_deref(), query, *kind)
         })
@@ -436,10 +571,13 @@ fn source_decl_name_matches_query(
 }
 
 fn references_in_text(uri: &str, text: &str, token: &str) -> Vec<Value> {
-    text.lines()
+    let mut refs: Vec<_> = text
+        .lines()
         .enumerate()
         .flat_map(|(line_idx, line)| token_ranges_in_line(uri, line_idx, line, token))
-        .collect()
+        .collect();
+    sort_locations(&mut refs);
+    refs
 }
 
 fn token_ranges_in_line(uri: &str, line_idx: usize, line: &str, token: &str) -> Vec<Value> {
@@ -468,4 +606,126 @@ fn token_has_boundaries(line: &str, start: usize, end: usize) -> bool {
     let boundary_before = before.map_or(true, |ch| !is_acl_token_char(ch));
     let boundary_after = after.map_or(true, |ch| !is_acl_token_char(ch));
     boundary_before && boundary_after
+}
+
+fn sort_locations(locations: &mut [Value]) {
+    locations.sort_by(|left, right| {
+        location_sort_key(left)
+            .cmp(&location_sort_key(right))
+            .then_with(|| left.to_string().cmp(&right.to_string()))
+    });
+}
+
+fn location_sort_key(location: &Value) -> (String, u64, u64, u64, u64) {
+    (
+        location["uri"].as_str().unwrap_or_default().to_string(),
+        location["range"]["start"]["line"].as_u64().unwrap_or(0),
+        location["range"]["start"]["character"]
+            .as_u64()
+            .unwrap_or(0),
+        location["range"]["end"]["line"].as_u64().unwrap_or(0),
+        location["range"]["end"]["character"].as_u64().unwrap_or(0),
+    )
+}
+
+fn blocked(reason: &str, code: &str, category: &str, message: &str, descriptor: Value) -> Value {
+    json!({
+        "ok": false,
+        "references": [],
+        "referenceCount": 0,
+        "diagnostics": [reference_diagnostic(reason, code, category, message, descriptor)],
+        "diagnosticCount": 1,
+    })
+}
+
+fn reference_diagnostic(
+    reason: &str,
+    code: &str,
+    category: &str,
+    message: &str,
+    descriptor: Value,
+) -> Value {
+    let severity = match reason {
+        "skipped_import" => "warning",
+        _ => "error",
+    };
+    json!({
+        "reason": reason,
+        "code": code,
+        "category": category,
+        "severity": severity,
+        "message": message,
+        "descriptor": descriptor,
+    })
+}
+
+fn skipped_import_diagnostic(import: &str, state: &str) -> Value {
+    reference_diagnostic(
+        "skipped_import",
+        "AIL_REFERENCES_SKIPPED_IMPORT",
+        CATEGORY_UNSUPPORTED,
+        "imported document was skipped during reference lookup",
+        json!({
+            "importLength": import.chars().count(),
+            "importKind": if Path::new(import).is_absolute() { "absolute" } else { "relative" },
+            "importState": state,
+            "importPathRedacted": true,
+            "documentUriRedacted": true,
+        }),
+    )
+}
+
+fn has_error_diagnostic(diagnostics: &[Value]) -> bool {
+    diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["severity"] == "error")
+}
+
+fn sort_reference_diagnostics(diagnostics: &mut [Value]) {
+    diagnostics.sort_by(|left, right| {
+        reference_diagnostic_sort_key(left)
+            .cmp(&reference_diagnostic_sort_key(right))
+            .then_with(|| left.to_string().cmp(&right.to_string()))
+    });
+}
+
+fn reference_diagnostic_sort_key(diagnostic: &Value) -> (String, String, String) {
+    (
+        diagnostic["code"].as_str().unwrap_or_default().to_string(),
+        diagnostic["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        diagnostic["descriptor"]["importState"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    )
+}
+
+fn is_reference_identifier(token: &str) -> bool {
+    !token.is_empty()
+        && token.chars().all(is_acl_token_char)
+        && token
+            .chars()
+            .any(|ch| ch.is_ascii_alphabetic() || ch == '_')
+}
+
+fn token_descriptor(token: &str) -> Value {
+    json!({
+        "tokenLength": token.chars().count(),
+        "containsQualifier": token.contains('.'),
+        "tokenClass": if token.chars().all(|ch| ch.is_ascii_digit()) {
+            "numeric"
+        } else {
+            "identifier_like"
+        },
+    })
+}
+
+fn token_range_json(line: usize, start: usize, end: usize) -> Value {
+    json!({
+        "start": { "line": line, "character": start },
+        "end": { "line": line, "character": end }
+    })
 }

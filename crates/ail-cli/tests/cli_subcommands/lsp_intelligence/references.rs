@@ -296,6 +296,292 @@ fn lsp_stdio_references_use_open_workspace_import_text() {
     assert_eq!(refs[1]["range"]["start"]["character"], 3);
 }
 
+#[test]
+fn lsp_references_diagnostics_report_missing_document() {
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 41,
+        "method": "ail/references",
+        "params": {
+            "textDocument": { "uri": "file:///redacted/missing.ail" },
+            "position": { "line": 0, "character": 0 }
+        }
+    });
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(lsp_frame(&request))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 41)
+        .expect("references diagnostic response must be emitted");
+
+    assert_eq!(response["result"]["ok"], false);
+    assert_eq!(
+        response["result"]["diagnostics"][0]["reason"],
+        "missing_document"
+    );
+    assert_eq!(
+        response["result"]["diagnostics"][0]["code"],
+        "AIL_REFERENCES_MISSING_DOCUMENT"
+    );
+    assert_eq!(
+        response["result"]["diagnostics"][0]["descriptor"]["documentUriRedacted"],
+        true
+    );
+}
+
+#[test]
+fn lsp_references_diagnostics_redact_unresolved_symbol() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let main = dir.child("main.ail");
+    let main_text = "fn main() -> Int = secret_symbol()\n";
+    main.write_str(main_text)
+        .expect("main source fixture must be written");
+    let main_uri = format!("file://{}", main.path().display());
+    let open_main = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": main_uri,
+                "languageId": "ail",
+                "version": 1,
+                "text": main_text,
+            }
+        }
+    });
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "method": "ail/references",
+        "params": {
+            "textDocument": { "uri": main_uri },
+            "position": { "line": 0, "character": main_text.find("secret_symbol").unwrap() + 1 }
+        }
+    });
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(format!("{}{}", lsp_frame(&open_main), lsp_frame(&request)))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 42)
+        .expect("references diagnostic response must be emitted");
+    let rendered = response.to_string();
+
+    assert_eq!(response["result"]["ok"], false);
+    assert_eq!(
+        response["result"]["diagnostics"][0]["reason"],
+        "unresolved_symbol"
+    );
+    assert_eq!(
+        response["result"]["diagnostics"][0]["code"],
+        "AIL_REFERENCES_UNRESOLVED_SYMBOL"
+    );
+    assert!(!rendered.contains("secret_symbol"));
+    assert_eq!(
+        response["result"]["diagnostics"][0]["descriptor"]["token"]["tokenLength"],
+        13
+    );
+}
+
+#[test]
+fn lsp_references_diagnostics_report_ambiguous_imported_symbols() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let left = dir.child("left.ail");
+    left.write_str("module left\nfn helper() -> Int = 1\n")
+        .expect("left source fixture must be written");
+    let right = dir.child("right.ail");
+    right
+        .write_str("module right\nfn helper() -> Int = 2\n")
+        .expect("right source fixture must be written");
+    let main = dir.child("main.ail");
+    let main_text = "use \"./right.ail\"\nuse \"./left.ail\"\nfn main() -> Int = helper()\n";
+    main.write_str(main_text)
+        .expect("main source fixture must be written");
+    let main_uri = format!("file://{}", main.path().display());
+    let open_main = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": main_uri,
+                "languageId": "ail",
+                "version": 1,
+                "text": main_text,
+            }
+        }
+    });
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 43,
+        "method": "ail/references",
+        "params": {
+            "textDocument": { "uri": main_uri },
+            "position": { "line": 2, "character": main_text.lines().nth(2).unwrap().find("helper").unwrap() + 1 }
+        }
+    });
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(format!("{}{}", lsp_frame(&open_main), lsp_frame(&request)))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 43)
+        .expect("references diagnostic response must be emitted");
+
+    assert_eq!(response["result"]["ok"], false);
+    assert_eq!(response["result"]["referenceCount"], 0);
+    assert_eq!(
+        response["result"]["diagnostics"][0]["reason"],
+        "ambiguous_symbol"
+    );
+    assert_eq!(
+        response["result"]["diagnostics"][0]["descriptor"]["candidateCount"],
+        2
+    );
+    assert_eq!(
+        response["result"]["diagnostics"][0]["descriptor"]["candidateLocationsRedacted"],
+        true
+    );
+}
+
+#[test]
+fn lsp_references_diagnostics_warn_for_skipped_unreadable_import() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    std::fs::create_dir(dir.child("bad.ail").path())
+        .expect("unreadable import directory must be created");
+    let main = dir.child("main.ail");
+    let main_text = "use \"./bad.ail\"\nfn main() -> Int = main()\n";
+    main.write_str(main_text)
+        .expect("main source fixture must be written");
+    let main_uri = format!("file://{}", main.path().display());
+    let open_main = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": main_uri,
+                "languageId": "ail",
+                "version": 1,
+                "text": main_text,
+            }
+        }
+    });
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 44,
+        "method": "ail/references",
+        "params": {
+            "textDocument": { "uri": main_uri },
+            "position": { "line": 1, "character": main_text.lines().nth(1).unwrap().find("main").unwrap() + 1 }
+        }
+    });
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(format!("{}{}", lsp_frame(&open_main), lsp_frame(&request)))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 44)
+        .expect("references diagnostic response must be emitted");
+
+    assert_eq!(response["result"]["ok"], true);
+    assert_eq!(response["result"]["diagnosticCount"], 1);
+    assert_eq!(
+        response["result"]["diagnostics"][0]["reason"],
+        "skipped_import"
+    );
+    assert_eq!(response["result"]["diagnostics"][0]["severity"], "warning");
+    assert_eq!(
+        response["result"]["diagnostics"][0]["descriptor"]["importState"],
+        "unreadable_import"
+    );
+    assert_eq!(
+        response["result"]["diagnostics"][0]["descriptor"]["importPathRedacted"],
+        true
+    );
+}
+
+#[test]
+fn lsp_references_order_imported_locations_deterministically_by_uri() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let imported = dir.child("aaa.ail");
+    imported
+        .write_str("module aaa\nfn target() -> Int = 1\n")
+        .expect("imported source fixture must be written");
+    let main = dir.child("main.ail");
+    main.write_str("use \"./aaa.ail\"\nfn main() -> Int = aaa.target()\n")
+        .expect("main source fixture must be written");
+
+    let output = ail()
+        .args([
+            "lsp",
+            "--references-token",
+            "aaa.target",
+            "--references-file",
+        ])
+        .arg(main.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+    let refs = v["data"]["references"]
+        .as_array()
+        .expect("references must be an array");
+
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["reference_count"], 2);
+    assert!(
+        refs[0]["uri"]
+            .as_str()
+            .expect("first reference uri")
+            .ends_with("aaa.ail")
+    );
+    assert!(
+        refs[1]["uri"]
+            .as_str()
+            .expect("second reference uri")
+            .ends_with("main.ail")
+    );
+}
+
+fn lsp_frame(message: &serde_json::Value) -> String {
+    let body = message.to_string();
+    format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
+}
+
 fn lsp_json_messages(stdout: &[u8]) -> Vec<serde_json::Value> {
     let text = std::str::from_utf8(stdout).expect("LSP stdout must be UTF-8");
     let mut messages = Vec::new();
