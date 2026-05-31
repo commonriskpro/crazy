@@ -83,6 +83,10 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
             tests.push(parse_source_test(rest, *line_num)?);
         } else if let Some(rest) = statement.strip_prefix("grant ") {
             grants.push(parse_source_grant(rest, *line_num)?);
+        } else if statement == "export" || statement.starts_with("export ") {
+            return Err(CliError::ParseError(format!(
+                "line {line_num}: unsupported source export syntax `{statement}`; imported `.ail` files expose declarations by name automatically"
+            )));
         } else {
             return Err(CliError::ParseError(format!(
                 "line {line_num}: expected `module`, `use`, `capability`, `const`, `fn`, `test`, or `grant`, got `{statement}`"

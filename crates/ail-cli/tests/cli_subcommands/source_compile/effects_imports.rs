@@ -267,6 +267,30 @@ fn compile_file_rejects_duplicate_source_imports() {
 }
 
 #[test]
+fn compile_file_rejects_source_export_syntax() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_export.ail");
+    source
+        .write_str("export fn helper() -> Int = 1\nfn main() -> Int = helper()\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "line 1: unsupported source export syntax `export fn helper() -> Int = 1`",
+        ))
+        .stderr(predicate::str::contains(
+            "imported `.ail` files expose declarations by name automatically",
+        ));
+}
+
+#[test]
 fn compile_file_rejects_invalid_ail_source_before_lowering() {
     use assert_fs::prelude::*;
 

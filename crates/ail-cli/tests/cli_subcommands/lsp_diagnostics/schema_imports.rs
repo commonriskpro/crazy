@@ -340,6 +340,41 @@ fn lsp_diagnose_reports_duplicate_source_imports() {
 }
 
 #[test]
+fn lsp_diagnose_reports_source_export_syntax() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("export fn helper() -> Int = 1\nfn main() -> Int = helper()\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(v["data"]["diagnostics"][0]["source"], "ail-source-parser");
+    let message = v["data"]["diagnostics"][0]["message"]
+        .as_str()
+        .expect("diagnostic message");
+    assert!(
+        message
+            .contains("line 1: unsupported source export syntax `export fn helper() -> Int = 1`")
+    );
+    assert!(message.contains("imported `.ail` files expose declarations by name automatically"));
+}
+
+#[test]
 fn lsp_diagnose_reports_ail_source_duplicate_imported_functions() {
     use assert_fs::prelude::*;
 
