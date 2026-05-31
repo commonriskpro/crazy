@@ -264,6 +264,27 @@ fn replay_engine_returns_error_for_unrecorded_call() {
 }
 
 #[test]
+fn replay_handler_missing_recording_error_is_redacted_and_classified() {
+    let engine = ReplayEngine::new();
+    let handler = engine.into_handler();
+    let cap = CapabilityId::new("http.call:TenantBillingProvider");
+    let operation = "GET:https://api.example.com/users?token=super-secret-token";
+
+    let err = handler
+        .handle(&cap, operation, b"")
+        .expect_err("unrecorded replay call must fail")
+        .to_string();
+
+    assert!(err.contains("replay.missing_recording"));
+    assert!(err.contains("capability=http.call:*"));
+    assert!(err.contains("operation_shape=http.request"));
+    assert!(!err.contains("TenantBillingProvider"));
+    assert!(!err.contains("super-secret-token"));
+    assert!(!err.contains("api.example.com"));
+    assert!(!err.contains(operation));
+}
+
+#[test]
 fn replay_engine_replays_same_response_multiple_times() {
     let mut engine = ReplayEngine::new();
     let cap = CapabilityId::new("http.call:PriceService");

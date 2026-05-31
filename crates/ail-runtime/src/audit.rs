@@ -50,6 +50,13 @@ pub(crate) fn denial_category(category: &'static str) -> Option<String> {
     Some(category.to_string())
 }
 
+// ── Stable replay mismatch categories ────────────────────────────────────
+
+/// Replay/audit category for calls that have no recorded capability response.
+pub const REPLAY_MISMATCH_MISSING_RECORDING: &str = "replay.missing_recording";
+/// Replay/audit category for recorded responses whose output hash no longer matches.
+pub const REPLAY_MISMATCH_HASH_MISMATCH: &str = "replay.hash_mismatch";
+
 // ── AuditEvent ────────────────────────────────────────────────────────────
 
 /// A single audit record.
@@ -234,6 +241,27 @@ mod tests {
                 denial_category(category),
                 Some(category.to_string()),
                 "helper must preserve the stable category text"
+            );
+        }
+    }
+
+    #[test]
+    fn replay_mismatch_categories_are_stable_machine_readable_values() {
+        let categories = [
+            REPLAY_MISMATCH_MISSING_RECORDING,
+            REPLAY_MISMATCH_HASH_MISMATCH,
+        ];
+
+        for category in categories {
+            assert!(
+                category.starts_with("replay."),
+                "category `{category}` must stay under replay namespace"
+            );
+            assert!(
+                category
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'.' || byte == b'_'),
+                "category `{category}` must stay machine readable"
             );
         }
     }
