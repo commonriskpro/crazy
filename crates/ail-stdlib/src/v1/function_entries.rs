@@ -24,6 +24,7 @@ mod time;
 /// - `std.core.option`: `map`, `and_then`, `unwrap_or`, `transpose`,
 ///   `collect_results`
 /// - `std.core.result`: `map`, `and_then`, `unwrap_or`, `transpose`
+/// - `std.core.tuple`: `length`, `get`, `first`, `second`
 /// - `std.text`: `trim`, `split`, `join`, `length_graphemes`,
 ///   `to_bytes`, `from_bytes`, `starts_with`, `ends_with`, `contains`, `replace`
 /// - `std.iter`: `map`, `filter`, `any`, `all`, `find`, `position`, `fold`,

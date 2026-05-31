@@ -223,4 +223,94 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
             ],
         }),
     });
+
+    // ── std.core.tuple functions ─────────────────────────────────────────
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.core.tuple.length".to_string()),
+        module_path: "std::core".to_string(),
+        name: "length".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "UInt".to_string(),
+            generics: vec!["Tuple".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Tuple<T...>".to_string()],
+            ensures: vec![
+                "result >= 0".to_string(),
+                "result equals tuple arity".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.core.tuple.get".to_string()),
+        module_path: "std::core".to_string(),
+        name: "get".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["Tuple".to_string(), "T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec![
+                "first arg is Tuple<T...>".to_string(),
+                "second arg is Int (index)".to_string(),
+            ],
+            ensures: vec![
+                "Some(element) when 0 <= index < tuple arity".to_string(),
+                "None when index is negative".to_string(),
+                "None when index >= tuple arity".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.core.tuple.first".to_string()),
+        module_path: "std::core".to_string(),
+        name: "first".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["Tuple".to_string(), "T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Tuple<T...>".to_string()],
+            ensures: vec![
+                "Some(first element) when tuple arity >= 1".to_string(),
+                "None when tuple is empty".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.core.tuple.second".to_string()),
+        module_path: "std::core".to_string(),
+        name: "second".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Option".to_string(),
+            generics: vec!["Tuple".to_string(), "T".to_string()],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["input is Tuple<T...>".to_string()],
+            ensures: vec![
+                "Some(second element) when tuple arity >= 2".to_string(),
+                "None when tuple arity < 2".to_string(),
+            ],
+        }),
+    });
 }

@@ -34,6 +34,18 @@ fn v1_ok_or_has_contract_clauses() {
     );
 }
 
+#[test]
+fn v1_tuple_accessors_have_contract_clauses() {
+    for id in [
+        "std.core.tuple.length",
+        "std.core.tuple.get",
+        "std.core.tuple.first",
+        "std.core.tuple.second",
+    ] {
+        assert!(has_contract_clauses(id), "{id} must have contract_clauses");
+    }
+}
+
 // A7: crypto pure function entries
 #[test]
 fn v1_contains_crypto_hash() {

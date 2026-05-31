@@ -23,7 +23,8 @@ use self::handlers::{
     result_unwrap_or, set_contains, set_insert, set_length, text_contains_exec, text_decode,
     text_encode, text_ends_with_exec, text_format, text_join, text_length_graphemes_exec,
     text_normalize, text_regex, text_replace_exec, text_split, text_starts_with_exec, text_trim,
-    time_add_duration_exec, time_duration_since_exec, time_instant_to_ms_exec,
+    time_add_duration_exec, time_duration_since_exec, time_instant_to_ms_exec, tuple_first,
+    tuple_get, tuple_length, tuple_second,
 };
 
 use super::capability::StdlibCapabilityDispatch;
@@ -174,6 +175,38 @@ pub fn stdlib_function_entries() -> Vec<FunctionEntry> {
             &["Result<Option<T>, E>"],
             "Option<Result<T, E>>",
             result_transpose,
+        ),
+        pure(
+            "std.core.tuple.length",
+            "std.core",
+            "length",
+            &["Tuple<T...>"],
+            "UInt",
+            tuple_length,
+        ),
+        pure(
+            "std.core.tuple.get",
+            "std.core",
+            "get",
+            &["Tuple<T...>", "Int"],
+            "Option<T>",
+            tuple_get,
+        ),
+        pure(
+            "std.core.tuple.first",
+            "std.core",
+            "first",
+            &["Tuple<T...>"],
+            "Option<T>",
+            tuple_first,
+        ),
+        pure(
+            "std.core.tuple.second",
+            "std.core",
+            "second",
+            &["Tuple<T...>"],
+            "Option<T>",
+            tuple_second,
         ),
         pure(
             "std.collections.list.length",

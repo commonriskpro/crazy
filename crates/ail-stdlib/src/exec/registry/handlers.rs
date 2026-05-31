@@ -199,6 +199,47 @@ pub(super) fn result_unwrap_or(args: &[StdlibValue]) -> Result<StdlibValue, Stdl
         .unwrap_or_else(|_| args[1].clone()))
 }
 
+// ── Tuple adapters ────────────────────────────────────────────────────────
+
+pub(super) fn tuple_length(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Tuple(items) => Ok(StdlibValue::Int(items.len() as i64)),
+        _ => Err(StdlibExecError::Type { expected: "Tuple" }),
+    }
+}
+
+pub(super) fn tuple_get(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let StdlibValue::Tuple(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Tuple" });
+    };
+    let StdlibValue::Int(index) = args[1] else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    let value = usize::try_from(index)
+        .ok()
+        .and_then(|index| items.get(index).cloned())
+        .map(Box::new);
+    Ok(StdlibValue::Option(value))
+}
+
+pub(super) fn tuple_first(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::Tuple(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Tuple" });
+    };
+    Ok(StdlibValue::Option(items.first().cloned().map(Box::new)))
+}
+
+pub(super) fn tuple_second(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::Tuple(items) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Tuple" });
+    };
+    Ok(StdlibValue::Option(items.get(1).cloned().map(Box::new)))
+}
+
 // ── Collection adapters ───────────────────────────────────────────────────
 
 pub(super) fn list_length(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
