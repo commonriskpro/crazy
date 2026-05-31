@@ -316,6 +316,23 @@ fn value(input:Option<Int>)->Int=match(input,Some(v),v,None,0)
 }
 
 #[test]
+fn formats_source_match_constructor_aliases_idempotently() {
+    let src = "fn picked(input:Option<Int>,fallback:Int)->Int=match(input,some(v),if(gt(v,0),v,fallback),none(),fallback)\n";
+
+    let (formatted, item_count) = format_ail_source(src).expect("source match must format");
+    let (formatted_again, item_count_again) =
+        format_ail_source(&formatted).expect("formatted source match must format again");
+
+    assert_eq!(item_count, 1);
+    assert_eq!(item_count_again, item_count);
+    assert_eq!(formatted_again, formatted);
+    assert_eq!(
+        formatted,
+        "fn picked(input: Option<Int>, fallback: Int) -> Int = match input { Some(v) => if v > 0 { v } else { fallback }, None => fallback }\n"
+    );
+}
+
+#[test]
 fn formats_source_option_predicate_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"
