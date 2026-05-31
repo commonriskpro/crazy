@@ -256,6 +256,17 @@ impl DependencyResolver {
         best
     }
 
+    /// Return conflict versions in canonical order so diagnostics do not depend
+    /// on the input dependency declaration order.
+    fn canonical_conflict_versions<'a>(left: &'a str, right: &'a str) -> (&'a str, &'a str) {
+        match (Version::parse(left), Version::parse(right)) {
+            (Ok(left_ver), Ok(right_ver)) if right_ver < left_ver => (right, left),
+            (Ok(_), Ok(_)) => (left, right),
+            _ if right < left => (right, left),
+            _ => (left, right),
+        }
+    }
+
     /// Resolve a `DependencySpec` against the given registry, advisories, and
     /// yank records, enforcing the full policy chain from `docs/packages.md`.
     ///
@@ -408,10 +419,12 @@ impl DependencyResolver {
             let manifest = Self::resolve(spec, registry, advisories, yanks)?;
             match resolved.get(&manifest.name) {
                 Some((_, prev_version)) if *prev_version != manifest.version => {
+                    let (v1, v2) =
+                        Self::canonical_conflict_versions(prev_version, &manifest.version);
                     return Err(ResolverError::ConflictingVersion {
                         name: manifest.name.clone(),
-                        v1: prev_version.clone(),
-                        v2: manifest.version.clone(),
+                        v1: v1.to_string(),
+                        v2: v2.to_string(),
                     });
                 }
                 Some(_) => {
@@ -943,6 +956,50 @@ mod tests {
             matches!(result, Err(ResolverError::ConflictingVersion { ref name, .. }) if name == "utils.core"),
             "conflicting versions must produce ConflictingVersion error"
         );
+    }
+
+    // Spec PKG-RES-REPRO-1: conflict diagnostics are independent of spec order.
+    #[test]
+    fn resolve_all_conflicting_versions_reports_canonical_versions() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("utils.core", "1.0.0", TrustLevel::Verified));
+        reg.register(make_manifest("utils.core", "2.0.0", TrustLevel::Verified));
+
+        let specs = vec![
+            spec("utils.core", "2.0.0", TrustLevel::Unverified),
+            spec("utils.core", "1.0.0", TrustLevel::Unverified),
+        ];
+
+        let result = DependencyResolver::resolve_all(&specs, &reg, &[], &[]);
+        assert_eq!(
+            result,
+            Err(ResolverError::ConflictingVersion {
+                name: "utils.core".to_string(),
+                v1: "1.0.0".to_string(),
+                v2: "2.0.0".to_string(),
+            }),
+            "conflict diagnostics must not depend on declaration order"
+        );
+    }
+
+    // Spec PKG-RES-REPRO-2: resolved graph ordering is independent of spec order.
+    #[test]
+    fn resolve_all_returns_manifests_in_canonical_name_order() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg.z", "1.0.0", TrustLevel::Verified));
+        reg.register(make_manifest("pkg.a", "1.0.0", TrustLevel::Verified));
+
+        let specs = vec![
+            spec("pkg.z", "1.0.0", TrustLevel::Unverified),
+            spec("pkg.a", "1.0.0", TrustLevel::Unverified),
+        ];
+
+        let manifests = DependencyResolver::resolve_all(&specs, &reg, &[], &[])
+            .expect("non-conflicting deps must resolve");
+
+        assert_eq!(manifests.len(), 2);
+        assert_eq!(manifests[0].name, "pkg.a");
+        assert_eq!(manifests[1].name, "pkg.z");
     }
 
     // ── advisory_range_constraint_matches ─────────────────────────────────
