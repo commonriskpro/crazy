@@ -94,12 +94,174 @@ pub struct ArtifactManifest {
     pub capabilities_manifest_hash: Option<[u8; 32]>,
 }
 
+// ── ArtifactManifest validation ─────────────────────────────────────────
+
+/// Current package-facing schema identifier for artifact manifest validation.
+///
+/// Kept outside `ArtifactManifest` so older manifest sidecars can still
+/// deserialize while package tooling gets a stable gate for schema envelopes.
+pub const ARTIFACT_MANIFEST_SCHEMA_VERSION: &str = "artifact-manifest/1.0";
+
+/// Stable issue code for package entries that reference the same artifact id.
+pub const E_ARTIFACT_MANIFEST_DUPLICATE_ARTIFACT: &str = "E_ARTIFACT_MANIFEST_DUPLICATE_ARTIFACT";
+
+/// Stable issue code for package manifests missing production hash seals.
+pub const E_ARTIFACT_MANIFEST_MISSING_HASH: &str = "E_ARTIFACT_MANIFEST_MISSING_HASH";
+
+/// Stable issue code for package manifest schema envelope mismatches.
+pub const E_ARTIFACT_MANIFEST_SCHEMA_MISMATCH: &str = "E_ARTIFACT_MANIFEST_SCHEMA_MISMATCH";
+
+/// A manifest plus package-envelope metadata used by package integration gates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArtifactManifestValidationEntry<'a> {
+    /// Stable package artifact id/path for duplicate detection and diagnostics.
+    pub artifact_id: &'a str,
+    /// Schema id from the package manifest envelope.
+    pub schema_version: &'a str,
+    /// Compiler-emitted manifest sidecar to validate.
+    pub manifest: &'a ArtifactManifest,
+}
+
+impl<'a> ArtifactManifestValidationEntry<'a> {
+    /// Build a validation entry for one package artifact manifest sidecar.
+    pub fn new(
+        artifact_id: &'a str,
+        schema_version: &'a str,
+        manifest: &'a ArtifactManifest,
+    ) -> Self {
+        Self {
+            artifact_id,
+            schema_version,
+            manifest,
+        }
+    }
+}
+
+/// Machine-readable artifact manifest validation issue.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactManifestValidationIssue {
+    /// Stable issue code for downstream policy gates.
+    pub code: String,
+    /// Package artifact id/path that owns the issue.
+    pub artifact_id: String,
+    /// Manifest or envelope field that failed validation.
+    pub field: String,
+    /// Human-readable explanation for logs and reports.
+    pub message: String,
+}
+
+impl ArtifactManifestValidationIssue {
+    fn new(
+        code: &'static str,
+        artifact_id: impl Into<String>,
+        field: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: code.to_string(),
+            artifact_id: artifact_id.into(),
+            field: field.to_string(),
+            message: message.into(),
+        }
+    }
+
+    fn sort_key(&self) -> (&str, &str, &str, &str) {
+        (&self.code, &self.artifact_id, &self.field, &self.message)
+    }
+}
+
+/// Validate package-facing artifact manifests for reproducibility gates.
+///
+/// The gate is intentionally stricter than deserialization compatibility:
+/// legacy manifests may deserialize with missing optional hashes, but package
+/// integration must surface stable issue codes before publish/promotion.
+pub fn validate_artifact_manifest_entries(
+    entries: &[ArtifactManifestValidationEntry<'_>],
+) -> Vec<ArtifactManifestValidationIssue> {
+    use std::collections::BTreeMap;
+
+    let mut issues = Vec::new();
+    let mut artifact_counts: BTreeMap<&str, usize> = BTreeMap::new();
+
+    for entry in entries {
+        *artifact_counts.entry(entry.artifact_id).or_default() += 1;
+
+        if entry.schema_version != ARTIFACT_MANIFEST_SCHEMA_VERSION {
+            issues.push(ArtifactManifestValidationIssue::new(
+                E_ARTIFACT_MANIFEST_SCHEMA_MISMATCH,
+                entry.artifact_id,
+                "schema_version",
+                format!(
+                    "expected schema {ARTIFACT_MANIFEST_SCHEMA_VERSION}, found {}",
+                    entry.schema_version
+                ),
+            ));
+        }
+
+        if entry.manifest.capabilities_manifest_hash.is_none() {
+            issues.push(ArtifactManifestValidationIssue::new(
+                E_ARTIFACT_MANIFEST_MISSING_HASH,
+                entry.artifact_id,
+                "capabilities_manifest_hash",
+                "capabilities_manifest_hash is required for package promotion",
+            ));
+        }
+
+        if entry.manifest.source_map_hash.is_none() {
+            issues.push(ArtifactManifestValidationIssue::new(
+                E_ARTIFACT_MANIFEST_MISSING_HASH,
+                entry.artifact_id,
+                "source_map_hash",
+                "source_map_hash is required for package promotion",
+            ));
+        }
+
+        if entry.manifest.wasm_hash.is_none() && entry.manifest.native_hash.is_none() {
+            issues.push(ArtifactManifestValidationIssue::new(
+                E_ARTIFACT_MANIFEST_MISSING_HASH,
+                entry.artifact_id,
+                "wasm_hash|native_hash",
+                "at least one backend artifact hash is required for package promotion",
+            ));
+        }
+    }
+
+    for (artifact_id, count) in artifact_counts {
+        if count > 1 {
+            issues.push(ArtifactManifestValidationIssue::new(
+                E_ARTIFACT_MANIFEST_DUPLICATE_ARTIFACT,
+                artifact_id,
+                "artifact_id",
+                format!("artifact id appears {count} times in package manifest"),
+            ));
+        }
+    }
+
+    issues.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
+    issues
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hash::stable_cbor_bytes;
+
+    fn manifest_with_backend_hash() -> ArtifactManifest {
+        ArtifactManifest {
+            profile: "prod".to_string(),
+            compiler_version: "1.0.0".to_string(),
+            graph_snapshot_hash: [1u8; 32],
+            verification_report_hash: [2u8; 32],
+            core_ir_hash: [3u8; 32],
+            anf_ir_hash: [4u8; 32],
+            wasm_hash: Some([5u8; 32]),
+            native_hash: None,
+            source_map_hash: Some([6u8; 32]),
+            capabilities_manifest_hash: Some([7u8; 32]),
+        }
+    }
 
     // Spec: ArtifactManifest is constructible with all required fields.
     // RED → GREEN: type must exist with these exact field names and types.
@@ -231,6 +393,130 @@ mod tests {
             "manifest with optional fields must encode to more bytes: {} vs {}",
             b_min.len(),
             b_full.len()
+        );
+    }
+
+    #[test]
+    fn validation_reports_missing_hashes_with_stable_codes() {
+        let manifest = ArtifactManifest {
+            profile: "prod".to_string(),
+            compiler_version: "1.0.0".to_string(),
+            graph_snapshot_hash: [1u8; 32],
+            verification_report_hash: [2u8; 32],
+            core_ir_hash: [3u8; 32],
+            anf_ir_hash: [4u8; 32],
+            wasm_hash: None,
+            native_hash: None,
+            source_map_hash: None,
+            capabilities_manifest_hash: None,
+        };
+
+        let issues = validate_artifact_manifest_entries(&[ArtifactManifestValidationEntry::new(
+            "program.wasm",
+            ARTIFACT_MANIFEST_SCHEMA_VERSION,
+            &manifest,
+        )]);
+
+        let issue_keys: Vec<(&str, &str)> = issues
+            .iter()
+            .map(|issue| (issue.code.as_str(), issue.field.as_str()))
+            .collect();
+
+        assert_eq!(
+            issue_keys,
+            vec![
+                (
+                    E_ARTIFACT_MANIFEST_MISSING_HASH,
+                    "capabilities_manifest_hash",
+                ),
+                (E_ARTIFACT_MANIFEST_MISSING_HASH, "source_map_hash"),
+                (E_ARTIFACT_MANIFEST_MISSING_HASH, "wasm_hash|native_hash"),
+            ]
+        );
+    }
+
+    #[test]
+    fn validation_reports_schema_mismatch_and_duplicate_artifacts() {
+        let manifest = manifest_with_backend_hash();
+        let issues = validate_artifact_manifest_entries(&[
+            ArtifactManifestValidationEntry::new(
+                "program.wasm",
+                "artifact-manifest/0.9",
+                &manifest,
+            ),
+            ArtifactManifestValidationEntry::new(
+                "program.wasm",
+                ARTIFACT_MANIFEST_SCHEMA_VERSION,
+                &manifest,
+            ),
+        ]);
+
+        let issue_keys: Vec<(&str, &str, &str)> = issues
+            .iter()
+            .map(|issue| {
+                (
+                    issue.code.as_str(),
+                    issue.artifact_id.as_str(),
+                    issue.field.as_str(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            issue_keys,
+            vec![
+                (
+                    E_ARTIFACT_MANIFEST_DUPLICATE_ARTIFACT,
+                    "program.wasm",
+                    "artifact_id",
+                ),
+                (
+                    E_ARTIFACT_MANIFEST_SCHEMA_MISMATCH,
+                    "program.wasm",
+                    "schema_version",
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn validation_orders_issues_deterministically() {
+        let mut missing = manifest_with_backend_hash();
+        missing.wasm_hash = None;
+        missing.source_map_hash = None;
+        missing.capabilities_manifest_hash = None;
+
+        let complete = manifest_with_backend_hash();
+        let issues = validate_artifact_manifest_entries(&[
+            ArtifactManifestValidationEntry::new("zeta.wasm", "artifact-manifest/0.8", &missing),
+            ArtifactManifestValidationEntry::new("alpha.wasm", "artifact-manifest/0.7", &complete),
+            ArtifactManifestValidationEntry::new(
+                "alpha.wasm",
+                ARTIFACT_MANIFEST_SCHEMA_VERSION,
+                &complete,
+            ),
+        ]);
+        let reversed_issues = validate_artifact_manifest_entries(&[
+            ArtifactManifestValidationEntry::new(
+                "alpha.wasm",
+                ARTIFACT_MANIFEST_SCHEMA_VERSION,
+                &complete,
+            ),
+            ArtifactManifestValidationEntry::new("alpha.wasm", "artifact-manifest/0.7", &complete),
+            ArtifactManifestValidationEntry::new("zeta.wasm", "artifact-manifest/0.8", &missing),
+        ]);
+
+        let sorted_issue_keys = issues
+            .windows(2)
+            .all(|pair| pair[0].sort_key() <= pair[1].sort_key());
+
+        assert!(
+            sorted_issue_keys,
+            "artifact manifest validation issues must have deterministic ordering: {issues:?}"
+        );
+        assert_eq!(
+            issues, reversed_issues,
+            "validation issues must not depend on package entry traversal order"
         );
     }
 }
