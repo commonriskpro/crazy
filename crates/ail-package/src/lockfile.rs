@@ -53,10 +53,114 @@ pub struct LockfileEntry {
     /// Optional BLAKE3 hex digest of the verification report used to
     /// produce this lock entry.
     pub verification_report_hash: Option<String>,
-    /// Assumption IDs accepted by the approver at lock time, in declaration order.
+    /// Assumption IDs accepted by the approver at lock time, in canonical lexical order.
     ///
     /// Uses `Vec` (not `HashSet`) to maintain CBOR determinism.
     pub accepted_assumptions: Vec<String>,
+}
+
+/// Stable high-level category for lockfile validation issues.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum LockfileValidationCategory {
+    /// Canonical ordering or uniqueness needed for deterministic replay.
+    Determinism,
+    /// Invalid or incomplete data stored in the lockfile itself.
+    LockfileIntegrity,
+    /// Drift between the lockfile and actual replay artifacts.
+    ReplayIntegrity,
+}
+
+impl std::fmt::Display for LockfileValidationCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LockfileValidationCategory::Determinism => write!(f, "determinism"),
+            LockfileValidationCategory::LockfileIntegrity => write!(f, "lockfile_integrity"),
+            LockfileValidationCategory::ReplayIntegrity => write!(f, "replay_integrity"),
+        }
+    }
+}
+
+/// Stable machine-readable issue kind emitted by lockfile validation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum LockfileValidationIssueKind {
+    /// Entries are not in canonical `(name, version)` order.
+    UnstableEntryOrder,
+    /// The same `(name, version)` package is pinned more than once.
+    DuplicatePackageEntry,
+    /// The caller supplied the same actual package coordinate more than once.
+    DuplicateActualPackage,
+    /// A locked package was not present in the actual package set.
+    MissingPackage,
+    /// A locked package exists, but its artifact digest differs from the lock.
+    PackageHashMismatch,
+    /// A locked package has no package artifact digest.
+    EmptyPackageHash,
+    /// A locked package records an empty verification report digest.
+    EmptyVerificationReportHash,
+    /// A locked package records an empty accepted assumption ID.
+    EmptyAcceptedAssumption,
+    /// A locked package records the same accepted assumption more than once.
+    DuplicateAcceptedAssumption,
+    /// Accepted assumptions are not in canonical lexical order.
+    UnstableAcceptedAssumptionOrder,
+}
+
+impl LockfileValidationIssueKind {
+    /// Stable issue code for downstream tooling and reports.
+    pub fn code(self) -> &'static str {
+        match self {
+            LockfileValidationIssueKind::UnstableEntryOrder => "LOCKFILE_UNSTABLE_ENTRY_ORDER",
+            LockfileValidationIssueKind::DuplicatePackageEntry => {
+                "LOCKFILE_DUPLICATE_PACKAGE_ENTRY"
+            }
+            LockfileValidationIssueKind::DuplicateActualPackage => {
+                "LOCKFILE_DUPLICATE_ACTUAL_PACKAGE"
+            }
+            LockfileValidationIssueKind::MissingPackage => "LOCKFILE_MISSING_PACKAGE",
+            LockfileValidationIssueKind::PackageHashMismatch => "LOCKFILE_PACKAGE_HASH_MISMATCH",
+            LockfileValidationIssueKind::EmptyPackageHash => "LOCKFILE_EMPTY_PACKAGE_HASH",
+            LockfileValidationIssueKind::EmptyVerificationReportHash => {
+                "LOCKFILE_EMPTY_VERIFICATION_REPORT_HASH"
+            }
+            LockfileValidationIssueKind::EmptyAcceptedAssumption => {
+                "LOCKFILE_EMPTY_ACCEPTED_ASSUMPTION"
+            }
+            LockfileValidationIssueKind::DuplicateAcceptedAssumption => {
+                "LOCKFILE_DUPLICATE_ACCEPTED_ASSUMPTION"
+            }
+            LockfileValidationIssueKind::UnstableAcceptedAssumptionOrder => {
+                "LOCKFILE_UNSTABLE_ACCEPTED_ASSUMPTION_ORDER"
+            }
+        }
+    }
+
+    /// Stable category for issue aggregation.
+    pub fn category(self) -> LockfileValidationCategory {
+        match self {
+            LockfileValidationIssueKind::UnstableEntryOrder
+            | LockfileValidationIssueKind::DuplicatePackageEntry
+            | LockfileValidationIssueKind::DuplicateActualPackage
+            | LockfileValidationIssueKind::DuplicateAcceptedAssumption
+            | LockfileValidationIssueKind::UnstableAcceptedAssumptionOrder => {
+                LockfileValidationCategory::Determinism
+            }
+            LockfileValidationIssueKind::EmptyPackageHash
+            | LockfileValidationIssueKind::EmptyVerificationReportHash
+            | LockfileValidationIssueKind::EmptyAcceptedAssumption => {
+                LockfileValidationCategory::LockfileIntegrity
+            }
+            LockfileValidationIssueKind::MissingPackage
+            | LockfileValidationIssueKind::PackageHashMismatch => {
+                LockfileValidationCategory::ReplayIntegrity
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for LockfileValidationIssueKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.code())
+    }
 }
 
 /// Reproducibility and integrity problems found in a lockfile validation pass.
@@ -82,6 +186,73 @@ pub enum LockfileValidationIssue {
         expected: String,
         actual: String,
     },
+    /// A locked package has no package artifact digest.
+    EmptyPackageHash { name: String, version: String },
+    /// A locked package records an empty verification report digest.
+    EmptyVerificationReportHash { name: String, version: String },
+    /// A locked package records an empty accepted assumption ID.
+    EmptyAcceptedAssumption { name: String, version: String },
+    /// A locked package records the same accepted assumption more than once.
+    DuplicateAcceptedAssumption {
+        name: String,
+        version: String,
+        assumption: String,
+    },
+    /// Accepted assumptions are not in canonical lexical order.
+    UnstableAcceptedAssumptionOrder {
+        name: String,
+        version: String,
+        previous: String,
+        assumption: String,
+    },
+}
+
+impl LockfileValidationIssue {
+    /// Stable machine-readable kind for this issue.
+    pub fn kind(&self) -> LockfileValidationIssueKind {
+        match self {
+            LockfileValidationIssue::UnstableEntryOrder { .. } => {
+                LockfileValidationIssueKind::UnstableEntryOrder
+            }
+            LockfileValidationIssue::DuplicatePackageEntry { .. } => {
+                LockfileValidationIssueKind::DuplicatePackageEntry
+            }
+            LockfileValidationIssue::DuplicateActualPackage { .. } => {
+                LockfileValidationIssueKind::DuplicateActualPackage
+            }
+            LockfileValidationIssue::MissingPackage { .. } => {
+                LockfileValidationIssueKind::MissingPackage
+            }
+            LockfileValidationIssue::PackageHashMismatch { .. } => {
+                LockfileValidationIssueKind::PackageHashMismatch
+            }
+            LockfileValidationIssue::EmptyPackageHash { .. } => {
+                LockfileValidationIssueKind::EmptyPackageHash
+            }
+            LockfileValidationIssue::EmptyVerificationReportHash { .. } => {
+                LockfileValidationIssueKind::EmptyVerificationReportHash
+            }
+            LockfileValidationIssue::EmptyAcceptedAssumption { .. } => {
+                LockfileValidationIssueKind::EmptyAcceptedAssumption
+            }
+            LockfileValidationIssue::DuplicateAcceptedAssumption { .. } => {
+                LockfileValidationIssueKind::DuplicateAcceptedAssumption
+            }
+            LockfileValidationIssue::UnstableAcceptedAssumptionOrder { .. } => {
+                LockfileValidationIssueKind::UnstableAcceptedAssumptionOrder
+            }
+        }
+    }
+
+    /// Stable issue code for downstream tooling and reports.
+    pub fn code(&self) -> &'static str {
+        self.kind().code()
+    }
+
+    /// Stable high-level category for issue aggregation.
+    pub fn category(&self) -> LockfileValidationCategory {
+        self.kind().category()
+    }
 }
 
 // ── Lockfile ──────────────────────────────────────────────────────────────
@@ -235,31 +406,56 @@ impl Lockfile {
                     version: entry.version.clone(),
                 });
             }
+
+            if entry.package_hash.is_empty() {
+                issues.push(LockfileValidationIssue::EmptyPackageHash {
+                    name: entry.name.clone(),
+                    version: entry.version.clone(),
+                });
+            }
+
+            if matches!(entry.verification_report_hash.as_deref(), Some("")) {
+                issues.push(LockfileValidationIssue::EmptyVerificationReportHash {
+                    name: entry.name.clone(),
+                    version: entry.version.clone(),
+                });
+            }
+
+            validate_accepted_assumptions(entry, &mut issues);
             previous = Some((entry, coordinate));
         }
 
-        let mut actual_by_coordinate = BTreeMap::new();
+        let mut actual_hashes_by_coordinate: BTreeMap<(&str, &str), BTreeSet<&str>> =
+            BTreeMap::new();
+        let mut actual_counts_by_coordinate: BTreeMap<(&str, &str), usize> = BTreeMap::new();
         for (name, version, hash) in actual {
-            if actual_by_coordinate
-                .insert((*name, *version), *hash)
-                .is_some()
-            {
+            actual_hashes_by_coordinate
+                .entry((*name, *version))
+                .or_default()
+                .insert(*hash);
+            *actual_counts_by_coordinate
+                .entry((*name, *version))
+                .or_default() += 1;
+        }
+
+        for ((name, version), count) in actual_counts_by_coordinate {
+            if count > 1 {
                 issues.push(LockfileValidationIssue::DuplicateActualPackage {
-                    name: (*name).to_string(),
-                    version: (*version).to_string(),
+                    name: name.to_string(),
+                    version: version.to_string(),
                 });
             }
         }
 
         for entry in &self.entries {
-            match actual_by_coordinate.get(&(entry.name.as_str(), entry.version.as_str())) {
-                Some(actual_hash) if *actual_hash == entry.package_hash.as_str() => {}
-                Some(actual_hash) => {
+            match actual_hashes_by_coordinate.get(&(entry.name.as_str(), entry.version.as_str())) {
+                Some(actual_hashes) if actual_hashes.contains(entry.package_hash.as_str()) => {}
+                Some(actual_hashes) => {
                     issues.push(LockfileValidationIssue::PackageHashMismatch {
                         name: entry.name.clone(),
                         version: entry.version.clone(),
                         expected: entry.package_hash.clone(),
-                        actual: (*actual_hash).to_string(),
+                        actual: actual_hashes.iter().copied().collect::<Vec<_>>().join(","),
                     });
                 }
                 None => {
@@ -271,6 +467,7 @@ impl Lockfile {
             }
         }
 
+        sort_validation_issues(&mut issues);
         issues
     }
 
@@ -288,6 +485,89 @@ impl Lockfile {
             })
             .map(|e| e.name.as_str())
             .collect()
+    }
+}
+
+fn validate_accepted_assumptions(entry: &LockfileEntry, issues: &mut Vec<LockfileValidationIssue>) {
+    let mut seen = BTreeSet::new();
+    let mut duplicate_reported = BTreeSet::new();
+    let mut empty_reported = false;
+    let mut previous: Option<&str> = None;
+
+    for assumption in &entry.accepted_assumptions {
+        let assumption = assumption.as_str();
+        if assumption.is_empty() {
+            if !empty_reported {
+                issues.push(LockfileValidationIssue::EmptyAcceptedAssumption {
+                    name: entry.name.clone(),
+                    version: entry.version.clone(),
+                });
+                empty_reported = true;
+            }
+            continue;
+        }
+
+        if let Some(previous) = previous {
+            if assumption < previous {
+                issues.push(LockfileValidationIssue::UnstableAcceptedAssumptionOrder {
+                    name: entry.name.clone(),
+                    version: entry.version.clone(),
+                    previous: previous.to_string(),
+                    assumption: assumption.to_string(),
+                });
+            }
+        }
+        previous = Some(assumption);
+
+        if !seen.insert(assumption) && duplicate_reported.insert(assumption) {
+            issues.push(LockfileValidationIssue::DuplicateAcceptedAssumption {
+                name: entry.name.clone(),
+                version: entry.version.clone(),
+                assumption: assumption.to_string(),
+            });
+        }
+    }
+}
+
+fn sort_validation_issues(issues: &mut [LockfileValidationIssue]) {
+    issues.sort_by(|a, b| validation_issue_sort_key(a).cmp(&validation_issue_sort_key(b)));
+}
+
+fn validation_issue_sort_key(
+    issue: &LockfileValidationIssue,
+) -> (&'static str, &str, &str, &str, &str) {
+    match issue {
+        LockfileValidationIssue::UnstableEntryOrder {
+            previous_name,
+            previous_version,
+            name,
+            version,
+        } => (issue.code(), name, version, previous_name, previous_version),
+        LockfileValidationIssue::DuplicatePackageEntry { name, version }
+        | LockfileValidationIssue::DuplicateActualPackage { name, version }
+        | LockfileValidationIssue::MissingPackage { name, version }
+        | LockfileValidationIssue::EmptyPackageHash { name, version }
+        | LockfileValidationIssue::EmptyVerificationReportHash { name, version }
+        | LockfileValidationIssue::EmptyAcceptedAssumption { name, version } => {
+            (issue.code(), name, version, "", "")
+        }
+        LockfileValidationIssue::PackageHashMismatch {
+            name,
+            version,
+            expected,
+            actual,
+        } => (issue.code(), name, version, expected, actual),
+        LockfileValidationIssue::DuplicateAcceptedAssumption {
+            name,
+            version,
+            assumption,
+        } => (issue.code(), name, version, assumption, ""),
+        LockfileValidationIssue::UnstableAcceptedAssumptionOrder {
+            name,
+            version,
+            previous,
+            assumption,
+        } => (issue.code(), name, version, previous, assumption),
     }
 }
 
@@ -569,6 +849,135 @@ mod tests {
                 version: "1.0.0".to_string(),
             }]
         );
+    }
+
+    // ── lockfile_validation_issue_exposes_stable_code_and_category ───────
+    // Production gate: replay tools need stable machine-readable grouping.
+    #[test]
+    fn lockfile_validation_issue_exposes_stable_code_and_category() {
+        let issue = LockfileValidationIssue::PackageHashMismatch {
+            name: "pkg.a".to_string(),
+            version: "1.0.0".to_string(),
+            expected: "expected".to_string(),
+            actual: "actual".to_string(),
+        };
+
+        assert_eq!(
+            issue.kind(),
+            LockfileValidationIssueKind::PackageHashMismatch
+        );
+        assert_eq!(issue.code(), "LOCKFILE_PACKAGE_HASH_MISMATCH");
+        assert_eq!(
+            issue.category(),
+            LockfileValidationCategory::ReplayIntegrity
+        );
+        assert_eq!(issue.category().to_string(), "replay_integrity");
+    }
+
+    // ── lockfile_validate_reproducibility_detects_empty_hashes ────────────
+    // Production gate: replay cannot trust empty digest fields.
+    #[test]
+    fn lockfile_validate_reproducibility_detects_empty_hashes() {
+        let mut lf = Lockfile::new();
+        let mut entry = entry_with("pkg.empty", "1.0.0", "");
+        entry.verification_report_hash = Some("".to_string());
+        lf.add(entry);
+
+        let actual = vec![("pkg.empty", "1.0.0", "")];
+
+        assert_eq!(
+            lf.validate_reproducibility(&actual),
+            vec![
+                LockfileValidationIssue::EmptyPackageHash {
+                    name: "pkg.empty".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                LockfileValidationIssue::EmptyVerificationReportHash {
+                    name: "pkg.empty".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+            ]
+        );
+    }
+
+    // ── lockfile_validate_reproducibility_detects_assumption_drift ────────
+    // Production gate: accepted assumptions are a canonical replay input.
+    #[test]
+    fn lockfile_validate_reproducibility_detects_assumption_drift() {
+        let mut lf = Lockfile::new();
+        let mut entry = entry_with("pkg.assumed", "1.0.0", "hash");
+        entry.accepted_assumptions = vec![
+            "assume-z".to_string(),
+            "assume-a".to_string(),
+            "assume-a".to_string(),
+            "".to_string(),
+        ];
+        lf.add(entry);
+
+        let actual = vec![("pkg.assumed", "1.0.0", "hash")];
+
+        assert_eq!(
+            lf.validate_reproducibility(&actual),
+            vec![
+                LockfileValidationIssue::DuplicateAcceptedAssumption {
+                    name: "pkg.assumed".to_string(),
+                    version: "1.0.0".to_string(),
+                    assumption: "assume-a".to_string(),
+                },
+                LockfileValidationIssue::EmptyAcceptedAssumption {
+                    name: "pkg.assumed".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                LockfileValidationIssue::UnstableAcceptedAssumptionOrder {
+                    name: "pkg.assumed".to_string(),
+                    version: "1.0.0".to_string(),
+                    previous: "assume-z".to_string(),
+                    assumption: "assume-a".to_string(),
+                },
+            ]
+        );
+    }
+
+    // ── lockfile_validate_reproducibility_orders_issues_deterministically ─
+    // TRIANGULATE: issue order and duplicate actual hashes do not depend on caller order.
+    #[test]
+    fn lockfile_validate_reproducibility_orders_issues_deterministically() {
+        let mut lf = Lockfile::new();
+        let mut invalid = entry_with("pkg.a", "1.0.0", "");
+        invalid.verification_report_hash = Some("".to_string());
+        lf.add(invalid);
+        let mut assumed = entry_with("pkg.b", "1.0.0", "expected");
+        assumed.accepted_assumptions = vec!["z".to_string(), "a".to_string(), "a".to_string()];
+        lf.add(assumed);
+
+        let actual_1 = vec![
+            ("pkg.b", "1.0.0", "y"),
+            ("pkg.a", "1.0.0", ""),
+            ("pkg.b", "1.0.0", "x"),
+        ];
+        let actual_2 = vec![
+            ("pkg.b", "1.0.0", "x"),
+            ("pkg.b", "1.0.0", "y"),
+            ("pkg.a", "1.0.0", ""),
+        ];
+
+        let issues = lf.validate_reproducibility(&actual_1);
+        assert_eq!(issues, lf.validate_reproducibility(&actual_2));
+        assert_eq!(
+            issues.iter().map(|issue| issue.code()).collect::<Vec<_>>(),
+            vec![
+                "LOCKFILE_DUPLICATE_ACCEPTED_ASSUMPTION",
+                "LOCKFILE_DUPLICATE_ACTUAL_PACKAGE",
+                "LOCKFILE_EMPTY_PACKAGE_HASH",
+                "LOCKFILE_EMPTY_VERIFICATION_REPORT_HASH",
+                "LOCKFILE_PACKAGE_HASH_MISMATCH",
+                "LOCKFILE_UNSTABLE_ACCEPTED_ASSUMPTION_ORDER",
+            ]
+        );
+        assert!(matches!(
+            &issues[4],
+            LockfileValidationIssue::PackageHashMismatch { actual, .. } if actual == "x,y"
+        ));
     }
 
     // ── lockfile_get_returns_none_for_missing ─────────────────────────────
