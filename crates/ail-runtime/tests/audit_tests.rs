@@ -9,7 +9,14 @@
 //   - Payload contains no raw WASM bytes (structural + field check)
 //   - AuditEvent::is_passed() discriminates correctly
 
-use ail_runtime::audit::{AuditEvent, AuditLog};
+use ail_runtime::audit::{
+    AuditEvent, AuditLog, DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED,
+    DENIAL_CATEGORY_CAPABILITY_REVOKED,
+    PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED,
+    PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_REVOKED,
+    PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED,
+    PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_REVOKED,
+};
 use ail_runtime::error::PreflightFailure;
 use ail_runtime::profile::CapabilityId;
 
@@ -192,4 +199,98 @@ fn audit_log_is_not_empty_after_push() {
         module_hash: "h".to_string(),
     });
     assert!(!log.is_empty());
+}
+
+#[test]
+fn preflight_capability_denial_has_stable_redacted_profile_policy_shape() {
+    let event = AuditEvent::PreflightFailed {
+        profile_name: "prod-tenant-alpha".to_string(),
+        denied: vec![
+            CapabilityId::new("secret.read:ProductionDbPassword"),
+            CapabilityId::new("network.egress:private-vpc"),
+        ],
+        reason: PreflightFailure::CapabilityDenied {
+            denied: vec![
+                CapabilityId::new("secret.read:ProductionDbPassword"),
+                CapabilityId::new("network.egress:private-vpc"),
+            ],
+        },
+    };
+
+    assert_eq!(
+        event.profile_policy_denial_shape(),
+        Some(PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED)
+    );
+    assert_eq!(
+        event.profile_policy_denial_diagnostic_key(),
+        Some(PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED)
+    );
+
+    let shape = event.profile_policy_denial_shape().expect("policy shape");
+    assert!(!shape.contains("ProductionDbPassword"));
+    assert!(!shape.contains("private-vpc"));
+    assert!(!shape.contains("prod-tenant-alpha"));
+}
+
+#[test]
+fn capability_call_policy_denial_shapes_cover_not_granted_and_revoked() {
+    let not_granted = AuditEvent::CapabilityCallExecuted {
+        capability: CapabilityId::new("secret.read:TenantPayrollKey"),
+        operation: "read-private-payroll-key".to_string(),
+        handler_name: "none".to_string(),
+        succeeded: false,
+        duration_us: 1,
+        timestamp: 1,
+        profile: Some("prod-tenant-payroll".to_string()),
+        module: Some("payroll-private-module".to_string()),
+        function: None,
+        input_hash: Some("a".repeat(64)),
+        output_hash: None,
+        trace_id: None,
+        verification_report_hash: None,
+        trace_context: None,
+        denial_category: Some(DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED.to_string()),
+    };
+    let revoked = AuditEvent::CapabilityCallExecuted {
+        capability: CapabilityId::new("network.egress:revoked-partner-api"),
+        operation: "send-customer-payload".to_string(),
+        handler_name: "none".to_string(),
+        succeeded: false,
+        duration_us: 1,
+        timestamp: 1,
+        profile: Some("prod-tenant-payroll".to_string()),
+        module: Some("payroll-private-module".to_string()),
+        function: None,
+        input_hash: Some("b".repeat(64)),
+        output_hash: None,
+        trace_id: None,
+        verification_report_hash: None,
+        trace_context: None,
+        denial_category: Some(DENIAL_CATEGORY_CAPABILITY_REVOKED.to_string()),
+    };
+
+    assert_eq!(
+        not_granted.profile_policy_denial_shape(),
+        Some(PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED)
+    );
+    assert_eq!(
+        not_granted.profile_policy_denial_diagnostic_key(),
+        Some(PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED)
+    );
+    assert_eq!(
+        revoked.profile_policy_denial_shape(),
+        Some(PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_REVOKED)
+    );
+    assert_eq!(
+        revoked.profile_policy_denial_diagnostic_key(),
+        Some(PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_REVOKED)
+    );
+
+    for event in [&not_granted, &revoked] {
+        let shape = event.profile_policy_denial_shape().expect("policy shape");
+        assert!(!shape.contains("TenantPayrollKey"));
+        assert!(!shape.contains("revoked-partner-api"));
+        assert!(!shape.contains("prod-tenant-payroll"));
+        assert!(!shape.contains("payroll-private-module"));
+    }
 }

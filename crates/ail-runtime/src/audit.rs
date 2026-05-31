@@ -67,6 +67,22 @@ pub const SECRET_ACCESS_SHAPE_READ: &str = "secret.read:<redacted>";
 /// Redacted shape descriptor for malformed empty `secret.read:` accesses.
 pub const SECRET_ACCESS_SHAPE_MALFORMED: &str = "secret.read:<malformed>";
 
+// ── Stable profile policy denial shape descriptors ─────────────────────
+
+/// Redacted shape descriptor for profile capability grants denied by default.
+pub const PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED: &str =
+    "profile.policy:<capability_not_granted>";
+/// Redacted shape descriptor for profile capability grants denied by revocation.
+pub const PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_REVOKED: &str =
+    "profile.policy:<capability_revoked>";
+
+/// Deterministic diagnostic key for profile capability grants denied by default.
+pub const PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED: &str =
+    "profile.policy.capability_not_granted";
+/// Deterministic diagnostic key for profile capability grants denied by revocation.
+pub const PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_REVOKED: &str =
+    "profile.policy.capability_revoked";
+
 // ── Stable limit denial shape descriptors ───────────────────────────────
 
 /// Redacted shape descriptor for memory-limit denials.
@@ -135,6 +151,46 @@ pub const TRANSACTION_CATEGORY_ROLLBACK_AFTER_COMMIT: &str = "transaction.rollba
 /// Transaction/audit category for a rollback request repeated after rollback.
 pub const TRANSACTION_CATEGORY_ROLLBACK_ALREADY_ROLLED_BACK: &str =
     "transaction.rollback_already_rolled_back";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProfilePolicyDenialKind {
+    CapabilityNotGranted,
+    CapabilityRevoked,
+}
+
+impl ProfilePolicyDenialKind {
+    fn shape(self) -> &'static str {
+        match self {
+            ProfilePolicyDenialKind::CapabilityNotGranted => {
+                PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_NOT_GRANTED
+            }
+            ProfilePolicyDenialKind::CapabilityRevoked => {
+                PROFILE_POLICY_DENIAL_SHAPE_CAPABILITY_REVOKED
+            }
+        }
+    }
+
+    fn diagnostic_key(self) -> &'static str {
+        match self {
+            ProfilePolicyDenialKind::CapabilityNotGranted => {
+                PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_NOT_GRANTED
+            }
+            ProfilePolicyDenialKind::CapabilityRevoked => {
+                PROFILE_POLICY_DENIAL_DIAGNOSTIC_KEY_CAPABILITY_REVOKED
+            }
+        }
+    }
+}
+
+fn profile_policy_denial_kind_from_category(category: &str) -> Option<ProfilePolicyDenialKind> {
+    match category {
+        DENIAL_CATEGORY_CAPABILITY_NOT_GRANTED => {
+            Some(ProfilePolicyDenialKind::CapabilityNotGranted)
+        }
+        DENIAL_CATEGORY_CAPABILITY_REVOKED => Some(ProfilePolicyDenialKind::CapabilityRevoked),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LimitDenialKind {
@@ -346,6 +402,37 @@ impl AuditEvent {
     /// `true` if this is a `CapabilityCallExecuted` event.
     pub fn is_capability_call(&self) -> bool {
         matches!(self, AuditEvent::CapabilityCallExecuted { .. })
+    }
+
+    /// Return a stable, redacted shape descriptor for profile-policy denials.
+    ///
+    /// The descriptor identifies only the policy denial class. It deliberately
+    /// excludes profile names, module names, capability IDs, operation names,
+    /// payloads, and handler details so security dashboards can group profile
+    /// policy denials without leaking tenant-specific capability names.
+    pub fn profile_policy_denial_shape(&self) -> Option<&'static str> {
+        self.profile_policy_denial_kind()
+            .map(ProfilePolicyDenialKind::shape)
+    }
+
+    /// Return a deterministic diagnostic key for profile-policy denials.
+    pub fn profile_policy_denial_diagnostic_key(&self) -> Option<&'static str> {
+        self.profile_policy_denial_kind()
+            .map(ProfilePolicyDenialKind::diagnostic_key)
+    }
+
+    fn profile_policy_denial_kind(&self) -> Option<ProfilePolicyDenialKind> {
+        match self {
+            AuditEvent::PreflightFailed {
+                reason: PreflightFailure::CapabilityDenied { .. },
+                ..
+            } => Some(ProfilePolicyDenialKind::CapabilityNotGranted),
+            AuditEvent::CapabilityCallExecuted {
+                denial_category: Some(category),
+                ..
+            } => profile_policy_denial_kind_from_category(category),
+            _ => None,
+        }
     }
 
     /// Return a stable, redacted shape descriptor for limit-denial events.
