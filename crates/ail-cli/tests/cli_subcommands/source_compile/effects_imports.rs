@@ -101,6 +101,52 @@ fn compile_file_rejects_ungranted_source_effect_call() {
             "line 2: source item `fn.main` uses capability `log.write` without a grant",
         ));
 }
+
+#[test]
+fn compile_file_accepts_source_log_write_alias_with_grant() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("log_write.ail");
+    source
+        .write_str(
+            "capability log.write\n\
+fn main() -> Int = log.write(\"hi\")\n\
+fn alias() -> Int = log_write(\"hi\")\n\
+grant main log.write\n\
+grant alias log.write\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn compile_file_rejects_source_log_write_alias_type_mismatch() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("bad_log_write.ail");
+    source
+        .write_str("capability log.write\nfn main() -> Int = log.write(42)\ngrant main log.write\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "type mismatch in log.write argument 1: expected Text, got Int",
+        ));
+}
+
 #[test]
 fn compile_file_rejects_bare_source_imports() {
     use assert_fs::prelude::*;

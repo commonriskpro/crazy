@@ -482,6 +482,16 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if func == "log.write" && args.len() == 1 {
+        return (
+            format!(
+                "log_write({})",
+                format_source_expr(&args[0], module, constants)
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "text.is_empty" && args.len() == 1 {
         return (
             format!(

@@ -696,14 +696,16 @@ fn formats_source_capabilities_and_grants() {
     let src = r#"
 grant fn.print_hello log.write
 fn print_hello()->Int=print("Hello")
+fn log_hello()->Int=log.write("Hello")
 capability log.write
+grant log_hello log.write
 "#;
     let (formatted, item_count) = format_ail_source(src).expect("source must format");
 
-    assert_eq!(item_count, 3);
+    assert_eq!(item_count, 5);
     assert_eq!(
         formatted,
-        "capability log.write\nfn print_hello() -> Int = print(\"Hello\")\ngrant print_hello log.write\n"
+        "capability log.write\nfn print_hello() -> Int = print(\"Hello\")\nfn log_hello() -> Int = log_write(\"Hello\")\ngrant print_hello log.write\ngrant log_hello log.write\n"
     );
 }
 

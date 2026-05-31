@@ -467,8 +467,8 @@ pub(super) fn collect_source_direct_effect_capabilities(
     let Some((func, args)) = parse_source_call(expr) else {
         return Ok(());
     };
-    if func == "print" {
-        validate_declared_source_effect_capability("log.write", capabilities, "print")?;
+    if matches!(func.as_str(), "print" | "log.write" | "log_write") {
+        validate_declared_source_effect_capability("log.write", capabilities, &func)?;
         out.insert("log.write".to_string());
     }
     if func == "effect_call" && args.len() >= 2 {
@@ -736,8 +736,8 @@ pub(super) fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
         "none" | "None" => SourceArity::Exact(0),
-        "not" | "len" | "print" | "text.trim" | "text_trim" | "Var" | "is_empty"
-        | "text.is_empty" | "text_is_empty" | "list.is_empty" | "list_is_empty"
+        "not" | "len" | "print" | "log.write" | "log_write" | "text.trim" | "text_trim" | "Var"
+        | "is_empty" | "text.is_empty" | "text_is_empty" | "list.is_empty" | "list_is_empty"
         | "queue.pop_front" | "queue_pop_front" | "queue.peek_front" | "queue_peek_front"
         | "queue.length" | "queue_length" | "queue.is_empty" | "queue_is_empty" | "set.length"
         | "set_length" | "map.length" | "map_length" | "is_some" | "is_none" | "is_ok"

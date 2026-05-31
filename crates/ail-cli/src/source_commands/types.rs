@@ -341,7 +341,7 @@ pub(super) fn infer_source_call_type(
             let payload_ty = infer_source_expr_type(&args[0], scope, functions)?;
             Ok(format!("Result<Unknown,{payload_ty}>"))
         }
-        "print" => {
+        "print" | "log.write" | "log_write" => {
             validate_source_arg_types(func, args, scope, functions, &["Text"])?;
             Ok("Int".to_string())
         }

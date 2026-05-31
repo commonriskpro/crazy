@@ -488,6 +488,18 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "update(${1:record}, ${2:field}, ${3:value})",
     },
     AclSymbol {
+        label: "print",
+        detail: "AIL source log effect",
+        documentation: "Writes a Text message through the log.write capability; the source item needs an explicit grant.",
+        insert_text: "print(${1:\"message\"})",
+    },
+    AclSymbol {
+        label: "log_write",
+        detail: "AIL source log effect",
+        documentation: "Namespaced alias for print(message); requires capability log.write and an explicit grant.",
+        insert_text: "log_write(${1:\"message\"})",
+    },
+    AclSymbol {
         label: "effect_call",
         detail: "AIL source capability call",
         documentation: "Calls an external capability operation after the source item has an explicit grant.",

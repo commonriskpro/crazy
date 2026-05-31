@@ -955,7 +955,9 @@ fn lowers_source_capabilities_and_grants_to_acl_ops() {
         r#"
 capability log.write
 fn print_hello() -> Int = print("Hello from source!")
+fn log_hello() -> Int = log.write("Hello from alias!")
 grant print_hello log.write
+grant log_hello log.write
 "#,
     )
     .expect("source capability program must parse");
@@ -965,5 +967,9 @@ grant print_hello log.write
     assert!(acl.contains(
         r#"op create_function id=fn.print_hello return=Int body=print("Hello from source!")"#
     ));
+    assert!(acl.contains(
+        r#"op create_function id=fn.log_hello return=Int body=print("Hello from alias!")"#
+    ));
     assert!(acl.contains("op grant target=fn.print_hello capability=log.write"));
+    assert!(acl.contains("op grant target=fn.log_hello capability=log.write"));
 }

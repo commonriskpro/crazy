@@ -304,6 +304,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
     if let Some(lowered) = lower_source_effect_call_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_log_write_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_is_empty_expr(expr, line_num)? {
         return Ok(lowered);
     }
@@ -603,6 +606,28 @@ fn lower_source_effect_call_expr(expr: &str, line_num: usize) -> Result<Option<S
             .collect::<Result<Vec<_>, _>>()?,
     );
     Ok(Some(format!("effect_call({})", lowered.join(", "))))
+}
+
+fn lower_source_log_write_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if !matches!(func.as_str(), "log.write" | "log_write") {
+        return Ok(None);
+    }
+    if args.len() != 1 {
+        return Err(source_lower_expr_error(
+            line_num,
+            SourceLowerDiagnostic::Expression,
+            expr,
+            "log.write",
+            "log.write requires `log.write(message)`",
+        ));
+    }
+    Ok(Some(format!(
+        "print({})",
+        lower_source_expr(&args[0], line_num)?
+    )))
 }
 
 fn lower_source_typed_let_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {

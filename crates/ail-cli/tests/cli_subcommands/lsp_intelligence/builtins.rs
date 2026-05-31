@@ -24,6 +24,23 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include AIL source effect_call snippet; got: {items:?}"
     );
 
+    let print_completion_output = ail()
+        .args(["lsp", "--complete", "log", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let print_completion = parse_json_output(&print_completion_output);
+    let print_items = print_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        print_items
+            .iter()
+            .any(|item| item["label"] == "log_write" && item["detail"] == "AIL source log effect"),
+        "completion must include AIL source log_write helper; got: {print_items:?}"
+    );
+
     let hover_output = ail()
         .args(["lsp", "--hover-token", "effect_call", "--json"])
         .assert()
@@ -38,6 +55,21 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .expect("hover markdown")
             .contains("explicit grant"),
         "hover must explain effect_call grants; got: {hover}"
+    );
+
+    let print_hover_output = ail()
+        .args(["lsp", "--hover-token", "log_write", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let print_hover = parse_json_output(&print_hover_output);
+    assert!(
+        print_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("requires capability log.write"),
+        "hover must explain log_write grants; got: {print_hover}"
     );
 
     let first_or_completion_output = ail()
