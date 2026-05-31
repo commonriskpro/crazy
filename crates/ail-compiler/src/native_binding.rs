@@ -24,6 +24,44 @@ use crate::native_codegen::{LowerResult, NativeCodegenCtx, infer_cranelift_retur
 use crate::native_lower::lower_anf_expr_cranelift;
 use crate::native_types::NativeDataLayout;
 
+// ── native_export_name ────────────────────────────────────────────────────
+
+const RUNTIME_IMPORT_SYMBOLS: [&str; 3] = ["host_call", "__ail_malloc", "ail_runtime_call"];
+
+/// Convert an ANF binding name into a deterministic, native-linker-safe export.
+///
+/// Source-facing names stay in source maps and capability manifests.  This is
+/// only the object-file symbol name handed to Cranelift.
+pub(crate) fn native_export_name(binding_name: &str) -> String {
+    let mut symbol = String::with_capacity(binding_name.len().max("ail_binding".len()));
+
+    for ch in binding_name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            symbol.push(ch);
+        } else {
+            symbol.push('_');
+        }
+    }
+
+    if symbol.is_empty() {
+        symbol.push_str("ail_binding");
+    }
+
+    if symbol
+        .as_bytes()
+        .first()
+        .is_some_and(|b| b.is_ascii_digit())
+    {
+        symbol.insert_str(0, "ail_");
+    }
+
+    if RUNTIME_IMPORT_SYMBOLS.contains(&symbol.as_str()) {
+        symbol.insert_str(0, "ail_");
+    }
+
+    symbol
+}
+
 // ── LowerBindingEnv ───────────────────────────────────────────────────────
 
 pub(crate) struct LowerBindingEnv<'a> {
@@ -49,7 +87,7 @@ pub(crate) struct LowerBindingEnv<'a> {
 /// - `Placeholder` / unsupported → `() -> ()` with `trap` body.
 pub(crate) fn lower_binding(
     module: &mut ObjectModule,
-    name: &str,
+    export_name: &str,
     expr: &crate::anf::AnfExpr,
     env: LowerBindingEnv<'_>,
 ) -> Result<u64, CompileError> {
@@ -62,8 +100,10 @@ pub(crate) fn lower_binding(
     }
 
     let func_id = module
-        .declare_function(name, Linkage::Export, &sig)
-        .map_err(|e| CompileError::NativeEncodingError(format!("declare_function({name}): {e}")))?;
+        .declare_function(export_name, Linkage::Export, &sig)
+        .map_err(|e| {
+            CompileError::NativeEncodingError(format!("declare_function({export_name}): {e}"))
+        })?;
 
     let mut func = Function::with_name_signature(UserFuncName::user(0, func_id.as_u32()), sig);
 
@@ -98,14 +138,14 @@ pub(crate) fn lower_binding(
     }
 
     let mut ctx = Context::for_function(func);
-    module
-        .define_function(func_id, &mut ctx)
-        .map_err(|e| CompileError::NativeEncodingError(format!("define_function({name}): {e}")))?;
+    module.define_function(func_id, &mut ctx).map_err(|e| {
+        CompileError::NativeEncodingError(format!("define_function({export_name}): {e}"))
+    })?;
 
     let code_size = ctx
         .compiled_code()
         .ok_or_else(|| {
-            CompileError::NativeEncodingError(format!("compiled_code missing for {name}"))
+            CompileError::NativeEncodingError(format!("compiled_code missing for {export_name}"))
         })?
         .code_info()
         .total_size;

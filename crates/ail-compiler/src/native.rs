@@ -67,7 +67,7 @@ use crate::hash::{hash_with_parent, stable_cbor_bytes};
 #[cfg(test)]
 pub(crate) use crate::native_codegen::infer_cranelift_return_type;
 // Binding-level compilation — see `native_binding.rs`.
-use crate::native_binding::{LowerBindingEnv, lower_binding};
+use crate::native_binding::{LowerBindingEnv, lower_binding, native_export_name};
 // Shared data-layout type — see `native_types.rs`.
 pub use crate::native_types::NativeDataLayout;
 
@@ -176,6 +176,8 @@ pub fn emit_native_with_profile(
         .anf_ir_hash
         .ok_or_else(|| CompileError::NativeEncodingError("anf_ir_hash not sealed".to_string()))?;
 
+    let export_names = native_export_names(&anf.bindings)?;
+
     let isa = build_isa()?;
     let mut module = build_object_module(isa)?;
 
@@ -252,7 +254,7 @@ pub fn emit_native_with_profile(
     let mut native_offsets: Vec<u64> = Vec::with_capacity(anf.bindings.len());
     let mut cumulative_offset: u64 = 0;
 
-    for binding in &anf.bindings {
+    for (binding, export_name) in anf.bindings.iter().zip(export_names.iter()) {
         // Record provenance entry: this binding starts at current offset.
         provenance.insert(binding.source_ref, cumulative_offset);
         native_offsets.push(cumulative_offset);
@@ -260,7 +262,7 @@ pub fn emit_native_with_profile(
         // Lower the binding and get its compiled code size.
         let code_size = lower_binding(
             &mut module,
-            &binding.name,
+            export_name,
             &binding.expr,
             LowerBindingEnv {
                 data_ids: &data_ids,
@@ -358,6 +360,24 @@ pub fn emit_native_with_profile(
         source_map_json,
         artifact_manifest_json,
     })
+}
+
+fn native_export_names(bindings: &[crate::anf::AnfBinding]) -> Result<Vec<String>, CompileError> {
+    let mut seen: BTreeMap<String, &str> = BTreeMap::new();
+    let mut export_names = Vec::with_capacity(bindings.len());
+
+    for binding in bindings {
+        let export_name = native_export_name(&binding.name);
+        if let Some(first_binding_name) = seen.insert(export_name.clone(), binding.name.as_str()) {
+            return Err(CompileError::NativeEncodingError(format!(
+                "duplicate native export name `{export_name}` from bindings `{first_binding_name}` and `{}`",
+                binding.name
+            )));
+        }
+        export_names.push(export_name);
+    }
+
+    Ok(export_names)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
