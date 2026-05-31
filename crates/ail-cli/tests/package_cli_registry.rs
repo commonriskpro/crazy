@@ -657,6 +657,12 @@ fn package_install_accepts_semver_range_and_locks_resolved_version() {
     assert_eq!(lockfile.entries[0].name, "range.pkg");
     assert_eq!(lockfile.entries[0].version, "1.5.0");
     assert_eq!(
+        lockfile.entries[0].requested_version.as_deref(),
+        Some("^1.2")
+    );
+    assert_eq!(install_json["data"]["requested_version"], "^1.2");
+    assert_eq!(install_json["data"]["resolved_version"], "1.5.0");
+    assert_eq!(
         lockfile.entries[0].package_hash,
         resolved
             .blake3_hex()
@@ -718,6 +724,7 @@ fn package_publish_rejects_noncanonical_lockfile_preflight_json() {
     lockfile.add(LockfileEntry {
         name: zeta.name.clone(),
         version: zeta.version.clone(),
+        requested_version: None,
         package_hash: zeta.blake3_hex().expect("zeta hash must compute"),
         trust_level: zeta.trust_level,
         verification_report_hash: None,
@@ -726,6 +733,7 @@ fn package_publish_rejects_noncanonical_lockfile_preflight_json() {
     lockfile.add(LockfileEntry {
         name: alpha.name.clone(),
         version: alpha.version.clone(),
+        requested_version: None,
         package_hash: alpha.blake3_hex().expect("alpha hash must compute"),
         trust_level: alpha.trust_level,
         verification_report_hash: None,
@@ -773,6 +781,7 @@ fn package_verify_rejects_noncanonical_lockfile_order_json() {
     lockfile.add(LockfileEntry {
         name: zeta.name.clone(),
         version: zeta.version.clone(),
+        requested_version: None,
         package_hash: zeta.blake3_hex().expect("zeta hash must compute"),
         trust_level: zeta.trust_level,
         verification_report_hash: None,
@@ -781,6 +790,7 @@ fn package_verify_rejects_noncanonical_lockfile_order_json() {
     lockfile.add(LockfileEntry {
         name: alpha.name.clone(),
         version: alpha.version.clone(),
+        requested_version: None,
         package_hash: alpha.blake3_hex().expect("alpha hash must compute"),
         trust_level: alpha.trust_level,
         verification_report_hash: None,
@@ -924,6 +934,7 @@ fn package_install_updates_existing_legacy_lockfile_entry_with_report_hash() {
     legacy_lockfile.add(LockfileEntry {
         name: "signed.report".to_string(),
         version: "1.0.0".to_string(),
+        requested_version: None,
         package_hash: "f".repeat(64),
         trust_level: TrustLevel::Assumed,
         verification_report_hash: None,

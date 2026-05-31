@@ -26,6 +26,7 @@ pub(super) fn install_package_from_registry(
     let entry = LockfileEntry {
         name: manifest.name.clone(),
         version: manifest.version.clone(),
+        requested_version: Some(version.to_string()),
         package_hash: hash,
         trust_level: manifest.trust_level,
         verification_report_hash: vr_hash,
@@ -49,6 +50,7 @@ pub(super) fn install_package_from_registry(
     {
         existing.package_hash = entry.package_hash.clone();
         existing.version = entry.version.clone();
+        existing.requested_version = entry.requested_version.clone();
         existing.trust_level = entry.trust_level;
         existing.verification_report_hash = entry.verification_report_hash.clone();
         existing.clone()

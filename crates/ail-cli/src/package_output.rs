@@ -404,6 +404,8 @@ pub(crate) fn lockfile_entry_to_json(entry: &LockfileEntry) -> Value {
     json!({
         "name": &entry.name,
         "version": &entry.version,
+        "resolved_version": &entry.version,
+        "requested_version": &entry.requested_version,
         "package_hash": &entry.package_hash,
         "trust_level": entry.trust_level.to_string(),
         "verification_report_hash": &entry.verification_report_hash,

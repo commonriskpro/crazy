@@ -284,6 +284,7 @@ fn doctor_artifact_hash_consistency_warn_on_hash_mismatch() {
     lockfile.add(LockfileEntry {
         name: "test.pkg".to_string(),
         version: "1.0.0".to_string(),
+        requested_version: None,
         package_hash: "a".repeat(64), // deliberate mismatch
         trust_level: TrustLevel::Verified,
         verification_report_hash: None,
@@ -318,6 +319,7 @@ fn doctor_artifact_hash_consistency_warn_on_missing_registry_entry() {
     lockfile.add(LockfileEntry {
         name: "missing.pkg".to_string(),
         version: "2.0.0".to_string(),
+        requested_version: None,
         package_hash: "b".repeat(64),
         trust_level: TrustLevel::Assumed,
         verification_report_hash: None,
@@ -382,6 +384,7 @@ fn doctor_artifact_hash_consistency_warn_on_empty_lockfile_hash() {
     lockfile.add(LockfileEntry {
         name: "emptyhash.pkg".to_string(),
         version: "1.0.0".to_string(),
+        requested_version: None,
         package_hash: String::new(),
         trust_level: TrustLevel::Verified,
         verification_report_hash: None,
@@ -519,6 +522,7 @@ fn doctor_package_advisories_warn_on_affected_package() {
     lockfile.add(LockfileEntry {
         name: "payments.stripe".to_string(),
         version: "1.0.0".to_string(),
+        requested_version: None,
         package_hash: "c".repeat(64),
         trust_level: TrustLevel::Assumed,
         verification_report_hash: None,
@@ -572,6 +576,7 @@ fn doctor_package_advisories_ok_when_no_matching_advisory() {
     lockfile.add(LockfileEntry {
         name: "safe.pkg".to_string(),
         version: "2.0.0".to_string(),
+        requested_version: None,
         package_hash: "d".repeat(64),
         trust_level: TrustLevel::Verified,
         verification_report_hash: None,

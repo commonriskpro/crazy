@@ -8,6 +8,7 @@
 // Lockfile records:
 //   name
 //   version
+//   requested_version
 //   package_hash
 //   trust_level
 //   verification_report_hash
@@ -46,6 +47,12 @@ pub struct LockfileEntry {
     pub name: String,
     /// Pinned semantic version string (e.g., `"2.3.1"`).
     pub version: String,
+    /// Version requirement requested by the user or manifest before resolution.
+    ///
+    /// This is metadata only: `version` remains the exact resolved pin used for
+    /// reproducible replay. Legacy lockfiles decode this as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_version: Option<String>,
     /// BLAKE3 hex digest of the package artifact at lock time.
     pub package_hash: String,
     /// Trust level recorded at lock time.
@@ -587,7 +594,7 @@ impl Lockfile {
     pub fn from_resolution(resolutions: Vec<(&DependencySpec, &PackageManifest)>) -> Self {
         let mut entries: Vec<_> = resolutions
             .into_iter()
-            .map(|(_spec, manifest)| {
+            .map(|(spec, manifest)| {
                 let package_hash = manifest.blake3_hex().unwrap_or_default();
                 let verification_report_hash = manifest
                     .verification_report
@@ -596,6 +603,7 @@ impl Lockfile {
                 LockfileEntry {
                     name: manifest.name.clone(),
                     version: manifest.version.clone(),
+                    requested_version: Some(spec.version_constraint.clone()),
                     package_hash,
                     trust_level: manifest.trust_level,
                     verification_report_hash,
@@ -1116,6 +1124,7 @@ mod tests {
         LockfileEntry {
             name: "payments.stripe".to_string(),
             version: "2.3.1".to_string(),
+            requested_version: Some("^2.0".to_string()),
             package_hash: "a".repeat(64),
             trust_level: TrustLevel::Assumed,
             verification_report_hash: Some("b".repeat(64)),
@@ -1127,6 +1136,7 @@ mod tests {
         LockfileEntry {
             name: name.to_string(),
             version: version.to_string(),
+            requested_version: None,
             package_hash: hash.to_string(),
             trust_level: TrustLevel::Verified,
             verification_report_hash: None,
@@ -1215,6 +1225,7 @@ mod tests {
         lf.add(LockfileEntry {
             name: "utils.core".to_string(),
             version: "1.0.0".to_string(),
+            requested_version: None,
             package_hash: "c".repeat(64),
             trust_level: TrustLevel::Verified,
             verification_report_hash: None,
@@ -1687,6 +1698,7 @@ mod tests {
             "version must be pinned from manifest"
         );
         assert_eq!(entry.trust_level, TrustLevel::Verified);
+        assert_eq!(entry.requested_version.as_deref(), Some("^2.0"));
     }
 
     #[test]

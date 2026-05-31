@@ -58,8 +58,10 @@ pub(crate) async fn cmd_package(
             let repro_evidence_status =
                 reproducible_evidence_status(installed.reproducible_evidence.is_some());
             let human_msg = format!(
-                "added: {package}\nname: {}\nversion: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\ncapabilities: []\nassumptions: []\nunsafe_surface: []\nadvisories: []\nnote: package install does not grant capabilities{}",
+                "added: {package}\nname: {}\nversion: {}\nrequested_version: {}\nresolved_version: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\ncapabilities: []\nassumptions: []\nunsafe_surface: []\nadvisories: []\nnote: package install does not grant capabilities{}",
                 entry.name,
+                entry.version,
+                entry.requested_version.as_deref().unwrap_or(&entry.version),
                 entry.version,
                 entry.trust_level,
                 installed.signature_status,
@@ -74,6 +76,8 @@ pub(crate) async fn cmd_package(
                     "package": package,
                     "name": entry.name,
                     "version": entry.version,
+                    "resolved_version": entry.version,
+                    "requested_version": entry.requested_version,
                     "trust": entry.trust_level.to_string(),
                     "signature_status": installed.signature_status,
                     "verification_report": installed.verification_report,
@@ -117,8 +121,10 @@ pub(crate) async fn cmd_package(
             let repro_evidence_status =
                 reproducible_evidence_status(installed.reproducible_evidence.is_some());
             let human_msg = format!(
-                "installed: {}@{}\ntrust: {:?}\npackage_hash: {}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\nnote: package install does not grant capabilities{}",
+                "installed: {}@{}\nrequested_version: {}\nresolved_version: {}\ntrust: {:?}\npackage_hash: {}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\nnote: package install does not grant capabilities{}",
                 entry.name,
+                entry.version,
+                entry.requested_version.as_deref().unwrap_or(&entry.version),
                 entry.version,
                 entry.trust_level,
                 entry.package_hash,
@@ -134,6 +140,8 @@ pub(crate) async fn cmd_package(
                     "installed": true,
                     "name": entry.name,
                     "version": entry.version,
+                    "resolved_version": entry.version,
+                    "requested_version": entry.requested_version,
                     "package_hash": entry.package_hash,
                     "trust": entry.trust_level.to_string(),
                     "signature_status": installed.signature_status,

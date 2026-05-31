@@ -108,6 +108,7 @@ pub fn lockfile_for_manifest(manifest: &PackageManifest) -> Lockfile {
     lockfile.add(LockfileEntry {
         name: manifest.name.clone(),
         version: manifest.version.clone(),
+        requested_version: None,
         package_hash: manifest.blake3_hex().expect("manifest hash must compute"),
         trust_level: manifest.trust_level,
         verification_report_hash: None,
