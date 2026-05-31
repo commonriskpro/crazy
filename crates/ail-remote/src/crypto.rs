@@ -12,8 +12,9 @@
 //
 // # Error model
 //
-// Each primitive returns `CryptoError`.  Callers should treat all errors as
-// opaque failures — no internal state is exposed through the error variants.
+// Each primitive returns `CryptoError`.  Failures expose stable issue codes,
+// categories, and redacted messages so production callers can branch or log
+// safely without leaking secret key, nonce, salt, password, or ciphertext bytes.
 
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
@@ -24,9 +25,95 @@ use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
 // ── CryptoError ──────────────────────────────────────────────────────────
 
+const AES256_GCM_KEY_LEN: usize = 32;
+const AES256_GCM_NONCE_LEN: usize = 12;
+const AES256_GCM_TAG_LEN: usize = 16;
+const ARGON2_SALT_LEN: usize = 16;
+
+/// Stable machine-readable crypto issue categories.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CryptoIssueCategory {
+    AesGcmInput,
+    AesGcmOperation,
+    Argon2Input,
+    Argon2Operation,
+}
+
+impl CryptoIssueCategory {
+    /// Stable lowercase category string for logs and telemetry.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            CryptoIssueCategory::AesGcmInput => "aes_gcm_input",
+            CryptoIssueCategory::AesGcmOperation => "aes_gcm_operation",
+            CryptoIssueCategory::Argon2Input => "argon2_input",
+            CryptoIssueCategory::Argon2Operation => "argon2_operation",
+        }
+    }
+}
+
+/// Stable machine-readable crypto issue codes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CryptoIssueCode {
+    Aes256GcmInvalidKeyLength,
+    Aes256GcmInvalidNonceLength,
+    Aes256GcmInvalidCiphertextLength,
+    Aes256GcmEncryptionFailed,
+    Aes256GcmDecryptionFailed,
+    Argon2EmptyPassword,
+    Argon2InvalidSaltLength,
+    Argon2KeyDerivationFailed,
+}
+
+impl CryptoIssueCode {
+    /// Stable uppercase issue code for API errors, logs, and telemetry.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            CryptoIssueCode::Aes256GcmInvalidKeyLength => {
+                "REMOTE_CRYPTO_AES256_GCM_INVALID_KEY_LENGTH"
+            }
+            CryptoIssueCode::Aes256GcmInvalidNonceLength => {
+                "REMOTE_CRYPTO_AES256_GCM_INVALID_NONCE_LENGTH"
+            }
+            CryptoIssueCode::Aes256GcmInvalidCiphertextLength => {
+                "REMOTE_CRYPTO_AES256_GCM_INVALID_CIPHERTEXT_LENGTH"
+            }
+            CryptoIssueCode::Aes256GcmEncryptionFailed => {
+                "REMOTE_CRYPTO_AES256_GCM_ENCRYPTION_FAILED"
+            }
+            CryptoIssueCode::Aes256GcmDecryptionFailed => {
+                "REMOTE_CRYPTO_AES256_GCM_DECRYPTION_FAILED"
+            }
+            CryptoIssueCode::Argon2EmptyPassword => "REMOTE_CRYPTO_ARGON2_EMPTY_PASSWORD",
+            CryptoIssueCode::Argon2InvalidSaltLength => "REMOTE_CRYPTO_ARGON2_INVALID_SALT_LENGTH",
+            CryptoIssueCode::Argon2KeyDerivationFailed => {
+                "REMOTE_CRYPTO_ARGON2_KEY_DERIVATION_FAILED"
+            }
+        }
+    }
+}
+
+/// Redacted, deterministic descriptor for a crypto failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CryptoIssueDescriptor {
+    pub code: CryptoIssueCode,
+    pub category: CryptoIssueCategory,
+    /// Redacted human-readable message. Never includes secret input bytes.
+    pub message: &'static str,
+}
+
 /// Error returned by crypto primitive operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CryptoError {
+    /// AES-256-GCM key length is invalid.
+    InvalidAes256GcmKeyLength { expected: usize, actual: usize },
+    /// AES-256-GCM nonce length is invalid.
+    InvalidAes256GcmNonceLength { expected: usize, actual: usize },
+    /// AES-256-GCM ciphertext is too short to contain an authentication tag.
+    InvalidAes256GcmCiphertextLength { minimum: usize, actual: usize },
+    /// Argon2id password is empty.
+    InvalidArgon2Password,
+    /// Argon2id salt length is invalid.
+    InvalidArgon2SaltLength { expected: usize, actual: usize },
     /// AES-256-GCM encryption failed (should not happen for well-formed inputs).
     EncryptionFailed,
     /// AES-256-GCM decryption or authentication tag verification failed.
@@ -35,21 +122,103 @@ pub enum CryptoError {
     KeyDerivationFailed,
 }
 
+impl CryptoError {
+    /// Stable issue code for machine-readable handling.
+    pub const fn code(&self) -> CryptoIssueCode {
+        self.descriptor().code
+    }
+
+    /// Stable issue category for grouping crypto failures.
+    pub const fn category(&self) -> CryptoIssueCategory {
+        self.descriptor().category
+    }
+
+    /// Redacted deterministic descriptor safe for production diagnostics.
+    pub const fn descriptor(&self) -> CryptoIssueDescriptor {
+        match self {
+            CryptoError::InvalidAes256GcmKeyLength { .. } => CryptoIssueDescriptor {
+                code: CryptoIssueCode::Aes256GcmInvalidKeyLength,
+                category: CryptoIssueCategory::AesGcmInput,
+                message: "AES-256-GCM key must be exactly 32 bytes",
+            },
+            CryptoError::InvalidAes256GcmNonceLength { .. } => CryptoIssueDescriptor {
+                code: CryptoIssueCode::Aes256GcmInvalidNonceLength,
+                category: CryptoIssueCategory::AesGcmInput,
+                message: "AES-256-GCM nonce must be exactly 12 bytes",
+            },
+            CryptoError::InvalidAes256GcmCiphertextLength { .. } => CryptoIssueDescriptor {
+                code: CryptoIssueCode::Aes256GcmInvalidCiphertextLength,
+                category: CryptoIssueCategory::AesGcmInput,
+                message: "AES-256-GCM ciphertext must include a 16-byte authentication tag",
+            },
+            CryptoError::InvalidArgon2Password => CryptoIssueDescriptor {
+                code: CryptoIssueCode::Argon2EmptyPassword,
+                category: CryptoIssueCategory::Argon2Input,
+                message: "Argon2id password must not be empty",
+            },
+            CryptoError::InvalidArgon2SaltLength { .. } => CryptoIssueDescriptor {
+                code: CryptoIssueCode::Argon2InvalidSaltLength,
+                category: CryptoIssueCategory::Argon2Input,
+                message: "Argon2id salt must be exactly 16 bytes",
+            },
+            CryptoError::EncryptionFailed => CryptoIssueDescriptor {
+                code: CryptoIssueCode::Aes256GcmEncryptionFailed,
+                category: CryptoIssueCategory::AesGcmOperation,
+                message: "AES-256-GCM encryption failed",
+            },
+            CryptoError::DecryptionFailed => CryptoIssueDescriptor {
+                code: CryptoIssueCode::Aes256GcmDecryptionFailed,
+                category: CryptoIssueCategory::AesGcmOperation,
+                message: "AES-256-GCM decryption or tag verification failed",
+            },
+            CryptoError::KeyDerivationFailed => CryptoIssueDescriptor {
+                code: CryptoIssueCode::Argon2KeyDerivationFailed,
+                category: CryptoIssueCategory::Argon2Operation,
+                message: "Argon2id key derivation failed",
+            },
+        }
+    }
+}
+
 impl std::fmt::Display for CryptoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CryptoError::EncryptionFailed => write!(f, "AES-256-GCM encryption failed"),
-            CryptoError::DecryptionFailed => {
-                write!(f, "AES-256-GCM decryption or tag verification failed")
-            }
-            CryptoError::KeyDerivationFailed => write!(f, "Argon2id key derivation failed"),
-        }
+        f.write_str(self.descriptor().message)
     }
 }
 
 impl std::error::Error for CryptoError {}
 
 // ── AES-256-GCM ──────────────────────────────────────────────────────────
+
+/// Encrypt `plaintext` using AES-256-GCM with runtime input validation.
+///
+/// This is the production-facing variant for callers that receive keys or
+/// nonces as byte slices.  Validation errors are machine-readable and never
+/// include key, nonce, or plaintext bytes.
+pub fn try_encrypt_aes256gcm(
+    key: &[u8],
+    nonce: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    if key.len() != AES256_GCM_KEY_LEN {
+        return Err(CryptoError::InvalidAes256GcmKeyLength {
+            expected: AES256_GCM_KEY_LEN,
+            actual: key.len(),
+        });
+    }
+    if nonce.len() != AES256_GCM_NONCE_LEN {
+        return Err(CryptoError::InvalidAes256GcmNonceLength {
+            expected: AES256_GCM_NONCE_LEN,
+            actual: nonce.len(),
+        });
+    }
+
+    let key = <&[u8; AES256_GCM_KEY_LEN]>::try_from(key).expect("validated AES-256-GCM key length");
+    let nonce =
+        <&[u8; AES256_GCM_NONCE_LEN]>::try_from(nonce).expect("validated AES-256-GCM nonce length");
+
+    encrypt_aes256gcm(key, nonce, plaintext)
+}
 
 /// Encrypt `plaintext` using AES-256-GCM.
 ///
@@ -78,6 +247,42 @@ pub fn encrypt_aes256gcm(
     cipher
         .encrypt(nonce, plaintext)
         .map_err(|_| CryptoError::EncryptionFailed)
+}
+
+/// Decrypt and authenticate `ciphertext` using AES-256-GCM with runtime input validation.
+///
+/// This is the production-facing variant for callers that receive keys, nonces,
+/// or ciphertext as byte slices. Validation failures are returned before AEAD
+/// authentication and never include secret input bytes.
+pub fn try_decrypt_aes256gcm(
+    key: &[u8],
+    nonce: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    if key.len() != AES256_GCM_KEY_LEN {
+        return Err(CryptoError::InvalidAes256GcmKeyLength {
+            expected: AES256_GCM_KEY_LEN,
+            actual: key.len(),
+        });
+    }
+    if nonce.len() != AES256_GCM_NONCE_LEN {
+        return Err(CryptoError::InvalidAes256GcmNonceLength {
+            expected: AES256_GCM_NONCE_LEN,
+            actual: nonce.len(),
+        });
+    }
+    if ciphertext.len() < AES256_GCM_TAG_LEN {
+        return Err(CryptoError::InvalidAes256GcmCiphertextLength {
+            minimum: AES256_GCM_TAG_LEN,
+            actual: ciphertext.len(),
+        });
+    }
+
+    let key = <&[u8; AES256_GCM_KEY_LEN]>::try_from(key).expect("validated AES-256-GCM key length");
+    let nonce =
+        <&[u8; AES256_GCM_NONCE_LEN]>::try_from(nonce).expect("validated AES-256-GCM nonce length");
+
+    decrypt_aes256gcm(key, nonce, ciphertext)
 }
 
 /// Decrypt and authenticate `ciphertext` using AES-256-GCM.
@@ -109,6 +314,26 @@ pub fn decrypt_aes256gcm(
 }
 
 // ── Argon2id ─────────────────────────────────────────────────────────────
+
+/// Derive a 32-byte key from `password` and `salt` using Argon2id with runtime validation.
+///
+/// This production-facing variant rejects empty passwords and invalid salt
+/// lengths before derivation. Diagnostics never include password or salt bytes.
+pub fn try_derive_key_argon2(password: &[u8], salt: &[u8]) -> Result<[u8; 32], CryptoError> {
+    if password.is_empty() {
+        return Err(CryptoError::InvalidArgon2Password);
+    }
+    if salt.len() != ARGON2_SALT_LEN {
+        return Err(CryptoError::InvalidArgon2SaltLength {
+            expected: ARGON2_SALT_LEN,
+            actual: salt.len(),
+        });
+    }
+
+    let salt = <&[u8; ARGON2_SALT_LEN]>::try_from(salt).expect("validated Argon2id salt length");
+
+    derive_key_argon2(password, salt)
+}
 
 /// Derive a 32-byte key from `password` and `salt` using Argon2id.
 ///
@@ -230,6 +455,116 @@ mod tests {
             result,
             Err(CryptoError::DecryptionFailed),
             "tampered ciphertext must cause DecryptionFailed"
+        );
+    }
+
+    // ── crypto_error_descriptors_are_stable_and_redacted ─────────────────
+    // Machine-readable diagnostics must be deterministic and avoid secret bytes.
+    #[test]
+    fn crypto_error_descriptors_are_stable_and_redacted() {
+        let error = CryptoError::InvalidAes256GcmKeyLength {
+            expected: 32,
+            actual: 31,
+        };
+
+        let descriptor = error.descriptor();
+        assert_eq!(
+            descriptor.code.as_str(),
+            "REMOTE_CRYPTO_AES256_GCM_INVALID_KEY_LENGTH"
+        );
+        assert_eq!(descriptor.category.as_str(), "aes_gcm_input");
+        assert_eq!(
+            descriptor.message,
+            "AES-256-GCM key must be exactly 32 bytes"
+        );
+        assert_eq!(error.to_string(), descriptor.message);
+        assert!(
+            !error.to_string().contains("171"),
+            "diagnostic must not leak key byte values"
+        );
+    }
+
+    // ── try_aes256gcm_reports_structural_input_errors ────────────────────
+    // Runtime-slice APIs must classify invalid key, nonce, and ciphertext shapes.
+    #[test]
+    fn try_aes256gcm_reports_structural_input_errors() {
+        let key = [0xABu8; 32];
+        let nonce = [0xCDu8; 12];
+
+        let key_error = try_encrypt_aes256gcm(&key[..31], &nonce, b"payload")
+            .expect_err("short key must be rejected before encryption");
+        assert_eq!(
+            key_error,
+            CryptoError::InvalidAes256GcmKeyLength {
+                expected: 32,
+                actual: 31,
+            }
+        );
+        assert_eq!(
+            key_error.code().as_str(),
+            "REMOTE_CRYPTO_AES256_GCM_INVALID_KEY_LENGTH"
+        );
+
+        let nonce_error = try_encrypt_aes256gcm(&key, &nonce[..11], b"payload")
+            .expect_err("short nonce must be rejected before encryption");
+        assert_eq!(
+            nonce_error,
+            CryptoError::InvalidAes256GcmNonceLength {
+                expected: 12,
+                actual: 11,
+            }
+        );
+        assert_eq!(
+            nonce_error.code().as_str(),
+            "REMOTE_CRYPTO_AES256_GCM_INVALID_NONCE_LENGTH"
+        );
+
+        let ciphertext_error = try_decrypt_aes256gcm(&key, &nonce, &[0xEF; 15])
+            .expect_err("ciphertext without a full tag must be rejected before decrypt");
+        assert_eq!(
+            ciphertext_error,
+            CryptoError::InvalidAes256GcmCiphertextLength {
+                minimum: 16,
+                actual: 15,
+            }
+        );
+        assert_eq!(
+            ciphertext_error.code().as_str(),
+            "REMOTE_CRYPTO_AES256_GCM_INVALID_CIPHERTEXT_LENGTH"
+        );
+    }
+
+    // ── try_argon2_reports_structural_input_errors ───────────────────────
+    // Runtime-slice APIs must classify invalid password and salt shapes.
+    #[test]
+    fn try_argon2_reports_structural_input_errors() {
+        let salt = [0x11u8; 16];
+
+        let password_error = try_derive_key_argon2(b"", &salt)
+            .expect_err("empty password must be rejected before derivation");
+        assert_eq!(password_error, CryptoError::InvalidArgon2Password);
+        assert_eq!(
+            password_error.code().as_str(),
+            "REMOTE_CRYPTO_ARGON2_EMPTY_PASSWORD"
+        );
+        assert_eq!(password_error.category().as_str(), "argon2_input");
+
+        let salt_error = try_derive_key_argon2(b"password", &salt[..15])
+            .expect_err("short salt must be rejected before derivation");
+        assert_eq!(
+            salt_error,
+            CryptoError::InvalidArgon2SaltLength {
+                expected: 16,
+                actual: 15,
+            }
+        );
+        assert_eq!(
+            salt_error.code().as_str(),
+            "REMOTE_CRYPTO_ARGON2_INVALID_SALT_LENGTH"
+        );
+        assert!(
+            !salt_error.to_string().contains("17"),
+            "diagnostic must not leak salt byte values"
         );
     }
 
