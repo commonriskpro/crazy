@@ -108,6 +108,9 @@ pub const E_ARTIFACT_MANIFEST_DUPLICATE_ARTIFACT: &str = "E_ARTIFACT_MANIFEST_DU
 /// Stable issue code for package manifests missing production hash seals.
 pub const E_ARTIFACT_MANIFEST_MISSING_HASH: &str = "E_ARTIFACT_MANIFEST_MISSING_HASH";
 
+/// Stable issue code for package manifests missing the compile profile.
+pub const E_ARTIFACT_MANIFEST_MISSING_PROFILE: &str = "E_ARTIFACT_MANIFEST_MISSING_PROFILE";
+
 /// Stable issue code for package manifest schema envelope mismatches.
 pub const E_ARTIFACT_MANIFEST_SCHEMA_MISMATCH: &str = "E_ARTIFACT_MANIFEST_SCHEMA_MISMATCH";
 
@@ -159,7 +162,7 @@ impl ArtifactManifestValidationIssue {
     ) -> Self {
         Self {
             code: code.to_string(),
-            artifact_id: artifact_id.into(),
+            artifact_id: redact_pathlike_id(&artifact_id.into()),
             field: field.to_string(),
             message: message.into(),
         }
@@ -195,6 +198,15 @@ pub fn validate_artifact_manifest_entries(
                     "expected schema {ARTIFACT_MANIFEST_SCHEMA_VERSION}, found {}",
                     entry.schema_version
                 ),
+            ));
+        }
+
+        if entry.manifest.profile.trim().is_empty() {
+            issues.push(ArtifactManifestValidationIssue::new(
+                E_ARTIFACT_MANIFEST_MISSING_PROFILE,
+                entry.artifact_id,
+                "profile",
+                "artifact manifest profile is required for package promotion",
             ));
         }
 
@@ -238,7 +250,23 @@ pub fn validate_artifact_manifest_entries(
     }
 
     issues.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
+    issues.dedup();
     issues
+}
+
+fn redact_pathlike_id(value: &str) -> String {
+    let trimmed = value.trim();
+    let Some(name) = trimmed.rsplit(['/', '\\']).next() else {
+        return "<missing>".to_string();
+    };
+
+    if name.is_empty() {
+        "<missing>".to_string()
+    } else if name == trimmed {
+        name.to_string()
+    } else {
+        format!("…/{name}")
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -436,6 +464,27 @@ mod tests {
     }
 
     #[test]
+    fn validation_reports_missing_profile_with_redacted_artifact_id() {
+        let mut manifest = manifest_with_backend_hash();
+        manifest.profile = " ".to_string();
+
+        let issues = validate_artifact_manifest_entries(&[ArtifactManifestValidationEntry::new(
+            "/private/build/program.wasm",
+            ARTIFACT_MANIFEST_SCHEMA_VERSION,
+            &manifest,
+        )]);
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, E_ARTIFACT_MANIFEST_MISSING_PROFILE);
+        assert_eq!(issues[0].artifact_id, "…/program.wasm");
+        assert_eq!(issues[0].field, "profile");
+        assert!(
+            !issues[0].message.contains("/private/build"),
+            "diagnostics must not leak raw artifact paths: {issues:?}"
+        );
+    }
+
+    #[test]
     fn validation_reports_schema_mismatch_and_duplicate_artifacts() {
         let manifest = manifest_with_backend_hash();
         let issues = validate_artifact_manifest_entries(&[
@@ -475,6 +524,40 @@ mod tests {
                     "program.wasm",
                     "schema_version",
                 ),
+            ]
+        );
+    }
+
+    #[test]
+    fn validation_deduplicates_repeated_manifest_issues() {
+        let mut missing = manifest_with_backend_hash();
+        missing.profile.clear();
+        missing.source_map_hash = None;
+
+        let issues = validate_artifact_manifest_entries(&[
+            ArtifactManifestValidationEntry::new(
+                "program.wasm",
+                ARTIFACT_MANIFEST_SCHEMA_VERSION,
+                &missing,
+            ),
+            ArtifactManifestValidationEntry::new(
+                "program.wasm",
+                ARTIFACT_MANIFEST_SCHEMA_VERSION,
+                &missing,
+            ),
+        ]);
+
+        let issue_keys: Vec<(&str, &str)> = issues
+            .iter()
+            .map(|issue| (issue.code.as_str(), issue.field.as_str()))
+            .collect();
+
+        assert_eq!(
+            issue_keys,
+            vec![
+                (E_ARTIFACT_MANIFEST_DUPLICATE_ARTIFACT, "artifact_id"),
+                (E_ARTIFACT_MANIFEST_MISSING_HASH, "source_map_hash"),
+                (E_ARTIFACT_MANIFEST_MISSING_PROFILE, "profile"),
             ]
         );
     }
