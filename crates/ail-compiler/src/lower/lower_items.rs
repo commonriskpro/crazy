@@ -13,7 +13,7 @@ use ail_core::semantic_graph::{
     RuntimeCheckRef, SemanticGraph,
 };
 
-use crate::anf::{AnfBinding, AnfExpr, SourceMap, SourceMapEntry};
+use crate::anf::{AnfBinding, AnfExpr, SourceMap, SourceMapEntry, SourceMapSpan};
 use crate::core_ir::{CoreExpr, CoreNode, CoreNodeKind, CoreType, LiteralValue, ResourceMode};
 use crate::error::CompileError;
 use crate::expr_parser::parse_expr;
@@ -177,6 +177,8 @@ pub(super) struct NodeProvenance {
     /// Content hash of the first `RuntimeCheckMeta` in
     /// `GraphNode.runtime_checks`, if any.
     pub(super) runtime_check_ref: Option<String>,
+    /// Authored source span copied from `GraphNode.span`, if present.
+    pub(super) source_span: Option<SourceMapSpan>,
 }
 
 /// Build a `NodeRef → NodeProvenance` lookup from a `SemanticGraph`.
@@ -236,6 +238,7 @@ pub(super) fn extract_provenance_lookup(
                     .as_ref()
                     .and_then(|rcs| rcs.first())
                     .map(|rc| rc.hash.clone()),
+                source_span: gn.span.as_ref().map(SourceMapSpan::from_graph_span),
             };
             (gn.id, prov)
         })
@@ -277,6 +280,8 @@ pub(super) fn build_enriched_source_map(
                 runtime_check_ref: prov
                     .and_then(|p| p.runtime_check_ref.as_ref())
                     .map(|s| RuntimeCheckRef(s.clone())),
+                source_span: prov.and_then(|p| p.source_span.clone()),
+                generated_span: None,
                 wasm_offset: None,
                 native_offset: None,
             }

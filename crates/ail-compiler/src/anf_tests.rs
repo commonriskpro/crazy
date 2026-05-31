@@ -568,6 +568,8 @@ fn source_map_entry_with_typed_refs_is_constructible() {
         effect_ref: Some(EffectRef("effect.db.read".to_string())),
         proof_obligation_ref: Some(ProofObligationRef("proof.no_negative_balance".to_string())),
         runtime_check_ref: Some(RuntimeCheckRef("rtcheck.null_guard".to_string())),
+        source_span: None,
+        generated_span: None,
         wasm_offset: None,
         native_offset: None,
     };
@@ -598,6 +600,8 @@ fn source_map_entry_typed_refs_cbor_round_trip() {
         effect_ref: None,
         proof_obligation_ref: None,
         runtime_check_ref: None,
+        source_span: None,
+        generated_span: None,
         wasm_offset: None,
         native_offset: None,
     };
@@ -650,6 +654,14 @@ fn source_map_from_bindings_sets_all_optional_fields_to_none() {
         assert!(
             entry.runtime_check_ref.is_none(),
             "runtime_check_ref must be None from from_bindings"
+        );
+        assert!(
+            entry.source_span.is_none(),
+            "source_span must be None from from_bindings"
+        );
+        assert!(
+            entry.generated_span.is_none(),
+            "generated_span must be None from from_bindings"
         );
         assert!(
             entry.wasm_offset.is_none(),

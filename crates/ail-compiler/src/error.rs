@@ -4,6 +4,47 @@
 
 use ail_core::semantic_graph::NodeRef;
 
+/// Stable, redacted source-map validation diagnostic.
+///
+/// Codes are stable for tooling, categories are low-cardinality, and the
+/// descriptor must never include raw source file ids or user payload text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceMapDiagnostic {
+    pub code: &'static str,
+    pub category: &'static str,
+    pub entry_index: usize,
+    pub node_id: NodeRef,
+    pub descriptor: String,
+}
+
+impl SourceMapDiagnostic {
+    pub fn new(
+        code: &'static str,
+        category: &'static str,
+        entry_index: usize,
+        node_id: NodeRef,
+        descriptor: impl Into<String>,
+    ) -> Self {
+        Self {
+            code,
+            category,
+            entry_index,
+            node_id,
+            descriptor: descriptor.into(),
+        }
+    }
+
+    pub fn code_rank(&self) -> u8 {
+        match self.code {
+            "AIL-SM-001" => 1,
+            "AIL-SM-002" => 2,
+            "AIL-SM-003" => 3,
+            "AIL-SM-004" => 4,
+            _ => u8::MAX,
+        }
+    }
+}
+
 /// Errors produced by the `ail-compiler` pipeline.
 ///
 /// Each variant corresponds to a distinct failure mode; the `lower_to_core_ir`,
@@ -20,6 +61,9 @@ pub enum CompileError {
 
     /// A `NodeRef` present in the graph could not be resolved during lowering.
     MissingNode(NodeRef),
+
+    /// The source map contains malformed span records for tooling diagnostics.
+    InvalidSourceMap { issues: Vec<SourceMapDiagnostic> },
 
     /// A production-like backend profile required audit provenance that was
     /// missing from the source map.
@@ -76,6 +120,21 @@ impl std::fmt::Display for CompileError {
             }
             CompileError::InvalidGraph(msg) => write!(f, "invalid graph: {msg}"),
             CompileError::MissingNode(r) => write!(f, "missing node: NodeRef({})", r.0),
+            CompileError::InvalidSourceMap { issues } => {
+                write!(f, "invalid source map")?;
+                for issue in issues {
+                    write!(
+                        f,
+                        ": {} {} entry={} NodeRef({}) {}",
+                        issue.code,
+                        issue.category,
+                        issue.entry_index,
+                        issue.node_id.0,
+                        issue.descriptor
+                    )?;
+                }
+                Ok(())
+            }
             CompileError::MissingProvenanceMetadata {
                 profile,
                 binding_name,
@@ -181,6 +240,32 @@ mod tests {
         assert!(
             msg.contains("NodeRef(7)"),
             "display must include node ref: {msg}"
+        );
+    }
+
+    #[test]
+    fn invalid_source_map_display_uses_stable_redacted_issue_data() {
+        let e = CompileError::InvalidSourceMap {
+            issues: vec![SourceMapDiagnostic::new(
+                "AIL-SM-001",
+                "span.range",
+                0,
+                NodeRef(7),
+                "source-span:file-id=present:range=reversed",
+            )],
+        };
+        let msg = e.to_string();
+        assert!(
+            msg.contains("AIL-SM-001"),
+            "display must include stable code: {msg}"
+        );
+        assert!(
+            msg.contains("span.range"),
+            "display must include category: {msg}"
+        );
+        assert!(
+            msg.contains("file-id=present"),
+            "display must use redacted file id shape: {msg}"
         );
     }
 

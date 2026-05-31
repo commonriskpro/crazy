@@ -4,7 +4,7 @@ use ail_core::semantic_graph::NodeRef;
 
 use wasm_encoder::Module;
 
-use crate::anf::{AnfExpr, AnfIr, SourceMap, SourceMapEntry};
+use crate::anf::{AnfExpr, AnfIr, SourceMap, SourceMapEntry, SourceMapSpan};
 
 use crate::artifact_manifest::ArtifactManifest;
 
@@ -54,6 +54,15 @@ use super::lambdas::{
 ///   violated) or WASM binary assembly failed.
 pub fn emit_wasm(anf: &AnfIr) -> Result<WasmArtifact, CompileError> {
     emit_wasm_with_profile(anf, "unspecified")
+}
+
+fn wasm_generated_span(offsets: &[u32], index: usize, wasm_len: usize) -> Option<SourceMapSpan> {
+    let start = u64::from(*offsets.get(index)?);
+    let end = offsets
+        .get(index + 1)
+        .map(|offset| u64::from(*offset))
+        .unwrap_or(wasm_len as u64);
+    Some(SourceMapSpan::new("program.wasm", start, end))
 }
 
 /// Emit a WASM module and bind the artifact manifest to `profile`.
@@ -308,14 +317,18 @@ pub fn emit_wasm_with_profile(anf: &AnfIr, profile: &str) -> Result<WasmArtifact
                 .map(|&o| Some(o))
                 .chain(std::iter::repeat(None)),
         )
-        .map(|(entry, wasm_offset)| SourceMapEntry {
+        .enumerate()
+        .map(|(index, (entry, wasm_offset))| SourceMapEntry {
             wasm_offset,
+            generated_span: wasm_offset
+                .and_then(|_| wasm_generated_span(&entry_offsets, index, wasm.len())),
             ..entry.clone()
         })
         .collect();
     let source_map = SourceMap {
         entries: source_map_entries,
     };
+    source_map.validate_tooling_quality()?;
     source_map.validate_required_provenance(profile, &anf.bindings)?;
 
     // Seal: source_map_hash = blake3(source_map_cbor_bytes).
