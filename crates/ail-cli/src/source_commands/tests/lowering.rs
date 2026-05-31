@@ -6,7 +6,7 @@ fn assert_lowering_diagnostic(
     code: &str,
     category: &str,
     detail: &str,
-) {
+) -> String {
     let err = result.expect_err("source lowering must fail");
     let CliError::ParseError(message) = err else {
         panic!("source lowering must return ParseError");
@@ -23,6 +23,7 @@ fn assert_lowering_diagnostic(
         message.contains(detail),
         "lowering diagnostic must keep actionable detail `{detail}`; got: {message}"
     );
+    message
 }
 
 #[test]
@@ -75,6 +76,83 @@ fn rejects_accessor_and_operator_shapes_with_stable_lowering_diagnostics() {
         "AIL_SOURCE_LOWER_UNARY_OPERATOR",
         "source.lower.operator",
         "unary `-` requires an expression",
+    );
+}
+
+#[test]
+fn rejects_unsupported_constructs_with_redacted_lowering_descriptor() {
+    let diagnostic = assert_lowering_diagnostic(
+        lower_source_expr("for customer_secret in values { customer_secret }", 31),
+        "AIL_SOURCE_LOWER_UNSUPPORTED_CONSTRUCT",
+        "source.lower.unsupported",
+        "unsupported source construct `for` during lowering",
+    );
+
+    assert!(
+        diagnostic.contains("descriptor={line=31,construct=for,sourceLength=49,sourceHash="),
+        "lowering diagnostic must include a deterministic redacted descriptor; got: {diagnostic}"
+    );
+    assert!(
+        !diagnostic.contains("customer_secret"),
+        "lowering diagnostic descriptor must not leak raw source; got: {diagnostic}"
+    );
+    assert_eq!(
+        diagnostic,
+        assert_lowering_diagnostic(
+            lower_source_expr("for customer_secret in values { customer_secret }", 31),
+            "AIL_SOURCE_LOWER_UNSUPPORTED_CONSTRUCT",
+            "source.lower.unsupported",
+            "unsupported source construct `for` during lowering",
+        ),
+        "same lowering failure must produce deterministic diagnostics"
+    );
+}
+
+#[test]
+fn rejects_typed_let_type_shape_during_lowering() {
+    let diagnostic = assert_lowering_diagnostic(
+        lower_source_expr("let_typed(value, List<Int, Text>, 9, 1, value)", 9),
+        "AIL_SOURCE_LOWER_TYPE_SHAPE",
+        "source.lower.type",
+        "typed let annotation has unsupported source type shape",
+    );
+
+    assert!(
+        diagnostic.contains("descriptor={line=9,construct=typed_let,"),
+        "typed let type-shape mismatch must include a redacted lowering descriptor; got: {diagnostic}"
+    );
+    assert!(
+        !diagnostic.contains("List<Int, Text>"),
+        "type-shape descriptor should not echo the raw source expression; got: {diagnostic}"
+    );
+}
+
+#[test]
+fn rejects_duplicate_record_fields_before_losing_bindings() {
+    assert_lowering_diagnostic(
+        lower_source_expr(r#"{ age: 1, name: "Ada", age: 2 }"#, 14),
+        "AIL_SOURCE_LOWER_BINDING_SHAPE",
+        "source.lower.binding",
+        "duplicate record field `age` would overwrite an earlier binding",
+    );
+}
+
+#[test]
+fn rejects_missing_effect_capability_reference_during_lowering() {
+    let diagnostic = assert_lowering_diagnostic(
+        lower_source_expr("effect_call(, write, customer_secret)", 17),
+        "AIL_SOURCE_LOWER_CAPABILITY_REFERENCE",
+        "source.lower.capability",
+        "effect_call requires `effect_call(capability, operation, ...)`",
+    );
+
+    assert!(
+        diagnostic.contains("descriptor={line=17,construct=effect_call,"),
+        "capability reference diagnostic must include a redacted descriptor; got: {diagnostic}"
+    );
+    assert!(
+        !diagnostic.contains("customer_secret"),
+        "capability reference descriptor must not leak raw source; got: {diagnostic}"
     );
 }
 

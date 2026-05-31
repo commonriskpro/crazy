@@ -154,6 +154,7 @@ pub(super) fn parse_source_record_literal(
 
     let mut base = None;
     let mut fields = Vec::new();
+    let mut seen_fields = BTreeSet::new();
     for (entry_idx, field_expr) in split_source_args(inner).into_iter().enumerate() {
         let entry = field_expr.trim();
         if let Some(spread) = entry.strip_prefix("...") {
@@ -193,6 +194,15 @@ pub(super) fn parse_source_record_literal(
             ));
         }
         validate_source_local_name(field, line_num)?;
+        if !seen_fields.insert(field.to_string()) {
+            return Err(source_lower_expr_error(
+                line_num,
+                SourceLowerDiagnostic::BindingShape,
+                expr,
+                "record_literal",
+                format!("duplicate record field `{field}` would overwrite an earlier binding"),
+            ));
+        }
         fields.push((field.to_string(), value.to_string()));
     }
 

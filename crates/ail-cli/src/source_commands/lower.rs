@@ -1,6 +1,7 @@
 use super::model::*;
 use super::parse::*;
 use super::syntax::*;
+use super::types::*;
 use super::*;
 
 mod collections;
@@ -21,34 +22,46 @@ pub(super) use text::*;
 
 #[derive(Clone, Copy)]
 pub(super) enum SourceLowerDiagnostic {
+    BindingShape,
+    CapabilityReference,
     CollectionArity,
     FieldAccess,
     IndexExpression,
     ListLiteral,
     RecordLiteral,
+    TypeShapeMismatch,
     UnaryOperator,
+    UnsupportedConstruct,
 }
 
 impl SourceLowerDiagnostic {
     fn code(self) -> &'static str {
         match self {
+            SourceLowerDiagnostic::BindingShape => "AIL_SOURCE_LOWER_BINDING_SHAPE",
+            SourceLowerDiagnostic::CapabilityReference => "AIL_SOURCE_LOWER_CAPABILITY_REFERENCE",
             SourceLowerDiagnostic::CollectionArity => "AIL_SOURCE_LOWER_COLLECTION_ARITY",
             SourceLowerDiagnostic::FieldAccess => "AIL_SOURCE_LOWER_FIELD_ACCESS",
             SourceLowerDiagnostic::IndexExpression => "AIL_SOURCE_LOWER_INDEX_EXPRESSION",
             SourceLowerDiagnostic::ListLiteral => "AIL_SOURCE_LOWER_LIST_LITERAL",
             SourceLowerDiagnostic::RecordLiteral => "AIL_SOURCE_LOWER_RECORD_LITERAL",
+            SourceLowerDiagnostic::TypeShapeMismatch => "AIL_SOURCE_LOWER_TYPE_SHAPE",
             SourceLowerDiagnostic::UnaryOperator => "AIL_SOURCE_LOWER_UNARY_OPERATOR",
+            SourceLowerDiagnostic::UnsupportedConstruct => "AIL_SOURCE_LOWER_UNSUPPORTED_CONSTRUCT",
         }
     }
 
     fn category(self) -> &'static str {
         match self {
+            SourceLowerDiagnostic::BindingShape => "source.lower.binding",
+            SourceLowerDiagnostic::CapabilityReference => "source.lower.capability",
             SourceLowerDiagnostic::CollectionArity
             | SourceLowerDiagnostic::FieldAccess
             | SourceLowerDiagnostic::IndexExpression
             | SourceLowerDiagnostic::ListLiteral
             | SourceLowerDiagnostic::RecordLiteral => "source.lower.collection",
+            SourceLowerDiagnostic::TypeShapeMismatch => "source.lower.type",
             SourceLowerDiagnostic::UnaryOperator => "source.lower.operator",
+            SourceLowerDiagnostic::UnsupportedConstruct => "source.lower.unsupported",
         }
     }
 }
@@ -58,12 +71,58 @@ pub(super) fn source_lower_error(
     diagnostic: SourceLowerDiagnostic,
     message: impl AsRef<str>,
 ) -> CliError {
-    CliError::ParseError(format!(
-        "line {line_num}: [{}] category={}: {}",
+    CliError::ParseError(source_lower_message(
+        line_num,
+        diagnostic,
+        None,
+        message.as_ref(),
+    ))
+}
+
+pub(super) fn source_lower_expr_error(
+    line_num: usize,
+    diagnostic: SourceLowerDiagnostic,
+    expr: &str,
+    construct: &'static str,
+    message: impl AsRef<str>,
+) -> CliError {
+    CliError::ParseError(source_lower_message(
+        line_num,
+        diagnostic,
+        Some(source_lower_descriptor(line_num, construct, expr)),
+        message.as_ref(),
+    ))
+}
+
+fn source_lower_message(
+    line_num: usize,
+    diagnostic: SourceLowerDiagnostic,
+    descriptor: Option<String>,
+    message: &str,
+) -> String {
+    let descriptor = descriptor
+        .map(|descriptor| format!(" {descriptor}"))
+        .unwrap_or_default();
+    format!(
+        "line {line_num}: [{}] category={}{}: {message}",
         diagnostic.code(),
         diagnostic.category(),
-        message.as_ref()
-    ))
+        descriptor
+    )
+}
+
+fn source_lower_descriptor(line_num: usize, construct: &'static str, expr: &str) -> String {
+    format!(
+        "descriptor={{line={line_num},construct={construct},sourceLength={},sourceHash={:016x}}}",
+        expr.chars().count(),
+        source_lower_redacted_hash(expr)
+    )
+}
+
+fn source_lower_redacted_hash(expr: &str) -> u64 {
+    expr.bytes().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    })
 }
 
 pub(super) fn source_program_to_graph(
@@ -213,6 +272,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
     if let Some(inner) = strip_wrapping_source_parens(expr) {
         return lower_source_expr(inner, line_num);
     }
+    if let Some(lowered) = lower_source_typed_let_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_constructor_expr(expr, line_num)? {
         return Ok(lowered);
     }
@@ -223,6 +285,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_result_predicate_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
+    if let Some(lowered) = lower_source_effect_call_expr(expr, line_num)? {
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_is_empty_expr(expr, line_num)? {
@@ -429,5 +494,115 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         }
         return Ok(format!("not({})", lower_source_expr(inner, line_num)?));
     }
+    if let Some(construct) = unsupported_source_construct(expr) {
+        return Err(source_lower_expr_error(
+            line_num,
+            SourceLowerDiagnostic::UnsupportedConstruct,
+            expr,
+            construct,
+            format!("unsupported source construct `{construct}` during lowering"),
+        ));
+    }
     Ok(expr.to_string())
+}
+
+fn lower_source_effect_call_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "effect_call" {
+        return Ok(None);
+    }
+    if args.len() < 2 || args[0].trim().is_empty() {
+        return Err(source_lower_expr_error(
+            line_num,
+            SourceLowerDiagnostic::CapabilityReference,
+            expr,
+            "effect_call",
+            "effect_call requires `effect_call(capability, operation, ...)`",
+        ));
+    }
+    let capability = args[0].trim();
+    let operation = args[1].trim();
+    if !is_source_ident(capability) || !is_source_ident(operation) {
+        return Err(source_lower_expr_error(
+            line_num,
+            SourceLowerDiagnostic::CapabilityReference,
+            expr,
+            "effect_call",
+            "effect_call capability and operation must be identifiers",
+        ));
+    }
+    let mut lowered = vec![capability.to_string(), operation.to_string()];
+    lowered.extend(
+        args[2..]
+            .iter()
+            .map(|arg| lower_source_expr(arg, line_num))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    Ok(Some(format!("effect_call({})", lowered.join(", "))))
+}
+
+fn lower_source_typed_let_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if func != "let_typed" {
+        return Ok(None);
+    }
+    if args.len() != 5 {
+        return Err(source_lower_expr_error(
+            line_num,
+            SourceLowerDiagnostic::BindingShape,
+            expr,
+            "typed_let",
+            "typed let lowering requires `let_typed(name, Type, line, value, next)`",
+        ));
+    }
+    if !is_source_local_ident(&args[0]) {
+        return Err(source_lower_expr_error(
+            line_num,
+            SourceLowerDiagnostic::BindingShape,
+            expr,
+            "typed_let",
+            "typed let lowering requires a local binding name",
+        ));
+    }
+    validate_source_type_annotation(&args[1]).map_err(|_| {
+        source_lower_expr_error(
+            line_num,
+            SourceLowerDiagnostic::TypeShapeMismatch,
+            expr,
+            "typed_let",
+            "typed let annotation has unsupported source type shape",
+        )
+    })?;
+    let ty = normalize_source_type_name(&args[1]);
+    let let_line = parse_source_let_line_marker(&args[2]).map_err(|_| {
+        source_lower_expr_error(
+            line_num,
+            SourceLowerDiagnostic::BindingShape,
+            expr,
+            "typed_let",
+            "typed let lowering requires a numeric source line marker",
+        )
+    })?;
+    Ok(Some(format!(
+        "let_typed({}, {ty}, {let_line}, {}, {})",
+        args[0].trim(),
+        lower_source_expr(&args[3], line_num)?,
+        lower_source_expr(&args[4], line_num)?
+    )))
+}
+
+fn unsupported_source_construct(expr: &str) -> Option<&'static str> {
+    let expr = expr.trim_start();
+    ["for", "while", "loop", "async", "await", "try", "return"]
+        .into_iter()
+        .find(|construct| {
+            expr == *construct
+                || expr
+                    .strip_prefix(*construct)
+                    .is_some_and(|rest| rest.chars().next().is_some_and(char::is_whitespace))
+        })
 }
