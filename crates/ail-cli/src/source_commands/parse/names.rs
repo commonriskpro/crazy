@@ -27,33 +27,50 @@ pub(super) fn normalize_grant_target(target: &str) -> String {
 pub(super) fn validate_source_local_name(name: &str, line_num: usize) -> Result<(), CliError> {
     validate_source_name(name, line_num)?;
     if name.contains('.') {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: local binding name `{name}` must not contain `.`"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidName,
+            name,
+            format!("local binding name `{name}` must not contain `.`"),
+        ));
     }
     Ok(())
 }
 
 pub(super) fn validate_source_name(name: &str, line_num: usize) -> Result<(), CliError> {
     if name.is_empty() {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: declaration name cannot be empty"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidName,
+            name,
+            "declaration name cannot be empty",
+        ));
     }
     if !is_valid_source_name_chars(name) {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: declaration name `{name}` contains unsupported characters"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidName,
+            name,
+            format!("declaration name `{name}` contains unsupported characters"),
+        ));
     }
     if name.split('.').any(str::is_empty) {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: declaration name `{name}` contains an empty path segment"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidName,
+            name,
+            format!("declaration name `{name}` contains an empty path segment"),
+        ));
     }
     if let Some(segment) = first_invalid_source_name_segment(name) {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: declaration name `{name}` segment `{segment}` must start with a letter or `_`"
-        )));
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidName,
+            name,
+            format!(
+                "declaration name `{name}` segment `{segment}` must start with a letter or `_`"
+            ),
+        ));
     }
     Ok(())
 }
