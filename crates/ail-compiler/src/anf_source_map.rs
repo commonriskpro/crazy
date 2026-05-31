@@ -93,6 +93,19 @@ impl SourceMap {
         SourceMap { entries }
     }
 
+    /// Return all entries lowered from `node_id` in stable source-map order.
+    ///
+    /// A single semantic node can lower into multiple ANF bindings (for
+    /// example synthetic temporaries). Diagnostics must keep every matching
+    /// span instead of collapsing duplicates, and callers get the same order as
+    /// `entries` so repeated report generation is deterministic.
+    pub fn entries_for_node(&self, node_id: NodeRef) -> Vec<&SourceMapEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.node_id == node_id)
+            .collect()
+    }
+
     /// Validate audit provenance required by production-like compiler profiles.
     ///
     /// The current implemented policy is intentionally small: `prod`,

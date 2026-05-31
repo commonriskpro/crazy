@@ -93,7 +93,9 @@ pub struct CompilerReport {
 
     /// Non-fatal warnings emitted during compilation.
     ///
-    /// Empty means no warnings.
+    /// Warnings are stored in deterministic `(code, scope, message)` order so
+    /// reports do not depend on caller traversal order. Empty means no
+    /// warnings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<CompilerWarning>,
 
@@ -138,6 +140,13 @@ impl CompilerReport {
             code: code.into(),
             message: message.into(),
             scope: scope.into(),
+        });
+        self.warnings.sort_by(|left, right| {
+            (&left.code, &left.scope, &left.message).cmp(&(
+                &right.code,
+                &right.scope,
+                &right.message,
+            ))
         });
     }
 
@@ -187,6 +196,35 @@ mod tests {
         assert_eq!(report.warnings.len(), 1);
         assert_eq!(report.warnings[0].code, "W_STUB_LOWERING");
         assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn add_warning_sorts_warnings_deterministically() {
+        let mut report = CompilerReport::new("prod");
+        report.add_warning("W_ZETA", "z message", "scope.b");
+        report.add_warning("W_ALPHA", "a message", "scope.c");
+        report.add_warning("W_ALPHA", "b message", "scope.a");
+
+        let warning_keys: Vec<(&str, &str, &str)> = report
+            .warnings
+            .iter()
+            .map(|warning| {
+                (
+                    warning.code.as_str(),
+                    warning.scope.as_str(),
+                    warning.message.as_str(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            warning_keys,
+            vec![
+                ("W_ALPHA", "scope.a", "b message"),
+                ("W_ALPHA", "scope.c", "a message"),
+                ("W_ZETA", "scope.b", "z message"),
+            ]
+        );
     }
 
     #[test]
