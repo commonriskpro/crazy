@@ -12,6 +12,7 @@ use super::rename::{
     prepare_rename_at_position, rename_candidate_at_position, rename_edits_at_position,
     rename_workspace_edit_at_position,
 };
+use super::source_helpers::is_acl_token_char;
 use super::symbols::{completion_items, hover_for_token, workspace_symbol_items};
 use super::tokens::token_at_position;
 
@@ -90,7 +91,7 @@ impl LspSession {
                             "workspaceDiagnostics": false
                         },
                         "completionProvider": {
-                            "triggerCharacters": [" ", "_"]
+                            "triggerCharacters": [" ", "_", ".", "+", "-", "*", "/", "%", "!", "=", ">", "<", "&", "|", "{"]
                         },
                         "hoverProvider": true,
                         "definitionProvider": true,
@@ -135,7 +136,7 @@ impl LspSession {
                 message,
                 json!({
                     "isIncomplete": false,
-                    "items": completion_items("")
+                    "items": completion_items(&self.completion_prefix(message))
                 }),
             )],
             "textDocument/hover" => {
@@ -285,6 +286,17 @@ impl LspSession {
             _ => vec![],
         }
     }
+
+    fn completion_prefix(&self, message: &Value) -> String {
+        let params = &message["params"];
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        let line = params["position"]["line"].as_u64().unwrap_or(0) as usize;
+        let character = params["position"]["character"].as_u64().unwrap_or(0) as usize;
+        self.documents
+            .get(uri)
+            .map(|text| completion_prefix_at_position(text, line, character))
+            .unwrap_or_default()
+    }
 }
 
 fn lsp_response(request: &Value, result: Value) -> Value {
@@ -293,4 +305,30 @@ fn lsp_response(request: &Value, result: Value) -> Value {
         "id": request.get("id").cloned().unwrap_or(Value::Null),
         "result": result,
     })
+}
+
+fn completion_prefix_at_position(text: &str, line: usize, character: usize) -> String {
+    let Some(line_text) = text.lines().nth(line) else {
+        return String::new();
+    };
+    let char_indices = line_text.char_indices().collect::<Vec<_>>();
+    let byte_pos = char_indices
+        .get(character)
+        .map(|(idx, _)| *idx)
+        .unwrap_or(line_text.len());
+    let start = line_text[..byte_pos]
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !is_completion_prefix_char(*ch))
+        .map(|(idx, ch)| idx + ch.len_utf8())
+        .unwrap_or(0);
+    line_text[start..byte_pos].trim().to_string()
+}
+
+fn is_completion_prefix_char(ch: char) -> bool {
+    is_acl_token_char(ch)
+        || matches!(
+            ch,
+            '+' | '-' | '*' | '/' | '%' | '!' | '=' | '>' | '<' | '&' | '|' | '{'
+        )
 }

@@ -69,6 +69,39 @@ fn lsp_completion_covers_source_consts() {
         "completion must include const snippet; got: {items:?}"
     );
 }
+
+#[test]
+fn lsp_completion_ranks_exact_matches_before_contains() {
+    let completion_output = ail()
+        .args(["lsp", "--complete", "test", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let completion = parse_json_output(&completion_output);
+    assert_eq!(completion["status"], "ok");
+    let items = completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+
+    assert_eq!(
+        items.first().expect("test completions must not be empty")["label"],
+        "test",
+        "exact source test snippet must rank before ACL create_test; got: {items:?}"
+    );
+    assert!(
+        items.iter().any(|item| item["label"] == "op create_test"),
+        "substring matches must still be available after exact matches; got: {items:?}"
+    );
+    assert!(
+        items.windows(2).all(
+            |window| window[0]["sortText"].as_str().expect("left sortText")
+                <= window[1]["sortText"].as_str().expect("right sortText")
+        ),
+        "completion sortText must preserve deterministic server order; got: {items:?}"
+    );
+}
+
 #[test]
 fn lsp_completion_and_hover_cover_acl_test_authoring() {
     let completion_output = ail()
@@ -243,6 +276,79 @@ fn lsp_completion_and_hover_cover_ail_source_operators() {
         "completion must include AIL source record update spread; got: {record_update_items:?}"
     );
 }
+
+#[test]
+fn lsp_stdio_completion_uses_cursor_prefix_to_filter_items() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    let text = "fn main() -> Int = ma\n";
+    source
+        .write_str(text)
+        .expect("source fixture must be written so file URI can resolve");
+    let uri = format!("file://{}", source.path().display());
+    let open = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "ail",
+                "version": 1,
+                "text": text,
+            }
+        }
+    })
+    .to_string();
+    let completion = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": format!("file://{}", source.path().display()) },
+            "position": { "line": 0, "character": 21 }
+        }
+    })
+    .to_string();
+    let input = format!(
+        "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+        open.len(),
+        open,
+        completion.len(),
+        completion
+    );
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 2)
+        .expect("completion response must be emitted");
+    let items = response["result"]["items"]
+        .as_array()
+        .expect("completion result items must be an array");
+
+    assert!(
+        items.iter().any(|item| item["label"] == "map"),
+        "cursor prefix `ma` must keep matching builtins; got: {items:?}"
+    );
+    assert!(
+        items.iter().any(|item| item["label"] == "match"),
+        "cursor prefix `ma` must keep matching syntax snippets; got: {items:?}"
+    );
+    assert!(
+        !items.iter().any(|item| item["label"] == "fn"),
+        "cursor prefix `ma` must filter unrelated snippets; got: {items:?}"
+    );
+}
+
 #[test]
 fn lsp_stdio_hover_reports_source_operator_metadata() {
     use assert_fs::prelude::*;
@@ -291,4 +397,24 @@ fn lsp_stdio_hover_reports_source_operator_metadata() {
         .success()
         .stdout(predicate::str::contains("textDocument/publishDiagnostics"))
         .stdout(predicate::str::contains("Adds two Int expressions"));
+}
+
+fn lsp_json_messages(stdout: &[u8]) -> Vec<serde_json::Value> {
+    let text = std::str::from_utf8(stdout).expect("LSP stdout must be UTF-8");
+    let mut messages = Vec::new();
+    let mut rest = text;
+    while let Some(header_start) = rest.find("Content-Length: ") {
+        rest = &rest[header_start + "Content-Length: ".len()..];
+        let Some((len, after_len)) = rest.split_once("\r\n\r\n") else {
+            break;
+        };
+        let len = len
+            .trim()
+            .parse::<usize>()
+            .expect("Content-Length must be numeric");
+        let body = &after_len[..len];
+        messages.push(serde_json::from_str(body).expect("LSP body must be JSON"));
+        rest = &after_len[len..];
+    }
+    messages
 }
