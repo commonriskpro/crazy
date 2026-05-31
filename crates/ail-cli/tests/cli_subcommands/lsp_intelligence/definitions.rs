@@ -357,3 +357,217 @@ fn lsp_json_messages(stdout: &[u8]) -> Vec<serde_json::Value> {
     }
     messages
 }
+
+#[test]
+fn lsp_definition_diagnostics_reports_missing_document_redacted() {
+    let uri = "file:///private/customer_secret.ail";
+    let result =
+        definition_diagnostic_result(vec![definition_diagnostic_message(uri, 41, 0, 0)], 41);
+
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["diagnosticCount"], 1);
+    assert_eq!(
+        result["diagnostics"][0]["code"],
+        "AIL_DEFINITION_MISSING_DOCUMENT"
+    );
+    assert_eq!(result["diagnostics"][0]["category"], "document_state");
+    assert_eq!(
+        result["diagnostics"][0]["descriptor"]["documentState"],
+        "not_open"
+    );
+    assert!(!result.to_string().contains("customer_secret"));
+}
+
+#[test]
+fn lsp_definition_diagnostics_reports_unresolved_symbol_redacted() {
+    let uri = "file:///workspace/main.ail";
+    let open = did_open_message(
+        uri,
+        "module main\nfn main() -> Int = customer_private_value\n",
+        1,
+    );
+    let result = definition_diagnostic_result(
+        vec![open, definition_diagnostic_message(uri, 42, 1, 22)],
+        42,
+    );
+
+    assert_eq!(result["ok"], false);
+    assert_eq!(
+        result["diagnostics"][0]["code"],
+        "AIL_DEFINITION_UNRESOLVED_SYMBOL"
+    );
+    assert_eq!(result["diagnostics"][0]["reason"], "unresolved_symbol");
+    assert_eq!(
+        result["diagnostics"][0]["descriptor"]["token"]["tokenLength"],
+        22
+    );
+    assert!(!result.to_string().contains("customer_private_value"));
+}
+
+#[test]
+fn lsp_definition_diagnostics_reports_ambiguous_symbol_redacted() {
+    let uri = "file:///workspace/main.ail";
+    let open = did_open_message(
+        uri,
+        "module main\nfn helper() -> Int = 1\nfn helper() -> Int = 2\nfn main() -> Int = helper()\n",
+        1,
+    );
+    let result = definition_diagnostic_result(
+        vec![open, definition_diagnostic_message(uri, 43, 3, 20)],
+        43,
+    );
+
+    assert_eq!(result["ok"], false);
+    assert_eq!(
+        result["diagnostics"][0]["code"],
+        "AIL_DEFINITION_AMBIGUOUS_SYMBOL"
+    );
+    assert_eq!(result["diagnostics"][0]["reason"], "ambiguous_symbol");
+    assert_eq!(result["diagnostics"][0]["descriptor"]["candidateCount"], 2);
+    assert_eq!(
+        result["diagnostics"][0]["descriptor"]["candidateLocationsRedacted"],
+        true
+    );
+    assert!(!result.to_string().contains("helper()"));
+}
+
+#[test]
+fn lsp_definition_diagnostics_reports_unsupported_target_redacted() {
+    let uri = "file:///workspace/customer_secret.acl";
+    let open = did_open_message(
+        uri,
+        "op grant target=customer.secret capability=log.write\n",
+        1,
+    );
+    let result = definition_diagnostic_result(
+        vec![open, definition_diagnostic_message(uri, 44, 0, 17)],
+        44,
+    );
+
+    assert_eq!(result["ok"], false);
+    assert_eq!(
+        result["diagnostics"][0]["code"],
+        "AIL_DEFINITION_UNSUPPORTED_TARGET"
+    );
+    assert_eq!(result["diagnostics"][0]["category"], "unsupported");
+    assert_eq!(
+        result["diagnostics"][0]["descriptor"]["documentUriRedacted"],
+        true
+    );
+    assert!(!result.to_string().contains("customer_secret"));
+    assert!(!result.to_string().contains("customer.secret"));
+}
+
+#[test]
+fn lsp_definition_diagnostics_reports_unsupported_import_with_stable_order_redacted() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    let text =
+        "module main\nuse \"./customer_secret.ail\"\nfn main() -> Int = customer_private_value\n";
+    source
+        .write_str(text)
+        .expect("source fixture must be written");
+    let uri = format!("file://{}", source.path().display());
+    let open = did_open_message(&uri, text, 1);
+    let result = definition_diagnostic_result(
+        vec![open, definition_diagnostic_message(&uri, 45, 2, 22)],
+        45,
+    );
+    let diagnostics = result["diagnostics"].as_array().expect("diagnostics");
+    let codes = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic["code"].as_str().expect("diagnostic code"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        codes,
+        vec![
+            "AIL_DEFINITION_UNRESOLVED_SYMBOL",
+            "AIL_DEFINITION_UNSUPPORTED_IMPORT"
+        ]
+    );
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["diagnosticCount"], 2);
+    assert_eq!(diagnostics[1]["reason"], "unsupported_import");
+    assert_eq!(
+        diagnostics[1]["descriptor"]["importState"],
+        "unresolved_import"
+    );
+    assert_eq!(diagnostics[1]["descriptor"]["importPathRedacted"], true);
+    assert!(!result.to_string().contains("customer_secret"));
+    assert!(!result.to_string().contains("customer_private_value"));
+}
+
+#[test]
+fn lsp_definition_diagnostics_preserves_successful_definition_result() {
+    let uri = "file:///workspace/main.ail";
+    let open = did_open_message(
+        uri,
+        "module main\nfn add_pair(x: Int, y: Int) -> Int = x + y\nfn main() -> Int = add_pair(20, 22)\n",
+        1,
+    );
+    let result = definition_diagnostic_result(
+        vec![open, definition_diagnostic_message(uri, 46, 2, 20)],
+        46,
+    );
+
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["diagnosticCount"], 0);
+    assert_eq!(result["definition"]["range"]["start"]["line"], 1);
+    assert_eq!(result["definition"]["range"]["start"]["character"], 3);
+}
+
+fn did_open_message(uri: &str, text: &str, version: u64) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "ail",
+                "version": version,
+                "text": text,
+            }
+        }
+    })
+    .to_string()
+}
+
+fn definition_diagnostic_message(uri: &str, request_id: u64, line: u64, character: u64) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "ail/definition",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        }
+    })
+    .to_string()
+}
+
+fn definition_diagnostic_result(messages: Vec<String>, request_id: u64) -> serde_json::Value {
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(lsp_input(messages))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == request_id)
+        .expect("ail/definition response must be emitted");
+    response["result"].clone()
+}
+
+fn lsp_input(messages: Vec<String>) -> String {
+    messages
+        .into_iter()
+        .map(|message| format!("Content-Length: {}\r\n\r\n{}", message.len(), message))
+        .collect::<Vec<_>>()
+        .join("")
+}
