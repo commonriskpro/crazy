@@ -144,8 +144,74 @@ pub(super) fn workspace_symbol_items(
     query: &str,
     workspace_documents: &std::collections::BTreeMap<String, String>,
 ) -> Vec<Value> {
+    workspace_symbol_search(query, None, workspace_documents).items
+}
+
+pub(super) fn workspace_symbol_items_with_root(
+    query: &str,
+    workspace_root_uri: Option<&str>,
+    workspace_documents: &BTreeMap<String, String>,
+) -> Vec<Value> {
+    workspace_symbol_search(query, workspace_root_uri, workspace_documents).items
+}
+
+pub(super) fn workspace_symbol_diagnostic_response(
+    params: &Value,
+    workspace_root_uri: Option<&str>,
+    workspace_documents: &BTreeMap<String, String>,
+) -> Value {
+    let Some(query) = params.get("query").and_then(Value::as_str) else {
+        let diagnostic = workspace_symbol_diagnostic(
+            "unsupported_query_shape",
+            "AIL_WORKSPACE_SYMBOL_UNSUPPORTED_QUERY_SHAPE",
+            "unsupported",
+            "workspace symbol query must be a string",
+            query_shape_descriptor(params.get("query")),
+        );
+        return json!({
+            "ok": false,
+            "symbols": [],
+            "symbolCount": 0,
+            "diagnostics": [diagnostic],
+            "diagnosticCount": 1,
+        });
+    };
+
+    let result = workspace_symbol_search(query, workspace_root_uri, workspace_documents);
+    json!({
+        "ok": !result.has_error(),
+        "symbols": result.items,
+        "symbolCount": result.symbol_count,
+        "diagnostics": result.diagnostics,
+        "diagnosticCount": result.diagnostic_count,
+    })
+}
+
+struct WorkspaceSymbolSearchResult {
+    items: Vec<Value>,
+    diagnostics: Vec<Value>,
+    symbol_count: usize,
+    diagnostic_count: usize,
+}
+
+impl WorkspaceSymbolSearchResult {
+    fn has_error(&self) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["severity"] == "error")
+    }
+}
+
+fn workspace_symbol_search(
+    query: &str,
+    workspace_root_uri: Option<&str>,
+    workspace_documents: &BTreeMap<String, String>,
+) -> WorkspaceSymbolSearchResult {
+    let mut diagnostics = Vec::new();
+    let documents =
+        workspace_symbol_documents(workspace_root_uri, workspace_documents, &mut diagnostics);
     let query = query.trim().to_ascii_lowercase();
-    let mut symbols = workspace_documents
+    let mut symbols = documents
         .iter()
         .filter(|(uri, _)| is_ail_source_uri(uri))
         .flat_map(|(uri, text)| ail_source_symbols_for_document(uri, text))
@@ -153,33 +219,214 @@ pub(super) fn workspace_symbol_items(
             query.is_empty() || symbol.name.to_ascii_lowercase().contains(query.as_str())
         })
         .collect::<Vec<_>>();
+    sort_workspace_symbols(&mut symbols);
+    diagnostics.extend(ambiguous_workspace_symbol_diagnostics(&symbols));
+
+    let items = symbols
+        .into_iter()
+        .map(workspace_symbol_item)
+        .collect::<Vec<_>>();
+    let symbol_count = items.len();
+    let diagnostic_count = diagnostics.len();
+    WorkspaceSymbolSearchResult {
+        items,
+        diagnostics,
+        symbol_count,
+        diagnostic_count,
+    }
+}
+
+fn workspace_symbol_documents(
+    workspace_root_uri: Option<&str>,
+    workspace_documents: &BTreeMap<String, String>,
+    diagnostics: &mut Vec<Value>,
+) -> BTreeMap<String, String> {
+    let mut documents = BTreeMap::new();
+    if let Some(root_uri) = workspace_root_uri {
+        match file_path_from_uri(root_uri) {
+            Some(root_path) => {
+                read_workspace_root_documents(&root_path, &mut documents, diagnostics)
+            }
+            None => diagnostics.push(workspace_symbol_diagnostic(
+                "missing_workspace_root",
+                "AIL_WORKSPACE_SYMBOL_MISSING_ROOT",
+                "document_state",
+                "workspace symbol search requires a file workspace root",
+                json!({ "workspaceRoot": "unavailable" }),
+            )),
+        }
+    } else {
+        diagnostics.push(workspace_symbol_diagnostic(
+            "missing_workspace_root",
+            "AIL_WORKSPACE_SYMBOL_MISSING_ROOT",
+            "document_state",
+            "workspace symbol search requires an initialized workspace root",
+            json!({ "workspaceRoot": "uninitialized" }),
+        ));
+    }
+
+    for (uri, text) in workspace_documents {
+        if is_ail_source_uri(uri) {
+            documents.insert(uri.clone(), text.clone());
+        }
+    }
+    documents
+}
+
+fn read_workspace_root_documents(
+    root_path: &Path,
+    documents: &mut BTreeMap<String, String>,
+    diagnostics: &mut Vec<Value>,
+) {
+    if !root_path.is_dir() {
+        diagnostics.push(workspace_symbol_diagnostic(
+            "missing_workspace_root",
+            "AIL_WORKSPACE_SYMBOL_MISSING_ROOT",
+            "document_state",
+            "workspace symbol search requires a readable directory workspace root",
+            json!({ "workspaceRoot": "not_directory" }),
+        ));
+        return;
+    }
+    read_workspace_root_directory(root_path, documents, diagnostics);
+}
+
+fn read_workspace_root_directory(
+    directory: &Path,
+    documents: &mut BTreeMap<String, String>,
+    diagnostics: &mut Vec<Value>,
+) {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(_) => {
+            diagnostics.push(skipped_workspace_file_diagnostic("directory"));
+            return;
+        }
+    };
+
+    for entry in entries {
+        let Ok(entry) = entry else {
+            diagnostics.push(skipped_workspace_file_diagnostic("entry"));
+            continue;
+        };
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("ail") {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    documents.insert(format!("file://{}", path.display()), text);
+                }
+                Err(_) => diagnostics.push(skipped_workspace_file_diagnostic("file")),
+            }
+            continue;
+        }
+        if path.is_dir() {
+            read_workspace_root_directory(&path, documents, diagnostics);
+        }
+    }
+}
+
+fn skipped_workspace_file_diagnostic(kind: &str) -> Value {
+    workspace_symbol_diagnostic(
+        "skipped_unreadable_file",
+        "AIL_WORKSPACE_SYMBOL_SKIPPED_UNREADABLE_FILE",
+        "document_state",
+        "workspace symbol search skipped an unreadable workspace entry",
+        json!({ "entryKind": kind, "pathRedacted": true }),
+    )
+}
+
+fn sort_workspace_symbols(symbols: &mut [WorkspaceSymbol]) {
     symbols.sort_by(|left, right| {
         left.name
             .cmp(&right.name)
+            .then_with(|| left.kind.cmp(&right.kind))
             .then_with(|| left.uri.cmp(&right.uri))
             .then_with(|| left.line.cmp(&right.line))
             .then_with(|| left.character.cmp(&right.character))
+            .then_with(|| left.selection_len.cmp(&right.selection_len))
     });
-    symbols
-        .into_iter()
-        .map(|symbol| {
-            let mut item = json!({
-                "name": symbol.name,
-                "kind": symbol.kind,
-                "location": {
-                    "uri": symbol.uri,
-                    "range": {
-                        "start": { "line": symbol.line, "character": symbol.character },
-                        "end": { "line": symbol.line, "character": symbol.character + symbol.selection_len }
-                    }
-                }
-            });
-            if let Some(container_name) = symbol.container_name {
-                item["containerName"] = json!(container_name);
+}
+
+fn workspace_symbol_item(symbol: WorkspaceSymbol) -> Value {
+    let mut item = json!({
+        "name": symbol.name,
+        "kind": symbol.kind,
+        "location": {
+            "uri": symbol.uri,
+            "range": {
+                "start": { "line": symbol.line, "character": symbol.character },
+                "end": { "line": symbol.line, "character": symbol.character + symbol.selection_len }
             }
-            item
+        }
+    });
+    if let Some(container_name) = symbol.container_name {
+        item["containerName"] = json!(container_name);
+    }
+    item
+}
+
+fn ambiguous_workspace_symbol_diagnostics(symbols: &[WorkspaceSymbol]) -> Vec<Value> {
+    let mut grouped: BTreeMap<&str, Vec<&WorkspaceSymbol>> = BTreeMap::new();
+    for symbol in symbols {
+        grouped.entry(&symbol.name).or_default().push(symbol);
+    }
+    grouped
+        .into_values()
+        .filter(|matches| matches.len() > 1)
+        .map(|matches| {
+            let symbol_kinds = matches
+                .iter()
+                .map(|symbol| symbol.kind)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            workspace_symbol_diagnostic(
+                "ambiguous_symbol",
+                "AIL_WORKSPACE_SYMBOL_AMBIGUOUS_SYMBOL",
+                "symbol_resolution",
+                "workspace symbol query matched duplicate symbol names",
+                json!({
+                    "symbolNameLength": matches.first().map(|symbol| symbol.name.chars().count()).unwrap_or(0),
+                    "candidateCount": matches.len(),
+                    "symbolKinds": symbol_kinds,
+                }),
+            )
         })
         .collect()
+}
+
+fn workspace_symbol_diagnostic(
+    reason: &str,
+    code: &str,
+    category: &str,
+    message: &str,
+    descriptor: Value,
+) -> Value {
+    let severity = match reason {
+        "ambiguous_symbol" | "skipped_unreadable_file" => "warning",
+        _ => "error",
+    };
+    json!({
+        "reason": reason,
+        "code": code,
+        "category": category,
+        "severity": severity,
+        "message": message,
+        "descriptor": descriptor,
+    })
+}
+
+fn query_shape_descriptor(query: Option<&Value>) -> Value {
+    let query_shape = match query {
+        Some(Value::String(_)) => "string",
+        Some(Value::Array(_)) => "array",
+        Some(Value::Object(_)) => "object",
+        Some(Value::Bool(_)) => "boolean",
+        Some(Value::Number(_)) => "number",
+        Some(Value::Null) => "null",
+        None => "missing",
+    };
+    json!({ "queryShape": query_shape })
 }
 
 #[derive(Debug)]

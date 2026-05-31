@@ -164,6 +164,204 @@ fn lsp_workspace_symbols_filters_query_against_open_document_index() {
     assert_eq!(symbols[0]["kind"], 12);
 }
 
+#[test]
+fn lsp_workspace_symbol_diagnostics_reports_missing_workspace_root() {
+    let workspace_symbols = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 31,
+        "method": "ail/workspaceSymbols",
+        "params": { "query": "" }
+    })
+    .to_string();
+    let input = format!(
+        "Content-Length: {}\r\n\r\n{}",
+        workspace_symbols.len(),
+        workspace_symbols
+    );
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 31)
+        .expect("ail/workspaceSymbols response must be emitted");
+    let result = &response["result"];
+
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["diagnosticCount"], 1);
+    assert_eq!(
+        result["diagnostics"][0]["code"],
+        "AIL_WORKSPACE_SYMBOL_MISSING_ROOT"
+    );
+    assert_eq!(result["diagnostics"][0]["category"], "document_state");
+    assert_eq!(
+        result["diagnostics"][0]["descriptor"]["workspaceRoot"],
+        "uninitialized"
+    );
+}
+
+#[test]
+fn lsp_workspace_symbol_diagnostics_rejects_unsupported_query_shape_redacted() {
+    let workspace_symbols = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 32,
+        "method": "ail/workspaceSymbols",
+        "params": { "query": { "pattern": "customer.secret" } }
+    })
+    .to_string();
+    let input = format!(
+        "Content-Length: {}\r\n\r\n{}",
+        workspace_symbols.len(),
+        workspace_symbols
+    );
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 32)
+        .expect("ail/workspaceSymbols response must be emitted");
+    let result = &response["result"];
+
+    assert_eq!(result["ok"], false);
+    assert_eq!(
+        result["diagnostics"][0]["code"],
+        "AIL_WORKSPACE_SYMBOL_UNSUPPORTED_QUERY_SHAPE"
+    );
+    assert_eq!(
+        result["diagnostics"][0]["descriptor"]["queryShape"],
+        "object"
+    );
+    assert!(
+        !result["diagnostics"][0]
+            .to_string()
+            .contains("customer.secret")
+    );
+}
+
+#[test]
+fn lsp_workspace_symbol_diagnostics_indexes_root_with_stable_order_and_warnings() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let alpha = dir.child("alpha.ail");
+    let beta = dir.child("beta.ail");
+    let unreadable = dir.child("customer.secret.ail");
+    alpha
+        .write_str("fn shared() -> Int = 1\nfn zzz() -> Int = 9\n")
+        .expect("alpha fixture must be written");
+    beta.write_str("fn aaa() -> Int = 0\nfn shared() -> Int = 2\n")
+        .expect("beta fixture must be written");
+    std::fs::create_dir(unreadable.path()).expect("unreadable fixture directory must be created");
+
+    let root_uri = format!("file://{}", dir.path().display());
+    let initialize = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "rootUri": root_uri }
+    })
+    .to_string();
+    let diagnostic_symbols = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 33,
+        "method": "ail/workspaceSymbols",
+        "params": { "query": "" }
+    })
+    .to_string();
+    let workspace_symbols = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 34,
+        "method": "workspace/symbol",
+        "params": { "query": "" }
+    })
+    .to_string();
+    let input = format!(
+        "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+        initialize.len(),
+        initialize,
+        diagnostic_symbols.len(),
+        diagnostic_symbols,
+        workspace_symbols.len(),
+        workspace_symbols
+    );
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let diagnostic_response = messages
+        .iter()
+        .find(|message| message["id"] == 33)
+        .expect("ail/workspaceSymbols response must be emitted");
+    let standard_response = messages
+        .iter()
+        .find(|message| message["id"] == 34)
+        .expect("workspace/symbol response must be emitted");
+    let result = &diagnostic_response["result"];
+    let symbols = result["symbols"]
+        .as_array()
+        .expect("symbols result must be an array");
+    let names = symbols
+        .iter()
+        .filter_map(|symbol| symbol["name"].as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(result["ok"], true);
+    assert_eq!(names, vec!["aaa", "shared", "shared", "zzz"]);
+    assert_eq!(
+        standard_response["result"]
+            .as_array()
+            .expect("standard workspace symbols must be an array")
+            .iter()
+            .filter_map(|symbol| symbol["name"].as_str())
+            .collect::<Vec<_>>(),
+        names
+    );
+    assert_eq!(result["diagnosticCount"], 2);
+    assert!(
+        result["diagnostics"]
+            .as_array()
+            .expect("diagnostics")
+            .iter()
+            .any(
+                |diagnostic| diagnostic["code"] == "AIL_WORKSPACE_SYMBOL_AMBIGUOUS_SYMBOL"
+                    && diagnostic["descriptor"]["candidateCount"] == 2
+            )
+    );
+    assert!(
+        result["diagnostics"]
+            .as_array()
+            .expect("diagnostics")
+            .iter()
+            .any(
+                |diagnostic| diagnostic["code"] == "AIL_WORKSPACE_SYMBOL_SKIPPED_UNREADABLE_FILE"
+                    && diagnostic["descriptor"]["pathRedacted"] == true
+            )
+    );
+    assert!(
+        !result["diagnostics"]
+            .to_string()
+            .contains("customer.secret")
+    );
+}
+
 fn lsp_json_messages(stdout: &[u8]) -> Vec<serde_json::Value> {
     let text = std::str::from_utf8(stdout).expect("LSP stdout must be UTF-8");
     let mut messages = Vec::new();

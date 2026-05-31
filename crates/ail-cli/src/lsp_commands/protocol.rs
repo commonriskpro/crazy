@@ -16,7 +16,10 @@ use super::rename::{
     rename_edits_at_position, rename_workspace_edit_at_position,
 };
 use super::source_helpers::{is_acl_token_char, is_ail_source_uri};
-use super::symbols::{completion_items, hover_for_token_with_workspace, workspace_symbol_items};
+use super::symbols::{
+    completion_items, hover_for_token_with_workspace, workspace_symbol_diagnostic_response,
+    workspace_symbol_items_with_root,
+};
 use super::tokens::{SEMANTIC_TOKEN_TYPES, semantic_token_data_for_source, token_at_position};
 
 pub(super) fn run_stdio_lsp() -> Result<(), CliError> {
@@ -39,6 +42,7 @@ pub(super) fn run_stdio_lsp() -> Result<(), CliError> {
 #[derive(Default)]
 struct LspSession {
     documents: BTreeMap<String, String>,
+    workspace_root_uri: Option<String>,
 }
 
 fn read_lsp_message(reader: &mut impl BufRead) -> Result<Option<Value>, CliError> {
@@ -84,9 +88,11 @@ impl LspSession {
     fn handle_lsp_message(&mut self, message: &Value) -> Vec<Value> {
         let method = message["method"].as_str().unwrap_or_default();
         match method {
-            "initialize" => vec![lsp_response(
-                message,
-                json!({
+            "initialize" => {
+                self.workspace_root_uri = workspace_root_uri_from_initialize(message);
+                vec![lsp_response(
+                    message,
+                    json!({
                     "capabilities": {
                         "textDocumentSync": 1,
                         "diagnosticProvider": {
@@ -118,8 +124,9 @@ impl LspSession {
                         "name": "ail-lsp",
                         "version": env!("CARGO_PKG_VERSION")
                     }
-                }),
-            )],
+                    }),
+                )]
+            }
             "shutdown" => vec![lsp_response(message, Value::Null)],
             "textDocument/didOpen" | "textDocument/didChange" => {
                 let params = &message["params"];
@@ -192,8 +199,20 @@ impl LspSession {
                 let query = message["params"]["query"].as_str().unwrap_or_default();
                 vec![lsp_response(
                     message,
-                    Value::Array(workspace_symbol_items(query, &self.documents)),
+                    Value::Array(workspace_symbol_items_with_root(
+                        query,
+                        self.workspace_root_uri.as_deref(),
+                        &self.documents,
+                    )),
                 )]
+            }
+            "ail/workspaceSymbols" => {
+                let result = workspace_symbol_diagnostic_response(
+                    &message["params"],
+                    self.workspace_root_uri.as_deref(),
+                    &self.documents,
+                );
+                vec![lsp_response(message, result)]
             }
             "textDocument/prepareRename" => {
                 let params = &message["params"];
@@ -347,6 +366,16 @@ impl LspSession {
             .map(|text| completion_prefix_at_position(text, line, character))
             .unwrap_or_default()
     }
+}
+
+fn workspace_root_uri_from_initialize(message: &Value) -> Option<String> {
+    let params = &message["params"];
+    params["workspaceFolders"]
+        .as_array()
+        .and_then(|folders| folders.first())
+        .and_then(|folder| folder["uri"].as_str())
+        .or_else(|| params["rootUri"].as_str())
+        .map(str::to_string)
 }
 
 fn lsp_response(request: &Value, result: Value) -> Value {
