@@ -63,7 +63,7 @@ mod spike_v03;
 
 pub use anf::{
     ANF_SCHEMA_VERSION, AnfBinding, AnfExpr, AnfIr, AnfMatchArm, AnfSelectClause, SourceMap,
-    SourceMapEntry,
+    SourceMapEntry, SourceMapSpan,
 };
 pub use artifact_manifest::ArtifactManifest;
 pub use cache::{ArtifactCache, ArtifactEntry, MemoryArtifactCache};
@@ -73,7 +73,7 @@ pub use core_ir::{
     CoreExpr, CoreIr, CoreNode, CoreNodeKind, CoreType, LiteralValue, MatchArm, SelectClause,
     StageHashes,
 };
-pub use error::CompileError;
+pub use error::{CompileError, SourceMapDiagnostic};
 pub use expr_parser::{ParseError, parse_expr};
 pub use incremental::{DirtySet, NodeHashes, compile_incremental, compute_node_hashes};
 pub use lower::{

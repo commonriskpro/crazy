@@ -30,7 +30,7 @@ use crate::core_ir::{LiteralValue, StageHashes};
 
 #[path = "anf_source_map.rs"]
 mod anf_source_map;
-pub use anf_source_map::{SourceMap, SourceMapEntry};
+pub use anf_source_map::{SourceMap, SourceMapEntry, SourceMapSpan};
 
 // ── Schema version ────────────────────────────────────────────────────────
 

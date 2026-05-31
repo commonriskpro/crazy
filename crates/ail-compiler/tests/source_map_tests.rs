@@ -13,13 +13,13 @@
 //    contract_ref, effect_ref, runtime_check_ref) from SemanticGraph nodes.
 
 use ail_compiler::{
-    AnfIr, CompileError, SourceMap, emit_native, emit_native_with_profile, emit_wasm,
-    emit_wasm_with_profile,
+    AnfIr, CompileError, SourceMap, SourceMapSpan, emit_native, emit_native_with_profile,
+    emit_wasm, emit_wasm_with_profile,
     lower::{lower_to_anf, lower_to_anf_with_graph, lower_to_core_ir},
 };
 use ail_core::semantic_graph::{
     ContractClauses, EdgeKind, EffectRow, GraphEdge, GraphNode, NodeKind, NodeRef, Provenance,
-    RefinementRef, RefinementStatus, RuntimeCheckMeta, SemanticGraph,
+    RefinementRef, RefinementStatus, RuntimeCheckMeta, SemanticGraph, Span,
 };
 use ail_verify::report::VerificationReport;
 
@@ -91,6 +91,10 @@ fn emit_wasm_populates_wasm_offset_for_every_binding() {
             "entry {i} must have wasm_offset set after emit_wasm, got None"
         );
         assert!(
+            entry.generated_span.is_some(),
+            "entry {i} must have generated_span set after emit_wasm"
+        );
+        assert!(
             entry.native_offset.is_none(),
             "entry {i} must NOT have native_offset set by emit_wasm"
         );
@@ -159,6 +163,10 @@ fn emit_native_populates_native_offset_for_every_binding() {
         assert!(
             entry.native_offset.is_some(),
             "entry {i} must have native_offset set after emit_native, got None"
+        );
+        assert!(
+            entry.generated_span.is_some(),
+            "entry {i} must have generated_span set after emit_native"
         );
         assert!(
             entry.wasm_offset.is_none(),
@@ -306,6 +314,54 @@ fn graph_with_boundary_provenance() -> SemanticGraph {
         nodes: vec![boundary],
         edges: vec![],
     }
+}
+
+#[test]
+fn lower_to_anf_with_graph_threads_source_span() {
+    let mut node = GraphNode::new(NodeRef(0), NodeKind::Function, "fn_with_span");
+    node.span = Some(Span {
+        source: "src/private_checkout.ail".to_string(),
+        start: 12,
+        end: 44,
+    });
+    let graph = SemanticGraph {
+        nodes: vec![node],
+        edges: vec![],
+    };
+    let core = lower_to_core_ir(&graph, &proven_report()).expect("lower_to_core_ir");
+    let anf = lower_to_anf_with_graph(&core, &graph).expect("lower_to_anf_with_graph");
+    let span = anf.source_map.entries[0]
+        .source_span
+        .as_ref()
+        .expect("source span must be threaded into source map");
+
+    assert_eq!(span.file_id, "src/private_checkout.ail");
+    assert_eq!(span.start, 12);
+    assert_eq!(span.end, 44);
+}
+
+#[test]
+fn source_map_validation_reports_stable_redacted_diagnostics_in_order() {
+    let mut map = anf_for_n(2).source_map;
+    map.entries[0].source_span = Some(SourceMapSpan::new("/secret/customer_a.ail", 20, 10));
+    map.entries[0].generated_span = Some(SourceMapSpan::new("program.wasm", 0, 12));
+    map.entries[1].source_span = Some(SourceMapSpan::new("", 1, 5));
+    map.entries[1].generated_span = Some(SourceMapSpan::new("program.wasm", 8, 20));
+
+    let issues = map.validation_issues();
+    let codes: Vec<&str> = issues.iter().map(|issue| issue.code).collect();
+    assert_eq!(codes, vec!["AIL-SM-001", "AIL-SM-002", "AIL-SM-003"]);
+    assert_eq!(issues[0].category, "span.range");
+    assert_eq!(issues[1].category, "span.file_id");
+    assert_eq!(issues[2].category, "generated.overlap");
+
+    let rendered = CompileError::InvalidSourceMap { issues }.to_string();
+    assert!(rendered.contains("file-id=present"));
+    assert!(rendered.contains("file-id=missing"));
+    assert!(
+        !rendered.contains("customer_a"),
+        "diagnostic descriptor must not expose raw source file ids: {rendered}"
+    );
 }
 
 // RED → GREEN: lower_to_anf_with_graph threads change_set from

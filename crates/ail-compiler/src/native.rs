@@ -56,7 +56,7 @@ use cranelift_codegen::{
 use cranelift_module::{FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
-use crate::anf::{AnfIr, SourceMap, SourceMapEntry};
+use crate::anf::{AnfIr, SourceMap, SourceMapEntry, SourceMapSpan};
 use crate::artifact_manifest::ArtifactManifest;
 // Shared capability manifest types — defined in `capabilities.rs`.
 pub use crate::capabilities::{CapabilitiesManifest, CapabilityEntry};
@@ -163,6 +163,16 @@ fn build_object_module(
 ///   violated) or Cranelift codegen / object emission failed.
 pub fn emit_native(anf: &AnfIr) -> Result<NativeArtifact, CompileError> {
     emit_native_with_profile(anf, "unspecified")
+}
+
+fn native_generated_span(
+    offsets: &[u64],
+    index: usize,
+    total_code_size: u64,
+) -> Option<SourceMapSpan> {
+    let start = *offsets.get(index)?;
+    let end = offsets.get(index + 1).copied().unwrap_or(total_code_size);
+    Some(SourceMapSpan::new("program.o", start, end))
 }
 
 /// Emit a native object and bind the artifact manifest to `profile`.
@@ -293,14 +303,18 @@ pub fn emit_native_with_profile(
                 .map(|&o| Some(o))
                 .chain(std::iter::repeat(None)),
         )
-        .map(|(entry, native_offset)| SourceMapEntry {
+        .enumerate()
+        .map(|(index, (entry, native_offset))| SourceMapEntry {
             native_offset,
+            generated_span: native_offset
+                .and_then(|_| native_generated_span(&native_offsets, index, cumulative_offset)),
             ..entry.clone()
         })
         .collect();
     let source_map = SourceMap {
         entries: source_map_entries,
     };
+    source_map.validate_tooling_quality()?;
     source_map.validate_required_provenance(profile, &anf.bindings)?;
 
     // Seal: source_map_hash = blake3(source_map_cbor_bytes).
