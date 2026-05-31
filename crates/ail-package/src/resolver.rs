@@ -20,6 +20,8 @@
 //   ProfilePolicy → LicensePolicy → CapabilityConflict → HandlerConflict → Ok.
 // - Version matching uses semver VersionReq for range constraints.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use semver::{Version, VersionReq};
 
 use crate::advisory::SecurityAdvisory;
@@ -205,6 +207,149 @@ impl std::fmt::Display for ResolverError {
 
 impl std::error::Error for ResolverError {}
 
+// ── ResolverDiagnostic ────────────────────────────────────────────────────
+
+/// Stable diagnostic classes for package resolver conflict preflight checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ResolverDiagnosticKind {
+    /// The same package is declared more than once in the dependency input.
+    DuplicatePackage,
+    /// Multiple declarations for a package cannot be satisfied by one version.
+    IncompatibleVersionRange,
+    /// No registry entry exists for the requested package name.
+    MissingPackage,
+    /// The package exists, but no registered version satisfies the constraint.
+    MissingVersion,
+    /// Manifest import metadata forms a package dependency cycle.
+    DependencyCycle,
+    /// The same package/version appears with multiple source descriptors.
+    ConflictingSource,
+}
+
+/// Redacted resolver conflict diagnostic suitable for production preflight logs.
+///
+/// Diagnostics intentionally expose package names, versions, and version
+/// constraints only. Source descriptors are compared internally but never
+/// emitted raw, because registry URLs may contain credentials or tenancy data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolverDiagnostic {
+    /// Machine-readable diagnostic kind.
+    pub kind: ResolverDiagnosticKind,
+    /// Primary package name for the diagnostic.
+    pub package: String,
+    /// Primary package version, when the issue is version-specific.
+    pub version: Option<String>,
+    /// Relevant version constraints in canonical lexical order.
+    pub constraints: Vec<String>,
+    /// Relevant registry versions in canonical semantic order where possible.
+    pub versions: Vec<String>,
+    /// Related package names, such as a normalized cycle path.
+    pub related_packages: Vec<String>,
+    /// Stable human-readable summary without raw source descriptors.
+    pub message: String,
+    /// Always true for diagnostics that deliberately omit sensitive metadata.
+    pub redacted: bool,
+}
+
+impl ResolverDiagnostic {
+    fn duplicate_package(package: String, constraints: Vec<String>) -> Self {
+        Self {
+            kind: ResolverDiagnosticKind::DuplicatePackage,
+            message: format!(
+                "package '{package}' is declared multiple times with constraints [{}]",
+                constraints.join(", ")
+            ),
+            package,
+            version: None,
+            constraints,
+            versions: vec![],
+            related_packages: vec![],
+            redacted: true,
+        }
+    }
+
+    fn incompatible_version_range(
+        package: String,
+        constraints: Vec<String>,
+        versions: Vec<String>,
+    ) -> Self {
+        Self {
+            kind: ResolverDiagnosticKind::IncompatibleVersionRange,
+            message: format!(
+                "package '{package}' constraints [{}] cannot be satisfied by one registered version",
+                constraints.join(", ")
+            ),
+            package,
+            version: None,
+            constraints,
+            versions,
+            related_packages: vec![],
+            redacted: true,
+        }
+    }
+
+    fn missing_package(package: String, constraint: String) -> Self {
+        Self {
+            kind: ResolverDiagnosticKind::MissingPackage,
+            message: format!(
+                "package '{package}' is not present in the registry for constraint '{constraint}'"
+            ),
+            package,
+            version: None,
+            constraints: vec![constraint],
+            versions: vec![],
+            related_packages: vec![],
+            redacted: true,
+        }
+    }
+
+    fn missing_version(package: String, constraint: String, versions: Vec<String>) -> Self {
+        Self {
+            kind: ResolverDiagnosticKind::MissingVersion,
+            message: format!(
+                "package '{package}' has no registered version matching constraint '{constraint}'"
+            ),
+            package,
+            version: None,
+            constraints: vec![constraint],
+            versions,
+            related_packages: vec![],
+            redacted: true,
+        }
+    }
+
+    fn dependency_cycle(package: String, related_packages: Vec<String>) -> Self {
+        Self {
+            kind: ResolverDiagnosticKind::DependencyCycle,
+            message: format!(
+                "package dependency cycle detected: {}",
+                related_packages.join(" -> ")
+            ),
+            package,
+            version: None,
+            constraints: vec![],
+            versions: vec![],
+            related_packages,
+            redacted: true,
+        }
+    }
+
+    fn conflicting_source(package: String, version: String, source_count: usize) -> Self {
+        Self {
+            kind: ResolverDiagnosticKind::ConflictingSource,
+            message: format!(
+                "package '{package}' version '{version}' has {source_count} distinct source descriptors (redacted)"
+            ),
+            package,
+            version: Some(version.clone()),
+            constraints: vec![],
+            versions: vec![version],
+            related_packages: vec![],
+            redacted: true,
+        }
+    }
+}
+
 // ── DependencyResolver ────────────────────────────────────────────────────
 
 /// Stateless dependency resolver with full policy enforcement.
@@ -265,6 +410,345 @@ impl DependencyResolver {
             _ if right < left => (right, left),
             _ => (left, right),
         }
+    }
+
+    fn version_matches_constraint(version: &str, constraint: &str) -> bool {
+        let Ok(parsed_version) = Version::parse(version) else {
+            return version == constraint;
+        };
+
+        VersionReq::parse(constraint)
+            .map(|req| req.matches(&parsed_version))
+            .unwrap_or_else(|_| version == constraint)
+    }
+
+    fn registry_versions_for(package: &str, registry: &PackageRegistry) -> Vec<String> {
+        let mut versions = BTreeSet::new();
+        for manifest in registry.all() {
+            if manifest.name == package {
+                versions.insert(manifest.version.clone());
+            }
+        }
+        Self::canonical_versions(versions)
+    }
+
+    fn canonical_versions(versions: BTreeSet<String>) -> Vec<String> {
+        let mut versions: Vec<String> = versions.into_iter().collect();
+        versions.sort_by(
+            |left, right| match (Version::parse(left), Version::parse(right)) {
+                (Ok(left_version), Ok(right_version)) => left_version.cmp(&right_version),
+                _ => left.cmp(right),
+            },
+        );
+        versions
+    }
+
+    fn diagnostic_sort_key(
+        diagnostic: &ResolverDiagnostic,
+    ) -> (
+        String,
+        ResolverDiagnosticKind,
+        Option<String>,
+        Vec<String>,
+        Vec<String>,
+        Vec<String>,
+    ) {
+        (
+            diagnostic.package.clone(),
+            diagnostic.kind,
+            diagnostic.version.clone(),
+            diagnostic.constraints.clone(),
+            diagnostic.versions.clone(),
+            diagnostic.related_packages.clone(),
+        )
+    }
+
+    fn provenance_source_descriptor(manifest: &PackageManifest) -> Option<String> {
+        let provenance = manifest.provenance.as_ref()?;
+        if provenance.source_repository.is_none() && provenance.url.is_none() {
+            return None;
+        }
+
+        Some(format!(
+            "source_repository={:?};url={:?}",
+            provenance.source_repository, provenance.url
+        ))
+    }
+
+    fn add_duplicate_package_diagnostics(
+        specs_by_package: &BTreeMap<String, Vec<&DependencySpec>>,
+        diagnostics: &mut Vec<ResolverDiagnostic>,
+    ) {
+        for (package, specs) in specs_by_package {
+            if specs.len() <= 1 {
+                continue;
+            }
+
+            let constraints = specs
+                .iter()
+                .map(|spec| spec.version_constraint.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            diagnostics.push(ResolverDiagnostic::duplicate_package(
+                package.clone(),
+                constraints,
+            ));
+        }
+    }
+
+    fn add_missing_diagnostics(
+        specs: &[DependencySpec],
+        registry: &PackageRegistry,
+        diagnostics: &mut Vec<ResolverDiagnostic>,
+    ) {
+        let mut emitted = BTreeSet::new();
+
+        for spec in specs {
+            let versions = Self::registry_versions_for(&spec.name, registry);
+            let key = (spec.name.clone(), spec.version_constraint.clone());
+            if !emitted.insert(key) {
+                continue;
+            }
+
+            if versions.is_empty() {
+                diagnostics.push(ResolverDiagnostic::missing_package(
+                    spec.name.clone(),
+                    spec.version_constraint.clone(),
+                ));
+                continue;
+            }
+
+            if !versions
+                .iter()
+                .any(|version| Self::version_matches_constraint(version, &spec.version_constraint))
+            {
+                diagnostics.push(ResolverDiagnostic::missing_version(
+                    spec.name.clone(),
+                    spec.version_constraint.clone(),
+                    versions,
+                ));
+            }
+        }
+    }
+
+    fn add_incompatible_range_diagnostics(
+        specs_by_package: &BTreeMap<String, Vec<&DependencySpec>>,
+        registry: &PackageRegistry,
+        diagnostics: &mut Vec<ResolverDiagnostic>,
+    ) {
+        for (package, specs) in specs_by_package {
+            if specs.len() <= 1 {
+                continue;
+            }
+
+            let versions = Self::registry_versions_for(package, registry);
+            if versions.is_empty() {
+                continue;
+            }
+
+            let constraints = specs
+                .iter()
+                .map(|spec| spec.version_constraint.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+
+            let has_common_version = versions.iter().any(|version| {
+                constraints
+                    .iter()
+                    .all(|constraint| Self::version_matches_constraint(version, constraint))
+            });
+
+            if !has_common_version {
+                diagnostics.push(ResolverDiagnostic::incompatible_version_range(
+                    package.clone(),
+                    constraints,
+                    versions,
+                ));
+            }
+        }
+    }
+
+    fn add_conflicting_source_diagnostics(
+        specs: &[DependencySpec],
+        registry: &PackageRegistry,
+        diagnostics: &mut Vec<ResolverDiagnostic>,
+    ) {
+        let package_scope = Self::diagnostic_package_scope(specs, registry);
+        let mut sources_by_package_version: BTreeMap<(String, String), BTreeSet<String>> =
+            BTreeMap::new();
+
+        for manifest in registry.all() {
+            if !package_scope.contains(&manifest.name) {
+                continue;
+            }
+
+            if let Some(source) = Self::provenance_source_descriptor(manifest) {
+                sources_by_package_version
+                    .entry((manifest.name.clone(), manifest.version.clone()))
+                    .or_default()
+                    .insert(source);
+            }
+        }
+
+        for ((package, version), sources) in sources_by_package_version {
+            if sources.len() > 1 {
+                diagnostics.push(ResolverDiagnostic::conflicting_source(
+                    package,
+                    version,
+                    sources.len(),
+                ));
+            }
+        }
+    }
+
+    fn dependency_graph_for(
+        root_packages: &BTreeSet<String>,
+        registry: &PackageRegistry,
+    ) -> BTreeMap<String, BTreeSet<String>> {
+        let registry_packages = registry
+            .all()
+            .iter()
+            .map(|manifest| manifest.name.clone())
+            .collect::<BTreeSet<_>>();
+        let mut graph = BTreeMap::new();
+        let mut pending = root_packages.iter().cloned().collect::<Vec<_>>();
+
+        while let Some(package) = pending.pop() {
+            if graph.contains_key(&package) {
+                continue;
+            }
+
+            let mut imports = BTreeSet::new();
+            for manifest in registry.all() {
+                if manifest.name != package {
+                    continue;
+                }
+
+                for import in &manifest.imports {
+                    if registry_packages.contains(&import.source_package) {
+                        imports.insert(import.source_package.clone());
+                    }
+                }
+            }
+
+            for import in &imports {
+                if !graph.contains_key(import) {
+                    pending.push(import.clone());
+                }
+            }
+            graph.insert(package, imports);
+        }
+
+        graph
+    }
+
+    fn normalized_cycle(cycle: &[String]) -> Vec<String> {
+        let Some((start_index, _)) = cycle
+            .iter()
+            .enumerate()
+            .min_by(|(_, left), (_, right)| left.cmp(right))
+        else {
+            return vec![];
+        };
+
+        let mut normalized = cycle[start_index..].to_vec();
+        normalized.extend_from_slice(&cycle[..start_index]);
+        if let Some(first) = normalized.first().cloned() {
+            normalized.push(first);
+        }
+        normalized
+    }
+
+    fn diagnostic_package_scope(
+        specs: &[DependencySpec],
+        registry: &PackageRegistry,
+    ) -> BTreeSet<String> {
+        let root_packages = specs
+            .iter()
+            .filter(|spec| {
+                registry
+                    .all()
+                    .iter()
+                    .any(|manifest| manifest.name == spec.name)
+            })
+            .map(|spec| spec.name.clone())
+            .collect::<BTreeSet<_>>();
+        let graph = Self::dependency_graph_for(&root_packages, registry);
+
+        graph.into_keys().collect()
+    }
+
+    fn add_cycle_diagnostics(
+        specs: &[DependencySpec],
+        registry: &PackageRegistry,
+        diagnostics: &mut Vec<ResolverDiagnostic>,
+    ) {
+        let package_scope = Self::diagnostic_package_scope(specs, registry);
+        let graph = Self::dependency_graph_for(&package_scope, registry);
+        let mut emitted_cycles = BTreeSet::new();
+
+        for root in graph.keys() {
+            let mut path = Vec::new();
+            Self::visit_cycles(root, &graph, &mut path, &mut emitted_cycles, diagnostics);
+        }
+    }
+
+    fn visit_cycles(
+        package: &str,
+        graph: &BTreeMap<String, BTreeSet<String>>,
+        path: &mut Vec<String>,
+        emitted_cycles: &mut BTreeSet<Vec<String>>,
+        diagnostics: &mut Vec<ResolverDiagnostic>,
+    ) {
+        if let Some(start_index) = path.iter().position(|visited| visited == package) {
+            let normalized = Self::normalized_cycle(&path[start_index..]);
+            if emitted_cycles.insert(normalized.clone()) {
+                diagnostics.push(ResolverDiagnostic::dependency_cycle(
+                    normalized.first().cloned().unwrap_or_default(),
+                    normalized,
+                ));
+            }
+            return;
+        }
+
+        path.push(package.to_string());
+        if let Some(imports) = graph.get(package) {
+            for import in imports {
+                Self::visit_cycles(import, graph, path, emitted_cycles, diagnostics);
+            }
+        }
+        path.pop();
+    }
+
+    /// Return stable redacted diagnostics for resolver preflight conflicts.
+    ///
+    /// This helper is intentionally parallel to [`resolve_all`](Self::resolve_all):
+    /// it does not change the existing fail-fast resolver API, and callers that
+    /// need production-ready reporting can run this before deciding whether to
+    /// call `resolve_all`.
+    pub fn conflict_diagnostics(
+        specs: &[DependencySpec],
+        registry: &PackageRegistry,
+    ) -> Vec<ResolverDiagnostic> {
+        let mut specs_by_package: BTreeMap<String, Vec<&DependencySpec>> = BTreeMap::new();
+        for spec in specs {
+            specs_by_package
+                .entry(spec.name.clone())
+                .or_default()
+                .push(spec);
+        }
+
+        let mut diagnostics = Vec::new();
+        Self::add_duplicate_package_diagnostics(&specs_by_package, &mut diagnostics);
+        Self::add_missing_diagnostics(specs, registry, &mut diagnostics);
+        Self::add_incompatible_range_diagnostics(&specs_by_package, registry, &mut diagnostics);
+        Self::add_cycle_diagnostics(specs, registry, &mut diagnostics);
+        Self::add_conflicting_source_diagnostics(specs, registry, &mut diagnostics);
+
+        diagnostics.sort_by_key(Self::diagnostic_sort_key);
+        diagnostics
     }
 
     /// Resolve a `DependencySpec` against the given registry, advisories, and
@@ -447,7 +931,8 @@ mod tests {
     use super::*;
     use crate::advisory::{AdvisorySeverity, SecurityAdvisory};
     use crate::handler::HandlerExport;
-    use crate::manifest::{PackageDef, PackageManifest};
+    use crate::import::ImportDeclaration;
+    use crate::manifest::{PackageDef, PackageManifest, Provenance};
     use crate::policy::DeploymentProfile;
     use crate::registry::PackageRegistry;
     use crate::trust::TrustLevel;
@@ -491,6 +976,30 @@ mod tests {
             min_graph_schema: None,
             min_core_ir_schema: None,
         }
+    }
+
+    fn import(source_package: &str) -> ImportDeclaration {
+        ImportDeclaration {
+            source_package: source_package.to_string(),
+            items: vec![],
+            version_constraint: None,
+        }
+    }
+
+    fn manifest_with_imports(
+        name: &str,
+        version: &str,
+        imports: Vec<ImportDeclaration>,
+    ) -> PackageManifest {
+        let mut manifest = make_manifest(name, version, TrustLevel::Verified);
+        manifest.imports = imports;
+        manifest
+    }
+
+    fn manifest_with_source(name: &str, version: &str, source: &str) -> PackageManifest {
+        let mut manifest = make_manifest(name, version, TrustLevel::Verified);
+        manifest.provenance = Some(Provenance::from_url(source));
+        manifest
     }
 
     // ── RED: resolve_returns_manifest_for_valid_spec ──────────────────────
@@ -1000,6 +1509,141 @@ mod tests {
         assert_eq!(manifests.len(), 2);
         assert_eq!(manifests[0].name, "pkg.a");
         assert_eq!(manifests[1].name, "pkg.z");
+    }
+
+    // ── conflict_diagnostics ──────────────────────────────────────────────
+
+    #[test]
+    fn conflict_diagnostics_reports_duplicate_incompatible_and_missing_inputs() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg.alpha", "1.0.0", TrustLevel::Verified));
+        reg.register(make_manifest("pkg.alpha", "2.0.0", TrustLevel::Verified));
+        reg.register(make_manifest("pkg.beta", "1.0.0", TrustLevel::Verified));
+
+        let specs = vec![
+            spec("pkg.ghost", "1.0.0", TrustLevel::Unverified),
+            spec("pkg.alpha", "2.0.0", TrustLevel::Unverified),
+            spec("pkg.beta", "^2.0", TrustLevel::Unverified),
+            spec("pkg.alpha", "1.0.0", TrustLevel::Unverified),
+        ];
+
+        let diagnostics = DependencyResolver::conflict_diagnostics(&specs, &reg);
+        let summary = diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.package.as_str(), diagnostic.kind))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            summary,
+            vec![
+                ("pkg.alpha", ResolverDiagnosticKind::DuplicatePackage),
+                (
+                    "pkg.alpha",
+                    ResolverDiagnosticKind::IncompatibleVersionRange
+                ),
+                ("pkg.beta", ResolverDiagnosticKind::MissingVersion),
+                ("pkg.ghost", ResolverDiagnosticKind::MissingPackage),
+            ],
+            "diagnostics must be complete and canonical by package/kind"
+        );
+        assert!(diagnostics.iter().all(|diagnostic| diagnostic.redacted));
+        assert_eq!(
+            diagnostics[1].constraints,
+            vec!["1.0.0".to_string(), "2.0.0".to_string()]
+        );
+        assert_eq!(
+            diagnostics[2].versions,
+            vec!["1.0.0".to_string()],
+            "missing-version diagnostics include safe registered version inventory"
+        );
+    }
+
+    #[test]
+    fn conflict_diagnostics_are_independent_of_input_order() {
+        let mut reg = PackageRegistry::new();
+        reg.register(make_manifest("pkg.alpha", "1.0.0", TrustLevel::Verified));
+        reg.register(make_manifest("pkg.alpha", "2.0.0", TrustLevel::Verified));
+
+        let specs_a = vec![
+            spec("pkg.alpha", "2.0.0", TrustLevel::Unverified),
+            spec("pkg.alpha", "1.0.0", TrustLevel::Unverified),
+        ];
+        let specs_b = vec![
+            spec("pkg.alpha", "1.0.0", TrustLevel::Unverified),
+            spec("pkg.alpha", "2.0.0", TrustLevel::Unverified),
+        ];
+
+        assert_eq!(
+            DependencyResolver::conflict_diagnostics(&specs_a, &reg),
+            DependencyResolver::conflict_diagnostics(&specs_b, &reg),
+            "diagnostic output must not depend on dependency declaration order"
+        );
+    }
+
+    #[test]
+    fn conflict_diagnostics_report_dependency_cycles_when_imports_represent_them() {
+        let mut reg = PackageRegistry::new();
+        reg.register(manifest_with_imports(
+            "pkg.a",
+            "1.0.0",
+            vec![import("pkg.b")],
+        ));
+        reg.register(manifest_with_imports(
+            "pkg.b",
+            "1.0.0",
+            vec![import("pkg.a")],
+        ));
+
+        let diagnostics = DependencyResolver::conflict_diagnostics(
+            &[spec("pkg.a", "1.0.0", TrustLevel::Unverified)],
+            &reg,
+        );
+
+        let cycle = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.kind == ResolverDiagnosticKind::DependencyCycle)
+            .expect("cycle diagnostic");
+        assert_eq!(cycle.package, "pkg.a");
+        assert_eq!(
+            cycle.related_packages,
+            vec![
+                "pkg.a".to_string(),
+                "pkg.b".to_string(),
+                "pkg.a".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn conflict_diagnostics_redact_conflicting_sources() {
+        let mut reg = PackageRegistry::new();
+        reg.register(manifest_with_source(
+            "pkg.secret",
+            "1.0.0",
+            "https://token:abc@registry.example.test/pkg.secret",
+        ));
+        reg.register(manifest_with_source(
+            "pkg.secret",
+            "1.0.0",
+            "https://token:def@mirror.example.test/pkg.secret",
+        ));
+
+        let diagnostics = DependencyResolver::conflict_diagnostics(
+            &[spec("pkg.secret", "1.0.0", TrustLevel::Unverified)],
+            &reg,
+        );
+
+        let source = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.kind == ResolverDiagnosticKind::ConflictingSource)
+            .expect("source conflict diagnostic");
+        assert_eq!(source.package, "pkg.secret");
+        assert_eq!(source.version.as_deref(), Some("1.0.0"));
+        assert!(source.redacted);
+        assert!(
+            !format!("{source:?}").contains("token"),
+            "diagnostic must not leak raw source credentials"
+        );
     }
 
     // ── advisory_range_constraint_matches ─────────────────────────────────
