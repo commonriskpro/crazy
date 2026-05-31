@@ -49,6 +49,34 @@ fn main() -> Int = 2
 }
 
 #[test]
+fn rejects_empty_source_constructor_match_patterns_with_specific_error() {
+    let err = parse_ail_source(
+        r#"
+fn main(input: Option<Int>) -> Int = match input { Some() => 1, None => 0 }
+"#,
+    )
+    .expect_err("empty source constructor match patterns must be rejected");
+
+    assert!(err.to_string().contains(
+        "line 2: unsupported empty source match pattern `Some()`: constructor arms require a single local binding or `_`"
+    ));
+}
+
+#[test]
+fn rejects_source_list_destructuring_match_patterns_with_specific_error() {
+    let err = parse_ail_source(
+        r#"
+fn main(input: Option<List<Int>>) -> Int = match input { Some([head, tail]) => head, None => 0 }
+"#,
+    )
+    .expect_err("list destructuring source match patterns must be rejected");
+
+    assert!(err.to_string().contains(
+        "line 2: unsupported source list match pattern `Some([head, tail])`: constructor arms currently support only a single local binding or `_`; bind the value and inspect elements in the arm body"
+    ));
+}
+
+#[test]
 fn qualifies_source_module_declarations_and_local_calls() {
     let program = parse_ail_source(
         r#"

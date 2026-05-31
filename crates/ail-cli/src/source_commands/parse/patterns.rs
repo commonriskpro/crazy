@@ -30,12 +30,29 @@ fn validate_source_constructor_pattern_binding_shape(
     pattern: &str,
     binding: &str,
 ) -> Result<(), CliError> {
-    if binding.starts_with('{') || binding.contains(':') {
-        return Err(CliError::ParseError(format!(
-            "unsupported source record-field match pattern `{pattern}`: constructor arms currently support only a single local binding or `_`; bind the value and inspect fields in the arm body"
-        )));
+    if let Some(message) = unsupported_source_constructor_binding_message(pattern, binding) {
+        return Err(CliError::ParseError(message));
     }
     Ok(())
+}
+
+fn unsupported_source_constructor_binding_message(pattern: &str, binding: &str) -> Option<String> {
+    if binding.is_empty() {
+        return Some(format!(
+            "unsupported empty source match pattern `{pattern}`: constructor arms require a single local binding or `_`"
+        ));
+    }
+    if binding.starts_with('{') || binding.contains(':') {
+        return Some(format!(
+            "unsupported source record-field match pattern `{pattern}`: constructor arms currently support only a single local binding or `_`; bind the value and inspect fields in the arm body"
+        ));
+    }
+    if binding.starts_with('[') {
+        return Some(format!(
+            "unsupported source list match pattern `{pattern}`: constructor arms currently support only a single local binding or `_`; bind the value and inspect elements in the arm body"
+        ));
+    }
+    None
 }
 
 fn unsupported_source_constructor_pattern_message(
@@ -47,18 +64,16 @@ fn unsupported_source_constructor_pattern_message(
     validate_source_constructor_tag(tag)?;
 
     let fields = split_source_args(inner);
-    if fields.len() > 1 {
+    let binding = fields.first().map(String::as_str).unwrap_or(inner).trim();
+    if let Some(message) = unsupported_source_constructor_binding_message(pattern, binding) {
+        return Ok(Some(message));
+    }
+    if fields.len() > 1 || inner.ends_with(',') {
         return Ok(Some(format!(
             "unsupported multi-binding source match pattern `{pattern}`: constructor arms currently support exactly one local binding or `_`"
         )));
     }
 
-    let binding = fields.first().map(String::as_str).unwrap_or(inner).trim();
-    if binding.starts_with('{') || binding.contains(':') {
-        return Ok(Some(format!(
-            "unsupported source record-field match pattern `{pattern}`: constructor arms currently support only a single local binding or `_`; bind the value and inspect fields in the arm body"
-        )));
-    }
     if binding.contains('(') || binding.contains(')') {
         return Ok(Some(format!(
             "unsupported nested source match pattern `{pattern}`: constructor arms currently support only a single local binding or `_`; bind the value and match again inside the arm"
