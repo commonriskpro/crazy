@@ -708,6 +708,34 @@ fn source_name_error(code: &str, category: &str, message: impl AsRef<str>) -> Cl
     CliError::ParseError(format!("{} [{code}] category={category}", message.as_ref()))
 }
 
+fn source_expr_malformed_string_error(expr: &str) -> CliError {
+    source_expr_error(
+        "AIL_SOURCE_EXPR_MALFORMED_STRING",
+        "source.expr.literal",
+        format!("malformed string literal `{expr}`"),
+    )
+}
+
+fn source_expr_unsupported_numeric_error(expr: &str) -> CliError {
+    source_expr_error(
+        "AIL_SOURCE_EXPR_UNSUPPORTED_NUMERIC",
+        "source.expr.literal",
+        format!("unsupported source numeric literal `{expr}`"),
+    )
+}
+
+fn source_expr_unsupported_error(expr: &str) -> CliError {
+    source_expr_error(
+        "AIL_SOURCE_EXPR_UNSUPPORTED",
+        "source.expr.unsupported",
+        format!("unsupported source expression `{expr}`"),
+    )
+}
+
+fn source_expr_error(code: &str, category: &str, message: impl AsRef<str>) -> CliError {
+    CliError::ParseError(format!("{} [{code}] category={category}", message.as_ref()))
+}
+
 fn source_effect_const_error(target: &str, capability: &str) -> CliError {
     source_effect_error(
         "AIL_SOURCE_EFFECT_CONST",
@@ -879,14 +907,10 @@ pub(super) fn validate_source_expr_vars(
         return Ok(());
     }
     if is_malformed_source_string(expr) {
-        return Err(CliError::ParseError(format!(
-            "malformed string literal `{expr}`"
-        )));
+        return Err(source_expr_malformed_string_error(expr));
     }
     if is_unsupported_source_numeric_literal(expr) {
-        return Err(CliError::ParseError(format!(
-            "unsupported source numeric literal `{expr}`"
-        )));
+        return Err(source_expr_unsupported_numeric_error(expr));
     }
     if let Some((func, args)) = parse_source_call(expr) {
         if func == "let" && args.len() == 3 {
@@ -951,9 +975,7 @@ pub(super) fn validate_source_expr_vars(
         }
         return Err(source_name_unknown_variable_error(expr));
     }
-    Err(CliError::ParseError(format!(
-        "unsupported source expression `{expr}`"
-    )))
+    Err(source_expr_unsupported_error(expr))
 }
 
 pub(super) fn is_source_literal(expr: &str) -> bool {
