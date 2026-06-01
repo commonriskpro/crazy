@@ -14,9 +14,11 @@ pub(super) fn lower_source_constructor_expr(
         if args.is_empty() {
             return Ok(Some("none()".to_string()));
         }
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: source constructor `None` requires no values"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::OptionResultHelper,
+            "source constructor `None` requires no values",
+        ));
     }
     let lowered_func = match func.as_str() {
         "Some" => "some",
@@ -25,9 +27,11 @@ pub(super) fn lower_source_constructor_expr(
         _ => return Ok(None),
     };
     if args.len() != 1 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: source constructor `{func}` requires exactly one value"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::OptionResultHelper,
+            format!("source constructor `{func}` requires exactly one value"),
+        ));
     }
     Ok(Some(format!(
         "{lowered_func}({})",
@@ -48,9 +52,11 @@ pub(super) fn lower_source_option_predicate_expr(
         _ => return Ok(None),
     };
     if args.len() != 1 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: {func} requires `{func}(option)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::OptionResultHelper,
+            format!("{func} requires `{func}(option)`"),
+        ));
     }
     Ok(Some(format!(
         "match({}, Some(_), {some_body}, None, {none_body})",
@@ -71,9 +77,11 @@ pub(super) fn lower_source_result_predicate_expr(
         _ => return Ok(None),
     };
     if args.len() != 1 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: {func} requires `{func}(result)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::OptionResultHelper,
+            format!("{func} requires `{func}(result)`"),
+        ));
     }
     Ok(Some(format!(
         "match({}, Ok(_), {ok_body}, Err(_), {err_body})",
@@ -92,9 +100,11 @@ pub(super) fn lower_source_option_ok_or_expr(
         return Ok(None);
     }
     if args.len() != 2 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: {func} requires `{func}(option, error)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::OptionResultHelper,
+            format!("{func} requires `{func}(option, error)`"),
+        ));
     }
     Ok(Some(format!(
         "match({}, Some(__ail_ok), ok(__ail_ok), None, err({}))",
@@ -114,9 +124,11 @@ pub(super) fn lower_source_result_unwrap_or_expr(
         return Ok(None);
     }
     if args.len() != 2 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: {func} requires `{func}(result, fallback)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::OptionResultHelper,
+            format!("{func} requires `{func}(result, fallback)`"),
+        ));
     }
     Ok(Some(format!(
         "match({}, Ok(__ail_unwrap), __ail_unwrap, Err(_), {})",
@@ -139,9 +151,16 @@ pub(super) fn lower_source_is_empty_expr(
         return Ok(None);
     }
     if args.len() != 1 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: is_empty requires `is_empty(value)`"
-        )));
+        let diagnostic = if func.starts_with("text") {
+            SourceLowerDiagnostic::TextHelper
+        } else {
+            SourceLowerDiagnostic::CollectionArity
+        };
+        return Err(source_lower_error(
+            line_num,
+            diagnostic,
+            "is_empty requires `is_empty(value)`",
+        ));
     }
     Ok(Some(format!(
         "eq(len({}), 0)",

@@ -442,6 +442,16 @@ fn option_value(input: Option<Int>) -> Int = option_unwrap_or(input, 1)
 }
 
 #[test]
+fn rejects_option_result_helper_arity_with_stable_lowering_diagnostic() {
+    assert_lowering_diagnostic(
+        lower_source_expr("option_is_some()", 33),
+        "AIL_SOURCE_LOWER_OPTION_RESULT_HELPER",
+        "source.lower.option_result",
+        "option_is_some requires `option_is_some(option)`",
+    );
+}
+
+#[test]
 fn lowers_source_option_predicate_helpers() {
     let program = parse_ail_source(
         r#"
