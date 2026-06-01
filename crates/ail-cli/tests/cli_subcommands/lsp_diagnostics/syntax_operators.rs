@@ -153,6 +153,48 @@ fn lsp_diagnose_reports_malformed_source_names() {
             .contains("declaration name `bad..name` contains an empty path segment")
     );
 }
+
+#[test]
+fn lsp_diagnose_reports_precise_module_name_spans() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("module 1bad\nfn main() -> Int = 1\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_PARSE_INVALID_NAME"
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 0);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["range"]["start"]["character"],
+        7
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["line"], 0);
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["character"], 11);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["span"],
+        v["data"]["diagnostics"][0]["range"]
+    );
+}
+
 #[test]
 fn lsp_diagnose_reports_unsupported_source_parameter_type() {
     use assert_fs::prelude::*;

@@ -1,8 +1,12 @@
 use super::*;
 
-pub(super) fn parse_source_module(rest: &str, line_num: usize) -> Result<String, CliError> {
+pub(super) fn parse_source_module(
+    rest: &str,
+    line_num: usize,
+    base_column: usize,
+) -> Result<String, CliError> {
     let module = rest.trim();
-    validate_source_name(module, line_num)?;
+    validate_source_name_at(module, line_num, trimmed_fragment_column(base_column, rest))?;
     Ok(module.to_string())
 }
 
@@ -86,13 +90,25 @@ pub(super) fn parse_source_import(rest: &str, line_num: usize) -> Result<String,
     Ok(import.to_string())
 }
 
-pub(super) fn parse_source_capability(rest: &str, line_num: usize) -> Result<String, CliError> {
+pub(super) fn parse_source_capability(
+    rest: &str,
+    line_num: usize,
+    base_column: usize,
+) -> Result<String, CliError> {
     let capability = rest.trim();
-    validate_source_name(capability, line_num)?;
+    validate_source_name_at(
+        capability,
+        line_num,
+        trimmed_fragment_column(base_column, rest),
+    )?;
     Ok(capability.to_string())
 }
 
-pub(super) fn parse_source_const(rest: &str, line_num: usize) -> Result<SourceConst, CliError> {
+pub(super) fn parse_source_const(
+    rest: &str,
+    line_num: usize,
+    base_column: usize,
+) -> Result<SourceConst, CliError> {
     let (head, body) = rest.split_once('=').ok_or_else(|| {
         source_parse_error_for_fragment(
             line_num,
@@ -109,10 +125,11 @@ pub(super) fn parse_source_const(rest: &str, line_num: usize) -> Result<SourceCo
             "const declaration requires `name: Type`",
         )
     })?;
+    let name_column = trimmed_fragment_column(base_column, name);
     let name = name.trim();
     let return_type = return_type.trim();
     let body = body.trim();
-    validate_source_name(name, line_num)?;
+    validate_source_name_at(name, line_num, name_column)?;
     validate_source_type_name(return_type, line_num)?;
     let return_type = normalize_source_type_name(return_type);
     if body.is_empty() {
@@ -395,7 +412,11 @@ pub(super) fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, 
     Ok(body)
 }
 
-pub(super) fn parse_source_test(rest: &str, line_num: usize) -> Result<SourceTest, CliError> {
+pub(super) fn parse_source_test(
+    rest: &str,
+    line_num: usize,
+    base_column: usize,
+) -> Result<SourceTest, CliError> {
     let (head, body) = rest.split_once('=').ok_or_else(|| {
         source_parse_error_for_fragment(
             line_num,
@@ -404,12 +425,16 @@ pub(super) fn parse_source_test(rest: &str, line_num: usize) -> Result<SourceTes
             "test declaration requires `= body`",
         )
     })?;
-    let (raw_name, return_type) = if let Some((name, ty)) = head.split_once("->") {
-        (name.trim(), ty.trim())
+    let (raw_name_text, raw_name, return_type) = if let Some((name, ty)) = head.split_once("->") {
+        (name, name.trim(), ty.trim())
     } else {
-        (head.trim(), "Bool")
+        (head, head.trim(), "Bool")
     };
-    validate_source_name(raw_name, line_num)?;
+    validate_source_name_at(
+        raw_name,
+        line_num,
+        trimmed_fragment_column(base_column, raw_name_text),
+    )?;
 
     let body = body.trim();
     if return_type.is_empty() || body.is_empty() {
@@ -432,7 +457,11 @@ pub(super) fn parse_source_test(rest: &str, line_num: usize) -> Result<SourceTes
     })
 }
 
-pub(super) fn parse_source_grant(rest: &str, line_num: usize) -> Result<SourceGrant, CliError> {
+pub(super) fn parse_source_grant(
+    rest: &str,
+    line_num: usize,
+    base_column: usize,
+) -> Result<SourceGrant, CliError> {
     let parts = rest.split_whitespace().collect::<Vec<_>>();
     if parts.len() != 2 {
         return Err(source_parse_error_for_fragment(
@@ -444,8 +473,19 @@ pub(super) fn parse_source_grant(rest: &str, line_num: usize) -> Result<SourceGr
     }
     let target = normalize_grant_target(parts[0]);
     let capability = parts[1].to_string();
-    validate_source_name(&target, line_num)?;
-    validate_source_name(&capability, line_num)?;
+    let target_column = trimmed_fragment_column(base_column, rest);
+    validate_source_name_at(&target, line_num, target_column)?;
+    let capability_column = rest
+        .find(parts[0])
+        .and_then(|target_idx| {
+            let after_target_idx = target_idx + parts[0].len();
+            rest[after_target_idx..]
+                .find(parts[1])
+                .map(|capability_idx| after_target_idx + capability_idx)
+        })
+        .map(|capability_idx| base_column + rest[..capability_idx].chars().count())
+        .unwrap_or(base_column);
+    validate_source_name_at(&capability, line_num, capability_column)?;
 
     Ok(SourceGrant { target, capability })
 }

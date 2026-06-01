@@ -59,7 +59,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
                     "module declaration may appear only once",
                 ));
             }
-            module = Some(parse_source_module(rest, *line_num)?);
+            module = Some(parse_source_module(rest, *line_num, 8)?);
         } else if let Some(rest) = statement.strip_prefix("use ") {
             let import = parse_source_import(rest, *line_num)?;
             if imports.iter().any(|existing| existing == &import) {
@@ -72,9 +72,9 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
             }
             imports.push(import);
         } else if let Some(rest) = statement.strip_prefix("capability ") {
-            capabilities.push(parse_source_capability(rest, *line_num)?);
+            capabilities.push(parse_source_capability(rest, *line_num, 12)?);
         } else if let Some(rest) = statement.strip_prefix("const ") {
-            constants.push(parse_source_const(rest, *line_num)?);
+            constants.push(parse_source_const(rest, *line_num, 7)?);
         } else if let Some(rest) = statement.strip_prefix("fn ") {
             if rest.trim_end().ends_with('{') {
                 let header = rest.trim_end().trim_end_matches('{').trim();
@@ -86,9 +86,9 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
             }
             functions.push(parse_source_function(rest, *line_num)?);
         } else if let Some(rest) = statement.strip_prefix("test ") {
-            tests.push(parse_source_test(rest, *line_num)?);
+            tests.push(parse_source_test(rest, *line_num, 6)?);
         } else if let Some(rest) = statement.strip_prefix("grant ") {
-            grants.push(parse_source_grant(rest, *line_num)?);
+            grants.push(parse_source_grant(rest, *line_num, 7)?);
         } else if statement == "export" || statement.starts_with("export ") {
             return Err(source_parse_error_for_fragment(
                 *line_num,
