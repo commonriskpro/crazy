@@ -92,6 +92,18 @@ fn lsp_diagnose_reports_numeric_leading_source_names() {
     assert_eq!(v["data"]["language"], "ail-source");
     assert_eq!(v["data"]["diagnostic_count"], 1);
     assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_PARSE_INVALID_NAME"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.parse.name"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["family"],
+        "AIL_SOURCE_PARSER"
+    );
     assert!(
         v["data"]["diagnostics"][0]["message"]
             .as_str()

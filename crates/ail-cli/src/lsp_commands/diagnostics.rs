@@ -52,7 +52,7 @@ fn diagnostics_for_ail_source_text(_uri: &str, text: &str) -> Vec<Value> {
         Ok(_) => vec![],
         Err(err) => {
             let message = err.to_string();
-            vec![diagnostic_for_text(
+            vec![diagnostic_for_source_error(
                 text,
                 line_from_error(&message),
                 message,
@@ -78,7 +78,7 @@ fn diagnostics_for_ail_source_document_path(path: &std::path::Path, text: &str) 
         Ok(_) => vec![],
         Err(err) => {
             let message = err.to_string();
-            vec![diagnostic_for_text(
+            vec![diagnostic_for_source_error(
                 text,
                 line_from_error(&message),
                 message,
@@ -93,6 +93,59 @@ fn diagnostic_for_text(text: &str, line: u64, message: String, source: &str, cod
     let (start_character, end_character) =
         diagnostic_character_range(text, line, &message).unwrap_or((0, 1));
     diagnostic(line, start_character, end_character, message, source, code)
+}
+
+fn diagnostic_for_source_error(
+    text: &str,
+    line: u64,
+    message: String,
+    source: &str,
+    fallback_code: &str,
+) -> Value {
+    let metadata = source_diagnostic_metadata(&message);
+    let code = metadata
+        .as_ref()
+        .map(|metadata| metadata.code.as_str())
+        .unwrap_or(fallback_code);
+    let mut diagnostic = diagnostic_for_text(text, line, message, source, code);
+    if let Some(metadata) = metadata {
+        diagnostic["data"] = json!({
+            "ailDiagnostic": {
+                "code": metadata.code,
+                "category": metadata.category,
+                "family": fallback_code,
+            }
+        });
+    }
+    diagnostic
+}
+
+struct SourceDiagnosticMetadata {
+    code: String,
+    category: String,
+}
+
+fn source_diagnostic_metadata(message: &str) -> Option<SourceDiagnosticMetadata> {
+    let code_start = message.find("[AIL_SOURCE_")? + 1;
+    let code_end = message[code_start..].find(']')? + code_start;
+    let code = &message[code_start..code_end];
+    if !is_lsp_diagnostic_identifier(code) {
+        return None;
+    }
+
+    let category_start = message[code_end..].find("category=")? + code_end + "category=".len();
+    let category = message[category_start..]
+        .split(|ch: char| ch.is_whitespace() || ch == ':' || ch == ',')
+        .next()
+        .unwrap_or_default();
+    if !is_lsp_diagnostic_identifier(category) {
+        return None;
+    }
+
+    Some(SourceDiagnosticMetadata {
+        code: code.to_string(),
+        category: category.to_string(),
+    })
 }
 
 fn diagnostic(
@@ -139,6 +192,13 @@ fn quoted_value_after<'a>(message: &'a str, prefix: &str) -> Option<&'a str> {
     let rest = &message[start..];
     let end = rest.find('`')?;
     Some(&rest[..end])
+}
+
+fn is_lsp_diagnostic_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
 }
 
 fn line_from_error(err: &str) -> u64 {

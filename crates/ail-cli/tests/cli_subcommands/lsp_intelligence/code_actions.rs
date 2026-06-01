@@ -47,7 +47,7 @@ fn lsp_code_action_reports_missing_document_with_redacted_diagnostic() {
 fn lsp_code_action_reports_unsupported_diagnostic_code_without_echoing_sensitive_code() {
     let uri = "file:///workspace/main.ail";
     let open = did_open_message(uri, "module main\n");
-    let mut diagnostic = diagnostic_with_code("SECRET_PATH_/tmp/customer.ail", 3);
+    let mut diagnostic = diagnostic_with_code("AIL_SOURCE_PARSE_SECRET_CUSTOMER", 3);
     diagnostic["source"] = serde_json::json!("/tmp/customer.ail");
     let code_action = code_action_message(uri, 21, vec![diagnostic]);
 
@@ -58,7 +58,7 @@ fn lsp_code_action_reports_unsupported_diagnostic_code_without_echoing_sensitive
     assert_eq!(failure["reason"], "unsupported_diagnostic_code");
     assert_eq!(failure["descriptor"]["diagnosticCode"], "unsupported");
     assert!(!failure.to_string().contains("customer.ail"));
-    assert!(!failure.to_string().contains("SECRET_PATH"));
+    assert!(!failure.to_string().contains("SECRET_CUSTOMER"));
 }
 
 #[test]
@@ -74,6 +74,26 @@ fn lsp_code_action_reports_supported_diagnostic_with_no_repair() {
     assert_eq!(failure["code"], "AIL_CODE_ACTION_NO_REPAIR_AVAILABLE");
     assert_eq!(failure["reason"], "no_repair_available");
     assert_eq!(failure["descriptor"]["diagnosticCode"], "AIL_SOURCE_PARSER");
+}
+
+#[test]
+fn lsp_code_action_accepts_specific_source_diagnostic_codes() {
+    let uri = "file:///workspace/main.ail";
+    let open = did_open_message(uri, "module main\n");
+    let code_action = code_action_message(
+        uri,
+        24,
+        vec![diagnostic_with_code("AIL_SOURCE_PARSE_INVALID_NAME", 4)],
+    );
+
+    let result = code_action_result(vec![open, code_action], 24);
+    let failure = &result[0]["data"]["diagnostic"];
+
+    assert_eq!(failure["code"], "AIL_CODE_ACTION_NO_REPAIR_AVAILABLE");
+    assert_eq!(
+        failure["descriptor"]["diagnosticCode"],
+        "AIL_SOURCE_PARSE_INVALID_NAME"
+    );
 }
 
 #[test]
