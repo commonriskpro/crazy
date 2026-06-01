@@ -196,6 +196,44 @@ test unwrap_none = eq(unwrap(None), 0)
 }
 
 #[test]
+fn lsp_diagnose_accepts_braced_expression_blocks_inside_source_match_arms() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            r#"
+fn unwrap_plus_one(value: Option<Int>) -> Int = match value {
+  Some(v) => {
+    v + 1
+  },
+  None => {
+    0
+  }
+}
+test unwrap_none = eq(unwrap_plus_one(None), 0)
+"#,
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_unwrap_or_helper() {
     use assert_fs::prelude::*;
 

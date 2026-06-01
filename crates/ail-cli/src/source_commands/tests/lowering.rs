@@ -510,6 +510,36 @@ test unwrap_none = eq(unwrap(None), 0)
 }
 
 #[test]
+fn lowers_braced_expression_blocks_inside_source_match_arms() {
+    let program = parse_ail_source(
+        r#"
+fn unwrap_plus_one(input: Option<Int>) -> Int = match input {
+  Some(v) => {
+    v + 1
+  },
+  None => {
+    0
+  }
+}
+test unwrap_none = eq(unwrap_plus_one(None), 0)
+"#,
+    )
+    .expect("source match arms may use braced expression blocks");
+    let acl = source_program_to_acl(&program, "source_match_expr_blocks".to_string());
+
+    assert_eq!(
+        program.functions[0].body,
+        "match(input, Some(v), add(v, 1), None, 0)"
+    );
+    assert!(acl.contains(
+        "op create_function id=fn.unwrap_plus_one return=Int body=match(input, Some(v), add(v, 1), None, 0)"
+    ));
+    assert!(acl.contains(
+        "op create_test id=test.unwrap_none return=Bool body=eq(unwrap_plus_one(none()), 0)"
+    ));
+}
+
+#[test]
 fn lowers_source_option_result_conversion_helpers() {
     let program = parse_ail_source(
         r#"

@@ -81,17 +81,21 @@ pub(super) fn split_source_match_arm<'a>(
 
 fn source_match_arm_body_expr(body: &str) -> &str {
     let body = body.trim();
-    let body = source_match_arm_return_block(body).unwrap_or(body);
+    let body = source_match_arm_braced_expr(body).unwrap_or(body);
     body.strip_prefix("return ").map(str::trim).unwrap_or(body)
 }
 
-fn source_match_arm_return_block(body: &str) -> Option<&str> {
+fn source_match_arm_braced_expr(body: &str) -> Option<&str> {
     let body = body.trim();
     if !body.starts_with('{') || matching_brace(body, 0)? != body.len() - 1 {
         return None;
     }
     let inner = body[1..body.len() - 1].trim();
-    inner.starts_with("return ").then_some(inner)
+    if inner.starts_with("return ") || find_top_level_source_colon(inner).is_none() {
+        Some(inner)
+    } else {
+        None
+    }
 }
 
 pub(super) fn find_top_level_source_arrow(input: &str) -> Option<usize> {
