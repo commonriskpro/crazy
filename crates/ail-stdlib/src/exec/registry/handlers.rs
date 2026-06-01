@@ -564,6 +564,26 @@ pub(super) fn text_contains_exec(args: &[StdlibValue]) -> Result<StdlibValue, St
     Ok(StdlibValue::Bool(text::text_contains(s, needle)))
 }
 
+pub(super) fn text_index_of_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Text(s), StdlibValue::Text(needle)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type {
+            expected: "Text, Text",
+        });
+    };
+    Ok(StdlibValue::Int(text::text_index_of(s, needle)))
+}
+
+pub(super) fn text_parse_int_or_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Text(s), StdlibValue::Int(fallback)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type {
+            expected: "Text, Int",
+        });
+    };
+    Ok(StdlibValue::Int(text::text_parse_int_or(s, *fallback)))
+}
+
 pub(super) fn text_replace_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 3)?;
     let (StdlibValue::Text(s), StdlibValue::Text(from), StdlibValue::Text(to)) =

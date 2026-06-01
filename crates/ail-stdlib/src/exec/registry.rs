@@ -21,10 +21,11 @@ use self::handlers::{
     option_transpose, option_unwrap_or, queue_is_empty, queue_length, queue_peek_front,
     queue_pop_front, queue_push_back, result_and_then, result_map, result_transpose,
     result_unwrap_or, set_contains, set_insert, set_length, text_contains_exec, text_decode,
-    text_encode, text_ends_with_exec, text_format, text_join, text_length_graphemes_exec,
-    text_normalize, text_regex, text_replace_exec, text_split, text_starts_with_exec, text_trim,
-    time_add_duration_exec, time_duration_since_exec, time_instant_to_ms_exec, tuple_first,
-    tuple_get, tuple_length, tuple_second,
+    text_encode, text_ends_with_exec, text_format, text_index_of_exec, text_join,
+    text_length_graphemes_exec, text_normalize, text_parse_int_or_exec, text_regex,
+    text_replace_exec, text_split, text_starts_with_exec, text_trim, time_add_duration_exec,
+    time_duration_since_exec, time_instant_to_ms_exec, tuple_first, tuple_get, tuple_length,
+    tuple_second,
 };
 
 use super::capability::StdlibCapabilityDispatch;
@@ -546,6 +547,22 @@ pub fn stdlib_function_entries() -> Vec<FunctionEntry> {
             &["Text", "Text", "Text"],
             "Text",
             text_replace_exec,
+        ),
+        pure(
+            "std.text.index_of",
+            "std.text",
+            "index_of",
+            &["Text", "Text"],
+            "Int",
+            text_index_of_exec,
+        ),
+        pure(
+            "std.text.parse_int_or",
+            "std.text",
+            "parse_int_or",
+            &["Text", "Int"],
+            "Int",
+            text_parse_int_or_exec,
         ),
         pure(
             "std.time.duration_since",

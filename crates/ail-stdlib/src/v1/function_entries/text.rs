@@ -193,6 +193,49 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
     });
 
     reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.index_of".to_string()),
+        module_path: "std::text".to_string(),
+        name: "index_of".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Int".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["both arguments are valid UTF-8".to_string()],
+            ensures: vec![
+                "returns the first byte offset where needle appears".to_string(),
+                "returns 0 for an empty needle".to_string(),
+                "returns -1 when needle is absent".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.parse_int_or".to_string()),
+        module_path: "std::text".to_string(),
+        name: "parse_int_or".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Int".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["first argument is valid UTF-8".to_string()],
+            ensures: vec![
+                "returns parsed Int for valid signed 64-bit decimal text".to_string(),
+                "returns fallback on invalid syntax or overflow".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
         id: StdlibId("std.text.replace".to_string()),
         module_path: "std::text".to_string(),
         name: "replace".to_string(),

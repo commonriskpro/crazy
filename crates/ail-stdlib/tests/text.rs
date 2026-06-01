@@ -4,9 +4,9 @@
 // Spec: G26 stdlib-impl, Requirements R4.1–R4.6.
 
 use ail_stdlib::text::{
-    NormalizeForm, text_contains, text_ends_with, text_from_bytes, text_join,
-    text_length_graphemes, text_normalize, text_replace, text_split, text_starts_with,
-    text_to_bytes, text_trim,
+    NormalizeForm, text_contains, text_ends_with, text_from_bytes, text_index_of, text_join,
+    text_length_graphemes, text_normalize, text_parse_int_or, text_replace, text_split,
+    text_starts_with, text_to_bytes, text_trim,
 };
 
 // ── R4.1: text_trim ──────────────────────────────────────────────────────
@@ -291,4 +291,43 @@ fn text_replace_to_empty_removes_occurrences() {
 #[test]
 fn text_replace_single_occurrence() {
     assert_eq!(text_replace("foo bar baz", "bar", "qux"), "foo qux baz");
+}
+
+// ── R4.12: text_index_of ──────────────────────────────────────────────────
+
+#[test]
+fn text_index_of_returns_first_byte_offset() {
+    assert_eq!(text_index_of("Hello, AIL", "AIL"), 7);
+}
+
+#[test]
+fn text_index_of_returns_minus_one_when_absent() {
+    assert_eq!(text_index_of("hello", "xyz"), -1);
+}
+
+#[test]
+fn text_index_of_empty_needle_returns_zero() {
+    assert_eq!(text_index_of("hello", ""), 0);
+}
+
+#[test]
+fn text_index_of_uses_utf8_byte_offsets() {
+    assert_eq!(text_index_of("🔥AIL", "AIL"), 4);
+}
+
+// ── R4.13: text_parse_int_or ──────────────────────────────────────────────
+
+#[test]
+fn text_parse_int_or_parses_signed_int() {
+    assert_eq!(text_parse_int_or("-42", 0), -42);
+}
+
+#[test]
+fn text_parse_int_or_returns_fallback_on_invalid_syntax() {
+    assert_eq!(text_parse_int_or("42px", -1), -1);
+}
+
+#[test]
+fn text_parse_int_or_returns_fallback_on_overflow() {
+    assert_eq!(text_parse_int_or("9223372036854775808", -1), -1);
 }

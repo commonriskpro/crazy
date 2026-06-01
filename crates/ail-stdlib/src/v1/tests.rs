@@ -374,6 +374,22 @@ fn v1_contains_text_contains() {
 }
 
 #[test]
+fn v1_contains_text_index_of() {
+    assert!(
+        has_function_entry("std.text.index_of"),
+        "std.text.index_of must be present"
+    );
+}
+
+#[test]
+fn v1_contains_text_parse_int_or() {
+    assert!(
+        has_function_entry("std.text.parse_int_or"),
+        "std.text.parse_int_or must be present"
+    );
+}
+
+#[test]
 fn v1_contains_text_replace() {
     assert!(
         has_function_entry("std.text.replace"),

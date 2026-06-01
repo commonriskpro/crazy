@@ -435,3 +435,82 @@ fn text_replace_exec_empty_from_returns_unchanged() {
     );
     assert_eq!(result, Ok(StdlibValue::Text("hello".to_string())));
 }
+
+// ── STDLIB-EXEC-TEXT-INDEX: index_of mirrors source/compiler helper ──────
+
+#[test]
+fn text_index_of_exec_returns_first_byte_offset() {
+    let result = call_pure_stdlib(
+        "std.text.index_of",
+        &[
+            StdlibValue::Text("Hello, AIL".to_string()),
+            StdlibValue::Text("AIL".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(7)));
+}
+
+#[test]
+fn text_index_of_exec_returns_minus_one_when_absent() {
+    let result = call_pure_stdlib(
+        "std.text.index_of",
+        &[
+            StdlibValue::Text("hello".to_string()),
+            StdlibValue::Text("xyz".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(-1)));
+}
+
+#[test]
+fn text_index_of_exec_uses_utf8_byte_offsets() {
+    let result = call_pure_stdlib(
+        "std.text.index_of",
+        &[
+            StdlibValue::Text("🔥AIL".to_string()),
+            StdlibValue::Text("AIL".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(4)));
+}
+
+// ── STDLIB-EXEC-TEXT-PARSE: parse_int_or mirrors source/compiler helper ──
+
+#[test]
+fn text_parse_int_or_exec_parses_signed_int() {
+    let result = call_pure_stdlib(
+        "std.text.parse_int_or",
+        &[StdlibValue::Text("-42".to_string()), StdlibValue::Int(0)],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(-42)));
+}
+
+#[test]
+fn text_parse_int_or_exec_returns_fallback_on_invalid_syntax() {
+    let result = call_pure_stdlib(
+        "std.text.parse_int_or",
+        &[StdlibValue::Text("42px".to_string()), StdlibValue::Int(-1)],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(-1)));
+}
+
+#[test]
+fn text_parse_int_or_exec_returns_fallback_on_overflow() {
+    let result = call_pure_stdlib(
+        "std.text.parse_int_or",
+        &[
+            StdlibValue::Text("9223372036854775808".to_string()),
+            StdlibValue::Int(-1),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(-1)));
+}
+
+#[test]
+fn text_parse_int_or_entry_is_registered() {
+    let entry = ail_stdlib::exec::find_function_entry("std.text.parse_int_or")
+        .expect("std.text.parse_int_or entry");
+    assert_eq!(entry.module, "std.text");
+    assert_eq!(entry.params, ["Text", "Int"]);
+    assert_eq!(entry.return_type, "Int");
+}

@@ -122,6 +122,25 @@ pub fn text_contains(s: &str, needle: &str) -> bool {
     s.contains(needle)
 }
 
+// ── text_index_of ─────────────────────────────────────────────────────────
+
+/// Return the byte offset of the first non-overlapping `needle` occurrence.
+///
+/// Returns `0` for an empty needle and `-1` when `needle` is absent.
+/// This matches the compiler/runtime scalar helper contract used by
+/// `text.index_of` in source AIL.
+pub fn text_index_of(s: &str, needle: &str) -> i64 {
+    s.find(needle).map(|idx| idx as i64).unwrap_or(-1)
+}
+
+// ── text_parse_int_or ─────────────────────────────────────────────────────
+
+/// Parse `s` as a signed 64-bit integer, returning `fallback` on invalid
+/// syntax or overflow.
+pub fn text_parse_int_or(s: &str, fallback: i64) -> i64 {
+    s.parse::<i64>().unwrap_or(fallback)
+}
+
 // ── text_replace ──────────────────────────────────────────────────────────
 
 /// Replace every non-overlapping occurrence of `from` in `s` with `to`.
