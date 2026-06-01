@@ -866,6 +866,42 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "map.insert(${1:map}, ${2:key}, ${3:value})",
     },
     AclSymbol {
+        label: "crypto_hash",
+        detail: "AIL source Crypto helper",
+        documentation: "Computes a BLAKE3 hash over Bytes and returns hash Bytes.",
+        insert_text: "crypto_hash(${1:bytes})",
+    },
+    AclSymbol {
+        label: "crypto.hash",
+        detail: "AIL source Crypto helper",
+        documentation: "Dotted alias that computes a BLAKE3 hash over Bytes.",
+        insert_text: "crypto.hash(${1:bytes})",
+    },
+    AclSymbol {
+        label: "crypto_hmac",
+        detail: "AIL source Crypto helper",
+        documentation: "Computes keyed HMAC Bytes for a Bytes message.",
+        insert_text: "crypto_hmac(${1:key}, ${2:message})",
+    },
+    AclSymbol {
+        label: "crypto.hmac",
+        detail: "AIL source Crypto helper",
+        documentation: "Dotted alias that computes keyed HMAC Bytes for a Bytes message.",
+        insert_text: "crypto.hmac(${1:key}, ${2:message})",
+    },
+    AclSymbol {
+        label: "crypto_constant_time_eq",
+        detail: "AIL source Crypto helper",
+        documentation: "Compares two Bytes buffers without early-exit timing leaks.",
+        insert_text: "crypto_constant_time_eq(${1:left}, ${2:right})",
+    },
+    AclSymbol {
+        label: "crypto.constant_time_eq",
+        detail: "AIL source Crypto helper",
+        documentation: "Dotted alias that compares two Bytes buffers without early-exit timing leaks.",
+        insert_text: "crypto.constant_time_eq(${1:left}, ${2:right})",
+    },
+    AclSymbol {
         label: "encoding_base64_encode",
         detail: "AIL source Encoding helper",
         documentation: "Encodes Bytes into standard Base64 Text.",

@@ -7,6 +7,7 @@ use super::*;
 mod bytes;
 mod collections;
 mod control;
+mod crypto;
 mod encoding;
 mod int;
 mod match_expr;
@@ -19,6 +20,7 @@ mod tuple;
 pub(super) use bytes::*;
 pub(super) use collections::*;
 pub(super) use control::*;
+pub(super) use crypto::*;
 pub(super) use encoding::*;
 pub(super) use int::*;
 pub(super) use match_expr::*;
@@ -36,6 +38,7 @@ pub(super) enum SourceLowerDiagnostic {
     CapabilityReference,
     CollectionArity,
     ControlExpression,
+    CryptoHelper,
     EncodingHelper,
     Expression,
     FieldAccess,
@@ -63,6 +66,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::CapabilityReference => "AIL_SOURCE_LOWER_CAPABILITY_REFERENCE",
             SourceLowerDiagnostic::CollectionArity => "AIL_SOURCE_LOWER_COLLECTION_ARITY",
             SourceLowerDiagnostic::ControlExpression => "AIL_SOURCE_LOWER_CONTROL_EXPRESSION",
+            SourceLowerDiagnostic::CryptoHelper => "AIL_SOURCE_LOWER_CRYPTO_HELPER",
             SourceLowerDiagnostic::EncodingHelper => "AIL_SOURCE_LOWER_ENCODING_HELPER",
             SourceLowerDiagnostic::Expression => "AIL_SOURCE_LOWER_EXPRESSION",
             SourceLowerDiagnostic::FieldAccess => "AIL_SOURCE_LOWER_FIELD_ACCESS",
@@ -89,6 +93,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::BytesHelper => "source.lower.bytes",
             SourceLowerDiagnostic::CapabilityReference => "source.lower.capability",
             SourceLowerDiagnostic::ControlExpression => "source.lower.control",
+            SourceLowerDiagnostic::CryptoHelper => "source.lower.crypto",
             SourceLowerDiagnostic::EncodingHelper => "source.lower.encoding",
             SourceLowerDiagnostic::Expression => "source.lower.expression",
             SourceLowerDiagnostic::IntHelper => "source.lower.int",
@@ -424,6 +429,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_encoding_helper_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
+    if let Some(lowered) = lower_source_crypto_helper_expr(expr, line_num)? {
         return Ok(lowered);
     }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {

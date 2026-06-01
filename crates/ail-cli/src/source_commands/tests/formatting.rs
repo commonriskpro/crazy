@@ -214,6 +214,28 @@ fn formats_source_text_replace_first_helper() {
 }
 
 #[test]
+fn formats_source_crypto_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn digest(value:Bytes)->Bytes=std.crypto.hash(value)
+fn mac(key:Bytes,message:Bytes)->Bytes=crypto.hmac(key,message)
+fn same(left:Bytes,right:Bytes)->Bool=std.crypto.constant_time_eq(left,right)
+"#,
+    )
+    .expect("source crypto helpers must format");
+
+    assert_eq!(item_count, 3);
+    assert!(formatted.contains("fn digest(value: Bytes) -> Bytes = crypto_hash(value)\n"));
+    assert!(
+        formatted
+            .contains("fn mac(key: Bytes, message: Bytes) -> Bytes = crypto_hmac(key, message)\n")
+    );
+    assert!(formatted.contains(
+        "fn same(left: Bytes, right: Bytes) -> Bool = crypto_constant_time_eq(left, right)\n"
+    ));
+}
+
+#[test]
 fn formats_source_encoding_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"

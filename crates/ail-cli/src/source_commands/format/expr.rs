@@ -667,6 +667,21 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if let Some((helper, arity)) = source_crypto_helper(&func)
+        && args.len() == arity
+    {
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "option.unwrap_or" && args.len() == 2 {
         return (
             format!(
@@ -991,6 +1006,17 @@ pub(super) fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn source_crypto_helper(func: &str) -> Option<(&'static str, usize)> {
+    match func {
+        "crypto.hash" | "std.crypto.hash" => Some(("crypto_hash", 1)),
+        "crypto.hmac" | "std.crypto.hmac" => Some(("crypto_hmac", 2)),
+        "crypto.constant_time_eq" | "std.crypto.constant_time_eq" => {
+            Some(("crypto_constant_time_eq", 2))
+        }
+        _ => None,
+    }
 }
 
 fn source_encoding_helper(func: &str) -> Option<(&'static str, usize)> {

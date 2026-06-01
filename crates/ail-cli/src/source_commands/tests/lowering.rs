@@ -1245,6 +1245,43 @@ grant main log.write
 }
 
 #[test]
+fn lowers_and_types_source_crypto_helpers() {
+    let program = parse_ail_source(
+        r#"
+fn digest(value: Bytes) -> Bytes = crypto_hash(value)
+fn mac(key: Bytes, message: Bytes) -> Bytes = crypto.hmac(key, message)
+fn same(left: Bytes, right: Bytes) -> Bool = std.crypto.constant_time_eq(left, right)
+"#,
+    )
+    .expect("source crypto helpers must parse and type-check");
+    let acl = source_program_to_acl(&program, "source_crypto".to_string());
+
+    assert_eq!(program.functions[0].body, "std.crypto.hash(value)");
+    assert_eq!(program.functions[1].body, "std.crypto.hmac(key, message)");
+    assert_eq!(
+        program.functions[2].body,
+        "std.crypto.constant_time_eq(left, right)"
+    );
+    assert!(
+        acl.contains("op create_function id=fn.digest return=Bytes body=std.crypto.hash(value)")
+    );
+    assert!(acl.contains(
+        "op create_function id=fn.same return=Bool body=std.crypto.constant_time_eq(left, right)"
+    ));
+}
+
+#[test]
+fn rejects_source_crypto_helper_type_mismatch() {
+    assert_lowering_diagnostic(
+        parse_ail_source("fn bad(input: Text) -> Bytes = crypto.hash(input)\n")
+            .map(|_| String::new()),
+        "AIL_SOURCE_TYPE_MISMATCH",
+        "source.type.mismatch",
+        "expected Bytes, got Text",
+    );
+}
+
+#[test]
 fn lowers_and_types_source_encoding_helpers() {
     let program = parse_ail_source(
         r#"

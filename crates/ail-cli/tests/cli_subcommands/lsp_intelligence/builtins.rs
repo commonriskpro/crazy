@@ -482,6 +482,59 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include dotted Map helpers; got: {dotted_map_items:?}"
     );
 
+    let crypto_completion_output = ail()
+        .args(["lsp", "--complete", "crypto_", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let crypto_completion = parse_json_output(&crypto_completion_output);
+    let crypto_items = crypto_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["crypto_hash", "crypto_hmac", "crypto_constant_time_eq"]
+            .iter()
+            .all(|label| crypto_items.iter().any(
+                |item| item["label"] == *label && item["detail"] == "AIL source Crypto helper"
+            )),
+        "completion must include AIL source crypto helpers; got: {crypto_items:?}"
+    );
+
+    let dotted_crypto_completion_output = ail()
+        .args(["lsp", "--complete", "crypto.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_crypto_completion = parse_json_output(&dotted_crypto_completion_output);
+    let dotted_crypto_items = dotted_crypto_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["crypto.hash", "crypto.hmac", "crypto.constant_time_eq"]
+            .iter()
+            .all(|label| dotted_crypto_items.iter().any(
+                |item| item["label"] == *label && item["detail"] == "AIL source Crypto helper"
+            )),
+        "completion must include dotted Crypto helpers; got: {dotted_crypto_items:?}"
+    );
+
+    let crypto_hover_output = ail()
+        .args(["lsp", "--hover-token", "crypto_constant_time_eq", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let crypto_hover = parse_json_output(&crypto_hover_output);
+    assert!(
+        crypto_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("without early-exit timing leaks"),
+        "hover must explain crypto_constant_time_eq; got: {crypto_hover}"
+    );
+
     let encoding_completion_output = ail()
         .args(["lsp", "--complete", "encoding_", "--json"])
         .assert()

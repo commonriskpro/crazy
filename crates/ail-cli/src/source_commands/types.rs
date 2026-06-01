@@ -354,6 +354,17 @@ pub(super) fn infer_source_call_type(
         | "std.encoding.hex_decode" => {
             infer_source_encoding_helper_type(func, args, scope, functions)
         }
+        "crypto.hash"
+        | "crypto_hash"
+        | "std.crypto.hash"
+        | "crypto.hmac"
+        | "crypto_hmac"
+        | "std.crypto.hmac"
+        | "crypto.constant_time_eq"
+        | "crypto_constant_time_eq"
+        | "std.crypto.constant_time_eq" => {
+            infer_source_crypto_helper_type(func, args, scope, functions)
+        }
         "record" => infer_source_record_type(args, scope, functions),
         "field" => infer_source_field_type(args, scope, functions),
         "update" => infer_source_update_type(args, scope, functions),
@@ -880,6 +891,35 @@ fn require_source_map_text_key_type<'a>(
         ));
     }
     Ok(Some(value_ty))
+}
+
+pub(super) fn infer_source_crypto_helper_type(
+    func: &str,
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let (expected, return_ty) = match func {
+        "crypto.hash" | "crypto_hash" | "std.crypto.hash" => (&["Bytes"][..], "Bytes"),
+        "crypto.hmac" | "crypto_hmac" | "std.crypto.hmac" => (&["Bytes", "Bytes"][..], "Bytes"),
+        "crypto.constant_time_eq" | "crypto_constant_time_eq" | "std.crypto.constant_time_eq" => {
+            (&["Bytes", "Bytes"][..], "Bool")
+        }
+        _ => unreachable!("checked source crypto helper"),
+    };
+    if args.len() != expected.len() {
+        return Err(source_expr_error(
+            "AIL_SOURCE_CRYPTO_ARITY",
+            "source.crypto.arity",
+            format!(
+                "function call `{func}` expects {} argument(s), got {}",
+                expected.len(),
+                args.len()
+            ),
+        ));
+    }
+    validate_source_arg_types(func, args, scope, functions, expected)?;
+    Ok(return_ty.to_string())
 }
 
 pub(super) fn infer_source_encoding_helper_type(
