@@ -734,10 +734,22 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "tuple_length(${1:tuple})",
     },
     AclSymbol {
+        label: "tuple.length",
+        detail: "AIL source Tuple helper",
+        documentation: "Dotted alias that returns the arity of a Tuple<T...> value as Int.",
+        insert_text: "tuple.length(${1:tuple})",
+    },
+    AclSymbol {
         label: "tuple_get",
         detail: "AIL source Tuple helper",
         documentation: "Returns Option<T> for a zero-based tuple index; None when out of bounds.",
         insert_text: "tuple_get(${1:tuple}, ${2:index})",
+    },
+    AclSymbol {
+        label: "tuple.get",
+        detail: "AIL source Tuple helper",
+        documentation: "Dotted alias that returns Option<T> for a zero-based tuple index.",
+        insert_text: "tuple.get(${1:tuple}, ${2:index})",
     },
     AclSymbol {
         label: "tuple_first",
@@ -746,10 +758,22 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "tuple_first(${1:tuple})",
     },
     AclSymbol {
+        label: "tuple.first",
+        detail: "AIL source Tuple helper",
+        documentation: "Dotted alias that returns Option<T> containing the first tuple element.",
+        insert_text: "tuple.first(${1:tuple})",
+    },
+    AclSymbol {
         label: "tuple_second",
         detail: "AIL source Tuple helper",
         documentation: "Returns Option<T> containing the second tuple element, or None when absent.",
         insert_text: "tuple_second(${1:tuple})",
+    },
+    AclSymbol {
+        label: "tuple.second",
+        detail: "AIL source Tuple helper",
+        documentation: "Dotted alias that returns Option<T> containing the second tuple element.",
+        insert_text: "tuple.second(${1:tuple})",
     },
     AclSymbol {
         label: "set_contains",
@@ -870,6 +894,12 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         detail: "AIL source log effect",
         documentation: "Namespaced alias for print(message); requires capability log.write and an explicit grant.",
         insert_text: "log_write(${1:\"message\"})",
+    },
+    AclSymbol {
+        label: "log.write",
+        detail: "AIL source log effect",
+        documentation: "Dotted alias for print(message); requires capability log.write and an explicit grant.",
+        insert_text: "log.write(${1:\"message\"})",
     },
     AclSymbol {
         label: "effect_call",

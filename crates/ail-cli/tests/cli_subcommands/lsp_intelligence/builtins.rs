@@ -37,8 +37,12 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
     assert!(
         print_items
             .iter()
-            .any(|item| item["label"] == "log_write" && item["detail"] == "AIL source log effect"),
-        "completion must include AIL source log_write helper; got: {print_items:?}"
+            .any(|item| item["label"] == "log_write" && item["detail"] == "AIL source log effect")
+            && print_items
+                .iter()
+                .any(|item| item["label"] == "log.write"
+                    && item["detail"] == "AIL source log effect"),
+        "completion must include AIL source log helpers; got: {print_items:?}"
     );
 
     let hover_output = ail()
@@ -1216,6 +1220,27 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             item["label"] == "tuple_first" && item["detail"] == "AIL source Tuple helper"
         }),
         "completion must include AIL source tuple helper; got: {tuple_items:?}"
+    );
+
+    let dotted_tuple_completion_output = ail()
+        .args(["lsp", "--complete", "tuple.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_tuple_completion = parse_json_output(&dotted_tuple_completion_output);
+    let dotted_tuple_items = dotted_tuple_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["tuple.length", "tuple.get", "tuple.first", "tuple.second"]
+            .iter()
+            .all(|label| {
+                dotted_tuple_items.iter().any(|item| {
+                    item["label"] == *label && item["detail"] == "AIL source Tuple helper"
+                })
+            }),
+        "completion must include dotted Tuple helpers; got: {dotted_tuple_items:?}"
     );
 
     let record_completion_output = ail()

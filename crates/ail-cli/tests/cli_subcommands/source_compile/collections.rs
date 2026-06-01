@@ -108,7 +108,13 @@ fn compile_file_accepts_source_tuple_collections() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("tuple.ail");
     source
-        .write_str("fn pair() -> Tuple<Int, Text> = tuple(42, \"answer\")\n")
+        .write_str(
+            "fn pair() -> Tuple<Int, Text> = tuple(42, \"answer\")\n\
+fn pair_len() -> Int = tuple.length(pair())\n\
+fn first() -> Option<Int> = tuple.first(pair())\n\
+fn second() -> Option<Text> = tuple.second(pair())\n\
+fn item(index: Int) -> Option<Text> = tuple.get(pair(), index)\n",
+        )
         .expect("source fixture must be written");
 
     ail()
