@@ -418,6 +418,46 @@ fn lsp_diagnose_reports_dotted_source_let_names() {
             .contains("local binding name `x.y` must not contain `.`")
     );
 }
+
+#[test]
+fn lsp_diagnose_reports_unsupported_source_let_type_span() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int {\n  let value: Mystery = 1\n  return value\n}\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["range"]["start"]["character"],
+        13
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["line"], 1);
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["character"], 20);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("unsupported source type `Mystery`")
+    );
+}
+
 #[test]
 fn lsp_diagnose_reports_non_finite_source_numeric_literals() {
     use assert_fs::prelude::*;

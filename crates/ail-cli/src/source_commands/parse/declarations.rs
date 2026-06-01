@@ -452,17 +452,19 @@ pub(super) fn source_block_to_expr(lines: &[(usize, usize, String)]) -> Result<S
         let value = value.trim();
         let (name, ty) = if let Some((name, ty)) = binding.split_once(':') {
             let name_column = trimmed_fragment_column(binding_column, name);
+            let ty_column = trimmed_fragment_column(binding_column + name.chars().count() + 1, ty);
             let name = name.trim();
             let ty = ty.trim();
             if ty.is_empty() {
-                return Err(source_parse_error_for_fragment(
+                return Err(source_parse_error_for_fragment_at(
                     *line_num,
+                    ty_column,
                     SourceParseDiagnostic::InvalidType,
-                    statement,
+                    ty,
                     "typed let statement requires a type annotation",
                 ));
             }
-            validate_source_type_name(ty, *line_num)?;
+            validate_source_type_name_at(ty, *line_num, ty_column)?;
             (name, name_column, Some(normalize_source_type_name(ty)))
         } else {
             (binding, binding_column, None)
