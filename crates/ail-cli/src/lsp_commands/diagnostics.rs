@@ -3,13 +3,18 @@ use serde_json::{Value, json};
 use ail_change::op_schema::validate_op_schemas;
 use ail_change::parser::parse_changeset;
 
-use crate::source_commands::{load_source_program_from_text, parse_ail_source};
+use crate::source_commands::{
+    SourceIgnoredExpressionStatement, load_source_program_from_text, parse_ail_source,
+    source_ignored_expression_statement_diagnostics,
+};
 
 use super::source_helpers::{file_path_from_uri, is_ail_source_uri};
 
 pub(super) const LSP_DIAGNOSTIC_ACL_PARSER: &str = "AIL_ACL_PARSER";
 pub(super) const LSP_DIAGNOSTIC_ACL_SCHEMA: &str = "AIL_ACL_SCHEMA";
 pub(super) const LSP_DIAGNOSTIC_SOURCE_IMPORT: &str = "AIL_SOURCE_IMPORT";
+pub(super) const LSP_DIAGNOSTIC_SOURCE_IGNORED_EXPRESSION: &str =
+    "AIL_SOURCE_LSP_IGNORED_EXPRESSION";
 pub(super) const LSP_DIAGNOSTIC_SOURCE_PARSER: &str = "AIL_SOURCE_PARSER";
 
 pub(super) fn diagnostics_for_document(uri: &str, text: &str) -> Vec<Value> {
@@ -75,7 +80,10 @@ fn diagnostics_for_ail_source_document_path(path: &std::path::Path, text: &str) 
     }
 
     match load_source_program_from_text(path, text) {
-        Ok(_) => vec![],
+        Ok(_) => source_ignored_expression_statement_diagnostics(text)
+            .into_iter()
+            .map(|ignored| ignored_expression_statement_diagnostic(text, ignored))
+            .collect(),
         Err(err) => {
             let message = err.to_string();
             vec![diagnostic_for_source_error(
@@ -151,6 +159,48 @@ fn diagnostic_for_source_error(
     diagnostic
 }
 
+fn ignored_expression_statement_diagnostic(
+    text: &str,
+    ignored: SourceIgnoredExpressionStatement,
+) -> Value {
+    let line = ignored.line_num.saturating_sub(1) as u64;
+    let (start_character, end_character) = line_character_range(text, line).unwrap_or((0, 1));
+    let message = "ignored expression statement has no direct effect; assign it with `let` or make it the returned expression".to_string();
+    let mut diagnostic = diagnostic_with_range_and_severity(
+        line,
+        start_character,
+        line,
+        end_character,
+        message,
+        "ail-source-lint",
+        LSP_DIAGNOSTIC_SOURCE_IGNORED_EXPRESSION,
+        2,
+    );
+    let span = json!({
+        "start": { "line": line, "character": start_character },
+        "end": { "line": line, "character": end_character },
+    });
+    diagnostic["data"] = json!({
+        "ailDiagnostic": {
+            "code": LSP_DIAGNOSTIC_SOURCE_IGNORED_EXPRESSION,
+            "category": "source.lsp.ignored_expression",
+            "family": "AIL_SOURCE_LSP",
+            "span": span,
+        }
+    });
+    diagnostic
+}
+
+fn line_character_range(text: &str, line: u64) -> Option<(u64, u64)> {
+    let line_text = text.lines().nth(line as usize)?;
+    let start = line_text
+        .chars()
+        .position(|ch| !ch.is_whitespace())
+        .unwrap_or(0) as u64;
+    let end = line_text.chars().count().max(start as usize + 1) as u64;
+    Some((start, end))
+}
+
 struct SourceDiagnosticMetadata {
     code: String,
     category: String,
@@ -223,6 +273,28 @@ fn diagnostic_with_range(
             "end": { "line": end_line, "character": end_character }
         },
         "severity": 1,
+        "source": source,
+        "code": code,
+        "message": message,
+    })
+}
+
+fn diagnostic_with_range_and_severity(
+    start_line: u64,
+    start_character: u64,
+    end_line: u64,
+    end_character: u64,
+    message: String,
+    source: &str,
+    code: &str,
+    severity: u64,
+) -> Value {
+    json!({
+        "range": {
+            "start": { "line": start_line, "character": start_character },
+            "end": { "line": end_line, "character": end_character }
+        },
+        "severity": severity,
         "source": source,
         "code": code,
         "message": message,

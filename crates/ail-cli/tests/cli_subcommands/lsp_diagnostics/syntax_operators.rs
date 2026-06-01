@@ -198,6 +198,52 @@ fn lsp_diagnose_reports_reserved_generated_statement_binding_names() {
 }
 
 #[test]
+fn lsp_diagnose_warns_for_ignored_pure_expression_statements() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int {\n  1 + 2\n  return 0\n}\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 0);
+    assert_eq!(v["data"]["diagnostics"][0]["severity"], 2);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_LSP_IGNORED_EXPRESSION"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.lsp.ignored_expression"
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["range"]["start"]["character"],
+        2
+    );
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("ignored expression statement has no direct effect")
+    );
+}
+
+#[test]
 fn lsp_diagnose_reports_source_match_expression_shape_code() {
     use assert_fs::prelude::*;
 
