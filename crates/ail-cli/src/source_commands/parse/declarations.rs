@@ -10,51 +10,66 @@ pub(super) fn parse_source_module(
     Ok(module.to_string())
 }
 
-pub(super) fn parse_source_import(rest: &str, line_num: usize) -> Result<String, CliError> {
-    let import = rest.trim();
-    let Some(import) = import.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
-        return Err(source_parse_error_for_fragment(
+pub(super) fn parse_source_import(
+    rest: &str,
+    line_num: usize,
+    base_column: usize,
+) -> Result<String, CliError> {
+    let raw_import_column = trimmed_fragment_column(base_column, rest);
+    let raw_import = rest.trim();
+    let Some(import) = raw_import
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+    else {
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            raw_import_column,
             SourceParseDiagnostic::InvalidDeclaration,
-            rest,
+            raw_import,
             "import declaration requires `use \"relative/path.ail\"`",
         ));
     };
+    let import_column = raw_import_column + 1;
     if import.is_empty() || import.contains('\0') || Path::new(import).is_absolute() {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            import_column,
             SourceParseDiagnostic::InvalidDeclaration,
             import,
             "import path must be a non-empty relative path",
         ));
     }
     if import.contains('\\') {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            import_column,
             SourceParseDiagnostic::InvalidDeclaration,
             import,
             format!("import path `{import}` must use `/` separators"),
         ));
     }
     if import.contains(':') {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            import_column,
             SourceParseDiagnostic::InvalidDeclaration,
             import,
             format!("import path `{import}` must not contain `:`"),
         ));
     }
     if import.contains("//") {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            import_column,
             SourceParseDiagnostic::InvalidDeclaration,
             import,
             format!("import path `{import}` must not contain empty path segments"),
         ));
     }
     if import.chars().any(char::is_whitespace) {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            import_column,
             SourceParseDiagnostic::InvalidDeclaration,
             import,
             format!("import path `{import}` must not contain whitespace"),
@@ -64,24 +79,27 @@ pub(super) fn parse_source_import(rest: &str, line_num: usize) -> Result<String,
         .components()
         .any(|component| matches!(component, Component::ParentDir))
     {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            import_column,
             SourceParseDiagnostic::InvalidDeclaration,
             import,
             format!("import path `{import}` must not contain `..`"),
         ));
     }
     if !import.starts_with("./") {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            import_column,
             SourceParseDiagnostic::InvalidDeclaration,
             import,
             format!("local import path `{import}` must start with `./`"),
         ));
     }
     if Path::new(import).extension().and_then(|ext| ext.to_str()) != Some("ail") {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            import_column,
             SourceParseDiagnostic::InvalidDeclaration,
             import,
             format!("import path `{import}` must end with `.ail`"),

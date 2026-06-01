@@ -63,7 +63,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
             }
             module = Some(parse_source_module(rest, *line_num, *column + 7)?);
         } else if let Some(rest) = statement.strip_prefix("use ") {
-            let import = parse_source_import(rest, *line_num)?;
+            let import = parse_source_import(rest, *line_num, *column + 4)?;
             if imports.iter().any(|existing| existing == &import) {
                 return Err(source_parse_error_for_fragment(
                     *line_num,
