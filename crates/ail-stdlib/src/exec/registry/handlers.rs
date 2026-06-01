@@ -865,6 +865,76 @@ pub(super) fn numeric_clamp(args: &[StdlibValue]) -> Result<StdlibValue, StdlibE
     Ok(StdlibValue::Int(numeric::clamp(*value, *low, *high)))
 }
 
+pub(super) fn numeric_abs_or(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(value), StdlibValue::Int(fallback)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::abs_or(*value, *fallback)))
+}
+
+pub(super) fn numeric_neg_or(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(value), StdlibValue::Int(fallback)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::neg_or(*value, *fallback)))
+}
+
+pub(super) fn numeric_add_or(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b), StdlibValue::Int(fallback)) =
+        (&args[0], &args[1], &args[2])
+    else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::add_or(*a, *b, *fallback)))
+}
+
+pub(super) fn numeric_sub_or(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b), StdlibValue::Int(fallback)) =
+        (&args[0], &args[1], &args[2])
+    else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::sub_or(*a, *b, *fallback)))
+}
+
+pub(super) fn numeric_mul_or(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b), StdlibValue::Int(fallback)) =
+        (&args[0], &args[1], &args[2])
+    else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::mul_or(*a, *b, *fallback)))
+}
+
+pub(super) fn numeric_div_or(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let (StdlibValue::Int(value), StdlibValue::Int(divisor), StdlibValue::Int(fallback)) =
+        (&args[0], &args[1], &args[2])
+    else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::div_or(
+        *value, *divisor, *fallback,
+    )))
+}
+
+pub(super) fn numeric_rem_or(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let (StdlibValue::Int(value), StdlibValue::Int(divisor), StdlibValue::Int(fallback)) =
+        (&args[0], &args[1], &args[2])
+    else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::rem_or(
+        *value, *divisor, *fallback,
+    )))
+}
+
 pub(super) fn numeric_wrapping_add(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 2)?;
     let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {

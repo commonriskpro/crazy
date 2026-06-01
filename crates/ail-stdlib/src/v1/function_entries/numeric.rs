@@ -192,6 +192,55 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
             ],
         }),
     });
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.abs_or",
+        "abs_or",
+        &["fallback semantics chosen explicitly"],
+        &["returns fallback when absolute value would overflow"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.neg_or",
+        "neg_or",
+        &["fallback semantics chosen explicitly"],
+        &["returns fallback when negation would overflow"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.add_or",
+        "add_or",
+        &["fallback semantics chosen explicitly"],
+        &["returns fallback on addition overflow"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.sub_or",
+        "sub_or",
+        &["fallback semantics chosen explicitly"],
+        &["returns fallback on subtraction underflow or overflow"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.mul_or",
+        "mul_or",
+        &["fallback semantics chosen explicitly"],
+        &["returns fallback on multiplication overflow"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.div_or",
+        "div_or",
+        &["fallback semantics chosen explicitly"],
+        &["returns fallback on divide-by-zero or division overflow"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.rem_or",
+        "rem_or",
+        &["fallback semantics chosen explicitly"],
+        &["returns fallback on divide-by-zero or remainder overflow"],
+    ));
 }
 
 fn numeric_i64_entry(id: &str, name: &str, requires: &[&str], ensures: &[&str]) -> StdlibEntry {

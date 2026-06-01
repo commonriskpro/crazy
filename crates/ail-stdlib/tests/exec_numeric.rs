@@ -241,6 +241,79 @@ fn clamp_type_error_returns_err() {
     assert_eq!(result, Err(StdlibExecError::Type { expected: "Int" }));
 }
 
+#[test]
+fn fallback_helpers_return_operation_or_fallback() {
+    for (id, args, expected) in [
+        (
+            "std.numeric.abs_or",
+            vec![StdlibValue::Int(-7), StdlibValue::Int(99)],
+            7,
+        ),
+        (
+            "std.numeric.abs_or",
+            vec![StdlibValue::Int(i64::MIN), StdlibValue::Int(99)],
+            99,
+        ),
+        (
+            "std.numeric.neg_or",
+            vec![StdlibValue::Int(-5), StdlibValue::Int(99)],
+            5,
+        ),
+        (
+            "std.numeric.neg_or",
+            vec![StdlibValue::Int(i64::MIN), StdlibValue::Int(99)],
+            99,
+        ),
+        (
+            "std.numeric.add_or",
+            vec![
+                StdlibValue::Int(i64::MAX),
+                StdlibValue::Int(1),
+                StdlibValue::Int(19),
+            ],
+            19,
+        ),
+        (
+            "std.numeric.sub_or",
+            vec![
+                StdlibValue::Int(i64::MIN),
+                StdlibValue::Int(1),
+                StdlibValue::Int(23),
+            ],
+            23,
+        ),
+        (
+            "std.numeric.mul_or",
+            vec![
+                StdlibValue::Int(i64::MAX),
+                StdlibValue::Int(2),
+                StdlibValue::Int(29),
+            ],
+            29,
+        ),
+        (
+            "std.numeric.div_or",
+            vec![
+                StdlibValue::Int(1),
+                StdlibValue::Int(0),
+                StdlibValue::Int(5),
+            ],
+            5,
+        ),
+        (
+            "std.numeric.rem_or",
+            vec![
+                StdlibValue::Int(i64::MIN),
+                StdlibValue::Int(-1),
+                StdlibValue::Int(13),
+            ],
+            13,
+        ),
+    ] {
+        assert_eq!(call_pure_stdlib(id, &args), Ok(StdlibValue::Int(expected)));
+    }
+}
+
 // ── STDLIB-EXEC-NUM-7: type error returns Err(Type) ───────────────────────
 
 #[test]

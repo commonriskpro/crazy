@@ -4,8 +4,9 @@
 // Spec: G26 stdlib-impl, Requirements R1.1–R1.5.
 
 use ail_stdlib::numeric::{
-    checked_add, checked_mul, checked_sub, clamp, max, min, saturating_add, saturating_mul,
-    saturating_neg, saturating_sub, wrapping_add, wrapping_mul, wrapping_neg, wrapping_sub,
+    abs_or, add_or, checked_add, checked_mul, checked_sub, clamp, div_or, max, min, mul_or, neg_or,
+    rem_or, saturating_add, saturating_mul, saturating_neg, saturating_sub, sub_or, wrapping_add,
+    wrapping_mul, wrapping_neg, wrapping_sub,
 };
 
 // ── Bounds helpers ───────────────────────────────────────────────────────
@@ -27,6 +28,26 @@ fn clamp_bounds_signed_int() {
     assert_eq!(clamp(-5, 0, 10), 0);
     assert_eq!(clamp(15, 0, 10), 10);
     assert_eq!(clamp(7, 0, 10), 7);
+}
+
+#[test]
+fn fallback_helpers_return_operation_or_fallback() {
+    assert_eq!(abs_or(-7, 99), 7);
+    assert_eq!(abs_or(i64::MIN, 99), 99);
+    assert_eq!(neg_or(-5, 99), 5);
+    assert_eq!(neg_or(i64::MIN, 99), 99);
+    assert_eq!(add_or(40, 2, -1), 42);
+    assert_eq!(add_or(i64::MAX, 1, 19), 19);
+    assert_eq!(sub_or(50, 8, -1), 42);
+    assert_eq!(sub_or(i64::MIN, 1, 23), 23);
+    assert_eq!(mul_or(6, 7, -1), 42);
+    assert_eq!(mul_or(i64::MAX, 2, 29), 29);
+    assert_eq!(div_or(21, 3, -1), 7);
+    assert_eq!(div_or(1, 0, 5), 5);
+    assert_eq!(div_or(i64::MIN, -1, 11), 11);
+    assert_eq!(rem_or(22, 5, -1), 2);
+    assert_eq!(rem_or(1, 0, 6), 6);
+    assert_eq!(rem_or(i64::MIN, -1, 13), 13);
 }
 
 // ── R1.1 + R1.2: checked_add ──────────────────────────────────────────────

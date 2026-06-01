@@ -51,6 +51,41 @@ pub fn checked_mul(a: i64, b: i64) -> Option<i64> {
     a.checked_mul(b)
 }
 
+/// Return `abs(value)`, or `fallback` when `value == i64::MIN`.
+pub fn abs_or(value: i64, fallback: i64) -> i64 {
+    value.checked_abs().unwrap_or(fallback)
+}
+
+/// Return `-value`, or `fallback` when `value == i64::MIN`.
+pub fn neg_or(value: i64, fallback: i64) -> i64 {
+    value.checked_neg().unwrap_or(fallback)
+}
+
+/// Add two `i64` values, returning `fallback` on overflow.
+pub fn add_or(a: i64, b: i64, fallback: i64) -> i64 {
+    a.checked_add(b).unwrap_or(fallback)
+}
+
+/// Subtract two `i64` values, returning `fallback` on underflow or overflow.
+pub fn sub_or(a: i64, b: i64, fallback: i64) -> i64 {
+    a.checked_sub(b).unwrap_or(fallback)
+}
+
+/// Multiply two `i64` values, returning `fallback` on overflow.
+pub fn mul_or(a: i64, b: i64, fallback: i64) -> i64 {
+    a.checked_mul(b).unwrap_or(fallback)
+}
+
+/// Divide two `i64` values, returning `fallback` on divide-by-zero or overflow.
+pub fn div_or(value: i64, divisor: i64, fallback: i64) -> i64 {
+    value.checked_div(divisor).unwrap_or(fallback)
+}
+
+/// Remainder of two `i64` values, returning `fallback` on divide-by-zero or overflow.
+pub fn rem_or(value: i64, divisor: i64, fallback: i64) -> i64 {
+    value.checked_rem(divisor).unwrap_or(fallback)
+}
+
 // ── Wrapping arithmetic ───────────────────────────────────────────────────
 
 /// Add two `i64` values with defined two's-complement wrapping.
