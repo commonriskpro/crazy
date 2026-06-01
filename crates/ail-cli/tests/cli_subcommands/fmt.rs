@@ -167,6 +167,43 @@ fn fmt_ail_source_write_makes_check_pass() {
         .assert()
         .success();
 }
+
+#[test]
+fn fmt_ail_source_preserves_else_if_chain() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn bucket(x:Int)->Int{\n\
+return if gt(x,10){3}else if gt(x,0){2}else{1}\n\
+}\n",
+        )
+        .expect("write source");
+
+    let output = ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    let formatted = v["data"]["formatted"]
+        .as_str()
+        .expect("formatted must be string");
+
+    assert!(formatted.contains("  return if x > 10 { 3 } else if x > 0 { 2 } else { 1 }\n"));
+    assert!(
+        !formatted.contains("else { if x > 0"),
+        "formatter must keep else-if as first-class source syntax; got:\n{formatted}"
+    );
+}
 #[test]
 fn fmt_stdin_json_detects_ail_source() {
     let output = ail()

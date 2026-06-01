@@ -72,10 +72,10 @@ pub(super) fn format_source_expr_node(
         }
         return (
             format!(
-                "if {} {{ {} }} else {{ {} }}",
+                "if {} {{ {} }} else {}",
                 format_source_expr(&args[0], module, constants),
                 format_source_expr(&args[1], module, constants),
-                format_source_expr(&args[2], module, constants)
+                format_source_else_branch(&args[2], module, constants)
             ),
             IF_PRECEDENCE,
         );
@@ -927,6 +927,34 @@ pub(super) fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn format_source_else_branch(
+    expr: &str,
+    module: Option<&str>,
+    constants: &BTreeMap<String, String>,
+) -> String {
+    let expr = expr.trim();
+    if let Some((func, args)) = parse_source_call(expr)
+        && func == "if"
+        && args.len() == 3
+        && !source_if_prefers_helper(&args)
+    {
+        return format!(
+            "if {} {{ {} }} else {}",
+            format_source_expr(&args[0], module, constants),
+            format_source_expr(&args[1], module, constants),
+            format_source_else_branch(&args[2], module, constants)
+        );
+    }
+    format!("{{ {} }}", format_source_expr(expr, module, constants))
+}
+
+fn source_if_prefers_helper(args: &[String]) -> bool {
+    source_if_as_first_or(args).is_some()
+        || source_if_as_last_or(args).is_some()
+        || source_if_as_get_or(args).is_some()
+        || source_if_as_list_get(args).is_some()
 }
 
 pub(super) fn format_source_match_expr(
