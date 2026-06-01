@@ -61,6 +61,27 @@ test main_addition = eq(add(20, 22), 42);
 }
 
 #[test]
+fn parses_source_block_expression_statements() {
+    let program = parse_ail_source(
+        r#"capability log.write
+fn main() -> Unit {
+  log.write("hi")
+  return ()
+}
+grant main log.write
+"#,
+    )
+    .expect("source block expression statement must parse");
+
+    assert_eq!(program.functions[0].name, "fn.main");
+    assert_eq!(program.functions[0].return_type, "Unit");
+    assert_eq!(
+        program.functions[0].body,
+        r#"let(__ail_stmt_3, print("hi"), unit())"#
+    );
+}
+
+#[test]
 fn rejects_source_parser_failures_with_stable_diagnostic_catalog() {
     let cases = [
         (

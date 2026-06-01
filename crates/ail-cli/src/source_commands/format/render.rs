@@ -58,6 +58,13 @@ pub(super) fn render_source_function(
 
     out.push_str(&format!("{signature} {{\n"));
     for binding in lets {
+        if binding.is_statement {
+            out.push_str(&format!(
+                "  {}\n",
+                format_source_expr(&binding.value, module, constants)
+            ));
+            continue;
+        }
         let annotation = binding
             .ty
             .as_ref()
@@ -95,6 +102,13 @@ pub(super) fn render_source_test(
             out.push_str(&format!("test {name} -> {} {{\n", test.return_type));
         }
         for binding in lets {
+            if binding.is_statement {
+                out.push_str(&format!(
+                    "  {}\n",
+                    format_source_expr(&binding.value, module, constants)
+                ));
+                continue;
+            }
             let annotation = binding
                 .ty
                 .as_ref()
@@ -154,6 +168,7 @@ pub(super) struct SourceLetBinding {
     name: String,
     ty: Option<String>,
     value: String,
+    is_statement: bool,
 }
 
 pub(super) fn source_let_chain(body: &str) -> (Vec<SourceLetBinding>, String) {
@@ -166,6 +181,7 @@ pub(super) fn source_let_chain(body: &str) -> (Vec<SourceLetBinding>, String) {
                     name: name.clone(),
                     ty: None,
                     value: value.clone(),
+                    is_statement: is_source_statement_binding_name(name),
                 });
                 current = next.clone();
             }
@@ -174,6 +190,7 @@ pub(super) fn source_let_chain(body: &str) -> (Vec<SourceLetBinding>, String) {
                     name: name.clone(),
                     ty: Some(ty.clone()),
                     value: value.clone(),
+                    is_statement: false,
                 });
                 current = next.clone();
             }

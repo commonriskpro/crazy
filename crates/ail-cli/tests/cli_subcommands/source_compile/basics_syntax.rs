@@ -58,6 +58,27 @@ fn compile_file_accepts_source_unit_literal() {
         .assert()
         .success();
 }
+
+#[test]
+fn compile_file_accepts_source_block_expression_statement() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("block_statement.ail");
+    source
+        .write_str(
+            "capability log.write\nfn main() -> Unit {\n  log.write(\"hi\")\n  return ()\n}\ngrant main log.write\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
 #[test]
 fn compile_file_accepts_source_consts() {
     use assert_fs::prelude::*;

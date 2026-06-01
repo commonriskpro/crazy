@@ -646,6 +646,31 @@ fn list_len(values:List<Int>)->Int=list.length(values)
 }
 
 #[test]
+fn formats_source_block_expression_statements() {
+    let (formatted, item_count) = format_ail_source(
+        r#"capability log.write
+fn main()->Unit{
+log.write("hi")
+return ()
+}
+grant main log.write
+"#,
+    )
+    .expect("source block expression statement must format");
+
+    assert_eq!(item_count, 3);
+    assert_eq!(
+        formatted,
+        "capability log.write\n\
+fn main() -> Unit {\n\
+  print(\"hi\")\n\
+  return ()\n\
+}\n\
+grant main log.write\n"
+    );
+}
+
+#[test]
 fn formats_source_project_fixture_idempotently() {
     let src = r#"
 module app

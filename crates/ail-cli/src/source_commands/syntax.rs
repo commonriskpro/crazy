@@ -285,6 +285,16 @@ pub(super) fn is_source_local_ident(name: &str) -> bool {
     is_source_ident(name) && !name.contains('.')
 }
 
+pub(super) const SOURCE_STATEMENT_BINDING_PREFIX: &str = "__ail_stmt_";
+
+pub(super) fn source_statement_binding_name(line_num: usize) -> String {
+    format!("{SOURCE_STATEMENT_BINDING_PREFIX}{line_num}")
+}
+
+pub(super) fn is_source_statement_binding_name(name: &str) -> bool {
+    name.starts_with(SOURCE_STATEMENT_BINDING_PREFIX) && is_source_local_ident(name)
+}
+
 pub(super) fn validate_source_local_expr_name(name: &str) -> Result<(), CliError> {
     if !is_source_ident(name) {
         return Err(source_parse_error_unlocated(

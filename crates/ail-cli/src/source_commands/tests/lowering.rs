@@ -1162,6 +1162,30 @@ fn main() -> Int {
 }
 
 #[test]
+fn lowers_source_block_expression_statement_to_ignored_let() {
+    let program = parse_ail_source(
+        r#"capability log.write
+fn main() -> Unit {
+  log.write("hi")
+  return ()
+}
+grant main log.write
+"#,
+    )
+    .expect("source");
+    let acl = source_program_to_acl(&program, "source_block_statement".to_string());
+
+    assert_eq!(
+        program.functions[0].body,
+        r#"let(__ail_stmt_3, print("hi"), unit())"#
+    );
+    assert!(acl.contains(
+        r#"op create_function id=fn.main return=Unit body=let(__ail_stmt_3, print("hi"), unit())"#
+    ));
+    assert!(acl.contains("op grant target=fn.main capability=log.write"));
+}
+
+#[test]
 fn lowers_source_unit_literal_to_compiler_unit_call() {
     let program = parse_ail_source("fn noop() -> Unit = ()\n").expect("source must parse");
     let acl = source_program_to_acl(&program, "source_unit".to_string());

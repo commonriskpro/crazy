@@ -486,12 +486,10 @@ pub(super) fn source_block_to_expr(lines: &[(usize, usize, String)]) -> Result<S
     let mut body = lower_source_expr(final_expr, *last_line)?;
     for (line_num, column, statement) in lines[..lines.len().saturating_sub(1)].iter().rev() {
         let Some(rest) = statement.strip_prefix("let ") else {
-            return Err(source_parse_error_for_fragment(
-                *line_num,
-                SourceParseDiagnostic::InvalidDeclaration,
-                statement,
-                "only `let name = expression` statements may precede the final expression",
-            ));
+            let lowered_statement = lower_source_expr(statement, *line_num)?;
+            let name = source_statement_binding_name(*line_num);
+            body = format!("let({name}, {lowered_statement}, {body})");
+            continue;
         };
         let rest_column = *column + 4;
         let (binding, value) = rest.split_once('=').ok_or_else(|| {
