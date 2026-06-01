@@ -50,6 +50,12 @@ pub(super) const AIL_SOURCE_SYNTAX_SYMBOLS: &[AclSymbol] = &[
         insert_text: "Unit",
     },
     AclSymbol {
+        label: "()",
+        detail: "AIL source Unit literal",
+        documentation: "Unit literal value used when an expression completes without a meaningful payload.",
+        insert_text: "()",
+    },
+    AclSymbol {
         label: "List",
         detail: "AIL source generic type",
         documentation: "Parameterized list type written as List<T> for ordered homogeneous values.",
