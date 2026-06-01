@@ -553,7 +553,10 @@ fn lsp_diagnose_accepts_source_list_get_helper() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("main.ail");
     source
-        .write_str("fn item(values: List<Int>, idx: Int) -> Option<Int> = list_get(values, idx)\n")
+        .write_str(
+            "fn item(values: List<Int>, idx: Int) -> Option<Int> = list_get(values, idx)\n\
+fn dotted_item(values: List<Int>, idx: Int) -> Option<Int> = list.get(values, idx)\n",
+        )
         .expect("source fixture must be written");
 
     let output = ail()
@@ -674,7 +677,9 @@ fn lsp_diagnose_accepts_source_list_mutation_helpers() {
         .write_str(
             "fn values() -> List<Int> = list(1, 2)
 fn pushed() -> List<Int> = list_push(values(), 3)
+fn dotted_pushed() -> List<Int> = list.push(values(), 4)
 fn merged() -> List<Int> = list_concat(values(), list(3, 4))
+fn dotted_merged() -> List<Int> = list.concat(values(), list(5, 6))
 ",
         )
         .expect("source fixture must be written");
@@ -704,10 +709,15 @@ fn lsp_diagnose_accepts_source_queue_helpers() {
         .write_str(
             "fn queue() -> List<Int> = list(1, 2)
 fn pushed() -> List<Int> = queue_push_back(queue(), 3)
+fn dotted_pushed() -> List<Int> = queue.push_back(queue(), 4)
 fn popped() -> Option<Tuple<Int, List<Int>>> = queue_pop_front(queue())
+fn dotted_popped() -> Option<Tuple<Int, List<Int>>> = queue.pop_front(queue())
 fn peeked() -> Option<Int> = queue_peek_front(queue())
+fn dotted_peeked() -> Option<Int> = queue.peek_front(queue())
 fn count() -> Int = queue_length(queue())
+fn dotted_count() -> Int = queue.length(queue())
 fn empty() -> Bool = queue_is_empty(queue())
+fn dotted_empty() -> Bool = queue.is_empty(queue())
 ",
         )
         .expect("source fixture must be written");
@@ -737,8 +747,11 @@ fn lsp_diagnose_accepts_source_set_helpers() {
         .write_str(
             "fn ids() -> Set<Int> = set(1, 2)
 fn has_two() -> Bool = set_contains(ids(), 2)
+fn dotted_has_two() -> Bool = set.contains(ids(), 2)
 fn count() -> Int = set_length(ids())
+fn dotted_count() -> Int = set.length(ids())
 fn updated() -> Set<Int> = set_insert(ids(), 3)
+fn dotted_updated() -> Set<Int> = set.insert(ids(), 4)
 ",
         )
         .expect("source fixture must be written");
@@ -768,9 +781,13 @@ fn lsp_diagnose_accepts_source_map_helpers() {
         .write_str(
             r#"fn labels() -> Map<Text, Int> = map("one", 1)
 fn maybe() -> Option<Int> = map_get(labels(), "one")
+fn dotted_maybe() -> Option<Int> = map.get(labels(), "one")
 fn has() -> Bool = map_contains_key(labels(), "one")
+fn dotted_has() -> Bool = map.contains_key(labels(), "one")
 fn count() -> Int = map_length(labels())
+fn dotted_count() -> Int = map.length(labels())
 fn updated() -> Map<Text, Int> = map_insert(labels(), "two", 2)
+fn dotted_updated() -> Map<Text, Int> = map.insert(labels(), "three", 3)
 "#,
         )
         .expect("source fixture must be written");

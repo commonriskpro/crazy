@@ -392,6 +392,92 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include AIL source map_insert helper; got: {map_insert_items:?}"
     );
 
+    let dotted_list_completion_output = ail()
+        .args(["lsp", "--complete", "list.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_list_completion = parse_json_output(&dotted_list_completion_output);
+    let dotted_list_items = dotted_list_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["list.get", "list.push", "list.concat", "list.length"]
+            .iter()
+            .all(|label| dotted_list_items
+                .iter()
+                .any(|item| item["label"] == *label && item["detail"] == "AIL source List helper"))
+            && dotted_list_items
+                .iter()
+                .any(|item| item["label"] == "list.is_empty"
+                    && item["detail"] == "AIL source List predicate"),
+        "completion must include dotted List helpers; got: {dotted_list_items:?}"
+    );
+
+    let dotted_queue_completion_output = ail()
+        .args(["lsp", "--complete", "queue.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_queue_completion = parse_json_output(&dotted_queue_completion_output);
+    let dotted_queue_items = dotted_queue_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        [
+            "queue.push_back",
+            "queue.pop_front",
+            "queue.peek_front",
+            "queue.length",
+            "queue.is_empty",
+        ]
+        .iter()
+        .all(|label| dotted_queue_items
+            .iter()
+            .any(|item| item["label"] == *label && item["detail"] == "AIL source Queue helper")),
+        "completion must include dotted Queue helpers; got: {dotted_queue_items:?}"
+    );
+
+    let dotted_set_completion_output = ail()
+        .args(["lsp", "--complete", "set.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_set_completion = parse_json_output(&dotted_set_completion_output);
+    let dotted_set_items = dotted_set_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["set.contains", "set.length", "set.insert"]
+            .iter()
+            .all(|label| dotted_set_items
+                .iter()
+                .any(|item| item["label"] == *label && item["detail"] == "AIL source Set helper")),
+        "completion must include dotted Set helpers; got: {dotted_set_items:?}"
+    );
+
+    let dotted_map_completion_output = ail()
+        .args(["lsp", "--complete", "map.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_map_completion = parse_json_output(&dotted_map_completion_output);
+    let dotted_map_items = dotted_map_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["map.get", "map.contains_key", "map.length", "map.insert"]
+            .iter()
+            .all(|label| dotted_map_items
+                .iter()
+                .any(|item| item["label"] == *label && item["detail"] == "AIL source Map helper")),
+        "completion must include dotted Map helpers; got: {dotted_map_items:?}"
+    );
+
     let text_eq_completion_output = ail()
         .args(["lsp", "--complete", "text_eq", "--json"])
         .assert()

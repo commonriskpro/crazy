@@ -212,6 +212,12 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "list_length(${1:list})",
     },
     AclSymbol {
+        label: "list.length",
+        detail: "AIL source List helper",
+        documentation: "Dotted alias that returns the length of a List value.",
+        insert_text: "list.length(${1:list})",
+    },
+    AclSymbol {
         label: "is_empty",
         detail: "AIL source sized predicate",
         documentation: "Returns true when a Text or List value has length 0.",
@@ -228,6 +234,12 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         detail: "AIL source List predicate",
         documentation: "Returns true when a List value has length 0.",
         insert_text: "list_is_empty(${1:list})",
+    },
+    AclSymbol {
+        label: "list.is_empty",
+        detail: "AIL source List predicate",
+        documentation: "Dotted alias that returns true when a List value has length 0.",
+        insert_text: "list.is_empty(${1:list})",
     },
     AclSymbol {
         label: "text_eq",
@@ -386,10 +398,22 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "list_get(${1:list}, ${2:index})",
     },
     AclSymbol {
+        label: "list.get",
+        detail: "AIL source List helper",
+        documentation: "Dotted alias that returns Option<T> for a zero-based List index.",
+        insert_text: "list.get(${1:list}, ${2:index})",
+    },
+    AclSymbol {
         label: "queue_push_back",
         detail: "AIL source Queue helper",
         documentation: "Returns a queue List<T> with the supplied value appended at the back.",
         insert_text: "queue_push_back(${1:queue}, ${2:value})",
+    },
+    AclSymbol {
+        label: "queue.push_back",
+        detail: "AIL source Queue helper",
+        documentation: "Dotted alias that appends a value at the back of a queue List<T>.",
+        insert_text: "queue.push_back(${1:queue}, ${2:value})",
     },
     AclSymbol {
         label: "queue_pop_front",
@@ -398,10 +422,22 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "queue_pop_front(${1:queue})",
     },
     AclSymbol {
+        label: "queue.pop_front",
+        detail: "AIL source Queue helper",
+        documentation: "Dotted alias that pops the front value and remaining queue, or None when empty.",
+        insert_text: "queue.pop_front(${1:queue})",
+    },
+    AclSymbol {
         label: "queue_peek_front",
         detail: "AIL source Queue helper",
         documentation: "Returns Option<T> for the oldest queued value without removing it.",
         insert_text: "queue_peek_front(${1:queue})",
+    },
+    AclSymbol {
+        label: "queue.peek_front",
+        detail: "AIL source Queue helper",
+        documentation: "Dotted alias that returns the oldest queued value without removing it.",
+        insert_text: "queue.peek_front(${1:queue})",
     },
     AclSymbol {
         label: "queue_length",
@@ -410,10 +446,22 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "queue_length(${1:queue})",
     },
     AclSymbol {
+        label: "queue.length",
+        detail: "AIL source Queue helper",
+        documentation: "Dotted alias that returns the number of entries in a queue List<T>.",
+        insert_text: "queue.length(${1:queue})",
+    },
+    AclSymbol {
         label: "queue_is_empty",
         detail: "AIL source Queue helper",
         documentation: "Returns true when the queue List<T> is empty.",
         insert_text: "queue_is_empty(${1:queue})",
+    },
+    AclSymbol {
+        label: "queue.is_empty",
+        detail: "AIL source Queue helper",
+        documentation: "Dotted alias that returns true when a queue List<T> is empty.",
+        insert_text: "queue.is_empty(${1:queue})",
     },
     AclSymbol {
         label: "list_push",
@@ -422,10 +470,22 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "list_push(${1:list}, ${2:value})",
     },
     AclSymbol {
+        label: "list.push",
+        detail: "AIL source List helper",
+        documentation: "Dotted alias that appends a value at the end of a List<T>.",
+        insert_text: "list.push(${1:list}, ${2:value})",
+    },
+    AclSymbol {
         label: "list_concat",
         detail: "AIL source List helper",
         documentation: "Returns a List<T> containing the first list followed by the second.",
         insert_text: "list_concat(${1:left}, ${2:right})",
+    },
+    AclSymbol {
+        label: "list.concat",
+        detail: "AIL source List helper",
+        documentation: "Dotted alias that concatenates two List<T> values.",
+        insert_text: "list.concat(${1:left}, ${2:right})",
     },
     AclSymbol {
         label: "set",
@@ -470,16 +530,34 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "set_contains(${1:set}, ${2:value})",
     },
     AclSymbol {
+        label: "set.contains",
+        detail: "AIL source Set helper",
+        documentation: "Dotted alias that returns true when Set<T> contains the supplied value.",
+        insert_text: "set.contains(${1:set}, ${2:value})",
+    },
+    AclSymbol {
         label: "set_length",
         detail: "AIL source Set helper",
         documentation: "Returns the number of entries in a Set<T>.",
         insert_text: "set_length(${1:set})",
     },
     AclSymbol {
+        label: "set.length",
+        detail: "AIL source Set helper",
+        documentation: "Dotted alias that returns the number of entries in a Set<T>.",
+        insert_text: "set.length(${1:set})",
+    },
+    AclSymbol {
         label: "set_insert",
         detail: "AIL source Set helper",
         documentation: "Returns a Set<T> with the supplied value inserted.",
         insert_text: "set_insert(${1:set}, ${2:value})",
+    },
+    AclSymbol {
+        label: "set.insert",
+        detail: "AIL source Set helper",
+        documentation: "Dotted alias that inserts a value into a Set<T>.",
+        insert_text: "set.insert(${1:set}, ${2:value})",
     },
     AclSymbol {
         label: "map",
@@ -494,10 +572,22 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "map_get(${1:map}, ${2:key})",
     },
     AclSymbol {
+        label: "map.get",
+        detail: "AIL source Map helper",
+        documentation: "Dotted alias that returns Option<V> for a Text key in Map<Text,V>.",
+        insert_text: "map.get(${1:map}, ${2:key})",
+    },
+    AclSymbol {
         label: "map_contains_key",
         detail: "AIL source Map helper",
         documentation: "Returns true when Map<Text,V> contains the Text key.",
         insert_text: "map_contains_key(${1:map}, ${2:key})",
+    },
+    AclSymbol {
+        label: "map.contains_key",
+        detail: "AIL source Map helper",
+        documentation: "Dotted alias that returns true when Map<Text,V> contains the Text key.",
+        insert_text: "map.contains_key(${1:map}, ${2:key})",
     },
     AclSymbol {
         label: "map_length",
@@ -506,10 +596,22 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "map_length(${1:map})",
     },
     AclSymbol {
+        label: "map.length",
+        detail: "AIL source Map helper",
+        documentation: "Dotted alias that returns the number of key/value entries in a Map<Text,V>.",
+        insert_text: "map.length(${1:map})",
+    },
+    AclSymbol {
         label: "map_insert",
         detail: "AIL source Map helper",
         documentation: "Returns a Map<Text,V> with the Text key set to the supplied value.",
         insert_text: "map_insert(${1:map}, ${2:key}, ${3:value})",
+    },
+    AclSymbol {
+        label: "map.insert",
+        detail: "AIL source Map helper",
+        documentation: "Dotted alias that sets a Text key to the supplied value in a Map<Text,V>.",
+        insert_text: "map.insert(${1:map}, ${2:key}, ${3:value})",
     },
     AclSymbol {
         label: "record",
