@@ -1097,6 +1097,30 @@ pub(super) fn numeric_saturating_neg(args: &[StdlibValue]) -> Result<StdlibValue
 
 // ── Testing adapters ──────────────────────────────────────────────────────
 
+fn testing_result_to_stdlib(result: testing::TestResult) -> StdlibValue {
+    match result {
+        testing::TestResult::Pass => StdlibValue::Result(Ok(Box::new(StdlibValue::Unit))),
+        testing::TestResult::Fail { message } => {
+            StdlibValue::Result(Err(Box::new(StdlibValue::Text(message))))
+        }
+        testing::TestResult::Skip { reason } => {
+            StdlibValue::Result(Err(Box::new(StdlibValue::Text(reason))))
+        }
+    }
+}
+
+pub(super) fn testing_assert_eq(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let StdlibValue::Text(context) = &args[2] else {
+        return Err(StdlibExecError::Type {
+            expected: "T, T, Text",
+        });
+    };
+    Ok(testing_result_to_stdlib(testing::assert_eq(
+        &args[0], &args[1], context,
+    )))
+}
+
 pub(super) fn testing_assert_approx(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 4)?;
     let (
@@ -1110,15 +1134,25 @@ pub(super) fn testing_assert_approx(args: &[StdlibValue]) -> Result<StdlibValue,
             expected: "Float, Float, Float, Text",
         });
     };
-    match testing::assert_approx(*left, *right, *epsilon, context) {
-        testing::TestResult::Pass => Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Unit)))),
-        testing::TestResult::Fail { message } => Ok(StdlibValue::Result(Err(Box::new(
-            StdlibValue::Text(message),
-        )))),
-        testing::TestResult::Skip { reason } => Ok(StdlibValue::Result(Err(Box::new(
-            StdlibValue::Text(reason),
-        )))),
-    }
+    Ok(testing_result_to_stdlib(testing::assert_approx(
+        *left, *right, *epsilon, context,
+    )))
+}
+
+pub(super) fn testing_expect_error(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Result(result), StdlibValue::Text(context)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type {
+            expected: "Result<T, E>, Text",
+        });
+    };
+    let borrowed = result
+        .as_ref()
+        .map(|value| value.as_ref())
+        .map_err(|error| error.as_ref());
+    Ok(testing_result_to_stdlib(testing::expect_error(
+        &borrowed, context,
+    )))
 }
 
 // ── Concurrent channel adapters ───────────────────────────────────────────

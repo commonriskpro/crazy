@@ -123,6 +123,12 @@ fn v1_contains_testing_assert_approx() {
     assert!(has_function_entry("std.testing.assert_approx"));
 }
 
+#[test]
+fn v1_contains_testing_core_assertions() {
+    assert!(has_function_entry("std.testing.assert_eq"));
+    assert!(has_function_entry("std.testing.expect_error"));
+}
+
 // A7: capability (effectful) entries for io
 #[test]
 fn v1_contains_io_read_with_effect() {

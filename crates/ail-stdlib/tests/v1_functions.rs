@@ -130,6 +130,17 @@ fn v1_functions_testing_has_assert_approx() {
 }
 
 #[test]
+fn v1_functions_testing_has_core_assertions() {
+    let reg = v1_registry_with_functions();
+    for id in ["std.testing.assert_eq", "std.testing.expect_error"] {
+        assert!(
+            reg.entries.iter().any(|e| e.id.0 == id),
+            "registry must contain {id}"
+        );
+    }
+}
+
+#[test]
 fn v1_functions_option_has_map() {
     let reg = v1_registry_with_functions();
     assert!(

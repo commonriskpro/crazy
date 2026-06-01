@@ -27,12 +27,12 @@ use self::handlers::{
     option_transpose, option_unwrap_or, queue_is_empty, queue_length, queue_peek_front,
     queue_pop_front, queue_push_back, result_and_then, result_map, result_transpose,
     result_unwrap_or, set_contains, set_insert, set_length, testing_assert_approx,
-    text_byte_at_or_exec, text_contains_exec, text_decode, text_encode, text_ends_with_exec,
-    text_format, text_index_of_exec, text_join, text_length_graphemes_exec, text_normalize,
-    text_parse_int_or_exec, text_regex, text_replace_exec, text_replace_first_exec,
-    text_slice_exec, text_split, text_starts_with_exec, text_trim, time_add_duration_exec,
-    time_duration_since_exec, time_instant_to_ms_exec, tuple_first, tuple_get, tuple_length,
-    tuple_second,
+    testing_assert_eq, testing_expect_error, text_byte_at_or_exec, text_contains_exec, text_decode,
+    text_encode, text_ends_with_exec, text_format, text_index_of_exec, text_join,
+    text_length_graphemes_exec, text_normalize, text_parse_int_or_exec, text_regex,
+    text_replace_exec, text_replace_first_exec, text_slice_exec, text_split, text_starts_with_exec,
+    text_trim, time_add_duration_exec, time_duration_since_exec, time_instant_to_ms_exec,
+    tuple_first, tuple_get, tuple_length, tuple_second,
 };
 
 use super::capability::StdlibCapabilityDispatch;
@@ -1026,6 +1026,22 @@ pub fn stdlib_function_entries() -> Vec<FunctionEntry> {
             &["Float", "Float", "Float", "Text"],
             "Result<Unit, Text>",
             testing_assert_approx,
+        ),
+        pure(
+            "std.testing.assert_eq",
+            "std.testing",
+            "assert_eq",
+            &["T", "T", "Text"],
+            "Result<Unit, Text>",
+            testing_assert_eq,
+        ),
+        pure(
+            "std.testing.expect_error",
+            "std.testing",
+            "expect_error",
+            &["Result<T, E>", "Text"],
+            "Result<Unit, Text>",
+            testing_expect_error,
         ),
         capability(
             "std.time.now",
