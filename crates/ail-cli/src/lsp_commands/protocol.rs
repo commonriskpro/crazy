@@ -597,6 +597,7 @@ fn supported_diagnostic_code(code: &str) -> bool {
             | "AIL_SOURCE_RECORD_FIELD_UNKNOWN"
             | "AIL_SOURCE_TYPE_MISMATCH"
             | "AIL_SOURCE_TYPE_SHAPE_MISMATCH"
+            | "AIL_SOURCE_TYPE_UNSUPPORTED_ANNOTATION"
     )
 }
 

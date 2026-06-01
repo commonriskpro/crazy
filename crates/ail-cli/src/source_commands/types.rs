@@ -1055,6 +1055,14 @@ fn source_type_shape_mismatch_error(context: &str, expected: &str, actual: &str)
     )
 }
 
+fn source_type_annotation_error(ty: &str) -> CliError {
+    source_type_error(
+        "AIL_SOURCE_TYPE_UNSUPPORTED_ANNOTATION",
+        "source.type.annotation",
+        format!("unsupported source type annotation `{ty}`"),
+    )
+}
+
 fn source_type_error(code: &str, category: &str, message: impl AsRef<str>) -> CliError {
     CliError::ParseError(format!("{} [{code}] category={category}", message.as_ref()))
 }
@@ -1121,9 +1129,7 @@ pub(super) fn validate_source_type_annotation(ty: &str) -> Result<(), CliError> 
     if is_supported_source_type(ty) {
         return Ok(());
     }
-    Err(CliError::ParseError(format!(
-        "unsupported source type annotation `{ty}`"
-    )))
+    Err(source_type_annotation_error(ty))
 }
 
 pub(super) fn validate_source_let_line_marker(line: &str) -> Result<(), CliError> {
