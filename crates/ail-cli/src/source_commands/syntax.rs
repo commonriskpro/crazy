@@ -60,8 +60,25 @@ pub(super) fn source_parse_error_for_fragment(
     fragment: &str,
     message: impl AsRef<str>,
 ) -> CliError {
+    source_parse_error_for_fragment_at(line_num, 1, diagnostic, fragment, message)
+}
+
+pub(super) fn source_parse_error_for_fragment_at(
+    line_num: usize,
+    column: usize,
+    diagnostic: SourceParseDiagnostic,
+    fragment: &str,
+    message: impl AsRef<str>,
+) -> CliError {
     let width = fragment.chars().count().max(1);
-    source_parse_error_at(line_num, 1, width, diagnostic, fragment, message)
+    source_parse_error_at(
+        line_num,
+        column.max(1),
+        width,
+        diagnostic,
+        fragment,
+        message,
+    )
 }
 
 pub(super) fn source_parse_error_at(

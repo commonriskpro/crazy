@@ -136,7 +136,7 @@ pub(super) fn parse_source_function(
     rest: &str,
     line_num: usize,
 ) -> Result<SourceFunction, CliError> {
-    let (name, params, return_and_body) = parse_source_function_signature(rest, line_num)?;
+    let (name, params, return_and_body) = parse_source_function_signature(rest, line_num, 4)?;
     let (return_type, body) = return_and_body.split_once('=').ok_or_else(|| {
         source_parse_error_for_fragment(
             line_num,
@@ -154,13 +154,14 @@ pub(super) fn parse_source_function_with_body(
     line_num: usize,
     body: String,
 ) -> Result<SourceFunction, CliError> {
-    let (name, params, return_type) = parse_source_function_signature(rest, line_num)?;
+    let (name, params, return_type) = parse_source_function_signature(rest, line_num, 4)?;
     build_source_function(name, params, return_type.trim(), body.trim(), line_num)
 }
 
 pub(super) fn parse_source_function_signature(
     rest: &str,
     line_num: usize,
+    base_column: usize,
 ) -> Result<(String, Vec<SourceParam>, String), CliError> {
     let open_paren = rest.find('(').ok_or_else(|| {
         source_parse_error_for_fragment(
@@ -170,8 +171,10 @@ pub(super) fn parse_source_function_signature(
             "function declaration requires `()`",
         )
     })?;
-    let raw_name = rest[..open_paren].trim();
-    validate_source_name(raw_name, line_num)?;
+    let raw_name_text = &rest[..open_paren];
+    let raw_name = raw_name_text.trim();
+    let raw_name_column = trimmed_fragment_column(base_column, raw_name_text);
+    validate_source_name_at(raw_name, line_num, raw_name_column)?;
 
     let params_start = open_paren + 1;
     let close_paren = rest[params_start..].find(')').ok_or_else(|| {
@@ -200,6 +203,10 @@ pub(super) fn parse_source_function_signature(
         params,
         after_arrow.trim().to_string(),
     ))
+}
+
+fn trimmed_fragment_column(base_column: usize, text: &str) -> usize {
+    base_column + text.chars().take_while(|ch| ch.is_whitespace()).count()
 }
 
 pub(super) fn build_source_function(

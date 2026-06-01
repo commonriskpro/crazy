@@ -25,10 +25,19 @@ pub(super) fn normalize_grant_target(target: &str) -> String {
 }
 
 pub(super) fn validate_source_local_name(name: &str, line_num: usize) -> Result<(), CliError> {
-    validate_source_name(name, line_num)?;
+    validate_source_local_name_at(name, line_num, 1)
+}
+
+pub(super) fn validate_source_local_name_at(
+    name: &str,
+    line_num: usize,
+    column: usize,
+) -> Result<(), CliError> {
+    validate_source_name_at(name, line_num, column)?;
     if name.contains('.') {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            column,
             SourceParseDiagnostic::InvalidName,
             name,
             format!("local binding name `{name}` must not contain `.`"),
@@ -38,33 +47,45 @@ pub(super) fn validate_source_local_name(name: &str, line_num: usize) -> Result<
 }
 
 pub(super) fn validate_source_name(name: &str, line_num: usize) -> Result<(), CliError> {
+    validate_source_name_at(name, line_num, 1)
+}
+
+pub(super) fn validate_source_name_at(
+    name: &str,
+    line_num: usize,
+    column: usize,
+) -> Result<(), CliError> {
     if name.is_empty() {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            column,
             SourceParseDiagnostic::InvalidName,
             name,
             "declaration name cannot be empty",
         ));
     }
     if !is_valid_source_name_chars(name) {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            column,
             SourceParseDiagnostic::InvalidName,
             name,
             format!("declaration name `{name}` contains unsupported characters"),
         ));
     }
     if name.split('.').any(str::is_empty) {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            column,
             SourceParseDiagnostic::InvalidName,
             name,
             format!("declaration name `{name}` contains an empty path segment"),
         ));
     }
     if let Some(segment) = first_invalid_source_name_segment(name) {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            column,
             SourceParseDiagnostic::InvalidName,
             name,
             format!(
