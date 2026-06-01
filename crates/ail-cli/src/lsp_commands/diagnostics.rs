@@ -20,9 +20,12 @@ pub(super) const LSP_DIAGNOSTIC_SOURCE_PARSER: &str = "AIL_SOURCE_PARSER";
 pub(super) fn diagnostics_for_document(uri: &str, text: &str) -> Vec<Value> {
     if is_ail_source_uri(uri) {
         if let Some(path) = file_path_from_uri(uri) {
-            return diagnostics_for_ail_source_document_path(&path, text);
+            if path.exists() {
+                return diagnostics_for_ail_source_document_path(&path, text);
+            }
+            return diagnostics_for_ail_source_inline(uri, text);
         }
-        return diagnostics_for_ail_source_text(uri, text);
+        return diagnostics_for_ail_source_inline(uri, text);
     }
     diagnostics_for_acl_text(uri, text)
 }
@@ -66,6 +69,17 @@ fn diagnostics_for_ail_source_text(_uri: &str, text: &str) -> Vec<Value> {
             )]
         }
     }
+}
+
+fn diagnostics_for_ail_source_inline(uri: &str, text: &str) -> Vec<Value> {
+    let syntax_diagnostics = diagnostics_for_ail_source_text(uri, text);
+    if !syntax_diagnostics.is_empty() {
+        return syntax_diagnostics;
+    }
+    source_ignored_expression_statement_diagnostics(text)
+        .into_iter()
+        .map(|ignored| ignored_expression_statement_diagnostic(uri, text, ignored))
+        .collect()
 }
 
 pub(super) fn diagnostics_for_ail_source_path(path: &std::path::Path, text: &str) -> Vec<Value> {

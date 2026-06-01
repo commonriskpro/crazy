@@ -178,6 +178,43 @@ fn lsp_code_action_removes_ignored_expression_statement() {
     );
 }
 
+#[test]
+fn lsp_publish_diagnostics_handles_unsaved_source_documents() {
+    let uri = "file:///workspace/unsaved.ail";
+    let open = did_open_message(uri, "fn main() -> Int {\n  1 + 2\n  return 0\n}\n");
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(lsp_input(&[open]))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let notification = messages
+        .iter()
+        .find(|message| message["method"] == "textDocument/publishDiagnostics")
+        .expect("publishDiagnostics notification must be emitted");
+    let diagnostics = notification["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics must be an array");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0]["code"], "AIL_SOURCE_LSP_IGNORED_EXPRESSION");
+    assert_eq!(diagnostics[0]["severity"], 2);
+    assert_eq!(
+        diagnostics[0]["data"]["ailRepair"]["code"],
+        "remove.ignored_expression_statement"
+    );
+    assert!(
+        !diagnostics[0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("failed to resolve AIL source"),
+        "unsaved source diagnostics must not require canonical file resolution"
+    );
+}
+
 fn code_action_result(messages: Vec<String>, request_id: u64) -> serde_json::Value {
     let output = ail()
         .args(["lsp", "--stdio"])
