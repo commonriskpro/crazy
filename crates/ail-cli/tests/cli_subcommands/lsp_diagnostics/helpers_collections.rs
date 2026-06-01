@@ -864,6 +864,49 @@ fn dotted_updated() -> Map<Text, Int> = map.insert(labels(), "three", 3)
     assert_eq!(v["data"]["error_count"], 0);
 }
 #[test]
+fn lsp_diagnose_reports_source_tuple_helper_arity_code() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn pair() -> Tuple<Int, Text> = tuple(42, \"answer\")\n\
+fn first() -> Option<Int> = tuple_first(pair(), 1)\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_LOWER_TUPLE_HELPER"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.lower.tuple"
+    );
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("tuple_first requires `tuple_first(tuple)`")
+    );
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_tuple_collections() {
     use assert_fs::prelude::*;
 

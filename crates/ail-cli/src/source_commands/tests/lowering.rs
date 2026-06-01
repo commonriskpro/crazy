@@ -216,6 +216,16 @@ fn pair() -> Tuple<Int, Text> = tuple(42, "answer")
 }
 
 #[test]
+fn rejects_tuple_helper_arity_with_stable_lowering_diagnostic() {
+    assert_lowering_diagnostic(
+        lower_source_expr("tuple_first(pair(), 1)", 17),
+        "AIL_SOURCE_LOWER_TUPLE_HELPER",
+        "source.lower.tuple",
+        "tuple_first requires `tuple_first(tuple)`",
+    );
+}
+
+#[test]
 fn lowers_source_tuple_accessors_to_core_calls() {
     let program = parse_ail_source(
         r#"

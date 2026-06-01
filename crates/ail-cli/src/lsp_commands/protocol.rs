@@ -573,6 +573,7 @@ fn supported_diagnostic_code(code: &str) -> bool {
             | "AIL_SOURCE_LOWER_PIPE_EXPRESSION"
             | "AIL_SOURCE_LOWER_RECORD_LITERAL"
             | "AIL_SOURCE_LOWER_TEXT_HELPER"
+            | "AIL_SOURCE_LOWER_TUPLE_HELPER"
             | "AIL_SOURCE_LOWER_TYPE_SHAPE"
             | "AIL_SOURCE_LOWER_UNARY_OPERATOR"
             | "AIL_SOURCE_LOWER_UNSUPPORTED_CONSTRUCT"

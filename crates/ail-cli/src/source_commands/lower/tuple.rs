@@ -11,9 +11,11 @@ pub(super) fn lower_source_tuple_accessor_expr(
         return Ok(None);
     };
     if args.len() != expected {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: {func} requires `{usage}`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::TupleHelper,
+            format!("{func} requires `{usage}`"),
+        ));
     }
     Ok(Some(format!(
         "{canonical}({})",
