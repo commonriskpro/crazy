@@ -204,7 +204,8 @@ fn compile_file_accepts_source_option_predicate_helpers() {
         .write_str(
             "fn has_value(input: Option<Int>) -> Bool = is_some(input)\n\
 fn missing(input: Option<Int>) -> Bool = option_is_none(input)\n\
-fn namespaced(input: Option<Int>) -> Bool = option.is_some(input)\n",
+fn namespaced(input: Option<Int>) -> Bool = option.is_some(input)\n\
+fn dotted_missing(input: Option<Int>) -> Bool = option.is_none(input)\n",
         )
         .expect("source fixture must be written");
 
@@ -245,7 +246,8 @@ fn compile_file_accepts_source_result_predicate_helpers() {
         .write_str(
             "fn succeeded(input: Result<Int, Text>) -> Bool = is_ok(input)\n\
 fn failed(input: Result<Int, Text>) -> Bool = result_is_err(input)\n\
-fn namespaced(input: Result<Int, Text>) -> Bool = result.is_ok(input)\n",
+fn namespaced(input: Result<Int, Text>) -> Bool = result.is_ok(input)\n\
+fn dotted_failed(input: Result<Int, Text>) -> Bool = result.is_err(input)\n",
         )
         .expect("source fixture must be written");
 
