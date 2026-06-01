@@ -1,5 +1,6 @@
 // Mechanical phase 2 split from source_compile.rs. Keep behavior-only moves in this module.
 use crate::common::ail;
+use crate::common::parse_json_output;
 use predicates::prelude::*;
 
 #[test]
@@ -38,12 +39,29 @@ fn err_value() -> Result<Int, Text> = Err(\"boom\")\n",
         )
         .expect("source fixture must be written");
 
-    ail()
+    let output = ail()
         .args(["compile", "--file"])
         .arg(source.path())
+        .args(["--json"])
         .current_dir(dir.path())
         .assert()
-        .success();
+        .success()
+        .get_output()
+        .clone();
+
+    let json = parse_json_output(&output);
+    assert_eq!(
+        json["data"]["export_types"]["maybe"],
+        serde_json::json!({ "Option": { "Scalar": "I64" } })
+    );
+    assert_eq!(
+        json["data"]["export_types"]["ok_value"],
+        serde_json::json!({ "Result": { "ok": { "Scalar": "I64" }, "err": "Text" } })
+    );
+    assert_eq!(
+        json["data"]["export_types"]["err_value"],
+        serde_json::json!({ "Result": { "ok": { "Scalar": "I64" }, "err": "Text" } })
+    );
 }
 #[test]
 fn compile_file_accepts_source_type_aliases() {

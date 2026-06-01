@@ -21,6 +21,7 @@ use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
 
 mod api;
+mod descriptors;
 mod format;
 mod lower;
 mod model;
@@ -34,5 +35,6 @@ mod validate;
 pub(crate) use api::{
     cmd_check_source, format_ail_source, load_source_graph, load_source_graph_with_entry,
 };
+pub(crate) use descriptors::{source_export_type_descriptors, source_return_descriptor_for_module};
 pub(crate) use model::{LoadedSourceGraph, SourceProgram};
 pub(crate) use parse::{load_source_program, load_source_program_from_text, parse_ail_source};

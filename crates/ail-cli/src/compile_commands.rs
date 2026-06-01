@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use crate::cli::{bytes_to_hex, load_current_graph_for_cli};
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
-use crate::source_commands::load_source_graph;
+use crate::source_commands::{load_source_graph, source_export_type_descriptors};
 use crate::store::StoreHandle;
 use crate::store_artifacts::{NativeArtifactBytes, WasmArtifactBytes};
 
@@ -267,6 +267,12 @@ pub(crate) async fn cmd_compile(
         .ok_or_else(|| CliError::Domain("compile wasm (missing wasm hash)".to_string()))?;
     let wasm_size = artifact.wasm.len();
     let capabilities_count = artifact.capabilities_manifest.entries.len();
+    let mut export_types = artifact.export_types.clone();
+    if source_file.is_some() {
+        export_types.extend(source_export_type_descriptors(&graph));
+    }
+    let export_types_json = serde_json::to_value(&export_types)
+        .map_err(|e| CliError::Domain(format!("compile (export types): {e}")))?;
 
     // Serialize the real capabilities manifest — one entry per ANF binding.
     let capabilities_manifest = serde_json::to_value(&artifact.capabilities_manifest)
@@ -321,6 +327,7 @@ pub(crate) async fn cmd_compile(
             "wasm_bytes": wasm_size,
             "wasm_hash": wasm_hash,
             "capabilities_manifest": capabilities_manifest,
+            "export_types": export_types_json,
             "semantic_source_map": semantic_source_map,
             "artifact_manifest": artifact_manifest,
             "compiler_report": compiler_report,
