@@ -429,6 +429,69 @@ fn narrow_to_u32_negative_returns_err() {
     );
 }
 
+#[test]
+fn narrow_to_u64_in_range_returns_ok() {
+    let result = call_pure_stdlib("std.numeric.narrow_to_u64", &[StdlibValue::Int(i64::MAX)]);
+    assert_eq!(
+        result,
+        Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Int(
+            i64::MAX
+        )))))
+    );
+}
+
+#[test]
+fn narrow_to_u64_negative_returns_err() {
+    let result = call_pure_stdlib("std.numeric.narrow_to_u64", &[StdlibValue::Int(-1)]);
+    assert!(
+        matches!(result, Ok(StdlibValue::Result(Err(_)))),
+        "narrow_to_u64(-1) must return Err variant, got: {result:?}"
+    );
+}
+
+#[test]
+fn narrow_to_i16_bounds_return_ok_or_err() {
+    let min = call_pure_stdlib(
+        "std.numeric.narrow_to_i16",
+        &[StdlibValue::Int(i16::MIN as i64)],
+    );
+    assert_eq!(
+        min,
+        Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Int(
+            i16::MIN as i64
+        )))))
+    );
+
+    let overflow = call_pure_stdlib(
+        "std.numeric.narrow_to_i16",
+        &[StdlibValue::Int(i16::MAX as i64 + 1)],
+    );
+    assert!(
+        matches!(overflow, Ok(StdlibValue::Result(Err(_)))),
+        "narrow_to_i16(i16::MAX + 1) must return Err variant, got: {overflow:?}"
+    );
+}
+
+#[test]
+fn narrow_to_u8_bounds_return_ok_or_err() {
+    let max = call_pure_stdlib(
+        "std.numeric.narrow_to_u8",
+        &[StdlibValue::Int(u8::MAX as i64)],
+    );
+    assert_eq!(
+        max,
+        Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Int(
+            u8::MAX as i64
+        )))))
+    );
+
+    let negative = call_pure_stdlib("std.numeric.narrow_to_u8", &[StdlibValue::Int(-1)]);
+    assert!(
+        matches!(negative, Ok(StdlibValue::Result(Err(_)))),
+        "narrow_to_u8(-1) must return Err variant, got: {negative:?}"
+    );
+}
+
 // STDLIB-EXEC-NUM-12: narrow_to_u32 arity error
 
 #[test]

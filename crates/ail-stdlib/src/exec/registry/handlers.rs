@@ -809,6 +809,42 @@ pub(super) fn numeric_narrow_to_u32(args: &[StdlibValue]) -> Result<StdlibValue,
     }
 }
 
+pub(super) fn numeric_narrow_to_u64(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Int(n) => Ok(StdlibValue::Result(
+            numeric::narrow_i64_to_u64(*n)
+                .map(|v| Box::new(StdlibValue::Int(v as i64)))
+                .map_err(|e| Box::new(StdlibValue::Text(e.to_string()))),
+        )),
+        _ => Err(StdlibExecError::Type { expected: "Int" }),
+    }
+}
+
+pub(super) fn numeric_narrow_to_i16(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Int(n) => Ok(StdlibValue::Result(
+            numeric::narrow_i64_to_i16(*n)
+                .map(|v| Box::new(StdlibValue::Int(v as i64)))
+                .map_err(|e| Box::new(StdlibValue::Text(e.to_string()))),
+        )),
+        _ => Err(StdlibExecError::Type { expected: "Int" }),
+    }
+}
+
+pub(super) fn numeric_narrow_to_u8(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    match &args[0] {
+        StdlibValue::Int(n) => Ok(StdlibValue::Result(
+            numeric::narrow_i64_to_u8(*n)
+                .map(|v| Box::new(StdlibValue::Int(v as i64)))
+                .map_err(|e| Box::new(StdlibValue::Text(e.to_string()))),
+        )),
+        _ => Err(StdlibExecError::Type { expected: "Int" }),
+    }
+}
+
 pub(super) fn numeric_checked_add(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 2)?;
     let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {

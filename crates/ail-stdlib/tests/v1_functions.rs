@@ -104,6 +104,21 @@ fn v1_functions_numeric_has_bit_and_shift_helpers() {
 }
 
 #[test]
+fn v1_functions_numeric_has_extra_narrowing_helpers() {
+    let reg = v1_registry_with_functions();
+    for id in [
+        "std.numeric.narrow_to_u64",
+        "std.numeric.narrow_to_i16",
+        "std.numeric.narrow_to_u8",
+    ] {
+        assert!(
+            reg.entries.iter().any(|e| e.id.0 == id),
+            "registry must contain {id}"
+        );
+    }
+}
+
+#[test]
 fn v1_functions_option_has_map() {
     let reg = v1_registry_with_functions();
     assert!(

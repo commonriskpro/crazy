@@ -111,6 +111,13 @@ fn v1_contains_numeric_narrow_to_u32() {
     assert!(has_function_entry("std.numeric.narrow_to_u32"));
 }
 
+#[test]
+fn v1_contains_numeric_narrow_to_extra_targets() {
+    assert!(has_function_entry("std.numeric.narrow_to_u64"));
+    assert!(has_function_entry("std.numeric.narrow_to_i16"));
+    assert!(has_function_entry("std.numeric.narrow_to_u8"));
+}
+
 // A7: capability (effectful) entries for io
 #[test]
 fn v1_contains_io_read_with_effect() {

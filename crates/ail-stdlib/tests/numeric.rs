@@ -5,9 +5,10 @@
 
 use ail_stdlib::numeric::{
     abs_or, add_or, bit_and, bit_not, bit_or, bit_xor, checked_add, checked_mul, checked_sub,
-    clamp, div_or, max, min, mul_or, neg_or, rem_or, saturating_add, saturating_mul,
-    saturating_neg, saturating_sub, shift_left, shift_right, shift_right_unsigned, sub_or,
-    wrapping_add, wrapping_mul, wrapping_neg, wrapping_sub,
+    clamp, div_or, max, min, mul_or, narrow_i64_to_i16, narrow_i64_to_u8, narrow_i64_to_u64,
+    neg_or, rem_or, saturating_add, saturating_mul, saturating_neg, saturating_sub, shift_left,
+    shift_right, shift_right_unsigned, sub_or, wrapping_add, wrapping_mul, wrapping_neg,
+    wrapping_sub,
 };
 
 // ── Bounds helpers ───────────────────────────────────────────────────────
@@ -67,6 +68,18 @@ fn bit_and_shift_helpers_match_compiler_semantics() {
     assert_eq!(shift_right(-8, 1), -4);
     assert_eq!(shift_right_unsigned(16, 1), 8);
     assert_eq!(shift_right_unsigned(-8, 1), 9223372036854775804);
+}
+
+#[test]
+fn narrowing_helpers_return_result_for_extra_targets() {
+    assert_eq!(narrow_i64_to_u64(42), Ok(42));
+    assert!(narrow_i64_to_u64(-1).is_err());
+    assert_eq!(narrow_i64_to_i16(i16::MIN as i64), Ok(i16::MIN));
+    assert_eq!(narrow_i64_to_i16(i16::MAX as i64), Ok(i16::MAX));
+    assert!(narrow_i64_to_i16(i16::MAX as i64 + 1).is_err());
+    assert_eq!(narrow_i64_to_u8(u8::MAX as i64), Ok(u8::MAX));
+    assert!(narrow_i64_to_u8(-1).is_err());
+    assert!(narrow_i64_to_u8(u8::MAX as i64 + 1).is_err());
 }
 
 // ── R1.1 + R1.2: checked_add ──────────────────────────────────────────────
