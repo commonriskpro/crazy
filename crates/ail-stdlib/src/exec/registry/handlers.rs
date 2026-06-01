@@ -873,12 +873,60 @@ pub(super) fn numeric_wrapping_add(args: &[StdlibValue]) -> Result<StdlibValue, 
     Ok(StdlibValue::Int(numeric::wrapping_add(*a, *b)))
 }
 
+pub(super) fn numeric_wrapping_sub(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::wrapping_sub(*a, *b)))
+}
+
+pub(super) fn numeric_wrapping_mul(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::wrapping_mul(*a, *b)))
+}
+
+pub(super) fn numeric_wrapping_neg(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::Int(value) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::wrapping_neg(*value)))
+}
+
 pub(super) fn numeric_saturating_add(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 2)?;
     let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
         return Err(StdlibExecError::Type { expected: "Int" });
     };
     Ok(StdlibValue::Int(numeric::saturating_add(*a, *b)))
+}
+
+pub(super) fn numeric_saturating_sub(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::saturating_sub(*a, *b)))
+}
+
+pub(super) fn numeric_saturating_mul(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::saturating_mul(*a, *b)))
+}
+
+pub(super) fn numeric_saturating_neg(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::Int(value) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::saturating_neg(*value)))
 }
 
 // ── Concurrent channel adapters ───────────────────────────────────────────

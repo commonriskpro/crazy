@@ -48,6 +48,24 @@ fn v1_functions_numeric_has_bounds_helpers() {
 }
 
 #[test]
+fn v1_functions_numeric_has_explicit_overflow_helpers() {
+    let reg = v1_registry_with_functions();
+    for id in [
+        "std.numeric.wrapping_sub",
+        "std.numeric.wrapping_mul",
+        "std.numeric.wrapping_neg",
+        "std.numeric.saturating_sub",
+        "std.numeric.saturating_mul",
+        "std.numeric.saturating_neg",
+    ] {
+        assert!(
+            reg.entries.iter().any(|e| e.id.0 == id),
+            "registry must contain {id}"
+        );
+    }
+}
+
+#[test]
 fn v1_functions_option_has_map() {
     let reg = v1_registry_with_functions();
     assert!(

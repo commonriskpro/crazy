@@ -39,6 +39,27 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
         }),
     });
 
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.wrapping_sub",
+        "wrapping_sub",
+        &["wrapping semantics chosen explicitly"],
+        &["result wraps on underflow or overflow (defined, not silent)"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.wrapping_mul",
+        "wrapping_mul",
+        &["wrapping semantics chosen explicitly"],
+        &["result wraps on overflow (defined, not silent)"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.wrapping_neg",
+        "wrapping_neg",
+        &["wrapping semantics chosen explicitly"],
+        &["result wraps on negation overflow (defined, not silent)"],
+    ));
+
     reg.entries.push(StdlibEntry {
         id: StdlibId("std.numeric.saturating_add".to_string()),
         module_path: "std::numeric".to_string(),
@@ -56,6 +77,27 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
             ensures: vec!["result clamped to i64::MAX or i64::MIN on overflow".to_string()],
         }),
     });
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.saturating_sub",
+        "saturating_sub",
+        &["saturating semantics chosen explicitly"],
+        &["result clamped to i64::MAX or i64::MIN on underflow or overflow"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.saturating_mul",
+        "saturating_mul",
+        &["saturating semantics chosen explicitly"],
+        &["result clamped to i64::MAX or i64::MIN on overflow"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.saturating_neg",
+        "saturating_neg",
+        &["saturating semantics chosen explicitly"],
+        &["i64::MIN negation clamps to i64::MAX"],
+    ));
 
     reg.entries.push(StdlibEntry {
         id: StdlibId("std.numeric.checked_sub".to_string()),
@@ -150,4 +192,24 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
             ],
         }),
     });
+}
+
+fn numeric_i64_entry(id: &str, name: &str, requires: &[&str], ensures: &[&str]) -> StdlibEntry {
+    StdlibEntry {
+        id: StdlibId(id.to_string()),
+        module_path: "std::numeric".to_string(),
+        name: name.to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "i64".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: requires.iter().map(|clause| clause.to_string()).collect(),
+            ensures: ensures.iter().map(|clause| clause.to_string()).collect(),
+        }),
+    }
 }

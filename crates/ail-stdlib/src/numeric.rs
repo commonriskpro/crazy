@@ -60,11 +60,41 @@ pub fn wrapping_add(a: i64, b: i64) -> i64 {
     a.wrapping_add(b)
 }
 
+/// Subtract two `i64` values with defined two's-complement wrapping.
+pub fn wrapping_sub(a: i64, b: i64) -> i64 {
+    a.wrapping_sub(b)
+}
+
+/// Multiply two `i64` values with defined two's-complement wrapping.
+pub fn wrapping_mul(a: i64, b: i64) -> i64 {
+    a.wrapping_mul(b)
+}
+
+/// Negate an `i64` value with defined two's-complement wrapping.
+pub fn wrapping_neg(value: i64) -> i64 {
+    value.wrapping_neg()
+}
+
 // ── Saturating arithmetic ─────────────────────────────────────────────────
 
 /// Add two `i64` values, clamping to `i64::MAX` or `i64::MIN` on overflow.
 pub fn saturating_add(a: i64, b: i64) -> i64 {
     a.saturating_add(b)
+}
+
+/// Subtract two `i64` values, clamping to `i64::MAX` or `i64::MIN` on overflow.
+pub fn saturating_sub(a: i64, b: i64) -> i64 {
+    a.saturating_sub(b)
+}
+
+/// Multiply two `i64` values, clamping to `i64::MAX` or `i64::MIN` on overflow.
+pub fn saturating_mul(a: i64, b: i64) -> i64 {
+    a.saturating_mul(b)
+}
+
+/// Negate an `i64` value, clamping `i64::MIN` to `i64::MAX`.
+pub fn saturating_neg(value: i64) -> i64 {
+    value.saturating_neg()
 }
 
 // ── Narrowing conversions returning Result ────────────────────────────────

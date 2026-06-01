@@ -52,6 +52,30 @@ fn wrapping_add_normal_no_wrap() {
     assert_eq!(result, Ok(StdlibValue::Int(8)));
 }
 
+#[test]
+fn wrapping_sub_wraps_at_min() {
+    let result = call_pure_stdlib(
+        "std.numeric.wrapping_sub",
+        &[StdlibValue::Int(i64::MIN), StdlibValue::Int(1)],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(i64::MAX)));
+}
+
+#[test]
+fn wrapping_mul_wraps_on_overflow() {
+    let result = call_pure_stdlib(
+        "std.numeric.wrapping_mul",
+        &[StdlibValue::Int(i64::MAX), StdlibValue::Int(2)],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(-2)));
+}
+
+#[test]
+fn wrapping_neg_wraps_min_to_min() {
+    let result = call_pure_stdlib("std.numeric.wrapping_neg", &[StdlibValue::Int(i64::MIN)]);
+    assert_eq!(result, Ok(StdlibValue::Int(i64::MIN)));
+}
+
 // ── STDLIB-EXEC-NUM-4: saturating_add clamps at MAX ──────────────────────
 
 #[test]
@@ -71,6 +95,30 @@ fn saturating_add_normal_no_clamp() {
         &[StdlibValue::Int(100), StdlibValue::Int(200)],
     );
     assert_eq!(result, Ok(StdlibValue::Int(300)));
+}
+
+#[test]
+fn saturating_sub_clamps_at_min() {
+    let result = call_pure_stdlib(
+        "std.numeric.saturating_sub",
+        &[StdlibValue::Int(i64::MIN), StdlibValue::Int(1)],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(i64::MIN)));
+}
+
+#[test]
+fn saturating_mul_clamps_at_max() {
+    let result = call_pure_stdlib(
+        "std.numeric.saturating_mul",
+        &[StdlibValue::Int(i64::MAX), StdlibValue::Int(2)],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(i64::MAX)));
+}
+
+#[test]
+fn saturating_neg_min_clamps_to_max() {
+    let result = call_pure_stdlib("std.numeric.saturating_neg", &[StdlibValue::Int(i64::MIN)]);
+    assert_eq!(result, Ok(StdlibValue::Int(i64::MAX)));
 }
 
 // ── STDLIB-EXEC-NUM-5: checked_sub underflow returns Option(None) ─────────

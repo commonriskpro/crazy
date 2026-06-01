@@ -4,7 +4,8 @@
 // Spec: G26 stdlib-impl, Requirements R1.1–R1.5.
 
 use ail_stdlib::numeric::{
-    checked_add, checked_mul, checked_sub, clamp, max, min, saturating_add, wrapping_add,
+    checked_add, checked_mul, checked_sub, clamp, max, min, saturating_add, saturating_mul,
+    saturating_neg, saturating_sub, wrapping_add, wrapping_mul, wrapping_neg, wrapping_sub,
 };
 
 // ── Bounds helpers ───────────────────────────────────────────────────────
@@ -65,6 +66,22 @@ fn wrapping_add_normal() {
     assert_eq!(wrapping_add(-1, 1), 0);
 }
 
+#[test]
+fn wrapping_sub_overflow_wraps() {
+    assert_eq!(wrapping_sub(i64::MIN, 1), i64::MAX);
+}
+
+#[test]
+fn wrapping_mul_overflow_wraps() {
+    assert_eq!(wrapping_mul(i64::MAX, 2), -2);
+}
+
+#[test]
+fn wrapping_neg_min_wraps_to_min() {
+    assert_eq!(wrapping_neg(i64::MIN), i64::MIN);
+    assert_eq!(wrapping_neg(5), -5);
+}
+
 // ── R1.3: saturating_add ─────────────────────────────────────────────────
 
 // S1.4: clamps to MAX on overflow
@@ -82,6 +99,22 @@ fn saturating_add_clamps_to_min() {
 #[test]
 fn saturating_add_normal() {
     assert_eq!(saturating_add(10, 20), 30);
+}
+
+#[test]
+fn saturating_sub_clamps_to_min() {
+    assert_eq!(saturating_sub(i64::MIN, 1), i64::MIN);
+}
+
+#[test]
+fn saturating_mul_clamps_to_max() {
+    assert_eq!(saturating_mul(i64::MAX, 2), i64::MAX);
+}
+
+#[test]
+fn saturating_neg_min_clamps_to_max() {
+    assert_eq!(saturating_neg(i64::MIN), i64::MAX);
+    assert_eq!(saturating_neg(5), -5);
 }
 
 // ── R1.4: checked_sub ────────────────────────────────────────────────────
