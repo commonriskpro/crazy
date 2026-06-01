@@ -1282,6 +1282,56 @@ fn rejects_source_crypto_helper_type_mismatch() {
 }
 
 #[test]
+fn lowers_and_types_source_numeric_narrow_helpers() {
+    let program = parse_ail_source(
+        r#"
+fn i32ish(value: Int) -> Result<Int,Text> = numeric_narrow_to_i32(value)
+fn u32ish(value: Int) -> Result<Int,Text> = numeric.narrow_to_u32(value)
+fn u64ish(value: Int) -> Result<Int,Text> = std.numeric.narrow_to_u64(value)
+fn i16ish(value: Int) -> Result<Int,Text> = numeric.narrow_to_i16(value)
+fn byteish(value: Int) -> Result<Int,Text> = std.numeric.narrow_to_u8(value)
+"#,
+    )
+    .expect("source numeric narrow helpers must parse and type-check");
+    let acl = source_program_to_acl(&program, "source_numeric".to_string());
+
+    assert_eq!(
+        program.functions[0].body,
+        "std.numeric.narrow_to_i32(value)"
+    );
+    assert_eq!(
+        program.functions[1].body,
+        "std.numeric.narrow_to_u32(value)"
+    );
+    assert_eq!(
+        program.functions[2].body,
+        "std.numeric.narrow_to_u64(value)"
+    );
+    assert_eq!(
+        program.functions[3].body,
+        "std.numeric.narrow_to_i16(value)"
+    );
+    assert_eq!(program.functions[4].body, "std.numeric.narrow_to_u8(value)");
+    assert!(acl.contains(
+        "op create_function id=fn.i32ish return=Result<Int,Text> body=std.numeric.narrow_to_i32(value)"
+    ));
+    assert!(acl.contains(
+        "op create_function id=fn.byteish return=Result<Int,Text> body=std.numeric.narrow_to_u8(value)"
+    ));
+}
+
+#[test]
+fn rejects_source_numeric_narrow_type_mismatch() {
+    assert_lowering_diagnostic(
+        parse_ail_source("fn bad(input: Text) -> Result<Int,Text> = numeric.narrow_to_u8(input)\n")
+            .map(|_| String::new()),
+        "AIL_SOURCE_TYPE_MISMATCH",
+        "source.type.mismatch",
+        "expected Int, got Text",
+    );
+}
+
+#[test]
 fn lowers_and_types_source_encoding_helpers() {
     let program = parse_ail_source(
         r#"

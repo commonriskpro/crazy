@@ -11,6 +11,7 @@ mod crypto;
 mod encoding;
 mod int;
 mod match_expr;
+mod numeric;
 mod option_result;
 mod syntax_helpers;
 mod text;
@@ -24,6 +25,7 @@ pub(super) use crypto::*;
 pub(super) use encoding::*;
 pub(super) use int::*;
 pub(super) use match_expr::*;
+pub(super) use numeric::*;
 pub(super) use option_result::*;
 pub(super) use syntax_helpers::*;
 pub(super) use text::*;
@@ -44,6 +46,7 @@ pub(super) enum SourceLowerDiagnostic {
     FieldAccess,
     IndexExpression,
     IntHelper,
+    NumericHelper,
     ListLiteral,
     MatchExpression,
     OptionResultHelper,
@@ -72,6 +75,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::FieldAccess => "AIL_SOURCE_LOWER_FIELD_ACCESS",
             SourceLowerDiagnostic::IndexExpression => "AIL_SOURCE_LOWER_INDEX_EXPRESSION",
             SourceLowerDiagnostic::IntHelper => "AIL_SOURCE_LOWER_INT_HELPER",
+            SourceLowerDiagnostic::NumericHelper => "AIL_SOURCE_LOWER_NUMERIC_HELPER",
             SourceLowerDiagnostic::ListLiteral => "AIL_SOURCE_LOWER_LIST_LITERAL",
             SourceLowerDiagnostic::MatchExpression => "AIL_SOURCE_LOWER_MATCH_EXPRESSION",
             SourceLowerDiagnostic::OptionResultHelper => "AIL_SOURCE_LOWER_OPTION_RESULT_HELPER",
@@ -97,6 +101,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::EncodingHelper => "source.lower.encoding",
             SourceLowerDiagnostic::Expression => "source.lower.expression",
             SourceLowerDiagnostic::IntHelper => "source.lower.int",
+            SourceLowerDiagnostic::NumericHelper => "source.lower.numeric",
             SourceLowerDiagnostic::MatchExpression => "source.lower.match",
             SourceLowerDiagnostic::OptionResultHelper => "source.lower.option_result",
             SourceLowerDiagnostic::CollectionArity
@@ -432,6 +437,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_crypto_helper_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
+    if let Some(lowered) = lower_source_numeric_helper_expr(expr, line_num)? {
         return Ok(lowered);
     }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {

@@ -365,6 +365,23 @@ pub(super) fn infer_source_call_type(
         | "std.crypto.constant_time_eq" => {
             infer_source_crypto_helper_type(func, args, scope, functions)
         }
+        "numeric.narrow_to_i32"
+        | "numeric_narrow_to_i32"
+        | "std.numeric.narrow_to_i32"
+        | "numeric.narrow_to_u32"
+        | "numeric_narrow_to_u32"
+        | "std.numeric.narrow_to_u32"
+        | "numeric.narrow_to_u64"
+        | "numeric_narrow_to_u64"
+        | "std.numeric.narrow_to_u64"
+        | "numeric.narrow_to_i16"
+        | "numeric_narrow_to_i16"
+        | "std.numeric.narrow_to_i16"
+        | "numeric.narrow_to_u8"
+        | "numeric_narrow_to_u8"
+        | "std.numeric.narrow_to_u8" => {
+            infer_source_numeric_helper_type(func, args, scope, functions)
+        }
         "record" => infer_source_record_type(args, scope, functions),
         "field" => infer_source_field_type(args, scope, functions),
         "update" => infer_source_update_type(args, scope, functions),
@@ -891,6 +908,44 @@ fn require_source_map_text_key_type<'a>(
         ));
     }
     Ok(Some(value_ty))
+}
+
+pub(super) fn infer_source_numeric_helper_type(
+    func: &str,
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    match func {
+        "numeric.narrow_to_i32"
+        | "numeric_narrow_to_i32"
+        | "std.numeric.narrow_to_i32"
+        | "numeric.narrow_to_u32"
+        | "numeric_narrow_to_u32"
+        | "std.numeric.narrow_to_u32"
+        | "numeric.narrow_to_u64"
+        | "numeric_narrow_to_u64"
+        | "std.numeric.narrow_to_u64"
+        | "numeric.narrow_to_i16"
+        | "numeric_narrow_to_i16"
+        | "std.numeric.narrow_to_i16"
+        | "numeric.narrow_to_u8"
+        | "numeric_narrow_to_u8"
+        | "std.numeric.narrow_to_u8" => {}
+        _ => unreachable!("checked source numeric helper"),
+    }
+    if args.len() != 1 {
+        return Err(source_expr_error(
+            "AIL_SOURCE_NUMERIC_ARITY",
+            "source.numeric.arity",
+            format!(
+                "function call `{func}` expects 1 argument(s), got {}",
+                args.len()
+            ),
+        ));
+    }
+    validate_source_arg_types(func, args, scope, functions, &["Int"])?;
+    Ok("Result<Int,Text>".to_string())
 }
 
 pub(super) fn infer_source_crypto_helper_type(

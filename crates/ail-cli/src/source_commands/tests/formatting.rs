@@ -236,6 +236,42 @@ fn same(left:Bytes,right:Bytes)->Bool=std.crypto.constant_time_eq(left,right)
 }
 
 #[test]
+fn formats_source_numeric_narrow_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn i32ish(value:Int)->Result<Int,Text>=std.numeric.narrow_to_i32(value)
+fn u32ish(value:Int)->Result<Int,Text>=numeric.narrow_to_u32(value)
+fn u64ish(value:Int)->Result<Int,Text>=std.numeric.narrow_to_u64(value)
+fn i16ish(value:Int)->Result<Int,Text>=numeric.narrow_to_i16(value)
+fn byteish(value:Int)->Result<Int,Text>=std.numeric.narrow_to_u8(value)
+"#,
+    )
+    .expect("source numeric narrow helpers must format");
+
+    assert_eq!(item_count, 5);
+    assert!(
+        formatted
+            .contains("fn i32ish(value: Int) -> Result<Int,Text> = numeric_narrow_to_i32(value)\n")
+    );
+    assert!(
+        formatted
+            .contains("fn u32ish(value: Int) -> Result<Int,Text> = numeric_narrow_to_u32(value)\n")
+    );
+    assert!(
+        formatted
+            .contains("fn u64ish(value: Int) -> Result<Int,Text> = numeric_narrow_to_u64(value)\n")
+    );
+    assert!(
+        formatted
+            .contains("fn i16ish(value: Int) -> Result<Int,Text> = numeric_narrow_to_i16(value)\n")
+    );
+    assert!(
+        formatted
+            .contains("fn byteish(value: Int) -> Result<Int,Text> = numeric_narrow_to_u8(value)\n")
+    );
+}
+
+#[test]
 fn formats_source_encoding_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"

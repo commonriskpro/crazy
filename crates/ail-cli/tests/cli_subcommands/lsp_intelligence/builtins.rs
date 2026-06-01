@@ -535,6 +535,71 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "hover must explain crypto_constant_time_eq; got: {crypto_hover}"
     );
 
+    let numeric_completion_output = ail()
+        .args(["lsp", "--complete", "numeric_", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let numeric_completion = parse_json_output(&numeric_completion_output);
+    let numeric_items = numeric_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        [
+            "numeric_narrow_to_i32",
+            "numeric_narrow_to_u32",
+            "numeric_narrow_to_u64",
+            "numeric_narrow_to_i16",
+            "numeric_narrow_to_u8",
+        ]
+        .iter()
+        .all(|label| numeric_items
+            .iter()
+            .any(|item| item["label"] == *label && item["detail"] == "AIL source Numeric helper")),
+        "completion must include AIL source numeric narrow helpers; got: {numeric_items:?}"
+    );
+
+    let dotted_numeric_completion_output = ail()
+        .args(["lsp", "--complete", "numeric.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_numeric_completion = parse_json_output(&dotted_numeric_completion_output);
+    let dotted_numeric_items = dotted_numeric_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        [
+            "numeric.narrow_to_i32",
+            "numeric.narrow_to_u32",
+            "numeric.narrow_to_u64",
+            "numeric.narrow_to_i16",
+            "numeric.narrow_to_u8",
+        ]
+        .iter()
+        .all(|label| dotted_numeric_items
+            .iter()
+            .any(|item| item["label"] == *label && item["detail"] == "AIL source Numeric helper")),
+        "completion must include dotted Numeric narrow helpers; got: {dotted_numeric_items:?}"
+    );
+
+    let numeric_hover_output = ail()
+        .args(["lsp", "--hover-token", "numeric_narrow_to_u8", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let numeric_hover = parse_json_output(&numeric_hover_output);
+    assert!(
+        numeric_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("unsigned 8-bit range"),
+        "hover must explain numeric_narrow_to_u8; got: {numeric_hover}"
+    );
+
     let encoding_completion_output = ail()
         .args(["lsp", "--complete", "encoding_", "--json"])
         .assert()

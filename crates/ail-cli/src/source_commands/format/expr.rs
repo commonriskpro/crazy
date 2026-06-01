@@ -682,6 +682,21 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if let Some((helper, arity)) = source_numeric_helper(&func)
+        && args.len() == arity
+    {
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "option.unwrap_or" && args.len() == 2 {
         return (
             format!(
@@ -1006,6 +1021,17 @@ pub(super) fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn source_numeric_helper(func: &str) -> Option<(&'static str, usize)> {
+    match func {
+        "numeric.narrow_to_i32" | "std.numeric.narrow_to_i32" => Some(("numeric_narrow_to_i32", 1)),
+        "numeric.narrow_to_u32" | "std.numeric.narrow_to_u32" => Some(("numeric_narrow_to_u32", 1)),
+        "numeric.narrow_to_u64" | "std.numeric.narrow_to_u64" => Some(("numeric_narrow_to_u64", 1)),
+        "numeric.narrow_to_i16" | "std.numeric.narrow_to_i16" => Some(("numeric_narrow_to_i16", 1)),
+        "numeric.narrow_to_u8" | "std.numeric.narrow_to_u8" => Some(("numeric_narrow_to_u8", 1)),
+        _ => None,
+    }
 }
 
 fn source_crypto_helper(func: &str) -> Option<(&'static str, usize)> {
