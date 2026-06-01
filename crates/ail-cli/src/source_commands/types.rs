@@ -520,11 +520,9 @@ fn require_source_list_type<'a>(ty: &'a str, context: &str) -> Result<Option<&'a
     if ty == "Unknown" {
         return Ok(None);
     }
-    source_list_element_type(ty).map(Some).ok_or_else(|| {
-        CliError::ParseError(format!(
-            "type mismatch in {context}: expected List<Unknown>, got {ty}"
-        ))
-    })
+    source_list_element_type(ty)
+        .map(Some)
+        .ok_or_else(|| source_type_shape_mismatch_error(context, "List<Unknown>", ty))
 }
 
 pub(super) fn infer_source_tuple_type(
@@ -590,11 +588,9 @@ fn require_source_tuple_type<'a>(
     if ty == "Unknown" {
         return Ok(None);
     }
-    source_tuple_types(ty).map(Some).ok_or_else(|| {
-        CliError::ParseError(format!(
-            "type mismatch in {context}: expected Tuple<Unknown>, got {ty}"
-        ))
-    })
+    source_tuple_types(ty)
+        .map(Some)
+        .ok_or_else(|| source_type_shape_mismatch_error(context, "Tuple<Unknown>", ty))
 }
 
 pub(super) fn infer_source_option_unwrap_or_type(
@@ -674,11 +670,9 @@ fn require_source_option_type<'a>(ty: &'a str, context: &str) -> Result<Option<&
     if ty == "Unknown" {
         return Ok(None);
     }
-    source_option_element_type(ty).map(Some).ok_or_else(|| {
-        CliError::ParseError(format!(
-            "type mismatch in {context}: expected Option<Unknown>, got {ty}"
-        ))
-    })
+    source_option_element_type(ty)
+        .map(Some)
+        .ok_or_else(|| source_type_shape_mismatch_error(context, "Option<Unknown>", ty))
 }
 
 fn require_source_result_type<'a>(
@@ -688,11 +682,9 @@ fn require_source_result_type<'a>(
     if ty == "Unknown" {
         return Ok(None);
     }
-    source_result_types(ty).map(Some).ok_or_else(|| {
-        CliError::ParseError(format!(
-            "type mismatch in {context}: expected Result<Unknown,Unknown>, got {ty}"
-        ))
-    })
+    source_result_types(ty)
+        .map(Some)
+        .ok_or_else(|| source_type_shape_mismatch_error(context, "Result<Unknown,Unknown>", ty))
 }
 
 pub(super) fn infer_source_set_type(
@@ -1022,6 +1014,14 @@ fn source_type_mismatch_error(context: &str, expected: &str, actual: &str) -> Cl
     source_type_error(
         "AIL_SOURCE_TYPE_MISMATCH",
         "source.type.mismatch",
+        format!("type mismatch in {context}: expected {expected}, got {actual}"),
+    )
+}
+
+fn source_type_shape_mismatch_error(context: &str, expected: &str, actual: &str) -> CliError {
+    source_type_error(
+        "AIL_SOURCE_TYPE_SHAPE_MISMATCH",
+        "source.type.shape",
         format!("type mismatch in {context}: expected {expected}, got {actual}"),
     )
 }

@@ -114,6 +114,14 @@ fn lsp_diagnose_reports_source_list_length_type_mismatch() {
             .expect("diagnostic message")
             .contains("type mismatch in list.length argument 1: expected List<Unknown>, got Text")
     );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_TYPE_SHAPE_MISMATCH"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.type.shape"
+    );
 }
 
 #[test]
