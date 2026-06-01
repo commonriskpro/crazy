@@ -149,6 +149,54 @@ fn lsp_diagnose_reports_numeric_leading_source_names() {
             .contains("declaration name `1bad` segment `1bad` must start with a letter or `_`")
     );
 }
+
+#[test]
+fn lsp_diagnose_reports_reserved_generated_statement_binding_names() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int {\n  let __ail_stmt_2 = 1\n  return __ail_stmt_2\n}\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_PARSE_INVALID_NAME"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.parse.name"
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["range"]["start"]["character"],
+        6
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["line"], 1);
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["character"], 18);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("uses reserved compiler-generated prefix `__ail_stmt_`")
+    );
+}
+
 #[test]
 fn lsp_diagnose_reports_source_match_expression_shape_code() {
     use assert_fs::prelude::*;

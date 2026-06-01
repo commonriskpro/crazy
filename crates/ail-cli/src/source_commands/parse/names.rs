@@ -46,6 +46,40 @@ pub(super) fn validate_source_local_name_at(
     Ok(())
 }
 
+pub(super) fn validate_source_user_local_name_at(
+    name: &str,
+    line_num: usize,
+    column: usize,
+) -> Result<(), CliError> {
+    validate_source_local_name_at(name, line_num, column)?;
+    if is_source_statement_binding_name(name) {
+        return Err(source_parse_error_for_fragment_at(
+            line_num,
+            column,
+            SourceParseDiagnostic::InvalidName,
+            name,
+            format!(
+                "local binding name `{name}` uses reserved compiler-generated prefix `{SOURCE_STATEMENT_BINDING_PREFIX}`"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_source_user_local_expr_name(name: &str) -> Result<(), CliError> {
+    validate_source_local_expr_name(name)?;
+    if is_source_statement_binding_name(name) {
+        return Err(source_parse_error_unlocated(
+            SourceParseDiagnostic::InvalidName,
+            name,
+            format!(
+                "local binding name `{name}` uses reserved compiler-generated prefix `{SOURCE_STATEMENT_BINDING_PREFIX}`"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_source_name(name: &str, line_num: usize) -> Result<(), CliError> {
     validate_source_name_at(name, line_num, 1)
 }

@@ -334,7 +334,7 @@ pub(super) fn parse_source_params(
             let ty_column = trimmed_fragment_column(param_column + name.chars().count() + 1, ty);
             let name = name.trim();
             let ty = ty.trim();
-            validate_source_local_name_at(name, line_num, name_column)?;
+            validate_source_user_local_name_at(name, line_num, name_column)?;
             if !seen.insert(name.to_string()) {
                 return Err(source_parse_error_for_fragment_at(
                     line_num,
@@ -522,7 +522,7 @@ pub(super) fn source_block_to_expr(lines: &[(usize, usize, String)]) -> Result<S
         } else {
             (binding, binding_column, None)
         };
-        validate_source_local_name_at(name, *line_num, name_column)?;
+        validate_source_user_local_name_at(name, *line_num, name_column)?;
         if value.is_empty() {
             return Err(source_parse_error_for_fragment(
                 *line_num,

@@ -14,7 +14,7 @@ pub(super) fn validate_source_match_pattern(pattern: &str) -> Result<(), CliErro
             && binding != "_"
         {
             validate_source_constructor_pattern_binding_shape(pattern, binding)?;
-            validate_source_local_expr_name(binding)?;
+            validate_source_user_local_expr_name(binding)?;
         }
         return Ok(());
     }

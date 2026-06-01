@@ -124,6 +124,25 @@ fn bad(input: Option<Int>) -> Int = match input { Some() => 1, None => 0 }
             "source.parse.pattern",
             "unsupported empty source match pattern `Some()`",
         ),
+        (
+            r#"
+fn bad() -> Int {
+  let __ail_stmt_2 = 1
+  return __ail_stmt_2
+}
+"#,
+            "AIL_SOURCE_PARSE_INVALID_NAME",
+            "source.parse.name",
+            "uses reserved compiler-generated prefix `__ail_stmt_`",
+        ),
+        (
+            r#"
+fn bad(__ail_stmt_2: Int) -> Int = __ail_stmt_2
+"#,
+            "AIL_SOURCE_PARSE_INVALID_NAME",
+            "source.parse.name",
+            "uses reserved compiler-generated prefix `__ail_stmt_`",
+        ),
     ];
 
     for (src, code, category, detail) in cases {
