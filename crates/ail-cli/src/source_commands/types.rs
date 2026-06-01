@@ -866,9 +866,7 @@ pub(super) fn infer_source_record_type(
         let field = pair[0].trim();
         validate_source_local_expr_name(field)?;
         if !seen.insert(field.to_string()) {
-            return Err(CliError::ParseError(format!(
-                "duplicate record field `{field}`"
-            )));
+            return Err(source_record_duplicate_field_error(field));
         }
         let value_ty = infer_source_expr_type(&pair[1], scope, functions)?;
         fields.push(format!("{field}:{value_ty}"));
@@ -1017,6 +1015,14 @@ fn source_record_field_error(field: &str, record_ty: &str) -> CliError {
         "AIL_SOURCE_RECORD_FIELD_UNKNOWN",
         "source.record.field",
         format!("unknown record field `{field}` for {record_ty}"),
+    )
+}
+
+fn source_record_duplicate_field_error(field: &str) -> CliError {
+    source_expr_error(
+        "AIL_SOURCE_RECORD_FIELD_DUPLICATE",
+        "source.record.duplicate_field",
+        format!("duplicate record field `{field}`"),
     )
 }
 
