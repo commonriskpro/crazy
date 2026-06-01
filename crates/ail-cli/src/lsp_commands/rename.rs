@@ -218,7 +218,7 @@ pub(super) fn rename_candidate_at_position(
         "referenceToken": symbol.name,
         "symbolKind": symbol.kind,
         "range": range,
-        "placeholder": token,
+        "placeholder": symbol_local_name(&symbol.name),
         "references": references,
         "referenceCount": reference_count,
     })

@@ -565,6 +565,71 @@ fn lsp_rename_edits_orders_document_edits_by_range() {
     assert_eq!(edits[2]["range"]["start"]["character"], 21);
 }
 
+#[test]
+fn lsp_rename_edits_cover_source_block_tests() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    let text = concat!(
+        "test smoke {\n",
+        "  let actual: Int = 20 + 22\n",
+        "  return actual == 42\n",
+        "}\n",
+        "grant test.smoke log.write\n",
+        "fn main() -> Int = 0\n",
+    );
+    source
+        .write_str(text)
+        .expect("source fixture must be written");
+    let uri = format!("file://{}", source.path().display());
+    let open_source = did_open_message(&uri, text, 1);
+    let rename_edits = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 43,
+        "method": "ail/renameEdits",
+        "params": {
+            "textDocument": { "uri": uri.clone() },
+            "position": { "line": 0, "character": 6 },
+            "newName": "addition"
+        }
+    })
+    .to_string();
+    let input = lsp_input(vec![open_source, rename_edits]);
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 43)
+        .expect("renameEdits response must be emitted");
+    let result = &response["result"];
+    let changes = result["workspaceEdit"]["changes"]
+        .as_object()
+        .expect("workspace changes must be returned");
+    let edits = changes
+        .get(&uri)
+        .and_then(|value| value.as_array())
+        .expect("source document edits must be returned");
+
+    assert_eq!(result["canRename"], true);
+    assert_eq!(result["referenceToken"], "test.smoke");
+    assert_eq!(result["editCount"], 2);
+    assert_eq!(edits.len(), 2);
+    assert_eq!(edits[0]["newText"], "addition");
+    assert_eq!(edits[0]["range"]["start"]["line"], 0);
+    assert_eq!(edits[0]["range"]["start"]["character"], 5);
+    assert_eq!(edits[1]["newText"], "test.addition");
+    assert_eq!(edits[1]["range"]["start"]["line"], 4);
+    assert_eq!(edits[1]["range"]["start"]["character"], 6);
+}
+
 fn rename_edits_result_for_new_name(new_name: &str, request_id: u64) -> serde_json::Value {
     use assert_fs::prelude::*;
 
