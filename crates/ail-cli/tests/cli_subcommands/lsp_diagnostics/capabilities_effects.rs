@@ -352,6 +352,50 @@ fn lsp_diagnose_reports_ail_source_unknown_effect_call_capability() {
     );
     assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
 }
+
+#[test]
+fn lsp_diagnose_reports_ail_source_effect_call_shape_code() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "capability log.write\nfn main() -> Int = effect_call(\"log.write\", write, \"hi\")\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("line 2: effect_call capability and operation must be identifiers")
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_EFFECT_CALL_SHAPE"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.effect.call_shape"
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
+}
+
 #[test]
 fn lsp_diagnose_reports_ail_source_unknown_grant_target() {
     use assert_fs::prelude::*;
