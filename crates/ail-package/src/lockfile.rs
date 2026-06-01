@@ -111,6 +111,8 @@ pub enum LockfileValidationIssueKind {
     EmptyPackageHash,
     /// A locked package records an empty verification report digest.
     EmptyVerificationReportHash,
+    /// A locked WASM artifact is missing its ABI descriptor artifact evidence.
+    MissingAbiDescriptorArtifact,
     /// A locked package records an empty accepted assumption ID.
     EmptyAcceptedAssumption,
     /// A locked package records the same accepted assumption more than once.
@@ -136,6 +138,9 @@ impl LockfileValidationIssueKind {
             LockfileValidationIssueKind::EmptyVerificationReportHash => {
                 "LOCKFILE_EMPTY_VERIFICATION_REPORT_HASH"
             }
+            LockfileValidationIssueKind::MissingAbiDescriptorArtifact => {
+                "LOCKFILE_MISSING_ABI_DESCRIPTOR_ARTIFACT"
+            }
             LockfileValidationIssueKind::EmptyAcceptedAssumption => {
                 "LOCKFILE_EMPTY_ACCEPTED_ASSUMPTION"
             }
@@ -160,6 +165,7 @@ impl LockfileValidationIssueKind {
             }
             LockfileValidationIssueKind::EmptyPackageHash
             | LockfileValidationIssueKind::EmptyVerificationReportHash
+            | LockfileValidationIssueKind::MissingAbiDescriptorArtifact
             | LockfileValidationIssueKind::EmptyAcceptedAssumption => {
                 LockfileValidationCategory::LockfileIntegrity
             }
@@ -204,6 +210,8 @@ pub enum LockfileValidationIssue {
     EmptyPackageHash { name: String, version: String },
     /// A locked package records an empty verification report digest.
     EmptyVerificationReportHash { name: String, version: String },
+    /// A locked WASM artifact is missing its ABI descriptor artifact evidence.
+    MissingAbiDescriptorArtifact { name: String, version: String },
     /// A locked package records an empty accepted assumption ID.
     EmptyAcceptedAssumption { name: String, version: String },
     /// A locked package records the same accepted assumption more than once.
@@ -245,6 +253,9 @@ impl LockfileValidationIssue {
             }
             LockfileValidationIssue::EmptyVerificationReportHash { .. } => {
                 LockfileValidationIssueKind::EmptyVerificationReportHash
+            }
+            LockfileValidationIssue::MissingAbiDescriptorArtifact { .. } => {
+                LockfileValidationIssueKind::MissingAbiDescriptorArtifact
             }
             LockfileValidationIssue::EmptyAcceptedAssumption { .. } => {
                 LockfileValidationIssueKind::EmptyAcceptedAssumption
@@ -294,6 +305,8 @@ pub enum LockfileIntegrityIssueKind {
     EmptyPackageHash,
     /// A locked package records an empty verification report digest.
     EmptyVerificationReportHash,
+    /// A locked WASM artifact is missing its ABI descriptor artifact evidence.
+    MissingAbiDescriptorArtifact,
     /// A locked package records an empty accepted assumption ID.
     EmptyAcceptedAssumption,
     /// A locked package records the same accepted assumption more than once.
@@ -327,6 +340,9 @@ impl LockfileIntegrityIssueKind {
             LockfileIntegrityIssueKind::EmptyVerificationReportHash => {
                 "LOCKFILE_EMPTY_VERIFICATION_REPORT_HASH"
             }
+            LockfileIntegrityIssueKind::MissingAbiDescriptorArtifact => {
+                "LOCKFILE_MISSING_ABI_DESCRIPTOR_ARTIFACT"
+            }
             LockfileIntegrityIssueKind::EmptyAcceptedAssumption => {
                 "LOCKFILE_EMPTY_ACCEPTED_ASSUMPTION"
             }
@@ -351,6 +367,7 @@ impl LockfileIntegrityIssueKind {
             }
             LockfileIntegrityIssueKind::EmptyPackageHash
             | LockfileIntegrityIssueKind::EmptyVerificationReportHash
+            | LockfileIntegrityIssueKind::MissingAbiDescriptorArtifact
             | LockfileIntegrityIssueKind::EmptyAcceptedAssumption
             | LockfileIntegrityIssueKind::MissingResolvedSource
             | LockfileIntegrityIssueKind::StaleGraphSchemaVersion
@@ -694,6 +711,7 @@ impl Lockfile {
             }
 
             validate_accepted_assumptions(entry, &mut issues);
+            validate_artifact_evidence(entry, &mut issues);
             previous = Some((entry, coordinate));
         }
 
@@ -901,6 +919,23 @@ fn validate_accepted_assumptions(entry: &LockfileEntry, issues: &mut Vec<Lockfil
     }
 }
 
+fn validate_artifact_evidence(entry: &LockfileEntry, issues: &mut Vec<LockfileValidationIssue>) {
+    if has_artifact_role(&entry.artifact_hashes, "wasm-artifact")
+        && !has_artifact_role(&entry.artifact_hashes, "wasm-abi-descriptor")
+    {
+        issues.push(LockfileValidationIssue::MissingAbiDescriptorArtifact {
+            name: entry.name.clone(),
+            version: entry.version.clone(),
+        });
+    }
+}
+
+fn has_artifact_role(artifact_hashes: &[ArtifactHashEntry], role: &str) -> bool {
+    artifact_hashes
+        .iter()
+        .any(|entry| entry.role.trim() == role)
+}
+
 #[derive(Default)]
 struct ResolvedPackageFacts {
     package_hashes: BTreeSet<String>,
@@ -1003,6 +1038,13 @@ fn integrity_issue_from_validation_issue(
                 version,
             )
         }
+        LockfileValidationIssue::MissingAbiDescriptorArtifact { name, version } => {
+            LockfileIntegrityIssue::new(
+                LockfileIntegrityIssueKind::MissingAbiDescriptorArtifact,
+                name,
+                version,
+            )
+        }
         LockfileValidationIssue::EmptyAcceptedAssumption { name, version } => {
             LockfileIntegrityIssue::new(
                 LockfileIntegrityIssueKind::EmptyAcceptedAssumption,
@@ -1073,6 +1115,7 @@ fn validation_issue_sort_key(
         | LockfileValidationIssue::MissingPackage { name, version }
         | LockfileValidationIssue::EmptyPackageHash { name, version }
         | LockfileValidationIssue::EmptyVerificationReportHash { name, version }
+        | LockfileValidationIssue::MissingAbiDescriptorArtifact { name, version }
         | LockfileValidationIssue::EmptyAcceptedAssumption { name, version } => {
             (issue.code(), name, version, "", "")
         }
@@ -1439,6 +1482,36 @@ mod tests {
             LockfileValidationCategory::ReplayIntegrity
         );
         assert_eq!(issue.category().to_string(), "replay_integrity");
+    }
+
+    // ── lockfile_validate_reproducibility_requires_wasm_abi_descriptor ───
+    // Production gate: a locked WASM binary is not replay-safe without its ABI contract.
+    #[test]
+    fn lockfile_validate_reproducibility_requires_wasm_abi_descriptor() {
+        let mut lf = Lockfile::new();
+        let mut entry = entry_with("abi.locked", "1.0.0", "hash");
+        entry.artifact_hashes = vec![ArtifactHashEntry {
+            role: "wasm-artifact".to_string(),
+            hash: "a".repeat(64),
+        }];
+        lf.add(entry);
+
+        let actual = vec![("abi.locked", "1.0.0", "hash")];
+
+        let issue = LockfileValidationIssue::MissingAbiDescriptorArtifact {
+            name: "abi.locked".to_string(),
+            version: "1.0.0".to_string(),
+        };
+        assert_eq!(lf.validate_reproducibility(&actual), vec![issue.clone()]);
+        assert_eq!(
+            issue.kind(),
+            LockfileValidationIssueKind::MissingAbiDescriptorArtifact
+        );
+        assert_eq!(issue.code(), "LOCKFILE_MISSING_ABI_DESCRIPTOR_ARTIFACT");
+        assert_eq!(
+            issue.category(),
+            LockfileValidationCategory::LockfileIntegrity
+        );
     }
 
     // ── lockfile_validate_reproducibility_detects_empty_hashes ────────────

@@ -243,6 +243,89 @@ impl LockfileReproducibilityCliIssue {
                 actual_hash: Some(actual.clone()),
                 reason: format!("locked package {name}@{version} digest differs from registry"),
             },
+            LockfileValidationIssue::EmptyPackageHash { name, version } => Self {
+                kind: "empty_package_hash",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: None,
+                actual_hash: None,
+                reason: format!("locked package {name}@{version} has an empty package hash"),
+            },
+            LockfileValidationIssue::EmptyVerificationReportHash { name, version } => Self {
+                kind: "empty_verification_report_hash",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: None,
+                actual_hash: None,
+                reason: format!(
+                    "locked package {name}@{version} has an empty verification report hash"
+                ),
+            },
+            LockfileValidationIssue::MissingAbiDescriptorArtifact { name, version } => Self {
+                kind: "missing_abi_descriptor_artifact",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: None,
+                actual_hash: None,
+                reason: format!(
+                    "locked WASM artifact {name}@{version} is missing wasm-abi-descriptor evidence"
+                ),
+            },
+            LockfileValidationIssue::EmptyAcceptedAssumption { name, version } => Self {
+                kind: "empty_accepted_assumption",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: None,
+                actual_hash: None,
+                reason: format!("locked package {name}@{version} has an empty accepted assumption"),
+            },
+            LockfileValidationIssue::DuplicateAcceptedAssumption {
+                name,
+                version,
+                assumption,
+            } => Self {
+                kind: "duplicate_accepted_assumption",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: None,
+                actual_hash: None,
+                reason: format!(
+                    "locked package {name}@{version} repeats accepted assumption {assumption}"
+                ),
+            },
+            LockfileValidationIssue::UnstableAcceptedAssumptionOrder {
+                name,
+                version,
+                previous,
+                assumption,
+            } => Self {
+                kind: "unstable_accepted_assumption_order",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: None,
+                actual_hash: None,
+                reason: format!(
+                    "accepted assumptions for {name}@{version} are not canonical: {previous} appears before {assumption}"
+                ),
+            },
         }
     }
 
