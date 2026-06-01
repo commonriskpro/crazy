@@ -346,6 +346,29 @@ fn disk_store_persists_change_for_compile() {
     let compile_json = parse_json_output(&compile_output);
     assert_eq!(compile_json["status"], "ok");
 
+    let package_output = ail()
+        .args(["package", "init", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let package_json = parse_json_output(&package_output);
+    let artifact_roles = package_json["data"]["manifest"]["artifact_hashes"]
+        .as_array()
+        .expect("package artifact_hashes must be an array")
+        .iter()
+        .map(|entry| entry["role"].as_str().expect("role must be string"))
+        .collect::<Vec<_>>();
+    assert!(
+        artifact_roles.contains(&"wasm-artifact"),
+        "package init after compile must bind the persisted wasm artifact"
+    );
+    assert!(
+        artifact_roles.contains(&"wasm-abi-descriptor"),
+        "package init after compile must bind the persisted ABI descriptor"
+    );
+
     let status_output = ail()
         .args(["status", "--json"])
         .current_dir(dir.path())

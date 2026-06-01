@@ -10,6 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ail_compiler::ArtifactManifest;
 use ail_core::semantic_graph::NodeKind;
 use ail_package::{
     AdvisoryChecker, ArtifactHashEntry, CompatibilityEngine, CompatibilityError,
@@ -19,7 +20,7 @@ use ail_package::{
 };
 use serde_json::json;
 
-use crate::cli::{AdvisoryCmd, PackageCmd, load_current_graph_for_cli};
+use crate::cli::{AdvisoryCmd, PackageCmd, bytes_to_hex, load_current_graph_for_cli};
 use crate::error::CliError;
 use crate::output::{OutputMode, print_error_response, print_response};
 use crate::package_output::{
