@@ -479,7 +479,7 @@ enum Commands {
         cmd: PolicyCmd,
     },
 
-    /// Manage packages (add, verify, publish, audit, explain).
+    /// Manage packages (add, lint, verify, publish, audit, explain).
     Package {
         #[command(subcommand)]
         cmd: PackageCmd,
@@ -559,6 +559,9 @@ pub(crate) enum PackageCmd {
         /// Search query.
         query: String,
     },
+    /// Lint the local package manifest for production-publish readiness.
+    #[command(visible_alias = "check")]
+    Lint,
     /// Verify all package integrity hashes against lock file.
     Verify,
     /// Publish this package to the registry.

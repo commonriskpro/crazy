@@ -6,8 +6,8 @@
 // so that the JSON contract surface is easy to audit in one place.
 
 use ail_package::{
-    AdvisorySeverity, LockfileEntry, LockfileValidationIssue, PackageManifest, SecurityAdvisory,
-    YankRecord,
+    AdvisorySeverity, LockfileEntry, LockfileValidationIssue, PackageManifest,
+    PackageManifestIssue, PackageManifestIssueKind, SecurityAdvisory, YankRecord,
 };
 use serde_json::{Value, json};
 
@@ -579,6 +579,50 @@ pub(crate) fn package_manifest_to_json(manifest: &PackageManifest) -> Result<Val
         );
     }
     Ok(value)
+}
+
+pub(crate) fn package_manifest_issue_to_json(issue: &PackageManifestIssue) -> Value {
+    json!({
+        "kind": package_manifest_issue_kind(issue.kind.clone()),
+        "status": "blocked",
+        "descriptor": &issue.descriptor,
+        "message": &issue.message,
+    })
+}
+
+pub(crate) fn package_manifest_issue_to_human_line(issue: &PackageManifestIssue) -> String {
+    let mut location = issue.descriptor.path.clone();
+    if let Some(index) = issue.descriptor.index {
+        location.push_str(&format!("[{index}]"));
+    }
+    if let Some(duplicate_of) = issue.descriptor.duplicate_of {
+        location.push_str(&format!(" duplicates [{duplicate_of}]"));
+    }
+    format!(
+        "- {} at {location}: {}",
+        package_manifest_issue_kind(issue.kind.clone()),
+        issue.message
+    )
+}
+
+fn package_manifest_issue_kind(kind: PackageManifestIssueKind) -> &'static str {
+    match kind {
+        PackageManifestIssueKind::InvalidPackageName => "invalid_package_name",
+        PackageManifestIssueKind::InvalidVersion => "invalid_version",
+        PackageManifestIssueKind::UnsafeWithoutSurface => "unsafe_without_surface",
+        PackageManifestIssueKind::ExportNameEmpty => "export_name_empty",
+        PackageManifestIssueKind::HandlerFieldEmpty => "handler_field_empty",
+        PackageManifestIssueKind::ImportSourceEmpty => "import_source_empty",
+        PackageManifestIssueKind::MissingLicense => "missing_license",
+        PackageManifestIssueKind::MissingEntryMetadata => "missing_entry_metadata",
+        PackageManifestIssueKind::MissingAbiDescriptorArtifact => "missing_abi_descriptor_artifact",
+        PackageManifestIssueKind::ArtifactRoleEmpty => "artifact_role_empty",
+        PackageManifestIssueKind::ArtifactHashInvalid => "artifact_hash_invalid",
+        PackageManifestIssueKind::DuplicateArtifactRole => "duplicate_artifact_role",
+        PackageManifestIssueKind::DuplicateDependency => "duplicate_dependency",
+        PackageManifestIssueKind::DuplicateCapability => "duplicate_capability",
+        PackageManifestIssueKind::DuplicateExport => "duplicate_export",
+    }
 }
 
 pub(crate) fn package_compatibility_issue_to_json(issue: &PackageCompatibilityCliIssue) -> Value {

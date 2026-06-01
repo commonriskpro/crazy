@@ -69,3 +69,21 @@ async fn cmd_package_explain_shows_full_metadata() {
         "package explain must succeed; got: {result:?}"
     );
 }
+
+#[tokio::test]
+async fn cmd_package_lint_blocks_manifest_without_production_metadata() {
+    use crate::store::memory_store;
+    let store = memory_store();
+
+    let result = cmd_package(OutputMode::Json, PackageCmd::Lint, &store).await;
+
+    let err = result.expect_err("default manifest must not pass production package lint");
+    assert!(
+        err.to_string().contains("package lint failed"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.to_string().contains("production manifest issue"),
+        "lint failure should describe production manifest issues; got: {err}"
+    );
+}

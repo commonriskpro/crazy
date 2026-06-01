@@ -2,7 +2,7 @@ use super::*;
 
 // ── Public entry point ────────────────────────────────────────────────────
 
-/// `ail package <add|verify|publish|audit|explain>` — manage packages.
+/// `ail package <add|lint|verify|publish|audit|explain>` — manage packages.
 ///
 /// Rules:
 /// - Package install does not grant capabilities.
@@ -197,6 +197,59 @@ pub(crate) async fn cmd_package(
                     "truncated": response.truncated,
                 }),
             );
+        }
+        PackageCmd::Lint => {
+            let manifest = load_or_create_package_manifest(store).await?;
+            let hash = manifest
+                .blake3_hex()
+                .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))?;
+            let issues = manifest.production_validation_issues();
+            let passed = issues.is_empty();
+            let response_data = json!({
+                "passed": passed,
+                "preflight": if passed { "passed" } else { "failed" },
+                "name": &manifest.name,
+                "version": &manifest.version,
+                "manifest_hash": &hash,
+                "issue_count": issues.len(),
+                "issues": issues.iter().map(package_manifest_issue_to_json).collect::<Vec<_>>(),
+            });
+            if passed {
+                print_response(
+                    mode,
+                    &format!(
+                        "package lint passed\nname: {}\nversion: {}\nmanifest_hash: {hash}\nissues: 0",
+                        manifest.name, manifest.version
+                    ),
+                    response_data,
+                );
+            } else {
+                let message = format!(
+                    "package lint failed: {} production manifest issue(s)",
+                    issues.len()
+                );
+                if mode == OutputMode::Json {
+                    let mut error_data = response_data;
+                    if let Some(obj) = error_data.as_object_mut() {
+                        obj.insert("error".to_string(), json!("package_lint_failed"));
+                        obj.insert("message".to_string(), json!(message.clone()));
+                    }
+                    print_error_response(error_data);
+                } else {
+                    let human_msg = format!(
+                        "{message}\nname: {}\nversion: {}\nmanifest_hash: {hash}\nissues:\n{}",
+                        manifest.name,
+                        manifest.version,
+                        issues
+                            .iter()
+                            .map(package_manifest_issue_to_human_line)
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    );
+                    print_response(mode, &human_msg, response_data);
+                }
+                return Err(CliError::Domain(message));
+            }
         }
         PackageCmd::Verify => {
             let lockfile = load_package_lockfile(store)?;

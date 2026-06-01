@@ -28,7 +28,8 @@ use crate::package_output::{
     PackageCompatibilityCliIssue, PackageInstallFailure, PackageInstallResult,
     RegistryPackageIntegrity, VerificationReportHashMismatch, advisory_to_json,
     emit_package_compatibility_blocked, emit_package_install_failure, format_warnings_for_human,
-    lockfile_entry_to_json, package_compatibility_issue_to_json, package_manifest_to_json,
+    lockfile_entry_to_json, package_compatibility_issue_to_json,
+    package_manifest_issue_to_human_line, package_manifest_issue_to_json, package_manifest_to_json,
     reproducible_evidence_status, verification_report_hash_mismatch_to_json,
     verification_report_status, yank_to_json,
 };

@@ -125,6 +125,30 @@ fn package_verify_json_has_verified() {
     );
 }
 
+/// package lint --json reports production manifest diagnostics.
+#[test]
+fn package_lint_json_reports_manifest_issues() {
+    let output = ail()
+        .args(["package", "lint", "--json"])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["data"]["error"], "package_lint_failed");
+    assert_eq!(v["data"]["passed"], false);
+    assert!(
+        v["data"]["issues"].is_array(),
+        "data.issues must be an array; got: {v}"
+    );
+    assert!(
+        v["data"]["issue_count"].as_u64().unwrap_or_default() > 0,
+        "lint should report at least one production manifest issue; got: {v}"
+    );
+}
+
 /// package explain --json produces JSON with package and capabilities.
 #[test]
 fn package_explain_json_has_package_and_capabilities() {
