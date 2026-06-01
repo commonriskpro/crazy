@@ -214,6 +214,50 @@ fn formats_source_text_replace_first_helper() {
 }
 
 #[test]
+fn formats_source_decimal_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn amount(cents:Int)->Tuple<Int,Int>=std.decimal.from_int(cents)
+fn scaled(value:Tuple<Int,Int>)->Result<Tuple<Int,Int>,Text>=decimal.rescale(value,2)
+fn summed(left:Tuple<Int,Int>,right:Tuple<Int,Int>)->Result<Tuple<Int,Int>,Text>=std.decimal.add(left,right)
+fn difference(left:Tuple<Int,Int>,right:Tuple<Int,Int>)->Result<Tuple<Int,Int>,Text>=decimal.sub(left,right)
+fn product(left:Tuple<Int,Int>,right:Tuple<Int,Int>)->Result<Tuple<Int,Int>,Text>=std.decimal.mul(left,right)
+fn negative(value:Tuple<Int,Int>)->Bool=decimal.is_negative(value)
+fn zero(value:Tuple<Int,Int>)->Bool=std.decimal.is_zero(value)
+fn safe(value:Tuple<Int,Int>)->Result<Tuple<Int,Int>,Text>=decimal.non_negative(value)
+"#,
+    )
+    .expect("source decimal helpers must format");
+
+    assert_eq!(item_count, 8);
+    assert!(
+        formatted.contains("fn amount(cents: Int) -> Tuple<Int,Int> = decimal_from_int(cents)\n")
+    );
+    assert!(formatted.contains(
+        "fn scaled(value: Tuple<Int,Int>) -> Result<Tuple<Int,Int>,Text> = decimal_rescale(value, 2)\n"
+    ));
+    assert!(formatted.contains(
+        "fn summed(left: Tuple<Int,Int>, right: Tuple<Int,Int>) -> Result<Tuple<Int,Int>,Text> = decimal_add(left, right)\n"
+    ));
+    assert!(formatted.contains(
+        "fn difference(left: Tuple<Int,Int>, right: Tuple<Int,Int>) -> Result<Tuple<Int,Int>,Text> = decimal_sub(left, right)\n"
+    ));
+    assert!(formatted.contains(
+        "fn product(left: Tuple<Int,Int>, right: Tuple<Int,Int>) -> Result<Tuple<Int,Int>,Text> = decimal_mul(left, right)\n"
+    ));
+    assert!(
+        formatted
+            .contains("fn negative(value: Tuple<Int,Int>) -> Bool = decimal_is_negative(value)\n")
+    );
+    assert!(
+        formatted.contains("fn zero(value: Tuple<Int,Int>) -> Bool = decimal_is_zero(value)\n")
+    );
+    assert!(formatted.contains(
+        "fn safe(value: Tuple<Int,Int>) -> Result<Tuple<Int,Int>,Text> = decimal_non_negative(value)\n"
+    ));
+}
+
+#[test]
 fn formats_source_text_boundary_helpers() {
     let (formatted, item_count) = format_ail_source(
         "fn prefixed(haystack:Text,prefix:Text)->Bool=text.starts_with(haystack,prefix)\n\

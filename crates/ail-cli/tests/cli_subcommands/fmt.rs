@@ -169,6 +169,48 @@ fn fmt_ail_source_write_makes_check_pass() {
 }
 
 #[test]
+fn fmt_file_json_outputs_canonical_ail_source_decimal_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let source = dir.child("money.ail");
+    source
+        .write_str(
+            "fn cents(value:Int)->Tuple<Int,Int>=std.decimal.from_int(value)\n\
+fn total(left:Tuple<Int,Int>,right:Tuple<Int,Int>)->Result<Tuple<Int,Int>,Text>=decimal.add(left,right)\n\
+fn valid(value:Tuple<Int,Int>)->Result<Tuple<Int,Int>,Text>=std.decimal.non_negative(value)\n",
+        )
+        .expect("write source");
+
+    let output = ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["item_count"], 3);
+    let formatted = v["data"]["formatted"]
+        .as_str()
+        .expect("formatted must be string");
+
+    assert!(
+        formatted.contains("fn cents(value: Int) -> Tuple<Int,Int> = decimal_from_int(value)\n")
+    );
+    assert!(formatted.contains(
+        "fn total(left: Tuple<Int,Int>, right: Tuple<Int,Int>) -> Result<Tuple<Int,Int>,Text> = decimal_add(left, right)\n"
+    ));
+    assert!(formatted.contains(
+        "fn valid(value: Tuple<Int,Int>) -> Result<Tuple<Int,Int>,Text> = decimal_non_negative(value)\n"
+    ));
+}
+
+#[test]
 fn fmt_ail_source_preserves_else_if_chain() {
     use assert_fs::prelude::*;
 

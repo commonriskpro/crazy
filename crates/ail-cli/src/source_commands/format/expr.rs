@@ -607,6 +607,21 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if let Some((helper, arity)) = source_decimal_helper(&func)
+        && args.len() == arity
+    {
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "option.unwrap_or" && args.len() == 2 {
         return (
             format!(
@@ -931,6 +946,20 @@ pub(super) fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn source_decimal_helper(func: &str) -> Option<(&'static str, usize)> {
+    match func {
+        "decimal.from_int" | "std.decimal.from_int" => Some(("decimal_from_int", 1)),
+        "decimal.rescale" | "std.decimal.rescale" => Some(("decimal_rescale", 2)),
+        "decimal.add" | "std.decimal.add" => Some(("decimal_add", 2)),
+        "decimal.sub" | "std.decimal.sub" => Some(("decimal_sub", 2)),
+        "decimal.mul" | "std.decimal.mul" => Some(("decimal_mul", 2)),
+        "decimal.is_negative" | "std.decimal.is_negative" => Some(("decimal_is_negative", 1)),
+        "decimal.is_zero" | "std.decimal.is_zero" => Some(("decimal_is_zero", 1)),
+        "decimal.non_negative" | "std.decimal.non_negative" => Some(("decimal_non_negative", 1)),
+        _ => None,
+    }
 }
 
 fn format_source_else_branch(
