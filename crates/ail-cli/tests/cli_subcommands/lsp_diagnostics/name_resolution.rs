@@ -75,6 +75,11 @@ fn lsp_diagnose_reports_ail_source_builtin_call_arity_errors() {
         19
     );
     assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["character"], 22);
+    assert_eq!(v["data"]["diagnostics"][0]["code"], "AIL_SOURCE_CALL_ARITY");
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.call.arity"
+    );
 }
 #[test]
 fn lsp_diagnose_reports_ail_source_user_call_arity_errors() {

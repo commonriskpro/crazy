@@ -563,6 +563,7 @@ fn supported_diagnostic_code(code: &str) -> bool {
             | LSP_DIAGNOSTIC_ACL_SCHEMA
             | LSP_DIAGNOSTIC_SOURCE_IMPORT
             | LSP_DIAGNOSTIC_SOURCE_PARSER
+            | "AIL_SOURCE_CALL_ARITY"
             | "AIL_SOURCE_LOWER_BINDING_SHAPE"
             | "AIL_SOURCE_LOWER_CAPABILITY_REFERENCE"
             | "AIL_SOURCE_LOWER_COLLECTION_ARITY"

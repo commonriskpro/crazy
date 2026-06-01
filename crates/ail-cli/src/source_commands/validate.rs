@@ -648,22 +648,29 @@ pub(super) fn validate_source_call_arity(
     arity: SourceArity,
 ) -> Result<(), CliError> {
     match arity {
-        SourceArity::Exact(expected) if actual != expected => Err(CliError::ParseError(format!(
-            "function call `{call}` expects {expected} argument(s), got {actual}"
-        ))),
-        SourceArity::Min(expected) if actual < expected => Err(CliError::ParseError(format!(
+        SourceArity::Exact(expected) if actual != expected => Err(source_call_arity_error(
+            format!("function call `{call}` expects {expected} argument(s), got {actual}"),
+        )),
+        SourceArity::Min(expected) if actual < expected => Err(source_call_arity_error(format!(
             "function call `{call}` expects at least {expected} argument(s), got {actual}"
         ))),
-        SourceArity::Even if !actual.is_multiple_of(2) => Err(CliError::ParseError(format!(
+        SourceArity::Even if !actual.is_multiple_of(2) => Err(source_call_arity_error(format!(
             "function call `{call}` expects an even number of arguments, got {actual}"
         ))),
         SourceArity::Match if actual < 3 || actual.is_multiple_of(2) => {
-            Err(CliError::ParseError(format!(
+            Err(source_call_arity_error(format!(
                 "function call `{call}` expects a scrutinee plus pattern/body pairs, got {actual} argument(s)"
             )))
         }
         _ => Ok(()),
     }
+}
+
+fn source_call_arity_error(message: impl AsRef<str>) -> CliError {
+    CliError::ParseError(format!(
+        "{} [AIL_SOURCE_CALL_ARITY] category=source.call.arity",
+        message.as_ref()
+    ))
 }
 
 pub(super) fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
