@@ -55,7 +55,10 @@ pub use generated_artifact::GeneratedArtifact;
 pub use handler::HandlerExport;
 pub use http_registry::{HttpClientError, HttpRegistryClient, HttpRegistryServer};
 pub use import::ImportDeclaration;
-pub use lockfile::{Lockfile, LockfileEntry};
+pub use lockfile::{
+    Lockfile, LockfileArtifactEvidence, LockfileEntry, LockfileValidationCategory,
+    LockfileValidationIssue, LockfileValidationIssueKind,
+};
 pub use manifest::{
     ArtifactHashEntry, PackageDef, PackageError, PackageManifest, PackageValidationError,
     Provenance, ReproducibleBuildEvidence,

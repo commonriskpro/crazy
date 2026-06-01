@@ -254,6 +254,24 @@ impl LockfileReproducibilityCliIssue {
                 actual_hash: Some(actual.clone()),
                 reason: format!("locked package {name}@{version} digest differs from registry"),
             },
+            LockfileValidationIssue::ArtifactHashMismatch {
+                name,
+                version,
+                expected,
+                actual,
+            } => Self {
+                kind: "artifact_hash_mismatch",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: Some(expected.clone()),
+                actual_hash: Some(actual.clone()),
+                reason: format!(
+                    "locked package {name}@{version} artifact evidence differs from registry"
+                ),
+            },
             LockfileValidationIssue::EmptyPackageHash { name, version } => Self {
                 kind: "empty_package_hash",
                 status: "blocked",

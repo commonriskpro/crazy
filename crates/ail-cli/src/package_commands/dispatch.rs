@@ -204,6 +204,7 @@ pub(crate) async fn cmd_package(
                 load_package_registry_with_compatibility(store)?;
             let mut seen = BTreeSet::new();
             let mut actual = Vec::new();
+            let mut actual_artifact_evidence = Vec::new();
             let mut actual_by_package = BTreeMap::new();
             let mut signature_failures = Vec::new();
             let mut warnings = Vec::new();
@@ -239,6 +240,11 @@ pub(crate) async fn cmd_package(
                                 verification_report_hash: report_hash,
                             },
                         );
+                        actual_artifact_evidence.push(LockfileArtifactEvidence::new(
+                            lookup.manifest.name.clone(),
+                            lookup.manifest.version.clone(),
+                            lookup.manifest.artifact_hashes.clone(),
+                        ));
                         actual.push((lookup.manifest.name, lookup.manifest.version, hash));
                     }
                     Err(e) => signature_failures.push(e.to_string()),
@@ -249,8 +255,10 @@ pub(crate) async fn cmd_package(
                 .map(|(name, version, hash)| (name.as_str(), version.as_str(), hash.as_str()))
                 .collect::<Vec<_>>();
             let mismatches = lockfile.verify_integrity(&actual_refs);
-            let lockfile_reproducibility_issues = lockfile
-                .validate_reproducibility(&actual_refs)
+            let mut lockfile_validation_issues = lockfile.validate_reproducibility(&actual_refs);
+            lockfile_validation_issues
+                .extend(lockfile.validate_artifact_reproducibility(&actual_artifact_evidence));
+            let lockfile_reproducibility_issues = lockfile_validation_issues
                 .iter()
                 .map(LockfileReproducibilityCliIssue::from_validation_issue)
                 .collect::<Vec<_>>();
@@ -480,6 +488,17 @@ pub(crate) async fn cmd_package(
                 .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))?;
             let lockfile = load_package_lockfile(store)?;
             let registry = load_package_registry(store)?;
+            let actual_artifact_evidence = registry
+                .all()
+                .iter()
+                .map(|manifest| {
+                    LockfileArtifactEvidence::new(
+                        manifest.name.clone(),
+                        manifest.version.clone(),
+                        manifest.artifact_hashes.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
             let actual = registry
                 .all()
                 .iter()
@@ -494,8 +513,10 @@ pub(crate) async fn cmd_package(
                 .iter()
                 .map(|(name, version, hash)| (name.as_str(), version.as_str(), hash.as_str()))
                 .collect::<Vec<_>>();
-            let lockfile_reproducibility_issues = lockfile
-                .validate_reproducibility(&actual_refs)
+            let mut lockfile_validation_issues = lockfile.validate_reproducibility(&actual_refs);
+            lockfile_validation_issues
+                .extend(lockfile.validate_artifact_reproducibility(&actual_artifact_evidence));
+            let lockfile_reproducibility_issues = lockfile_validation_issues
                 .iter()
                 .map(LockfileReproducibilityCliIssue::from_validation_issue)
                 .collect::<Vec<_>>();

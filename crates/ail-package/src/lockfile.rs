@@ -107,6 +107,8 @@ pub enum LockfileValidationIssueKind {
     MissingPackage,
     /// A locked package exists, but its artifact digest differs from the lock.
     PackageHashMismatch,
+    /// Locked artifact evidence differs from replay metadata.
+    ArtifactHashMismatch,
     /// A locked package has no package artifact digest.
     EmptyPackageHash,
     /// A locked package records an empty verification report digest.
@@ -134,6 +136,7 @@ impl LockfileValidationIssueKind {
             }
             LockfileValidationIssueKind::MissingPackage => "LOCKFILE_MISSING_PACKAGE",
             LockfileValidationIssueKind::PackageHashMismatch => "LOCKFILE_PACKAGE_HASH_MISMATCH",
+            LockfileValidationIssueKind::ArtifactHashMismatch => "LOCKFILE_ARTIFACT_HASH_MISMATCH",
             LockfileValidationIssueKind::EmptyPackageHash => "LOCKFILE_EMPTY_PACKAGE_HASH",
             LockfileValidationIssueKind::EmptyVerificationReportHash => {
                 "LOCKFILE_EMPTY_VERIFICATION_REPORT_HASH"
@@ -170,7 +173,8 @@ impl LockfileValidationIssueKind {
                 LockfileValidationCategory::LockfileIntegrity
             }
             LockfileValidationIssueKind::MissingPackage
-            | LockfileValidationIssueKind::PackageHashMismatch => {
+            | LockfileValidationIssueKind::PackageHashMismatch
+            | LockfileValidationIssueKind::ArtifactHashMismatch => {
                 LockfileValidationCategory::ReplayIntegrity
             }
         }
@@ -201,6 +205,13 @@ pub enum LockfileValidationIssue {
     MissingPackage { name: String, version: String },
     /// A locked package exists, but its artifact digest differs from the lock.
     PackageHashMismatch {
+        name: String,
+        version: String,
+        expected: String,
+        actual: String,
+    },
+    /// Locked artifact evidence differs from replay metadata.
+    ArtifactHashMismatch {
         name: String,
         version: String,
         expected: String,
@@ -248,6 +259,9 @@ impl LockfileValidationIssue {
             LockfileValidationIssue::PackageHashMismatch { .. } => {
                 LockfileValidationIssueKind::PackageHashMismatch
             }
+            LockfileValidationIssue::ArtifactHashMismatch { .. } => {
+                LockfileValidationIssueKind::ArtifactHashMismatch
+            }
             LockfileValidationIssue::EmptyPackageHash { .. } => {
                 LockfileValidationIssueKind::EmptyPackageHash
             }
@@ -280,6 +294,28 @@ impl LockfileValidationIssue {
     }
 }
 
+/// Actual artifact evidence observed for one resolved package during replay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LockfileArtifactEvidence {
+    pub name: String,
+    pub version: String,
+    pub artifact_hashes: Vec<ArtifactHashEntry>,
+}
+
+impl LockfileArtifactEvidence {
+    pub fn new(
+        name: impl Into<String>,
+        version: impl Into<String>,
+        artifact_hashes: Vec<ArtifactHashEntry>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            version: version.into(),
+            artifact_hashes,
+        }
+    }
+}
+
 /// Stable machine-readable issue kind emitted by production lockfile diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum LockfileIntegrityIssueKind {
@@ -293,6 +329,8 @@ pub enum LockfileIntegrityIssueKind {
     MissingPackage,
     /// A locked package exists, but its artifact digest differs from replay.
     PackageHashMismatch,
+    /// Locked artifact evidence differs from replay metadata.
+    ArtifactHashMismatch,
     /// A locked package's source digest differs from replay metadata.
     SourceHashMismatch,
     /// Replay metadata did not include a resolved source descriptor.
@@ -328,6 +366,7 @@ impl LockfileIntegrityIssueKind {
             }
             LockfileIntegrityIssueKind::MissingPackage => "LOCKFILE_MISSING_PACKAGE",
             LockfileIntegrityIssueKind::PackageHashMismatch => "LOCKFILE_PACKAGE_HASH_MISMATCH",
+            LockfileIntegrityIssueKind::ArtifactHashMismatch => "LOCKFILE_ARTIFACT_HASH_MISMATCH",
             LockfileIntegrityIssueKind::SourceHashMismatch => "LOCKFILE_SOURCE_HASH_MISMATCH",
             LockfileIntegrityIssueKind::MissingResolvedSource => "LOCKFILE_MISSING_RESOLVED_SOURCE",
             LockfileIntegrityIssueKind::StaleGraphSchemaVersion => {
@@ -376,6 +415,7 @@ impl LockfileIntegrityIssueKind {
             }
             LockfileIntegrityIssueKind::MissingPackage
             | LockfileIntegrityIssueKind::PackageHashMismatch
+            | LockfileIntegrityIssueKind::ArtifactHashMismatch
             | LockfileIntegrityIssueKind::SourceHashMismatch => {
                 LockfileValidationCategory::ReplayIntegrity
             }
@@ -761,6 +801,44 @@ impl Lockfile {
         issues
     }
 
+    /// Validate that locked artifact evidence matches replay metadata.
+    ///
+    /// Package hashes prove the manifest bytes, but production package replay
+    /// also needs the lockfile-visible artifact evidence to remain identical:
+    /// tools should catch a hand-edited or legacy lockfile that no longer
+    /// records the artifact roles/hashes present in the resolved manifest.
+    pub fn validate_artifact_reproducibility(
+        &self,
+        actual: &[LockfileArtifactEvidence],
+    ) -> Vec<LockfileValidationIssue> {
+        let mut actual_by_coordinate: BTreeMap<(&str, &str), String> = BTreeMap::new();
+        for package in actual {
+            actual_by_coordinate.insert(
+                (package.name.as_str(), package.version.as_str()),
+                canonical_artifact_hashes(&package.artifact_hashes),
+            );
+        }
+
+        let mut issues = Vec::new();
+        for entry in &self.entries {
+            let expected = canonical_artifact_hashes(&entry.artifact_hashes);
+            let actual = actual_by_coordinate
+                .get(&(entry.name.as_str(), entry.version.as_str()))
+                .cloned()
+                .unwrap_or_default();
+            if expected != actual {
+                issues.push(LockfileValidationIssue::ArtifactHashMismatch {
+                    name: entry.name.clone(),
+                    version: entry.version.clone(),
+                    expected,
+                    actual,
+                });
+            }
+        }
+        sort_validation_issues(&mut issues);
+        issues
+    }
+
     /// Produce stable, redacted production diagnostics for lockfile replay integrity.
     ///
     /// This keeps [`Lockfile::validate_reproducibility`] compatible while giving
@@ -1022,8 +1100,18 @@ fn integrity_issue_from_validation_issue(
             version,
             expected,
             actual,
+        }
+        | LockfileValidationIssue::ArtifactHashMismatch {
+            name,
+            version,
+            expected,
+            actual,
         } => LockfileIntegrityIssue::new(
-            LockfileIntegrityIssueKind::PackageHashMismatch,
+            if matches!(issue, LockfileValidationIssue::ArtifactHashMismatch { .. }) {
+                LockfileIntegrityIssueKind::ArtifactHashMismatch
+            } else {
+                LockfileIntegrityIssueKind::PackageHashMismatch
+            },
             name,
             version,
         )
@@ -1080,6 +1168,16 @@ fn join_strings(values: &BTreeSet<String>) -> String {
     values.iter().cloned().collect::<Vec<_>>().join(",")
 }
 
+fn canonical_artifact_hashes(artifact_hashes: &[ArtifactHashEntry]) -> String {
+    artifact_hashes
+        .iter()
+        .map(|entry| format!("{}={}", entry.role.trim(), entry.hash.trim()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn sort_integrity_issues(issues: &mut [LockfileIntegrityIssue]) {
     issues.sort_by(|a, b| integrity_issue_sort_key(a).cmp(&integrity_issue_sort_key(b)));
 }
@@ -1120,6 +1218,12 @@ fn validation_issue_sort_key(
             (issue.code(), name, version, "", "")
         }
         LockfileValidationIssue::PackageHashMismatch {
+            name,
+            version,
+            expected,
+            actual,
+        }
+        | LockfileValidationIssue::ArtifactHashMismatch {
             name,
             version,
             expected,
@@ -1511,6 +1615,52 @@ mod tests {
         assert_eq!(
             issue.category(),
             LockfileValidationCategory::LockfileIntegrity
+        );
+    }
+
+    // ── lockfile_validate_artifact_reproducibility_detects_artifact_drift
+    // Production gate: replay must compare the lock-visible artifact contract too.
+    #[test]
+    fn lockfile_validate_artifact_reproducibility_detects_artifact_drift() {
+        let mut lf = Lockfile::new();
+        let mut entry = entry_with("abi.locked", "1.0.0", "hash");
+        entry.artifact_hashes = vec![
+            ArtifactHashEntry {
+                role: "wasm-artifact".to_string(),
+                hash: "a".repeat(64),
+            },
+            ArtifactHashEntry {
+                role: "wasm-abi-descriptor".to_string(),
+                hash: "b".repeat(64),
+            },
+        ];
+        lf.add(entry);
+
+        let issues = lf.validate_artifact_reproducibility(&[LockfileArtifactEvidence::new(
+            "abi.locked",
+            "1.0.0",
+            vec![
+                ArtifactHashEntry {
+                    role: "wasm-artifact".to_string(),
+                    hash: "c".repeat(64),
+                },
+                ArtifactHashEntry {
+                    role: "wasm-abi-descriptor".to_string(),
+                    hash: "b".repeat(64),
+                },
+            ],
+        )]);
+
+        assert_eq!(issues.len(), 1);
+        let issue = &issues[0];
+        assert_eq!(
+            issue.kind(),
+            LockfileValidationIssueKind::ArtifactHashMismatch
+        );
+        assert_eq!(issue.code(), "LOCKFILE_ARTIFACT_HASH_MISMATCH");
+        assert_eq!(
+            issue.category(),
+            LockfileValidationCategory::ReplayIntegrity
         );
     }
 

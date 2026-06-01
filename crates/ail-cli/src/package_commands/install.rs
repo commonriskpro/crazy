@@ -68,6 +68,17 @@ pub(super) fn install_package_from_registry(
     let lockfile_hash = lockfile
         .blake3_hex()
         .map_err(|e| CliError::Domain(format!("package lock hash failed: {e}")))?;
+    let actual_artifact_evidence = registry
+        .all()
+        .iter()
+        .map(|manifest| {
+            LockfileArtifactEvidence::new(
+                manifest.name.clone(),
+                manifest.version.clone(),
+                manifest.artifact_hashes.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
     let actual = registry
         .all()
         .iter()
@@ -82,8 +93,10 @@ pub(super) fn install_package_from_registry(
         .iter()
         .map(|(name, version, hash)| (name.as_str(), version.as_str(), hash.as_str()))
         .collect::<Vec<_>>();
-    let lockfile_reproducibility_issues = lockfile
-        .validate_reproducibility(&actual_refs)
+    let mut lockfile_validation_issues = lockfile.validate_reproducibility(&actual_refs);
+    lockfile_validation_issues
+        .extend(lockfile.validate_artifact_reproducibility(&actual_artifact_evidence));
+    let lockfile_reproducibility_issues = lockfile_validation_issues
         .iter()
         .map(LockfileReproducibilityCliIssue::from_validation_issue)
         .collect::<Vec<_>>();

@@ -14,7 +14,7 @@ use ail_compiler::ArtifactManifest;
 use ail_core::semantic_graph::NodeKind;
 use ail_package::{
     AdvisoryChecker, ArtifactHashEntry, CompatibilityEngine, CompatibilityError,
-    LocalCompatibilityIssue, LocalCompatibilityIssueKind, LockfileEntry,
+    LocalCompatibilityIssue, LocalCompatibilityIssueKind, LockfileArtifactEvidence, LockfileEntry,
     PackageCompatibilityMetadata, PackageDef, PackageKeypair, PackageManifest, PackageRegistry,
     PublishRequest, RegistryClient, SecurityAdvisory, TrustLevel,
 };
