@@ -151,6 +151,30 @@ fn compile_file_accepts_source_unwrap_or_helper() {
         .success();
 }
 #[test]
+fn compile_file_accepts_source_option_result_fallback_aliases() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("fallback_aliases.ail");
+    source
+        .write_str(
+            "fn option_value(input: Option<Int>) -> Int = option_unwrap_or(input, 1)\n\
+fn promoted(input: Option<Int>) -> Result<Int, Text> = option_ok_or(input, \"missing\")\n\
+fn result_value(input: Result<Int, Text>) -> Int = result_unwrap_or(input, 2)\n\
+fn dotted_option(input: Option<Int>) -> Int = option.unwrap_or(input, 3)\n\
+fn dotted_promoted(input: Option<Int>) -> Result<Int, Text> = option.ok_or(input, \"missing\")\n\
+fn dotted_result(input: Result<Int, Text>) -> Int = result.unwrap_or(input, 4)\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+#[test]
 fn compile_file_rejects_source_unwrap_or_fallback_mismatch() {
     use assert_fs::prelude::*;
 

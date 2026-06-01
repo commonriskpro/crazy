@@ -148,6 +148,38 @@ fn lsp_diagnose_accepts_source_unwrap_or_helper() {
     assert_eq!(v["data"]["error_count"], 0);
 }
 #[test]
+fn lsp_diagnose_accepts_source_option_result_fallback_aliases() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "fn option_value(input: Option<Int>) -> Int = option_unwrap_or(input, 1)\n\
+fn promoted(input: Option<Int>) -> Result<Int, Text> = option_ok_or(input, \"missing\")\n\
+fn result_value(input: Result<Int, Text>) -> Int = result_unwrap_or(input, 2)\n\
+fn dotted_option(input: Option<Int>) -> Int = option.unwrap_or(input, 3)\n\
+fn dotted_promoted(input: Option<Int>) -> Result<Int, Text> = option.ok_or(input, \"missing\")\n\
+fn dotted_result(input: Result<Int, Text>) -> Int = result.unwrap_or(input, 4)\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+#[test]
 fn lsp_diagnose_accepts_source_option_predicate_helpers() {
     use assert_fs::prelude::*;
 

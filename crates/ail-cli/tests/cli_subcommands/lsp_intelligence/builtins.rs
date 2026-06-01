@@ -198,8 +198,16 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
     assert!(
         ok_or_items
             .iter()
-            .any(|item| item["label"] == "ok_or" && item["detail"] == "AIL source Option helper"),
-        "completion must include AIL source ok_or helper; got: {ok_or_items:?}"
+            .any(|item| item["label"] == "ok_or" && item["detail"] == "AIL source Option helper")
+            && ok_or_items
+                .iter()
+                .any(|item| item["label"] == "option_ok_or"
+                    && item["detail"] == "AIL source Option helper")
+            && ok_or_items
+                .iter()
+                .any(|item| item["label"] == "option.ok_or"
+                    && item["detail"] == "AIL source Option helper"),
+        "completion must include AIL source ok_or helpers; got: {ok_or_items:?}"
     );
 
     let result_unwrap_completion_output = ail()
@@ -218,6 +226,24 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .any(|item| item["label"] == "result_unwrap_or"
                 && item["detail"] == "AIL source Result helper"),
         "completion must include AIL source result_unwrap_or helper; got: {result_unwrap_items:?}"
+    );
+
+    let dotted_result_completion_output = ail()
+        .args(["lsp", "--complete", "result.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_result_completion = parse_json_output(&dotted_result_completion_output);
+    let dotted_result_items = dotted_result_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        dotted_result_items
+            .iter()
+            .any(|item| item["label"] == "result.unwrap_or"
+                && item["detail"] == "AIL source Result helper"),
+        "completion must include dotted Result fallback helper; got: {dotted_result_items:?}"
     );
 
     let list_push_completion_output = ail()
@@ -1067,8 +1093,70 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
     assert!(
         unwrap_or_items.iter().any(
             |item| item["label"] == "unwrap_or" && item["detail"] == "AIL source Option helper"
-        ),
-        "completion must include AIL source unwrap_or helper; got: {unwrap_or_items:?}"
+        ) && unwrap_or_items
+            .iter()
+            .any(|item| item["label"] == "option_unwrap_or"
+                && item["detail"] == "AIL source Option helper"),
+        "completion must include AIL source unwrap_or helpers; got: {unwrap_or_items:?}"
+    );
+
+    let option_fallback_completion_output = ail()
+        .args(["lsp", "--complete", "option_", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let option_fallback_completion = parse_json_output(&option_fallback_completion_output);
+    let option_fallback_items = option_fallback_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        option_fallback_items
+            .iter()
+            .any(|item| item["label"] == "option_unwrap_or"
+                && item["detail"] == "AIL source Option helper")
+            && option_fallback_items
+                .iter()
+                .any(|item| item["label"] == "option_ok_or"
+                    && item["detail"] == "AIL source Option helper"),
+        "completion must include namespaced Option fallback helpers; got: {option_fallback_items:?}"
+    );
+
+    let dotted_option_completion_output = ail()
+        .args(["lsp", "--complete", "option.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_option_completion = parse_json_output(&dotted_option_completion_output);
+    let dotted_option_items = dotted_option_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        dotted_option_items
+            .iter()
+            .any(|item| item["label"] == "option.unwrap_or"
+                && item["detail"] == "AIL source Option helper")
+            && dotted_option_items
+                .iter()
+                .any(|item| item["label"] == "option.ok_or"
+                    && item["detail"] == "AIL source Option helper"),
+        "completion must include dotted Option fallback helpers; got: {dotted_option_items:?}"
+    );
+
+    let option_unwrap_hover_output = ail()
+        .args(["lsp", "--hover-token", "option_unwrap_or", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let option_unwrap_hover = parse_json_output(&option_unwrap_hover_output);
+    assert!(
+        option_unwrap_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("Namespaced alias"),
+        "hover must explain source option_unwrap_or helper; got: {option_unwrap_hover}"
     );
 
     let option_predicate_completion_output = ail()

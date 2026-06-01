@@ -320,16 +320,46 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "unwrap_or(${1:option}, ${2:fallback})",
     },
     AclSymbol {
+        label: "option_unwrap_or",
+        detail: "AIL source Option helper",
+        documentation: "Namespaced alias that returns the value inside Option<T>, or a fallback when it is None.",
+        insert_text: "option_unwrap_or(${1:option}, ${2:fallback})",
+    },
+    AclSymbol {
+        label: "option.unwrap_or",
+        detail: "AIL source Option helper",
+        documentation: "Dotted alias that returns the value inside Option<T>, or a fallback when it is None.",
+        insert_text: "option.unwrap_or(${1:option}, ${2:fallback})",
+    },
+    AclSymbol {
         label: "ok_or",
         detail: "AIL source Option helper",
         documentation: "Converts Option<T> to Result<T,E> using the supplied error when None.",
         insert_text: "ok_or(${1:option}, ${2:error})",
     },
     AclSymbol {
+        label: "option_ok_or",
+        detail: "AIL source Option helper",
+        documentation: "Namespaced alias that converts Option<T> to Result<T,E> using the supplied error when None.",
+        insert_text: "option_ok_or(${1:option}, ${2:error})",
+    },
+    AclSymbol {
+        label: "option.ok_or",
+        detail: "AIL source Option helper",
+        documentation: "Dotted alias that converts Option<T> to Result<T,E> using the supplied error when None.",
+        insert_text: "option.ok_or(${1:option}, ${2:error})",
+    },
+    AclSymbol {
         label: "result_unwrap_or",
         detail: "AIL source Result helper",
         documentation: "Returns the Ok value inside Result<T,E>, or a fallback when it is Err.",
         insert_text: "result_unwrap_or(${1:result}, ${2:fallback})",
+    },
+    AclSymbol {
+        label: "result.unwrap_or",
+        detail: "AIL source Result helper",
+        documentation: "Dotted alias that returns the Ok value inside Result<T,E>, or a fallback when it is Err.",
+        insert_text: "result.unwrap_or(${1:result}, ${2:fallback})",
     },
     AclSymbol {
         label: "first_or",
