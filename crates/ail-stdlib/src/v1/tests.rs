@@ -129,6 +129,15 @@ fn v1_contains_testing_core_assertions() {
     assert!(has_function_entry("std.testing.expect_error"));
 }
 
+#[test]
+fn v1_contains_decimal_core_functions() {
+    assert!(has_function_entry("std.decimal.from_int"));
+    assert!(has_function_entry("std.decimal.rescale"));
+    assert!(has_function_entry("std.decimal.add"));
+    assert!(has_function_entry("std.decimal.sub"));
+    assert!(has_function_entry("std.decimal.mul"));
+}
+
 // A7: capability (effectful) entries for io
 #[test]
 fn v1_contains_io_read_with_effect() {

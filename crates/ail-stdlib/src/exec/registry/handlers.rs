@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::{concurrent, crypto, encoding, json, numeric, testing, text};
+use crate::{concurrent, crypto, decimal, encoding, json, numeric, testing, text};
 
 // super = registry, super::super = exec (which re-exports StdlibValue/StdlibExecError)
 use super::super::{StdlibExecError, StdlibValue};
@@ -23,6 +23,42 @@ fn expect_arity(args: &[StdlibValue], expected: usize) -> Result<(), StdlibExecE
             actual: args.len(),
         })
     }
+}
+
+// ── Decimal value adapter ─────────────────────────────────────────────────
+
+fn decimal_to_stdlib(value: decimal::Decimal) -> StdlibValue {
+    StdlibValue::Tuple(vec![
+        StdlibValue::Int(value.mantissa),
+        StdlibValue::Int(value.scale as i64),
+    ])
+}
+
+fn decimal_from_stdlib(value: &StdlibValue) -> Result<decimal::Decimal, StdlibExecError> {
+    let StdlibValue::Tuple(parts) = value else {
+        return Err(StdlibExecError::Type {
+            expected: "Decimal",
+        });
+    };
+    let [StdlibValue::Int(mantissa), StdlibValue::Int(scale)] = parts.as_slice() else {
+        return Err(StdlibExecError::Type {
+            expected: "Decimal",
+        });
+    };
+    let scale = u8::try_from(*scale).map_err(|_| StdlibExecError::Type {
+        expected: "Decimal",
+    })?;
+    Ok(decimal::Decimal::new(*mantissa, scale))
+}
+
+fn decimal_result_to_stdlib(
+    result: Result<decimal::Decimal, decimal::DecimalError>,
+) -> StdlibValue {
+    StdlibValue::Result(
+        result
+            .map(|value| Box::new(decimal_to_stdlib(value)))
+            .map_err(|error| Box::new(StdlibValue::Text(error.to_string()))),
+    )
 }
 
 // ── Option combinators ────────────────────────────────────────────────────
@@ -638,6 +674,51 @@ pub(super) fn text_replace_exec(args: &[StdlibValue]) -> Result<StdlibValue, Std
         });
     };
     Ok(StdlibValue::Text(text::text_replace(s, from, to)))
+}
+
+// ── Decimal adapters ──────────────────────────────────────────────────────
+
+pub(super) fn decimal_from_int(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::Int(value) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(decimal_to_stdlib(decimal::Decimal::from_int(*value)))
+}
+
+pub(super) fn decimal_rescale(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let value = decimal_from_stdlib(&args[0])?;
+    let StdlibValue::Int(target_scale) = &args[1] else {
+        return Err(StdlibExecError::Type {
+            expected: "Decimal, Int",
+        });
+    };
+    let result = u8::try_from(*target_scale)
+        .map_err(|error| decimal::DecimalError::NarrowError(error.to_string()))
+        .and_then(|scale| value.rescale(scale));
+    Ok(decimal_result_to_stdlib(result))
+}
+
+pub(super) fn decimal_add(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let lhs = decimal_from_stdlib(&args[0])?;
+    let rhs = decimal_from_stdlib(&args[1])?;
+    Ok(decimal_result_to_stdlib(lhs.add(&rhs)))
+}
+
+pub(super) fn decimal_sub(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let lhs = decimal_from_stdlib(&args[0])?;
+    let rhs = decimal_from_stdlib(&args[1])?;
+    Ok(decimal_result_to_stdlib(lhs.sub(&rhs)))
+}
+
+pub(super) fn decimal_mul(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let lhs = decimal_from_stdlib(&args[0])?;
+    let rhs = decimal_from_stdlib(&args[1])?;
+    Ok(decimal_result_to_stdlib(lhs.mul(&rhs)))
 }
 
 // ── Crypto adapters ───────────────────────────────────────────────────────

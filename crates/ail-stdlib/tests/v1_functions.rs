@@ -141,6 +141,23 @@ fn v1_functions_testing_has_core_assertions() {
 }
 
 #[test]
+fn v1_functions_decimal_has_core_arithmetic() {
+    let reg = v1_registry_with_functions();
+    for id in [
+        "std.decimal.from_int",
+        "std.decimal.rescale",
+        "std.decimal.add",
+        "std.decimal.sub",
+        "std.decimal.mul",
+    ] {
+        assert!(
+            reg.entries.iter().any(|e| e.id.0 == id),
+            "registry must contain {id}"
+        );
+    }
+}
+
+#[test]
 fn v1_functions_option_has_map() {
     let reg = v1_registry_with_functions();
     assert!(

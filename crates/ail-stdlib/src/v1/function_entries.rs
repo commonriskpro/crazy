@@ -8,6 +8,7 @@ use super::module_entries::v1_registry;
 mod bytes;
 mod collections;
 mod core;
+mod decimal;
 mod iter;
 mod numeric;
 mod numeric_narrowing;
@@ -40,6 +41,7 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
     numeric::add_entries(&mut reg);
     core::add_entries(&mut reg);
     text::add_entries(&mut reg);
+    decimal::add_entries(&mut reg);
     iter::add_entries(&mut reg);
     numeric_narrowing::add_entries(&mut reg);
     bytes::add_entries(&mut reg);
