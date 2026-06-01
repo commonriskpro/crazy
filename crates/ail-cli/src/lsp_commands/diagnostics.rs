@@ -107,13 +107,44 @@ fn diagnostic_for_source_error(
         .as_ref()
         .map(|metadata| metadata.code.as_str())
         .unwrap_or(fallback_code);
-    let mut diagnostic = diagnostic_for_text(text, line, message, source, code);
+    let range = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.span.as_ref())
+        .map(|span| {
+            (
+                span.start_line,
+                span.start_character,
+                span.end_line,
+                span.end_character,
+            )
+        });
+    let mut diagnostic = if let Some((start_line, start_character, end_line, end_character)) = range
+    {
+        diagnostic_with_range(
+            start_line,
+            start_character,
+            end_line,
+            end_character,
+            message,
+            source,
+            code,
+        )
+    } else {
+        diagnostic_for_text(text, line, message, source, code)
+    };
     if let Some(metadata) = metadata {
+        let span = metadata.span.as_ref().map(|span| {
+            json!({
+                "start": { "line": span.start_line, "character": span.start_character },
+                "end": { "line": span.end_line, "character": span.end_character },
+            })
+        });
         diagnostic["data"] = json!({
             "ailDiagnostic": {
                 "code": metadata.code,
                 "category": metadata.category,
                 "family": fallback_code,
+                "span": span,
             }
         });
     }
@@ -123,6 +154,14 @@ fn diagnostic_for_source_error(
 struct SourceDiagnosticMetadata {
     code: String,
     category: String,
+    span: Option<SourceDiagnosticSpan>,
+}
+
+struct SourceDiagnosticSpan {
+    start_line: u64,
+    start_character: u64,
+    end_line: u64,
+    end_character: u64,
 }
 
 fn source_diagnostic_metadata(message: &str) -> Option<SourceDiagnosticMetadata> {
@@ -145,6 +184,7 @@ fn source_diagnostic_metadata(message: &str) -> Option<SourceDiagnosticMetadata>
     Some(SourceDiagnosticMetadata {
         code: code.to_string(),
         category: category.to_string(),
+        span: source_diagnostic_span(message),
     })
 }
 
@@ -160,6 +200,27 @@ fn diagnostic(
         "range": {
             "start": { "line": line, "character": start_character },
             "end": { "line": line, "character": end_character }
+        },
+        "severity": 1,
+        "source": source,
+        "code": code,
+        "message": message,
+    })
+}
+
+fn diagnostic_with_range(
+    start_line: u64,
+    start_character: u64,
+    end_line: u64,
+    end_character: u64,
+    message: String,
+    source: &str,
+    code: &str,
+) -> Value {
+    json!({
+        "range": {
+            "start": { "line": start_line, "character": start_character },
+            "end": { "line": end_line, "character": end_character }
         },
         "severity": 1,
         "source": source,
@@ -199,6 +260,34 @@ fn is_lsp_diagnostic_identifier(value: &str) -> bool {
         && value
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+}
+
+fn source_diagnostic_span(message: &str) -> Option<SourceDiagnosticSpan> {
+    let start = message.find("span=")? + "span=".len();
+    let value = message[start..].split_whitespace().next()?;
+    if value == "<unknown>" {
+        return None;
+    }
+    let (start_position, end_position) = value.split_once("..")?;
+    let (start_line, start_character) = source_diagnostic_position(start_position)?;
+    let (end_line, mut end_character) = source_diagnostic_position(end_position)?;
+    if end_line == start_line {
+        end_character = end_character.max(start_character + 1);
+    }
+    Some(SourceDiagnosticSpan {
+        start_line,
+        start_character,
+        end_line,
+        end_character,
+    })
+}
+
+fn source_diagnostic_position(position: &str) -> Option<(u64, u64)> {
+    let (line, character) = position.split_once(':')?;
+    Some((
+        line.parse::<u64>().ok()?.checked_sub(1)?,
+        character.parse::<u64>().ok()?.checked_sub(1)?,
+    ))
 }
 
 fn line_from_error(err: &str) -> u64 {

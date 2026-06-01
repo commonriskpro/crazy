@@ -104,6 +104,17 @@ fn lsp_diagnose_reports_numeric_leading_source_names() {
         v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["family"],
         "AIL_SOURCE_PARSER"
     );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 0);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["range"]["start"]["character"],
+        0
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["line"], 0);
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["character"], 4);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["span"],
+        v["data"]["diagnostics"][0]["range"]
+    );
     assert!(
         v["data"]["diagnostics"][0]["message"]
             .as_str()
