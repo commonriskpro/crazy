@@ -78,6 +78,49 @@ fn lsp_diagnose_reports_ail_source_parse_errors() {
             .contains("function parameters must use `name: Type`")
     );
 }
+
+#[test]
+fn lsp_diagnose_reports_ail_source_import_cycle_code() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let main = dir.child("main.ail");
+    let dep = dir.child("dep.ail");
+    main.write_str("use \"./dep.ail\"\nfn main() -> Int = dep_value()\n")
+        .expect("main fixture must be written");
+    dep.write_str("use \"./main.ail\"\nfn dep_value() -> Int = 1\n")
+        .expect("dep fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(main.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("cyclic AIL source import detected")
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_IMPORT_CYCLE"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.import.cycle"
+    );
+}
+
 #[test]
 fn lsp_diagnose_reports_bare_source_imports() {
     use assert_fs::prelude::*;

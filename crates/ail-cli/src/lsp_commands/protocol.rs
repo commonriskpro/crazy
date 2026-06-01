@@ -575,6 +575,7 @@ fn supported_diagnostic_code(code: &str) -> bool {
             | "AIL_SOURCE_GRANT_CAPABILITY_UNKNOWN"
             | "AIL_SOURCE_GRANT_TARGET_AMBIGUOUS"
             | "AIL_SOURCE_GRANT_TARGET_UNKNOWN"
+            | "AIL_SOURCE_IMPORT_CYCLE"
             | "AIL_SOURCE_LOWER_BINDING_SHAPE"
             | "AIL_SOURCE_LOWER_CAPABILITY_REFERENCE"
             | "AIL_SOURCE_LOWER_COLLECTION_ARITY"

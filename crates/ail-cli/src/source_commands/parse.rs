@@ -196,11 +196,7 @@ pub(super) fn load_source_program_from_text_inner(
 ) -> Result<SourceProgram, CliError> {
     let canonical_path = canonical_path.to_path_buf();
     if let Some(start) = visiting.iter().position(|path| path == &canonical_path) {
-        return Err(CliError::ParseError(format_source_import_cycle(
-            visiting,
-            start,
-            &canonical_path,
-        )));
+        return Err(source_import_cycle_error(visiting, start, &canonical_path));
     }
     if !visited.insert(canonical_path.clone()) {
         return Ok(SourceProgram::default());
@@ -246,6 +242,13 @@ fn format_source_import_cycle(visiting: &[PathBuf], start: usize, repeated: &Pat
         .collect::<Vec<_>>();
     chain.push(repeated.display().to_string());
     format!("cyclic AIL source import detected: {}", chain.join(" -> "))
+}
+
+fn source_import_cycle_error(visiting: &[PathBuf], start: usize, repeated: &Path) -> CliError {
+    CliError::ParseError(format!(
+        "{} [AIL_SOURCE_IMPORT_CYCLE] category=source.import.cycle",
+        format_source_import_cycle(visiting, start, repeated)
+    ))
 }
 
 pub(super) fn resolve_source_import(source_path: &Path, import: &str) -> PathBuf {
