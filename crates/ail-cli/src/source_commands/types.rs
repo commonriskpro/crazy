@@ -97,6 +97,9 @@ pub(super) fn infer_source_expr_type(
     functions: &BTreeMap<&str, SourceCallable>,
 ) -> Result<String, CliError> {
     let expr = expr.trim();
+    if matches!(expr, "()" | "unit()") {
+        return Ok("Unit".to_string());
+    }
     if expr == "true" || expr == "false" {
         return Ok("Bool".to_string());
     }

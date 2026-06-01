@@ -217,6 +217,15 @@ impl Parser<'_> {
                 })
             }
             "match" => parse_match_call(args),
+            "unit" => {
+                if !args.is_empty() {
+                    return Err(ParseError::new(format!(
+                        "unit expects 0 args, got {}",
+                        args.len()
+                    )));
+                }
+                Ok(CoreExpr::Literal(LiteralValue::Unit))
+            }
             "record" => parse_record_call(args),
             "field" => {
                 let [record, field] = expect_arity::<2>(func, args)?;

@@ -44,6 +44,12 @@ pub(super) const AIL_SOURCE_SYNTAX_SYMBOLS: &[AclSymbol] = &[
         insert_text: "Text",
     },
     AclSymbol {
+        label: "Unit",
+        detail: "AIL source builtin type",
+        documentation: "Unit type for functions that complete without a meaningful value.",
+        insert_text: "Unit",
+    },
+    AclSymbol {
         label: "List",
         detail: "AIL source generic type",
         documentation: "Parameterized list type written as List<T> for ordered homogeneous values.",

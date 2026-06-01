@@ -119,6 +119,30 @@ fn lsp_completion_covers_source_consts() {
 }
 
 #[test]
+fn lsp_completion_covers_source_unit_type() {
+    let completion_output = ail()
+        .args(["lsp", "--complete", "Unit", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let completion = parse_json_output(&completion_output);
+    assert_eq!(completion["status"], "ok");
+    let items = completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        items.iter().any(|item| item["label"] == "Unit"
+            && item["insertText"].as_str().expect("insertText") == "Unit"
+            && item["documentation"]["value"]
+                .as_str()
+                .expect("documentation")
+                .contains("without a meaningful value")),
+        "completion must include Unit type snippet; got: {items:?}"
+    );
+}
+
+#[test]
 fn lsp_completion_ranks_exact_matches_before_contains() {
     let completion_output = ail()
         .args(["lsp", "--complete", "test", "--json"])

@@ -300,6 +300,9 @@ pub(super) fn source_expr_to_acl_body(expr: &str, constants: &BTreeMap<String, S
 
 pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     let expr = expr.trim();
+    if expr == "()" {
+        return Ok("unit()".to_string());
+    }
     if let Some(rest) = expr.strip_prefix("if ") {
         return lower_if_expr(rest, line_num);
     }

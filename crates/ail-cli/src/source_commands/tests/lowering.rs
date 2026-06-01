@@ -1162,6 +1162,16 @@ fn main() -> Int {
 }
 
 #[test]
+fn lowers_source_unit_literal_to_compiler_unit_call() {
+    let program = parse_ail_source("fn noop() -> Unit = ()\n").expect("source must parse");
+    let acl = source_program_to_acl(&program, "source_unit".to_string());
+
+    assert_eq!(program.functions[0].return_type, "Unit");
+    assert_eq!(program.functions[0].body, "unit()");
+    assert!(acl.contains("op create_function id=fn.noop return=Unit body=unit()"));
+}
+
+#[test]
 fn rejects_match_expression_shape_with_stable_lowering_diagnostic() {
     assert_lowering_diagnostic(
         lower_source_expr("match { _ => 1 }", 61),

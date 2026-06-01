@@ -258,6 +258,7 @@ pub(super) fn source_primitive_type_alias(ty: &str) -> Option<&'static str> {
         "Bool" | "bool" => Some("Bool"),
         "Text" | "String" | "str" => Some("Text"),
         "Float" | "float" | "f64" => Some("Float"),
+        "Unit" | "unit" => Some("Unit"),
         _ => None,
     }
 }

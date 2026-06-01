@@ -40,6 +40,24 @@ fn compile_file_accepts_source_block_tests_with_lets() {
         .assert()
         .success();
 }
+
+#[test]
+fn compile_file_accepts_source_unit_literal() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("unit.ail");
+    source
+        .write_str("fn noop() -> Unit = ()\nfn main() -> Int = 0\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
 #[test]
 fn compile_file_accepts_source_consts() {
     use assert_fs::prelude::*;

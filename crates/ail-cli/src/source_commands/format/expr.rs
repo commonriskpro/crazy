@@ -140,6 +140,10 @@ pub(super) fn format_source_expr_node(
         return ("None".to_string(), CALL_PRECEDENCE);
     }
 
+    if func == "unit" && args.is_empty() {
+        return ("()".to_string(), CALL_PRECEDENCE);
+    }
+
     if matches!(func.as_str(), "some" | "ok" | "err") && args.len() == 1 {
         let constructor = match func.as_str() {
             "some" => "Some",
