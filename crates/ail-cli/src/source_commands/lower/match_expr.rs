@@ -53,7 +53,49 @@ pub(super) fn lower_match_expr(rest: &str, line_num: usize) -> Result<String, Cl
 }
 
 pub(super) fn split_source_match_arms(arms: &str) -> Vec<String> {
-    split_source_args(arms)
+    let comma_split = split_source_args(arms);
+    if comma_split.len() != 1 {
+        return comma_split;
+    }
+    split_braced_source_match_arms(arms).unwrap_or(comma_split)
+}
+
+fn split_braced_source_match_arms(arms: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    while start < arms.len() {
+        let rest = arms[start..].trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        start += arms[start..].len() - rest.len();
+        let arrow = find_top_level_source_arrow(&arms[start..])? + start;
+        let body_start = arms[arrow + 2..]
+            .char_indices()
+            .find(|(_, ch)| !ch.is_whitespace())
+            .map(|(idx, _)| arrow + 2 + idx)
+            .unwrap_or(arms.len());
+        if !arms[body_start..].starts_with('{') {
+            return None;
+        }
+        let body_end = matching_brace(arms, body_start)? + 1;
+        out.push(
+            arms[start..body_end]
+                .trim()
+                .trim_end_matches(',')
+                .trim()
+                .to_string(),
+        );
+        start = body_end;
+        while let Some((idx, ch)) = arms[start..].char_indices().next() {
+            if ch.is_whitespace() || ch == ',' {
+                start += idx + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 pub(super) fn split_source_match_arm<'a>(
