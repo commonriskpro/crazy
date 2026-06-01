@@ -242,6 +242,45 @@ test bucket_negative = eq(bucket(-5), 1)
 }
 
 #[test]
+fn lsp_diagnose_accepts_return_markers_inside_source_if_branches() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            r#"
+fn bucket(x: Int) -> Int {
+  if gt(x, 10) {
+    return 3
+  } else if gt(x, 0) {
+    return 2
+  } else {
+    return 1
+  }
+}
+test bucket_negative = eq(bucket(-5), 1)
+"#,
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
+#[test]
 fn lsp_diagnose_reports_malformed_source_names() {
     use assert_fs::prelude::*;
 

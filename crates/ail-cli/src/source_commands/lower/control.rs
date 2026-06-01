@@ -24,7 +24,7 @@ pub(super) fn lower_if_expr(rest: &str, line_num: usize) -> Result<String, CliEr
             "if expression has unclosed then block",
         )
     })?;
-    let then_expr = rest[open_then + 1..then_close].trim();
+    let then_expr = source_if_branch_expr(rest[open_then + 1..then_close].trim());
     let after_then = rest[then_close + 1..].trim_start();
     let after_else = after_then.strip_prefix("else").ok_or_else(|| {
         source_lower_error(
@@ -58,7 +58,7 @@ pub(super) fn lower_if_expr(rest: &str, line_num: usize) -> Result<String, CliEr
                 "unexpected tokens after if expression",
             ));
         }
-        after_else[1..else_close].trim().to_string()
+        source_if_branch_expr(after_else[1..else_close].trim()).to_string()
     };
 
     if then_expr.is_empty() || else_expr.trim().is_empty() {
@@ -75,4 +75,12 @@ pub(super) fn lower_if_expr(rest: &str, line_num: usize) -> Result<String, CliEr
         lower_source_expr(then_expr, line_num)?,
         lower_source_expr(&else_expr, line_num)?
     ))
+}
+
+fn source_if_branch_expr(branch: &str) -> &str {
+    branch
+        .trim()
+        .strip_prefix("return ")
+        .map(str::trim)
+        .unwrap_or_else(|| branch.trim())
 }
