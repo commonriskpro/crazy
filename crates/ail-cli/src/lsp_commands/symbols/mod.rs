@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::source_helpers::{
-    file_path_from_uri, is_ail_source_uri, resolve_lsp_source_import, source_imports_from_text,
-    source_module_from_text, source_test_name_end,
+    byte_index_to_lsp_character, file_path_from_uri, is_ail_source_uri, resolve_lsp_source_import,
+    source_imports_from_text, source_module_from_text, source_test_name_end,
 };
 
 use acl::ACL_SYMBOLS;
@@ -456,8 +456,9 @@ fn ail_source_symbols_for_document(uri: &str, text: &str) -> Vec<WorkspaceSymbol
                 name,
                 2,
                 line_idx,
+                line,
                 leading + "module ".len(),
-                name.len(),
+                leading + "module ".len() + name.len(),
                 None,
             ));
             continue;
@@ -472,8 +473,9 @@ fn ail_source_symbols_for_document(uri: &str, text: &str) -> Vec<WorkspaceSymbol
                     &qualified_source_name(raw_name, module.as_deref(), None),
                     12,
                     line_idx,
+                    line,
                     leading + "fn ".len(),
-                    raw_name.len(),
+                    leading + "fn ".len() + raw_name.len(),
                     module.clone(),
                 ));
             }
@@ -489,8 +491,9 @@ fn ail_source_symbols_for_document(uri: &str, text: &str) -> Vec<WorkspaceSymbol
                     &qualified_source_name(raw_name, module.as_deref(), None),
                     14,
                     line_idx,
+                    line,
                     leading + "const ".len(),
-                    raw_name.len(),
+                    leading + "const ".len() + raw_name.len(),
                     module.clone(),
                 ));
             }
@@ -506,8 +509,9 @@ fn ail_source_symbols_for_document(uri: &str, text: &str) -> Vec<WorkspaceSymbol
                     &qualified_source_name(raw_name, module.as_deref(), Some("test.")),
                     12,
                     line_idx,
+                    line,
                     leading + "test ".len(),
-                    raw_name.len(),
+                    leading + "test ".len() + raw_name.len(),
                     module.clone(),
                 ));
             }
@@ -521,8 +525,9 @@ fn ail_source_symbols_for_document(uri: &str, text: &str) -> Vec<WorkspaceSymbol
                     raw_name,
                     5,
                     line_idx,
+                    line,
                     leading + "capability ".len(),
-                    raw_name.len(),
+                    leading + "capability ".len() + raw_name.len(),
                     module.clone(),
                 ));
             }
@@ -536,17 +541,20 @@ fn source_symbol(
     name: &str,
     kind: u64,
     line: usize,
-    character: usize,
-    selection_len: usize,
+    line_text: &str,
+    start: usize,
+    end: usize,
     container_name: Option<String>,
 ) -> WorkspaceSymbol {
+    let character = byte_index_to_lsp_character(line_text, start);
+    let end_character = byte_index_to_lsp_character(line_text, end);
     WorkspaceSymbol {
         name: name.to_string(),
         kind,
         uri: uri.to_string(),
         line,
         character,
-        selection_len,
+        selection_len: end_character - character,
         container_name,
     }
 }
@@ -784,6 +792,7 @@ fn source_hover_candidates_in_text(
             candidates.extend(source_import_hover_candidate(
                 uri,
                 token,
+                line,
                 rest,
                 line_idx,
                 leading + "use ".len(),
@@ -796,6 +805,7 @@ fn source_hover_candidates_in_text(
                 uri,
                 token,
                 module.as_deref(),
+                line,
                 rest,
                 line_idx,
                 leading + "fn ".len(),
@@ -810,6 +820,7 @@ fn source_hover_candidates_in_text(
                 uri,
                 token,
                 module.as_deref(),
+                line,
                 rest,
                 line_idx,
                 leading + "const ".len(),
@@ -820,9 +831,14 @@ fn source_hover_candidates_in_text(
         }
 
         if let Some(rest) = trimmed.strip_prefix("test ") {
-            if let Some(candidate) =
-                source_test_hover_candidate(uri, token, rest, line_idx, leading + "test ".len())
-            {
+            if let Some(candidate) = source_test_hover_candidate(
+                uri,
+                token,
+                line,
+                rest,
+                line_idx,
+                leading + "test ".len(),
+            ) {
                 candidates.push(candidate);
             }
             continue;
@@ -832,6 +848,7 @@ fn source_hover_candidates_in_text(
             if let Some(candidate) = source_capability_hover_candidate(
                 uri,
                 token,
+                line,
                 rest,
                 line_idx,
                 leading + "capability ".len(),
@@ -846,6 +863,7 @@ fn source_hover_candidates_in_text(
 fn source_import_hover_candidate(
     uri: &str,
     token: &str,
+    line_text: &str,
     rest: &str,
     line_idx: usize,
     start_offset: usize,
@@ -867,8 +885,8 @@ fn source_import_hover_candidate(
         detail: format!("Imports `{import}` into this source module."),
         uri: uri.to_string(),
         line: line_idx,
-        start: start_offset + import_start,
-        end: start_offset + import_end,
+        start: byte_index_to_lsp_character(line_text, start_offset + import_start),
+        end: byte_index_to_lsp_character(line_text, start_offset + import_end),
     })
 }
 
@@ -876,6 +894,7 @@ fn source_function_hover_candidate(
     uri: &str,
     token: &str,
     module: Option<&str>,
+    line_text: &str,
     rest: &str,
     line_idx: usize,
     start_offset: usize,
@@ -894,8 +913,8 @@ fn source_function_hover_candidate(
         detail: "Typed AIL source function.".to_string(),
         uri: uri.to_string(),
         line: line_idx,
-        start: start_offset,
-        end: start_offset + name.len(),
+        start: byte_index_to_lsp_character(line_text, start_offset),
+        end: byte_index_to_lsp_character(line_text, start_offset + name.len()),
     })
 }
 
@@ -903,6 +922,7 @@ fn source_const_hover_candidate(
     uri: &str,
     token: &str,
     module: Option<&str>,
+    line_text: &str,
     rest: &str,
     line_idx: usize,
     start_offset: usize,
@@ -921,14 +941,15 @@ fn source_const_hover_candidate(
         detail: "Typed top-level AIL source constant.".to_string(),
         uri: uri.to_string(),
         line: line_idx,
-        start: start_offset,
-        end: start_offset + name.len(),
+        start: byte_index_to_lsp_character(line_text, start_offset),
+        end: byte_index_to_lsp_character(line_text, start_offset + name.len()),
     })
 }
 
 fn source_test_hover_candidate(
     uri: &str,
     token: &str,
+    line_text: &str,
     rest: &str,
     line_idx: usize,
     start_offset: usize,
@@ -947,14 +968,15 @@ fn source_test_hover_candidate(
         detail: "Executable AIL source test discovered by `ail test --file`.".to_string(),
         uri: uri.to_string(),
         line: line_idx,
-        start: start_offset,
-        end: start_offset + name.len(),
+        start: byte_index_to_lsp_character(line_text, start_offset),
+        end: byte_index_to_lsp_character(line_text, start_offset + name.len()),
     })
 }
 
 fn source_capability_hover_candidate(
     uri: &str,
     token: &str,
+    line_text: &str,
     rest: &str,
     line_idx: usize,
     start_offset: usize,
@@ -971,8 +993,8 @@ fn source_capability_hover_candidate(
             .to_string(),
         uri: uri.to_string(),
         line: line_idx,
-        start: start_offset,
-        end: start_offset + name.len(),
+        start: byte_index_to_lsp_character(line_text, start_offset),
+        end: byte_index_to_lsp_character(line_text, start_offset + name.len()),
     })
 }
 

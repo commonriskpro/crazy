@@ -112,6 +112,67 @@ fn lsp_workspace_symbols_indexes_open_ail_documents_deterministically() {
 }
 
 #[test]
+fn lsp_workspace_symbols_use_utf16_source_ranges() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    let source_uri = format!("file://{}", source.path().display());
+    let text = "module main\n\u{2003}fn helper() -> Int = 1\n";
+    source
+        .write_str(text)
+        .expect("source fixture must be written");
+    let open_source = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": source_uri,
+                "languageId": "ail",
+                "version": 1,
+                "text": text,
+            }
+        }
+    })
+    .to_string();
+    let workspace_symbols = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 13,
+        "method": "workspace/symbol",
+        "params": { "query": "helper" }
+    })
+    .to_string();
+    let input = format!(
+        "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+        open_source.len(),
+        open_source,
+        workspace_symbols.len(),
+        workspace_symbols
+    );
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 13)
+        .expect("workspace/symbol response must be emitted");
+    let symbols = response["result"]
+        .as_array()
+        .expect("workspace/symbol result must be an array");
+
+    assert_eq!(symbols.len(), 1);
+    assert_eq!(symbols[0]["name"], "main.helper");
+    assert_eq!(symbols[0]["location"]["range"]["start"]["character"], 4);
+    assert_eq!(symbols[0]["location"]["range"]["end"]["character"], 10);
+}
+
+#[test]
 fn lsp_workspace_symbols_filters_query_against_open_document_index() {
     use assert_fs::prelude::*;
 

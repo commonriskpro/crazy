@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::source_helpers::{
-    file_path_from_uri, is_acl_token_char, is_ail_source_uri, resolve_lsp_source_import,
-    source_imports_from_text, source_module_from_text, source_test_name_end,
+    byte_index_to_lsp_character, file_path_from_uri, is_acl_token_char, is_ail_source_uri,
+    resolve_lsp_source_import, source_imports_from_text, source_module_from_text,
+    source_test_name_end,
 };
 use super::tokens::token_range_at_position;
 
@@ -145,10 +146,7 @@ fn definition_lookup_for_token_with_workspace(
         if let Some(start) = line.find(&needle).map(|idx| idx + "id=".len()) {
             definitions.push(json!({
                 "uri": uri,
-                "range": {
-                    "start": { "line": line_idx, "character": start },
-                    "end": { "line": line_idx, "character": start + token.len() }
-                }
+                "range": byte_range_json(line_idx, line, start, start + token.len())
             }));
         }
     }
@@ -502,6 +500,13 @@ fn token_range_json(line: usize, start: usize, end: usize) -> Value {
     })
 }
 
+fn byte_range_json(line_idx: usize, line: &str, start: usize, end: usize) -> Value {
+    json!({
+        "start": { "line": line_idx, "character": byte_index_to_lsp_character(line, start) },
+        "end": { "line": line_idx, "character": byte_index_to_lsp_character(line, end) }
+    })
+}
+
 fn source_definitions_in_text(
     uri: &str,
     text: &str,
@@ -544,10 +549,7 @@ fn source_function_definitions_in_text(uri: &str, text: &str, token: &str) -> Ve
             let start = leading + "fn ".len();
             definitions.push(json!({
                 "uri": uri,
-                "range": {
-                    "start": { "line": line_idx, "character": start },
-                    "end": { "line": line_idx, "character": start + name.len() }
-                }
+                "range": byte_range_json(line_idx, line, start, start + name.len())
             }));
         }
     }
@@ -571,10 +573,7 @@ fn source_const_definitions_in_text(uri: &str, text: &str, token: &str) -> Vec<V
             let start = leading + "const ".len();
             definitions.push(json!({
                 "uri": uri,
-                "range": {
-                    "start": { "line": line_idx, "character": start },
-                    "end": { "line": line_idx, "character": start + name.len() }
-                }
+                "range": byte_range_json(line_idx, line, start, start + name.len())
             }));
         }
     }
@@ -598,10 +597,7 @@ fn source_test_definitions_in_text(uri: &str, text: &str, token: &str) -> Vec<Va
             let start = leading + "test ".len();
             definitions.push(json!({
                 "uri": uri,
-                "range": {
-                    "start": { "line": line_idx, "character": start },
-                    "end": { "line": line_idx, "character": start + name.len() }
-                }
+                "range": byte_range_json(line_idx, line, start, start + name.len())
             }));
         }
     }
@@ -637,10 +633,7 @@ fn source_capability_definitions_in_text(uri: &str, text: &str, token: &str) -> 
             let start = leading + "capability ".len();
             definitions.push(json!({
                 "uri": uri,
-                "range": {
-                    "start": { "line": line_idx, "character": start },
-                    "end": { "line": line_idx, "character": start + name.len() }
-                }
+                "range": byte_range_json(line_idx, line, start, start + name.len())
             }));
         }
     }

@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::source_helpers::{
-    file_path_from_uri, is_acl_token_char, is_ail_source_uri, resolve_lsp_source_import,
-    source_imports_from_text, source_module_from_text, source_test_name_end,
+    byte_index_to_lsp_character, file_path_from_uri, is_acl_token_char, is_ail_source_uri,
+    resolve_lsp_source_import, source_imports_from_text, source_module_from_text,
+    source_test_name_end,
 };
 use super::tokens::token_range_at_position;
 
@@ -456,13 +457,7 @@ fn source_reference_ranges_in_line(
         if token_has_boundaries(line, start, end)
             && source_reference_match_allowed(line, start, end, query, needle)
         {
-            out.push(json!({
-                "uri": uri,
-                "range": {
-                    "start": { "line": line_idx, "character": start },
-                    "end": { "line": line_idx, "character": end }
-                }
-            }));
+            out.push(location_for_byte_range(uri, line_idx, line, start, end));
         }
         search_from = end;
     }
@@ -584,13 +579,7 @@ fn token_ranges_in_line(uri: &str, line_idx: usize, line: &str, token: &str) -> 
         let start = search_from + offset;
         let end = start + token.len();
         if token_has_boundaries(line, start, end) {
-            out.push(json!({
-                "uri": uri,
-                "range": {
-                    "start": { "line": line_idx, "character": start },
-                    "end": { "line": line_idx, "character": end }
-                }
-            }));
+            out.push(location_for_byte_range(uri, line_idx, line, start, end));
         }
         search_from = end;
     }
@@ -724,5 +713,21 @@ fn token_range_json(line: usize, start: usize, end: usize) -> Value {
     json!({
         "start": { "line": line, "character": start },
         "end": { "line": line, "character": end }
+    })
+}
+
+fn location_for_byte_range(
+    uri: &str,
+    line_idx: usize,
+    line: &str,
+    start: usize,
+    end: usize,
+) -> Value {
+    json!({
+        "uri": uri,
+        "range": {
+            "start": { "line": line_idx, "character": byte_index_to_lsp_character(line, start) },
+            "end": { "line": line_idx, "character": byte_index_to_lsp_character(line, end) }
+        }
     })
 }

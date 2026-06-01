@@ -40,6 +40,34 @@ end
     );
 }
 #[test]
+fn lsp_definition_uses_utf16_source_definition_ranges() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("module main\n\u{2003}fn helper() -> Int = 1\nfn main() -> Int = helper()\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--definition-token", "helper", "--definition-file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["definition"]["range"]["start"]["line"], 1);
+    assert_eq!(
+        v["data"]["definition"]["range"]["start"]["character"], 4,
+        "definition range must count the em-space indentation as one UTF-16 unit"
+    );
+}
+
+#[test]
 fn lsp_definition_resolves_ail_source_imported_function() {
     use assert_fs::prelude::*;
 
