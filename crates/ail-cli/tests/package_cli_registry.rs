@@ -53,6 +53,68 @@ fn package_publish_persists_signed_registry_record() {
 }
 
 #[test]
+fn package_publish_production_blocks_incomplete_manifest() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let output = ail()
+        .args(["package", "publish", "--production", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["data"]["error"], "package_publish_preflight_failed");
+    assert_eq!(v["data"]["production"], true);
+    assert_eq!(v["data"]["production_lint"], "failed");
+    assert!(
+        v["data"]["production_issue_count"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0,
+        "production publish must surface production manifest issues; got: {v}"
+    );
+}
+
+#[test]
+fn package_publish_production_accepts_linted_manifest() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    ail()
+        .args([
+            "package",
+            "init",
+            "--name",
+            "local.package",
+            "--version",
+            "0.1.0",
+            "--license",
+            "MIT",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = ail()
+        .args(["package", "publish", "--production", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["published"], true);
+    assert_eq!(v["data"]["production"], true);
+    assert_eq!(v["data"]["production_lint"], "passed");
+    assert_eq!(v["data"]["production_issue_count"], 0);
+}
+
+#[test]
 fn package_advisory_add_persists_local_metadata_and_preserves_signed_records() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();

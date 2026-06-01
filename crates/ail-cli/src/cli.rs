@@ -568,7 +568,11 @@ pub(crate) enum PackageCmd {
     /// Verify all package integrity hashes against lock file.
     Verify,
     /// Publish this package to the registry.
-    Publish,
+    Publish {
+        /// Enforce production manifest lint before signing and publishing.
+        #[arg(long)]
+        production: bool,
+    },
     /// Audit all packages for known security advisories.
     Audit,
     /// Manage local package advisory metadata.

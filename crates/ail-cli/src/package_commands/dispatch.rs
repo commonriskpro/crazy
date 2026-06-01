@@ -543,13 +543,14 @@ pub(crate) async fn cmd_package(
             }
             print_response(mode, &human_msg, response_data);
         }
-        PackageCmd::Publish => {
+        PackageCmd::Publish { production } => {
             let manifest = load_or_create_package_manifest(store).await?;
             if let Err(error) = manifest.validate() {
                 let message = format!("package publish preflight failed: {error}");
                 let response_data = json!({
                     "published": false,
                     "preflight": "failed",
+                    "production": production,
                     "name": &manifest.name,
                     "version": &manifest.version,
                     "error": "package_publish_preflight_failed",
@@ -565,6 +566,51 @@ pub(crate) async fn cmd_package(
             let hash = manifest
                 .blake3_hex()
                 .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))?;
+            let production_issues = manifest.production_validation_issues();
+            if production && !production_issues.is_empty() {
+                let message = format!(
+                    "package publish preflight failed: {} production manifest issue(s)",
+                    production_issues.len()
+                );
+                let response_data = json!({
+                    "published": false,
+                    "preflight": "failed",
+                    "production": true,
+                    "name": &manifest.name,
+                    "version": &manifest.version,
+                    "package_hash": &hash,
+                    "production_lint": "failed",
+                    "production_issue_count": production_issues.len(),
+                    "production_issues": production_issues
+                        .iter()
+                        .map(package_manifest_issue_to_json)
+                        .collect::<Vec<_>>(),
+                });
+                if mode == OutputMode::Json {
+                    let mut error_data = response_data;
+                    if let Some(obj) = error_data.as_object_mut() {
+                        obj.insert(
+                            "error".to_string(),
+                            json!("package_publish_preflight_failed"),
+                        );
+                        obj.insert("message".to_string(), json!(message.clone()));
+                    }
+                    print_error_response(error_data);
+                } else {
+                    let human_msg = format!(
+                        "{message}\nname: {}\nversion: {}\npackage_hash: {hash}\nproduction_lint: failed\nproduction_issues:\n{}",
+                        manifest.name,
+                        manifest.version,
+                        production_issues
+                            .iter()
+                            .map(package_manifest_issue_to_human_line)
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    );
+                    print_response(mode, &human_msg, response_data);
+                }
+                return Err(CliError::Domain(message));
+            }
             let lockfile = load_package_lockfile(store)?;
             let registry = load_package_registry(store)?;
             let actual_artifact_evidence = registry
@@ -617,6 +663,7 @@ pub(crate) async fn cmd_package(
                 let response_data = json!({
                     "published": false,
                     "preflight": "failed",
+                    "production": production,
                     "name": &manifest.name,
                     "version": &manifest.version,
                     "package_hash": &hash,
@@ -680,8 +727,9 @@ pub(crate) async fn cmd_package(
                 verification_report_status(manifest.verification_report.is_some());
             let repro_evidence_status =
                 reproducible_evidence_status(manifest.reproducible_evidence.is_some());
+            let production_lint = if production { "passed" } else { "not_enforced" };
             let human_msg = format!(
-                "published\nname: {}\nversion: {}\npackage_hash: {hash}\ntrust: {:?}\nsignature: signed\ncapabilities_manifest: attached\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\npreflight: passed\nlockfile_reproducibility: {lockfile_reproducibility}\nlocked_package_count: {locked_package_count}",
+                "published\nname: {}\nversion: {}\npackage_hash: {hash}\ntrust: {:?}\nsignature: signed\ncapabilities_manifest: attached\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\npreflight: passed\nproduction_lint: {production_lint}\nlockfile_reproducibility: {lockfile_reproducibility}\nlocked_package_count: {locked_package_count}",
                 manifest.name, manifest.version, manifest.trust_level
             );
             print_response(
@@ -689,6 +737,7 @@ pub(crate) async fn cmd_package(
                 &human_msg,
                 json!({
                     "published": true,
+                    "production": production,
                     "name": manifest.name,
                     "version": manifest.version,
                     "package_hash": hash,
@@ -697,6 +746,12 @@ pub(crate) async fn cmd_package(
                     "log_id": published.log_id,
                     "sequence": published.sequence,
                     "preflight": "passed",
+                    "production_lint": production_lint,
+                    "production_issue_count": production_issues.len(),
+                    "production_issues": production_issues
+                        .iter()
+                        .map(package_manifest_issue_to_json)
+                        .collect::<Vec<_>>(),
                     "lockfile_hash": lockfile_hash,
                     "locked_package_count": locked_package_count,
                     "lockfile_reproducibility": lockfile_reproducibility,
