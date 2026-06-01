@@ -169,6 +169,43 @@ fn fmt_ail_source_write_makes_check_pass() {
 }
 
 #[test]
+fn fmt_file_json_outputs_canonical_ail_source_encoding_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let source = dir.child("encoding.ail");
+    source
+        .write_str(
+            "fn b64(value:Bytes)->Text=std.encoding.base64_encode(value)\n\
+fn raw(value:Text)->Result<Bytes,Text>=encoding.hex_decode(value)\n",
+        )
+        .expect("write source");
+
+    let output = ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["item_count"], 2);
+    let formatted = v["data"]["formatted"]
+        .as_str()
+        .expect("formatted must be string");
+
+    assert!(formatted.contains("fn b64(value: Bytes) -> Text = encoding_base64_encode(value)\n"));
+    assert!(
+        formatted
+            .contains("fn raw(value: Text) -> Result<Bytes,Text> = encoding_hex_decode(value)\n")
+    );
+}
+
+#[test]
 fn fmt_file_json_outputs_canonical_ail_source_time_helpers() {
     use assert_fs::prelude::*;
 

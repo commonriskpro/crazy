@@ -214,6 +214,31 @@ fn formats_source_text_replace_first_helper() {
 }
 
 #[test]
+fn formats_source_encoding_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn b64(value:Bytes)->Text=std.encoding.base64_encode(value)
+fn from_b64(value:Text)->Result<Bytes,Text>=encoding.base64_decode(value)
+fn hexed(value:Bytes)->Text=std.encoding.hex_encode(value)
+fn from_hex(value:Text)->Result<Bytes,Text>=encoding.hex_decode(value)
+"#,
+    )
+    .expect("source encoding helpers must format");
+
+    assert_eq!(item_count, 4);
+    assert!(formatted.contains("fn b64(value: Bytes) -> Text = encoding_base64_encode(value)\n"));
+    assert!(formatted.contains(
+        "fn from_b64(value: Text) -> Result<Bytes,Text> = encoding_base64_decode(value)\n"
+    ));
+    assert!(formatted.contains("fn hexed(value: Bytes) -> Text = encoding_hex_encode(value)\n"));
+    assert!(
+        formatted.contains(
+            "fn from_hex(value: Text) -> Result<Bytes,Text> = encoding_hex_decode(value)\n"
+        )
+    );
+}
+
+#[test]
 fn formats_source_time_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"

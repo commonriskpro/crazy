@@ -340,6 +340,20 @@ pub(super) fn infer_source_call_type(
         | "time.instant_to_ms"
         | "time_instant_to_ms"
         | "std.time.instant_to_ms" => infer_source_time_helper_type(func, args, scope, functions),
+        "encoding.base64_encode"
+        | "encoding_base64_encode"
+        | "std.encoding.base64_encode"
+        | "encoding.hex_encode"
+        | "encoding_hex_encode"
+        | "std.encoding.hex_encode"
+        | "encoding.base64_decode"
+        | "encoding_base64_decode"
+        | "std.encoding.base64_decode"
+        | "encoding.hex_decode"
+        | "encoding_hex_decode"
+        | "std.encoding.hex_decode" => {
+            infer_source_encoding_helper_type(func, args, scope, functions)
+        }
         "record" => infer_source_record_type(args, scope, functions),
         "field" => infer_source_field_type(args, scope, functions),
         "update" => infer_source_update_type(args, scope, functions),
@@ -866,6 +880,42 @@ fn require_source_map_text_key_type<'a>(
         ));
     }
     Ok(Some(value_ty))
+}
+
+pub(super) fn infer_source_encoding_helper_type(
+    func: &str,
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let (expected, return_ty) = match func {
+        "encoding.base64_encode" | "encoding_base64_encode" | "std.encoding.base64_encode" => {
+            (&["Bytes"][..], "Text")
+        }
+        "encoding.hex_encode" | "encoding_hex_encode" | "std.encoding.hex_encode" => {
+            (&["Bytes"][..], "Text")
+        }
+        "encoding.base64_decode" | "encoding_base64_decode" | "std.encoding.base64_decode" => {
+            (&["Text"][..], "Result<Bytes,Text>")
+        }
+        "encoding.hex_decode" | "encoding_hex_decode" | "std.encoding.hex_decode" => {
+            (&["Text"][..], "Result<Bytes,Text>")
+        }
+        _ => unreachable!("checked source encoding helper"),
+    };
+    if args.len() != expected.len() {
+        return Err(source_expr_error(
+            "AIL_SOURCE_ENCODING_ARITY",
+            "source.encoding.arity",
+            format!(
+                "function call `{func}` expects {} argument(s), got {}",
+                expected.len(),
+                args.len()
+            ),
+        ));
+    }
+    validate_source_arg_types(func, args, scope, functions, expected)?;
+    Ok(return_ty.to_string())
 }
 
 pub(super) fn infer_source_time_helper_type(

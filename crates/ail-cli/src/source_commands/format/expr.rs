@@ -652,6 +652,21 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if let Some((helper, arity)) = source_encoding_helper(&func)
+        && args.len() == arity
+    {
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "option.unwrap_or" && args.len() == 2 {
         return (
             format!(
@@ -976,6 +991,20 @@ pub(super) fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn source_encoding_helper(func: &str) -> Option<(&'static str, usize)> {
+    match func {
+        "encoding.base64_encode" | "std.encoding.base64_encode" => {
+            Some(("encoding_base64_encode", 1))
+        }
+        "encoding.base64_decode" | "std.encoding.base64_decode" => {
+            Some(("encoding_base64_decode", 1))
+        }
+        "encoding.hex_encode" | "std.encoding.hex_encode" => Some(("encoding_hex_encode", 1)),
+        "encoding.hex_decode" | "std.encoding.hex_decode" => Some(("encoding_hex_decode", 1)),
+        _ => None,
+    }
 }
 
 fn source_time_helper(func: &str) -> Option<(&'static str, usize)> {

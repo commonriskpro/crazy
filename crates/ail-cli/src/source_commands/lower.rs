@@ -7,6 +7,7 @@ use super::*;
 mod bytes;
 mod collections;
 mod control;
+mod encoding;
 mod int;
 mod match_expr;
 mod option_result;
@@ -18,6 +19,7 @@ mod tuple;
 pub(super) use bytes::*;
 pub(super) use collections::*;
 pub(super) use control::*;
+pub(super) use encoding::*;
 pub(super) use int::*;
 pub(super) use match_expr::*;
 pub(super) use option_result::*;
@@ -34,6 +36,7 @@ pub(super) enum SourceLowerDiagnostic {
     CapabilityReference,
     CollectionArity,
     ControlExpression,
+    EncodingHelper,
     Expression,
     FieldAccess,
     IndexExpression,
@@ -60,6 +63,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::CapabilityReference => "AIL_SOURCE_LOWER_CAPABILITY_REFERENCE",
             SourceLowerDiagnostic::CollectionArity => "AIL_SOURCE_LOWER_COLLECTION_ARITY",
             SourceLowerDiagnostic::ControlExpression => "AIL_SOURCE_LOWER_CONTROL_EXPRESSION",
+            SourceLowerDiagnostic::EncodingHelper => "AIL_SOURCE_LOWER_ENCODING_HELPER",
             SourceLowerDiagnostic::Expression => "AIL_SOURCE_LOWER_EXPRESSION",
             SourceLowerDiagnostic::FieldAccess => "AIL_SOURCE_LOWER_FIELD_ACCESS",
             SourceLowerDiagnostic::IndexExpression => "AIL_SOURCE_LOWER_INDEX_EXPRESSION",
@@ -85,6 +89,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::BytesHelper => "source.lower.bytes",
             SourceLowerDiagnostic::CapabilityReference => "source.lower.capability",
             SourceLowerDiagnostic::ControlExpression => "source.lower.control",
+            SourceLowerDiagnostic::EncodingHelper => "source.lower.encoding",
             SourceLowerDiagnostic::Expression => "source.lower.expression",
             SourceLowerDiagnostic::IntHelper => "source.lower.int",
             SourceLowerDiagnostic::MatchExpression => "source.lower.match",
@@ -416,6 +421,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_time_helper_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
+    if let Some(lowered) = lower_source_encoding_helper_expr(expr, line_num)? {
         return Ok(lowered);
     }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {

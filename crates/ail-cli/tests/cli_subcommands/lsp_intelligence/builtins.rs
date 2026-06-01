@@ -482,6 +482,69 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include dotted Map helpers; got: {dotted_map_items:?}"
     );
 
+    let encoding_completion_output = ail()
+        .args(["lsp", "--complete", "encoding_", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let encoding_completion = parse_json_output(&encoding_completion_output);
+    let encoding_items = encoding_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        [
+            "encoding_base64_encode",
+            "encoding_base64_decode",
+            "encoding_hex_encode",
+            "encoding_hex_decode",
+        ]
+        .iter()
+        .all(|label| encoding_items
+            .iter()
+            .any(|item| item["label"] == *label && item["detail"] == "AIL source Encoding helper")),
+        "completion must include AIL source encoding helpers; got: {encoding_items:?}"
+    );
+
+    let dotted_encoding_completion_output = ail()
+        .args(["lsp", "--complete", "encoding.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_encoding_completion = parse_json_output(&dotted_encoding_completion_output);
+    let dotted_encoding_items = dotted_encoding_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        [
+            "encoding.base64_encode",
+            "encoding.base64_decode",
+            "encoding.hex_encode",
+            "encoding.hex_decode",
+        ]
+        .iter()
+        .all(|label| dotted_encoding_items
+            .iter()
+            .any(|item| item["label"] == *label && item["detail"] == "AIL source Encoding helper")),
+        "completion must include dotted Encoding helpers; got: {dotted_encoding_items:?}"
+    );
+
+    let encoding_hover_output = ail()
+        .args(["lsp", "--hover-token", "encoding_base64_decode", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let encoding_hover = parse_json_output(&encoding_hover_output);
+    assert!(
+        encoding_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("Result<Bytes,Text>"),
+        "hover must explain encoding_base64_decode; got: {encoding_hover}"
+    );
+
     let time_completion_output = ail()
         .args(["lsp", "--complete", "time_", "--json"])
         .assert()

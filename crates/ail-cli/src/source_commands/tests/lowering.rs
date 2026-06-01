@@ -1245,6 +1245,48 @@ grant main log.write
 }
 
 #[test]
+fn lowers_and_types_source_encoding_helpers() {
+    let program = parse_ail_source(
+        r#"
+fn b64(value: Bytes) -> Text = encoding_base64_encode(value)
+fn from_b64(value: Text) -> Result<Bytes,Text> = encoding.base64_decode(value)
+fn hexed(value: Bytes) -> Text = std.encoding.hex_encode(value)
+fn from_hex(value: Text) -> Result<Bytes,Text> = encoding.hex_decode(value)
+"#,
+    )
+    .expect("source encoding helpers must parse and type-check");
+    let acl = source_program_to_acl(&program, "source_encoding".to_string());
+
+    assert_eq!(
+        program.functions[0].body,
+        "std.encoding.base64_encode(value)"
+    );
+    assert_eq!(
+        program.functions[1].body,
+        "std.encoding.base64_decode(value)"
+    );
+    assert_eq!(program.functions[2].body, "std.encoding.hex_encode(value)");
+    assert_eq!(program.functions[3].body, "std.encoding.hex_decode(value)");
+    assert!(acl.contains(
+        "op create_function id=fn.b64 return=Text body=std.encoding.base64_encode(value)"
+    ));
+    assert!(acl.contains(
+        "op create_function id=fn.from_hex return=Result<Bytes,Text> body=std.encoding.hex_decode(value)"
+    ));
+}
+
+#[test]
+fn rejects_source_encoding_helper_type_mismatch() {
+    assert_lowering_diagnostic(
+        parse_ail_source("fn bad(input: Text) -> Text = encoding.base64_encode(input)\n")
+            .map(|_| String::new()),
+        "AIL_SOURCE_TYPE_MISMATCH",
+        "source.type.mismatch",
+        "expected Bytes, got Text",
+    );
+}
+
+#[test]
 fn lowers_and_types_source_time_helpers() {
     let program = parse_ail_source(
         r#"
