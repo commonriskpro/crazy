@@ -409,6 +409,7 @@ pub(crate) fn lockfile_entry_to_json(entry: &LockfileEntry) -> Value {
         "package_hash": &entry.package_hash,
         "trust_level": entry.trust_level.to_string(),
         "verification_report_hash": &entry.verification_report_hash,
+        "artifact_hashes": &entry.artifact_hashes,
         "accepted_assumptions": &entry.accepted_assumptions,
     })
 }

@@ -288,6 +288,7 @@ fn doctor_artifact_hash_consistency_warn_on_hash_mismatch() {
         package_hash: "a".repeat(64), // deliberate mismatch
         trust_level: TrustLevel::Verified,
         verification_report_hash: None,
+        artifact_hashes: vec![],
         accepted_assumptions: vec![],
     });
     save_package_lockfile(&store, &lockfile).expect("save lockfile");
@@ -323,6 +324,7 @@ fn doctor_artifact_hash_consistency_warn_on_missing_registry_entry() {
         package_hash: "b".repeat(64),
         trust_level: TrustLevel::Assumed,
         verification_report_hash: None,
+        artifact_hashes: vec![],
         accepted_assumptions: vec![],
     });
     save_package_lockfile(&store, &lockfile).expect("save lockfile");
@@ -388,6 +390,7 @@ fn doctor_artifact_hash_consistency_warn_on_empty_lockfile_hash() {
         package_hash: String::new(),
         trust_level: TrustLevel::Verified,
         verification_report_hash: None,
+        artifact_hashes: vec![],
         accepted_assumptions: vec![],
     });
     save_package_lockfile(&store, &lockfile).expect("save lockfile");
@@ -526,6 +529,7 @@ fn doctor_package_advisories_warn_on_affected_package() {
         package_hash: "c".repeat(64),
         trust_level: TrustLevel::Assumed,
         verification_report_hash: None,
+        artifact_hashes: vec![],
         accepted_assumptions: vec![],
     });
     save_package_lockfile(&store, &lockfile).expect("save lockfile");
@@ -580,6 +584,7 @@ fn doctor_package_advisories_ok_when_no_matching_advisory() {
         package_hash: "d".repeat(64),
         trust_level: TrustLevel::Verified,
         verification_report_hash: None,
+        artifact_hashes: vec![],
         accepted_assumptions: vec![],
     });
     save_package_lockfile(&store, &lockfile).expect("save lockfile");

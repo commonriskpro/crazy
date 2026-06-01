@@ -12,6 +12,7 @@
 //   package_hash
 //   trust_level
 //   verification_report_hash
+//   artifact_hashes
 //   accepted_assumptions
 //
 // A `Lockfile` is an ordered collection of `LockfileEntry` records that
@@ -29,7 +30,7 @@ use blake3::Hasher;
 use ciborium::ser::into_writer;
 use serde::{Deserialize, Serialize};
 
-use crate::manifest::PackageManifest;
+use crate::manifest::{ArtifactHashEntry, PackageManifest};
 use crate::resolver::DependencySpec;
 use crate::trust::TrustLevel;
 
@@ -60,6 +61,12 @@ pub struct LockfileEntry {
     /// Optional BLAKE3 hex digest of the verification report used to
     /// produce this lock entry.
     pub verification_report_hash: Option<String>,
+    /// Artifact evidence copied from the package manifest at lock time.
+    ///
+    /// This includes executable artifacts such as `wasm-artifact` and their
+    /// companion contract artifacts such as `wasm-abi-descriptor`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifact_hashes: Vec<ArtifactHashEntry>,
     /// Assumption IDs accepted by the approver at lock time, in canonical lexical order.
     ///
     /// Uses `Vec` (not `HashSet`) to maintain CBOR determinism.
@@ -607,6 +614,7 @@ impl Lockfile {
                     package_hash,
                     trust_level: manifest.trust_level,
                     verification_report_hash,
+                    artifact_hashes: manifest.artifact_hashes.clone(),
                     accepted_assumptions: vec![],
                 }
             })
@@ -1128,6 +1136,16 @@ mod tests {
             package_hash: "a".repeat(64),
             trust_level: TrustLevel::Assumed,
             verification_report_hash: Some("b".repeat(64)),
+            artifact_hashes: vec![
+                ArtifactHashEntry {
+                    role: "wasm-artifact".to_string(),
+                    hash: "c".repeat(64),
+                },
+                ArtifactHashEntry {
+                    role: "wasm-abi-descriptor".to_string(),
+                    hash: "d".repeat(64),
+                },
+            ],
             accepted_assumptions: vec!["assume-pci".to_string(), "assume-gdpr".to_string()],
         }
     }
@@ -1140,6 +1158,7 @@ mod tests {
             package_hash: hash.to_string(),
             trust_level: TrustLevel::Verified,
             verification_report_hash: None,
+            artifact_hashes: vec![],
             accepted_assumptions: vec![],
         }
     }
@@ -1186,6 +1205,7 @@ mod tests {
     fn lockfile_entry_without_report_hash() {
         let entry = LockfileEntry {
             verification_report_hash: None,
+            artifact_hashes: vec![],
             accepted_assumptions: vec![],
             ..sample_entry()
         };
@@ -1229,6 +1249,7 @@ mod tests {
             package_hash: "c".repeat(64),
             trust_level: TrustLevel::Verified,
             verification_report_hash: None,
+            artifact_hashes: vec![],
             accepted_assumptions: vec![],
         });
 
@@ -1730,6 +1751,29 @@ mod tests {
             entry.verification_report_hash.as_deref(),
             Some(expected.as_str())
         );
+    }
+
+    #[test]
+    fn from_resolution_pins_manifest_artifact_hashes() {
+        let mut manifest = make_test_manifest("payments.stripe", "2.3.1");
+        manifest.artifact_hashes = vec![
+            ArtifactHashEntry {
+                role: "wasm-artifact".to_string(),
+                hash: "a".repeat(64),
+            },
+            ArtifactHashEntry {
+                role: "wasm-abi-descriptor".to_string(),
+                hash: "b".repeat(64),
+            },
+        ];
+        let spec = make_test_spec("payments.stripe", "^2.0");
+
+        let lf = Lockfile::from_resolution(vec![(&spec, &manifest)]);
+
+        let entry = lf
+            .get("payments.stripe", "2.3.1")
+            .expect("entry must exist");
+        assert_eq!(entry.artifact_hashes, manifest.artifact_hashes);
     }
 
     // Spec PKG-LOCK-1: to_specs() returns exact-version DependencySpecs

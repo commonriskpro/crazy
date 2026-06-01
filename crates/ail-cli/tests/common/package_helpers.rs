@@ -112,6 +112,7 @@ pub fn lockfile_for_manifest(manifest: &PackageManifest) -> Lockfile {
         package_hash: manifest.blake3_hex().expect("manifest hash must compute"),
         trust_level: manifest.trust_level,
         verification_report_hash: None,
+        artifact_hashes: manifest.artifact_hashes.clone(),
         accepted_assumptions: vec![],
     });
     lockfile

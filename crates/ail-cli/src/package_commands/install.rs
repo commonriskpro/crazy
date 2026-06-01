@@ -30,6 +30,7 @@ pub(super) fn install_package_from_registry(
         package_hash: hash,
         trust_level: manifest.trust_level,
         verification_report_hash: vr_hash,
+        artifact_hashes: manifest.artifact_hashes.clone(),
         accepted_assumptions: vec![],
     };
     let mut lockfile = load_package_lockfile(store)?;
@@ -53,6 +54,7 @@ pub(super) fn install_package_from_registry(
         existing.requested_version = entry.requested_version.clone();
         existing.trust_level = entry.trust_level;
         existing.verification_report_hash = entry.verification_report_hash.clone();
+        existing.artifact_hashes = entry.artifact_hashes.clone();
         existing.clone()
     } else {
         lockfile.add(entry.clone());

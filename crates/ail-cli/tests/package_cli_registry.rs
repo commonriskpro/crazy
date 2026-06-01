@@ -730,6 +730,7 @@ fn package_publish_rejects_noncanonical_lockfile_preflight_json() {
         package_hash: zeta.blake3_hex().expect("zeta hash must compute"),
         trust_level: zeta.trust_level,
         verification_report_hash: None,
+        artifact_hashes: vec![],
         accepted_assumptions: vec![],
     });
     lockfile.add(LockfileEntry {
@@ -739,6 +740,7 @@ fn package_publish_rejects_noncanonical_lockfile_preflight_json() {
         package_hash: alpha.blake3_hex().expect("alpha hash must compute"),
         trust_level: alpha.trust_level,
         verification_report_hash: None,
+        artifact_hashes: vec![],
         accepted_assumptions: vec![],
     });
     write_package_lockfile(dir.path(), &lockfile);
@@ -828,6 +830,7 @@ fn package_verify_rejects_noncanonical_lockfile_order_json() {
         package_hash: zeta.blake3_hex().expect("zeta hash must compute"),
         trust_level: zeta.trust_level,
         verification_report_hash: None,
+        artifact_hashes: vec![],
         accepted_assumptions: vec![],
     });
     lockfile.add(LockfileEntry {
@@ -837,6 +840,7 @@ fn package_verify_rejects_noncanonical_lockfile_order_json() {
         package_hash: alpha.blake3_hex().expect("alpha hash must compute"),
         trust_level: alpha.trust_level,
         verification_report_hash: None,
+        artifact_hashes: vec![],
         accepted_assumptions: vec![],
     });
     write_package_lockfile(dir.path(), &lockfile);
@@ -953,6 +957,54 @@ fn package_install_stores_verification_report_hash_and_verify_passes() {
 }
 
 #[test]
+fn package_install_locks_wasm_abi_artifact_hashes() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let mut manifest = test_package_manifest("abi.locked", "1.0.0", TrustLevel::Verified);
+    manifest.artifact_hashes = vec![
+        ArtifactHashEntry {
+            role: "wasm-artifact".to_string(),
+            hash: "a".repeat(64),
+        },
+        ArtifactHashEntry {
+            role: "wasm-abi-descriptor".to_string(),
+            hash: "b".repeat(64),
+        },
+    ];
+    write_legacy_package_registry(dir.path(), &[manifest]);
+
+    let output = ail()
+        .args(["package", "install", "abi.locked@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let install_json = parse_json_output(&output);
+    let install_roles = install_json["data"]["artifact_hashes"]
+        .as_array()
+        .expect("install artifact_hashes must be an array")
+        .iter()
+        .map(|entry| entry["role"].as_str().expect("role must be string"))
+        .collect::<Vec<_>>();
+    assert!(install_roles.contains(&"wasm-artifact"));
+    assert!(install_roles.contains(&"wasm-abi-descriptor"));
+
+    let lockfile_bytes = fs::read(package_lockfile_path(dir.path())).expect("lockfile must exist");
+    let lockfile: Lockfile =
+        ciborium::from_reader(lockfile_bytes.as_slice()).expect("decode lockfile");
+    let lock_roles = lockfile.entries[0]
+        .artifact_hashes
+        .iter()
+        .map(|entry| entry.role.as_str())
+        .collect::<Vec<_>>();
+    assert!(lock_roles.contains(&"wasm-artifact"));
+    assert!(lock_roles.contains(&"wasm-abi-descriptor"));
+}
+
+#[test]
 fn package_install_updates_existing_legacy_lockfile_entry_with_report_hash() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
@@ -981,6 +1033,7 @@ fn package_install_updates_existing_legacy_lockfile_entry_with_report_hash() {
         package_hash: "f".repeat(64),
         trust_level: TrustLevel::Assumed,
         verification_report_hash: None,
+        artifact_hashes: vec![],
         accepted_assumptions: vec!["legacy-assumption".to_string()],
     });
     write_package_lockfile(dir.path(), &legacy_lockfile);
