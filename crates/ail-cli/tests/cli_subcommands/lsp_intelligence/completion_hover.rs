@@ -43,8 +43,56 @@ fn lsp_completion_covers_source_match_expressions() {
             && item["insertText"]
                 .as_str()
                 .expect("insertText")
-                .contains("match ${1:value}")),
+                .contains("match ${1:value}")
+            && item["insertText"]
+                .as_str()
+                .expect("insertText")
+                .contains("return ${3:v}")
+            && item["insertText"]
+                .as_str()
+                .expect("insertText")
+                .contains("${4:None} => {\n        return ${5:fallback}\n    }")),
         "completion must include match snippet; got: {items:?}"
+    );
+}
+
+#[test]
+fn lsp_completion_covers_source_block_control_flow() {
+    let completion_output = ail()
+        .args(["lsp", "--complete", "return", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let completion = parse_json_output(&completion_output);
+    assert_eq!(completion["status"], "ok");
+    let items = completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        items.iter().any(|item| item["label"] == "return"
+            && item["insertText"].as_str().expect("insertText") == "return ${1:value}"),
+        "completion must include return marker snippet; got: {items:?}"
+    );
+
+    let else_completion_output = ail()
+        .args(["lsp", "--complete", "else", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let else_completion = parse_json_output(&else_completion_output);
+    assert_eq!(else_completion["status"], "ok");
+    let else_items = else_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        else_items.iter().any(|item| item["label"] == "else if"
+            && item["insertText"]
+                .as_str()
+                .expect("insertText")
+                .contains("else if ${1:condition}")),
+        "completion must include else-if block snippet; got: {else_items:?}"
     );
 }
 #[test]

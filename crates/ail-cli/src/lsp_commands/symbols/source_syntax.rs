@@ -92,16 +92,28 @@ pub(super) const AIL_SOURCE_SYNTAX_SYMBOLS: &[AclSymbol] = &[
         insert_text: "let ${1:name}: ${2:Int} = ${3:value}",
     },
     AclSymbol {
+        label: "return",
+        detail: "AIL source return marker",
+        documentation: "Marks the final expression returned from a source function, test, if branch, or match arm block.",
+        insert_text: "return ${1:value}",
+    },
+    AclSymbol {
         label: "if",
         detail: "AIL source conditional",
-        documentation: "Evaluates a typed conditional expression with explicit then and else branches.",
-        insert_text: "if ${1:condition} { ${2:then_expr} } else { ${3:else_expr} }",
+        documentation: "Evaluates a typed conditional expression with block branches and explicit return markers.",
+        insert_text: "if ${1:condition} {\n    return ${2:then_expr}\n} else {\n    return ${3:else_expr}\n}",
+    },
+    AclSymbol {
+        label: "else if",
+        detail: "AIL source conditional branch",
+        documentation: "Adds an else-if branch to a block conditional while preserving typed branch expressions.",
+        insert_text: "else if ${1:condition} {\n    return ${2:then_expr}\n}",
     },
     AclSymbol {
         label: "match",
         detail: "AIL source pattern match",
-        documentation: "Destructures Option/Result values or matches literals with typed arms.",
-        insert_text: "match ${1:value} { ${2:Some(v)} => ${3:v}, ${4:None} => ${5:fallback} }",
+        documentation: "Destructures Option/Result values or matches literals with block arms and explicit return markers.",
+        insert_text: "match ${1:value} {\n    ${2:Some(v)} => {\n        return ${3:v}\n    }\n    ${4:None} => {\n        return ${5:fallback}\n    }\n}",
     },
     AclSymbol {
         label: "Some",

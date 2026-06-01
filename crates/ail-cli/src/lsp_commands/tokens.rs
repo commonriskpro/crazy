@@ -251,6 +251,7 @@ fn is_source_keyword(text: &str) -> bool {
             | "const"
             | "test"
             | "let"
+            | "return"
             | "if"
             | "else"
             | "match"

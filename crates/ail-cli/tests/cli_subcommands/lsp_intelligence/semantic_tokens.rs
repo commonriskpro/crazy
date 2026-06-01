@@ -9,6 +9,11 @@ fn lsp_semantic_tokens_are_stable_ordered_and_typed_for_source_documents() {
     let source_text = "module math\n\
 fn add_pair(x: Int, y: Int) -> Int = x + y // sum\n\
 const greeting: Text = \"hello // world\"\n\
+fn clamp(x: Int) -> Int = if x == 0 {\n\
+    return 1\n\
+} else {\n\
+    return x\n\
+}\n\
 test smoke = add_pair(1, 2) == 3\n";
     source
         .write_str(source_text)
@@ -108,6 +113,9 @@ test smoke = add_pair(1, 2) == 3\n";
         ("+", "operator"),
         ("\"hello // world\"", "string"),
         ("// sum", "comment"),
+        ("if", "keyword"),
+        ("return", "keyword"),
+        ("else", "keyword"),
         ("test", "keyword"),
         ("==", "operator"),
         ("3", "number"),
