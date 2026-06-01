@@ -127,6 +127,72 @@ test smoke = add_pair(1, 2) == 3\n";
     }
 }
 
+#[test]
+fn lsp_semantic_tokens_use_utf16_offsets() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    let source_text = "fn main() -> Text = \"🔥\" ++ \"x\"\n";
+    source
+        .write_str(source_text)
+        .expect("source fixture must be written");
+    let uri = format!("file://{}", source.path().display());
+
+    let open = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "ail",
+                "version": 1,
+                "text": source_text,
+            }
+        }
+    })
+    .to_string();
+    let semantic_tokens = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/semanticTokens/full",
+        "params": {
+            "textDocument": { "uri": format!("file://{}", source.path().display()) }
+        }
+    })
+    .to_string();
+    let input = lsp_input(&[open, semantic_tokens]);
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let token_response = messages
+        .iter()
+        .find(|message| message["id"] == 2)
+        .expect("semantic token response must be emitted");
+    let encoded = token_response["result"]["data"]
+        .as_array()
+        .expect("semantic token result data must be an array")
+        .iter()
+        .map(|value| value.as_u64().expect("semantic token data must be numeric"))
+        .collect::<Vec<_>>();
+    let decoded = decode_semantic_tokens(&encoded);
+
+    assert!(
+        decoded.contains(&(0, 20, 4, 6)),
+        "emoji string token length must be UTF-16 units, not bytes: {decoded:?}"
+    );
+    assert!(
+        decoded.contains(&(0, 25, 2, 5)),
+        "operator after emoji must start at UTF-16 offset 25, not byte offset 27: {decoded:?}"
+    );
+}
+
 fn lsp_input(messages: &[String]) -> String {
     messages
         .iter()

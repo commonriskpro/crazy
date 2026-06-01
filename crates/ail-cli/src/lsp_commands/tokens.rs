@@ -165,6 +165,7 @@ fn semantic_tokens_in_line(line_idx: u32, line: &str) -> Vec<SemanticToken> {
         if rest.starts_with("//") {
             tokens.push(semantic_token(
                 line_idx,
+                line,
                 byte_idx,
                 line.len(),
                 SEMANTIC_COMMENT,
@@ -174,7 +175,13 @@ fn semantic_tokens_in_line(line_idx: u32, line: &str) -> Vec<SemanticToken> {
 
         if ch == '"' {
             let end = string_literal_end(line, byte_idx);
-            tokens.push(semantic_token(line_idx, byte_idx, end, SEMANTIC_STRING));
+            tokens.push(semantic_token(
+                line_idx,
+                line,
+                byte_idx,
+                end,
+                SEMANTIC_STRING,
+            ));
             byte_idx = end;
             previous_identifier = None;
             continue;
@@ -182,7 +189,13 @@ fn semantic_tokens_in_line(line_idx: u32, line: &str) -> Vec<SemanticToken> {
 
         if ch.is_ascii_digit() {
             let end = scan_while(line, byte_idx, |ch| ch.is_ascii_digit() || ch == '_');
-            tokens.push(semantic_token(line_idx, byte_idx, end, SEMANTIC_NUMBER));
+            tokens.push(semantic_token(
+                line_idx,
+                line,
+                byte_idx,
+                end,
+                SEMANTIC_NUMBER,
+            ));
             byte_idx = end;
             previous_identifier = None;
             continue;
@@ -190,7 +203,13 @@ fn semantic_tokens_in_line(line_idx: u32, line: &str) -> Vec<SemanticToken> {
 
         if let Some(operator) = source_operator_at_start(rest) {
             let end = byte_idx + operator.len();
-            tokens.push(semantic_token(line_idx, byte_idx, end, SEMANTIC_OPERATOR));
+            tokens.push(semantic_token(
+                line_idx,
+                line,
+                byte_idx,
+                end,
+                SEMANTIC_OPERATOR,
+            ));
             byte_idx = end;
             previous_identifier = None;
             continue;
@@ -204,7 +223,7 @@ fn semantic_tokens_in_line(line_idx: u32, line: &str) -> Vec<SemanticToken> {
                 previous_identifier,
                 next_non_whitespace_char(line, end),
             );
-            tokens.push(semantic_token(line_idx, byte_idx, end, token_type));
+            tokens.push(semantic_token(line_idx, line, byte_idx, end, token_type));
             byte_idx = end;
             previous_identifier = Some(text);
             continue;
@@ -217,11 +236,19 @@ fn semantic_tokens_in_line(line_idx: u32, line: &str) -> Vec<SemanticToken> {
     tokens
 }
 
-fn semantic_token(line: u32, start: usize, end: usize, token_type: u32) -> SemanticToken {
+fn semantic_token(
+    line_idx: u32,
+    line: &str,
+    start: usize,
+    end: usize,
+    token_type: u32,
+) -> SemanticToken {
+    let start_character = byte_index_to_lsp_character(line, start);
+    let end_character = byte_index_to_lsp_character(line, end);
     SemanticToken {
-        line,
-        start: start as u32,
-        length: (end - start) as u32,
+        line: line_idx,
+        start: start_character as u32,
+        length: (end_character - start_character) as u32,
         token_type,
     }
 }
