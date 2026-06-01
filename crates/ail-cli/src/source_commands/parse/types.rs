@@ -1,9 +1,18 @@
 use super::*;
 
 pub(super) fn validate_source_type_name(ty: &str, line_num: usize) -> Result<(), CliError> {
+    validate_source_type_name_at(ty, line_num, 1)
+}
+
+pub(super) fn validate_source_type_name_at(
+    ty: &str,
+    line_num: usize,
+    column: usize,
+) -> Result<(), CliError> {
     if let Err(reason) = validate_source_type_shape(ty) {
-        return Err(source_parse_error_for_fragment(
+        return Err(source_parse_error_for_fragment_at(
             line_num,
+            column,
             SourceParseDiagnostic::InvalidType,
             ty,
             reason,
@@ -12,8 +21,9 @@ pub(super) fn validate_source_type_name(ty: &str, line_num: usize) -> Result<(),
     if is_supported_source_type(ty) {
         return Ok(());
     }
-    Err(source_parse_error_for_fragment(
+    Err(source_parse_error_for_fragment_at(
         line_num,
+        column,
         SourceParseDiagnostic::InvalidType,
         ty,
         format!("unsupported source type `{ty}`"),

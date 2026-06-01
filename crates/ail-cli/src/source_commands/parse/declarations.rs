@@ -306,6 +306,7 @@ pub(super) fn parse_source_params(
                 )
             })?;
             let name_column = trimmed_fragment_column(param_column, name);
+            let ty_column = trimmed_fragment_column(param_column + name.chars().count() + 1, ty);
             let name = name.trim();
             let ty = ty.trim();
             validate_source_local_name_at(name, line_num, name_column)?;
@@ -321,13 +322,13 @@ pub(super) fn parse_source_params(
             if ty.is_empty() {
                 return Err(source_parse_error_for_fragment_at(
                     line_num,
-                    param_column,
+                    ty_column,
                     SourceParseDiagnostic::InvalidType,
-                    param,
+                    ty,
                     format!("parameter `{name}` requires a type"),
                 ));
             }
-            validate_source_type_name(ty, line_num)?;
+            validate_source_type_name_at(ty, line_num, ty_column)?;
             let ty = normalize_source_type_name(ty);
             Ok(SourceParam {
                 name: name.to_string(),

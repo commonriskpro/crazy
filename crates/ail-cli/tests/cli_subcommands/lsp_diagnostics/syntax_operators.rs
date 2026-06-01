@@ -219,6 +219,13 @@ fn lsp_diagnose_reports_unsupported_source_parameter_type() {
     assert_eq!(v["data"]["language"], "ail-source");
     assert_eq!(v["data"]["diagnostic_count"], 1);
     assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 0);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["range"]["start"]["character"],
+        11
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["line"], 0);
+    assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["character"], 18);
     assert!(
         v["data"]["diagnostics"][0]["message"]
             .as_str()
