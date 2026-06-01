@@ -11,9 +11,11 @@ pub(super) fn lower_source_text_eq_expr(
         return Ok(None);
     }
     if args.len() != 2 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: text_eq requires `text_eq(left, right)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::TextHelper,
+            "text_eq requires `text_eq(left, right)`",
+        ));
     }
     Ok(Some(format!(
         "text.eq({}, {})",
@@ -33,9 +35,11 @@ pub(super) fn lower_source_text_trim_expr(
         return Ok(None);
     }
     if args.len() != 1 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: text_trim requires `text_trim(value)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::TextHelper,
+            "text_trim requires `text_trim(value)`",
+        ));
     }
     Ok(Some(format!(
         "text.trim({})",
@@ -57,9 +61,16 @@ pub(super) fn lower_source_length_expr(
         return Ok(None);
     }
     if args.len() != 1 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: {func} requires `{func}(value)`"
-        )));
+        let diagnostic = if func.starts_with("list") {
+            SourceLowerDiagnostic::CollectionArity
+        } else {
+            SourceLowerDiagnostic::TextHelper
+        };
+        return Err(source_lower_error(
+            line_num,
+            diagnostic,
+            format!("{func} requires `{func}(value)`"),
+        ));
     }
     Ok(Some(format!(
         "len({})",
@@ -78,9 +89,11 @@ pub(super) fn lower_source_text_contains_expr(
         return Ok(None);
     }
     if args.len() != 2 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: text_contains requires `text_contains(haystack, needle)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::TextHelper,
+            "text_contains requires `text_contains(haystack, needle)`",
+        ));
     }
     Ok(Some(format!(
         "text.contains({}, {})",
@@ -100,9 +113,11 @@ pub(super) fn lower_source_text_index_of_expr(
         return Ok(None);
     }
     if args.len() != 2 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: text_index_of requires `text_index_of(haystack, needle)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::TextHelper,
+            "text_index_of requires `text_index_of(haystack, needle)`",
+        ));
     }
     Ok(Some(format!(
         "text.index_of({}, {})",
@@ -122,9 +137,11 @@ pub(super) fn lower_source_text_parse_int_or_expr(
         return Ok(None);
     }
     if args.len() != 2 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: text_parse_int_or requires `text_parse_int_or(value, fallback)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::TextHelper,
+            "text_parse_int_or requires `text_parse_int_or(value, fallback)`",
+        ));
     }
     Ok(Some(format!(
         "text.parse_int_or({}, {})",
@@ -144,9 +161,11 @@ pub(super) fn lower_source_text_byte_at_or_expr(
         return Ok(None);
     }
     if args.len() != 3 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: text_byte_at_or requires `text_byte_at_or(value, index, fallback)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::TextHelper,
+            "text_byte_at_or requires `text_byte_at_or(value, index, fallback)`",
+        ));
     }
     Ok(Some(format!(
         "text.byte_at_or({}, {}, {})",
@@ -167,9 +186,11 @@ pub(super) fn lower_source_text_slice_expr(
         return Ok(None);
     }
     if args.len() != 3 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: text_slice requires `text_slice(value, start, length)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::TextHelper,
+            "text_slice requires `text_slice(value, start, length)`",
+        ));
     }
     Ok(Some(format!(
         "text.slice({}, {}, {})",
@@ -190,9 +211,11 @@ pub(super) fn lower_source_text_replace_first_expr(
         return Ok(None);
     }
     if args.len() != 3 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: text_replace_first requires `text_replace_first(value, needle, replacement)`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::TextHelper,
+            "text_replace_first requires `text_replace_first(value, needle, replacement)`",
+        ));
     }
     Ok(Some(format!(
         "text.replace_first({}, {}, {})",
@@ -215,9 +238,11 @@ pub(super) fn lower_source_text_boundary_expr(
         _ => return Ok(None),
     };
     if args.len() != 2 {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: {func} requires `{expected}`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::TextHelper,
+            format!("{func} requires `{expected}`"),
+        ));
     }
     Ok(Some(format!(
         "{lowered_func}({}, {})",

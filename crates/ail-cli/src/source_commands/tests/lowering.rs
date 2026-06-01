@@ -779,6 +779,16 @@ fn cleaned(value: Text) -> Text = text_trim(value)
 }
 
 #[test]
+fn rejects_text_helper_arity_with_stable_lowering_diagnostic() {
+    assert_lowering_diagnostic(
+        lower_source_expr("text_contains(value)", 42),
+        "AIL_SOURCE_LOWER_TEXT_HELPER",
+        "source.lower.text",
+        "text_contains requires `text_contains(haystack, needle)`",
+    );
+}
+
+#[test]
 fn lowers_source_text_contains_helper() {
     let program = parse_ail_source(
         r#"

@@ -33,6 +33,7 @@ pub(super) enum SourceLowerDiagnostic {
     ListLiteral,
     PipeExpression,
     RecordLiteral,
+    TextHelper,
     TypeShapeMismatch,
     UnaryOperator,
     UnsupportedConstruct,
@@ -50,6 +51,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::ListLiteral => "AIL_SOURCE_LOWER_LIST_LITERAL",
             SourceLowerDiagnostic::PipeExpression => "AIL_SOURCE_LOWER_PIPE_EXPRESSION",
             SourceLowerDiagnostic::RecordLiteral => "AIL_SOURCE_LOWER_RECORD_LITERAL",
+            SourceLowerDiagnostic::TextHelper => "AIL_SOURCE_LOWER_TEXT_HELPER",
             SourceLowerDiagnostic::TypeShapeMismatch => "AIL_SOURCE_LOWER_TYPE_SHAPE",
             SourceLowerDiagnostic::UnaryOperator => "AIL_SOURCE_LOWER_UNARY_OPERATOR",
             SourceLowerDiagnostic::UnsupportedConstruct => "AIL_SOURCE_LOWER_UNSUPPORTED_CONSTRUCT",
@@ -67,6 +69,7 @@ impl SourceLowerDiagnostic {
             | SourceLowerDiagnostic::ListLiteral
             | SourceLowerDiagnostic::RecordLiteral => "source.lower.collection",
             SourceLowerDiagnostic::PipeExpression => "source.lower.pipe",
+            SourceLowerDiagnostic::TextHelper => "source.lower.text",
             SourceLowerDiagnostic::TypeShapeMismatch => "source.lower.type",
             SourceLowerDiagnostic::UnaryOperator => "source.lower.operator",
             SourceLowerDiagnostic::UnsupportedConstruct => "source.lower.unsupported",

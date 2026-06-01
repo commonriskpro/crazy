@@ -345,6 +345,46 @@ fn dotted_parsed(value: Text, fallback: Int) -> Int = text.parse_int_or(value, f
     assert_eq!(v["data"]["error_count"], 0);
 }
 #[test]
+fn lsp_diagnose_reports_source_text_helper_arity_code() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn has(value: Text) -> Bool = text_contains(value)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_LOWER_TEXT_HELPER"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.lower.text"
+    );
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("text_contains requires `text_contains(haystack, needle)`")
+    );
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_text_contains_helper() {
     use assert_fs::prelude::*;
 
