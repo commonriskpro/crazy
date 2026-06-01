@@ -383,21 +383,40 @@ pub(super) fn collect_braced_body(
     opener_line: usize,
 ) -> Result<(Vec<(usize, usize, String)>, usize), CliError> {
     let mut body = Vec::new();
+    let mut pending_nested: Option<(usize, usize, String, isize)> = None;
     while idx < statements.len() {
         let (line_num, column, statement) = &statements[idx];
+        if let Some((start_line, start_column, combined, depth)) = pending_nested.as_mut() {
+            append_source_block_fragment(combined, statement);
+            *depth += source_brace_delta(statement);
+            if *depth <= 0 {
+                body.push((*start_line, *start_column, combined.clone()));
+                pending_nested = None;
+            }
+            idx += 1;
+            continue;
+        }
+
         if statement == "}" {
             return Ok((body, idx + 1));
         }
-        if statement.ends_with('{') {
-            return Err(source_parse_error_for_fragment(
-                *line_num,
-                SourceParseDiagnostic::InvalidDeclaration,
-                statement,
-                "nested source blocks are not supported yet",
-            ));
+        let brace_delta = source_brace_delta(statement);
+        if brace_delta > 0 {
+            pending_nested = Some((*line_num, *column, statement.clone(), brace_delta));
+            idx += 1;
+            continue;
         }
         body.push((*line_num, *column, statement.clone()));
         idx += 1;
+    }
+
+    if let Some((line_num, _column, statement, _depth)) = pending_nested {
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::MissingDelimiter,
+            &statement,
+            "nested source block requires closing `}`",
+        ));
     }
 
     Err(source_parse_error(
@@ -405,6 +424,42 @@ pub(super) fn collect_braced_body(
         SourceParseDiagnostic::MissingDelimiter,
         "function block requires closing `}`",
     ))
+}
+
+fn append_source_block_fragment(combined: &mut String, fragment: &str) {
+    if !combined.is_empty() {
+        combined.push(' ');
+    }
+    combined.push_str(fragment.trim());
+}
+
+fn source_brace_delta(statement: &str) -> isize {
+    let mut delta = 0isize;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+
+    for ch in statement.chars() {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+        match ch {
+            '"' => {
+                in_string = true;
+                prev_was_escape = false;
+            }
+            '{' => delta += 1,
+            '}' => delta -= 1,
+            _ => {
+                prev_was_escape = false;
+            }
+        }
+    }
+
+    delta
 }
 
 pub(super) fn source_block_to_expr(lines: &[(usize, usize, String)]) -> Result<String, CliError> {
