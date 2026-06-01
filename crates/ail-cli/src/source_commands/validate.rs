@@ -414,9 +414,7 @@ pub(super) fn validate_source_const_effect_free(
     let mut direct_effects = BTreeSet::new();
     collect_source_direct_effect_capabilities(body, capabilities, &mut direct_effects)?;
     if let Some(capability) = direct_effects.into_iter().next() {
-        return Err(CliError::ParseError(format!(
-            "source const `{target}` uses capability `{capability}`; const declarations must be effect-free"
-        )));
+        return Err(source_effect_const_error(target, &capability));
     }
     Ok(())
 }
@@ -443,9 +441,7 @@ pub(super) fn validate_source_item_effect_grants(
     let granted = grants.get(target);
     for capability in direct_effects {
         if !granted.is_some_and(|caps| caps.contains(capability.as_str())) {
-            return Err(CliError::ParseError(format!(
-                "source item `{target}` uses capability `{capability}` without a grant"
-            )));
+            return Err(source_effect_grant_missing_error(target, &capability));
         }
     }
     Ok(())
@@ -467,9 +463,7 @@ pub(super) fn collect_source_direct_effect_capabilities(
         let capability = args[0].as_str();
         let operation = args[1].as_str();
         if !is_source_ident(capability) || !is_source_ident(operation) {
-            return Err(CliError::ParseError(
-                "effect_call capability and operation must be identifiers".to_string(),
-            ));
+            return Err(source_effect_call_shape_error());
         }
         validate_declared_source_effect_capability(capability, capabilities, "effect_call")?;
         out.insert(capability.to_string());
@@ -492,9 +486,7 @@ pub(super) fn validate_declared_source_effect_capability(
     if capabilities.contains(capability) {
         return Ok(());
     }
-    Err(CliError::ParseError(format!(
-        "{context} capability `{capability}` is not declared"
-    )))
+    Err(source_effect_capability_unknown_error(context, capability))
 }
 
 pub(super) fn validate_source_program_calls(program: &SourceProgram) -> Result<(), CliError> {
@@ -663,6 +655,44 @@ fn source_call_arity_error(message: impl AsRef<str>) -> CliError {
         "{} [AIL_SOURCE_CALL_ARITY] category=source.call.arity",
         message.as_ref()
     ))
+}
+
+fn source_effect_const_error(target: &str, capability: &str) -> CliError {
+    source_effect_error(
+        "AIL_SOURCE_EFFECT_CONST",
+        "source.effect.const",
+        format!(
+            "source const `{target}` uses capability `{capability}`; const declarations must be effect-free"
+        ),
+    )
+}
+
+fn source_effect_grant_missing_error(target: &str, capability: &str) -> CliError {
+    source_effect_error(
+        "AIL_SOURCE_EFFECT_GRANT_MISSING",
+        "source.effect.grant",
+        format!("source item `{target}` uses capability `{capability}` without a grant"),
+    )
+}
+
+fn source_effect_capability_unknown_error(context: &str, capability: &str) -> CliError {
+    source_effect_error(
+        "AIL_SOURCE_EFFECT_CAPABILITY_UNKNOWN",
+        "source.effect.capability",
+        format!("{context} capability `{capability}` is not declared"),
+    )
+}
+
+fn source_effect_call_shape_error() -> CliError {
+    source_effect_error(
+        "AIL_SOURCE_EFFECT_CALL_SHAPE",
+        "source.effect.call_shape",
+        "effect_call capability and operation must be identifiers",
+    )
+}
+
+fn source_effect_error(code: &str, category: &str, message: impl AsRef<str>) -> CliError {
+    CliError::ParseError(format!("{} [{code}] category={category}", message.as_ref()))
 }
 
 fn source_grant_target_unknown_error(target: &str) -> CliError {

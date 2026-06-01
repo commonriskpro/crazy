@@ -151,7 +151,59 @@ fn lsp_diagnose_reports_ungranted_source_effect_call() {
             .expect("diagnostic message")
             .contains("line 2: source item `fn.main` uses capability `log.write` without a grant")
     );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_EFFECT_GRANT_MISSING"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.effect.grant"
+    );
     assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
+}
+
+#[test]
+fn lsp_diagnose_reports_source_const_effect_code() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "capability log.write\nconst noisy: Int = log.write(\"hi\")\nfn main() -> Int = noisy\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains(
+                "line 2: source const `fn.noisy` uses capability `log.write`; const declarations must be effect-free"
+            )
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_EFFECT_CONST"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.effect.const"
+    );
 }
 
 #[test]
@@ -289,6 +341,14 @@ fn lsp_diagnose_reports_ail_source_unknown_effect_call_capability() {
             .as_str()
             .expect("diagnostic message")
             .contains("line 2: effect_call capability `log.write` is not declared")
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_EFFECT_CAPABILITY_UNKNOWN"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.effect.capability"
     );
     assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
 }

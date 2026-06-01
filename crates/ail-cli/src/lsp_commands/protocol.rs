@@ -565,6 +565,10 @@ fn supported_diagnostic_code(code: &str) -> bool {
             | LSP_DIAGNOSTIC_SOURCE_PARSER
             | "AIL_SOURCE_BUILTIN_UNTYPED"
             | "AIL_SOURCE_CALL_ARITY"
+            | "AIL_SOURCE_EFFECT_CALL_SHAPE"
+            | "AIL_SOURCE_EFFECT_CAPABILITY_UNKNOWN"
+            | "AIL_SOURCE_EFFECT_CONST"
+            | "AIL_SOURCE_EFFECT_GRANT_MISSING"
             | "AIL_SOURCE_EXPR_MALFORMED_STRING"
             | "AIL_SOURCE_EXPR_UNSUPPORTED"
             | "AIL_SOURCE_EXPR_UNSUPPORTED_NUMERIC"
