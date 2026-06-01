@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::{concurrent, crypto, encoding, json, numeric, text};
+use crate::{concurrent, crypto, encoding, json, numeric, testing, text};
 
 // super = registry, super::super = exec (which re-exports StdlibValue/StdlibExecError)
 use super::super::{StdlibExecError, StdlibValue};
@@ -1093,6 +1093,32 @@ pub(super) fn numeric_saturating_neg(args: &[StdlibValue]) -> Result<StdlibValue
         return Err(StdlibExecError::Type { expected: "Int" });
     };
     Ok(StdlibValue::Int(numeric::saturating_neg(*value)))
+}
+
+// ── Testing adapters ──────────────────────────────────────────────────────
+
+pub(super) fn testing_assert_approx(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 4)?;
+    let (
+        StdlibValue::Float(left),
+        StdlibValue::Float(right),
+        StdlibValue::Float(epsilon),
+        StdlibValue::Text(context),
+    ) = (&args[0], &args[1], &args[2], &args[3])
+    else {
+        return Err(StdlibExecError::Type {
+            expected: "Float, Float, Float, Text",
+        });
+    };
+    match testing::assert_approx(*left, *right, *epsilon, context) {
+        testing::TestResult::Pass => Ok(StdlibValue::Result(Ok(Box::new(StdlibValue::Unit)))),
+        testing::TestResult::Fail { message } => Ok(StdlibValue::Result(Err(Box::new(
+            StdlibValue::Text(message),
+        )))),
+        testing::TestResult::Skip { reason } => Ok(StdlibValue::Result(Err(Box::new(
+            StdlibValue::Text(reason),
+        )))),
+    }
 }
 
 // ── Concurrent channel adapters ───────────────────────────────────────────

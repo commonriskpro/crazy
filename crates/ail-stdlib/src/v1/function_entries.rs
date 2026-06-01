@@ -11,6 +11,7 @@ mod core;
 mod iter;
 mod numeric;
 mod numeric_narrowing;
+mod testing;
 mod text;
 mod time;
 
@@ -44,6 +45,7 @@ pub fn v1_registry_with_functions() -> StdlibRegistry {
     bytes::add_entries(&mut reg);
     collections::add_entries(&mut reg);
     time::add_entries(&mut reg);
+    testing::add_entries(&mut reg);
     append_registered_function_entries(&mut reg);
 
     reg

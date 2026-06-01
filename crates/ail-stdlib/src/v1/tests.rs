@@ -118,6 +118,11 @@ fn v1_contains_numeric_narrow_to_extra_targets() {
     assert!(has_function_entry("std.numeric.narrow_to_u8"));
 }
 
+#[test]
+fn v1_contains_testing_assert_approx() {
+    assert!(has_function_entry("std.testing.assert_approx"));
+}
+
 // A7: capability (effectful) entries for io
 #[test]
 fn v1_contains_io_read_with_effect() {

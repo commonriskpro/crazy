@@ -119,6 +119,17 @@ fn v1_functions_numeric_has_extra_narrowing_helpers() {
 }
 
 #[test]
+fn v1_functions_testing_has_assert_approx() {
+    let reg = v1_registry_with_functions();
+    assert!(
+        reg.entries
+            .iter()
+            .any(|e| e.id.0 == "std.testing.assert_approx"),
+        "registry must contain std.testing.assert_approx"
+    );
+}
+
+#[test]
 fn v1_functions_option_has_map() {
     let reg = v1_registry_with_functions();
     assert!(
