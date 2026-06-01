@@ -1074,6 +1074,27 @@ test clamp = eq(clamp_positive(-5), 0)
 }
 
 #[test]
+fn lowers_source_else_if_expression_to_nested_compiler_if_call() {
+    let program = parse_ail_source(
+        r#"
+fn bucket(x: Int) -> Int {
+  if gt(x, 10) { 3 } else if gt(x, 0) { 2 } else { 1 }
+}
+test bucket_negative = eq(bucket(-5), 1)
+"#,
+    )
+    .expect("source");
+    let acl = source_program_to_acl(&program, "source_else_if".to_string());
+
+    assert!(acl.contains(
+        "op create_function id=fn.bucket return=Int body=if(gt(x, 10), 3, if(gt(x, 0), 2, 1))"
+    ));
+    assert!(
+        acl.contains("op create_test id=test.bucket_negative return=Bool body=eq(bucket(-5), 1)")
+    );
+}
+
+#[test]
 fn lowers_source_capabilities_and_grants_to_acl_ops() {
     let program = parse_ail_source(
         r#"

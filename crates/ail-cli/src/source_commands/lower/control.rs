@@ -34,30 +34,34 @@ pub(super) fn lower_if_expr(rest: &str, line_num: usize) -> Result<String, CliEr
         )
     })?;
     let after_else = after_else.trim_start();
-    if !after_else.starts_with('{') {
-        return Err(source_lower_error(
-            line_num,
-            SourceLowerDiagnostic::ControlExpression,
-            "else branch requires `{ expression }`",
-        ));
-    }
-    let else_close = matching_brace(after_else, 0).ok_or_else(|| {
-        source_lower_error(
-            line_num,
-            SourceLowerDiagnostic::ControlExpression,
-            "if expression has unclosed else block",
-        )
-    })?;
-    if !after_else[else_close + 1..].trim().is_empty() {
-        return Err(source_lower_error(
-            line_num,
-            SourceLowerDiagnostic::ControlExpression,
-            "unexpected tokens after if expression",
-        ));
-    }
-    let else_expr = after_else[1..else_close].trim();
+    let else_expr = if let Some(nested_if) = after_else.strip_prefix("if ") {
+        lower_if_expr(nested_if, line_num)?
+    } else {
+        if !after_else.starts_with('{') {
+            return Err(source_lower_error(
+                line_num,
+                SourceLowerDiagnostic::ControlExpression,
+                "else branch requires `{ expression }` or `if condition { expression } else { expression }`",
+            ));
+        }
+        let else_close = matching_brace(after_else, 0).ok_or_else(|| {
+            source_lower_error(
+                line_num,
+                SourceLowerDiagnostic::ControlExpression,
+                "if expression has unclosed else block",
+            )
+        })?;
+        if !after_else[else_close + 1..].trim().is_empty() {
+            return Err(source_lower_error(
+                line_num,
+                SourceLowerDiagnostic::ControlExpression,
+                "unexpected tokens after if expression",
+            ));
+        }
+        after_else[1..else_close].trim().to_string()
+    };
 
-    if then_expr.is_empty() || else_expr.is_empty() {
+    if then_expr.is_empty() || else_expr.trim().is_empty() {
         return Err(source_lower_error(
             line_num,
             SourceLowerDiagnostic::ControlExpression,
@@ -69,6 +73,6 @@ pub(super) fn lower_if_expr(rest: &str, line_num: usize) -> Result<String, CliEr
         "if({}, {}, {})",
         lower_source_expr(cond, line_num)?,
         lower_source_expr(then_expr, line_num)?,
-        lower_source_expr(else_expr, line_num)?
+        lower_source_expr(&else_expr, line_num)?
     ))
 }
