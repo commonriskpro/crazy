@@ -113,6 +113,12 @@ pub enum LockfileValidationIssueKind {
     EmptyPackageHash,
     /// A locked package records an empty verification report digest.
     EmptyVerificationReportHash,
+    /// A locked artifact hash entry has an empty role.
+    EmptyArtifactRole,
+    /// A locked artifact hash entry has a non-canonical BLAKE3 hex digest.
+    InvalidArtifactHash,
+    /// A locked artifact hash entry repeats an artifact role.
+    DuplicateArtifactRole,
     /// A locked WASM artifact is missing its ABI descriptor artifact evidence.
     MissingAbiDescriptorArtifact,
     /// A locked package records an empty accepted assumption ID.
@@ -141,6 +147,11 @@ impl LockfileValidationIssueKind {
             LockfileValidationIssueKind::EmptyVerificationReportHash => {
                 "LOCKFILE_EMPTY_VERIFICATION_REPORT_HASH"
             }
+            LockfileValidationIssueKind::EmptyArtifactRole => "LOCKFILE_EMPTY_ARTIFACT_ROLE",
+            LockfileValidationIssueKind::InvalidArtifactHash => "LOCKFILE_INVALID_ARTIFACT_HASH",
+            LockfileValidationIssueKind::DuplicateArtifactRole => {
+                "LOCKFILE_DUPLICATE_ARTIFACT_ROLE"
+            }
             LockfileValidationIssueKind::MissingAbiDescriptorArtifact => {
                 "LOCKFILE_MISSING_ABI_DESCRIPTOR_ARTIFACT"
             }
@@ -168,6 +179,9 @@ impl LockfileValidationIssueKind {
             }
             LockfileValidationIssueKind::EmptyPackageHash
             | LockfileValidationIssueKind::EmptyVerificationReportHash
+            | LockfileValidationIssueKind::EmptyArtifactRole
+            | LockfileValidationIssueKind::InvalidArtifactHash
+            | LockfileValidationIssueKind::DuplicateArtifactRole
             | LockfileValidationIssueKind::MissingAbiDescriptorArtifact
             | LockfileValidationIssueKind::EmptyAcceptedAssumption => {
                 LockfileValidationCategory::LockfileIntegrity
@@ -221,6 +235,20 @@ pub enum LockfileValidationIssue {
     EmptyPackageHash { name: String, version: String },
     /// A locked package records an empty verification report digest.
     EmptyVerificationReportHash { name: String, version: String },
+    /// A locked artifact hash entry has an empty role.
+    EmptyArtifactRole { name: String, version: String },
+    /// A locked artifact hash entry has a non-canonical BLAKE3 hex digest.
+    InvalidArtifactHash {
+        name: String,
+        version: String,
+        role: String,
+    },
+    /// A locked artifact hash entry repeats an artifact role.
+    DuplicateArtifactRole {
+        name: String,
+        version: String,
+        role: String,
+    },
     /// A locked WASM artifact is missing its ABI descriptor artifact evidence.
     MissingAbiDescriptorArtifact { name: String, version: String },
     /// A locked package records an empty accepted assumption ID.
@@ -267,6 +295,15 @@ impl LockfileValidationIssue {
             }
             LockfileValidationIssue::EmptyVerificationReportHash { .. } => {
                 LockfileValidationIssueKind::EmptyVerificationReportHash
+            }
+            LockfileValidationIssue::EmptyArtifactRole { .. } => {
+                LockfileValidationIssueKind::EmptyArtifactRole
+            }
+            LockfileValidationIssue::InvalidArtifactHash { .. } => {
+                LockfileValidationIssueKind::InvalidArtifactHash
+            }
+            LockfileValidationIssue::DuplicateArtifactRole { .. } => {
+                LockfileValidationIssueKind::DuplicateArtifactRole
             }
             LockfileValidationIssue::MissingAbiDescriptorArtifact { .. } => {
                 LockfileValidationIssueKind::MissingAbiDescriptorArtifact
@@ -343,6 +380,12 @@ pub enum LockfileIntegrityIssueKind {
     EmptyPackageHash,
     /// A locked package records an empty verification report digest.
     EmptyVerificationReportHash,
+    /// A locked artifact hash entry has an empty role.
+    EmptyArtifactRole,
+    /// A locked artifact hash entry has a non-canonical BLAKE3 hex digest.
+    InvalidArtifactHash,
+    /// A locked artifact hash entry repeats an artifact role.
+    DuplicateArtifactRole,
     /// A locked WASM artifact is missing its ABI descriptor artifact evidence.
     MissingAbiDescriptorArtifact,
     /// A locked package records an empty accepted assumption ID.
@@ -379,6 +422,9 @@ impl LockfileIntegrityIssueKind {
             LockfileIntegrityIssueKind::EmptyVerificationReportHash => {
                 "LOCKFILE_EMPTY_VERIFICATION_REPORT_HASH"
             }
+            LockfileIntegrityIssueKind::EmptyArtifactRole => "LOCKFILE_EMPTY_ARTIFACT_ROLE",
+            LockfileIntegrityIssueKind::InvalidArtifactHash => "LOCKFILE_INVALID_ARTIFACT_HASH",
+            LockfileIntegrityIssueKind::DuplicateArtifactRole => "LOCKFILE_DUPLICATE_ARTIFACT_ROLE",
             LockfileIntegrityIssueKind::MissingAbiDescriptorArtifact => {
                 "LOCKFILE_MISSING_ABI_DESCRIPTOR_ARTIFACT"
             }
@@ -406,6 +452,9 @@ impl LockfileIntegrityIssueKind {
             }
             LockfileIntegrityIssueKind::EmptyPackageHash
             | LockfileIntegrityIssueKind::EmptyVerificationReportHash
+            | LockfileIntegrityIssueKind::EmptyArtifactRole
+            | LockfileIntegrityIssueKind::InvalidArtifactHash
+            | LockfileIntegrityIssueKind::DuplicateArtifactRole
             | LockfileIntegrityIssueKind::MissingAbiDescriptorArtifact
             | LockfileIntegrityIssueKind::EmptyAcceptedAssumption
             | LockfileIntegrityIssueKind::MissingResolvedSource
@@ -998,6 +1047,33 @@ fn validate_accepted_assumptions(entry: &LockfileEntry, issues: &mut Vec<Lockfil
 }
 
 fn validate_artifact_evidence(entry: &LockfileEntry, issues: &mut Vec<LockfileValidationIssue>) {
+    let mut roles = BTreeSet::new();
+    let mut duplicate_roles = BTreeSet::new();
+
+    for artifact in &entry.artifact_hashes {
+        let role = artifact.role.trim();
+        if role.is_empty() {
+            issues.push(LockfileValidationIssue::EmptyArtifactRole {
+                name: entry.name.clone(),
+                version: entry.version.clone(),
+            });
+        } else if !roles.insert(role) && duplicate_roles.insert(role) {
+            issues.push(LockfileValidationIssue::DuplicateArtifactRole {
+                name: entry.name.clone(),
+                version: entry.version.clone(),
+                role: role.to_string(),
+            });
+        }
+
+        if !is_valid_blake3_hex(artifact.hash.trim()) {
+            issues.push(LockfileValidationIssue::InvalidArtifactHash {
+                name: entry.name.clone(),
+                version: entry.version.clone(),
+                role: role.to_string(),
+            });
+        }
+    }
+
     if has_artifact_role(&entry.artifact_hashes, "wasm-artifact")
         && !has_artifact_role(&entry.artifact_hashes, "wasm-abi-descriptor")
     {
@@ -1012,6 +1088,13 @@ fn has_artifact_role(artifact_hashes: &[ArtifactHashEntry], role: &str) -> bool 
     artifact_hashes
         .iter()
         .any(|entry| entry.role.trim() == role)
+}
+
+fn is_valid_blake3_hex(hash: &str) -> bool {
+    hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 #[derive(Default)]
@@ -1126,6 +1209,33 @@ fn integrity_issue_from_validation_issue(
                 version,
             )
         }
+        LockfileValidationIssue::EmptyArtifactRole { name, version } => {
+            LockfileIntegrityIssue::new(
+                LockfileIntegrityIssueKind::EmptyArtifactRole,
+                name,
+                version,
+            )
+        }
+        LockfileValidationIssue::InvalidArtifactHash {
+            name,
+            version,
+            role,
+        } => LockfileIntegrityIssue::new(
+            LockfileIntegrityIssueKind::InvalidArtifactHash,
+            name,
+            version,
+        )
+        .with_expected_actual("canonical_blake3_hex", role),
+        LockfileValidationIssue::DuplicateArtifactRole {
+            name,
+            version,
+            role,
+        } => LockfileIntegrityIssue::new(
+            LockfileIntegrityIssueKind::DuplicateArtifactRole,
+            name,
+            version,
+        )
+        .with_expected_actual("unique_artifact_role", role),
         LockfileValidationIssue::MissingAbiDescriptorArtifact { name, version } => {
             LockfileIntegrityIssue::new(
                 LockfileIntegrityIssueKind::MissingAbiDescriptorArtifact,
@@ -1213,10 +1323,21 @@ fn validation_issue_sort_key(
         | LockfileValidationIssue::MissingPackage { name, version }
         | LockfileValidationIssue::EmptyPackageHash { name, version }
         | LockfileValidationIssue::EmptyVerificationReportHash { name, version }
+        | LockfileValidationIssue::EmptyArtifactRole { name, version }
         | LockfileValidationIssue::MissingAbiDescriptorArtifact { name, version }
         | LockfileValidationIssue::EmptyAcceptedAssumption { name, version } => {
             (issue.code(), name, version, "", "")
         }
+        LockfileValidationIssue::InvalidArtifactHash {
+            name,
+            version,
+            role,
+        }
+        | LockfileValidationIssue::DuplicateArtifactRole {
+            name,
+            version,
+            role,
+        } => (issue.code(), name, version, role, ""),
         LockfileValidationIssue::PackageHashMismatch {
             name,
             version,
@@ -1662,6 +1783,44 @@ mod tests {
             issue.category(),
             LockfileValidationCategory::ReplayIntegrity
         );
+    }
+
+    // ── lockfile_validate_reproducibility_rejects_bad_artifact_evidence ─
+    // Production gate: hand-edited locks must not carry malformed artifact metadata.
+    #[test]
+    fn lockfile_validate_reproducibility_rejects_bad_artifact_evidence() {
+        let mut lf = Lockfile::new();
+        let mut entry = entry_with("artifact.locked", "1.0.0", "hash");
+        entry.artifact_hashes = vec![
+            ArtifactHashEntry {
+                role: "".to_string(),
+                hash: "not-a-blake3-hash".to_string(),
+            },
+            ArtifactHashEntry {
+                role: "source-archive".to_string(),
+                hash: "a".repeat(64),
+            },
+            ArtifactHashEntry {
+                role: "source-archive".to_string(),
+                hash: "b".repeat(64),
+            },
+        ];
+        lf.add(entry);
+
+        let issues = lf.validate_reproducibility(&[("artifact.locked", "1.0.0", "hash")]);
+
+        assert_eq!(
+            issues.iter().map(|issue| issue.code()).collect::<Vec<_>>(),
+            vec![
+                "LOCKFILE_DUPLICATE_ARTIFACT_ROLE",
+                "LOCKFILE_EMPTY_ARTIFACT_ROLE",
+                "LOCKFILE_INVALID_ARTIFACT_HASH",
+            ]
+        );
+        assert!(matches!(
+            &issues[0],
+            LockfileValidationIssue::DuplicateArtifactRole { role, .. } if role == "source-archive"
+        ));
     }
 
     // ── lockfile_validate_reproducibility_detects_empty_hashes ────────────

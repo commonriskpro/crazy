@@ -296,6 +296,49 @@ impl LockfileReproducibilityCliIssue {
                     "locked package {name}@{version} has an empty verification report hash"
                 ),
             },
+            LockfileValidationIssue::EmptyArtifactRole { name, version } => Self {
+                kind: "empty_artifact_role",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: None,
+                actual_hash: None,
+                reason: format!("locked package {name}@{version} has an empty artifact role"),
+            },
+            LockfileValidationIssue::InvalidArtifactHash {
+                name,
+                version,
+                role,
+            } => Self {
+                kind: "invalid_artifact_hash",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: None,
+                actual_hash: None,
+                reason: format!(
+                    "locked package {name}@{version} has a non-canonical artifact hash for role {role}"
+                ),
+            },
+            LockfileValidationIssue::DuplicateArtifactRole {
+                name,
+                version,
+                role,
+            } => Self {
+                kind: "duplicate_artifact_role",
+                status: "blocked",
+                package: Some(name.clone()),
+                version: Some(version.clone()),
+                previous_package: None,
+                previous_version: None,
+                expected_hash: None,
+                actual_hash: None,
+                reason: format!("locked package {name}@{version} repeats artifact role {role}"),
+            },
             LockfileValidationIssue::MissingAbiDescriptorArtifact { name, version } => Self {
                 kind: "missing_abi_descriptor_artifact",
                 status: "blocked",
