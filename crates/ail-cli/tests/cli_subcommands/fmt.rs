@@ -237,4 +237,25 @@ fn fmt_json_rejects_check_write_mode_mismatch() {
     assert_eq!(v["data"]["descriptor"]["input"], "stdin");
 }
 
+#[test]
+fn fmt_json_rejects_write_without_file() {
+    let output = ail()
+        .arg("fmt")
+        .arg("--write")
+        .arg("--json")
+        .write_stdin("fn add_pair(x:Int,y:Int)->Int=add(x,y)\n")
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["data"]["code"], "FMT_WRITE_REQUIRES_FILE");
+    assert_eq!(v["data"]["category"], "usage");
+    assert_eq!(v["data"]["descriptor"]["mode"], "write");
+    assert_eq!(v["data"]["descriptor"]["input"], "stdin");
+    assert_eq!(v["data"]["descriptor"]["extension"], "none");
+}
+
 // ── ail link integration tests ─────────────────────────────────────────────

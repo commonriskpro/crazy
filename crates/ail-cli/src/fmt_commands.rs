@@ -54,6 +54,7 @@ enum FmtDiagnosticKind {
     UnsupportedSyntax,
     NonIdempotent,
     WriteCheckModeMismatch,
+    WriteRequiresFile,
     NotCanonical,
 }
 
@@ -64,6 +65,7 @@ impl FmtDiagnosticKind {
             FmtDiagnosticKind::UnsupportedSyntax => "FMT_UNSUPPORTED_SYNTAX",
             FmtDiagnosticKind::NonIdempotent => "FMT_NON_IDEMPOTENT",
             FmtDiagnosticKind::WriteCheckModeMismatch => "FMT_WRITE_CHECK_MODE_MISMATCH",
+            FmtDiagnosticKind::WriteRequiresFile => "FMT_WRITE_REQUIRES_FILE",
             FmtDiagnosticKind::NotCanonical => "FMT_NOT_CANONICAL",
         }
     }
@@ -74,6 +76,7 @@ impl FmtDiagnosticKind {
             FmtDiagnosticKind::UnsupportedSyntax => "unsupported",
             FmtDiagnosticKind::NonIdempotent => "stability",
             FmtDiagnosticKind::WriteCheckModeMismatch => "usage",
+            FmtDiagnosticKind::WriteRequiresFile => "usage",
             FmtDiagnosticKind::NotCanonical => "check",
         }
     }
@@ -159,6 +162,7 @@ impl FmtDiagnostic {
             }
             FmtDiagnosticKind::NonIdempotent
             | FmtDiagnosticKind::WriteCheckModeMismatch
+            | FmtDiagnosticKind::WriteRequiresFile
             | FmtDiagnosticKind::NotCanonical => CliError::Domain(self.message),
         }
     }
@@ -212,6 +216,14 @@ fn mode_mismatch_diagnostic(file: Option<&Path>) -> FmtDiagnostic {
         FmtDiagnosticKind::WriteCheckModeMismatch,
         "ail fmt cannot combine --check and --write; run --check to validate or --write to rewrite",
         redacted_fmt_descriptor(file, FmtLanguage::Unknown, true, true, None),
+    )
+}
+
+fn write_requires_file_diagnostic() -> FmtDiagnostic {
+    FmtDiagnostic::new(
+        FmtDiagnosticKind::WriteRequiresFile,
+        "ail fmt --write requires --file <path>; stdin formatting is stdout-only",
+        redacted_fmt_descriptor(None, FmtLanguage::Unknown, false, true, None),
     )
 }
 
@@ -525,9 +537,9 @@ pub(crate) fn cmd_fmt(
     }
 
     if write && file.is_none() {
-        return Err(CliError::Domain(
-            "ail fmt --write requires --file <path>; stdin formatting is stdout-only".to_string(),
-        ));
+        let diagnostic = write_requires_file_diagnostic();
+        print_fmt_diagnostic(mode, &diagnostic);
+        return Err(diagnostic.into_cli_error());
     }
 
     let input = if let Some(path) = &file {
