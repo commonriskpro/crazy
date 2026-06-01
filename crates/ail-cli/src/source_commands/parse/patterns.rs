@@ -205,7 +205,7 @@ pub(super) fn validate_source_match_reachable(arms: &[String]) -> Result<(), Cli
     for pattern in arms.iter().step_by(2).map(String::as_str) {
         let normalized = source_match_pattern_key(pattern);
         if saw_wildcard {
-            return Err(CliError::ParseError(format!(
+            return Err(source_match_unreachable_error(format!(
                 "unreachable match arm `{pattern}` after wildcard `_`"
             )));
         }
@@ -214,7 +214,7 @@ pub(super) fn validate_source_match_reachable(arms: &[String]) -> Result<(), Cli
             continue;
         }
         if !seen.insert(normalized.clone()) {
-            return Err(CliError::ParseError(format!(
+            return Err(source_match_unreachable_error(format!(
                 "duplicate match arm pattern `{normalized}`"
             )));
         }
@@ -241,7 +241,7 @@ pub(super) fn validate_source_match_exhaustive(
         if has_some && has_none {
             return Ok(());
         }
-        return Err(CliError::ParseError(format!(
+        return Err(source_match_non_exhaustive_error(format!(
             "non-exhaustive match for {scrutinee_ty}: expected Some and None arms or `_`"
         )));
     }
@@ -256,7 +256,7 @@ pub(super) fn validate_source_match_exhaustive(
         if has_ok && has_err {
             return Ok(());
         }
-        return Err(CliError::ParseError(format!(
+        return Err(source_match_non_exhaustive_error(format!(
             "non-exhaustive match for {scrutinee_ty}: expected Ok and Err arms or `_`"
         )));
     }
@@ -267,12 +267,32 @@ pub(super) fn validate_source_match_exhaustive(
         if has_true && has_false {
             return Ok(());
         }
-        return Err(CliError::ParseError(
-            "non-exhaustive match for Bool: expected true and false arms or `_`".to_string(),
+        return Err(source_match_non_exhaustive_error(
+            "non-exhaustive match for Bool: expected true and false arms or `_`",
         ));
     }
 
     Ok(())
+}
+
+fn source_match_unreachable_error(message: impl AsRef<str>) -> CliError {
+    source_match_error(
+        "AIL_SOURCE_MATCH_UNREACHABLE",
+        "source.match.reachability",
+        message,
+    )
+}
+
+fn source_match_non_exhaustive_error(message: impl AsRef<str>) -> CliError {
+    source_match_error(
+        "AIL_SOURCE_MATCH_NON_EXHAUSTIVE",
+        "source.match.exhaustiveness",
+        message,
+    )
+}
+
+fn source_match_error(code: &str, category: &str, message: impl AsRef<str>) -> CliError {
+    CliError::ParseError(format!("{} [{code}] category={category}", message.as_ref()))
 }
 
 pub(super) fn source_match_pattern_key(pattern: &str) -> String {

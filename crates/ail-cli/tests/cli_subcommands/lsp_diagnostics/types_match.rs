@@ -412,6 +412,14 @@ fn lsp_diagnose_reports_non_exhaustive_source_match() {
             .expect("diagnostic message")
             .contains("non-exhaustive match for Option<Int>")
     );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_MATCH_NON_EXHAUSTIVE"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.match.exhaustiveness"
+    );
 }
 #[test]
 fn lsp_diagnose_reports_unreachable_source_match_arm() {
@@ -442,6 +450,14 @@ fn lsp_diagnose_reports_unreachable_source_match_arm() {
             .as_str()
             .expect("diagnostic message")
             .contains("unreachable match arm `Some(v)`")
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_MATCH_UNREACHABLE"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.match.reachability"
     );
 }
 #[test]
