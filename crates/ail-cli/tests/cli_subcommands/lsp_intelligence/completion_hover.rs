@@ -432,6 +432,21 @@ fn lsp_hover_reports_source_type_metadata() {
             .contains("Signed integer type"),
         "hover must explain AIL source builtin types; got: {hover}"
     );
+
+    let bytes_hover_output = ail()
+        .args(["lsp", "--hover-token", "Bytes", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let bytes_hover = parse_json_output(&bytes_hover_output);
+    assert!(
+        bytes_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("Byte buffer type"),
+        "hover must explain AIL source Bytes type; got: {bytes_hover}"
+    );
 }
 
 #[test]

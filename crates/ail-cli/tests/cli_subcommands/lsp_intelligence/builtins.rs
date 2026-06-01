@@ -482,6 +482,71 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include dotted Map helpers; got: {dotted_map_items:?}"
     );
 
+    let bytes_completion_output = ail()
+        .args(["lsp", "--complete", "bytes_", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let bytes_completion = parse_json_output(&bytes_completion_output);
+    let bytes_items = bytes_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        [
+            "bytes_length",
+            "bytes_at",
+            "bytes_slice",
+            "bytes_concat",
+            "bytes_empty",
+        ]
+        .iter()
+        .all(|label| bytes_items
+            .iter()
+            .any(|item| item["label"] == *label && item["detail"] == "AIL source Bytes helper")),
+        "completion must include AIL source bytes helpers; got: {bytes_items:?}"
+    );
+
+    let dotted_bytes_completion_output = ail()
+        .args(["lsp", "--complete", "bytes.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_bytes_completion = parse_json_output(&dotted_bytes_completion_output);
+    let dotted_bytes_items = dotted_bytes_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        [
+            "bytes.length",
+            "bytes.at",
+            "bytes.slice",
+            "bytes.concat",
+            "bytes.empty",
+        ]
+        .iter()
+        .all(|label| dotted_bytes_items
+            .iter()
+            .any(|item| item["label"] == *label && item["detail"] == "AIL source Bytes helper")),
+        "completion must include dotted Bytes helpers; got: {dotted_bytes_items:?}"
+    );
+
+    let bytes_hover_output = ail()
+        .args(["lsp", "--hover-token", "bytes_length", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let bytes_hover = parse_json_output(&bytes_hover_output);
+    assert!(
+        bytes_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("byte count"),
+        "hover must explain bytes_length; got: {bytes_hover}"
+    );
+
     let text_eq_completion_output = ail()
         .args(["lsp", "--complete", "text_eq", "--json"])
         .assert()

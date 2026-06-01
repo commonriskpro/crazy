@@ -44,6 +44,12 @@ pub(super) const AIL_SOURCE_SYNTAX_SYMBOLS: &[AclSymbol] = &[
         insert_text: "Text",
     },
     AclSymbol {
+        label: "Bytes",
+        detail: "AIL source builtin type",
+        documentation: "Byte buffer type used by std.bytes helpers and byte-oriented APIs.",
+        insert_text: "Bytes",
+    },
+    AclSymbol {
         label: "Unit",
         detail: "AIL source builtin type",
         documentation: "Unit type for functions that complete without a meaningful value.",
