@@ -21,7 +21,7 @@ use super::rename::{
     missing_document_rename_failure, prepare_rename_at_position, rename_candidate_at_position,
     rename_edits_at_position, rename_workspace_edit_at_position,
 };
-use super::source_helpers::{is_acl_token_char, is_ail_source_uri};
+use super::source_helpers::{is_acl_token_char, is_ail_source_uri, lsp_character_to_byte_index};
 use super::symbols::{
     completion_items, hover_for_token_with_workspace, workspace_symbol_diagnostic_response,
     workspace_symbol_items_with_root,
@@ -449,19 +449,12 @@ fn lsp_position_to_byte_index(text: &str, position: &Value) -> Option<usize> {
         let line_without_newline = line.strip_suffix('\n').unwrap_or(line);
         if line_idx == target_line {
             return Some(
-                line_start + char_offset_to_byte_index(line_without_newline, target_character),
+                line_start + lsp_character_to_byte_index(line_without_newline, target_character),
             );
         }
         line_start += line.len();
     }
     (target_line == text.lines().count()).then_some(text.len())
-}
-
-fn char_offset_to_byte_index(line: &str, character: usize) -> usize {
-    line.char_indices()
-        .nth(character)
-        .map(|(idx, _)| idx)
-        .unwrap_or(line.len())
 }
 
 fn workspace_root_uri_from_initialize(message: &Value) -> Option<String> {
@@ -486,11 +479,7 @@ fn completion_prefix_at_position(text: &str, line: usize, character: usize) -> S
     let Some(line_text) = text.lines().nth(line) else {
         return String::new();
     };
-    let char_indices = line_text.char_indices().collect::<Vec<_>>();
-    let byte_pos = char_indices
-        .get(character)
-        .map(|(idx, _)| *idx)
-        .unwrap_or(line_text.len());
+    let byte_pos = lsp_character_to_byte_index(line_text, character);
     let start = line_text[..byte_pos]
         .char_indices()
         .rev()

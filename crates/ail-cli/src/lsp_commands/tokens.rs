@@ -1,4 +1,6 @@
-use super::source_helpers::is_acl_token_char;
+use super::source_helpers::{
+    byte_index_to_lsp_character, is_acl_token_char, lsp_character_to_byte_index,
+};
 
 pub(super) const SEMANTIC_TOKEN_TYPES: &[&str] = &[
     "namespace",
@@ -31,6 +33,8 @@ pub(super) struct TokenRange {
     pub(super) token: String,
     pub(super) start: usize,
     pub(super) end: usize,
+    pub(super) start_character: usize,
+    pub(super) end_character: usize,
 }
 
 pub(super) fn token_range_at_position(
@@ -39,11 +43,7 @@ pub(super) fn token_range_at_position(
     character: usize,
 ) -> Option<TokenRange> {
     let line_text = text.lines().nth(line)?;
-    let char_indices: Vec<(usize, char)> = line_text.char_indices().collect();
-    let byte_pos = char_indices
-        .get(character)
-        .map(|(idx, _)| *idx)
-        .unwrap_or(line_text.len());
+    let byte_pos = lsp_character_to_byte_index(line_text, character);
     if let Some(operator) = source_operator_token_at_position(line_text, byte_pos) {
         let start = line_text
             .match_indices(operator)
@@ -52,10 +52,13 @@ pub(super) fn token_range_at_position(
                 (byte_pos >= start && byte_pos <= end).then_some(start)
             })
             .unwrap_or(byte_pos);
+        let end = start + operator.len();
         return Some(TokenRange {
             token: operator.to_string(),
             start,
-            end: start + operator.len(),
+            end,
+            start_character: byte_index_to_lsp_character(line_text, start),
+            end_character: byte_index_to_lsp_character(line_text, end),
         });
     }
     let start = line_text[..byte_pos]
@@ -73,6 +76,8 @@ pub(super) fn token_range_at_position(
         token: line_text[start..end].to_string(),
         start,
         end,
+        start_character: byte_index_to_lsp_character(line_text, start),
+        end_character: byte_index_to_lsp_character(line_text, end),
     })
 }
 

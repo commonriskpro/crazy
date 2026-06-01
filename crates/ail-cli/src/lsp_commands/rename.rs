@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Value, json};
 
 use super::references::references_for_token_with_workspace;
-use super::source_helpers::{file_path_from_uri, is_acl_token_char, is_ail_source_uri};
+use super::source_helpers::{
+    file_path_from_uri, is_acl_token_char, is_ail_source_uri, lsp_character_to_byte_index,
+};
 use super::symbols::workspace_symbol_items;
 use super::tokens::{TokenRange, token_range_at_position};
 
@@ -429,8 +431,9 @@ fn text_for_range(text: &str, range: &Value) -> Option<String> {
         return None;
     }
     let line = text.lines().nth(start_line)?;
-    line.get(start_character..end_character)
-        .map(ToString::to_string)
+    let start = lsp_character_to_byte_index(line, start_character);
+    let end = lsp_character_to_byte_index(line, end_character);
+    line.get(start..end).map(ToString::to_string)
 }
 
 fn replacement_text_for_reference(
@@ -479,8 +482,8 @@ fn is_rename_identifier(token: &str) -> bool {
 
 fn token_range_json(line: usize, token_range: &TokenRange) -> Value {
     json!({
-        "start": { "line": line, "character": token_range.start },
-        "end": { "line": line, "character": token_range.end }
+        "start": { "line": line, "character": token_range.start_character },
+        "end": { "line": line, "character": token_range.end_character }
     })
 }
 

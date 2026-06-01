@@ -64,7 +64,7 @@ pub(super) fn references_diagnostic_at_position(
             "reference target is not a supported .ail identifier",
             json!({
                 "target": token_descriptor(token),
-                "range": token_range_json(line, token_range.start, token_range.end),
+                "range": token_range_json(line, token_range.start_character, token_range.end_character),
             }),
         );
     }

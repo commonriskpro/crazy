@@ -216,6 +216,47 @@ fn lsp_publish_diagnostics_handles_unsaved_source_documents() {
 }
 
 #[test]
+fn lsp_did_change_uses_utf16_range_offsets() {
+    let uri = "file:///workspace/utf16-incremental.ail";
+    let open = did_open_message(uri, "fn main() -> Int {\n  \"🔥\" ++ x\n  return 0\n}\n");
+    let change = did_change_message(
+        uri,
+        serde_json::json!([{
+            "range": {
+                "start": { "line": 1, "character": 10 },
+                "end": { "line": 1, "character": 11 }
+            },
+            "text": "\"x\""
+        }]),
+    );
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(lsp_input(&[open, change]))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let notification = messages
+        .iter()
+        .filter(|message| message["method"] == "textDocument/publishDiagnostics")
+        .last()
+        .expect("didChange must publish diagnostics for UTF-16 ranged text");
+    let diagnostics = notification["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics must be an array");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0]["code"], "AIL_SOURCE_LSP_IGNORED_EXPRESSION");
+    assert_eq!(diagnostics[0]["range"]["start"]["line"], 1);
+    assert_eq!(
+        diagnostics[0]["data"]["ailRepair"]["code"],
+        "remove.ignored_expression_statement"
+    );
+}
+
+#[test]
 fn lsp_did_change_applies_incremental_source_document_edits() {
     let uri = "file:///workspace/incremental.ail";
     let open = did_open_message(uri, "fn main() -> Int {\n  return 0\n}\n");

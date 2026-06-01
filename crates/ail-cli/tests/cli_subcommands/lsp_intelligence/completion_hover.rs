@@ -724,6 +724,70 @@ fn lsp_stdio_completion_uses_cursor_prefix_to_filter_items() {
 }
 
 #[test]
+fn lsp_stdio_completion_uses_utf16_cursor_positions() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    let text = "// 🔥 reX\n";
+    source
+        .write_str(text)
+        .expect("source fixture must be written so file URI can resolve");
+    let uri = format!("file://{}", source.path().display());
+    let open = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "ail",
+                "version": 1,
+                "text": text,
+            }
+        }
+    })
+    .to_string();
+    let completion = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": format!("file://{}", source.path().display()) },
+            "position": { "line": 0, "character": 8 }
+        }
+    })
+    .to_string();
+    let input = format!(
+        "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+        open.len(),
+        open,
+        completion.len(),
+        completion
+    );
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let response = messages
+        .iter()
+        .find(|message| message["id"] == 3)
+        .expect("completion response must be emitted");
+    let items = response["result"]["items"]
+        .as_array()
+        .expect("completion result items must be an array");
+
+    assert!(
+        items.iter().any(|item| item["label"] == "Record"),
+        "UTF-16 cursor after `re` must keep `Record`; got: {items:?}"
+    );
+}
+
+#[test]
 fn lsp_stdio_hover_reports_source_operator_metadata() {
     use assert_fs::prelude::*;
 

@@ -61,3 +61,34 @@ pub(super) fn resolve_lsp_source_import(source_path: &std::path::Path, import: &
 pub(super) fn is_acl_token_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.')
 }
+
+pub(super) fn lsp_character_to_byte_index(line: &str, character: usize) -> usize {
+    let mut utf16_units = 0usize;
+    for (idx, ch) in line.char_indices() {
+        if utf16_units >= character {
+            return idx;
+        }
+        let next_units = utf16_units + ch.len_utf16();
+        if next_units > character {
+            return idx;
+        }
+        utf16_units = next_units;
+    }
+    line.len()
+}
+
+pub(super) fn byte_index_to_lsp_character(line: &str, byte_index: usize) -> usize {
+    let boundary = previous_char_boundary(line, byte_index.min(line.len()));
+    line[..boundary].chars().map(|ch| ch.len_utf16()).sum()
+}
+
+fn previous_char_boundary(text: &str, byte_index: usize) -> usize {
+    if text.is_char_boundary(byte_index) {
+        return byte_index;
+    }
+    text.char_indices()
+        .map(|(idx, _)| idx)
+        .take_while(|idx| *idx < byte_index)
+        .last()
+        .unwrap_or(0)
+}
