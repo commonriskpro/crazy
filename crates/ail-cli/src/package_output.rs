@@ -58,6 +58,9 @@ impl PackageInstallFailure {
         if rendered.contains("package install blocked by local advisory policy") {
             return Self::advisory_blocked();
         }
+        if rendered.contains("package manifest validation failed") {
+            return Self::invalid_manifest();
+        }
         if rendered.contains("invalid package version requirement") {
             return Self::invalid_requirement();
         }
@@ -108,6 +111,14 @@ impl PackageInstallFailure {
             code: "install.resolver.invalid_requirement",
             category: "resolver",
             message: "package resolver rejected the version requirement",
+        }
+    }
+
+    fn invalid_manifest() -> Self {
+        Self {
+            code: "install.manifest.invalid",
+            category: "manifest",
+            message: "package manifest failed structural validation",
         }
     }
 

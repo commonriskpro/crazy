@@ -502,6 +502,80 @@ fn package_legacy_unsigned_install_is_explicit() {
 }
 
 #[test]
+fn package_install_rejects_invalid_legacy_manifest_json() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let mut manifest = test_package_manifest("abi.invalid", "1.0.0", TrustLevel::Assumed);
+    manifest.artifact_hashes.push(ArtifactHashEntry {
+        role: "wasm-artifact".to_string(),
+        hash: "a".repeat(64),
+    });
+    write_legacy_package_registry(dir.path(), &[manifest]);
+
+    let output = ail()
+        .args(["package", "install", "abi.invalid@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("code=install.manifest.invalid"))
+        .stderr(predicate::str::contains("category=manifest"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["data"]["code"], "install.manifest.invalid");
+    assert_eq!(v["data"]["category"], "manifest");
+}
+
+#[test]
+fn package_verify_rejects_invalid_registry_manifest_json() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let mut manifest = test_package_manifest("abi.invalid", "1.0.0", TrustLevel::Assumed);
+    manifest.artifact_hashes.push(ArtifactHashEntry {
+        role: "wasm-artifact".to_string(),
+        hash: "a".repeat(64),
+    });
+    write_legacy_package_registry(dir.path(), &[manifest.clone()]);
+    let mut lockfile = Lockfile::new();
+    lockfile.add(LockfileEntry {
+        name: manifest.name.clone(),
+        version: manifest.version.clone(),
+        requested_version: None,
+        package_hash: manifest.blake3_hex().expect("manifest hash must compute"),
+        trust_level: manifest.trust_level,
+        verification_report_hash: None,
+        artifact_hashes: vec![],
+        accepted_assumptions: vec![],
+    });
+    write_package_lockfile(dir.path(), &lockfile);
+
+    let output = ail()
+        .args(["package", "verify", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("signature or package metadata"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["data"]["verified"], false);
+    assert_eq!(v["data"]["signature_integrity"], "failed");
+    assert!(
+        v["data"]["signature_failures"][0]
+            .as_str()
+            .expect("signature failure must be string")
+            .contains("package manifest validation failed"),
+        "verify failure must explain invalid package metadata; got: {v}"
+    );
+}
+
+#[test]
 fn package_add_legacy_unsigned_does_not_claim_accepted_verification_report() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();

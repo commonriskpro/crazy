@@ -470,12 +470,14 @@ pub(crate) fn trusted_package_lookup(
     version: &str,
 ) -> Result<LocalPackageLookup, CliError> {
     let manifest = resolve_package_manifest_for_install(registry, name, version)?;
+    validate_resolved_package_manifest(manifest)?;
 
     if let Some(signed) = registry.lookup_signed_by_name_version(&manifest.name, &manifest.version)
     {
         signed
             .verify()
             .map_err(|e| CliError::Domain(format!("package signature verification failed: {e}")))?;
+        validate_resolved_package_manifest(&signed.manifest)?;
         return Ok(LocalPackageLookup {
             manifest: signed.manifest.clone(),
             signature_status: "signed",
@@ -497,6 +499,12 @@ pub(crate) fn trusted_package_lookup(
             manifest.name, manifest.version
         )),
     })
+}
+
+fn validate_resolved_package_manifest(manifest: &PackageManifest) -> Result<(), CliError> {
+    manifest
+        .validate()
+        .map_err(|error| CliError::Domain(format!("package manifest validation failed: {error}")))
 }
 
 fn resolve_package_manifest_for_install<'a>(

@@ -330,6 +330,17 @@ pub(crate) async fn cmd_package(
                     verified_packages_missing_evidence.join(", ")
                 ));
             }
+            if !signature_failures.is_empty() {
+                human_msg.push_str(&format!(
+                    "\nsignature_failures: {}\n{}",
+                    signature_failures.len(),
+                    signature_failures
+                        .iter()
+                        .map(|failure| format!("- {failure}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
             if !lockfile_reproducibility_issues.is_empty() {
                 human_msg.push_str(&format!(
                     "\nlockfile_reproducibility_issues: {}\n{}",
@@ -372,6 +383,23 @@ pub(crate) async fn cmd_package(
                     .map(lockfile_entry_to_json)
                     .collect::<Vec<_>>(),
             });
+            if !signature_ok {
+                let message = format!(
+                    "package verification failed: {} signature or package metadata issue(s)",
+                    signature_failures.len()
+                );
+                if mode == OutputMode::Json {
+                    let mut error_data = response_data;
+                    if let Some(obj) = error_data.as_object_mut() {
+                        obj.insert("error".to_string(), json!("package_verification_failed"));
+                        obj.insert("message".to_string(), json!(message.clone()));
+                    }
+                    print_error_response(error_data);
+                } else {
+                    print_response(mode, &human_msg, response_data);
+                }
+                return Err(CliError::Domain(message));
+            }
             if !report_hash_ok {
                 let message = format!(
                     "package verification failed: {} verification report hash mismatch(es)",
