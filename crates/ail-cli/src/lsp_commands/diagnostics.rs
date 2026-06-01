@@ -84,7 +84,7 @@ fn diagnostics_for_ail_source_inline(uri: &str, text: &str) -> Vec<Value> {
         .chain(
             source_unused_binding_diagnostics(text)
                 .into_iter()
-                .map(|unused| unused_binding_diagnostic(text, unused)),
+                .map(|unused| unused_binding_diagnostic(uri, text, unused)),
         )
         .collect()
 }
@@ -107,7 +107,7 @@ fn diagnostics_for_ail_source_document_path(path: &std::path::Path, text: &str) 
             .chain(
                 source_unused_binding_diagnostics(text)
                     .into_iter()
-                    .map(|unused| unused_binding_diagnostic(text, unused)),
+                    .map(|unused| unused_binding_diagnostic(&uri, text, unused)),
             )
             .collect(),
         Err(err) => {
@@ -222,7 +222,7 @@ fn ignored_expression_statement_diagnostic(
     diagnostic
 }
 
-fn unused_binding_diagnostic(text: &str, unused: SourceUnusedBinding) -> Value {
+fn unused_binding_diagnostic(uri: &str, text: &str, unused: SourceUnusedBinding) -> Value {
     let line = unused.line_num.saturating_sub(1) as u64;
     let (start_character, end_character) = line_character_range(text, line).unwrap_or((0, 1));
     let message = format!(
@@ -243,15 +243,47 @@ fn unused_binding_diagnostic(text: &str, unused: SourceUnusedBinding) -> Value {
         "start": { "line": line, "character": start_character },
         "end": { "line": line, "character": end_character },
     });
+    let repair = unused_binding_prefix_workspace_edit(uri, text, &unused, line);
     diagnostic["data"] = json!({
         "ailDiagnostic": {
             "code": LSP_DIAGNOSTIC_SOURCE_UNUSED_BINDING,
             "category": "source.lsp.unused_binding",
             "family": "AIL_SOURCE_LSP",
             "span": span,
+        },
+        "ailRepair": {
+            "code": "prefix.unused_binding_with_underscore",
+            "edit": repair,
         }
     });
     diagnostic
+}
+
+fn unused_binding_prefix_workspace_edit(
+    uri: &str,
+    text: &str,
+    unused: &SourceUnusedBinding,
+    line: u64,
+) -> Value {
+    let character = unused_binding_name_character(text, line, &unused.name).unwrap_or(0);
+    let mut changes = serde_json::Map::new();
+    changes.insert(
+        uri.to_string(),
+        json!([{
+                "range": {
+                    "start": { "line": line, "character": character },
+                    "end": { "line": line, "character": character }
+                },
+                "newText": "_"
+        }]),
+    );
+    json!({ "changes": changes })
+}
+
+fn unused_binding_name_character(text: &str, line: u64, name: &str) -> Option<u64> {
+    let line_text = text.lines().nth(line as usize)?;
+    let byte_idx = line_text.find(name)?;
+    Some(line_text[..byte_idx].chars().count() as u64)
 }
 
 fn delete_line_workspace_edit(uri: &str, line: u64) -> Value {

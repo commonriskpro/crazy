@@ -11,7 +11,8 @@ use super::definition::{
 };
 use super::diagnostics::{
     LSP_DIAGNOSTIC_ACL_PARSER, LSP_DIAGNOSTIC_ACL_SCHEMA, LSP_DIAGNOSTIC_SOURCE_IGNORED_EXPRESSION,
-    LSP_DIAGNOSTIC_SOURCE_IMPORT, LSP_DIAGNOSTIC_SOURCE_PARSER, diagnostics_for_document,
+    LSP_DIAGNOSTIC_SOURCE_IMPORT, LSP_DIAGNOSTIC_SOURCE_PARSER,
+    LSP_DIAGNOSTIC_SOURCE_UNUSED_BINDING, diagnostics_for_document,
 };
 use super::references::{
     missing_document_references_failure, references_diagnostic_at_position,
@@ -603,6 +604,7 @@ fn supported_diagnostic_code(code: &str) -> bool {
             | LSP_DIAGNOSTIC_SOURCE_IMPORT
             | LSP_DIAGNOSTIC_SOURCE_IGNORED_EXPRESSION
             | LSP_DIAGNOSTIC_SOURCE_PARSER
+            | LSP_DIAGNOSTIC_SOURCE_UNUSED_BINDING
             | "AIL_SOURCE_BUILTIN_UNTYPED"
             | "AIL_SOURCE_CALL_ARITY"
             | "AIL_SOURCE_EFFECT_CALL_SHAPE"

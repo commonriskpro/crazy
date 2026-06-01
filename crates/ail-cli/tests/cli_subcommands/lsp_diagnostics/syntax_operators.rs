@@ -284,6 +284,10 @@ fn lsp_diagnose_warns_for_unused_source_bindings() {
         v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
         "source.lsp.unused_binding"
     );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailRepair"]["code"],
+        "prefix.unused_binding_with_underscore"
+    );
     assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
     assert!(
         v["data"]["diagnostics"][0]["message"]
