@@ -428,6 +428,23 @@ pub(crate) async fn cmd_package(
         }
         PackageCmd::Publish => {
             let manifest = load_or_create_package_manifest(store).await?;
+            if let Err(error) = manifest.validate() {
+                let message = format!("package publish preflight failed: {error}");
+                let response_data = json!({
+                    "published": false,
+                    "preflight": "failed",
+                    "name": &manifest.name,
+                    "version": &manifest.version,
+                    "error": "package_publish_preflight_failed",
+                    "message": message.clone(),
+                });
+                if mode == OutputMode::Json {
+                    print_error_response(response_data);
+                } else {
+                    print_response(mode, &message, response_data);
+                }
+                return Err(CliError::Domain(message));
+            }
             let hash = manifest
                 .blake3_hex()
                 .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))?;

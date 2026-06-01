@@ -5,7 +5,9 @@
 
 mod common;
 
-use ail_package::{AdvisorySeverity, Lockfile, LockfileEntry, SecurityAdvisory, TrustLevel};
+use ail_package::{
+    AdvisorySeverity, ArtifactHashEntry, Lockfile, LockfileEntry, SecurityAdvisory, TrustLevel,
+};
 use common::package_helpers::{
     TestPackageRegistryFile, lockfile_for_manifest, package_lockfile_path,
     read_package_registry_file, signed_test_package, test_package_manifest,
@@ -766,6 +768,47 @@ fn package_publish_rejects_noncanonical_lockfile_preflight_json() {
     assert!(
         registry.signed_packages.is_empty(),
         "publish preflight must reject before writing signed packages"
+    );
+}
+
+#[test]
+fn package_publish_rejects_wasm_artifact_without_abi_descriptor() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let mut manifest = test_package_manifest("abi.missing", "1.0.0", TrustLevel::Verified);
+    manifest.artifact_hashes.push(ArtifactHashEntry {
+        role: "wasm-artifact".to_string(),
+        hash: "a".repeat(64),
+    });
+
+    let package_dir = dir.path().join(".ail").join("packages");
+    fs::create_dir_all(&package_dir).expect("package dir must be created");
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&manifest, &mut bytes).expect("package manifest must encode");
+    fs::write(package_dir.join("package.cbor"), bytes).expect("package manifest must be written");
+
+    let output = ail()
+        .args(["package", "publish", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("package publish preflight failed"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["data"]["published"], false);
+    assert_eq!(v["data"]["preflight"], "failed");
+    assert_eq!(v["data"]["error"], "package_publish_preflight_failed");
+    assert!(
+        v["data"]["message"]
+            .as_str()
+            .expect("message must be string")
+            .contains("wasm-abi-descriptor"),
+        "publish failure must explain the missing ABI descriptor; got: {v}"
     );
 }
 

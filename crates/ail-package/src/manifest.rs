@@ -274,6 +274,12 @@ pub enum PackageValidationError {
     ///
     /// Every import must identify its source package.
     ImportSourceEmpty,
+    /// A package declares a persisted WASM artifact without the matching ABI
+    /// descriptor artifact.
+    ///
+    /// WASM packages must carry the ABI descriptor that runtimes and package
+    /// compatibility gates use to validate invocation contracts.
+    WasmArtifactMissingAbiDescriptor,
 }
 
 impl std::fmt::Display for PackageValidationError {
@@ -295,6 +301,10 @@ impl std::fmt::Display for PackageValidationError {
             PackageValidationError::ImportSourceEmpty => {
                 write!(f, "an import declaration has an empty source_package")
             }
+            PackageValidationError::WasmArtifactMissingAbiDescriptor => write!(
+                f,
+                "a wasm artifact declaration is missing its wasm-abi-descriptor artifact"
+            ),
         }
     }
 }
@@ -325,6 +335,7 @@ pub enum PackageManifestIssueKind {
     ImportSourceEmpty,
     MissingLicense,
     MissingEntryMetadata,
+    MissingAbiDescriptorArtifact,
     DuplicateDependency,
     DuplicateCapability,
     DuplicateExport,
@@ -536,6 +547,11 @@ impl PackageManifest {
                 return Err(PackageValidationError::ImportSourceEmpty);
             }
         }
+        if has_artifact_role(&self.artifact_hashes, "wasm-artifact")
+            && !has_artifact_role(&self.artifact_hashes, "wasm-abi-descriptor")
+        {
+            return Err(PackageValidationError::WasmArtifactMissingAbiDescriptor);
+        }
         Ok(())
     }
 
@@ -607,6 +623,17 @@ impl PackageManifest {
             "exported capability entries must be unique",
         );
         push_duplicate_import_issues(&mut issues, &self.imports);
+        if has_artifact_role(&self.artifact_hashes, "wasm-artifact")
+            && !has_artifact_role(&self.artifact_hashes, "wasm-abi-descriptor")
+        {
+            issues.push(PackageManifestIssue::new(
+                PackageManifestIssueKind::MissingAbiDescriptorArtifact,
+                "manifest.artifact_hashes",
+                None,
+                None,
+                "wasm packages must declare the ABI descriptor artifact",
+            ));
+        }
 
         for (index, export) in self.exports.iter().enumerate() {
             if export.name.trim().is_empty() {
@@ -679,6 +706,12 @@ fn is_valid_package_name(name: &str) -> bool {
     name.bytes().all(|byte| {
         byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
     })
+}
+
+fn has_artifact_role(artifact_hashes: &[ArtifactHashEntry], role: &str) -> bool {
+    artifact_hashes
+        .iter()
+        .any(|entry| entry.role.trim() == role)
 }
 
 fn push_duplicate_string_issues(
@@ -837,6 +870,22 @@ mod tests {
         assert_eq!(
             m.validate(),
             Err(PackageValidationError::UnsafeWithoutSurface)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_wasm_artifact_without_abi_descriptor() {
+        let mut def = minimal_def(TrustLevel::Verified);
+        def.artifact_hashes.push(ArtifactHashEntry {
+            role: "wasm-artifact".to_string(),
+            hash: "a".repeat(64),
+        });
+
+        let manifest = PackageManifest::from_def(def);
+
+        assert_eq!(
+            manifest.validate(),
+            Err(PackageValidationError::WasmArtifactMissingAbiDescriptor)
         );
     }
 
@@ -1302,6 +1351,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn production_validation_reports_wasm_artifact_without_abi_descriptor() {
+        use crate::export::{ExportDeclaration, ExportStability, ExportVisibility};
+
+        let mut def = minimal_def(TrustLevel::Verified);
+        def.license = Some("Apache-2.0".to_string());
+        def.exports.push(ExportDeclaration {
+            name: "main".to_string(),
+            signature: "() -> Int".to_string(),
+            effects: vec![],
+            contracts: vec![],
+            visibility: ExportVisibility::Public,
+            stability: ExportStability::Stable,
+            trust_state: None,
+        });
+        def.artifact_hashes.push(ArtifactHashEntry {
+            role: "wasm-artifact".to_string(),
+            hash: "a".repeat(64),
+        });
+
+        let manifest = PackageManifest::from_def(def);
+        let issues = manifest.production_validation_issues();
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(
+            issues[0].kind,
+            PackageManifestIssueKind::MissingAbiDescriptorArtifact
+        );
+        assert_eq!(issues[0].descriptor.path, "manifest.artifact_hashes");
+    }
+
     // ── production diagnostics accepts publish-ready manifest ─────────────
     // TRIANGULATE: publish diagnostics accept valid package metadata.
     #[test]
@@ -1318,6 +1398,14 @@ mod tests {
             visibility: ExportVisibility::Public,
             stability: ExportStability::Stable,
             trust_state: None,
+        });
+        def.artifact_hashes.push(ArtifactHashEntry {
+            role: "wasm-artifact".to_string(),
+            hash: "a".repeat(64),
+        });
+        def.artifact_hashes.push(ArtifactHashEntry {
+            role: "wasm-abi-descriptor".to_string(),
+            hash: "b".repeat(64),
         });
 
         let manifest = PackageManifest::from_def(def);
