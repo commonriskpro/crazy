@@ -44,7 +44,10 @@ pub(super) fn lower_match_expr(rest: &str, line_num: usize) -> Result<String, Cl
         let (pattern, body) = split_source_match_arm(arm, line_num)?;
         let pattern = normalize_source_match_pattern(pattern, line_num)?;
         lowered.push(pattern);
-        lowered.push(lower_source_expr(body, line_num)?);
+        lowered.push(lower_source_expr(
+            source_match_arm_body_expr(body),
+            line_num,
+        )?);
     }
     Ok(format!("match({})", lowered.join(", ")))
 }
@@ -74,6 +77,13 @@ pub(super) fn split_source_match_arm<'a>(
         ));
     }
     Ok((pattern, body))
+}
+
+fn source_match_arm_body_expr(body: &str) -> &str {
+    body.trim()
+        .strip_prefix("return ")
+        .map(str::trim)
+        .unwrap_or_else(|| body.trim())
 }
 
 pub(super) fn find_top_level_source_arrow(input: &str) -> Option<usize> {
