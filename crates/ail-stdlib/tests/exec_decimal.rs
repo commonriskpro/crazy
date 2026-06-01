@@ -42,6 +42,47 @@ fn decimal_rescale_returns_decimal_result() {
 }
 
 #[test]
+fn decimal_predicates_return_bool() {
+    assert_eq!(
+        call_pure_stdlib("std.decimal.is_negative", &[decimal(-1, 0)]),
+        Ok(StdlibValue::Bool(true))
+    );
+    assert_eq!(
+        call_pure_stdlib("std.decimal.is_negative", &[decimal(0, 0)]),
+        Ok(StdlibValue::Bool(false))
+    );
+    assert_eq!(
+        call_pure_stdlib("std.decimal.is_zero", &[decimal(0, 2)]),
+        Ok(StdlibValue::Bool(true))
+    );
+    assert_eq!(
+        call_pure_stdlib("std.decimal.is_zero", &[decimal(5, 2)]),
+        Ok(StdlibValue::Bool(false))
+    );
+}
+
+#[test]
+fn decimal_non_negative_returns_ok_for_zero_and_positive() {
+    let zero = call_pure_stdlib("std.decimal.non_negative", &[decimal(0, 0)]);
+    assert_eq!(ok_decimal(zero), decimal(0, 0));
+
+    let positive = call_pure_stdlib("std.decimal.non_negative", &[decimal(5, 2)]);
+    assert_eq!(ok_decimal(positive), decimal(5, 2));
+}
+
+#[test]
+fn decimal_non_negative_rejects_negative() {
+    let result = call_pure_stdlib("std.decimal.non_negative", &[decimal(-1, 0)]);
+    let Ok(StdlibValue::Result(Err(message))) = result else {
+        panic!("negative decimal must return Result::Err, got {result:?}");
+    };
+    assert!(
+        matches!(&*message, StdlibValue::Text(text) if text.contains("negative value")),
+        "error must mention negative value, got {message:?}"
+    );
+}
+
+#[test]
 fn decimal_scale_mismatch_returns_err_text() {
     let result = call_pure_stdlib("std.decimal.add", &[decimal(100, 2), decimal(50, 1)]);
     let Ok(StdlibValue::Result(Err(message))) = result else {

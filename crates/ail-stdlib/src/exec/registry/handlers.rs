@@ -721,6 +721,26 @@ pub(super) fn decimal_mul(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExe
     Ok(decimal_result_to_stdlib(lhs.mul(&rhs)))
 }
 
+pub(super) fn decimal_is_negative(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let value = decimal_from_stdlib(&args[0])?;
+    Ok(StdlibValue::Bool(value.is_negative()))
+}
+
+pub(super) fn decimal_is_zero(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let value = decimal_from_stdlib(&args[0])?;
+    Ok(StdlibValue::Bool(value.is_zero()))
+}
+
+pub(super) fn decimal_non_negative(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let value = decimal_from_stdlib(&args[0])?;
+    Ok(decimal_result_to_stdlib(
+        decimal::NonNegativeDecimal::new(value).map(|non_negative| non_negative.0),
+    ))
+}
+
 // ── Crypto adapters ───────────────────────────────────────────────────────
 
 pub(super) fn crypto_hash(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {

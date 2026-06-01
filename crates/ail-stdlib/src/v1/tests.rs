@@ -136,6 +136,9 @@ fn v1_contains_decimal_core_functions() {
     assert!(has_function_entry("std.decimal.add"));
     assert!(has_function_entry("std.decimal.sub"));
     assert!(has_function_entry("std.decimal.mul"));
+    assert!(has_function_entry("std.decimal.is_negative"));
+    assert!(has_function_entry("std.decimal.is_zero"));
+    assert!(has_function_entry("std.decimal.non_negative"));
 }
 
 // A7: capability (effectful) entries for io

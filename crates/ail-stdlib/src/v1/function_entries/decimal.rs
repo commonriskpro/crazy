@@ -57,6 +57,36 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
             "Err(Text) on overflow",
         ],
     ));
+
+    reg.entries.push(decimal_entry(
+        "std.decimal.is_negative",
+        "is_negative",
+        "Bool",
+        &[],
+        &["input is Decimal"],
+        &["returns true when mantissa is below zero"],
+    ));
+
+    reg.entries.push(decimal_entry(
+        "std.decimal.is_zero",
+        "is_zero",
+        "Bool",
+        &[],
+        &["input is Decimal"],
+        &["returns true when mantissa is zero"],
+    ));
+
+    reg.entries.push(decimal_entry(
+        "std.decimal.non_negative",
+        "non_negative",
+        "Result",
+        &["Decimal", "Text"],
+        &["input is Decimal"],
+        &[
+            "Ok(Decimal) when value is zero or positive",
+            "Err(Text) when value is negative",
+        ],
+    ));
 }
 
 fn decimal_entry(

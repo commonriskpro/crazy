@@ -149,6 +149,9 @@ fn v1_functions_decimal_has_core_arithmetic() {
         "std.decimal.add",
         "std.decimal.sub",
         "std.decimal.mul",
+        "std.decimal.is_negative",
+        "std.decimal.is_zero",
+        "std.decimal.non_negative",
     ] {
         assert!(
             reg.entries.iter().any(|e| e.id.0 == id),
