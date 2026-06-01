@@ -32,6 +32,14 @@ fn lsp_diagnose_reports_ail_source_unknown_grant_capability() {
             .expect("diagnostic message")
             .contains("grant capability `log.write` is not declared")
     );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_GRANT_CAPABILITY_UNKNOWN"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.grant.capability"
+    );
 }
 #[test]
 fn lsp_diagnose_accepts_module_test_capability_grants() {
@@ -101,6 +109,14 @@ fn main() -> Int = 0
             .as_str()
             .expect("diagnostic message")
             .contains("grant target `smoke` is ambiguous; use `fn.smoke` or `test.smoke`")
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_GRANT_TARGET_AMBIGUOUS"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.grant.ambiguous_target"
     );
 }
 #[test]
@@ -305,5 +321,13 @@ fn lsp_diagnose_reports_ail_source_unknown_grant_target() {
             .as_str()
             .expect("diagnostic message")
             .contains("grant target `fn.missing` is not declared")
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_GRANT_TARGET_UNKNOWN"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.grant.target"
     );
 }

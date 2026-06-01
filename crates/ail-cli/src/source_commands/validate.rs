@@ -99,9 +99,7 @@ pub(super) fn resolve_source_grant_target(
             .into_iter()
             .next()
             .expect("single grant target match")),
-        _ => Err(CliError::ParseError(format!(
-            "grant target `{target}` is ambiguous; use `fn.{target}` or `test.{target}`"
-        ))),
+        _ => Err(source_grant_target_ambiguous_error(target)),
     }
 }
 
@@ -374,16 +372,10 @@ pub(super) fn validate_source_program_grants(program: &SourceProgram) -> Result<
 
     for grant in &program.grants {
         if !grant_targets.contains(grant.target.as_str()) {
-            return Err(CliError::ParseError(format!(
-                "grant target `{}` is not declared as a function or test",
-                grant.target
-            )));
+            return Err(source_grant_target_unknown_error(&grant.target));
         }
         if !capabilities.contains(grant.capability.as_str()) {
-            return Err(CliError::ParseError(format!(
-                "grant capability `{}` is not declared",
-                grant.capability
-            )));
+            return Err(source_grant_capability_unknown_error(&grant.capability));
         }
     }
     Ok(())
@@ -671,6 +663,34 @@ fn source_call_arity_error(message: impl AsRef<str>) -> CliError {
         "{} [AIL_SOURCE_CALL_ARITY] category=source.call.arity",
         message.as_ref()
     ))
+}
+
+fn source_grant_target_unknown_error(target: &str) -> CliError {
+    source_grant_error(
+        "AIL_SOURCE_GRANT_TARGET_UNKNOWN",
+        "source.grant.target",
+        format!("grant target `{target}` is not declared as a function or test"),
+    )
+}
+
+fn source_grant_capability_unknown_error(capability: &str) -> CliError {
+    source_grant_error(
+        "AIL_SOURCE_GRANT_CAPABILITY_UNKNOWN",
+        "source.grant.capability",
+        format!("grant capability `{capability}` is not declared"),
+    )
+}
+
+fn source_grant_target_ambiguous_error(target: &str) -> CliError {
+    source_grant_error(
+        "AIL_SOURCE_GRANT_TARGET_AMBIGUOUS",
+        "source.grant.ambiguous_target",
+        format!("grant target `{target}` is ambiguous; use `fn.{target}` or `test.{target}`"),
+    )
+}
+
+fn source_grant_error(code: &str, category: &str, message: impl AsRef<str>) -> CliError {
+    CliError::ParseError(format!("{} [{code}] category={category}", message.as_ref()))
 }
 
 pub(super) fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
