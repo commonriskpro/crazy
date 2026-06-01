@@ -654,6 +654,7 @@ fn run_file_prints_structured_collection_results() {
     source
         .write_str(
             "fn numbers() -> List<Int> = [1, 2, 3]\n\
+fn names() -> List<Text> = [\"Ada\", \"AIL\"]\n\
 fn pair() -> Tuple<Int, Int> = tuple(42, 7)\n\
 fn person() -> Record<age:Int,score:Int> = { age: 42, score: 7 }\n",
         )
@@ -671,6 +672,26 @@ fn person() -> Record<age:Int,score:Int> = { age: 42, score: 7 }\n",
         .success()
         .stdout(predicate::str::contains("module: fn.numbers"))
         .stdout(predicate::str::contains("result: [1, 2, 3]"));
+
+    let names_output = ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--json",
+            "fn.names",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let names_json = parse_json_output(&names_output);
+    assert_eq!(names_json["data"]["invoke_result"], "result: [Ada, AIL]");
+    assert_eq!(
+        names_json["data"]["invoke_value"],
+        serde_json::json!(["Ada", "AIL"])
+    );
 
     ail()
         .args([
@@ -702,6 +723,84 @@ fn person() -> Record<age:Int,score:Int> = { age: 42, score: 7 }\n",
     assert_eq!(json["data"]["invoke_result"], "result: {age: 42, score: 7}");
     assert_eq!(json["data"]["invoke_value"]["age"], 42);
     assert_eq!(json["data"]["invoke_value"]["score"], 7);
+}
+
+#[test]
+fn run_file_prints_declared_option_and_result_values() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("variants.ail");
+    source
+        .write_str(
+            "fn maybe() -> Option<Int> = Some(42)\n\
+fn missing() -> Option<Int> = None\n\
+fn outcome() -> Result<Int, Text> = Ok(7)\n\
+fn failure() -> Result<Int, Text> = Err(\"bad\")\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.maybe",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.maybe"))
+        .stdout(predicate::str::contains("result: Some(42)"));
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.missing",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.missing"))
+        .stdout(predicate::str::contains("result: None"));
+
+    let ok_output = ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--json",
+            "fn.outcome",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let ok_json = parse_json_output(&ok_output);
+    assert_eq!(ok_json["data"]["invoke_result"], "result: Ok(7)");
+    assert_eq!(ok_json["data"]["invoke_value"]["tag"], "Ok");
+    assert_eq!(ok_json["data"]["invoke_value"]["value"], 7);
+
+    let err_output = ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--json",
+            "fn.failure",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let err_json = parse_json_output(&err_output);
+    assert_eq!(err_json["data"]["invoke_result"], "result: Err(bad)");
+    assert_eq!(err_json["data"]["invoke_value"]["tag"], "Err");
+    assert_eq!(err_json["data"]["invoke_value"]["value"], "bad");
 }
 
 #[test]

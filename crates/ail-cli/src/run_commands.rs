@@ -12,8 +12,8 @@
 //   derive_runtime_capability_ids — collect CapabilityIds from a SemanticGraph
 
 use ail_compiler::{
-    AnfExpr, AnfIr, WasmTypeDescriptor, emit_wasm_with_profile, lower_to_anf_with_graph,
-    lower_to_core_ir,
+    AnfExpr, AnfIr, WasmScalarType, WasmTypeDescriptor, emit_wasm_with_profile,
+    lower_to_anf_with_graph, lower_to_core_ir,
 };
 use std::sync::Arc;
 
@@ -24,7 +24,7 @@ use ail_runtime::{
 };
 use serde_json::{Value, json};
 
-use ail_core::semantic_graph::SemanticGraph;
+use ail_core::semantic_graph::{NodeKind, SemanticGraph};
 
 use crate::builtin_targets::runtime_anf_for_target;
 use crate::cli::load_current_graph_for_cli;
