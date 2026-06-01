@@ -38,7 +38,8 @@ pub(crate) use api::{
 };
 pub(crate) use descriptors::{source_export_type_descriptors, source_return_descriptor_for_module};
 pub(crate) use diagnostics::{
-    SourceIgnoredExpressionStatement, source_ignored_expression_statement_diagnostics,
+    SourceIgnoredExpressionStatement, SourceUnusedBinding,
+    source_ignored_expression_statement_diagnostics, source_unused_binding_diagnostics,
 };
 pub(crate) use model::{LoadedSourceGraph, SourceProgram};
 pub(crate) use parse::{load_source_program, load_source_program_from_text, parse_ail_source};

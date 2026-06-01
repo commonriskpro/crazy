@@ -4,8 +4,9 @@ use ail_change::op_schema::validate_op_schemas;
 use ail_change::parser::parse_changeset;
 
 use crate::source_commands::{
-    SourceIgnoredExpressionStatement, load_source_program_from_text, parse_ail_source,
-    source_ignored_expression_statement_diagnostics,
+    SourceIgnoredExpressionStatement, SourceUnusedBinding, load_source_program_from_text,
+    parse_ail_source, source_ignored_expression_statement_diagnostics,
+    source_unused_binding_diagnostics,
 };
 
 use super::source_helpers::{file_path_from_uri, is_ail_source_uri};
@@ -16,6 +17,7 @@ pub(super) const LSP_DIAGNOSTIC_SOURCE_IMPORT: &str = "AIL_SOURCE_IMPORT";
 pub(super) const LSP_DIAGNOSTIC_SOURCE_IGNORED_EXPRESSION: &str =
     "AIL_SOURCE_LSP_IGNORED_EXPRESSION";
 pub(super) const LSP_DIAGNOSTIC_SOURCE_PARSER: &str = "AIL_SOURCE_PARSER";
+pub(super) const LSP_DIAGNOSTIC_SOURCE_UNUSED_BINDING: &str = "AIL_SOURCE_LSP_UNUSED_BINDING";
 
 pub(super) fn diagnostics_for_document(uri: &str, text: &str) -> Vec<Value> {
     if is_ail_source_uri(uri) {
@@ -79,6 +81,11 @@ fn diagnostics_for_ail_source_inline(uri: &str, text: &str) -> Vec<Value> {
     source_ignored_expression_statement_diagnostics(text)
         .into_iter()
         .map(|ignored| ignored_expression_statement_diagnostic(uri, text, ignored))
+        .chain(
+            source_unused_binding_diagnostics(text)
+                .into_iter()
+                .map(|unused| unused_binding_diagnostic(text, unused)),
+        )
         .collect()
 }
 
@@ -97,6 +104,11 @@ fn diagnostics_for_ail_source_document_path(path: &std::path::Path, text: &str) 
         Ok(_) => source_ignored_expression_statement_diagnostics(text)
             .into_iter()
             .map(|ignored| ignored_expression_statement_diagnostic(&uri, text, ignored))
+            .chain(
+                source_unused_binding_diagnostics(text)
+                    .into_iter()
+                    .map(|unused| unused_binding_diagnostic(text, unused)),
+            )
             .collect(),
         Err(err) => {
             let message = err.to_string();
@@ -205,6 +217,38 @@ fn ignored_expression_statement_diagnostic(
         "ailRepair": {
             "code": "remove.ignored_expression_statement",
             "edit": delete_line_workspace_edit(uri, line),
+        }
+    });
+    diagnostic
+}
+
+fn unused_binding_diagnostic(text: &str, unused: SourceUnusedBinding) -> Value {
+    let line = unused.line_num.saturating_sub(1) as u64;
+    let (start_character, end_character) = line_character_range(text, line).unwrap_or((0, 1));
+    let message = format!(
+        "unused local binding `{}`; remove it or prefix with `_` to mark it intentionally unused",
+        unused.name
+    );
+    let mut diagnostic = diagnostic_with_range_and_severity(
+        line,
+        start_character,
+        line,
+        end_character,
+        message,
+        "ail-source-lint",
+        LSP_DIAGNOSTIC_SOURCE_UNUSED_BINDING,
+        2,
+    );
+    let span = json!({
+        "start": { "line": line, "character": start_character },
+        "end": { "line": line, "character": end_character },
+    });
+    diagnostic["data"] = json!({
+        "ailDiagnostic": {
+            "code": LSP_DIAGNOSTIC_SOURCE_UNUSED_BINDING,
+            "category": "source.lsp.unused_binding",
+            "family": "AIL_SOURCE_LSP",
+            "span": span,
         }
     });
     diagnostic
