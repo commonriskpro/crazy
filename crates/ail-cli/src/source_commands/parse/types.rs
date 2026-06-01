@@ -257,6 +257,7 @@ pub(super) fn source_primitive_type_alias(ty: &str) -> Option<&'static str> {
         "Int" | "int" | "i32" | "i64" => Some("Int"),
         "Bool" | "bool" => Some("Bool"),
         "Text" | "String" | "str" => Some("Text"),
+        "Bytes" | "bytes" => Some("Bytes"),
         "Float" | "float" | "f64" => Some("Float"),
         "Unit" | "unit" => Some("Unit"),
         _ => None,

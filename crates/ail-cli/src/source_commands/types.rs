@@ -327,6 +327,10 @@ pub(super) fn infer_source_call_type(
         }
         "map.length" | "map_length" => infer_source_map_length_type(args, scope, functions),
         "map.insert" | "map_insert" => infer_source_map_insert_type(args, scope, functions),
+        "bytes.length" | "bytes_length" | "std.bytes.length" | "bytes.at" | "bytes_at"
+        | "std.bytes.at" | "bytes.slice" | "bytes_slice" | "std.bytes.slice" | "bytes.concat"
+        | "bytes_concat" | "std.bytes.concat" | "bytes.empty" | "bytes_empty"
+        | "std.bytes.empty" => infer_source_bytes_helper_type(func, args, scope, functions),
         "record" => infer_source_record_type(args, scope, functions),
         "field" => infer_source_field_type(args, scope, functions),
         "update" => infer_source_update_type(args, scope, functions),
@@ -853,6 +857,37 @@ fn require_source_map_text_key_type<'a>(
         ));
     }
     Ok(Some(value_ty))
+}
+
+pub(super) fn infer_source_bytes_helper_type(
+    func: &str,
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let (expected, return_ty) = match func {
+        "bytes.length" | "bytes_length" | "std.bytes.length" => (&["Bytes"][..], "Int"),
+        "bytes.at" | "bytes_at" | "std.bytes.at" => (&["Bytes", "Int"][..], "Option<Int>"),
+        "bytes.slice" | "bytes_slice" | "std.bytes.slice" => {
+            (&["Bytes", "Int", "Int"][..], "Option<Bytes>")
+        }
+        "bytes.concat" | "bytes_concat" | "std.bytes.concat" => (&["Bytes", "Bytes"][..], "Bytes"),
+        "bytes.empty" | "bytes_empty" | "std.bytes.empty" => (&["Bytes"][..], "Bool"),
+        _ => unreachable!("checked source bytes helper"),
+    };
+    if args.len() != expected.len() {
+        return Err(source_expr_error(
+            "AIL_SOURCE_BYTES_ARITY",
+            "source.bytes.arity",
+            format!(
+                "function call `{func}` expects {} argument(s), got {}",
+                expected.len(),
+                args.len()
+            ),
+        ));
+    }
+    validate_source_arg_types(func, args, scope, functions, expected)?;
+    Ok(return_ty.to_string())
 }
 
 pub(super) fn infer_source_record_type(

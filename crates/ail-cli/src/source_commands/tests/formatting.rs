@@ -214,6 +214,35 @@ fn formats_source_text_replace_first_helper() {
 }
 
 #[test]
+fn formats_source_bytes_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn count(input:bytes)->Int=std.bytes.length(input)
+fn maybe_byte(input:Bytes)->Option<Int>=bytes.at(input,0)
+fn piece(input:Bytes)->Option<Bytes>=std.bytes.slice(input,0,2)
+fn merged(left:Bytes,right:Bytes)->Bytes=bytes.concat(left,right)
+fn empty(input:Bytes)->Bool=std.bytes.empty(input)
+"#,
+    )
+    .expect("source bytes helpers must format");
+
+    assert_eq!(item_count, 5);
+    assert!(formatted.contains("fn count(input: Bytes) -> Int = bytes_length(input)\n"));
+    assert!(
+        formatted.contains("fn maybe_byte(input: Bytes) -> Option<Int> = bytes_at(input, 0)\n")
+    );
+    assert!(
+        formatted.contains("fn piece(input: Bytes) -> Option<Bytes> = bytes_slice(input, 0, 2)\n")
+    );
+    assert!(
+        formatted.contains(
+            "fn merged(left: Bytes, right: Bytes) -> Bytes = bytes_concat(left, right)\n"
+        )
+    );
+    assert!(formatted.contains("fn empty(input: Bytes) -> Bool = bytes_empty(input)\n"));
+}
+
+#[test]
 fn formats_source_decimal_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"

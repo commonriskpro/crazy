@@ -4,6 +4,7 @@ use super::syntax::*;
 use super::types::*;
 use super::*;
 
+mod bytes;
 mod collections;
 mod control;
 mod int;
@@ -13,6 +14,7 @@ mod syntax_helpers;
 mod text;
 mod tuple;
 
+pub(super) use bytes::*;
 pub(super) use collections::*;
 pub(super) use control::*;
 pub(super) use int::*;
@@ -26,6 +28,7 @@ pub(super) use tuple::*;
 pub(super) enum SourceLowerDiagnostic {
     AclMaterialization,
     BindingShape,
+    BytesHelper,
     CapabilityReference,
     CollectionArity,
     ControlExpression,
@@ -50,6 +53,7 @@ impl SourceLowerDiagnostic {
         match self {
             SourceLowerDiagnostic::AclMaterialization => "AIL_SOURCE_LOWER_TO_ACL",
             SourceLowerDiagnostic::BindingShape => "AIL_SOURCE_LOWER_BINDING_SHAPE",
+            SourceLowerDiagnostic::BytesHelper => "AIL_SOURCE_LOWER_BYTES_HELPER",
             SourceLowerDiagnostic::CapabilityReference => "AIL_SOURCE_LOWER_CAPABILITY_REFERENCE",
             SourceLowerDiagnostic::CollectionArity => "AIL_SOURCE_LOWER_COLLECTION_ARITY",
             SourceLowerDiagnostic::ControlExpression => "AIL_SOURCE_LOWER_CONTROL_EXPRESSION",
@@ -74,6 +78,7 @@ impl SourceLowerDiagnostic {
         match self {
             SourceLowerDiagnostic::AclMaterialization => "source.lower.to_acl",
             SourceLowerDiagnostic::BindingShape => "source.lower.binding",
+            SourceLowerDiagnostic::BytesHelper => "source.lower.bytes",
             SourceLowerDiagnostic::CapabilityReference => "source.lower.capability",
             SourceLowerDiagnostic::ControlExpression => "source.lower.control",
             SourceLowerDiagnostic::Expression => "source.lower.expression",
@@ -400,6 +405,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_map_helper_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
+    if let Some(lowered) = lower_source_bytes_helper_expr(expr, line_num)? {
         return Ok(lowered);
     }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {

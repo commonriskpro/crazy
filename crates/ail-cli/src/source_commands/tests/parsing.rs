@@ -61,6 +61,17 @@ test main_addition = eq(add(20, 22), 42);
 }
 
 #[test]
+fn parses_bytes_primitive_source_type_alias() {
+    let program =
+        parse_ail_source("fn byte_count(input: bytes) -> Int = std.bytes.length(input)\n")
+            .expect("Bytes source type alias must parse");
+
+    assert_eq!(program.functions[0].params[0].ty, "Bytes");
+    assert_eq!(program.functions[0].return_type, "Int");
+    assert_eq!(program.functions[0].body, "std.bytes.length(input)");
+}
+
+#[test]
 fn parses_source_block_expression_statements() {
     let program = parse_ail_source(
         r#"capability log.write

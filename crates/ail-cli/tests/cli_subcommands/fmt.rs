@@ -169,6 +169,48 @@ fn fmt_ail_source_write_makes_check_pass() {
 }
 
 #[test]
+fn fmt_file_json_outputs_canonical_ail_source_bytes_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let source = dir.child("bytes.ail");
+    source
+        .write_str(
+            "fn count(input:bytes)->Int=std.bytes.length(input)\n\
+fn part(input:Bytes)->Option<Bytes>=bytes.slice(input,0,2)\n\
+fn merged(left:Bytes,right:Bytes)->Bytes=std.bytes.concat(left,right)\n",
+        )
+        .expect("write source");
+
+    let output = ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["item_count"], 3);
+    let formatted = v["data"]["formatted"]
+        .as_str()
+        .expect("formatted must be string");
+
+    assert!(formatted.contains("fn count(input: Bytes) -> Int = bytes_length(input)\n"));
+    assert!(
+        formatted.contains("fn part(input: Bytes) -> Option<Bytes> = bytes_slice(input, 0, 2)\n")
+    );
+    assert!(
+        formatted.contains(
+            "fn merged(left: Bytes, right: Bytes) -> Bytes = bytes_concat(left, right)\n"
+        )
+    );
+}
+
+#[test]
 fn fmt_file_json_outputs_canonical_ail_source_decimal_helpers() {
     use assert_fs::prelude::*;
 

@@ -622,6 +622,21 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if let Some((helper, arity)) = source_bytes_helper(&func)
+        && args.len() == arity
+    {
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "option.unwrap_or" && args.len() == 2 {
         return (
             format!(
@@ -946,6 +961,17 @@ pub(super) fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn source_bytes_helper(func: &str) -> Option<(&'static str, usize)> {
+    match func {
+        "bytes.length" | "std.bytes.length" => Some(("bytes_length", 1)),
+        "bytes.at" | "std.bytes.at" => Some(("bytes_at", 2)),
+        "bytes.slice" | "std.bytes.slice" => Some(("bytes_slice", 3)),
+        "bytes.concat" | "std.bytes.concat" => Some(("bytes_concat", 2)),
+        "bytes.empty" | "std.bytes.empty" => Some(("bytes_empty", 1)),
+        _ => None,
+    }
 }
 
 fn source_decimal_helper(func: &str) -> Option<(&'static str, usize)> {

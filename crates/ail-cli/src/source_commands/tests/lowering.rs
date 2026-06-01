@@ -1245,6 +1245,43 @@ grant main log.write
 }
 
 #[test]
+fn lowers_and_types_source_bytes_helpers() {
+    let program = parse_ail_source(
+        r#"
+fn count(input: bytes) -> Int = bytes_length(input)
+fn maybe_byte(input: Bytes) -> Option<Int> = bytes.at(input, 0)
+fn piece(input: Bytes) -> Option<Bytes> = std.bytes.slice(input, 0, 2)
+fn merged(left: Bytes, right: Bytes) -> Bytes = bytes.concat(left, right)
+fn empty(input: Bytes) -> Bool = bytes.empty(input)
+"#,
+    )
+    .expect("source bytes helpers must parse and type-check");
+    let acl = source_program_to_acl(&program, "source_bytes".to_string());
+
+    assert_eq!(program.functions[0].params[0].ty, "Bytes");
+    assert_eq!(program.functions[0].body, "std.bytes.length(input)");
+    assert_eq!(program.functions[1].body, "std.bytes.at(input, 0)");
+    assert_eq!(program.functions[2].body, "std.bytes.slice(input, 0, 2)");
+    assert_eq!(program.functions[3].body, "std.bytes.concat(left, right)");
+    assert_eq!(program.functions[4].body, "std.bytes.empty(input)");
+    assert!(acl.contains("op create_function id=fn.count return=Int body=std.bytes.length(input)"));
+    assert!(acl.contains(
+        "op create_function id=fn.piece return=Option<Bytes> body=std.bytes.slice(input, 0, 2)"
+    ));
+}
+
+#[test]
+fn rejects_source_bytes_helper_type_mismatch() {
+    assert_lowering_diagnostic(
+        parse_ail_source("fn bad(input: Text) -> Int = bytes.length(input)\n")
+            .map(|_| String::new()),
+        "AIL_SOURCE_TYPE_MISMATCH",
+        "source.type.mismatch",
+        "expected Bytes, got Text",
+    );
+}
+
+#[test]
 fn lowers_source_unit_literal_to_compiler_unit_call() {
     let program = parse_ail_source("fn noop() -> Unit = ()\n").expect("source must parse");
     let acl = source_program_to_acl(&program, "source_unit".to_string());
