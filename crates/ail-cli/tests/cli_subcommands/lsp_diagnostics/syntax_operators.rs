@@ -227,6 +227,15 @@ fn lsp_diagnose_warns_for_ignored_pure_expression_statements() {
         "AIL_SOURCE_LSP_IGNORED_EXPRESSION"
     );
     assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailRepair"]["code"],
+        "remove.ignored_expression_statement"
+    );
+    let uri = format!("file://{}", source.path().display());
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailRepair"]["edit"]["changes"][uri.as_str()][0]["newText"],
+        ""
+    );
+    assert_eq!(
         v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
         "source.lsp.ignored_expression"
     );

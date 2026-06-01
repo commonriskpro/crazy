@@ -73,8 +73,8 @@ pub(super) fn diagnostics_for_ail_source_path(path: &std::path::Path, text: &str
 }
 
 fn diagnostics_for_ail_source_document_path(path: &std::path::Path, text: &str) -> Vec<Value> {
-    let syntax_diagnostics =
-        diagnostics_for_ail_source_text(&format!("file://{}", path.display()), text);
+    let uri = format!("file://{}", path.display());
+    let syntax_diagnostics = diagnostics_for_ail_source_text(&uri, text);
     if !syntax_diagnostics.is_empty() {
         return syntax_diagnostics;
     }
@@ -82,7 +82,7 @@ fn diagnostics_for_ail_source_document_path(path: &std::path::Path, text: &str) 
     match load_source_program_from_text(path, text) {
         Ok(_) => source_ignored_expression_statement_diagnostics(text)
             .into_iter()
-            .map(|ignored| ignored_expression_statement_diagnostic(text, ignored))
+            .map(|ignored| ignored_expression_statement_diagnostic(&uri, text, ignored))
             .collect(),
         Err(err) => {
             let message = err.to_string();
@@ -160,6 +160,7 @@ fn diagnostic_for_source_error(
 }
 
 fn ignored_expression_statement_diagnostic(
+    uri: &str,
     text: &str,
     ignored: SourceIgnoredExpressionStatement,
 ) -> Value {
@@ -186,9 +187,28 @@ fn ignored_expression_statement_diagnostic(
             "category": "source.lsp.ignored_expression",
             "family": "AIL_SOURCE_LSP",
             "span": span,
+        },
+        "ailRepair": {
+            "code": "remove.ignored_expression_statement",
+            "edit": delete_line_workspace_edit(uri, line),
         }
     });
     diagnostic
+}
+
+fn delete_line_workspace_edit(uri: &str, line: u64) -> Value {
+    let mut changes = serde_json::Map::new();
+    changes.insert(
+        uri.to_string(),
+        json!([{
+            "range": {
+                "start": { "line": line, "character": 0 },
+                "end": { "line": line + 1, "character": 0 }
+            },
+            "newText": ""
+        }]),
+    );
+    json!({ "changes": changes })
 }
 
 fn line_character_range(text: &str, line: u64) -> Option<(u64, u64)> {

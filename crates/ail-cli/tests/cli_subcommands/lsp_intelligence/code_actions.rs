@@ -150,6 +150,34 @@ fn lsp_code_actions_are_deterministically_ordered_and_emit_single_repairs() {
     );
 }
 
+#[test]
+fn lsp_code_action_removes_ignored_expression_statement() {
+    let uri = "file:///workspace/main.ail";
+    let open = did_open_message(uri, "fn main() -> Int {\n  1 + 2\n  return 0\n}\n");
+    let code_action = code_action_message(uri, 25, vec![ignored_expression_diagnostic(uri)]);
+
+    let result = code_action_result(vec![open, code_action], 25);
+
+    assert_eq!(result[0]["kind"], "quickfix");
+    assert_eq!(
+        result[0]["data"]["diagnosticCode"],
+        "AIL_SOURCE_LSP_IGNORED_EXPRESSION"
+    );
+    assert_eq!(
+        result[0]["data"]["repairCode"],
+        "remove.ignored_expression_statement"
+    );
+    assert_eq!(result[0]["edit"]["changes"][uri][0]["newText"], "");
+    assert_eq!(
+        result[0]["edit"]["changes"][uri][0]["range"]["start"]["line"],
+        1
+    );
+    assert_eq!(
+        result[0]["edit"]["changes"][uri][0]["range"]["end"]["line"],
+        2
+    );
+}
+
 fn code_action_result(messages: Vec<String>, request_id: u64) -> serde_json::Value {
     let output = ail()
         .args(["lsp", "--stdio"])
@@ -164,6 +192,40 @@ fn code_action_result(messages: Vec<String>, request_id: u64) -> serde_json::Val
         .find(|message| message["id"] == request_id)
         .expect("codeAction response must be emitted");
     response["result"].clone()
+}
+
+fn ignored_expression_diagnostic(uri: &str) -> serde_json::Value {
+    serde_json::json!({
+        "range": {
+            "start": { "line": 1, "character": 2 },
+            "end": { "line": 1, "character": 7 }
+        },
+        "severity": 2,
+        "source": "ail-source-lint",
+        "code": "AIL_SOURCE_LSP_IGNORED_EXPRESSION",
+        "message": "ignored expression statement has no direct effect",
+        "data": {
+            "ailRepair": {
+                "code": "remove.ignored_expression_statement",
+                "edit": delete_line_edit(uri)
+            }
+        }
+    })
+}
+
+fn delete_line_edit(uri: &str) -> serde_json::Value {
+    let mut changes = serde_json::Map::new();
+    changes.insert(
+        uri.to_string(),
+        serde_json::json!([{
+            "range": {
+                "start": { "line": 1, "character": 0 },
+                "end": { "line": 2, "character": 0 }
+            },
+            "newText": ""
+        }]),
+    );
+    serde_json::json!({ "changes": changes })
 }
 
 fn did_open_message(uri: &str, text: &str) -> String {
