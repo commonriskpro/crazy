@@ -26,6 +26,31 @@ fn assert_lowering_diagnostic(
     message
 }
 
+fn assert_graph_materialization_diagnostic<T: std::fmt::Debug>(
+    result: Result<T, CliError>,
+    code: &str,
+    category: &str,
+    detail: &str,
+) -> String {
+    let err = result.expect_err("source graph materialization must fail");
+    let CliError::ParseError(message) = err else {
+        panic!("source graph materialization must return ParseError");
+    };
+    assert!(
+        message.contains(code),
+        "graph materialization diagnostic must include stable code `{code}`; got: {message}"
+    );
+    assert!(
+        message.contains(&format!("category={category}")),
+        "graph materialization diagnostic must include category `{category}`; got: {message}"
+    );
+    assert!(
+        message.contains(detail),
+        "graph materialization diagnostic must keep actionable detail `{detail}`; got: {message}"
+    );
+    message
+}
+
 #[test]
 fn lowers_source_to_acl_create_ops() {
     let program =
@@ -35,6 +60,16 @@ fn lowers_source_to_acl_create_ops() {
 
     assert!(acl.contains("op create_function id=fn.main return=Int body=add(20, 22)"));
     assert!(acl.contains("op create_test id=test.add return=Bool body=eq(add(20, 22), 42)"));
+}
+
+#[test]
+fn rejects_invalid_acl_materialization_with_stable_diagnostic() {
+    assert_graph_materialization_diagnostic(
+        source_program_to_graph(&SourceProgram::default(), "source\ninvalid"),
+        "AIL_SOURCE_LOWER_TO_ACL",
+        "source.lower.to_acl",
+        "failed to lower AIL source to ACL",
+    );
 }
 
 #[test]

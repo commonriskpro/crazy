@@ -24,6 +24,7 @@ pub(super) use tuple::*;
 
 #[derive(Clone, Copy)]
 pub(super) enum SourceLowerDiagnostic {
+    AclMaterialization,
     BindingShape,
     CapabilityReference,
     CollectionArity,
@@ -47,6 +48,7 @@ pub(super) enum SourceLowerDiagnostic {
 impl SourceLowerDiagnostic {
     fn code(self) -> &'static str {
         match self {
+            SourceLowerDiagnostic::AclMaterialization => "AIL_SOURCE_LOWER_TO_ACL",
             SourceLowerDiagnostic::BindingShape => "AIL_SOURCE_LOWER_BINDING_SHAPE",
             SourceLowerDiagnostic::CapabilityReference => "AIL_SOURCE_LOWER_CAPABILITY_REFERENCE",
             SourceLowerDiagnostic::CollectionArity => "AIL_SOURCE_LOWER_COLLECTION_ARITY",
@@ -70,6 +72,7 @@ impl SourceLowerDiagnostic {
 
     fn category(self) -> &'static str {
         match self {
+            SourceLowerDiagnostic::AclMaterialization => "source.lower.to_acl",
             SourceLowerDiagnostic::BindingShape => "source.lower.binding",
             SourceLowerDiagnostic::CapabilityReference => "source.lower.capability",
             SourceLowerDiagnostic::ControlExpression => "source.lower.control",
@@ -151,13 +154,21 @@ fn source_lower_redacted_hash(expr: &str) -> u64 {
     })
 }
 
+fn source_lower_to_acl_error(error: impl std::fmt::Display) -> CliError {
+    let diagnostic = SourceLowerDiagnostic::AclMaterialization;
+    CliError::ParseError(format!(
+        "failed to lower AIL source to ACL: {error} [{}] category={}",
+        diagnostic.code(),
+        diagnostic.category()
+    ))
+}
+
 pub(super) fn source_program_to_graph(
     program: &SourceProgram,
     change_name: impl Into<String>,
 ) -> Result<SemanticGraph, CliError> {
     let acl = source_program_to_acl(program, change_name.into());
-    let parsed = parse_changeset(&acl)
-        .map_err(|e| CliError::ParseError(format!("failed to lower AIL source to ACL: {e}")))?;
+    let parsed = parse_changeset(&acl).map_err(source_lower_to_acl_error)?;
     let canonical = canonicalize_parsed(parsed);
     let mut graph = SemanticGraph {
         nodes: vec![],
