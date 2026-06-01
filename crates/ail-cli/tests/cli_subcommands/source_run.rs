@@ -646,6 +646,65 @@ end
     assert_eq!(run_json["data"]["invoke_value"], "Hello, world!");
 }
 #[test]
+fn run_file_prints_structured_collection_results() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("structured.ail");
+    source
+        .write_str(
+            "fn numbers() -> List<Int> = [1, 2, 3]\n\
+fn pair() -> Tuple<Int, Int> = tuple(42, 7)\n\
+fn person() -> Record<age:Int,score:Int> = { age: 42, score: 7 }\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.numbers",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.numbers"))
+        .stdout(predicate::str::contains("result: [1, 2, 3]"));
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.pair",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.pair"))
+        .stdout(predicate::str::contains("result: (42, 7)"));
+
+    let output = ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--json",
+            "fn.person",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let json = parse_json_output(&output);
+    assert_eq!(json["data"]["invoke_result"], "result: {age: 42, score: 7}");
+    assert_eq!(json["data"]["invoke_value"]["age"], 42);
+    assert_eq!(json["data"]["invoke_value"]["score"], 7);
+}
+
+#[test]
 fn run_print_requires_log_write_grant_and_captures_output() {
     use assert_fs::prelude::*;
 
