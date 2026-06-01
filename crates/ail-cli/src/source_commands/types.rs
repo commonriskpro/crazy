@@ -1015,9 +1015,19 @@ pub(super) fn validate_source_type_match(
     if source_type_matches(expected, actual) {
         return Ok(());
     }
-    Err(CliError::ParseError(format!(
-        "type mismatch in {context}: expected {expected}, got {actual}"
-    )))
+    Err(source_type_mismatch_error(context, expected, actual))
+}
+
+fn source_type_mismatch_error(context: &str, expected: &str, actual: &str) -> CliError {
+    source_type_error(
+        "AIL_SOURCE_TYPE_MISMATCH",
+        "source.type.mismatch",
+        format!("type mismatch in {context}: expected {expected}, got {actual}"),
+    )
+}
+
+fn source_type_error(code: &str, category: &str, message: impl AsRef<str>) -> CliError {
+    CliError::ParseError(format!("{} [{code}] category={category}", message.as_ref()))
 }
 
 pub(super) fn source_type_matches(expected: &str, actual: &str) -> bool {

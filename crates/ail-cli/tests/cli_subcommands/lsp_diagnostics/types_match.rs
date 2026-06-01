@@ -475,6 +475,14 @@ fn lsp_diagnose_reports_ail_source_return_type_mismatch() {
             .contains("line 2: type mismatch in fn.main: expected Int, got Bool")
     );
     assert_eq!(v["data"]["diagnostics"][0]["range"]["start"]["line"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_TYPE_MISMATCH"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.type.mismatch"
+    );
 }
 #[test]
 fn lsp_diagnose_reports_ail_source_float_literal_type_mismatch() {
