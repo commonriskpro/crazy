@@ -214,6 +214,27 @@ fn formats_source_text_replace_first_helper() {
 }
 
 #[test]
+fn formats_source_time_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn elapsed(later:Int,earlier:Int)->Int=std.time.duration_since(later,earlier)
+fn deadline(start:Int,delta:Int)->Int=time.add_duration(start,delta)
+fn millis(value:Int)->Int=std.time.instant_to_ms(value)
+"#,
+    )
+    .expect("source time helpers must format");
+
+    assert_eq!(item_count, 3);
+    assert!(formatted.contains(
+        "fn elapsed(later: Int, earlier: Int) -> Int = time_duration_since(later, earlier)\n"
+    ));
+    assert!(formatted.contains(
+        "fn deadline(start: Int, delta: Int) -> Int = time_add_duration(start, delta)\n"
+    ));
+    assert!(formatted.contains("fn millis(value: Int) -> Int = time_instant_to_ms(value)\n"));
+}
+
+#[test]
 fn formats_source_bytes_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"

@@ -331,6 +331,15 @@ pub(super) fn infer_source_call_type(
         | "std.bytes.at" | "bytes.slice" | "bytes_slice" | "std.bytes.slice" | "bytes.concat"
         | "bytes_concat" | "std.bytes.concat" | "bytes.empty" | "bytes_empty"
         | "std.bytes.empty" => infer_source_bytes_helper_type(func, args, scope, functions),
+        "time.duration_since"
+        | "time_duration_since"
+        | "std.time.duration_since"
+        | "time.add_duration"
+        | "time_add_duration"
+        | "std.time.add_duration"
+        | "time.instant_to_ms"
+        | "time_instant_to_ms"
+        | "std.time.instant_to_ms" => infer_source_time_helper_type(func, args, scope, functions),
         "record" => infer_source_record_type(args, scope, functions),
         "field" => infer_source_field_type(args, scope, functions),
         "update" => infer_source_update_type(args, scope, functions),
@@ -857,6 +866,35 @@ fn require_source_map_text_key_type<'a>(
         ));
     }
     Ok(Some(value_ty))
+}
+
+pub(super) fn infer_source_time_helper_type(
+    func: &str,
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let expected = match func {
+        "time.duration_since" | "time_duration_since" | "std.time.duration_since" => {
+            &["Int", "Int"][..]
+        }
+        "time.add_duration" | "time_add_duration" | "std.time.add_duration" => &["Int", "Int"][..],
+        "time.instant_to_ms" | "time_instant_to_ms" | "std.time.instant_to_ms" => &["Int"][..],
+        _ => unreachable!("checked source time helper"),
+    };
+    if args.len() != expected.len() {
+        return Err(source_expr_error(
+            "AIL_SOURCE_TIME_ARITY",
+            "source.time.arity",
+            format!(
+                "function call `{func}` expects {} argument(s), got {}",
+                expected.len(),
+                args.len()
+            ),
+        ));
+    }
+    validate_source_arg_types(func, args, scope, functions, expected)?;
+    Ok("Int".to_string())
 }
 
 pub(super) fn infer_source_bytes_helper_type(

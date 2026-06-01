@@ -637,6 +637,21 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if let Some((helper, arity)) = source_time_helper(&func)
+        && args.len() == arity
+    {
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "option.unwrap_or" && args.len() == 2 {
         return (
             format!(
@@ -961,6 +976,15 @@ pub(super) fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn source_time_helper(func: &str) -> Option<(&'static str, usize)> {
+    match func {
+        "time.duration_since" | "std.time.duration_since" => Some(("time_duration_since", 2)),
+        "time.add_duration" | "std.time.add_duration" => Some(("time_add_duration", 2)),
+        "time.instant_to_ms" | "std.time.instant_to_ms" => Some(("time_instant_to_ms", 1)),
+        _ => None,
+    }
 }
 
 fn source_bytes_helper(func: &str) -> Option<(&'static str, usize)> {

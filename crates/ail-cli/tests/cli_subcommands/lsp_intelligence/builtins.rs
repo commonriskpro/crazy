@@ -482,6 +482,67 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include dotted Map helpers; got: {dotted_map_items:?}"
     );
 
+    let time_completion_output = ail()
+        .args(["lsp", "--complete", "time_", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let time_completion = parse_json_output(&time_completion_output);
+    let time_items = time_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        [
+            "time_duration_since",
+            "time_add_duration",
+            "time_instant_to_ms",
+        ]
+        .iter()
+        .all(|label| time_items
+            .iter()
+            .any(|item| item["label"] == *label && item["detail"] == "AIL source Time helper")),
+        "completion must include AIL source time helpers; got: {time_items:?}"
+    );
+
+    let dotted_time_completion_output = ail()
+        .args(["lsp", "--complete", "time.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_time_completion = parse_json_output(&dotted_time_completion_output);
+    let dotted_time_items = dotted_time_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        [
+            "time.duration_since",
+            "time.add_duration",
+            "time.instant_to_ms",
+        ]
+        .iter()
+        .all(|label| dotted_time_items
+            .iter()
+            .any(|item| item["label"] == *label && item["detail"] == "AIL source Time helper")),
+        "completion must include dotted Time helpers; got: {dotted_time_items:?}"
+    );
+
+    let time_hover_output = ail()
+        .args(["lsp", "--hover-token", "time_duration_since", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let time_hover = parse_json_output(&time_hover_output);
+    assert!(
+        time_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("later_ms - earlier_ms"),
+        "hover must explain time_duration_since; got: {time_hover}"
+    );
+
     let bytes_completion_output = ail()
         .args(["lsp", "--complete", "bytes_", "--json"])
         .assert()

@@ -12,6 +12,7 @@ mod match_expr;
 mod option_result;
 mod syntax_helpers;
 mod text;
+mod time;
 mod tuple;
 
 pub(super) use bytes::*;
@@ -22,6 +23,7 @@ pub(super) use match_expr::*;
 pub(super) use option_result::*;
 pub(super) use syntax_helpers::*;
 pub(super) use text::*;
+pub(super) use time::*;
 pub(super) use tuple::*;
 
 #[derive(Clone, Copy)]
@@ -42,6 +44,7 @@ pub(super) enum SourceLowerDiagnostic {
     PipeExpression,
     RecordLiteral,
     TextHelper,
+    TimeHelper,
     TupleHelper,
     TypeShapeMismatch,
     UnaryOperator,
@@ -67,6 +70,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::PipeExpression => "AIL_SOURCE_LOWER_PIPE_EXPRESSION",
             SourceLowerDiagnostic::RecordLiteral => "AIL_SOURCE_LOWER_RECORD_LITERAL",
             SourceLowerDiagnostic::TextHelper => "AIL_SOURCE_LOWER_TEXT_HELPER",
+            SourceLowerDiagnostic::TimeHelper => "AIL_SOURCE_LOWER_TIME_HELPER",
             SourceLowerDiagnostic::TupleHelper => "AIL_SOURCE_LOWER_TUPLE_HELPER",
             SourceLowerDiagnostic::TypeShapeMismatch => "AIL_SOURCE_LOWER_TYPE_SHAPE",
             SourceLowerDiagnostic::UnaryOperator => "AIL_SOURCE_LOWER_UNARY_OPERATOR",
@@ -92,6 +96,7 @@ impl SourceLowerDiagnostic {
             | SourceLowerDiagnostic::RecordLiteral => "source.lower.collection",
             SourceLowerDiagnostic::PipeExpression => "source.lower.pipe",
             SourceLowerDiagnostic::TextHelper => "source.lower.text",
+            SourceLowerDiagnostic::TimeHelper => "source.lower.time",
             SourceLowerDiagnostic::TupleHelper => "source.lower.tuple",
             SourceLowerDiagnostic::TypeShapeMismatch => "source.lower.type",
             SourceLowerDiagnostic::UnaryOperator => "source.lower.operator",
@@ -408,6 +413,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_bytes_helper_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
+    if let Some(lowered) = lower_source_time_helper_expr(expr, line_num)? {
         return Ok(lowered);
     }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {

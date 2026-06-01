@@ -1245,6 +1245,46 @@ grant main log.write
 }
 
 #[test]
+fn lowers_and_types_source_time_helpers() {
+    let program = parse_ail_source(
+        r#"
+fn elapsed(later: Int, earlier: Int) -> Int = time_duration_since(later, earlier)
+fn deadline(start: Int, delta: Int) -> Int = time.add_duration(start, delta)
+fn millis(value: Int) -> Int = std.time.instant_to_ms(value)
+"#,
+    )
+    .expect("source time helpers must parse and type-check");
+    let acl = source_program_to_acl(&program, "source_time".to_string());
+
+    assert_eq!(
+        program.functions[0].body,
+        "std.time.duration_since(later, earlier)"
+    );
+    assert_eq!(
+        program.functions[1].body,
+        "std.time.add_duration(start, delta)"
+    );
+    assert_eq!(program.functions[2].body, "std.time.instant_to_ms(value)");
+    assert!(acl.contains(
+        "op create_function id=fn.elapsed return=Int body=std.time.duration_since(later, earlier)"
+    ));
+    assert!(acl.contains(
+        "op create_function id=fn.deadline return=Int body=std.time.add_duration(start, delta)"
+    ));
+}
+
+#[test]
+fn rejects_source_time_helper_type_mismatch() {
+    assert_lowering_diagnostic(
+        parse_ail_source("fn bad(input: Text) -> Int = time.duration_since(input, 0)\n")
+            .map(|_| String::new()),
+        "AIL_SOURCE_TYPE_MISMATCH",
+        "source.type.mismatch",
+        "expected Int, got Text",
+    );
+}
+
+#[test]
 fn lowers_and_types_source_bytes_helpers() {
     let program = parse_ail_source(
         r#"

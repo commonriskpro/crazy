@@ -866,6 +866,42 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "map.insert(${1:map}, ${2:key}, ${3:value})",
     },
     AclSymbol {
+        label: "time_duration_since",
+        detail: "AIL source Time helper",
+        documentation: "Returns later_ms - earlier_ms for two epoch-millisecond Int instants.",
+        insert_text: "time_duration_since(${1:later_ms}, ${2:earlier_ms})",
+    },
+    AclSymbol {
+        label: "time.duration_since",
+        detail: "AIL source Time helper",
+        documentation: "Dotted alias that returns later_ms - earlier_ms for epoch-millisecond Int instants.",
+        insert_text: "time.duration_since(${1:later_ms}, ${2:earlier_ms})",
+    },
+    AclSymbol {
+        label: "time_add_duration",
+        detail: "AIL source Time helper",
+        documentation: "Adds a duration in milliseconds to an epoch-millisecond Int instant.",
+        insert_text: "time_add_duration(${1:instant_ms}, ${2:duration_ms})",
+    },
+    AclSymbol {
+        label: "time.add_duration",
+        detail: "AIL source Time helper",
+        documentation: "Dotted alias that adds a millisecond duration to an epoch-millisecond Int instant.",
+        insert_text: "time.add_duration(${1:instant_ms}, ${2:duration_ms})",
+    },
+    AclSymbol {
+        label: "time_instant_to_ms",
+        detail: "AIL source Time helper",
+        documentation: "Projects an epoch-millisecond Int instant to its millisecond value.",
+        insert_text: "time_instant_to_ms(${1:instant_ms})",
+    },
+    AclSymbol {
+        label: "time.instant_to_ms",
+        detail: "AIL source Time helper",
+        documentation: "Dotted alias that projects an epoch-millisecond Int instant to milliseconds.",
+        insert_text: "time.instant_to_ms(${1:instant_ms})",
+    },
+    AclSymbol {
         label: "bytes_length",
         detail: "AIL source Bytes helper",
         documentation: "Returns the byte count of a Bytes buffer as Int.",
