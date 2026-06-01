@@ -926,6 +926,66 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include AIL source int_rem_or helper; got: {int_rem_or_items:?}"
     );
 
+    let dotted_int_completion_output = ail()
+        .args(["lsp", "--complete", "int.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_int_completion = parse_json_output(&dotted_int_completion_output);
+    let dotted_int_items = dotted_int_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        [
+            ("int.min", "AIL source Int bounds helper"),
+            ("int.max", "AIL source Int bounds helper"),
+            ("int.clamp", "AIL source Int bounds helper"),
+            ("int.abs_or", "AIL source Int safety helper"),
+            ("int.neg_or", "AIL source Int safety helper"),
+            ("int.add_or", "AIL source Int safety helper"),
+            ("int.sub_or", "AIL source Int safety helper"),
+            ("int.mul_or", "AIL source Int safety helper"),
+            ("int.div_or", "AIL source Int safety helper"),
+            ("int.rem_or", "AIL source Int safety helper"),
+            ("int.saturating_add", "AIL source Int safety helper"),
+            ("int.saturating_sub", "AIL source Int safety helper"),
+            ("int.saturating_mul", "AIL source Int safety helper"),
+            ("int.saturating_neg", "AIL source Int safety helper"),
+            (
+                "int.wrapping_add",
+                "AIL source Int explicit wrapping helper"
+            ),
+            (
+                "int.wrapping_sub",
+                "AIL source Int explicit wrapping helper"
+            ),
+            (
+                "int.wrapping_mul",
+                "AIL source Int explicit wrapping helper"
+            ),
+            (
+                "int.wrapping_neg",
+                "AIL source Int explicit wrapping helper"
+            ),
+            ("int.bit_and", "AIL source Int bitwise helper"),
+            ("int.bit_or", "AIL source Int bitwise helper"),
+            ("int.bit_xor", "AIL source Int bitwise helper"),
+            ("int.bit_not", "AIL source Int bitwise helper"),
+            ("int.shift_left", "AIL source Int bit shift helper"),
+            ("int.shift_right", "AIL source Int bit shift helper"),
+            (
+                "int.shift_right_unsigned",
+                "AIL source Int bit shift helper"
+            ),
+        ]
+        .iter()
+        .all(|(label, detail)| dotted_int_items
+            .iter()
+            .any(|item| item["label"] == *label && item["detail"] == *detail)),
+        "completion must include dotted Int helpers; got: {dotted_int_items:?}"
+    );
+
     let text_contains_completion_output = ail()
         .args(["lsp", "--complete", "text_contains", "--json"])
         .assert()
