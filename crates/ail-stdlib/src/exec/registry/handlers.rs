@@ -839,6 +839,32 @@ pub(super) fn numeric_checked_mul(args: &[StdlibValue]) -> Result<StdlibValue, S
     ))
 }
 
+pub(super) fn numeric_min(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::min(*a, *b)))
+}
+
+pub(super) fn numeric_max(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::max(*a, *b)))
+}
+
+pub(super) fn numeric_clamp(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let (StdlibValue::Int(value), StdlibValue::Int(low), StdlibValue::Int(high)) =
+        (&args[0], &args[1], &args[2])
+    else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::clamp(*value, *low, *high)))
+}
+
 pub(super) fn numeric_wrapping_add(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 2)?;
     let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {

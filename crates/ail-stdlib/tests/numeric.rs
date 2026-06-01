@@ -3,7 +3,30 @@
 // TDD cycle: all tests written before implementation.
 // Spec: G26 stdlib-impl, Requirements R1.1–R1.5.
 
-use ail_stdlib::numeric::{checked_add, checked_mul, checked_sub, saturating_add, wrapping_add};
+use ail_stdlib::numeric::{
+    checked_add, checked_mul, checked_sub, clamp, max, min, saturating_add, wrapping_add,
+};
+
+// ── Bounds helpers ───────────────────────────────────────────────────────
+
+#[test]
+fn min_returns_smaller_signed_int() {
+    assert_eq!(min(10, -2), -2);
+    assert_eq!(min(-5, -8), -8);
+}
+
+#[test]
+fn max_returns_larger_signed_int() {
+    assert_eq!(max(10, -2), 10);
+    assert_eq!(max(-5, -8), -5);
+}
+
+#[test]
+fn clamp_bounds_signed_int() {
+    assert_eq!(clamp(-5, 0, 10), 0);
+    assert_eq!(clamp(15, 0, 10), 10);
+    assert_eq!(clamp(7, 0, 10), 7);
+}
 
 // ── R1.1 + R1.2: checked_add ──────────────────────────────────────────────
 

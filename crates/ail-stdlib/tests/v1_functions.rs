@@ -37,6 +37,17 @@ fn v1_functions_numeric_has_checked_add() {
 }
 
 #[test]
+fn v1_functions_numeric_has_bounds_helpers() {
+    let reg = v1_registry_with_functions();
+    for id in ["std.numeric.min", "std.numeric.max", "std.numeric.clamp"] {
+        assert!(
+            reg.entries.iter().any(|e| e.id.0 == id),
+            "registry must contain {id}"
+        );
+    }
+}
+
+#[test]
 fn v1_functions_option_has_map() {
     let reg = v1_registry_with_functions();
     assert!(

@@ -92,4 +92,62 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
             ensures: vec!["returns None on overflow".to_string()],
         }),
     });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.min".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "min".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "i64".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["signed integer comparison".to_string()],
+            ensures: vec!["returns the smaller operand".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.max".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "max".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "i64".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["signed integer comparison".to_string()],
+            ensures: vec!["returns the larger operand".to_string()],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.numeric.clamp".to_string()),
+        module_path: "std::numeric".to_string(),
+        name: "clamp".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "i64".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["signed integer bounds".to_string()],
+            ensures: vec![
+                "returns low when value is below low".to_string(),
+                "returns high when value is above high".to_string(),
+                "returns value when value is inside bounds".to_string(),
+            ],
+        }),
+    });
 }

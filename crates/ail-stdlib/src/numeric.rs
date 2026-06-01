@@ -11,6 +11,31 @@
 
 // ── Checked arithmetic ────────────────────────────────────────────────────
 
+/// Return the smaller of two `i64` values.
+pub fn min(a: i64, b: i64) -> i64 {
+    a.min(b)
+}
+
+/// Return the larger of two `i64` values.
+pub fn max(a: i64, b: i64) -> i64 {
+    a.max(b)
+}
+
+/// Clamp an `i64` value between low and high bounds.
+///
+/// This intentionally mirrors the existing AIL `int_clamp` compiler helper:
+/// first return `low` when `value < low`, otherwise return `high` when
+/// `value > high`, otherwise return `value`.
+pub fn clamp(value: i64, low: i64, high: i64) -> i64 {
+    if value < low {
+        low
+    } else if value > high {
+        high
+    } else {
+        value
+    }
+}
+
 /// Add two `i64` values, returning `None` on overflow.
 pub fn checked_add(a: i64, b: i64) -> Option<i64> {
     a.checked_add(b)

@@ -73,12 +73,9 @@ pub(super) fn try_lower_int_call(
             match (value, low, high) {
                 (Some(value), Some(low), Some(high)) => {
                     let below_low = builder.ins().icmp(IntCC::SignedLessThan, value, low);
-                    let low_or_value = builder.ins().select(below_low, low, value);
-                    let above_high =
-                        builder
-                            .ins()
-                            .icmp(IntCC::SignedGreaterThan, low_or_value, high);
-                    LowerResult::Value(builder.ins().select(above_high, high, low_or_value))
+                    let above_high = builder.ins().icmp(IntCC::SignedGreaterThan, value, high);
+                    let high_or_value = builder.ins().select(above_high, high, value);
+                    LowerResult::Value(builder.ins().select(below_low, low, high_or_value))
                 }
                 _ => {
                     builder.ins().trap(TrapCode::user(1).unwrap());

@@ -121,6 +121,78 @@ fn checked_mul_normal_returns_option_some() {
     );
 }
 
+// ── STDLIB-EXEC-NUM-7: bounds helpers match source/compiler helpers ──────
+
+#[test]
+fn min_returns_smaller_signed_int() {
+    let result = call_pure_stdlib(
+        "std.numeric.min",
+        &[StdlibValue::Int(10), StdlibValue::Int(-2)],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(-2)));
+}
+
+#[test]
+fn max_returns_larger_signed_int() {
+    let result = call_pure_stdlib(
+        "std.numeric.max",
+        &[StdlibValue::Int(10), StdlibValue::Int(-2)],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(10)));
+}
+
+#[test]
+fn clamp_returns_low_when_value_is_below_bounds() {
+    let result = call_pure_stdlib(
+        "std.numeric.clamp",
+        &[
+            StdlibValue::Int(-5),
+            StdlibValue::Int(0),
+            StdlibValue::Int(10),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(0)));
+}
+
+#[test]
+fn clamp_returns_high_when_value_is_above_bounds() {
+    let result = call_pure_stdlib(
+        "std.numeric.clamp",
+        &[
+            StdlibValue::Int(15),
+            StdlibValue::Int(0),
+            StdlibValue::Int(10),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(10)));
+}
+
+#[test]
+fn clamp_returns_value_when_value_is_inside_bounds() {
+    let result = call_pure_stdlib(
+        "std.numeric.clamp",
+        &[
+            StdlibValue::Int(7),
+            StdlibValue::Int(0),
+            StdlibValue::Int(10),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(7)));
+}
+
+#[test]
+fn clamp_type_error_returns_err() {
+    let result = call_pure_stdlib(
+        "std.numeric.clamp",
+        &[
+            StdlibValue::Text("x".to_string()),
+            StdlibValue::Int(0),
+            StdlibValue::Int(10),
+        ],
+    );
+    assert_eq!(result, Err(StdlibExecError::Type { expected: "Int" }));
+}
+
 // ── STDLIB-EXEC-NUM-7: type error returns Err(Type) ───────────────────────
 
 #[test]
