@@ -572,6 +572,7 @@ fn supported_diagnostic_code(code: &str) -> bool {
             | "AIL_SOURCE_LOWER_INDEX_EXPRESSION"
             | "AIL_SOURCE_LOWER_INT_HELPER"
             | "AIL_SOURCE_LOWER_LIST_LITERAL"
+            | "AIL_SOURCE_LOWER_MATCH_EXPRESSION"
             | "AIL_SOURCE_LOWER_OPTION_RESULT_HELPER"
             | "AIL_SOURCE_LOWER_PIPE_EXPRESSION"
             | "AIL_SOURCE_LOWER_RECORD_LITERAL"

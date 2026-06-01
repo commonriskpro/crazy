@@ -998,6 +998,16 @@ fn main() -> Int {
 }
 
 #[test]
+fn rejects_match_expression_shape_with_stable_lowering_diagnostic() {
+    assert_lowering_diagnostic(
+        lower_source_expr("match { _ => 1 }", 61),
+        "AIL_SOURCE_LOWER_MATCH_EXPRESSION",
+        "source.lower.match",
+        "match expression requires a scrutinee",
+    );
+}
+
+#[test]
 fn rejects_if_expression_shape_with_stable_lowering_diagnostic() {
     assert_lowering_diagnostic(
         lower_source_expr("if { 1 } else { 2 }", 55),
