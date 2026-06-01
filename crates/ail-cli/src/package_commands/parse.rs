@@ -31,3 +31,53 @@ pub(super) fn validate_required_package_metadata_field(
     }
     Ok(value)
 }
+
+pub(super) fn validate_optional_reproducible_evidence(
+    source_digest: Option<String>,
+    toolchain_id: Option<String>,
+    recipe_hash: Option<String>,
+) -> Result<Option<ReproducibleBuildEvidence>, CliError> {
+    let provided = [
+        source_digest.is_some(),
+        toolchain_id.is_some(),
+        recipe_hash.is_some(),
+    ]
+    .iter()
+    .filter(|provided| **provided)
+    .count();
+    if provided == 0 {
+        return Ok(None);
+    }
+    if provided != 3 {
+        return Err(CliError::ParseError(
+            "reproducible evidence requires --source-digest, --toolchain-id, and --recipe-hash"
+                .to_string(),
+        ));
+    }
+
+    let source_digest =
+        validate_package_blake3_hex_field("source_digest", source_digest.expect("checked"))?;
+    let toolchain_id =
+        validate_required_package_metadata_field("toolchain_id", toolchain_id.expect("checked"))?;
+    let recipe_hash =
+        validate_package_blake3_hex_field("recipe_hash", recipe_hash.expect("checked"))?;
+    Ok(Some(ReproducibleBuildEvidence::new(
+        source_digest,
+        toolchain_id,
+        recipe_hash,
+    )))
+}
+
+fn validate_package_blake3_hex_field(field: &str, value: String) -> Result<String, CliError> {
+    let value = validate_required_package_metadata_field(field, value)?;
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(CliError::ParseError(format!(
+            "package metadata {field} must be a 64-character lowercase BLAKE3 hex digest"
+        )));
+    }
+    Ok(value)
+}

@@ -18,16 +18,22 @@ pub(crate) async fn cmd_package(
             name,
             version,
             license,
+            source_digest,
+            toolchain_id,
+            recipe_hash,
         } => {
             let package_name = name.unwrap_or_else(|| "local.package".to_string());
             let license = license
                 .map(|value| validate_required_package_metadata_field("license", value))
                 .transpose()?;
+            let reproducible_evidence =
+                validate_optional_reproducible_evidence(source_digest, toolchain_id, recipe_hash)?;
             let manifest = package_manifest_for_current_graph_with_metadata(
                 store,
                 &package_name,
                 &version,
                 license,
+                reproducible_evidence,
             )
             .await?;
             save_package_manifest(store, &manifest)?;
@@ -41,8 +47,9 @@ pub(crate) async fn cmd_package(
                 "warning"
             };
             let human_msg = format!(
-                "package initialized\nname: {package_name}\nversion: {version}\nlicense: {}\nmanifest_hash: {hash}\nproduction_lint: {production_lint}\nproduction_issue_count: {}",
+                "package initialized\nname: {package_name}\nversion: {version}\nlicense: {}\nmanifest_hash: {hash}\nreproducible_evidence: {}\nproduction_lint: {production_lint}\nproduction_issue_count: {}",
                 manifest.license.as_deref().unwrap_or("none"),
+                reproducible_evidence_status(manifest.reproducible_evidence.is_some()),
                 production_issues.len()
             );
             print_response(
@@ -52,6 +59,9 @@ pub(crate) async fn cmd_package(
                     "initialized": true,
                     "manifest": package_manifest_to_json(&manifest)?,
                     "manifest_hash": hash,
+                    "reproducible_evidence_status": reproducible_evidence_status(
+                        manifest.reproducible_evidence.is_some()
+                    ),
                     "production_lint": production_lint,
                     "production_issue_count": production_issues.len(),
                     "production_issues": production_issues

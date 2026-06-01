@@ -8,7 +8,7 @@ pub(crate) async fn package_manifest_for_current_graph(
     name: &str,
     version: &str,
 ) -> Result<PackageManifest, CliError> {
-    package_manifest_for_current_graph_with_metadata(store, name, version, None).await
+    package_manifest_for_current_graph_with_metadata(store, name, version, None, None).await
 }
 
 pub(super) async fn package_manifest_for_current_graph_with_metadata(
@@ -16,6 +16,7 @@ pub(super) async fn package_manifest_for_current_graph_with_metadata(
     name: &str,
     version: &str,
     license: Option<String>,
+    reproducible_evidence: Option<ReproducibleBuildEvidence>,
 ) -> Result<PackageManifest, CliError> {
     let graph = load_current_graph_for_cli(store).await?;
     let graph_hash = store.save_graph(&graph).await?.to_hex();
@@ -65,7 +66,7 @@ pub(super) async fn package_manifest_for_current_graph_with_metadata(
         graph_schema: Some(1),
         core_ir_schema: Some(1),
         // 4G fields
-        reproducible_evidence: None,
+        reproducible_evidence,
     });
     manifest
         .validate()

@@ -102,6 +102,9 @@ async fn cmd_package_init_persists_license_metadata() {
             name: Some("local.package".to_string()),
             version: "1.2.3".to_string(),
             license: Some("MIT".to_string()),
+            source_digest: None,
+            toolchain_id: None,
+            recipe_hash: None,
         },
         &store,
     )
@@ -119,4 +122,40 @@ async fn cmd_package_init_persists_license_metadata() {
         manifest.production_validation_issues().is_empty(),
         "license, semver, and package name should produce a production-clean minimal manifest"
     );
+}
+
+#[tokio::test]
+async fn cmd_package_init_persists_reproducible_evidence() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    crate::store::init_file_layout(&ail_dir).expect("init layout");
+    let store = crate::store::file_store(ail_dir);
+
+    let result = cmd_package(
+        OutputMode::Json,
+        PackageCmd::Init {
+            name: Some("local.package".to_string()),
+            version: "1.2.3".to_string(),
+            license: Some("MIT".to_string()),
+            source_digest: Some("a".repeat(64)),
+            toolchain_id: Some("ail-toolchain-1".to_string()),
+            recipe_hash: Some("b".repeat(64)),
+        },
+        &store,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "package init with reproducible evidence must succeed; got: {result:?}"
+    );
+    let path = package_manifest_path(&store).expect("manifest path");
+    let bytes = std::fs::read(path).expect("manifest bytes");
+    let manifest: PackageManifest = ciborium::from_reader(bytes.as_slice()).expect("manifest cbor");
+    let evidence = manifest
+        .reproducible_evidence
+        .expect("evidence must persist");
+    assert_eq!(evidence.source_digest, "a".repeat(64));
+    assert_eq!(evidence.toolchain_id, "ail-toolchain-1");
+    assert_eq!(evidence.recipe_hash, "b".repeat(64));
 }

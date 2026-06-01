@@ -546,6 +546,15 @@ pub(crate) enum PackageCmd {
         /// SPDX-style package license metadata for production publishing.
         #[arg(long)]
         license: Option<String>,
+        /// BLAKE3 source archive digest for reproducible-build evidence.
+        #[arg(long)]
+        source_digest: Option<String>,
+        /// Toolchain identifier for reproducible-build evidence.
+        #[arg(long)]
+        toolchain_id: Option<String>,
+        /// BLAKE3 deterministic build recipe hash for reproducible-build evidence.
+        #[arg(long)]
+        recipe_hash: Option<String>,
     },
     /// Add a package dependency (shows trust/capabilities/advisories).
     Add {

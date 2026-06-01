@@ -176,6 +176,44 @@ fn package_init_json_accepts_license_metadata() {
     assert_eq!(v["data"]["production_issue_count"], 0);
 }
 
+/// package init can attach reproducible-build evidence metadata.
+#[test]
+fn package_init_json_accepts_reproducible_evidence() {
+    let source_digest = "a".repeat(64);
+    let recipe_hash = "b".repeat(64);
+    let output = ail()
+        .args([
+            "package",
+            "init",
+            "--name",
+            "local.package",
+            "--version",
+            "1.2.3",
+            "--license",
+            "MIT",
+            "--source-digest",
+            &source_digest,
+            "--toolchain-id",
+            "ail-toolchain-1",
+            "--recipe-hash",
+            &recipe_hash,
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["reproducible_evidence_status"], "present");
+    assert_eq!(
+        v["data"]["manifest"]["reproducible_evidence"]["toolchain_id"],
+        "ail-toolchain-1"
+    );
+    assert!(v["data"]["manifest"]["reproducible_evidence"]["build_inputs_hash"].is_string());
+}
+
 /// package explain --json produces JSON with package and capabilities.
 #[test]
 fn package_explain_json_has_package_and_capabilities() {
