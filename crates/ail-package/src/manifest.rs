@@ -280,6 +280,12 @@ pub enum PackageValidationError {
     /// WASM packages must carry the ABI descriptor that runtimes and package
     /// compatibility gates use to validate invocation contracts.
     WasmArtifactMissingAbiDescriptor,
+    /// An artifact hash entry has an empty role.
+    ArtifactRoleEmpty,
+    /// An artifact hash entry does not contain a canonical BLAKE3 hex digest.
+    ArtifactHashInvalid,
+    /// More than one artifact hash entry uses the same role.
+    DuplicateArtifactRole,
 }
 
 impl std::fmt::Display for PackageValidationError {
@@ -305,6 +311,16 @@ impl std::fmt::Display for PackageValidationError {
                 f,
                 "a wasm artifact declaration is missing its wasm-abi-descriptor artifact"
             ),
+            PackageValidationError::ArtifactRoleEmpty => {
+                write!(f, "an artifact hash entry has an empty role")
+            }
+            PackageValidationError::ArtifactHashInvalid => write!(
+                f,
+                "an artifact hash entry has a non-canonical BLAKE3 hex digest"
+            ),
+            PackageValidationError::DuplicateArtifactRole => {
+                write!(f, "artifact hash entries must not repeat a role")
+            }
         }
     }
 }
@@ -336,6 +352,9 @@ pub enum PackageManifestIssueKind {
     MissingLicense,
     MissingEntryMetadata,
     MissingAbiDescriptorArtifact,
+    ArtifactRoleEmpty,
+    ArtifactHashInvalid,
+    DuplicateArtifactRole,
     DuplicateDependency,
     DuplicateCapability,
     DuplicateExport,
@@ -547,6 +566,19 @@ impl PackageManifest {
                 return Err(PackageValidationError::ImportSourceEmpty);
             }
         }
+        let mut artifact_roles = BTreeMap::new();
+        for artifact in &self.artifact_hashes {
+            let role = artifact.role.trim();
+            if role.is_empty() {
+                return Err(PackageValidationError::ArtifactRoleEmpty);
+            }
+            if !is_valid_blake3_hex(&artifact.hash) {
+                return Err(PackageValidationError::ArtifactHashInvalid);
+            }
+            if artifact_roles.insert(role, ()).is_some() {
+                return Err(PackageValidationError::DuplicateArtifactRole);
+            }
+        }
         if has_artifact_role(&self.artifact_hashes, "wasm-artifact")
             && !has_artifact_role(&self.artifact_hashes, "wasm-abi-descriptor")
         {
@@ -623,6 +655,7 @@ impl PackageManifest {
             "exported capability entries must be unique",
         );
         push_duplicate_import_issues(&mut issues, &self.imports);
+        push_artifact_hash_issues(&mut issues, &self.artifact_hashes);
         if has_artifact_role(&self.artifact_hashes, "wasm-artifact")
             && !has_artifact_role(&self.artifact_hashes, "wasm-abi-descriptor")
         {
@@ -712,6 +745,58 @@ fn has_artifact_role(artifact_hashes: &[ArtifactHashEntry], role: &str) -> bool 
     artifact_hashes
         .iter()
         .any(|entry| entry.role.trim() == role)
+}
+
+fn is_valid_blake3_hex(hash: &str) -> bool {
+    hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn push_artifact_hash_issues(
+    issues: &mut Vec<PackageManifestIssue>,
+    artifact_hashes: &[ArtifactHashEntry],
+) {
+    let mut first_role_indexes: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut duplicate_roles = Vec::new();
+
+    for (index, artifact) in artifact_hashes.iter().enumerate() {
+        let role = artifact.role.trim();
+        if role.is_empty() {
+            issues.push(PackageManifestIssue::new(
+                PackageManifestIssueKind::ArtifactRoleEmpty,
+                "manifest.artifact_hashes.role",
+                Some(index),
+                None,
+                "artifact hash entries must include an artifact role",
+            ));
+        } else if let Some(first_index) = first_role_indexes.get(role).copied() {
+            duplicate_roles.push((index, first_index));
+        } else {
+            first_role_indexes.insert(role, index);
+        }
+
+        if !is_valid_blake3_hex(&artifact.hash) {
+            issues.push(PackageManifestIssue::new(
+                PackageManifestIssueKind::ArtifactHashInvalid,
+                "manifest.artifact_hashes.hash",
+                Some(index),
+                None,
+                "artifact hashes must be canonical BLAKE3 hex digests",
+            ));
+        }
+    }
+
+    for (index, first_index) in duplicate_roles {
+        issues.push(PackageManifestIssue::new(
+            PackageManifestIssueKind::DuplicateArtifactRole,
+            "manifest.artifact_hashes.role",
+            Some(index),
+            Some(first_index),
+            "artifact hash roles must be unique",
+        ));
+    }
 }
 
 fn push_duplicate_string_issues(
@@ -1380,6 +1465,50 @@ mod tests {
             PackageManifestIssueKind::MissingAbiDescriptorArtifact
         );
         assert_eq!(issues[0].descriptor.path, "manifest.artifact_hashes");
+    }
+
+    #[test]
+    fn production_validation_reports_invalid_artifact_hash_entries() {
+        let mut def = minimal_def(TrustLevel::Assumed);
+        def.license = Some("Apache-2.0".to_string());
+        def.artifact_hashes.push(ArtifactHashEntry {
+            role: "".to_string(),
+            hash: "not-a-blake3-hash".to_string(),
+        });
+        def.artifact_hashes.push(ArtifactHashEntry {
+            role: "source-archive".to_string(),
+            hash: "a".repeat(64),
+        });
+        def.artifact_hashes.push(ArtifactHashEntry {
+            role: "source-archive".to_string(),
+            hash: "b".repeat(64),
+        });
+
+        let manifest = PackageManifest::from_def(def);
+        assert_eq!(
+            manifest.validate(),
+            Err(PackageValidationError::ArtifactRoleEmpty)
+        );
+
+        let issues = manifest.production_validation_issues();
+        let kinds = issues
+            .iter()
+            .map(|issue| issue.kind.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            kinds,
+            vec![
+                PackageManifestIssueKind::ArtifactRoleEmpty,
+                PackageManifestIssueKind::ArtifactHashInvalid,
+                PackageManifestIssueKind::DuplicateArtifactRole,
+            ]
+        );
+        assert_eq!(issues[0].descriptor.path, "manifest.artifact_hashes.role");
+        assert_eq!(issues[0].descriptor.index, Some(0));
+        assert_eq!(issues[1].descriptor.path, "manifest.artifact_hashes.hash");
+        assert_eq!(issues[1].descriptor.index, Some(0));
+        assert_eq!(issues[2].descriptor.duplicate_of, Some(1));
     }
 
     // ── production diagnostics accepts publish-ready manifest ─────────────

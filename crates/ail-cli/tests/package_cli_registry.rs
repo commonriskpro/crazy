@@ -530,6 +530,34 @@ fn package_install_rejects_invalid_legacy_manifest_json() {
 }
 
 #[test]
+fn package_install_rejects_invalid_artifact_hash_json() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let mut manifest = test_package_manifest("artifact.invalid", "1.0.0", TrustLevel::Assumed);
+    manifest.artifact_hashes.push(ArtifactHashEntry {
+        role: "source-archive".to_string(),
+        hash: "not-a-blake3-hash".to_string(),
+    });
+    write_legacy_package_registry(dir.path(), &[manifest]);
+
+    let output = ail()
+        .args(["package", "install", "artifact.invalid@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("code=install.manifest.invalid"))
+        .stderr(predicate::str::contains("category=manifest"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["data"]["code"], "install.manifest.invalid");
+    assert_eq!(v["data"]["category"], "manifest");
+}
+
+#[test]
 fn package_verify_rejects_invalid_registry_manifest_json() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
@@ -572,6 +600,52 @@ fn package_verify_rejects_invalid_registry_manifest_json() {
             .expect("signature failure must be string")
             .contains("package manifest validation failed"),
         "verify failure must explain invalid package metadata; got: {v}"
+    );
+}
+
+#[test]
+fn package_verify_rejects_invalid_artifact_hash_json() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let mut manifest = test_package_manifest("artifact.invalid", "1.0.0", TrustLevel::Assumed);
+    manifest.artifact_hashes.push(ArtifactHashEntry {
+        role: "source-archive".to_string(),
+        hash: "not-a-blake3-hash".to_string(),
+    });
+    write_legacy_package_registry(dir.path(), &[manifest.clone()]);
+    let mut lockfile = Lockfile::new();
+    lockfile.add(LockfileEntry {
+        name: manifest.name.clone(),
+        version: manifest.version.clone(),
+        requested_version: None,
+        package_hash: manifest.blake3_hex().expect("manifest hash must compute"),
+        trust_level: manifest.trust_level,
+        verification_report_hash: None,
+        artifact_hashes: vec![],
+        accepted_assumptions: vec![],
+    });
+    write_package_lockfile(dir.path(), &lockfile);
+
+    let output = ail()
+        .args(["package", "verify", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("signature or package metadata"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["data"]["verified"], false);
+    assert_eq!(v["data"]["signature_integrity"], "failed");
+    assert!(
+        v["data"]["signature_failures"][0]
+            .as_str()
+            .expect("signature failure must be string")
+            .contains("BLAKE3"),
+        "verify failure must explain the invalid artifact hash; got: {v}"
     );
 }
 
@@ -885,6 +959,47 @@ fn package_publish_rejects_wasm_artifact_without_abi_descriptor() {
             .expect("message must be string")
             .contains("wasm-abi-descriptor"),
         "publish failure must explain the missing ABI descriptor; got: {v}"
+    );
+}
+
+#[test]
+fn package_publish_rejects_invalid_artifact_hash() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let mut manifest = test_package_manifest("artifact.invalid", "1.0.0", TrustLevel::Assumed);
+    manifest.artifact_hashes.push(ArtifactHashEntry {
+        role: "source-archive".to_string(),
+        hash: "not-a-blake3-hash".to_string(),
+    });
+
+    let package_dir = dir.path().join(".ail").join("packages");
+    fs::create_dir_all(&package_dir).expect("package dir must be created");
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&manifest, &mut bytes).expect("package manifest must encode");
+    fs::write(package_dir.join("package.cbor"), bytes).expect("package manifest must be written");
+
+    let output = ail()
+        .args(["package", "publish", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("package publish preflight failed"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "error");
+    assert_eq!(v["data"]["published"], false);
+    assert_eq!(v["data"]["preflight"], "failed");
+    assert_eq!(v["data"]["error"], "package_publish_preflight_failed");
+    assert!(
+        v["data"]["message"]
+            .as_str()
+            .expect("message must be string")
+            .contains("BLAKE3"),
+        "publish failure must explain the invalid artifact hash; got: {v}"
     );
 }
 
