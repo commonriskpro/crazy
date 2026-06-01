@@ -566,6 +566,7 @@ fn supported_diagnostic_code(code: &str) -> bool {
             | "AIL_SOURCE_LOWER_BINDING_SHAPE"
             | "AIL_SOURCE_LOWER_CAPABILITY_REFERENCE"
             | "AIL_SOURCE_LOWER_COLLECTION_ARITY"
+            | "AIL_SOURCE_LOWER_CONTROL_EXPRESSION"
             | "AIL_SOURCE_LOWER_EXPRESSION"
             | "AIL_SOURCE_LOWER_FIELD_ACCESS"
             | "AIL_SOURCE_LOWER_INDEX_EXPRESSION"

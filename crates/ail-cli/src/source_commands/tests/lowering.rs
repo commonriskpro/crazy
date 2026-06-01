@@ -998,6 +998,16 @@ fn main() -> Int {
 }
 
 #[test]
+fn rejects_if_expression_shape_with_stable_lowering_diagnostic() {
+    assert_lowering_diagnostic(
+        lower_source_expr("if { 1 } else { 2 }", 55),
+        "AIL_SOURCE_LOWER_CONTROL_EXPRESSION",
+        "source.lower.control",
+        "if expression requires a condition",
+    );
+}
+
+#[test]
 fn lowers_source_if_expression_to_compiler_if_call() {
     let program = parse_ail_source(
         r#"

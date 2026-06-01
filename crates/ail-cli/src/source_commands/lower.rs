@@ -27,6 +27,7 @@ pub(super) enum SourceLowerDiagnostic {
     BindingShape,
     CapabilityReference,
     CollectionArity,
+    ControlExpression,
     Expression,
     FieldAccess,
     IndexExpression,
@@ -48,6 +49,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::BindingShape => "AIL_SOURCE_LOWER_BINDING_SHAPE",
             SourceLowerDiagnostic::CapabilityReference => "AIL_SOURCE_LOWER_CAPABILITY_REFERENCE",
             SourceLowerDiagnostic::CollectionArity => "AIL_SOURCE_LOWER_COLLECTION_ARITY",
+            SourceLowerDiagnostic::ControlExpression => "AIL_SOURCE_LOWER_CONTROL_EXPRESSION",
             SourceLowerDiagnostic::Expression => "AIL_SOURCE_LOWER_EXPRESSION",
             SourceLowerDiagnostic::FieldAccess => "AIL_SOURCE_LOWER_FIELD_ACCESS",
             SourceLowerDiagnostic::IndexExpression => "AIL_SOURCE_LOWER_INDEX_EXPRESSION",
@@ -68,6 +70,7 @@ impl SourceLowerDiagnostic {
         match self {
             SourceLowerDiagnostic::BindingShape => "source.lower.binding",
             SourceLowerDiagnostic::CapabilityReference => "source.lower.capability",
+            SourceLowerDiagnostic::ControlExpression => "source.lower.control",
             SourceLowerDiagnostic::Expression => "source.lower.expression",
             SourceLowerDiagnostic::IntHelper => "source.lower.int",
             SourceLowerDiagnostic::OptionResultHelper => "source.lower.option_result",
