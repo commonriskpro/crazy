@@ -1063,6 +1063,14 @@ fn source_type_annotation_error(ty: &str) -> CliError {
     )
 }
 
+fn source_let_line_marker_error(line: &str) -> CliError {
+    source_expr_error(
+        "AIL_SOURCE_LET_LINE_MARKER",
+        "source.let.line_marker",
+        format!("invalid typed let source line marker `{line}`"),
+    )
+}
+
 fn source_type_error(code: &str, category: &str, message: impl AsRef<str>) -> CliError {
     CliError::ParseError(format!("{} [{code}] category={category}", message.as_ref()))
 }
@@ -1138,7 +1146,7 @@ pub(super) fn validate_source_let_line_marker(line: &str) -> Result<(), CliError
 
 pub(super) fn parse_source_let_line_marker(line: &str) -> Result<usize, CliError> {
     line.parse::<usize>()
-        .map_err(|_| CliError::ParseError(format!("invalid typed let source line marker `{line}`")))
+        .map_err(|_| source_let_line_marker_error(line))
 }
 
 pub(super) fn source_error_at_line(err: CliError, line_num: usize) -> CliError {

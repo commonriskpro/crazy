@@ -579,6 +579,46 @@ fn lsp_diagnose_reports_unsupported_source_type_annotation_code() {
 }
 
 #[test]
+fn lsp_diagnose_reports_typed_let_line_marker_code() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int = let_typed(value, Int, nope, 1, value)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("invalid typed let source line marker `nope`")
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_LET_LINE_MARKER"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.let.line_marker"
+    );
+}
+
+#[test]
 fn lsp_diagnose_reports_non_finite_source_numeric_literals() {
     use assert_fs::prelude::*;
 
