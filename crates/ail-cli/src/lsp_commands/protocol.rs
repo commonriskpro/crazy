@@ -603,6 +603,7 @@ fn supported_diagnostic_code(code: &str) -> bool {
             | "AIL_SOURCE_PARSE_UNEXPECTED_TOKEN"
             | "AIL_SOURCE_RECORD_FIELD_DUPLICATE"
             | "AIL_SOURCE_RECORD_FIELD_UNKNOWN"
+            | "AIL_SOURCE_SYMBOL_BUILTIN_SHADOW"
             | "AIL_SOURCE_SYMBOL_DUPLICATE"
             | "AIL_SOURCE_TYPE_MISMATCH"
             | "AIL_SOURCE_TYPE_SHAPE_MISMATCH"

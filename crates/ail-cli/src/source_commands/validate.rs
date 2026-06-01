@@ -273,18 +273,20 @@ pub(super) fn validate_source_program_symbols(program: &SourceProgram) -> Result
     }
     for constant in &program.constants {
         if let Some(builtin) = source_function_builtin_shadow(&constant.name) {
-            return Err(CliError::ParseError(format!(
-                "const declaration `{}` shadows builtin `{builtin}`",
-                constant.name
-            )));
+            return Err(source_symbol_builtin_shadow_error(
+                "const",
+                &constant.name,
+                builtin,
+            ));
         }
     }
     for function in &program.functions {
         if let Some(builtin) = source_function_builtin_shadow(&function.name) {
-            return Err(CliError::ParseError(format!(
-                "function declaration `{}` shadows builtin `{builtin}`",
-                function.name
-            )));
+            return Err(source_symbol_builtin_shadow_error(
+                "function",
+                &function.name,
+                builtin,
+            ));
         }
     }
     Ok(())
@@ -346,6 +348,14 @@ fn source_symbol_duplicate_error(
         "AIL_SOURCE_SYMBOL_DUPLICATE",
         "source.symbol.duplicate",
         format_duplicate_source_declaration(imported_kind, legacy_prefix, first, second),
+    )
+}
+
+fn source_symbol_builtin_shadow_error(kind: &str, name: &str, builtin: &str) -> CliError {
+    source_symbol_error(
+        "AIL_SOURCE_SYMBOL_BUILTIN_SHADOW",
+        "source.symbol.builtin_shadow",
+        format!("{kind} declaration `{name}` shadows builtin `{builtin}`"),
     )
 }
 

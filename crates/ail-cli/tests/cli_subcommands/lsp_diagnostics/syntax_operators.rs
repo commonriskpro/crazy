@@ -383,6 +383,14 @@ fn lsp_diagnose_reports_source_functions_that_shadow_builtins() {
             .expect("diagnostic message")
             .contains("function declaration `fn.add` shadows builtin `add`")
     );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_SYMBOL_BUILTIN_SHADOW"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.symbol.builtin_shadow"
+    );
 }
 #[test]
 fn lsp_diagnose_reports_duplicate_source_parameters() {
