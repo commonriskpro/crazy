@@ -409,9 +409,11 @@ pub(super) fn infer_source_is_empty_type(
             require_source_list_type(&arg_ty, &format!("{func} argument 1"))?;
         }
         _ if arg_ty != "Text" && source_list_element_type(&arg_ty).is_none() => {
-            return Err(CliError::ParseError(format!(
-                "type mismatch in {func} argument 1: expected Text or List<Unknown>, got {arg_ty}"
-            )));
+            return Err(source_type_shape_mismatch_error(
+                &format!("{func} argument 1"),
+                "Text or List<Unknown>",
+                &arg_ty,
+            ));
         }
         _ => {}
     }
@@ -433,9 +435,11 @@ pub(super) fn infer_source_length_type(
             require_source_list_type(&arg_ty, &format!("{func} argument 1"))?;
         }
         _ if arg_ty != "Text" && source_list_element_type(&arg_ty).is_none() => {
-            return Err(CliError::ParseError(format!(
-                "type mismatch in {func} argument 1: expected Text or List<Unknown>, got {arg_ty}"
-            )));
+            return Err(source_type_shape_mismatch_error(
+                &format!("{func} argument 1"),
+                "Text or List<Unknown>",
+                &arg_ty,
+            ));
         }
         _ => {}
     }

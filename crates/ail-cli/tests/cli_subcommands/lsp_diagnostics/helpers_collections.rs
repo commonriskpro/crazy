@@ -125,6 +125,46 @@ fn lsp_diagnose_reports_source_list_length_type_mismatch() {
 }
 
 #[test]
+fn lsp_diagnose_reports_source_len_union_shape_code() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn count(value: Int) -> Int = len(value)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("type mismatch in len argument 1: expected Text or List<Unknown>, got Int")
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_TYPE_SHAPE_MISMATCH"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.type.shape"
+    );
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_text_concat_operator() {
     use assert_fs::prelude::*;
 
@@ -783,6 +823,49 @@ fn lsp_diagnose_reports_source_is_empty_alias_type_mismatch() {
             )
     );
 }
+
+#[test]
+fn lsp_diagnose_reports_source_is_empty_union_shape_code() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn empty(value: Int) -> Bool = is_empty(value)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains(
+                "type mismatch in is_empty argument 1: expected Text or List<Unknown>, got Int"
+            )
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_TYPE_SHAPE_MISMATCH"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.type.shape"
+    );
+}
+
 #[test]
 fn lsp_diagnose_accepts_source_set_and_map_collections() {
     use assert_fs::prelude::*;
