@@ -80,6 +80,26 @@ fn compile_file_accepts_source_block_expression_statement() {
 }
 
 #[test]
+fn compile_file_accepts_source_control_block_expression_statements() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("control_block_statement.ail");
+    source
+        .write_str(
+            "capability log.write\nfn main(flag: Bool) -> Int {\n  if flag {\n    log.write(\"then\")\n    return 1\n  } else {\n    log.write(\"else\")\n    return 0\n  }\n}\ngrant main log.write\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args(["compile", "--file"])
+        .arg(source.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
 fn compile_file_accepts_source_consts() {
     use assert_fs::prelude::*;
 

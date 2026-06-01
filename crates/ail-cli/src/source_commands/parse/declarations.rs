@@ -428,7 +428,7 @@ pub(super) fn collect_braced_body(
 
 fn append_source_block_fragment(combined: &mut String, fragment: &str) {
     if !combined.is_empty() {
-        combined.push(' ');
+        combined.push('\n');
     }
     combined.push_str(fragment.trim());
 }

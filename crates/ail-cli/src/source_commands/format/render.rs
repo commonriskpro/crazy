@@ -165,10 +165,10 @@ pub(super) fn format_source_call_name(func: &str, module: Option<&str>) -> Strin
 }
 
 pub(super) struct SourceLetBinding {
-    name: String,
-    ty: Option<String>,
-    value: String,
-    is_statement: bool,
+    pub(super) name: String,
+    pub(super) ty: Option<String>,
+    pub(super) value: String,
+    pub(super) is_statement: bool,
 }
 
 pub(super) fn source_let_chain(body: &str) -> (Vec<SourceLetBinding>, String) {

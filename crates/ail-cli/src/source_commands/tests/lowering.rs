@@ -1186,6 +1186,65 @@ grant main log.write
 }
 
 #[test]
+fn lowers_source_if_branch_expression_statements() {
+    let program = parse_ail_source(
+        r#"capability log.write
+fn main(flag: Bool) -> Int {
+  if flag {
+    log.write("then")
+    return 1
+  } else {
+    log.write("else")
+    return 0
+  }
+}
+grant main log.write
+"#,
+    )
+    .expect("source");
+    let acl = source_program_to_acl(&program, "source_if_statement".to_string());
+
+    assert_eq!(
+        program.functions[0].body,
+        r#"if(flag, let(__ail_stmt_4, print("then"), 1), let(__ail_stmt_7, print("else"), 0))"#
+    );
+    assert!(acl.contains(
+        r#"op create_function id=fn.main return=Int body=if(flag, let(__ail_stmt_4, print("then"), 1), let(__ail_stmt_7, print("else"), 0))"#
+    ));
+}
+
+#[test]
+fn lowers_source_match_arm_expression_statements() {
+    let program = parse_ail_source(
+        r#"capability log.write
+fn main(value: Option<Int>) -> Int {
+  match value {
+    Some(v) => {
+      log.write("some")
+      return v
+    }
+    None => {
+      log.write("none")
+      return 0
+    }
+  }
+}
+grant main log.write
+"#,
+    )
+    .expect("source");
+    let acl = source_program_to_acl(&program, "source_match_statement".to_string());
+
+    assert_eq!(
+        program.functions[0].body,
+        r#"match(value, Some(v), let(__ail_stmt_5, print("some"), v), None, let(__ail_stmt_9, print("none"), 0))"#
+    );
+    assert!(acl.contains(
+        r#"op create_function id=fn.main return=Int body=match(value, Some(v), let(__ail_stmt_5, print("some"), v), None, let(__ail_stmt_9, print("none"), 0))"#
+    ));
+}
+
+#[test]
 fn lowers_source_unit_literal_to_compiler_unit_call() {
     let program = parse_ail_source("fn noop() -> Unit = ()\n").expect("source must parse");
     let acl = source_program_to_acl(&program, "source_unit".to_string());

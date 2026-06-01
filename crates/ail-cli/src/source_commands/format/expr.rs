@@ -72,9 +72,9 @@ pub(super) fn format_source_expr_node(
         }
         return (
             format!(
-                "if {} {{ {} }} else {}",
+                "if {} {} else {}",
                 format_source_expr(&args[0], module, constants),
-                format_source_expr(&args[1], module, constants),
+                format_source_branch_block(&args[1], module, constants, ""),
                 format_source_else_branch(&args[2], module, constants)
             ),
             IF_PRECEDENCE,
@@ -945,13 +945,53 @@ fn format_source_else_branch(
         && !source_if_prefers_helper(&args)
     {
         return format!(
-            "if {} {{ {} }} else {}",
+            "if {} {} else {}",
             format_source_expr(&args[0], module, constants),
-            format_source_expr(&args[1], module, constants),
+            format_source_branch_block(&args[1], module, constants, ""),
             format_source_else_branch(&args[2], module, constants)
         );
     }
-    format!("{{ {} }}", format_source_expr(expr, module, constants))
+    format_source_branch_block(expr, module, constants, "")
+}
+
+fn format_source_branch_block(
+    expr: &str,
+    module: Option<&str>,
+    constants: &BTreeMap<String, String>,
+    closing_indent: &str,
+) -> String {
+    let (lets, final_expr) = source_let_chain(expr);
+    if lets.is_empty() {
+        return format!("{{ {} }}", format_source_expr(expr, module, constants));
+    }
+
+    let body_indent = format!("{closing_indent}  ");
+    let mut out = String::from("{\n");
+    for binding in lets {
+        if binding.is_statement {
+            out.push_str(&format!(
+                "{body_indent}{}\n",
+                format_source_expr(&binding.value, module, constants)
+            ));
+            continue;
+        }
+        let annotation = binding
+            .ty
+            .as_ref()
+            .map(|ty| format!(": {ty}"))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "{body_indent}let {}{} = {}\n",
+            binding.name,
+            annotation,
+            format_source_expr(&binding.value, module, constants)
+        ));
+    }
+    out.push_str(&format!(
+        "{body_indent}return {}\n{closing_indent}}}",
+        format_source_expr(&final_expr, module, constants)
+    ));
+    out
 }
 
 fn source_if_prefers_helper(args: &[String]) -> bool {
@@ -970,9 +1010,9 @@ pub(super) fn format_source_match_expr(
         .chunks_exact(2)
         .map(|pair| {
             format!(
-                "  {} => {{\n    return {}\n  }}",
+                "  {} => {}",
                 format_source_match_pattern(&pair[0]),
-                format_source_expr(&pair[1], module, constants)
+                format_source_match_arm_block(&pair[1], module, constants)
             )
         })
         .collect::<Vec<_>>()
@@ -981,6 +1021,21 @@ pub(super) fn format_source_match_expr(
         "match {} {{\n{arms}\n}}",
         format_source_expr(&args[0], module, constants)
     )
+}
+
+fn format_source_match_arm_block(
+    expr: &str,
+    module: Option<&str>,
+    constants: &BTreeMap<String, String>,
+) -> String {
+    let (lets, _) = source_let_chain(expr);
+    if lets.is_empty() {
+        return format!(
+            "{{\n    return {}\n  }}",
+            format_source_expr(expr, module, constants)
+        );
+    }
+    format_source_branch_block(expr, module, constants, "  ")
 }
 
 fn format_source_match_pattern(pattern: &str) -> String {

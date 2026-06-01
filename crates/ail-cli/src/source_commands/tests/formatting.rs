@@ -671,6 +671,78 @@ grant main log.write\n"
 }
 
 #[test]
+fn formats_source_control_block_expression_statements() {
+    let (formatted, item_count) = format_ail_source(
+        r#"capability log.write
+fn main(flag:Bool)->Int{
+if flag {
+log.write("then")
+return 1
+} else {
+log.write("else")
+return 0
+}
+}
+grant main log.write
+"#,
+    )
+    .expect("source control block expression statement must format");
+
+    assert_eq!(item_count, 3);
+    assert!(
+        formatted.contains(
+            "return if flag {\n\
+  print(\"then\")\n\
+  return 1\n\
+} else {\n\
+  print(\"else\")\n\
+  return 0\n\
+}\n"
+        ),
+        "formatter must preserve expression statements in if branches; got:\n{formatted}"
+    );
+}
+
+#[test]
+fn formats_source_match_arm_expression_statements() {
+    let (formatted, item_count) = format_ail_source(
+        r#"capability log.write
+fn main(value:Option<Int>)->Int{
+match value {
+Some(v) => {
+log.write("some")
+return v
+}
+None => {
+log.write("none")
+return 0
+}
+}
+}
+grant main log.write
+"#,
+    )
+    .expect("source match arm expression statement must format");
+
+    assert_eq!(item_count, 3);
+    assert!(
+        formatted.contains(
+            "match value {\n\
+  Some(v) => {\n\
+    print(\"some\")\n\
+    return v\n\
+  }\n\
+  None => {\n\
+    print(\"none\")\n\
+    return 0\n\
+  }\n\
+}\n"
+        ),
+        "formatter must preserve expression statements in match arms; got:\n{formatted}"
+    );
+}
+
+#[test]
 fn formats_source_project_fixture_idempotently() {
     let src = r#"
 module app

@@ -30,7 +30,12 @@ pub(super) fn lower_match_expr(rest: &str, line_num: usize) -> Result<String, Cl
             "unexpected tokens after match expression",
         ));
     }
-    let arms = rest[open + 1..close].trim();
+    let raw_arms = &rest[open + 1..close];
+    let arms_line_num = line_num
+        + raw_arms[..raw_arms.len() - raw_arms.trim_start().len()]
+            .matches('\n')
+            .count();
+    let arms = raw_arms.trim();
     if arms.is_empty() {
         return Err(source_lower_error(
             line_num,
@@ -40,14 +45,18 @@ pub(super) fn lower_match_expr(rest: &str, line_num: usize) -> Result<String, Cl
     }
 
     let mut lowered = vec![lower_source_expr(scrutinee, line_num)?];
+    let mut arm_search_start = 0usize;
     for arm in split_source_match_arms(arms) {
+        let arm_start = arms[arm_search_start..]
+            .find(&arm)
+            .map(|idx| arm_search_start + idx)
+            .unwrap_or(arm_search_start);
         let (pattern, body) = split_source_match_arm(arm, line_num)?;
+        let body_line_num = source_match_arm_body_line(arms, arm_start, &arm, arms_line_num);
         let pattern = normalize_source_match_pattern(pattern, line_num)?;
         lowered.push(pattern);
-        lowered.push(lower_source_expr(
-            source_match_arm_body_expr(body),
-            line_num,
-        )?);
+        lowered.push(lower_source_match_arm_body_expr(body, body_line_num)?);
+        arm_search_start = arm_start + arm.len();
     }
     Ok(format!("match({})", lowered.join(", ")))
 }
@@ -121,10 +130,25 @@ pub(super) fn split_source_match_arm<'a>(
     Ok((pattern, body))
 }
 
-fn source_match_arm_body_expr(body: &str) -> &str {
+fn lower_source_match_arm_body_expr(body: &str, line_num: usize) -> Result<String, CliError> {
     let body = body.trim();
-    let body = source_match_arm_braced_expr(body).unwrap_or(body);
-    body.strip_prefix("return ").map(str::trim).unwrap_or(body)
+    if let Some(inner) = source_match_arm_braced_expr(body) {
+        return lower_source_statement_block_expr(
+            inner,
+            line_num,
+            SourceLowerDiagnostic::MatchExpression,
+            "match arm body must be a non-empty expression",
+        );
+    }
+    lower_source_expr(body, line_num)
+}
+
+fn source_match_arm_body_line(arms: &str, arm_start: usize, arm: &str, line_num: usize) -> usize {
+    let Some(arrow) = find_top_level_source_arrow(arm) else {
+        return line_num;
+    };
+    let body_start = arm_start + arrow + 2;
+    line_num + arms[..body_start].chars().filter(|ch| *ch == '\n').count()
 }
 
 fn source_match_arm_braced_expr(body: &str) -> Option<&str> {
@@ -132,8 +156,9 @@ fn source_match_arm_braced_expr(body: &str) -> Option<&str> {
     if !body.starts_with('{') || matching_brace(body, 0)? != body.len() - 1 {
         return None;
     }
-    let inner = body[1..body.len() - 1].trim();
-    if inner.starts_with("return ") || find_top_level_source_colon(inner).is_none() {
+    let inner = &body[1..body.len() - 1];
+    let trimmed = inner.trim();
+    if trimmed.starts_with("return ") || find_top_level_source_colon(trimmed).is_none() {
         Some(inner)
     } else {
         None
