@@ -144,11 +144,12 @@ pub(super) fn parse_source_const(
         )
     })?;
     let name_column = trimmed_fragment_column(base_column, name);
+    let return_type_column = source_fragment_column(base_column, head, return_type);
     let name = name.trim();
     let return_type = return_type.trim();
     let body = body.trim();
     validate_source_name_at(name, line_num, name_column)?;
-    validate_source_type_name(return_type, line_num)?;
+    validate_source_type_name_at(return_type, line_num, return_type_column)?;
     let return_type = normalize_source_type_name(return_type);
     if body.is_empty() {
         return Err(source_parse_error_for_fragment(
@@ -172,7 +173,7 @@ pub(super) fn parse_source_function(
     line_num: usize,
     base_column: usize,
 ) -> Result<SourceFunction, CliError> {
-    let (name, params, return_and_body) =
+    let (name, params, return_and_body, return_and_body_column) =
         parse_source_function_signature(rest, line_num, base_column)?;
     let (return_type, body) = return_and_body.split_once('=').ok_or_else(|| {
         source_parse_error_for_fragment(
@@ -182,8 +183,16 @@ pub(super) fn parse_source_function(
             "function declaration requires `= body`",
         )
     })?;
+    let return_type_column = trimmed_fragment_column(return_and_body_column, return_type);
 
-    build_source_function(name, params, return_type.trim(), body.trim(), line_num)
+    build_source_function(
+        name,
+        params,
+        return_type.trim(),
+        return_type_column,
+        body.trim(),
+        line_num,
+    )
 }
 
 pub(super) fn parse_source_function_with_body(
@@ -192,15 +201,23 @@ pub(super) fn parse_source_function_with_body(
     base_column: usize,
     body: String,
 ) -> Result<SourceFunction, CliError> {
-    let (name, params, return_type) = parse_source_function_signature(rest, line_num, base_column)?;
-    build_source_function(name, params, return_type.trim(), body.trim(), line_num)
+    let (name, params, return_type, return_type_column) =
+        parse_source_function_signature(rest, line_num, base_column)?;
+    build_source_function(
+        name,
+        params,
+        return_type.trim(),
+        trimmed_fragment_column(return_type_column, &return_type),
+        body.trim(),
+        line_num,
+    )
 }
 
 pub(super) fn parse_source_function_signature(
     rest: &str,
     line_num: usize,
     base_column: usize,
-) -> Result<(String, Vec<SourceParam>, String), CliError> {
+) -> Result<(String, Vec<SourceParam>, String, usize), CliError> {
     let open_paren = rest.find('(').ok_or_else(|| {
         source_parse_error_for_fragment(
             line_num,
@@ -229,6 +246,11 @@ pub(super) fn parse_source_function_signature(
         base_column + rest[..params_start].chars().count(),
     )?;
     let after_params = &rest[close_paren + 1..];
+    let after_params_column = base_column + rest[..close_paren + 1].chars().count();
+    let arrow_leading = after_params
+        .chars()
+        .take_while(|ch| ch.is_whitespace())
+        .count();
     let after_arrow = after_params
         .trim_start()
         .strip_prefix("->")
@@ -240,10 +262,12 @@ pub(super) fn parse_source_function_signature(
                 "function declaration requires `-> Type`",
             )
         })?;
+    let after_arrow_column = after_params_column + arrow_leading + 2;
     Ok((
         normalize_function_name(raw_name),
         params,
-        after_arrow.trim().to_string(),
+        after_arrow.to_string(),
+        after_arrow_column,
     ))
 }
 
@@ -255,6 +279,7 @@ pub(super) fn build_source_function(
     name: String,
     params: Vec<SourceParam>,
     return_type: &str,
+    return_type_column: usize,
     body: &str,
     line_num: usize,
 ) -> Result<SourceFunction, CliError> {
@@ -266,7 +291,7 @@ pub(super) fn build_source_function(
             "function return type and body must be non-empty",
         ));
     }
-    validate_source_type_name(return_type, line_num)?;
+    validate_source_type_name_at(return_type, line_num, return_type_column)?;
     let return_type = normalize_source_type_name(return_type);
 
     Ok(SourceFunction {
@@ -475,11 +500,17 @@ pub(super) fn parse_source_test(
             "test declaration requires `= body`",
         )
     })?;
-    let (raw_name_text, raw_name, return_type) = if let Some((name, ty)) = head.split_once("->") {
-        (name, name.trim(), ty.trim())
-    } else {
-        (head, head.trim(), "Bool")
-    };
+    let (raw_name_text, raw_name, return_type, return_type_column) =
+        if let Some((name, ty)) = head.split_once("->") {
+            (
+                name,
+                name.trim(),
+                ty.trim(),
+                source_fragment_column(base_column, head, ty),
+            )
+        } else {
+            (head, head.trim(), "Bool", base_column)
+        };
     validate_source_name_at(
         raw_name,
         line_num,
@@ -495,7 +526,7 @@ pub(super) fn parse_source_test(
             "test return type and body must be non-empty",
         ));
     }
-    validate_source_type_name(return_type, line_num)?;
+    validate_source_type_name_at(return_type, line_num, return_type_column)?;
     let return_type = normalize_source_type_name(return_type);
 
     Ok(SourceTest {
