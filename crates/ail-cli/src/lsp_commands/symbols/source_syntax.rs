@@ -77,7 +77,7 @@ pub(super) const AIL_SOURCE_SYNTAX_SYMBOLS: &[AclSymbol] = &[
         label: "test",
         detail: "AIL source test",
         documentation: "Declares an executable source test that `ail test --file` can discover and run.",
-        insert_text: "test ${1:name} = ${2:eq(add(20, 22), 42)}",
+        insert_text: "test ${1:name} {\n    let ${2:actual}: ${3:Int} = ${4:add(20, 22)}\n    return ${5:eq(actual, 42)}\n}",
     },
     AclSymbol {
         label: "grant",

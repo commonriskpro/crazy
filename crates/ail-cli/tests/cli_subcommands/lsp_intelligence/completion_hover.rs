@@ -151,6 +151,34 @@ fn lsp_completion_ranks_exact_matches_before_contains() {
 }
 
 #[test]
+fn lsp_completion_covers_source_block_tests() {
+    let completion_output = ail()
+        .args(["lsp", "--complete", "test", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let completion = parse_json_output(&completion_output);
+    assert_eq!(completion["status"], "ok");
+    let items = completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+
+    assert!(
+        items.iter().any(|item| item["label"] == "test"
+            && item["insertText"]
+                .as_str()
+                .expect("insertText")
+                .contains("test ${1:name} {\n    let ${2:actual}: ${3:Int}")
+            && item["insertText"]
+                .as_str()
+                .expect("insertText")
+                .contains("return ${5:eq(actual, 42)}")),
+        "completion must include block source test snippet; got: {items:?}"
+    );
+}
+
+#[test]
 fn lsp_completion_and_hover_cover_acl_test_authoring() {
     let completion_output = ail()
         .args(["lsp", "--complete", "create_test", "--json"])

@@ -557,6 +557,25 @@ pub(super) fn parse_source_test(
             "test declaration requires `= body`",
         )
     })?;
+    build_source_test(head, body.trim(), line_num, base_column, rest)
+}
+
+pub(super) fn parse_source_test_with_body(
+    rest: &str,
+    line_num: usize,
+    base_column: usize,
+    body: String,
+) -> Result<SourceTest, CliError> {
+    build_source_test(rest, body.trim(), line_num, base_column, rest)
+}
+
+fn build_source_test(
+    head: &str,
+    body: &str,
+    line_num: usize,
+    base_column: usize,
+    diagnostic_fragment: &str,
+) -> Result<SourceTest, CliError> {
     let (raw_name_text, raw_name, return_type, return_type_column) =
         if let Some((name, ty)) = head.split_once("->") {
             (
@@ -579,7 +598,7 @@ pub(super) fn parse_source_test(
         return Err(source_parse_error_for_fragment(
             line_num,
             SourceParseDiagnostic::InvalidDeclaration,
-            rest,
+            diagnostic_fragment,
             "test return type and body must be non-empty",
         ));
     }

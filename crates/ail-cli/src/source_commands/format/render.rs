@@ -87,6 +87,34 @@ pub(super) fn render_source_test(
         test.name.strip_prefix("test.").unwrap_or(&test.name),
         module,
     );
+    let (lets, final_expr) = source_let_chain(&test.body);
+    if !lets.is_empty() {
+        if test.return_type == "Bool" {
+            out.push_str(&format!("test {name} {{\n"));
+        } else {
+            out.push_str(&format!("test {name} -> {} {{\n", test.return_type));
+        }
+        for binding in lets {
+            let annotation = binding
+                .ty
+                .as_ref()
+                .map(|ty| format!(": {ty}"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "  let {}{} = {}\n",
+                binding.name,
+                annotation,
+                format_source_expr(&binding.value, module, constants)
+            ));
+        }
+        out.push_str(&format!(
+            "  return {}\n",
+            format_source_expr(&final_expr, module, constants)
+        ));
+        out.push_str("}\n");
+        return;
+    }
+
     if test.return_type == "Bool" {
         out.push_str(&format!(
             "test {name} = {}\n",

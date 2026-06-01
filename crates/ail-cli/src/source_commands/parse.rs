@@ -93,6 +93,19 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
             }
             functions.push(parse_source_function(rest, *line_num, *column + 3)?);
         } else if let Some(rest) = statement.strip_prefix("test ") {
+            if rest.trim_end().ends_with('{') {
+                let header = rest.trim_end().trim_end_matches('{').trim();
+                let (body_lines, next_idx) = collect_braced_body(&statements, idx + 1, *line_num)?;
+                let body = source_block_to_expr(&body_lines)?;
+                tests.push(parse_source_test_with_body(
+                    header,
+                    *line_num,
+                    *column + 5,
+                    body,
+                )?);
+                idx = next_idx;
+                continue;
+            }
             tests.push(parse_source_test(rest, *line_num, *column + 5)?);
         } else if let Some(rest) = statement.strip_prefix("grant ") {
             grants.push(parse_source_grant(rest, *line_num, *column + 6)?);
