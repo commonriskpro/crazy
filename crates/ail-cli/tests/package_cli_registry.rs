@@ -80,7 +80,7 @@ fn package_publish_production_blocks_incomplete_manifest() {
 }
 
 #[test]
-fn package_publish_production_accepts_linted_manifest() {
+fn package_publish_production_blocks_linted_manifest_without_evidence() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
 
@@ -103,6 +103,49 @@ fn package_publish_production_accepts_linted_manifest() {
         .args(["package", "publish", "--production", "--json"])
         .current_dir(dir.path())
         .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["production"], true);
+    assert_eq!(v["data"]["production_lint"], "passed");
+    assert_eq!(v["data"]["reproducible_evidence_integrity"], "failed");
+    assert_eq!(v["data"]["reproducible_evidence_status"], "none");
+}
+
+#[test]
+fn package_publish_production_accepts_linted_manifest_with_evidence() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let source_digest = "a".repeat(64);
+    let recipe_hash = "b".repeat(64);
+
+    ail()
+        .args([
+            "package",
+            "init",
+            "--name",
+            "local.package",
+            "--version",
+            "0.1.0",
+            "--license",
+            "MIT",
+            "--source-digest",
+            &source_digest,
+            "--toolchain-id",
+            "ail-toolchain-1",
+            "--recipe-hash",
+            &recipe_hash,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = ail()
+        .args(["package", "publish", "--production", "--json"])
+        .current_dir(dir.path())
+        .assert()
         .success()
         .get_output()
         .clone();
@@ -112,6 +155,7 @@ fn package_publish_production_accepts_linted_manifest() {
     assert_eq!(v["data"]["production"], true);
     assert_eq!(v["data"]["production_lint"], "passed");
     assert_eq!(v["data"]["production_issue_count"], 0);
+    assert_eq!(v["data"]["reproducible_evidence_status"], "present");
 }
 
 #[test]

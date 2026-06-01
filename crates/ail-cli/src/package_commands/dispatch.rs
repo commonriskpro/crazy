@@ -637,6 +637,45 @@ pub(crate) async fn cmd_package(
                 }
                 return Err(CliError::Domain(message));
             }
+            if production
+                && manifest.trust_level == TrustLevel::Verified
+                && manifest.reproducible_evidence.is_none()
+            {
+                let message =
+                    "package publish preflight failed: verified package missing reproducible_evidence"
+                        .to_string();
+                let response_data = json!({
+                    "published": false,
+                    "preflight": "failed",
+                    "production": true,
+                    "name": &manifest.name,
+                    "version": &manifest.version,
+                    "package_hash": &hash,
+                    "production_lint": "passed",
+                    "production_issue_count": 0,
+                    "production_issues": [],
+                    "reproducible_evidence_integrity": "failed",
+                    "reproducible_evidence_status": "none",
+                });
+                if mode == OutputMode::Json {
+                    let mut error_data = response_data;
+                    if let Some(obj) = error_data.as_object_mut() {
+                        obj.insert(
+                            "error".to_string(),
+                            json!("package_publish_preflight_failed"),
+                        );
+                        obj.insert("message".to_string(), json!(message.clone()));
+                    }
+                    print_error_response(error_data);
+                } else {
+                    let human_msg = format!(
+                        "{message}\nname: {}\nversion: {}\npackage_hash: {hash}\nproduction_lint: passed\nreproducible_evidence_integrity: failed\nreproducible_evidence_status: none",
+                        manifest.name, manifest.version
+                    );
+                    print_response(mode, &human_msg, response_data);
+                }
+                return Err(CliError::Domain(message));
+            }
             let lockfile = load_package_lockfile(store)?;
             let registry = load_package_registry(store)?;
             let actual_artifact_evidence = registry
