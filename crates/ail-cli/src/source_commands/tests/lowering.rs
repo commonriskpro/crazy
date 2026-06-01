@@ -157,6 +157,16 @@ fn rejects_missing_effect_capability_reference_during_lowering() {
 }
 
 #[test]
+fn rejects_log_write_arity_with_stable_lowering_diagnostic() {
+    assert_lowering_diagnostic(
+        lower_source_expr(r#"log.write("hello", "extra")"#, 18),
+        "AIL_SOURCE_LOWER_EXPRESSION",
+        "source.lower.expression",
+        "log.write requires `log.write(message)`",
+    );
+}
+
+#[test]
 fn lowers_source_consts_to_zero_arg_functions() {
     let program = parse_ail_source(
         "const answer: Int = 40 + 2\nfn main() -> Int = answer\ntest answer = answer == 42",

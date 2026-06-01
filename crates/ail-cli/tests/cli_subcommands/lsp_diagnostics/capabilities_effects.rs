@@ -203,6 +203,48 @@ fn lsp_diagnose_reports_source_log_write_alias_type_mismatch() {
 }
 
 #[test]
+fn lsp_diagnose_reports_source_log_write_arity_code() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "capability log.write\nfn main() -> Int = log.write(\"hi\", \"extra\")\ngrant main log.write\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_LOWER_EXPRESSION"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.lower.expression"
+    );
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("log.write requires `log.write(message)`")
+    );
+}
+
+#[test]
 fn lsp_diagnose_reports_ail_source_unknown_effect_call_capability() {
     use assert_fs::prelude::*;
 
