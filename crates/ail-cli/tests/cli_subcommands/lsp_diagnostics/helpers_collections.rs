@@ -289,6 +289,46 @@ fn dotted_byte(value: Text, index: Int, fallback: Int) -> Int = text.byte_at_or(
     assert_eq!(v["data"]["error_count"], 0);
 }
 #[test]
+fn lsp_diagnose_reports_source_int_helper_arity_code() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn bounded(value: Int) -> Int = int_clamp(value)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_LOWER_INT_HELPER"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.lower.int"
+    );
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("int_clamp requires `int_clamp(value, low, high)`")
+    );
+}
+
+#[test]
 fn lsp_diagnose_accepts_source_int_bounds_helpers() {
     use assert_fs::prelude::*;
 

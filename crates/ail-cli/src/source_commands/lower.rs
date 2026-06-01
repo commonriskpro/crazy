@@ -30,6 +30,7 @@ pub(super) enum SourceLowerDiagnostic {
     Expression,
     FieldAccess,
     IndexExpression,
+    IntHelper,
     ListLiteral,
     PipeExpression,
     RecordLiteral,
@@ -49,6 +50,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::Expression => "AIL_SOURCE_LOWER_EXPRESSION",
             SourceLowerDiagnostic::FieldAccess => "AIL_SOURCE_LOWER_FIELD_ACCESS",
             SourceLowerDiagnostic::IndexExpression => "AIL_SOURCE_LOWER_INDEX_EXPRESSION",
+            SourceLowerDiagnostic::IntHelper => "AIL_SOURCE_LOWER_INT_HELPER",
             SourceLowerDiagnostic::ListLiteral => "AIL_SOURCE_LOWER_LIST_LITERAL",
             SourceLowerDiagnostic::PipeExpression => "AIL_SOURCE_LOWER_PIPE_EXPRESSION",
             SourceLowerDiagnostic::RecordLiteral => "AIL_SOURCE_LOWER_RECORD_LITERAL",
@@ -65,6 +67,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::BindingShape => "source.lower.binding",
             SourceLowerDiagnostic::CapabilityReference => "source.lower.capability",
             SourceLowerDiagnostic::Expression => "source.lower.expression",
+            SourceLowerDiagnostic::IntHelper => "source.lower.int",
             SourceLowerDiagnostic::CollectionArity
             | SourceLowerDiagnostic::FieldAccess
             | SourceLowerDiagnostic::IndexExpression

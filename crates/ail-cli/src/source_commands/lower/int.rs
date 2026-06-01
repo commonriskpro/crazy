@@ -52,9 +52,11 @@ pub(super) fn lower_source_int_bounds_expr(
         2
     };
     if args.len() != expected_len {
-        return Err(CliError::ParseError(format!(
-            "line {line_num}: {func} requires `{expected}`"
-        )));
+        return Err(source_lower_error(
+            line_num,
+            SourceLowerDiagnostic::IntHelper,
+            format!("{func} requires `{expected}`"),
+        ));
     }
     Ok(Some(format!(
         "{lowered_func}({})",

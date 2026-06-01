@@ -667,6 +667,16 @@ fn same(left: Text, right: Text) -> Bool = text_eq(left, right)
 }
 
 #[test]
+fn rejects_int_helper_arity_with_stable_lowering_diagnostic() {
+    assert_lowering_diagnostic(
+        lower_source_expr("int_clamp(value)", 29),
+        "AIL_SOURCE_LOWER_INT_HELPER",
+        "source.lower.int",
+        "int_clamp requires `int_clamp(value, low, high)`",
+    );
+}
+
+#[test]
 fn lowers_source_int_bounds_helpers() {
     let program = parse_ail_source(
         r#"
