@@ -414,4 +414,12 @@ fn lsp_diagnose_reports_ail_source_duplicate_imported_functions() {
     assert!(message.contains("duplicate imported source function `fn.helper`"));
     assert!(message.contains("dep.ail line 1"));
     assert!(message.contains("main.ail line 2"));
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_SYMBOL_DUPLICATE"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.symbol.duplicate"
+    );
 }

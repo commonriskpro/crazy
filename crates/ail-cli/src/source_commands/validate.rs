@@ -188,9 +188,7 @@ pub(super) fn qualify_source_expr_calls(
 
 pub(super) fn validate_source_program_symbols(program: &SourceProgram) -> Result<(), CliError> {
     if let Some(name) = duplicate_name(program.capabilities.iter().map(String::as_str)) {
-        return Err(CliError::ParseError(format!(
-            "duplicate capability declaration `{name}`"
-        )));
+        return Err(source_symbol_duplicate_capability_error(&name));
     }
     if let Some((first, second)) =
         duplicate_source_declaration(program.constants.iter().map(|constant| {
@@ -202,12 +200,12 @@ pub(super) fn validate_source_program_symbols(program: &SourceProgram) -> Result
             }
         }))
     {
-        return Err(CliError::ParseError(format_duplicate_source_declaration(
+        return Err(source_symbol_duplicate_error(
             "const",
             "duplicate const declaration",
             first,
             second,
-        )));
+        ));
     }
     let function_names = program
         .functions
@@ -224,7 +222,7 @@ pub(super) fn validate_source_program_symbols(program: &SourceProgram) -> Result
             .iter()
             .find(|function| function.name == constant.name)
             .expect("matching function exists");
-        return Err(CliError::ParseError(format_duplicate_source_declaration(
+        return Err(source_symbol_duplicate_error(
             "declaration",
             "duplicate function or const declaration",
             SourceDeclarationRef {
@@ -239,7 +237,7 @@ pub(super) fn validate_source_program_symbols(program: &SourceProgram) -> Result
                 line_num: function.line_num,
                 source_path: function.source_path.as_deref(),
             },
-        )));
+        ));
     }
     if let Some((first, second)) =
         duplicate_source_declaration(program.functions.iter().map(|function| {
@@ -251,12 +249,12 @@ pub(super) fn validate_source_program_symbols(program: &SourceProgram) -> Result
             }
         }))
     {
-        return Err(CliError::ParseError(format_duplicate_source_declaration(
+        return Err(source_symbol_duplicate_error(
             "function",
             "duplicate function declaration",
             first,
             second,
-        )));
+        ));
     }
     if let Some((first, second)) =
         duplicate_source_declaration(program.tests.iter().map(|test| SourceDeclarationRef {
@@ -266,12 +264,12 @@ pub(super) fn validate_source_program_symbols(program: &SourceProgram) -> Result
             source_path: test.source_path.as_deref(),
         }))
     {
-        return Err(CliError::ParseError(format_duplicate_source_declaration(
+        return Err(source_symbol_duplicate_error(
             "test",
             "duplicate test declaration",
             first,
             second,
-        )));
+        ));
     }
     for constant in &program.constants {
         if let Some(builtin) = source_function_builtin_shadow(&constant.name) {
@@ -328,6 +326,31 @@ fn format_duplicate_source_declaration(
         format_source_declaration_origin(first),
         format_source_declaration_origin(second)
     )
+}
+
+fn source_symbol_duplicate_capability_error(name: &str) -> CliError {
+    source_symbol_error(
+        "AIL_SOURCE_SYMBOL_DUPLICATE",
+        "source.symbol.duplicate",
+        format!("duplicate capability declaration `{name}`"),
+    )
+}
+
+fn source_symbol_duplicate_error(
+    imported_kind: &str,
+    legacy_prefix: &str,
+    first: SourceDeclarationRef<'_>,
+    second: SourceDeclarationRef<'_>,
+) -> CliError {
+    source_symbol_error(
+        "AIL_SOURCE_SYMBOL_DUPLICATE",
+        "source.symbol.duplicate",
+        format_duplicate_source_declaration(imported_kind, legacy_prefix, first, second),
+    )
+}
+
+fn source_symbol_error(code: &str, category: &str, message: impl AsRef<str>) -> CliError {
+    CliError::ParseError(format!("{} [{code}] category={category}", message.as_ref()))
 }
 
 fn format_source_declaration_origin(declaration: SourceDeclarationRef<'_>) -> String {

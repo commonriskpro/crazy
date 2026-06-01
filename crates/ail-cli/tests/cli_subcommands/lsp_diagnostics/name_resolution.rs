@@ -3,6 +3,46 @@ use crate::common::ail;
 use crate::common::parse_json_output;
 
 #[test]
+fn lsp_diagnose_reports_ail_source_duplicate_function_code() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int = 0\nfn main() -> Int = 1\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("duplicate function declaration `fn.main`")
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_SYMBOL_DUPLICATE"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.symbol.duplicate"
+    );
+}
+
+#[test]
 fn lsp_diagnose_reports_ail_source_unknown_function_calls() {
     use assert_fs::prelude::*;
 
