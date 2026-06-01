@@ -764,10 +764,7 @@ pub(super) fn infer_source_map_type(
         return Ok("Map<Unknown,Unknown>".to_string());
     }
     if !args.len().is_multiple_of(2) {
-        return Err(CliError::ParseError(format!(
-            "function call `map` expects an even number of arguments, got {}",
-            args.len()
-        )));
+        return Err(source_map_arity_error(args.len()));
     }
 
     let first_key_ty = infer_source_expr_type(&args[0], scope, functions)?;
@@ -1023,6 +1020,14 @@ fn source_record_duplicate_field_error(field: &str) -> CliError {
         "AIL_SOURCE_RECORD_FIELD_DUPLICATE",
         "source.record.duplicate_field",
         format!("duplicate record field `{field}`"),
+    )
+}
+
+fn source_map_arity_error(actual: usize) -> CliError {
+    source_expr_error(
+        "AIL_SOURCE_MAP_ARITY",
+        "source.map.arity",
+        format!("function call `map` expects an even number of arguments, got {actual}"),
     )
 }
 

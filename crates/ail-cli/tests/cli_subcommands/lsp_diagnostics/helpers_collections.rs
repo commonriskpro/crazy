@@ -1037,6 +1037,43 @@ fn dotted_updated() -> Map<Text, Int> = map.insert(labels(), "three", 3)
 }
 
 #[test]
+fn lsp_diagnose_reports_source_map_arity_code() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(r#"fn labels() -> Map<Text, Int> = map("one", 1, "two")"#)
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("function call `map` expects an even number of arguments, got 3")
+    );
+    assert_eq!(v["data"]["diagnostics"][0]["code"], "AIL_SOURCE_MAP_ARITY");
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.map.arity"
+    );
+}
+
+#[test]
 fn lsp_diagnose_reports_source_map_text_key_shape_code() {
     use assert_fs::prelude::*;
 
