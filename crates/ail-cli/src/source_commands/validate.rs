@@ -612,9 +612,7 @@ pub(super) fn validate_source_expr_calls(
             validate_source_call_arity(&call, argc, SourceArity::Exact(expected))?;
             continue;
         }
-        return Err(CliError::ParseError(format!(
-            "unknown function call `{call}` in AIL source"
-        )));
+        return Err(source_name_unknown_function_error(&call));
     }
     Ok(())
 }
@@ -688,6 +686,26 @@ fn source_call_arity_error(message: impl AsRef<str>) -> CliError {
         "{} [AIL_SOURCE_CALL_ARITY] category=source.call.arity",
         message.as_ref()
     ))
+}
+
+fn source_name_unknown_function_error(call: &str) -> CliError {
+    source_name_error(
+        "AIL_SOURCE_NAME_UNKNOWN_FUNCTION",
+        "source.name.function",
+        format!("unknown function call `{call}` in AIL source"),
+    )
+}
+
+fn source_name_unknown_variable_error(name: &str) -> CliError {
+    source_name_error(
+        "AIL_SOURCE_NAME_UNKNOWN_VARIABLE",
+        "source.name.variable",
+        format!("unknown variable `{name}` in AIL source"),
+    )
+}
+
+fn source_name_error(code: &str, category: &str, message: impl AsRef<str>) -> CliError {
+    CliError::ParseError(format!("{} [{code}] category={category}", message.as_ref()))
 }
 
 fn source_effect_const_error(target: &str, capability: &str) -> CliError {
@@ -931,9 +949,7 @@ pub(super) fn validate_source_expr_vars(
         if scope.contains(expr) || source_const_reference_target(expr, constants).is_some() {
             return Ok(());
         }
-        return Err(CliError::ParseError(format!(
-            "unknown variable `{expr}` in AIL source"
-        )));
+        return Err(source_name_unknown_variable_error(expr));
     }
     Err(CliError::ParseError(format!(
         "unsupported source expression `{expr}`"

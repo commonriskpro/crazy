@@ -595,6 +595,8 @@ fn supported_diagnostic_code(code: &str) -> bool {
             | "AIL_SOURCE_LOWER_UNSUPPORTED_CONSTRUCT"
             | "AIL_SOURCE_LET_LINE_MARKER"
             | "AIL_SOURCE_MAP_ARITY"
+            | "AIL_SOURCE_NAME_UNKNOWN_FUNCTION"
+            | "AIL_SOURCE_NAME_UNKNOWN_VARIABLE"
             | "AIL_SOURCE_PARSE_INVALID_DECLARATION"
             | "AIL_SOURCE_PARSE_INVALID_NAME"
             | "AIL_SOURCE_PARSE_INVALID_PATTERN"

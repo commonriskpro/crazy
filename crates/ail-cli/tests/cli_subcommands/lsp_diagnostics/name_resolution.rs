@@ -78,6 +78,14 @@ fn lsp_diagnose_reports_ail_source_unknown_function_calls() {
         19
     );
     assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["character"], 27);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_NAME_UNKNOWN_FUNCTION"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.name.function"
+    );
 }
 #[test]
 fn lsp_diagnose_reports_ail_source_builtin_call_arity_errors() {
@@ -188,6 +196,14 @@ fn lsp_diagnose_reports_ail_source_unknown_variables() {
         23
     );
     assert_eq!(v["data"]["diagnostics"][0]["range"]["end"]["character"], 24);
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_NAME_UNKNOWN_VARIABLE"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.name.variable"
+    );
 }
 #[test]
 fn lsp_diagnose_accepts_ail_source_params_and_let_variables() {
