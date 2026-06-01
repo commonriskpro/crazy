@@ -966,15 +966,15 @@ pub(super) fn format_source_match_expr(
         .chunks_exact(2)
         .map(|pair| {
             format!(
-                "{} => {}",
+                "  {} => {{\n    return {}\n  }}",
                 format_source_match_pattern(&pair[0]),
                 format_source_expr(&pair[1], module, constants)
             )
         })
         .collect::<Vec<_>>()
-        .join(", ");
+        .join("\n");
     format!(
-        "match {} {{ {arms} }}",
+        "match {} {{\n{arms}\n}}",
         format_source_expr(&args[0], module, constants)
     )
 }

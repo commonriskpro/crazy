@@ -204,6 +204,50 @@ return if gt(x,10){3}else if gt(x,0){2}else{1}\n\
         "formatter must keep else-if as first-class source syntax; got:\n{formatted}"
     );
 }
+
+#[test]
+fn fmt_ail_source_renders_match_blocks_without_arm_commas() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn bucket(x:Int)->Text=match(x,0,\"zero\",1,\"one\",_,\"many\")\n")
+        .expect("write source");
+
+    let output = ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    let formatted = v["data"]["formatted"]
+        .as_str()
+        .expect("formatted must be string");
+
+    assert!(
+        formatted.contains(
+            "fn bucket(x: Int) -> Text = match x {\n\
+  0 => {\n\
+    return \"zero\"\n\
+  }\n\
+  1 => {\n\
+    return \"one\"\n\
+  }\n\
+  _ => {\n\
+    return \"many\"\n\
+  }\n\
+}\n"
+        ),
+        "formatter must emit block match arms without commas; got:\n{formatted}"
+    );
+}
 #[test]
 fn fmt_stdin_json_detects_ail_source() {
     let output = ail()
