@@ -555,6 +555,18 @@ pub(crate) enum PackageCmd {
         /// BLAKE3 deterministic build recipe hash for reproducible-build evidence.
         #[arg(long)]
         recipe_hash: Option<String>,
+        /// CI/archive URL for structured package provenance.
+        #[arg(long)]
+        provenance_url: Option<String>,
+        /// Source repository URL for structured package provenance.
+        #[arg(long)]
+        source_repository: Option<String>,
+        /// Source commit/tree hash for structured package provenance.
+        #[arg(long)]
+        commit_hash: Option<String>,
+        /// CI/build identifier for structured package provenance.
+        #[arg(long)]
+        build_id: Option<String>,
     },
     /// Add a package dependency (shows trust/capabilities/advisories).
     Add {

@@ -21,6 +21,10 @@ pub(crate) async fn cmd_package(
             source_digest,
             toolchain_id,
             recipe_hash,
+            provenance_url,
+            source_repository,
+            commit_hash,
+            build_id,
         } => {
             let package_name = name.unwrap_or_else(|| "local.package".to_string());
             let license = license
@@ -28,12 +32,19 @@ pub(crate) async fn cmd_package(
                 .transpose()?;
             let reproducible_evidence =
                 validate_optional_reproducible_evidence(source_digest, toolchain_id, recipe_hash)?;
+            let provenance = validate_optional_package_provenance(
+                provenance_url,
+                source_repository,
+                commit_hash,
+                build_id,
+            )?;
             let manifest = package_manifest_for_current_graph_with_metadata(
                 store,
                 &package_name,
                 &version,
                 license,
                 reproducible_evidence,
+                provenance,
             )
             .await?;
             save_package_manifest(store, &manifest)?;
@@ -47,8 +58,13 @@ pub(crate) async fn cmd_package(
                 "warning"
             };
             let human_msg = format!(
-                "package initialized\nname: {package_name}\nversion: {version}\nlicense: {}\nmanifest_hash: {hash}\nreproducible_evidence: {}\nproduction_lint: {production_lint}\nproduction_issue_count: {}",
+                "package initialized\nname: {package_name}\nversion: {version}\nlicense: {}\nmanifest_hash: {hash}\nprovenance: {}\nreproducible_evidence: {}\nproduction_lint: {production_lint}\nproduction_issue_count: {}",
                 manifest.license.as_deref().unwrap_or("none"),
+                manifest
+                    .provenance
+                    .as_ref()
+                    .and_then(|provenance| provenance.url.as_deref())
+                    .unwrap_or("structured"),
                 reproducible_evidence_status(manifest.reproducible_evidence.is_some()),
                 production_issues.len()
             );

@@ -214,6 +214,48 @@ fn package_init_json_accepts_reproducible_evidence() {
     assert!(v["data"]["manifest"]["reproducible_evidence"]["build_inputs_hash"].is_string());
 }
 
+/// package init can attach structured provenance metadata.
+#[test]
+fn package_init_json_accepts_structured_provenance() {
+    let output = ail()
+        .args([
+            "package",
+            "init",
+            "--name",
+            "local.package",
+            "--version",
+            "1.2.3",
+            "--license",
+            "MIT",
+            "--provenance-url",
+            "https://ci.example/build/1",
+            "--source-repository",
+            "https://example.com/org/repo",
+            "--commit-hash",
+            "abc123",
+            "--build-id",
+            "build-1",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(
+        v["data"]["manifest"]["provenance"]["url"],
+        "https://ci.example/build/1"
+    );
+    assert_eq!(
+        v["data"]["manifest"]["provenance"]["source_repository"],
+        "https://example.com/org/repo"
+    );
+    assert_eq!(v["data"]["manifest"]["provenance"]["commit_hash"], "abc123");
+    assert_eq!(v["data"]["manifest"]["provenance"]["build_id"], "build-1");
+}
+
 /// package explain --json produces JSON with package and capabilities.
 #[test]
 fn package_explain_json_has_package_and_capabilities() {

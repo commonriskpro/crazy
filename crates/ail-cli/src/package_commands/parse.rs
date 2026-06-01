@@ -68,6 +68,36 @@ pub(super) fn validate_optional_reproducible_evidence(
     )))
 }
 
+pub(super) fn validate_optional_package_provenance(
+    url: Option<String>,
+    source_repository: Option<String>,
+    commit_hash: Option<String>,
+    build_id: Option<String>,
+) -> Result<Option<Provenance>, CliError> {
+    if url.is_none() && source_repository.is_none() && commit_hash.is_none() && build_id.is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(Provenance {
+        url: validate_optional_package_metadata_field("provenance_url", url)?,
+        source_repository: validate_optional_package_metadata_field(
+            "source_repository",
+            source_repository,
+        )?,
+        commit_hash: validate_optional_package_metadata_field("commit_hash", commit_hash)?,
+        build_id: validate_optional_package_metadata_field("build_id", build_id)?,
+    }))
+}
+
+fn validate_optional_package_metadata_field(
+    field: &str,
+    value: Option<String>,
+) -> Result<Option<String>, CliError> {
+    value
+        .map(|value| validate_required_package_metadata_field(field, value))
+        .transpose()
+}
+
 fn validate_package_blake3_hex_field(field: &str, value: String) -> Result<String, CliError> {
     let value = validate_required_package_metadata_field(field, value)?;
     if value.len() != 64

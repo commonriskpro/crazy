@@ -105,6 +105,10 @@ async fn cmd_package_init_persists_license_metadata() {
             source_digest: None,
             toolchain_id: None,
             recipe_hash: None,
+            provenance_url: None,
+            source_repository: None,
+            commit_hash: None,
+            build_id: None,
         },
         &store,
     )
@@ -140,6 +144,10 @@ async fn cmd_package_init_persists_reproducible_evidence() {
             source_digest: Some("a".repeat(64)),
             toolchain_id: Some("ail-toolchain-1".to_string()),
             recipe_hash: Some("b".repeat(64)),
+            provenance_url: None,
+            source_repository: None,
+            commit_hash: None,
+            build_id: None,
         },
         &store,
     )
@@ -158,4 +166,49 @@ async fn cmd_package_init_persists_reproducible_evidence() {
     assert_eq!(evidence.source_digest, "a".repeat(64));
     assert_eq!(evidence.toolchain_id, "ail-toolchain-1");
     assert_eq!(evidence.recipe_hash, "b".repeat(64));
+}
+
+#[tokio::test]
+async fn cmd_package_init_persists_structured_provenance() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    crate::store::init_file_layout(&ail_dir).expect("init layout");
+    let store = crate::store::file_store(ail_dir);
+
+    let result = cmd_package(
+        OutputMode::Json,
+        PackageCmd::Init {
+            name: Some("local.package".to_string()),
+            version: "1.2.3".to_string(),
+            license: Some("MIT".to_string()),
+            source_digest: None,
+            toolchain_id: None,
+            recipe_hash: None,
+            provenance_url: Some("https://ci.example/build/1".to_string()),
+            source_repository: Some("https://example.com/org/repo".to_string()),
+            commit_hash: Some("abc123".to_string()),
+            build_id: Some("build-1".to_string()),
+        },
+        &store,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "package init with provenance metadata must succeed; got: {result:?}"
+    );
+    let path = package_manifest_path(&store).expect("manifest path");
+    let bytes = std::fs::read(path).expect("manifest bytes");
+    let manifest: PackageManifest = ciborium::from_reader(bytes.as_slice()).expect("manifest cbor");
+    let provenance = manifest.provenance.expect("provenance must persist");
+    assert_eq!(
+        provenance.url.as_deref(),
+        Some("https://ci.example/build/1")
+    );
+    assert_eq!(
+        provenance.source_repository.as_deref(),
+        Some("https://example.com/org/repo")
+    );
+    assert_eq!(provenance.commit_hash.as_deref(), Some("abc123"));
+    assert_eq!(provenance.build_id.as_deref(), Some("build-1"));
 }

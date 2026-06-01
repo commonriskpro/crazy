@@ -16,7 +16,8 @@ use ail_package::{
     AdvisoryChecker, ArtifactHashEntry, CompatibilityEngine, CompatibilityError,
     LocalCompatibilityIssue, LocalCompatibilityIssueKind, LockfileArtifactEvidence, LockfileEntry,
     PackageCompatibilityMetadata, PackageDef, PackageKeypair, PackageManifest, PackageRegistry,
-    PublishRequest, RegistryClient, ReproducibleBuildEvidence, SecurityAdvisory, TrustLevel,
+    Provenance, PublishRequest, RegistryClient, ReproducibleBuildEvidence, SecurityAdvisory,
+    TrustLevel,
 };
 use serde_json::json;
 
@@ -57,7 +58,7 @@ use install::install_package_from_registry;
 pub(crate) use manifest::package_manifest_for_current_graph;
 use manifest::{load_or_create_package_manifest, package_manifest_for_current_graph_with_metadata};
 use parse::{
-    parse_advisory_severity, parse_package_spec, validate_optional_reproducible_evidence,
-    validate_required_package_metadata_field,
+    parse_advisory_severity, parse_package_spec, validate_optional_package_provenance,
+    validate_optional_reproducible_evidence, validate_required_package_metadata_field,
 };
 use verify::{verification_report_hash_for_manifest, verification_report_hash_mismatches};
