@@ -156,23 +156,17 @@ pub(super) fn source_match_pattern_binding_type<'a>(
         "Some" => source_option_element_type(scrutinee_ty)
             .map(|ty| Some((binding, ty.to_string())))
             .ok_or_else(|| {
-                CliError::ParseError(format!(
-                    "type mismatch in match pattern `{pattern}`: expected Option<Unknown>, got {scrutinee_ty}"
-                ))
+                source_match_pattern_type_error(pattern, "Option<Unknown>", scrutinee_ty)
             }),
         "Ok" => source_result_types(scrutinee_ty)
             .map(|(ok_ty, _)| Some((binding, ok_ty.to_string())))
             .ok_or_else(|| {
-                CliError::ParseError(format!(
-                    "type mismatch in match pattern `{pattern}`: expected Result<Unknown,Unknown>, got {scrutinee_ty}"
-                ))
+                source_match_pattern_type_error(pattern, "Result<Unknown,Unknown>", scrutinee_ty)
             }),
         "Err" => source_result_types(scrutinee_ty)
             .map(|(_, err_ty)| Some((binding, err_ty.to_string())))
             .ok_or_else(|| {
-                CliError::ParseError(format!(
-                    "type mismatch in match pattern `{pattern}`: expected Result<Unknown,Unknown>, got {scrutinee_ty}"
-                ))
+                source_match_pattern_type_error(pattern, "Result<Unknown,Unknown>", scrutinee_ty)
             }),
         _ => Ok(None),
     }
@@ -187,13 +181,17 @@ pub(super) fn validate_source_match_pattern_type(
     };
     match tag {
         "Some" | "None" if source_option_element_type(scrutinee_ty).is_some() => Ok(()),
-        "Some" | "None" => Err(CliError::ParseError(format!(
-            "type mismatch in match pattern `{pattern}`: expected Option<Unknown>, got {scrutinee_ty}"
-        ))),
+        "Some" | "None" => Err(source_match_pattern_type_error(
+            pattern,
+            "Option<Unknown>",
+            scrutinee_ty,
+        )),
         "Ok" | "Err" if source_result_types(scrutinee_ty).is_some() => Ok(()),
-        "Ok" | "Err" => Err(CliError::ParseError(format!(
-            "type mismatch in match pattern `{pattern}`: expected Result<Unknown,Unknown>, got {scrutinee_ty}"
-        ))),
+        "Ok" | "Err" => Err(source_match_pattern_type_error(
+            pattern,
+            "Result<Unknown,Unknown>",
+            scrutinee_ty,
+        )),
         _ => Ok(()),
     }
 }
@@ -288,6 +286,14 @@ fn source_match_non_exhaustive_error(message: impl AsRef<str>) -> CliError {
         "AIL_SOURCE_MATCH_NON_EXHAUSTIVE",
         "source.match.exhaustiveness",
         message,
+    )
+}
+
+fn source_match_pattern_type_error(pattern: &str, expected: &str, actual: &str) -> CliError {
+    source_match_error(
+        "AIL_SOURCE_MATCH_PATTERN_TYPE",
+        "source.match.pattern",
+        format!("type mismatch in match pattern `{pattern}`: expected {expected}, got {actual}"),
     )
 }
 

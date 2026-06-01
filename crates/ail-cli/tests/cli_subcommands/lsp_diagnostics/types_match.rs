@@ -421,6 +421,49 @@ fn lsp_diagnose_reports_non_exhaustive_source_match() {
         "source.match.exhaustiveness"
     );
 }
+
+#[test]
+fn lsp_diagnose_reports_source_match_pattern_type_code() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main(value: Int) -> Int = match value { Some(v) => v, _ => 0 }\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 1);
+    assert_eq!(v["data"]["error_count"], 1);
+    assert!(
+        v["data"]["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains(
+                "type mismatch in match pattern `Some(v)`: expected Option<Unknown>, got Int"
+            )
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_MATCH_PATTERN_TYPE"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.match.pattern"
+    );
+}
+
 #[test]
 fn lsp_diagnose_reports_unreachable_source_match_arm() {
     use assert_fs::prelude::*;
