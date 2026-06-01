@@ -4,9 +4,10 @@
 // Spec: G26 stdlib-impl, Requirements R1.1–R1.5.
 
 use ail_stdlib::numeric::{
-    abs_or, add_or, checked_add, checked_mul, checked_sub, clamp, div_or, max, min, mul_or, neg_or,
-    rem_or, saturating_add, saturating_mul, saturating_neg, saturating_sub, sub_or, wrapping_add,
-    wrapping_mul, wrapping_neg, wrapping_sub,
+    abs_or, add_or, bit_and, bit_not, bit_or, bit_xor, checked_add, checked_mul, checked_sub,
+    clamp, div_or, max, min, mul_or, neg_or, rem_or, saturating_add, saturating_mul,
+    saturating_neg, saturating_sub, shift_left, shift_right, shift_right_unsigned, sub_or,
+    wrapping_add, wrapping_mul, wrapping_neg, wrapping_sub,
 };
 
 // ── Bounds helpers ───────────────────────────────────────────────────────
@@ -48,6 +49,24 @@ fn fallback_helpers_return_operation_or_fallback() {
     assert_eq!(rem_or(22, 5, -1), 2);
     assert_eq!(rem_or(1, 0, 6), 6);
     assert_eq!(rem_or(i64::MIN, -1, 13), 13);
+}
+
+#[test]
+fn bit_and_shift_helpers_match_compiler_semantics() {
+    assert_eq!(bit_and(6, 3), 2);
+    assert_eq!(bit_and(-1, 42), 42);
+    assert_eq!(bit_or(4, 1), 5);
+    assert_eq!(bit_or(8, 3), 11);
+    assert_eq!(bit_xor(6, 3), 5);
+    assert_eq!(bit_xor(-1, 42), -43);
+    assert_eq!(bit_not(0), -1);
+    assert_eq!(bit_not(-1), 0);
+    assert_eq!(shift_left(1, 3), 8);
+    assert_eq!(shift_left(-1, 1), -2);
+    assert_eq!(shift_right(16, 1), 8);
+    assert_eq!(shift_right(-8, 1), -4);
+    assert_eq!(shift_right_unsigned(16, 1), 8);
+    assert_eq!(shift_right_unsigned(-8, 1), 9223372036854775804);
 }
 
 // ── R1.1 + R1.2: checked_add ──────────────────────────────────────────────

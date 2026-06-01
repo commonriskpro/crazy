@@ -85,6 +85,25 @@ fn v1_functions_numeric_has_fallback_helpers() {
 }
 
 #[test]
+fn v1_functions_numeric_has_bit_and_shift_helpers() {
+    let reg = v1_registry_with_functions();
+    for id in [
+        "std.numeric.bit_and",
+        "std.numeric.bit_or",
+        "std.numeric.bit_xor",
+        "std.numeric.bit_not",
+        "std.numeric.shift_left",
+        "std.numeric.shift_right",
+        "std.numeric.shift_right_unsigned",
+    ] {
+        assert!(
+            reg.entries.iter().any(|e| e.id.0 == id),
+            "registry must contain {id}"
+        );
+    }
+}
+
+#[test]
 fn v1_functions_option_has_map() {
     let reg = v1_registry_with_functions();
     assert!(

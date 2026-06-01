@@ -314,6 +314,45 @@ fn fallback_helpers_return_operation_or_fallback() {
     }
 }
 
+#[test]
+fn bit_and_shift_helpers_match_compiler_semantics() {
+    for (id, args, expected) in [
+        (
+            "std.numeric.bit_and",
+            vec![StdlibValue::Int(6), StdlibValue::Int(3)],
+            2,
+        ),
+        (
+            "std.numeric.bit_or",
+            vec![StdlibValue::Int(8), StdlibValue::Int(3)],
+            11,
+        ),
+        (
+            "std.numeric.bit_xor",
+            vec![StdlibValue::Int(-1), StdlibValue::Int(42)],
+            -43,
+        ),
+        ("std.numeric.bit_not", vec![StdlibValue::Int(0)], -1),
+        (
+            "std.numeric.shift_left",
+            vec![StdlibValue::Int(-1), StdlibValue::Int(1)],
+            -2,
+        ),
+        (
+            "std.numeric.shift_right",
+            vec![StdlibValue::Int(-8), StdlibValue::Int(1)],
+            -4,
+        ),
+        (
+            "std.numeric.shift_right_unsigned",
+            vec![StdlibValue::Int(-8), StdlibValue::Int(1)],
+            9223372036854775804,
+        ),
+    ] {
+        assert_eq!(call_pure_stdlib(id, &args), Ok(StdlibValue::Int(expected)));
+    }
+}
+
 // ── STDLIB-EXEC-NUM-7: type error returns Err(Type) ───────────────────────
 
 #[test]

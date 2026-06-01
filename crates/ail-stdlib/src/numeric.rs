@@ -86,6 +86,41 @@ pub fn rem_or(value: i64, divisor: i64, fallback: i64) -> i64 {
     value.checked_rem(divisor).unwrap_or(fallback)
 }
 
+/// Bitwise AND for two `i64` values.
+pub fn bit_and(a: i64, b: i64) -> i64 {
+    a & b
+}
+
+/// Bitwise OR for two `i64` values.
+pub fn bit_or(a: i64, b: i64) -> i64 {
+    a | b
+}
+
+/// Bitwise XOR for two `i64` values.
+pub fn bit_xor(a: i64, b: i64) -> i64 {
+    a ^ b
+}
+
+/// Bitwise NOT for an `i64` value.
+pub fn bit_not(value: i64) -> i64 {
+    !value
+}
+
+/// Shift left using AIL's explicit wrapping shift semantics.
+pub fn shift_left(value: i64, amount: i64) -> i64 {
+    value.wrapping_shl(amount as u32)
+}
+
+/// Arithmetic shift right using AIL's explicit wrapping shift semantics.
+pub fn shift_right(value: i64, amount: i64) -> i64 {
+    value.wrapping_shr(amount as u32)
+}
+
+/// Logical shift right using AIL's explicit unsigned wrapping shift semantics.
+pub fn shift_right_unsigned(value: i64, amount: i64) -> i64 {
+    ((value as u64).wrapping_shr(amount as u32)) as i64
+}
+
 // ── Wrapping arithmetic ───────────────────────────────────────────────────
 
 /// Add two `i64` values with defined two's-complement wrapping.

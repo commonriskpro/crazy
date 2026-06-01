@@ -935,6 +935,66 @@ pub(super) fn numeric_rem_or(args: &[StdlibValue]) -> Result<StdlibValue, Stdlib
     )))
 }
 
+pub(super) fn numeric_bit_and(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::bit_and(*a, *b)))
+}
+
+pub(super) fn numeric_bit_or(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::bit_or(*a, *b)))
+}
+
+pub(super) fn numeric_bit_xor(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::bit_xor(*a, *b)))
+}
+
+pub(super) fn numeric_bit_not(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::Int(value) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::bit_not(*value)))
+}
+
+pub(super) fn numeric_shift_left(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(value), StdlibValue::Int(amount)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::shift_left(*value, *amount)))
+}
+
+pub(super) fn numeric_shift_right(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(value), StdlibValue::Int(amount)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::shift_right(*value, *amount)))
+}
+
+pub(super) fn numeric_shift_right_unsigned(
+    args: &[StdlibValue],
+) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 2)?;
+    let (StdlibValue::Int(value), StdlibValue::Int(amount)) = (&args[0], &args[1]) else {
+        return Err(StdlibExecError::Type { expected: "Int" });
+    };
+    Ok(StdlibValue::Int(numeric::shift_right_unsigned(
+        *value, *amount,
+    )))
+}
+
 pub(super) fn numeric_wrapping_add(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 2)?;
     let (StdlibValue::Int(a), StdlibValue::Int(b)) = (&args[0], &args[1]) else {

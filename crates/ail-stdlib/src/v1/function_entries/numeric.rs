@@ -241,6 +241,55 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
         &["fallback semantics chosen explicitly"],
         &["returns fallback on divide-by-zero or remainder overflow"],
     ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.bit_and",
+        "bit_and",
+        &["bitwise integer semantics chosen explicitly"],
+        &["returns left AND right"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.bit_or",
+        "bit_or",
+        &["bitwise integer semantics chosen explicitly"],
+        &["returns left OR right"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.bit_xor",
+        "bit_xor",
+        &["bitwise integer semantics chosen explicitly"],
+        &["returns left XOR right"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.bit_not",
+        "bit_not",
+        &["bitwise integer semantics chosen explicitly"],
+        &["returns bitwise complement"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.shift_left",
+        "shift_left",
+        &["wrapping shift semantics chosen explicitly"],
+        &["returns value shifted left by amount modulo machine shift width"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.shift_right",
+        "shift_right",
+        &["wrapping signed shift semantics chosen explicitly"],
+        &["returns arithmetic right shift by amount modulo machine shift width"],
+    ));
+
+    reg.entries.push(numeric_i64_entry(
+        "std.numeric.shift_right_unsigned",
+        "shift_right_unsigned",
+        &["wrapping unsigned shift semantics chosen explicitly"],
+        &["returns logical right shift by amount modulo machine shift width"],
+    ));
 }
 
 fn numeric_i64_entry(id: &str, name: &str, requires: &[&str], ensures: &[&str]) -> StdlibEntry {
