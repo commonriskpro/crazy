@@ -54,6 +54,11 @@ fn err_value() -> Result<Int, Text> = Err(\"boom\")\n",
         json["data"]["export_types"]["maybe"],
         serde_json::json!({ "Option": { "Scalar": "I64" } })
     );
+    assert_eq!(json["data"]["abi_descriptor"]["abi_version"], 1);
+    assert_eq!(
+        json["data"]["abi_descriptor"]["exports"]["maybe"],
+        serde_json::json!({ "Option": { "Scalar": "I64" } })
+    );
     assert_eq!(
         json["data"]["export_types"]["ok_value"],
         serde_json::json!({ "Result": { "ok": { "Scalar": "I64" }, "err": "Text" } })
@@ -61,6 +66,12 @@ fn err_value() -> Result<Int, Text> = Err(\"boom\")\n",
     assert_eq!(
         json["data"]["export_types"]["err_value"],
         serde_json::json!({ "Result": { "ok": { "Scalar": "I64" }, "err": "Text" } })
+    );
+    assert!(
+        json["data"]["persisted_paths"]["abi_descriptor_path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with(".abi.json")),
+        "compile --json must expose the persisted ABI descriptor sidecar path"
     );
 }
 #[test]

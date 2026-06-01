@@ -282,6 +282,15 @@ pub(crate) async fn cmd_inspect(
                 let artifact_manifest_val: Value =
                     serde_json::from_slice(&persisted.artifact_manifest_json)
                         .unwrap_or(Value::Null);
+                let (abi_descriptor_val, abi_descriptor_source) =
+                    if let Some(bytes) = persisted.abi_descriptor_json.as_ref() {
+                        (
+                            serde_json::from_slice(bytes).unwrap_or(Value::Null),
+                            "persisted_artifact",
+                        )
+                    } else {
+                        (Value::Null, "missing")
+                    };
                 let semantic_source_map_val: Value =
                     serde_json::from_slice(&persisted.source_map_json).unwrap_or(Value::Null);
                 let human_msg = format!(
@@ -300,6 +309,8 @@ pub(crate) async fn cmd_inspect(
                         "wasm_bytes": persisted.wasm_bytes.len(),
                         "capabilities_manifest": capabilities_manifest_val,
                         "capabilities_manifest_source": "persisted_artifact",
+                        "abi_descriptor": abi_descriptor_val,
+                        "abi_descriptor_source": abi_descriptor_source,
                         "semantic_source_map": semantic_source_map_val,
                         "artifact_manifest": artifact_manifest_val,
                         "persisted_paths": {
@@ -307,6 +318,11 @@ pub(crate) async fn cmd_inspect(
                             "source_map_path": persisted.paths.source_map_path.to_string_lossy(),
                             "manifest_path": persisted.paths.manifest_path.to_string_lossy(),
                             "capabilities_path": persisted.paths.capabilities_path.to_string_lossy(),
+                            "abi_descriptor_path": persisted
+                                .paths
+                                .abi_descriptor_path
+                                .as_ref()
+                                .map(|path| path.to_string_lossy().to_string()),
                         },
                     }),
                 );
@@ -369,6 +385,8 @@ pub(crate) async fn cmd_inspect(
                 let compiler_version = artifact.artifact_manifest.compiler_version.clone();
                 let capabilities_manifest_val =
                     serde_json::to_value(&artifact.capabilities_manifest).unwrap_or(Value::Null);
+                let abi_descriptor_val =
+                    serde_json::to_value(&artifact.abi_descriptor).unwrap_or(Value::Null);
                 let artifact_manifest_val: Value =
                     serde_json::from_slice(&artifact.artifact_manifest_json).unwrap_or(Value::Null);
                 let semantic_source_map_val: Value =
@@ -389,6 +407,8 @@ pub(crate) async fn cmd_inspect(
                         "compiler_version": compiler_version,
                         "capabilities_manifest": capabilities_manifest_val,
                         "capabilities_manifest_source": "computed_from_wasm_bindings",
+                        "abi_descriptor": abi_descriptor_val,
+                        "abi_descriptor_source": "computed_from_wasm_bindings",
                         "semantic_source_map": semantic_source_map_val,
                         "artifact_manifest": artifact_manifest_val,
                     }),

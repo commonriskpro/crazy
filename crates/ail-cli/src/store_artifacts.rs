@@ -19,7 +19,7 @@ use crate::store::{StoreHandle, atomic_write, is_object_file_name};
 
 /// Raw bytes passed to `save_wasm_artifact`.
 ///
-/// Groups the four sidecar payloads so the method signature stays under the
+/// Groups the baseline sidecar payloads so the method signature stays under the
 /// clippy `too_many_arguments` threshold.
 pub struct WasmArtifactBytes<'a> {
     /// Compiled WASM module bytes.
@@ -45,12 +45,13 @@ pub struct WasmArtifactIndexEntry {
     pub stored_at: u64,
 }
 
-/// On-disk paths for the four sidecar files written by `save_wasm_artifact`.
+/// On-disk paths for the sidecar files written by WASM artifact persistence.
 pub struct WasmArtifactPaths {
     pub wasm_path: PathBuf,
     pub source_map_path: PathBuf,
     pub manifest_path: PathBuf,
     pub capabilities_path: PathBuf,
+    pub abi_descriptor_path: Option<PathBuf>,
 }
 
 /// A fully loaded persisted WASM artifact.
@@ -69,6 +70,8 @@ pub struct PersistedWasmArtifact {
     pub artifact_manifest_json: Vec<u8>,
     /// Capabilities manifest JSON bytes.
     pub capabilities_manifest_json: Vec<u8>,
+    /// ABI descriptor JSON bytes, when persisted by newer compilers.
+    pub abi_descriptor_json: Option<Vec<u8>>,
     /// On-disk file paths.
     pub paths: WasmArtifactPaths,
 }
@@ -136,7 +139,7 @@ pub struct PersistedNativeArtifact {
 impl StoreHandle {
     /// Persist a compiled WASM artifact and its sidecars under `.ail/wasm/`.
     ///
-    /// Writes four files keyed by `hash`:
+    /// Writes four baseline files keyed by `hash`:
     ///   - `<hash>.wasm`              — raw WASM bytes
     ///   - `<hash>.source_map.json`   — source map JSON
     ///   - `<hash>.manifest.json`     — artifact manifest JSON
@@ -154,6 +157,33 @@ impl StoreHandle {
         target: &str,
         bytes: WasmArtifactBytes<'_>,
     ) -> Result<Option<WasmArtifactPaths>, CliError> {
+        self.save_wasm_artifact_impl(hash, profile, target, bytes, None)
+    }
+
+    /// Persist a compiled WASM artifact plus its versioned ABI descriptor.
+    ///
+    /// In addition to the baseline files written by [`Self::save_wasm_artifact`],
+    /// writes `<hash>.abi.json` so runtime/editor/package tooling can recover
+    /// the export ABI contract without recompiling source.
+    pub fn save_wasm_artifact_with_abi(
+        &self,
+        hash: &str,
+        profile: &str,
+        target: &str,
+        bytes: WasmArtifactBytes<'_>,
+        abi_descriptor_json: &[u8],
+    ) -> Result<Option<WasmArtifactPaths>, CliError> {
+        self.save_wasm_artifact_impl(hash, profile, target, bytes, Some(abi_descriptor_json))
+    }
+
+    fn save_wasm_artifact_impl(
+        &self,
+        hash: &str,
+        profile: &str,
+        target: &str,
+        bytes: WasmArtifactBytes<'_>,
+        abi_descriptor_json: Option<&[u8]>,
+    ) -> Result<Option<WasmArtifactPaths>, CliError> {
         let StoreHandle::File { ail_dir, .. } = self else {
             return Ok(None);
         };
@@ -164,11 +194,15 @@ impl StoreHandle {
         let source_map_path = dir.join(format!("{hash}.source_map.json"));
         let manifest_path = dir.join(format!("{hash}.manifest.json"));
         let capabilities_path = dir.join(format!("{hash}.capabilities.json"));
+        let abi_descriptor_path = abi_descriptor_json.map(|_| dir.join(format!("{hash}.abi.json")));
 
         atomic_write(&wasm_path, bytes.wasm)?;
         atomic_write(&source_map_path, bytes.source_map_json)?;
         atomic_write(&manifest_path, bytes.artifact_manifest_json)?;
         atomic_write(&capabilities_path, bytes.capabilities_manifest_json)?;
+        if let (Some(path), Some(json)) = (&abi_descriptor_path, abi_descriptor_json) {
+            atomic_write(path, json)?;
+        }
 
         // Update the artifact index.
         let mut entries = read_wasm_artifact_index(ail_dir).unwrap_or_default();
@@ -195,6 +229,7 @@ impl StoreHandle {
             source_map_path,
             manifest_path,
             capabilities_path,
+            abi_descriptor_path,
         }))
     }
 
@@ -407,6 +442,7 @@ impl StoreHandle {
         let source_map_path = dir.join(format!("{}.source_map.json", entry.hash));
         let manifest_path = dir.join(format!("{}.manifest.json", entry.hash));
         let capabilities_path = dir.join(format!("{}.capabilities.json", entry.hash));
+        let abi_descriptor_path = dir.join(format!("{}.abi.json", entry.hash));
 
         if !wasm_path.exists() {
             return Ok(None);
@@ -428,6 +464,12 @@ impl StoreHandle {
         } else {
             b"{\"entries\":[]}".to_vec()
         };
+        let abi_descriptor_json = if abi_descriptor_path.exists() {
+            Some(std::fs::read(&abi_descriptor_path)?)
+        } else {
+            None
+        };
+        let abi_descriptor_path = abi_descriptor_path.exists().then_some(abi_descriptor_path);
 
         Ok(Some(PersistedWasmArtifact {
             hash: entry.hash.clone(),
@@ -437,11 +479,13 @@ impl StoreHandle {
             source_map_json,
             artifact_manifest_json,
             capabilities_manifest_json,
+            abi_descriptor_json,
             paths: WasmArtifactPaths {
                 wasm_path,
                 source_map_path,
                 manifest_path,
                 capabilities_path,
+                abi_descriptor_path,
             },
         }))
     }
@@ -589,6 +633,63 @@ mod tests {
         assert_eq!(index[0].hash, fake_hash, "index hash must match");
         assert_eq!(index[0].profile, "dev");
         assert_eq!(index[0].target, "wasm");
+    }
+
+    // Scenario: save_wasm_artifact_with_abi writes and reloads ABI descriptor sidecar.
+    //   GIVEN a file StoreHandle
+    //   WHEN a WASM artifact is saved with an ABI descriptor
+    //   THEN .ail/wasm/<hash>.abi.json is on disk and load_wasm_artifact returns it
+    #[test]
+    fn wasm_artifact_save_load_roundtrip_with_abi_descriptor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ail_dir = temp.path().join(".ail");
+        init_file_layout(&ail_dir).expect("init layout");
+        let store = file_store(ail_dir);
+
+        let fake_hash = "b".repeat(64);
+        let abi_descriptor = b"{\"abi_version\":1,\"exports\":{\"main\":{\"Scalar\":\"I64\"}}}";
+        let paths = store
+            .save_wasm_artifact_with_abi(
+                &fake_hash,
+                "dev",
+                "wasm",
+                WasmArtifactBytes {
+                    wasm: b"wasm-with-abi",
+                    source_map_json: b"{}",
+                    artifact_manifest_json: b"{}",
+                    capabilities_manifest_json: b"{\"entries\":[]}",
+                },
+                abi_descriptor,
+            )
+            .expect("save must succeed")
+            .expect("file store must return Some(paths)");
+
+        let abi_path = paths
+            .abi_descriptor_path
+            .as_ref()
+            .expect("ABI descriptor path must be returned");
+        assert!(abi_path.exists(), "ABI descriptor sidecar must exist");
+        assert_eq!(
+            std::fs::read(abi_path).expect("read ABI descriptor"),
+            abi_descriptor
+        );
+
+        let loaded = store
+            .load_wasm_artifact("dev.wasm")
+            .expect("load must not error")
+            .expect("artifact must be found");
+        assert_eq!(
+            loaded.abi_descriptor_json.as_deref(),
+            Some(&abi_descriptor[..])
+        );
+        assert!(
+            loaded
+                .paths
+                .abi_descriptor_path
+                .as_ref()
+                .is_some_and(|path| path.exists()),
+            "loaded paths must include the ABI descriptor sidecar"
+        );
     }
 
     // Scenario: load_wasm_artifact returns None for memory backend.

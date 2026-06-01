@@ -17,7 +17,8 @@
 //   detect_native_object_format — platform-specific object file format name
 
 use ail_compiler::{
-    emit_native_with_profile, emit_wasm_with_profile, lower_to_anf_with_graph, lower_to_core_ir,
+    AbiDescriptor, emit_native_with_profile, emit_wasm_with_profile, lower_to_anf_with_graph,
+    lower_to_core_ir,
 };
 use ail_core::semantic_graph::SemanticGraph;
 use ail_verify::effect_checker::EffectChecker;
@@ -273,6 +274,11 @@ pub(crate) async fn cmd_compile(
     }
     let export_types_json = serde_json::to_value(&export_types)
         .map_err(|e| CliError::Domain(format!("compile (export types): {e}")))?;
+    let abi_descriptor = AbiDescriptor::new(export_types.clone());
+    let abi_descriptor_json = serde_json::to_value(&abi_descriptor)
+        .map_err(|e| CliError::Domain(format!("compile (abi descriptor): {e}")))?;
+    let abi_descriptor_json_bytes = serde_json::to_vec(&abi_descriptor)
+        .map_err(|e| CliError::Domain(format!("compile (abi descriptor bytes): {e}")))?;
 
     // Serialize the real capabilities manifest — one entry per ANF binding.
     let capabilities_manifest = serde_json::to_value(&artifact.capabilities_manifest)
@@ -285,7 +291,7 @@ pub(crate) async fn cmd_compile(
         .map_err(|e| CliError::Domain(format!("compile (artifact sidecar): {e}")))?;
 
     // ── Persist WASM artifact to .ail/wasm/ (file-backed stores only) ─────
-    let persisted_paths = store.save_wasm_artifact(
+    let persisted_paths = store.save_wasm_artifact_with_abi(
         &wasm_hash,
         profile,
         target,
@@ -295,6 +301,7 @@ pub(crate) async fn cmd_compile(
             artifact_manifest_json: &artifact.artifact_manifest_json,
             capabilities_manifest_json: &capabilities_manifest_json_bytes,
         },
+        &abi_descriptor_json_bytes,
     )?;
     let persisted = persisted_paths.as_ref().map(|p| {
         json!({
@@ -302,6 +309,10 @@ pub(crate) async fn cmd_compile(
             "source_map_path": p.source_map_path.to_string_lossy(),
             "manifest_path": p.manifest_path.to_string_lossy(),
             "capabilities_path": p.capabilities_path.to_string_lossy(),
+            "abi_descriptor_path": p
+                .abi_descriptor_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string()),
         })
     });
 
@@ -328,6 +339,7 @@ pub(crate) async fn cmd_compile(
             "wasm_hash": wasm_hash,
             "capabilities_manifest": capabilities_manifest,
             "export_types": export_types_json,
+            "abi_descriptor": abi_descriptor_json,
             "semantic_source_map": semantic_source_map,
             "artifact_manifest": artifact_manifest,
             "compiler_report": compiler_report,
