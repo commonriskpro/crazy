@@ -843,6 +843,45 @@ pub(crate) async fn cmd_package(
                     return Err(CliError::Domain(message));
                 }
             }
+            if production {
+                if let Err(error) = validate_verified_package_evidence(&manifest) {
+                    let message = "package publish preflight failed: verification evidence invalid"
+                        .to_string();
+                    let response_data = json!({
+                        "published": false,
+                        "preflight": "failed",
+                        "production": true,
+                        "name": &manifest.name,
+                        "version": &manifest.version,
+                        "package_hash": &hash,
+                        "production_lint": "passed",
+                        "production_issue_count": 0,
+                        "production_issues": [],
+                        "reproducible_evidence_integrity": "ok",
+                        "provenance_integrity": "ok",
+                        "verification_evidence_integrity": "failed",
+                        "verification_evidence_issue": error.to_string(),
+                    });
+                    if mode == OutputMode::Json {
+                        let mut error_data = response_data;
+                        if let Some(obj) = error_data.as_object_mut() {
+                            obj.insert(
+                                "error".to_string(),
+                                json!("package_publish_preflight_failed"),
+                            );
+                            obj.insert("message".to_string(), json!(message.clone()));
+                        }
+                        print_error_response(error_data);
+                    } else {
+                        let human_msg = format!(
+                            "{message}\nname: {}\nversion: {}\npackage_hash: {hash}\nproduction_lint: passed\nreproducible_evidence_integrity: ok\nprovenance_integrity: ok\nverification_evidence_integrity: failed\nverification_evidence_issue: {error}",
+                            manifest.name, manifest.version
+                        );
+                        print_response(mode, &human_msg, response_data);
+                    }
+                    return Err(CliError::Domain(message));
+                }
+            }
             let lockfile = load_package_lockfile(store)?;
             let registry = load_package_registry(store)?;
             let actual_artifact_evidence = registry
@@ -961,8 +1000,9 @@ pub(crate) async fn cmd_package(
                 reproducible_evidence_status(manifest.reproducible_evidence.is_some());
             let production_lint = if production { "passed" } else { "not_enforced" };
             let provenance_integrity = if production { "ok" } else { "not_enforced" };
+            let verification_evidence_integrity = if production { "ok" } else { "not_enforced" };
             let human_msg = format!(
-                "published\nname: {}\nversion: {}\npackage_hash: {hash}\ntrust: {:?}\nsignature: signed\ncapabilities_manifest: attached\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\npreflight: passed\nproduction_lint: {production_lint}\nprovenance_integrity: {provenance_integrity}\nlockfile_reproducibility: {lockfile_reproducibility}\nlocked_package_count: {locked_package_count}",
+                "published\nname: {}\nversion: {}\npackage_hash: {hash}\ntrust: {:?}\nsignature: signed\ncapabilities_manifest: attached\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\npreflight: passed\nproduction_lint: {production_lint}\nprovenance_integrity: {provenance_integrity}\nverification_evidence_integrity: {verification_evidence_integrity}\nlockfile_reproducibility: {lockfile_reproducibility}\nlocked_package_count: {locked_package_count}",
                 manifest.name, manifest.version, manifest.trust_level
             );
             print_response(
@@ -981,6 +1021,7 @@ pub(crate) async fn cmd_package(
                     "preflight": "passed",
                     "production_lint": production_lint,
                     "provenance_integrity": provenance_integrity,
+                    "verification_evidence_integrity": verification_evidence_integrity,
                     "production_issue_count": production_issues.len(),
                     "production_issues": production_issues
                         .iter()

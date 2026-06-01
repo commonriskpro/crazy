@@ -17,7 +17,7 @@ use ail_package::{
     LocalCompatibilityIssue, LocalCompatibilityIssueKind, LockfileArtifactEvidence, LockfileEntry,
     PackageCompatibilityMetadata, PackageDef, PackageKeypair, PackageManifest, PackageRegistry,
     Provenance, PublishRequest, RegistryClient, ReproducibleBuildEvidence, SecurityAdvisory,
-    TrustLevel,
+    TrustLevel, validate_verified_package_evidence,
 };
 use serde_json::json;
 

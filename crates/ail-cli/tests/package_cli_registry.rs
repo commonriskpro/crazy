@@ -6,14 +6,14 @@
 mod common;
 
 use ail_package::{
-    AdvisorySeverity, ArtifactHashEntry, Lockfile, LockfileEntry, PackageManifest,
+    AdvisorySeverity, ArtifactHashEntry, Lockfile, LockfileEntry, PackageManifest, Provenance,
     SecurityAdvisory, TrustLevel,
 };
 use common::package_helpers::{
     TestPackageRegistryFile, lockfile_for_manifest, package_lockfile_path,
     read_package_registry_file, signed_test_package, test_package_manifest,
-    test_package_manifest_with_report, write_legacy_package_registry, write_package_lockfile,
-    write_package_registry_file,
+    test_package_manifest_with_full_evidence, test_package_manifest_with_report,
+    write_legacy_package_registry, write_package_lockfile, write_package_registry_file,
 };
 use common::{ail, parse_json_output};
 use predicates::prelude::*;
@@ -160,7 +160,7 @@ fn package_publish_production_blocks_evidence_without_source_provenance() {
 }
 
 #[test]
-fn package_publish_production_accepts_linted_manifest_with_evidence_and_provenance() {
+fn package_publish_production_blocks_missing_verification_report() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
     let source_digest = "a".repeat(64);
@@ -195,6 +195,45 @@ fn package_publish_production_accepts_linted_manifest_with_evidence_and_provenan
         .args(["package", "publish", "--production", "--json"])
         .current_dir(dir.path())
         .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["production"], true);
+    assert_eq!(v["data"]["production_lint"], "passed");
+    assert_eq!(v["data"]["provenance_integrity"], "ok");
+    assert_eq!(v["data"]["verification_evidence_integrity"], "failed");
+    assert!(
+        v["data"]["verification_evidence_issue"]
+            .as_str()
+            .expect("verification issue must be string")
+            .contains("verification_report")
+    );
+}
+
+#[test]
+fn package_publish_production_accepts_verified_evidence_report_and_provenance() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let mut manifest = test_package_manifest_with_full_evidence("local.package", "0.1.0");
+    manifest.license = Some("MIT".to_string());
+    manifest.provenance = Some(Provenance {
+        url: None,
+        source_repository: Some("https://example.com/org/repo".to_string()),
+        commit_hash: Some("abc123".to_string()),
+        build_id: Some("build-1".to_string()),
+    });
+    let package_path = dir.path().join(".ail").join("package.cbor");
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&manifest, &mut bytes).expect("package manifest must encode");
+    fs::write(package_path, bytes).expect("package manifest must be written");
+
+    let output = ail()
+        .args(["package", "publish", "--production", "--json"])
+        .current_dir(dir.path())
+        .assert()
         .success()
         .get_output()
         .clone();
@@ -206,6 +245,7 @@ fn package_publish_production_accepts_linted_manifest_with_evidence_and_provenan
     assert_eq!(v["data"]["production_issue_count"], 0);
     assert_eq!(v["data"]["reproducible_evidence_status"], "present");
     assert_eq!(v["data"]["provenance_integrity"], "ok");
+    assert_eq!(v["data"]["verification_evidence_integrity"], "ok");
 }
 
 #[test]
