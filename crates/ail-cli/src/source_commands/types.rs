@@ -748,11 +748,9 @@ fn require_source_set_type<'a>(ty: &'a str, context: &str) -> Result<Option<&'a 
     if ty == "Unknown" {
         return Ok(None);
     }
-    source_set_element_type(ty).map(Some).ok_or_else(|| {
-        CliError::ParseError(format!(
-            "type mismatch in {context}: expected Set<Unknown>, got {ty}"
-        ))
-    })
+    source_set_element_type(ty)
+        .map(Some)
+        .ok_or_else(|| source_type_shape_mismatch_error(context, "Set<Unknown>", ty))
 }
 
 pub(super) fn infer_source_map_type(
@@ -839,14 +837,18 @@ fn require_source_map_text_key_type<'a>(
         return Ok(None);
     }
     let Some((key_ty, value_ty)) = source_map_types(ty) else {
-        return Err(CliError::ParseError(format!(
-            "type mismatch in {context}: expected Map<Text,Unknown>, got {ty}"
-        )));
+        return Err(source_type_shape_mismatch_error(
+            context,
+            "Map<Text,Unknown>",
+            ty,
+        ));
     };
     if !source_type_matches("Text", key_ty) {
-        return Err(CliError::ParseError(format!(
-            "type mismatch in {context}: expected Map<Text,Unknown>, got {ty}"
-        )));
+        return Err(source_type_shape_mismatch_error(
+            context,
+            "Map<Text,Unknown>",
+            ty,
+        ));
     }
     Ok(Some(value_ty))
 }
@@ -926,9 +928,7 @@ pub(super) fn infer_source_index_type(
     source_list_element_type(&collection_ty)
         .map(ToString::to_string)
         .ok_or_else(|| {
-            CliError::ParseError(format!(
-                "type mismatch in index argument 1: expected List<Unknown>, got {collection_ty}"
-            ))
+            source_type_shape_mismatch_error("index argument 1", "List<Unknown>", &collection_ty)
         })
 }
 
@@ -944,9 +944,7 @@ pub(super) fn infer_source_list_get_type(
         return Ok("Option<Unknown>".to_string());
     }
     let element_ty = source_list_element_type(&collection_ty).ok_or_else(|| {
-        CliError::ParseError(format!(
-            "type mismatch in list.get argument 1: expected List<Unknown>, got {collection_ty}"
-        ))
+        source_type_shape_mismatch_error("list.get argument 1", "List<Unknown>", &collection_ty)
     })?;
     Ok(format!("Option<{element_ty}>"))
 }
