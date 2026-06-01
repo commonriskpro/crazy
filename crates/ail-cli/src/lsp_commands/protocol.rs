@@ -591,6 +591,7 @@ fn supported_diagnostic_code(code: &str) -> bool {
             | "AIL_SOURCE_PARSE_INVALID_TYPE"
             | "AIL_SOURCE_PARSE_MISSING_DELIMITER"
             | "AIL_SOURCE_PARSE_UNEXPECTED_TOKEN"
+            | "AIL_SOURCE_RECORD_FIELD_UNKNOWN"
             | "AIL_SOURCE_TYPE_MISMATCH"
             | "AIL_SOURCE_TYPE_SHAPE_MISMATCH"
     )

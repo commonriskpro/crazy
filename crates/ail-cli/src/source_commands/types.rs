@@ -884,16 +884,12 @@ pub(super) fn infer_source_field_type(
         return Ok("Unknown".to_string());
     }
     let fields = source_record_fields(&record_ty).ok_or_else(|| {
-        CliError::ParseError(format!(
-            "type mismatch in field argument 1: expected Record<...>, got {record_ty}"
-        ))
+        source_type_shape_mismatch_error("field argument 1", "Record<...>", &record_ty)
     })?;
     fields
         .into_iter()
         .find_map(|(name, ty)| (name == field).then_some(ty.to_string()))
-        .ok_or_else(|| {
-            CliError::ParseError(format!("unknown record field `{field}` for {record_ty}"))
-        })
+        .ok_or_else(|| source_record_field_error(field, &record_ty))
 }
 
 pub(super) fn infer_source_update_type(
@@ -905,16 +901,12 @@ pub(super) fn infer_source_update_type(
     let field = args[1].trim();
     validate_source_local_expr_name(field)?;
     let fields = source_record_fields(&record_ty).ok_or_else(|| {
-        CliError::ParseError(format!(
-            "type mismatch in update argument 1: expected Record<...>, got {record_ty}"
-        ))
+        source_type_shape_mismatch_error("update argument 1", "Record<...>", &record_ty)
     })?;
     let expected_ty = fields
         .into_iter()
         .find_map(|(name, ty)| (name == field).then_some(ty.to_string()))
-        .ok_or_else(|| {
-            CliError::ParseError(format!("unknown record field `{field}` for {record_ty}"))
-        })?;
+        .ok_or_else(|| source_record_field_error(field, &record_ty))?;
     let value_ty = infer_source_expr_type(&args[2], scope, functions)?;
     validate_source_type_match(&expected_ty, &value_ty, &format!("update field {field}"))?;
     Ok(record_ty)
@@ -1018,6 +1010,14 @@ pub(super) fn validate_source_type_match(
 
 fn source_expr_error(code: &str, category: &str, message: impl AsRef<str>) -> CliError {
     CliError::ParseError(format!("{} [{code}] category={category}", message.as_ref()))
+}
+
+fn source_record_field_error(field: &str, record_ty: &str) -> CliError {
+    source_expr_error(
+        "AIL_SOURCE_RECORD_FIELD_UNKNOWN",
+        "source.record.field",
+        format!("unknown record field `{field}` for {record_ty}"),
+    )
 }
 
 fn source_type_mismatch_error(context: &str, expected: &str, actual: &str) -> CliError {
