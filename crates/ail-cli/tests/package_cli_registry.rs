@@ -6,7 +6,8 @@
 mod common;
 
 use ail_package::{
-    AdvisorySeverity, ArtifactHashEntry, Lockfile, LockfileEntry, SecurityAdvisory, TrustLevel,
+    AdvisorySeverity, ArtifactHashEntry, Lockfile, LockfileEntry, PackageManifest,
+    SecurityAdvisory, TrustLevel,
 };
 use common::package_helpers::{
     TestPackageRegistryFile, lockfile_for_manifest, package_lockfile_path,
@@ -156,6 +157,66 @@ fn package_publish_production_accepts_linted_manifest_with_evidence() {
     assert_eq!(v["data"]["production_lint"], "passed");
     assert_eq!(v["data"]["production_issue_count"], 0);
     assert_eq!(v["data"]["reproducible_evidence_status"], "present");
+}
+
+#[test]
+fn package_publish_production_blocks_corrupt_reproducible_evidence() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let source_digest = "a".repeat(64);
+    let recipe_hash = "b".repeat(64);
+
+    ail()
+        .args([
+            "package",
+            "init",
+            "--name",
+            "local.package",
+            "--version",
+            "0.1.0",
+            "--license",
+            "MIT",
+            "--source-digest",
+            &source_digest,
+            "--toolchain-id",
+            "ail-toolchain-1",
+            "--recipe-hash",
+            &recipe_hash,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let manifest_path = dir.path().join(".ail").join("package.cbor");
+    let bytes = fs::read(&manifest_path).expect("package manifest must exist");
+    let mut manifest: PackageManifest =
+        ciborium::from_reader(bytes.as_slice()).expect("package manifest must decode");
+    manifest
+        .reproducible_evidence
+        .as_mut()
+        .expect("evidence must exist")
+        .build_inputs_hash = "c".repeat(64);
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&manifest, &mut bytes).expect("package manifest must encode");
+    fs::write(&manifest_path, bytes).expect("package manifest must be written");
+
+    let output = ail()
+        .args(["package", "publish", "--production", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["production"], true);
+    assert_eq!(v["data"]["production_lint"], "passed");
+    assert_eq!(v["data"]["reproducible_evidence_integrity"], "failed");
+    assert_eq!(v["data"]["reproducible_evidence_status"], "present");
+    assert_eq!(
+        v["data"]["reproducible_evidence_issue"]["field"],
+        "build_inputs_hash"
+    );
 }
 
 #[test]

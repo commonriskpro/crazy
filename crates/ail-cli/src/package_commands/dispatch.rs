@@ -2,6 +2,52 @@ use super::*;
 
 // ── Public entry point ────────────────────────────────────────────────────
 
+fn reproducible_evidence_preflight_issue(
+    evidence: &ReproducibleBuildEvidence,
+) -> Option<(&'static str, String)> {
+    if !is_package_blake3_hex(&evidence.build_inputs_hash) {
+        return Some((
+            "build_inputs_hash",
+            "expected 64-character lowercase BLAKE3 hex digest".to_string(),
+        ));
+    }
+    if evidence.toolchain_id.trim().is_empty() {
+        return Some(("toolchain_id", "must be non-empty".to_string()));
+    }
+    if !is_package_blake3_hex(&evidence.source_digest) {
+        return Some((
+            "source_digest",
+            "expected 64-character lowercase BLAKE3 hex digest".to_string(),
+        ));
+    }
+    if !is_package_blake3_hex(&evidence.recipe_hash) {
+        return Some((
+            "recipe_hash",
+            "expected 64-character lowercase BLAKE3 hex digest".to_string(),
+        ));
+    }
+
+    let derived = ReproducibleBuildEvidence::compute_build_inputs_hash(
+        &evidence.source_digest,
+        &evidence.toolchain_id,
+    );
+    if evidence.build_inputs_hash != derived {
+        return Some((
+            "build_inputs_hash",
+            "must equal BLAKE3(source_digest || toolchain_id)".to_string(),
+        ));
+    }
+
+    None
+}
+
+fn is_package_blake3_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
 /// `ail package <add|lint|verify|publish|audit|explain>` — manage packages.
 ///
 /// Rules:
@@ -675,6 +721,50 @@ pub(crate) async fn cmd_package(
                     print_response(mode, &human_msg, response_data);
                 }
                 return Err(CliError::Domain(message));
+            }
+            if production {
+                if let Some(evidence) = manifest.reproducible_evidence.as_ref() {
+                    if let Some((field, reason)) = reproducible_evidence_preflight_issue(evidence) {
+                        let message = format!(
+                            "package publish preflight failed: reproducible_evidence field {field} invalid"
+                        );
+                        let response_data = json!({
+                            "published": false,
+                            "preflight": "failed",
+                            "production": true,
+                            "name": &manifest.name,
+                            "version": &manifest.version,
+                            "package_hash": &hash,
+                            "production_lint": "passed",
+                            "production_issue_count": 0,
+                            "production_issues": [],
+                            "reproducible_evidence_integrity": "failed",
+                            "reproducible_evidence_status": "present",
+                            "reproducible_evidence_issue": {
+                                "field": field,
+                                "reason": reason,
+                            },
+                        });
+                        if mode == OutputMode::Json {
+                            let mut error_data = response_data;
+                            if let Some(obj) = error_data.as_object_mut() {
+                                obj.insert(
+                                    "error".to_string(),
+                                    json!("package_publish_preflight_failed"),
+                                );
+                                obj.insert("message".to_string(), json!(message.clone()));
+                            }
+                            print_error_response(error_data);
+                        } else {
+                            let human_msg = format!(
+                                "{message}\nname: {}\nversion: {}\npackage_hash: {hash}\nproduction_lint: passed\nreproducible_evidence_integrity: failed\nreproducible_evidence_status: present\nreproducible_evidence_issue: {field}: {reason}",
+                                manifest.name, manifest.version
+                            );
+                            print_response(mode, &human_msg, response_data);
+                        }
+                        return Err(CliError::Domain(message));
+                    }
+                }
             }
             let lockfile = load_package_lockfile(store)?;
             let registry = load_package_registry(store)?;
