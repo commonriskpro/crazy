@@ -910,6 +910,14 @@ fn lsp_diagnose_reports_untyped_source_builtins() {
             .expect("diagnostic message")
             .contains("unsupported source builtin `fold` has no type inference")
     );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_BUILTIN_UNTYPED"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.builtin.untyped"
+    );
 }
 #[test]
 fn lsp_stdio_publish_diagnostics_reports_ail_source_missing_imports() {

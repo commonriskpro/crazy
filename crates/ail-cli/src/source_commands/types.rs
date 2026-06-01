@@ -355,9 +355,7 @@ pub(super) fn infer_source_call_type(
             for arg in args {
                 infer_source_expr_type(arg, scope, functions)?;
             }
-            Err(CliError::ParseError(format!(
-                "unsupported source builtin `{unsupported}` has no type inference"
-            )))
+            Err(source_builtin_untyped_error(unsupported))
         }
         _ => {
             if let Some(function) = source_callable_for_reference(functions, func) {
@@ -1019,6 +1017,14 @@ fn source_record_field_error(field: &str, record_ty: &str) -> CliError {
         "AIL_SOURCE_RECORD_FIELD_UNKNOWN",
         "source.record.field",
         format!("unknown record field `{field}` for {record_ty}"),
+    )
+}
+
+fn source_builtin_untyped_error(func: &str) -> CliError {
+    source_expr_error(
+        "AIL_SOURCE_BUILTIN_UNTYPED",
+        "source.builtin.untyped",
+        format!("unsupported source builtin `{func}` has no type inference"),
     )
 }
 
