@@ -68,6 +68,33 @@ fn lsp_diagnose_reports_ail_source_cyclic_imports() {
     assert!(message.contains("main.ail ->"));
     assert!(message.contains("dep.ail ->"));
 }
+
+#[test]
+fn lsp_diagnose_accepts_inline_return_markers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str("fn main() -> Int = return add(20, 22)\ntest add = return eq(main(), 42)\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["lsp", "--diagnose"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostic_count"], 0);
+    assert_eq!(v["data"]["error_count"], 0);
+}
+
 #[test]
 fn lsp_diagnose_reports_numeric_leading_source_names() {
     use assert_fs::prelude::*;

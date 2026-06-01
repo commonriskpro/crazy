@@ -298,7 +298,7 @@ pub(super) fn build_source_function(
         name,
         params,
         return_type,
-        body: lower_source_expr(body, line_num)?,
+        body: lower_source_expr(source_optional_return_expr(body), line_num)?,
         line_num,
         source_path: None,
     })
@@ -589,10 +589,17 @@ pub(super) fn parse_source_test(
     Ok(SourceTest {
         name: normalize_test_name(raw_name),
         return_type,
-        body: lower_source_expr(body, line_num)?,
+        body: lower_source_expr(source_optional_return_expr(body), line_num)?,
         line_num,
         source_path: None,
     })
+}
+
+fn source_optional_return_expr(expr: &str) -> &str {
+    expr.trim()
+        .strip_prefix("return ")
+        .map(str::trim)
+        .unwrap_or_else(|| expr.trim())
 }
 
 pub(super) fn parse_source_grant(

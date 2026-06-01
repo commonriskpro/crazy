@@ -63,6 +63,19 @@ fn lowers_source_to_acl_create_ops() {
 }
 
 #[test]
+fn lowers_inline_return_markers_in_source_functions_and_tests() {
+    let program =
+        parse_ail_source("fn main() -> Int = return add(20, 22)\ntest add = return eq(main(), 42)")
+            .expect("inline return markers must parse");
+    let acl = source_program_to_acl(&program, "source_inline_returns".to_string());
+
+    assert_eq!(program.functions[0].body, "add(20, 22)");
+    assert_eq!(program.tests[0].body, "eq(main(), 42)");
+    assert!(acl.contains("op create_function id=fn.main return=Int body=add(20, 22)"));
+    assert!(acl.contains("op create_test id=test.add return=Bool body=eq(main(), 42)"));
+}
+
+#[test]
 fn rejects_invalid_acl_materialization_with_stable_diagnostic() {
     assert_graph_materialization_diagnostic(
         source_program_to_graph(&SourceProgram::default(), "source\ninvalid"),
