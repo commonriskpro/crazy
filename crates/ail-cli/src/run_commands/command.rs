@@ -49,7 +49,10 @@ pub(crate) async fn cmd_run(
     {
         let artifact = emit_wasm_with_profile(&anf, profile)
             .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?;
-        (artifact, vec![])
+        (
+            RunWasmArtifact::emitted(artifact, "compiled_builtin"),
+            vec![],
+        )
     } else {
         let graph = if let Some(source) = source_graph.as_ref() {
             source.graph.clone()
@@ -65,8 +68,21 @@ pub(crate) async fn cmd_run(
         let anf = lower_to_anf_with_graph(&core, &graph)
             .map_err(|e| CliError::Domain(format!("Failed to lower Core IR to ANF: {e}")))?;
         let capability_ids = derive_runtime_capability_ids(&graph, &anf, module_name);
-        let artifact = emit_wasm_with_profile(&anf, profile)
-            .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?;
+        let artifact = if source_file.is_none() {
+            if let Some(persisted) =
+                load_current_persisted_wasm_artifact(store, profile, target, &anf)?
+            {
+                persisted
+            } else {
+                let artifact = emit_wasm_with_profile(&anf, profile)
+                    .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?;
+                RunWasmArtifact::emitted(artifact, "compiled_in_memory")
+            }
+        } else {
+            let artifact = emit_wasm_with_profile(&anf, profile)
+                .map_err(|e| CliError::Domain(format!("Failed to emit WASM artifact: {e}")))?;
+            RunWasmArtifact::emitted(artifact, "compiled_source_file")
+        };
         (artifact, capability_ids)
     };
 
@@ -120,6 +136,7 @@ pub(crate) async fn cmd_run(
                 "artifact_hash": {
                     "passed": preflight_passed,
                     "hash": module_hash,
+                    "source": artifact.source,
                 },
                 "verification_report": "accepted",
                 "runtime_profile": {
@@ -249,6 +266,7 @@ pub(crate) async fn cmd_run(
                     "profile": profile,
                     "module": module_name,
                     "source_file": source_file.map(|path| path.display().to_string()),
+                    "artifact_source": artifact.source,
                     "invoke_result": result_display,
                     "invoke_value": invoke_value,
                     "invoke_abi_descriptor": invoke_abi_descriptor_json,
@@ -273,4 +291,47 @@ pub(crate) async fn cmd_run(
             module_name,
         ))),
     }
+}
+
+fn load_current_persisted_wasm_artifact(
+    store: &StoreHandle,
+    profile: &str,
+    target: &str,
+    anf: &AnfIr,
+) -> Result<Option<RunWasmArtifact>, CliError> {
+    let Some(persisted) = store.load_wasm_artifact(profile)? else {
+        return Ok(None);
+    };
+    if persisted.profile != profile || persisted.target != target {
+        return Ok(None);
+    }
+
+    if !persisted.paths.manifest_path.exists() {
+        return Ok(None);
+    }
+    let manifest: ArtifactManifest = serde_json::from_slice(&persisted.artifact_manifest_json)
+        .map_err(|e| {
+            CliError::Domain(format!(
+                "run (persisted artifact manifest for profile `{profile}`): {e}"
+            ))
+        })?;
+    if manifest.graph_snapshot_hash != anf.stage_hashes.graph_snapshot_hash {
+        return Ok(None);
+    }
+
+    let Some(abi_descriptor_json) = persisted.abi_descriptor_json.as_ref() else {
+        return Ok(None);
+    };
+    let abi_descriptor: AbiDescriptor =
+        serde_json::from_slice(abi_descriptor_json).map_err(|e| {
+            CliError::Domain(format!(
+                "run (persisted ABI descriptor for profile `{profile}`): {e}"
+            ))
+        })?;
+
+    Ok(Some(RunWasmArtifact {
+        wasm: persisted.wasm_bytes,
+        export_types: abi_descriptor.exports,
+        source: "persisted_wasm_artifact",
+    }))
 }

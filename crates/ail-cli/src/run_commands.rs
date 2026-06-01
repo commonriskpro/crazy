@@ -12,7 +12,7 @@
 //   derive_runtime_capability_ids — collect CapabilityIds from a SemanticGraph
 
 use ail_compiler::{
-    AbiDescriptor, AnfExpr, AnfIr, WasmTypeDescriptor, emit_wasm_with_profile,
+    AbiDescriptor, AnfExpr, AnfIr, ArtifactManifest, WasmTypeDescriptor, emit_wasm_with_profile,
     lower_to_anf_with_graph, lower_to_core_ir,
 };
 use std::collections::BTreeMap;
@@ -48,6 +48,22 @@ pub(crate) use command::cmd_run;
 pub(crate) use invoke::invoke_export_for_cli;
 
 use errors::format_run_preflight_error;
+
+struct RunWasmArtifact {
+    wasm: Vec<u8>,
+    export_types: BTreeMap<String, WasmTypeDescriptor>,
+    source: &'static str,
+}
+
+impl RunWasmArtifact {
+    fn emitted(artifact: ail_compiler::WasmArtifact, source: &'static str) -> Self {
+        Self {
+            wasm: artifact.wasm,
+            export_types: artifact.export_types,
+            source,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;

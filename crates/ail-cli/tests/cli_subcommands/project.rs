@@ -382,6 +382,14 @@ fn disk_store_persists_change_for_compile() {
     let run_json = parse_json_output(&run_output);
     assert_eq!(run_json["status"], "ok");
     assert_eq!(run_json["data"]["outcome"], "PreflightPassed");
+    assert_eq!(
+        run_json["data"]["artifact_source"],
+        "persisted_wasm_artifact"
+    );
+    assert_eq!(
+        run_json["data"]["runtime_check_results"]["artifact_hash"]["source"],
+        "persisted_wasm_artifact"
+    );
 
     dir.child(".ail/HEAD").assert(predicate::path::exists());
     dir.child(".ail/refs/branches/main")
