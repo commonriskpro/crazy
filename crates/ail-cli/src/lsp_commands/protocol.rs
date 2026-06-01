@@ -100,7 +100,7 @@ impl LspSession {
                     message,
                     json!({
                     "capabilities": {
-                        "textDocumentSync": 1,
+                        "textDocumentSync": 2,
                         "diagnosticProvider": {
                             "interFileDependencies": true,
                             "workspaceDiagnostics": false
@@ -141,12 +141,7 @@ impl LspSession {
                 let text = if method == "textDocument/didOpen" {
                     doc["text"].as_str().unwrap_or_default().to_string()
                 } else {
-                    params["contentChanges"]
-                        .as_array()
-                        .and_then(|changes| changes.last())
-                        .and_then(|change| change["text"].as_str())
-                        .unwrap_or_default()
-                        .to_string()
+                    self.changed_document_text(uri, params)
                 };
                 self.documents.insert(uri.to_string(), text.clone());
                 vec![json!({
@@ -412,6 +407,61 @@ impl LspSession {
             .map(|text| completion_prefix_at_position(text, line, character))
             .unwrap_or_default()
     }
+
+    fn changed_document_text(&self, uri: &str, params: &Value) -> String {
+        let mut text = self.documents.get(uri).cloned().unwrap_or_default();
+        let Some(changes) = params["contentChanges"].as_array() else {
+            return text;
+        };
+        for change in changes {
+            text = apply_document_change(&text, change);
+        }
+        text
+    }
+}
+
+fn apply_document_change(current: &str, change: &Value) -> String {
+    let replacement = change["text"].as_str().unwrap_or_default();
+    let Some(range) = change.get("range").filter(|range| range.is_object()) else {
+        return replacement.to_string();
+    };
+    let Some(start) = lsp_position_to_byte_index(current, &range["start"]) else {
+        return current.to_string();
+    };
+    let Some(end) = lsp_position_to_byte_index(current, &range["end"]) else {
+        return current.to_string();
+    };
+    if start > end {
+        return current.to_string();
+    }
+    let mut out = String::with_capacity(current.len() - (end - start) + replacement.len());
+    out.push_str(&current[..start]);
+    out.push_str(replacement);
+    out.push_str(&current[end..]);
+    out
+}
+
+fn lsp_position_to_byte_index(text: &str, position: &Value) -> Option<usize> {
+    let target_line = position["line"].as_u64()? as usize;
+    let target_character = position["character"].as_u64()? as usize;
+    let mut line_start = 0usize;
+    for (line_idx, line) in text.split_inclusive('\n').enumerate() {
+        let line_without_newline = line.strip_suffix('\n').unwrap_or(line);
+        if line_idx == target_line {
+            return Some(
+                line_start + char_offset_to_byte_index(line_without_newline, target_character),
+            );
+        }
+        line_start += line.len();
+    }
+    (target_line == text.lines().count()).then_some(text.len())
+}
+
+fn char_offset_to_byte_index(line: &str, character: usize) -> usize {
+    line.char_indices()
+        .nth(character)
+        .map(|(idx, _)| idx)
+        .unwrap_or(line.len())
 }
 
 fn workspace_root_uri_from_initialize(message: &Value) -> Option<String> {

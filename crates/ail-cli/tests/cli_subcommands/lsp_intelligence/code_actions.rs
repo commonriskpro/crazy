@@ -215,6 +215,47 @@ fn lsp_publish_diagnostics_handles_unsaved_source_documents() {
     );
 }
 
+#[test]
+fn lsp_did_change_applies_incremental_source_document_edits() {
+    let uri = "file:///workspace/incremental.ail";
+    let open = did_open_message(uri, "fn main() -> Int {\n  return 0\n}\n");
+    let change = did_change_message(
+        uri,
+        serde_json::json!([{
+            "range": {
+                "start": { "line": 1, "character": 0 },
+                "end": { "line": 1, "character": 0 }
+            },
+            "text": "  1 + 2\n"
+        }]),
+    );
+
+    let output = ail()
+        .args(["lsp", "--stdio"])
+        .write_stdin(lsp_input(&[open, change]))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let messages = lsp_json_messages(&output.stdout);
+    let notification = messages
+        .iter()
+        .filter(|message| message["method"] == "textDocument/publishDiagnostics")
+        .last()
+        .expect("didChange must publish diagnostics for incrementally updated text");
+    let diagnostics = notification["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics must be an array");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0]["code"], "AIL_SOURCE_LSP_IGNORED_EXPRESSION");
+    assert_eq!(diagnostics[0]["range"]["start"]["line"], 1);
+    assert_eq!(
+        diagnostics[0]["data"]["ailRepair"]["code"],
+        "remove.ignored_expression_statement"
+    );
+}
+
 fn code_action_result(messages: Vec<String>, request_id: u64) -> serde_json::Value {
     let output = ail()
         .args(["lsp", "--stdio"])
@@ -229,6 +270,21 @@ fn code_action_result(messages: Vec<String>, request_id: u64) -> serde_json::Val
         .find(|message| message["id"] == request_id)
         .expect("codeAction response must be emitted");
     response["result"].clone()
+}
+
+fn did_change_message(uri: &str, content_changes: serde_json::Value) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "version": 2,
+            },
+            "contentChanges": content_changes
+        }
+    })
+    .to_string()
 }
 
 fn ignored_expression_diagnostic(uri: &str) -> serde_json::Value {
