@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use super::source_helpers::{
     file_path_from_uri, is_acl_token_char, is_ail_source_uri, resolve_lsp_source_import,
-    source_imports_from_text, source_module_from_text,
+    source_imports_from_text, source_module_from_text, source_test_name_end,
 };
 use super::tokens::token_range_at_position;
 
@@ -523,10 +523,7 @@ fn source_declaration_in_line(line: &str) -> Option<(SourceSymbolKind, &str, usi
         return Some((SourceSymbolKind::Const, name, leading + "const ".len()));
     }
     if let Some(rest) = trimmed.strip_prefix("test ") {
-        let name_end = [rest.find("->"), rest.find('=')]
-            .into_iter()
-            .flatten()
-            .min()?;
+        let name_end = source_test_name_end(rest)?;
         let name = rest[..name_end].trim();
         return Some((SourceSymbolKind::Test, name, leading + "test ".len()));
     }

@@ -22,7 +22,7 @@ fn lsp_workspace_symbols_indexes_open_ail_documents_deterministically() {
                 "uri": math_uri,
                 "languageId": "ail",
                 "version": 1,
-                "text": "module math\nconst answer: Int = 42\nfn add_pair(x: Int, y: Int) -> Int = x + y\ntest add = eq(add_pair(20, 22), 42)\n",
+                "text": "module math\nconst answer: Int = 42\nfn add_pair(x: Int, y: Int) -> Int = x + y\ntest add {\n  let actual: Int = add_pair(20, 22)\n  return actual == 42\n}\n",
             }
         }
     })
@@ -103,6 +103,12 @@ fn lsp_workspace_symbols_indexes_open_ail_documents_deterministically() {
     );
     assert_eq!(add_pair["location"]["range"]["start"]["line"], 2);
     assert_eq!(add_pair["location"]["range"]["start"]["character"], 3);
+    let add_test = symbols
+        .iter()
+        .find(|symbol| symbol["name"] == "test.add")
+        .expect("test.add symbol must be indexed");
+    assert_eq!(add_test["location"]["range"]["start"]["line"], 3);
+    assert_eq!(add_test["location"]["range"]["start"]["character"], 5);
 }
 
 #[test]

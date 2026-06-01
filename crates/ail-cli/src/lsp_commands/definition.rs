@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use super::source_helpers::{
     file_path_from_uri, is_acl_token_char, is_ail_source_uri, resolve_lsp_source_import,
-    source_imports_from_text, source_module_from_text,
+    source_imports_from_text, source_module_from_text, source_test_name_end,
 };
 use super::tokens::token_range_at_position;
 
@@ -589,11 +589,7 @@ fn source_test_definitions_in_text(uri: &str, text: &str, token: &str) -> Vec<Va
         let Some(rest) = trimmed.strip_prefix("test ") else {
             continue;
         };
-        let Some(name_end) = [rest.find("->"), rest.find('=')]
-            .into_iter()
-            .flatten()
-            .min()
-        else {
+        let Some(name_end) = source_test_name_end(rest) else {
             continue;
         };
         let name = rest[..name_end].trim();

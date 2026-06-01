@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::source_helpers::{
     file_path_from_uri, is_ail_source_uri, resolve_lsp_source_import, source_imports_from_text,
-    source_module_from_text,
+    source_module_from_text, source_test_name_end,
 };
 
 use acl::ACL_SYMBOLS;
@@ -497,10 +497,7 @@ fn ail_source_symbols_for_document(uri: &str, text: &str) -> Vec<WorkspaceSymbol
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("test ")
-            && let Some(name_end) = [rest.find("->"), rest.find('=')]
-                .into_iter()
-                .flatten()
-                .min()
+            && let Some(name_end) = source_test_name_end(rest)
         {
             let raw_name = rest[..name_end].trim();
             if !raw_name.is_empty() {
@@ -936,10 +933,7 @@ fn source_test_hover_candidate(
     line_idx: usize,
     start_offset: usize,
 ) -> Option<SourceHoverCandidate> {
-    let name_end = [rest.find("->"), rest.find('=')]
-        .into_iter()
-        .flatten()
-        .min()?;
+    let name_end = source_test_name_end(rest)?;
     let name = rest[..name_end].trim();
     if !source_test_name_matches_token(name, token) {
         return None;

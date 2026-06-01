@@ -125,6 +125,45 @@ fn lsp_references_resolve_ail_source_prefixed_test_uses() {
 }
 
 #[test]
+fn lsp_references_resolve_ail_source_block_test_uses() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "test smoke {\n  let actual: Int = 20 + 22\n  return actual == 42\n}\ngrant test.smoke log.write\nfn main() -> Int = 0\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args([
+            "lsp",
+            "--references-token",
+            "test.smoke",
+            "--references-file",
+        ])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+    let refs = v["data"]["references"]
+        .as_array()
+        .expect("references must be an array");
+
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["token"], "test.smoke");
+    assert_eq!(v["data"]["reference_count"], 2);
+    assert_eq!(refs[0]["range"]["start"]["line"], 0);
+    assert_eq!(refs[0]["range"]["start"]["character"], 5);
+    assert_eq!(refs[1]["range"]["start"]["line"], 4);
+    assert_eq!(refs[1]["range"]["start"]["character"], 6);
+}
+
+#[test]
 fn lsp_references_scope_kind_qualified_source_test_without_function_collision() {
     use assert_fs::prelude::*;
 

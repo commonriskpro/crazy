@@ -180,6 +180,39 @@ fn lsp_definition_resolves_ail_source_test() {
 }
 
 #[test]
+fn lsp_definition_resolves_ail_source_block_test() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("main.ail");
+    source
+        .write_str(
+            "test smoke {\n  let actual: Int = 20 + 22\n  return actual == 42\n}\nfn main() -> Int = 0\n",
+        )
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args([
+            "lsp",
+            "--definition-token",
+            "test.smoke",
+            "--definition-file",
+        ])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v = parse_json_output(&output);
+
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["token"], "test.smoke");
+    assert_eq!(v["data"]["definition"]["range"]["start"]["line"], 0);
+    assert_eq!(v["data"]["definition"]["range"]["start"]["character"], 5);
+}
+
+#[test]
 fn lsp_definition_resolves_kind_qualified_source_test_without_function_collision() {
     use assert_fs::prelude::*;
 

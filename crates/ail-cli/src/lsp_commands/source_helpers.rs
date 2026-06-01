@@ -39,6 +39,13 @@ pub(super) fn source_imports_from_text(text: &str) -> Vec<String> {
         .collect()
 }
 
+pub(super) fn source_test_name_end(rest: &str) -> Option<usize> {
+    [rest.find("->"), rest.find('='), rest.find('{')]
+        .into_iter()
+        .flatten()
+        .min()
+}
+
 pub(super) fn resolve_lsp_source_import(source_path: &std::path::Path, import: &str) -> PathBuf {
     let import_path = std::path::Path::new(import);
     if import_path.is_absolute() {
