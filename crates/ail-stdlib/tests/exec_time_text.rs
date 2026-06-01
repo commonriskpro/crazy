@@ -514,3 +514,96 @@ fn text_parse_int_or_entry_is_registered() {
     assert_eq!(entry.params, ["Text", "Int"]);
     assert_eq!(entry.return_type, "Int");
 }
+
+// ── STDLIB-EXEC-TEXT-BYTE: byte_at_or mirrors source/compiler helper ─────
+
+#[test]
+fn text_byte_at_or_exec_returns_byte_value() {
+    let result = call_pure_stdlib(
+        "std.text.byte_at_or",
+        &[
+            StdlibValue::Text("AIL".to_string()),
+            StdlibValue::Int(1),
+            StdlibValue::Int(-1),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(73)));
+}
+
+#[test]
+fn text_byte_at_or_exec_returns_fallback_when_out_of_range() {
+    let result = call_pure_stdlib(
+        "std.text.byte_at_or",
+        &[
+            StdlibValue::Text("AIL".to_string()),
+            StdlibValue::Int(3),
+            StdlibValue::Int(99),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Int(99)));
+}
+
+// ── STDLIB-EXEC-TEXT-SLICE: slice mirrors source/compiler helper ─────────
+
+#[test]
+fn text_slice_exec_returns_utf8_byte_slice() {
+    let result = call_pure_stdlib(
+        "std.text.slice",
+        &[
+            StdlibValue::Text("Hello, AIL".to_string()),
+            StdlibValue::Int(7),
+            StdlibValue::Int(3),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Text("AIL".to_string())));
+}
+
+#[test]
+fn text_slice_exec_rejects_utf8_boundary_splits() {
+    let result = call_pure_stdlib(
+        "std.text.slice",
+        &[
+            StdlibValue::Text("éx".to_string()),
+            StdlibValue::Int(1),
+            StdlibValue::Int(1),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Text(String::new())));
+}
+
+// ── STDLIB-EXEC-TEXT-REPLACE-FIRST: mirrors source/compiler helper ───────
+
+#[test]
+fn text_replace_first_exec_replaces_only_first_occurrence() {
+    let result = call_pure_stdlib(
+        "std.text.replace_first",
+        &[
+            StdlibValue::Text("one one one".to_string()),
+            StdlibValue::Text("one".to_string()),
+            StdlibValue::Text("two".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Text("two one one".to_string())));
+}
+
+#[test]
+fn text_replace_first_exec_empty_needle_returns_original() {
+    let result = call_pure_stdlib(
+        "std.text.replace_first",
+        &[
+            StdlibValue::Text("hello".to_string()),
+            StdlibValue::Text("".to_string()),
+            StdlibValue::Text("x".to_string()),
+        ],
+    );
+    assert_eq!(result, Ok(StdlibValue::Text("hello".to_string())));
+}
+
+#[test]
+fn text_slice_entry_is_registered() {
+    let entry =
+        ail_stdlib::exec::find_function_entry("std.text.slice").expect("std.text.slice entry");
+    assert_eq!(entry.module, "std.text");
+    assert_eq!(entry.params, ["Text", "Int", "Int"]);
+    assert_eq!(entry.return_type, "Text");
+}

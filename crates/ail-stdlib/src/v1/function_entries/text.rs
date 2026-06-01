@@ -193,6 +193,69 @@ pub(super) fn add_entries(reg: &mut StdlibRegistry) {
     });
 
     reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.byte_at_or".to_string()),
+        module_path: "std::text".to_string(),
+        name: "byte_at_or".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Int".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["first argument is valid UTF-8".to_string()],
+            ensures: vec![
+                "returns the UTF-8 byte value at index".to_string(),
+                "returns fallback when index is negative or out of range".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.slice".to_string()),
+        module_path: "std::text".to_string(),
+        name: "slice".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Text".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["first argument is valid UTF-8".to_string()],
+            ensures: vec![
+                "returns a UTF-8-valid byte slice".to_string(),
+                "returns empty Text when indices are invalid or split UTF-8 boundaries".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
+        id: StdlibId("std.text.replace_first".to_string()),
+        module_path: "std::text".to_string(),
+        name: "replace_first".to_string(),
+        kind: NodeKind::Function,
+        stability: StabilityTier::Stable,
+        type_facts: Some(TypeFacts {
+            nominal: "Text".to_string(),
+            generics: vec![],
+        }),
+        effect_row: None,
+        capability_reqs: None,
+        contract_clauses: Some(ContractClauses {
+            requires: vec!["all arguments are valid UTF-8".to_string()],
+            ensures: vec![
+                "only the first non-overlapping occurrence is replaced".to_string(),
+                "empty needle returns the input unchanged".to_string(),
+            ],
+        }),
+    });
+
+    reg.entries.push(StdlibEntry {
         id: StdlibId("std.text.index_of".to_string()),
         module_path: "std::text".to_string(),
         name: "index_of".to_string(),

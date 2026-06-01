@@ -374,6 +374,30 @@ fn v1_contains_text_contains() {
 }
 
 #[test]
+fn v1_contains_text_byte_at_or() {
+    assert!(
+        has_function_entry("std.text.byte_at_or"),
+        "std.text.byte_at_or must be present"
+    );
+}
+
+#[test]
+fn v1_contains_text_slice() {
+    assert!(
+        has_function_entry("std.text.slice"),
+        "std.text.slice must be present"
+    );
+}
+
+#[test]
+fn v1_contains_text_replace_first() {
+    assert!(
+        has_function_entry("std.text.replace_first"),
+        "std.text.replace_first must be present"
+    );
+}
+
+#[test]
 fn v1_contains_text_index_of() {
     assert!(
         has_function_entry("std.text.index_of"),

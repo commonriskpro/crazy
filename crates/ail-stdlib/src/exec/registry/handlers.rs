@@ -564,6 +564,50 @@ pub(super) fn text_contains_exec(args: &[StdlibValue]) -> Result<StdlibValue, St
     Ok(StdlibValue::Bool(text::text_contains(s, needle)))
 }
 
+pub(super) fn text_byte_at_or_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let (StdlibValue::Text(s), StdlibValue::Int(index), StdlibValue::Int(fallback)) =
+        (&args[0], &args[1], &args[2])
+    else {
+        return Err(StdlibExecError::Type {
+            expected: "Text, Int, Int",
+        });
+    };
+    Ok(StdlibValue::Int(text::text_byte_at_or(
+        s, *index, *fallback,
+    )))
+}
+
+pub(super) fn text_slice_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let (StdlibValue::Text(s), StdlibValue::Int(start), StdlibValue::Int(length)) =
+        (&args[0], &args[1], &args[2])
+    else {
+        return Err(StdlibExecError::Type {
+            expected: "Text, Int, Int",
+        });
+    };
+    Ok(StdlibValue::Text(text::text_slice(s, *start, *length)))
+}
+
+pub(super) fn text_replace_first_exec(
+    args: &[StdlibValue],
+) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 3)?;
+    let (StdlibValue::Text(s), StdlibValue::Text(needle), StdlibValue::Text(replacement)) =
+        (&args[0], &args[1], &args[2])
+    else {
+        return Err(StdlibExecError::Type {
+            expected: "Text, Text, Text",
+        });
+    };
+    Ok(StdlibValue::Text(text::text_replace_first(
+        s,
+        needle,
+        replacement,
+    )))
+}
+
 pub(super) fn text_index_of_exec(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
     expect_arity(args, 2)?;
     let (StdlibValue::Text(s), StdlibValue::Text(needle)) = (&args[0], &args[1]) else {

@@ -4,9 +4,9 @@
 // Spec: G26 stdlib-impl, Requirements R4.1–R4.6.
 
 use ail_stdlib::text::{
-    NormalizeForm, text_contains, text_ends_with, text_from_bytes, text_index_of, text_join,
-    text_length_graphemes, text_normalize, text_parse_int_or, text_replace, text_split,
-    text_starts_with, text_to_bytes, text_trim,
+    NormalizeForm, text_byte_at_or, text_contains, text_ends_with, text_from_bytes, text_index_of,
+    text_join, text_length_graphemes, text_normalize, text_parse_int_or, text_replace,
+    text_replace_first, text_slice, text_split, text_starts_with, text_to_bytes, text_trim,
 };
 
 // ── R4.1: text_trim ──────────────────────────────────────────────────────
@@ -330,4 +330,69 @@ fn text_parse_int_or_returns_fallback_on_invalid_syntax() {
 #[test]
 fn text_parse_int_or_returns_fallback_on_overflow() {
     assert_eq!(text_parse_int_or("9223372036854775808", -1), -1);
+}
+
+// ── R4.14: text_byte_at_or ────────────────────────────────────────────────
+
+#[test]
+fn text_byte_at_or_returns_byte_value() {
+    assert_eq!(text_byte_at_or("AIL", 1, -1), 73);
+}
+
+#[test]
+fn text_byte_at_or_returns_fallback_for_negative_index() {
+    assert_eq!(text_byte_at_or("AIL", -1, 99), 99);
+}
+
+#[test]
+fn text_byte_at_or_returns_fallback_for_out_of_range_index() {
+    assert_eq!(text_byte_at_or("AIL", 3, 99), 99);
+}
+
+#[test]
+fn text_byte_at_or_reads_utf8_bytes() {
+    assert_eq!(text_byte_at_or("🔥", 0, -1), 240);
+}
+
+// ── R4.15: text_slice ─────────────────────────────────────────────────────
+
+#[test]
+fn text_slice_returns_utf8_byte_slice() {
+    assert_eq!(text_slice("Hello, AIL", 7, 3), "AIL");
+}
+
+#[test]
+fn text_slice_clamps_length_to_remaining_text() {
+    assert_eq!(text_slice("Hello", 2, 99), "llo");
+}
+
+#[test]
+fn text_slice_returns_empty_for_negative_values() {
+    assert_eq!(text_slice("Hello", -1, 2), "");
+    assert_eq!(text_slice("Hello", 1, -2), "");
+}
+
+#[test]
+fn text_slice_returns_empty_when_splitting_utf8_boundary() {
+    assert_eq!(text_slice("éx", 1, 1), "");
+}
+
+// ── R4.16: text_replace_first ─────────────────────────────────────────────
+
+#[test]
+fn text_replace_first_replaces_only_first_occurrence() {
+    assert_eq!(
+        text_replace_first("one one one", "one", "two"),
+        "two one one"
+    );
+}
+
+#[test]
+fn text_replace_first_returns_original_when_needle_absent() {
+    assert_eq!(text_replace_first("hello", "xyz", "x"), "hello");
+}
+
+#[test]
+fn text_replace_first_empty_needle_returns_original() {
+    assert_eq!(text_replace_first("hello", "", "x"), "hello");
 }

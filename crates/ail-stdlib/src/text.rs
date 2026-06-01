@@ -122,6 +122,48 @@ pub fn text_contains(s: &str, needle: &str) -> bool {
     s.contains(needle)
 }
 
+// ── text_byte_at_or ───────────────────────────────────────────────────────
+
+/// Return the UTF-8 byte value at `index`, or `fallback` when out of range.
+pub fn text_byte_at_or(s: &str, index: i64, fallback: i64) -> i64 {
+    let Ok(index) = usize::try_from(index) else {
+        return fallback;
+    };
+    s.as_bytes()
+        .get(index)
+        .map(|byte| i64::from(*byte))
+        .unwrap_or(fallback)
+}
+
+// ── text_slice ────────────────────────────────────────────────────────────
+
+/// Return a UTF-8-valid byte slice from `start` with at most `length` bytes.
+///
+/// Invalid negative values, out-of-range starts, or UTF-8 boundary splits
+/// return an empty string. Lengths beyond the remaining text are clamped.
+pub fn text_slice(s: &str, start: i64, length: i64) -> String {
+    let (Ok(start), Ok(length)) = (usize::try_from(start), usize::try_from(length)) else {
+        return String::new();
+    };
+    if length == 0 || start >= s.len() {
+        return String::new();
+    }
+    let end = start.saturating_add(length).min(s.len());
+    s.get(start..end).unwrap_or_default().to_string()
+}
+
+// ── text_replace_first ────────────────────────────────────────────────────
+
+/// Replace only the first non-overlapping occurrence of `needle`.
+///
+/// If `needle` is empty or absent, returns `s` unchanged.
+pub fn text_replace_first(s: &str, needle: &str, replacement: &str) -> String {
+    if needle.is_empty() {
+        return s.to_string();
+    }
+    s.replacen(needle, replacement, 1)
+}
+
 // ── text_index_of ─────────────────────────────────────────────────────────
 
 /// Return the byte offset of the first non-overlapping `needle` occurrence.
