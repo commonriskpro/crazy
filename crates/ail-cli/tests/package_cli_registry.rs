@@ -116,7 +116,7 @@ fn package_publish_production_blocks_linted_manifest_without_evidence() {
 }
 
 #[test]
-fn package_publish_production_accepts_linted_manifest_with_evidence() {
+fn package_publish_production_blocks_evidence_without_source_provenance() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
     let source_digest = "a".repeat(64);
@@ -147,6 +147,54 @@ fn package_publish_production_accepts_linted_manifest_with_evidence() {
         .args(["package", "publish", "--production", "--json"])
         .current_dir(dir.path())
         .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["production"], true);
+    assert_eq!(v["data"]["production_lint"], "passed");
+    assert_eq!(v["data"]["reproducible_evidence_integrity"], "ok");
+    assert_eq!(v["data"]["provenance_integrity"], "failed");
+    assert_eq!(v["data"]["provenance_issue"]["field"], "source_repository");
+}
+
+#[test]
+fn package_publish_production_accepts_linted_manifest_with_evidence_and_provenance() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let source_digest = "a".repeat(64);
+    let recipe_hash = "b".repeat(64);
+
+    ail()
+        .args([
+            "package",
+            "init",
+            "--name",
+            "local.package",
+            "--version",
+            "0.1.0",
+            "--license",
+            "MIT",
+            "--source-digest",
+            &source_digest,
+            "--toolchain-id",
+            "ail-toolchain-1",
+            "--recipe-hash",
+            &recipe_hash,
+            "--source-repository",
+            "https://example.com/org/repo",
+            "--commit-hash",
+            "abc123",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = ail()
+        .args(["package", "publish", "--production", "--json"])
+        .current_dir(dir.path())
+        .assert()
         .success()
         .get_output()
         .clone();
@@ -157,6 +205,7 @@ fn package_publish_production_accepts_linted_manifest_with_evidence() {
     assert_eq!(v["data"]["production_lint"], "passed");
     assert_eq!(v["data"]["production_issue_count"], 0);
     assert_eq!(v["data"]["reproducible_evidence_status"], "present");
+    assert_eq!(v["data"]["provenance_integrity"], "ok");
 }
 
 #[test]

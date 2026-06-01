@@ -41,6 +41,39 @@ fn reproducible_evidence_preflight_issue(
     None
 }
 
+fn production_provenance_preflight_issue(
+    provenance: Option<&Provenance>,
+) -> Option<(&'static str, String)> {
+    let Some(provenance) = provenance else {
+        return Some(("provenance", "must be present".to_string()));
+    };
+    if provenance
+        .source_repository
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return Some((
+            "source_repository",
+            "must identify the package source repository".to_string(),
+        ));
+    }
+    if provenance
+        .commit_hash
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return Some((
+            "commit_hash",
+            "must identify the source revision".to_string(),
+        ));
+    }
+    None
+}
+
 fn is_package_blake3_hex(value: &str) -> bool {
     value.len() == 64
         && value
@@ -766,6 +799,50 @@ pub(crate) async fn cmd_package(
                     }
                 }
             }
+            if production {
+                if let Some((field, reason)) =
+                    production_provenance_preflight_issue(manifest.provenance.as_ref())
+                {
+                    let message = format!(
+                        "package publish preflight failed: provenance field {field} invalid"
+                    );
+                    let response_data = json!({
+                        "published": false,
+                        "preflight": "failed",
+                        "production": true,
+                        "name": &manifest.name,
+                        "version": &manifest.version,
+                        "package_hash": &hash,
+                        "production_lint": "passed",
+                        "production_issue_count": 0,
+                        "production_issues": [],
+                        "reproducible_evidence_integrity": "ok",
+                        "provenance_integrity": "failed",
+                        "provenance_issue": {
+                            "field": field,
+                            "reason": reason,
+                        },
+                    });
+                    if mode == OutputMode::Json {
+                        let mut error_data = response_data;
+                        if let Some(obj) = error_data.as_object_mut() {
+                            obj.insert(
+                                "error".to_string(),
+                                json!("package_publish_preflight_failed"),
+                            );
+                            obj.insert("message".to_string(), json!(message.clone()));
+                        }
+                        print_error_response(error_data);
+                    } else {
+                        let human_msg = format!(
+                            "{message}\nname: {}\nversion: {}\npackage_hash: {hash}\nproduction_lint: passed\nreproducible_evidence_integrity: ok\nprovenance_integrity: failed\nprovenance_issue: {field}: {reason}",
+                            manifest.name, manifest.version
+                        );
+                        print_response(mode, &human_msg, response_data);
+                    }
+                    return Err(CliError::Domain(message));
+                }
+            }
             let lockfile = load_package_lockfile(store)?;
             let registry = load_package_registry(store)?;
             let actual_artifact_evidence = registry
@@ -883,8 +960,9 @@ pub(crate) async fn cmd_package(
             let repro_evidence_status =
                 reproducible_evidence_status(manifest.reproducible_evidence.is_some());
             let production_lint = if production { "passed" } else { "not_enforced" };
+            let provenance_integrity = if production { "ok" } else { "not_enforced" };
             let human_msg = format!(
-                "published\nname: {}\nversion: {}\npackage_hash: {hash}\ntrust: {:?}\nsignature: signed\ncapabilities_manifest: attached\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\npreflight: passed\nproduction_lint: {production_lint}\nlockfile_reproducibility: {lockfile_reproducibility}\nlocked_package_count: {locked_package_count}",
+                "published\nname: {}\nversion: {}\npackage_hash: {hash}\ntrust: {:?}\nsignature: signed\ncapabilities_manifest: attached\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\npreflight: passed\nproduction_lint: {production_lint}\nprovenance_integrity: {provenance_integrity}\nlockfile_reproducibility: {lockfile_reproducibility}\nlocked_package_count: {locked_package_count}",
                 manifest.name, manifest.version, manifest.trust_level
             );
             print_response(
@@ -902,6 +980,7 @@ pub(crate) async fn cmd_package(
                     "sequence": published.sequence,
                     "preflight": "passed",
                     "production_lint": production_lint,
+                    "provenance_integrity": provenance_integrity,
                     "production_issue_count": production_issues.len(),
                     "production_issues": production_issues
                         .iter()
