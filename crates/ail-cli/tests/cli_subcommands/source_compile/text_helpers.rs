@@ -46,7 +46,10 @@ fn compile_file_accepts_source_text_eq_helper() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("text_eq.ail");
     source
-        .write_str("fn same(left: Text, right: Text) -> Bool = text_eq(left, right)\n")
+        .write_str(
+            "fn same(left: Text, right: Text) -> Bool = text_eq(left, right)\n\
+fn dotted_same(left: Text, right: Text) -> Bool = text.eq(left, right)\n",
+        )
         .expect("source fixture must be written");
 
     ail()
@@ -83,7 +86,10 @@ fn compile_file_accepts_source_text_trim_helper() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     let source = dir.child("text_trim.ail");
     source
-        .write_str("fn cleaned(value: Text) -> Text = text_trim(value)\n")
+        .write_str(
+            "fn cleaned(value: Text) -> Text = text_trim(value)\n\
+fn dotted_cleaned(value: Text) -> Text = text.trim(value)\n",
+        )
         .expect("source fixture must be written");
 
     ail()
@@ -103,7 +109,8 @@ fn compile_file_accepts_source_text_length_helper() {
     source
         .write_str(
             "fn main(value: Text) -> Int = text_length(value)\n\
-             fn dotted(value: Text) -> Int = text.length(value)\n",
+             fn dotted(value: Text) -> Int = text.length(value)\n\
+             fn dotted_short(value: Text) -> Int = text.len(value)\n",
         )
         .expect("source fixture must be written");
 
@@ -164,7 +171,8 @@ fn compile_file_accepts_source_text_byte_at_or_helper() {
     let source = dir.child("text_byte_at_or.ail");
     source
         .write_str(
-            "fn byte(value: Text, index: Int, fallback: Int) -> Int = text_byte_at_or(value, index, fallback)\n",
+            "fn byte(value: Text, index: Int, fallback: Int) -> Int = text_byte_at_or(value, index, fallback)\n\
+fn dotted_byte(value: Text, index: Int, fallback: Int) -> Int = text.byte_at_or(value, index, fallback)\n",
         )
         .expect("source fixture must be written");
 
@@ -203,7 +211,8 @@ fn compile_file_accepts_source_text_parse_int_or_helper() {
     let source = dir.child("text_parse_int_or.ail");
     source
         .write_str(
-            "fn parsed(value: Text, fallback: Int) -> Int = text_parse_int_or(value, fallback)\n",
+            "fn parsed(value: Text, fallback: Int) -> Int = text_parse_int_or(value, fallback)\n\
+fn dotted_parsed(value: Text, fallback: Int) -> Int = text.parse_int_or(value, fallback)\n",
         )
         .expect("source fixture must be written");
 
@@ -242,7 +251,8 @@ fn compile_file_accepts_source_text_contains_helper() {
     let source = dir.child("text_contains.ail");
     source
         .write_str(
-            "fn has(haystack: Text, needle: Text) -> Bool = text_contains(haystack, needle)\n",
+            "fn has(haystack: Text, needle: Text) -> Bool = text_contains(haystack, needle)\n\
+fn dotted_has(haystack: Text, needle: Text) -> Bool = text.contains(haystack, needle)\n",
         )
         .expect("source fixture must be written");
 
@@ -281,7 +291,8 @@ fn compile_file_accepts_source_text_index_of_helper() {
     let source = dir.child("text_index_of.ail");
     source
         .write_str(
-            "fn find(haystack: Text, needle: Text) -> Int = text_index_of(haystack, needle)\n",
+            "fn find(haystack: Text, needle: Text) -> Int = text_index_of(haystack, needle)\n\
+fn dotted_find(haystack: Text, needle: Text) -> Int = text.index_of(haystack, needle)\n",
         )
         .expect("source fixture must be written");
 
@@ -320,7 +331,8 @@ fn compile_file_accepts_source_text_slice_helper() {
     let source = dir.child("text_slice.ail");
     source
         .write_str(
-            "fn piece(value: Text, start: Int, length: Int) -> Text = text_slice(value, start, length)\n",
+            "fn piece(value: Text, start: Int, length: Int) -> Text = text_slice(value, start, length)\n\
+fn dotted_piece(value: Text, start: Int, length: Int) -> Text = text.slice(value, start, length)\n",
         )
         .expect("source fixture must be written");
 
@@ -359,7 +371,8 @@ fn compile_file_accepts_source_text_replace_first_helper() {
     let source = dir.child("text_replace_first.ail");
     source
         .write_str(
-            "fn changed(value: Text, needle: Text, replacement: Text) -> Text = text_replace_first(value, needle, replacement)\n",
+            "fn changed(value: Text, needle: Text, replacement: Text) -> Text = text_replace_first(value, needle, replacement)\n\
+fn dotted_changed(value: Text, needle: Text, replacement: Text) -> Text = text.replace_first(value, needle, replacement)\n",
         )
         .expect("source fixture must be written");
 
@@ -401,7 +414,9 @@ fn compile_file_accepts_source_text_boundary_helpers() {
     source
         .write_str(
             "fn prefixed(haystack: Text, prefix: Text) -> Bool = text_starts_with(haystack, prefix)\n\
-             fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suffix)\n",
+             fn dotted_prefixed(haystack: Text, prefix: Text) -> Bool = text.starts_with(haystack, prefix)\n\
+             fn suffixed(haystack: Text, suffix: Text) -> Bool = text_ends_with(haystack, suffix)\n\
+             fn dotted_suffixed(haystack: Text, suffix: Text) -> Bool = text.ends_with(haystack, suffix)\n",
         )
         .expect("source fixture must be written");
 

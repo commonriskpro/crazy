@@ -206,6 +206,18 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_length(${1:value})",
     },
     AclSymbol {
+        label: "text.length",
+        detail: "AIL source Text helper",
+        documentation: "Dotted alias that returns the byte length of a Text value.",
+        insert_text: "text.length(${1:value})",
+    },
+    AclSymbol {
+        label: "text.len",
+        detail: "AIL source Text helper",
+        documentation: "Dotted alias that returns the byte length of a Text value.",
+        insert_text: "text.len(${1:value})",
+    },
+    AclSymbol {
         label: "list_length",
         detail: "AIL source List helper",
         documentation: "Returns the length of a List value.",
@@ -230,6 +242,12 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_is_empty(${1:value})",
     },
     AclSymbol {
+        label: "text.is_empty",
+        detail: "AIL source Text predicate",
+        documentation: "Dotted alias that returns true when a Text value has length 0.",
+        insert_text: "text.is_empty(${1:value})",
+    },
+    AclSymbol {
         label: "list_is_empty",
         detail: "AIL source List predicate",
         documentation: "Returns true when a List value has length 0.",
@@ -248,10 +266,22 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_eq(${1:left}, ${2:right})",
     },
     AclSymbol {
+        label: "text.eq",
+        detail: "AIL source Text predicate",
+        documentation: "Dotted alias that compares two Text values by content.",
+        insert_text: "text.eq(${1:left}, ${2:right})",
+    },
+    AclSymbol {
         label: "text_trim",
         detail: "AIL source Text helper",
         documentation: "Returns Text with leading and trailing ASCII whitespace removed.",
         insert_text: "text_trim(${1:value})",
+    },
+    AclSymbol {
+        label: "text.trim",
+        detail: "AIL source Text helper",
+        documentation: "Dotted alias that trims leading and trailing ASCII whitespace from Text.",
+        insert_text: "text.trim(${1:value})",
     },
     AclSymbol {
         label: "text_contains",
@@ -260,10 +290,22 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_contains(${1:haystack}, ${2:needle})",
     },
     AclSymbol {
+        label: "text.contains",
+        detail: "AIL source Text predicate",
+        documentation: "Dotted alias that returns true when the first Text contains the second Text.",
+        insert_text: "text.contains(${1:haystack}, ${2:needle})",
+    },
+    AclSymbol {
         label: "text_index_of",
         detail: "AIL source Text search",
         documentation: "Returns the zero-based byte index of needle inside Text, or -1 when absent.",
         insert_text: "text_index_of(${1:haystack}, ${2:needle})",
+    },
+    AclSymbol {
+        label: "text.index_of",
+        detail: "AIL source Text search",
+        documentation: "Dotted alias that returns the zero-based byte index of needle, or -1 when absent.",
+        insert_text: "text.index_of(${1:haystack}, ${2:needle})",
     },
     AclSymbol {
         label: "text_parse_int_or",
@@ -272,10 +314,22 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_parse_int_or(${1:value}, ${2:fallback})",
     },
     AclSymbol {
+        label: "text.parse_int_or",
+        detail: "AIL source Text parser",
+        documentation: "Dotted alias that parses an ASCII decimal Int from Text, or returns fallback.",
+        insert_text: "text.parse_int_or(${1:value}, ${2:fallback})",
+    },
+    AclSymbol {
         label: "text_byte_at_or",
         detail: "AIL source Text helper",
         documentation: "Returns the byte value at index, or fallback when the index is out of bounds.",
         insert_text: "text_byte_at_or(${1:value}, ${2:index}, ${3:fallback})",
+    },
+    AclSymbol {
+        label: "text.byte_at_or",
+        detail: "AIL source Text helper",
+        documentation: "Dotted alias that returns the byte value at index, or fallback out of bounds.",
+        insert_text: "text.byte_at_or(${1:value}, ${2:index}, ${3:fallback})",
     },
     AclSymbol {
         label: "text_slice",
@@ -284,10 +338,22 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_slice(${1:value}, ${2:start}, ${3:length})",
     },
     AclSymbol {
+        label: "text.slice",
+        detail: "AIL source Text helper",
+        documentation: "Dotted alias that returns a safe byte slice of Text from start for length bytes.",
+        insert_text: "text.slice(${1:value}, ${2:start}, ${3:length})",
+    },
+    AclSymbol {
         label: "text_replace_first",
         detail: "AIL source Text helper",
         documentation: "Replaces the first occurrence of needle in Text, or returns the original Text when absent.",
         insert_text: "text_replace_first(${1:value}, ${2:needle}, ${3:replacement})",
+    },
+    AclSymbol {
+        label: "text.replace_first",
+        detail: "AIL source Text helper",
+        documentation: "Dotted alias that replaces the first occurrence of needle in Text.",
+        insert_text: "text.replace_first(${1:value}, ${2:needle}, ${3:replacement})",
     },
     AclSymbol {
         label: "text_starts_with",
@@ -296,10 +362,22 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "text_starts_with(${1:haystack}, ${2:prefix})",
     },
     AclSymbol {
+        label: "text.starts_with",
+        detail: "AIL source Text predicate",
+        documentation: "Dotted alias that returns true when Text starts with the given prefix.",
+        insert_text: "text.starts_with(${1:haystack}, ${2:prefix})",
+    },
+    AclSymbol {
         label: "text_ends_with",
         detail: "AIL source Text predicate",
         documentation: "Returns true when Text ends with the given suffix.",
         insert_text: "text_ends_with(${1:haystack}, ${2:suffix})",
+    },
+    AclSymbol {
+        label: "text.ends_with",
+        detail: "AIL source Text predicate",
+        documentation: "Dotted alias that returns true when Text ends with the given suffix.",
+        insert_text: "text.ends_with(${1:haystack}, ${2:suffix})",
     },
     AclSymbol {
         label: "Some",

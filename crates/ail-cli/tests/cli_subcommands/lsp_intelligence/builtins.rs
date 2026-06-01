@@ -1070,6 +1070,39 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "completion must include AIL source text_ends_with helper; got: {text_ends_with_items:?}"
     );
 
+    let dotted_text_completion_output = ail()
+        .args(["lsp", "--complete", "text.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_text_completion = parse_json_output(&dotted_text_completion_output);
+    let dotted_text_items = dotted_text_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        [
+            ("text.length", "AIL source Text helper"),
+            ("text.len", "AIL source Text helper"),
+            ("text.is_empty", "AIL source Text predicate"),
+            ("text.eq", "AIL source Text predicate"),
+            ("text.trim", "AIL source Text helper"),
+            ("text.contains", "AIL source Text predicate"),
+            ("text.index_of", "AIL source Text search"),
+            ("text.parse_int_or", "AIL source Text parser"),
+            ("text.byte_at_or", "AIL source Text helper"),
+            ("text.slice", "AIL source Text helper"),
+            ("text.replace_first", "AIL source Text helper"),
+            ("text.starts_with", "AIL source Text predicate"),
+            ("text.ends_with", "AIL source Text predicate"),
+        ]
+        .iter()
+        .all(|(label, detail)| dotted_text_items
+            .iter()
+            .any(|item| item["label"] == *label && item["detail"] == *detail)),
+        "completion must include dotted Text helpers; got: {dotted_text_items:?}"
+    );
+
     let map_completion_output = ail()
         .args(["lsp", "--complete", "ma", "--json"])
         .assert()
