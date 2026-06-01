@@ -152,8 +152,10 @@ pub(super) fn parse_source_const(
 pub(super) fn parse_source_function(
     rest: &str,
     line_num: usize,
+    base_column: usize,
 ) -> Result<SourceFunction, CliError> {
-    let (name, params, return_and_body) = parse_source_function_signature(rest, line_num, 4)?;
+    let (name, params, return_and_body) =
+        parse_source_function_signature(rest, line_num, base_column)?;
     let (return_type, body) = return_and_body.split_once('=').ok_or_else(|| {
         source_parse_error_for_fragment(
             line_num,
@@ -169,9 +171,10 @@ pub(super) fn parse_source_function(
 pub(super) fn parse_source_function_with_body(
     rest: &str,
     line_num: usize,
+    base_column: usize,
     body: String,
 ) -> Result<SourceFunction, CliError> {
-    let (name, params, return_type) = parse_source_function_signature(rest, line_num, 4)?;
+    let (name, params, return_type) = parse_source_function_signature(rest, line_num, base_column)?;
     build_source_function(name, params, return_type.trim(), body.trim(), line_num)
 }
 
@@ -202,7 +205,11 @@ pub(super) fn parse_source_function_signature(
             "function declaration requires closing `)`",
         )
     })? + params_start;
-    let params = parse_source_params(&rest[params_start..close_paren], line_num)?;
+    let params = parse_source_params(
+        &rest[params_start..close_paren],
+        line_num,
+        base_column + rest[..params_start].chars().count(),
+    )?;
     let after_params = &rest[close_paren + 1..];
     let after_arrow = after_params
         .trim_start()
@@ -257,7 +264,9 @@ pub(super) fn build_source_function(
 pub(super) fn parse_source_params(
     params: &str,
     line_num: usize,
+    base_column: usize,
 ) -> Result<Vec<SourceParam>, CliError> {
+    let params_column = trimmed_fragment_column(base_column, params);
     let params = params.trim();
     if params.is_empty() {
         return Ok(vec![]);
@@ -268,28 +277,33 @@ pub(super) fn parse_source_params(
         .into_iter()
         .map(|raw| {
             let param = raw.trim();
+            let param_column = source_fragment_column(params_column, params, param);
             let (name, ty) = param.split_once(':').ok_or_else(|| {
-                source_parse_error_for_fragment(
+                source_parse_error_for_fragment_at(
                     line_num,
+                    param_column,
                     SourceParseDiagnostic::InvalidDeclaration,
                     param,
                     "function parameters must use `name: Type`",
                 )
             })?;
+            let name_column = trimmed_fragment_column(param_column, name);
             let name = name.trim();
             let ty = ty.trim();
-            validate_source_local_name(name, line_num)?;
+            validate_source_local_name_at(name, line_num, name_column)?;
             if !seen.insert(name.to_string()) {
-                return Err(source_parse_error_for_fragment(
+                return Err(source_parse_error_for_fragment_at(
                     line_num,
+                    name_column,
                     SourceParseDiagnostic::InvalidDeclaration,
-                    param,
+                    name,
                     format!("duplicate parameter `{name}`"),
                 ));
             }
             if ty.is_empty() {
-                return Err(source_parse_error_for_fragment(
+                return Err(source_parse_error_for_fragment_at(
                     line_num,
+                    param_column,
                     SourceParseDiagnostic::InvalidType,
                     param,
                     format!("parameter `{name}` requires a type"),
@@ -305,14 +319,28 @@ pub(super) fn parse_source_params(
         .collect()
 }
 
+fn source_fragment_column(base_column: usize, source: &str, fragment: &str) -> usize {
+    let source_start = source.as_ptr() as usize;
+    let source_end = source_start + source.len();
+    let fragment_start = fragment.as_ptr() as usize;
+    if fragment_start < source_start || fragment_start > source_end {
+        return base_column;
+    }
+    let byte_offset = fragment_start - source_start;
+    source
+        .get(..byte_offset)
+        .map(|prefix| base_column + prefix.chars().count())
+        .unwrap_or(base_column)
+}
+
 pub(super) fn collect_braced_body(
-    statements: &[(usize, String)],
+    statements: &[(usize, usize, String)],
     mut idx: usize,
     opener_line: usize,
-) -> Result<(Vec<(usize, String)>, usize), CliError> {
+) -> Result<(Vec<(usize, usize, String)>, usize), CliError> {
     let mut body = Vec::new();
     while idx < statements.len() {
-        let (line_num, statement) = &statements[idx];
+        let (line_num, column, statement) = &statements[idx];
         if statement == "}" {
             return Ok((body, idx + 1));
         }
@@ -324,7 +352,7 @@ pub(super) fn collect_braced_body(
                 "nested source blocks are not supported yet",
             ));
         }
-        body.push((*line_num, statement.clone()));
+        body.push((*line_num, *column, statement.clone()));
         idx += 1;
     }
 
@@ -335,8 +363,8 @@ pub(super) fn collect_braced_body(
     ))
 }
 
-pub(super) fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, CliError> {
-    let Some((last_line, last_statement)) = lines.last() else {
+pub(super) fn source_block_to_expr(lines: &[(usize, usize, String)]) -> Result<String, CliError> {
+    let Some((last_line, _last_column, last_statement)) = lines.last() else {
         return Err(source_parse_error(
             1,
             SourceParseDiagnostic::InvalidDeclaration,
@@ -357,7 +385,7 @@ pub(super) fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, 
     }
 
     let mut body = lower_source_expr(final_expr, *last_line)?;
-    for (line_num, statement) in lines[..lines.len().saturating_sub(1)].iter().rev() {
+    for (line_num, column, statement) in lines[..lines.len().saturating_sub(1)].iter().rev() {
         let Some(rest) = statement.strip_prefix("let ") else {
             return Err(source_parse_error_for_fragment(
                 *line_num,
@@ -366,6 +394,7 @@ pub(super) fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, 
                 "only `let name = expression` statements may precede the final expression",
             ));
         };
+        let rest_column = *column + 4;
         let (binding, value) = rest.split_once('=').ok_or_else(|| {
             source_parse_error_for_fragment(
                 *line_num,
@@ -374,9 +403,11 @@ pub(super) fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, 
                 "let statement requires `let name = expression`",
             )
         })?;
+        let binding_column = trimmed_fragment_column(rest_column, binding);
         let binding = binding.trim();
         let value = value.trim();
         let (name, ty) = if let Some((name, ty)) = binding.split_once(':') {
+            let name_column = trimmed_fragment_column(binding_column, name);
             let name = name.trim();
             let ty = ty.trim();
             if ty.is_empty() {
@@ -388,11 +419,11 @@ pub(super) fn source_block_to_expr(lines: &[(usize, String)]) -> Result<String, 
                 ));
             }
             validate_source_type_name(ty, *line_num)?;
-            (name, Some(normalize_source_type_name(ty)))
+            (name, name_column, Some(normalize_source_type_name(ty)))
         } else {
-            (binding, None)
+            (binding, binding_column, None)
         };
-        validate_source_local_name(name, *line_num)?;
+        validate_source_local_name_at(name, *line_num, name_column)?;
         if value.is_empty() {
             return Err(source_parse_error_for_fragment(
                 *line_num,

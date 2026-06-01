@@ -43,12 +43,14 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
     let statements = src
         .lines()
         .enumerate()
-        .filter_map(|(idx, raw_line)| normalize_source_line(raw_line).map(|line| (idx + 1, line)))
+        .filter_map(|(idx, raw_line)| {
+            normalize_source_line(raw_line).map(|(column, line)| (idx + 1, column, line))
+        })
         .collect::<Vec<_>>();
 
     let mut idx = 0usize;
     while idx < statements.len() {
-        let (line_num, statement) = &statements[idx];
+        let (line_num, column, statement) = &statements[idx];
 
         if let Some(rest) = statement.strip_prefix("module ") {
             if module.is_some() {
@@ -59,7 +61,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
                     "module declaration may appear only once",
                 ));
             }
-            module = Some(parse_source_module(rest, *line_num, 8)?);
+            module = Some(parse_source_module(rest, *line_num, *column + 7)?);
         } else if let Some(rest) = statement.strip_prefix("use ") {
             let import = parse_source_import(rest, *line_num)?;
             if imports.iter().any(|existing| existing == &import) {
@@ -72,23 +74,28 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
             }
             imports.push(import);
         } else if let Some(rest) = statement.strip_prefix("capability ") {
-            capabilities.push(parse_source_capability(rest, *line_num, 12)?);
+            capabilities.push(parse_source_capability(rest, *line_num, *column + 11)?);
         } else if let Some(rest) = statement.strip_prefix("const ") {
-            constants.push(parse_source_const(rest, *line_num, 7)?);
+            constants.push(parse_source_const(rest, *line_num, *column + 6)?);
         } else if let Some(rest) = statement.strip_prefix("fn ") {
             if rest.trim_end().ends_with('{') {
                 let header = rest.trim_end().trim_end_matches('{').trim();
                 let (body_lines, next_idx) = collect_braced_body(&statements, idx + 1, *line_num)?;
                 let body = source_block_to_expr(&body_lines)?;
-                functions.push(parse_source_function_with_body(header, *line_num, body)?);
+                functions.push(parse_source_function_with_body(
+                    header,
+                    *line_num,
+                    *column + 3,
+                    body,
+                )?);
                 idx = next_idx;
                 continue;
             }
-            functions.push(parse_source_function(rest, *line_num)?);
+            functions.push(parse_source_function(rest, *line_num, *column + 3)?);
         } else if let Some(rest) = statement.strip_prefix("test ") {
-            tests.push(parse_source_test(rest, *line_num, 6)?);
+            tests.push(parse_source_test(rest, *line_num, *column + 5)?);
         } else if let Some(rest) = statement.strip_prefix("grant ") {
-            grants.push(parse_source_grant(rest, *line_num, 7)?);
+            grants.push(parse_source_grant(rest, *line_num, *column + 6)?);
         } else if statement == "export" || statement.starts_with("export ") {
             return Err(source_parse_error_for_fragment(
                 *line_num,

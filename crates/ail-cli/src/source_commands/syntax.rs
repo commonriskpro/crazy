@@ -303,17 +303,27 @@ pub(super) fn validate_source_local_expr_name(name: &str) -> Result<(), CliError
     Ok(())
 }
 
-pub(super) fn normalize_source_line(raw_line: &str) -> Option<String> {
+pub(super) fn normalize_source_line(raw_line: &str) -> Option<(usize, String)> {
     let trimmed = raw_line.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
         return None;
     }
-    let without_comment = strip_source_comment(trimmed);
+    let leading_bytes = raw_line
+        .char_indices()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(idx, _)| idx)
+        .unwrap_or(raw_line.len());
+    let leading_chars = raw_line[..leading_bytes].chars().count();
+    let without_comment = strip_source_comment(&raw_line[leading_bytes..]);
+    let statement_start = without_comment
+        .chars()
+        .take_while(|ch| ch.is_whitespace())
+        .count();
     let statement = without_comment.trim().trim_end_matches(';').trim();
     if statement.is_empty() {
         None
     } else {
-        Some(statement.to_string())
+        Some((leading_chars + statement_start + 1, statement.to_string()))
     }
 }
 
