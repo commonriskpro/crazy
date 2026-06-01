@@ -116,7 +116,7 @@ pub(crate) async fn cmd_run(
                 .any(|e| matches!(e, AuditEvent::PreflightPassed { .. }));
             let capability_required = manifest.requires.len();
 
-            let runtime_checks = json!({
+            let mut runtime_checks = json!({
                 "artifact_hash": {
                     "passed": preflight_passed,
                     "hash": module_hash,
@@ -147,15 +147,42 @@ pub(crate) async fn cmd_run(
                     module_name,
                 )
             });
-            let export_type = declared_source_export_type
-                .as_ref()
-                .or_else(|| artifact.export_types.get(export_name.as_str()));
+            let (export_type, abi_descriptor_source) =
+                if let Some(descriptor) = declared_source_export_type.as_ref() {
+                    (Some(descriptor), "source_declared_return")
+                } else if let Some(descriptor) = artifact.export_types.get(export_name.as_str()) {
+                    (Some(descriptor), "compiled_artifact")
+                } else {
+                    (None, "missing")
+                };
             if source_file.is_some() && export_type.is_none() {
                 return Err(CliError::Domain(format!(
                     "source entrypoint `{module_name}` was not exported as `{}`",
                     export_name
                 )));
             }
+            let invoke_abi_descriptor = export_type.map(|descriptor| {
+                AbiDescriptor::new(BTreeMap::from([(export_name.clone(), descriptor.clone())]))
+            });
+            let invoke_abi_diagnostics = invoke_abi_descriptor
+                .as_ref()
+                .map(|descriptor| descriptor.validation_diagnostics())
+                .unwrap_or_default();
+            if !invoke_abi_diagnostics.is_empty() {
+                let diagnostics = serde_json::to_string(&invoke_abi_diagnostics)
+                    .unwrap_or_else(|_| "ABI descriptor diagnostics unavailable".to_string());
+                return Err(CliError::Domain(format!(
+                    "run ABI descriptor invalid for `{export_name}`: {diagnostics}"
+                )));
+            }
+            let invoke_abi_descriptor_json = invoke_abi_descriptor
+                .as_ref()
+                .map(|descriptor| serde_json::to_value(descriptor).unwrap_or(Value::Null))
+                .unwrap_or(Value::Null);
+            runtime_checks["abi_descriptor"] = json!({
+                "passed": invoke_abi_diagnostics.is_empty(),
+                "source": abi_descriptor_source,
+            });
             let invoke_result = invoke_export_for_cli(
                 &mut instance,
                 export_name.as_str(),
@@ -224,6 +251,8 @@ pub(crate) async fn cmd_run(
                     "source_file": source_file.map(|path| path.display().to_string()),
                     "invoke_result": result_display,
                     "invoke_value": invoke_value,
+                    "invoke_abi_descriptor": invoke_abi_descriptor_json,
+                    "invoke_abi_descriptor_source": abi_descriptor_source,
                     "output": output_lines,
                     "runtime_report": {
                         "profile": profile,

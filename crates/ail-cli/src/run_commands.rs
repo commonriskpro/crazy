@@ -12,9 +12,10 @@
 //   derive_runtime_capability_ids — collect CapabilityIds from a SemanticGraph
 
 use ail_compiler::{
-    AnfExpr, AnfIr, WasmTypeDescriptor, emit_wasm_with_profile, lower_to_anf_with_graph,
-    lower_to_core_ir,
+    AbiDescriptor, AnfExpr, AnfIr, WasmTypeDescriptor, emit_wasm_with_profile,
+    lower_to_anf_with_graph, lower_to_core_ir,
 };
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use ail_runtime::{

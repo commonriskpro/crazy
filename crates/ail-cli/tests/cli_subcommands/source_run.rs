@@ -783,6 +783,19 @@ fn failure() -> Result<Int, Text> = Err(\"bad\")\n",
     assert_eq!(ok_json["data"]["invoke_result"], "result: Ok(7)");
     assert_eq!(ok_json["data"]["invoke_value"]["tag"], "Ok");
     assert_eq!(ok_json["data"]["invoke_value"]["value"], 7);
+    assert_eq!(
+        ok_json["data"]["invoke_abi_descriptor_source"],
+        "source_declared_return"
+    );
+    assert_eq!(ok_json["data"]["invoke_abi_descriptor"]["abi_version"], 1);
+    assert_eq!(
+        ok_json["data"]["invoke_abi_descriptor"]["exports"]["outcome"],
+        serde_json::json!({ "Result": { "ok": { "Scalar": "I64" }, "err": "Text" } })
+    );
+    assert_eq!(
+        ok_json["data"]["runtime_check_results"]["abi_descriptor"]["passed"],
+        true
+    );
 
     let err_output = ail()
         .args([
