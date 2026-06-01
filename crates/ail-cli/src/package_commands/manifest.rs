@@ -8,6 +8,15 @@ pub(crate) async fn package_manifest_for_current_graph(
     name: &str,
     version: &str,
 ) -> Result<PackageManifest, CliError> {
+    package_manifest_for_current_graph_with_metadata(store, name, version, None).await
+}
+
+pub(super) async fn package_manifest_for_current_graph_with_metadata(
+    store: &StoreHandle,
+    name: &str,
+    version: &str,
+    license: Option<String>,
+) -> Result<PackageManifest, CliError> {
     let graph = load_current_graph_for_cli(store).await?;
     let graph_hash = store.save_graph(&graph).await?.to_hex();
     let mut artifact_hashes = vec![ArtifactHashEntry {
@@ -50,7 +59,7 @@ pub(crate) async fn package_manifest_for_current_graph(
         exports: vec![],
         imports: vec![],
         boundaries: vec![],
-        license: None,
+        license,
         provenance: Some(ail_package::Provenance::from_url("local graph package")),
         verification_report: None,
         graph_schema: Some(1),

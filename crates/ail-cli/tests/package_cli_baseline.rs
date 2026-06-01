@@ -149,6 +149,33 @@ fn package_lint_json_reports_manifest_issues() {
     );
 }
 
+/// package init --license --json creates production-clean package metadata.
+#[test]
+fn package_init_json_accepts_license_metadata() {
+    let output = ail()
+        .args([
+            "package",
+            "init",
+            "--name",
+            "local.package",
+            "--version",
+            "1.2.3",
+            "--license",
+            "MIT",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["manifest"]["license"], "MIT");
+    assert_eq!(v["data"]["production_lint"], "passed");
+    assert_eq!(v["data"]["production_issue_count"], 0);
+}
+
 /// package explain --json produces JSON with package and capabilities.
 #[test]
 fn package_explain_json_has_package_and_capabilities() {

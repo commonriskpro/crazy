@@ -543,6 +543,9 @@ pub(crate) enum PackageCmd {
         /// Package version.
         #[arg(long, default_value = "0.1.0")]
         version: String,
+        /// SPDX-style package license metadata for production publishing.
+        #[arg(long)]
+        license: Option<String>,
     },
     /// Add a package dependency (shows trust/capabilities/advisories).
     Add {

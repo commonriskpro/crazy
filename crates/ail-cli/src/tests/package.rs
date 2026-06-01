@@ -1,6 +1,7 @@
 use super::*;
 use crate::package_commands::package_manifest_for_current_graph;
-use crate::package_registry_io::save_package_registry;
+use crate::package_registry_io::{package_manifest_path, save_package_registry};
+use ail_package::PackageManifest;
 use ail_package::PackageRegistry;
 
 // Scenario: cmd_package add shows trust/capabilities/advisories.
@@ -85,5 +86,37 @@ async fn cmd_package_lint_blocks_manifest_without_production_metadata() {
     assert!(
         err.to_string().contains("production manifest issue"),
         "lint failure should describe production manifest issues; got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn cmd_package_init_persists_license_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ail_dir = temp.path().join(".ail");
+    crate::store::init_file_layout(&ail_dir).expect("init layout");
+    let store = crate::store::file_store(ail_dir);
+
+    let result = cmd_package(
+        OutputMode::Json,
+        PackageCmd::Init {
+            name: Some("local.package".to_string()),
+            version: "1.2.3".to_string(),
+            license: Some("MIT".to_string()),
+        },
+        &store,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "package init with production metadata must succeed; got: {result:?}"
+    );
+    let path = package_manifest_path(&store).expect("manifest path");
+    let bytes = std::fs::read(path).expect("manifest bytes");
+    let manifest: PackageManifest = ciborium::from_reader(bytes.as_slice()).expect("manifest cbor");
+    assert_eq!(manifest.license.as_deref(), Some("MIT"));
+    assert!(
+        manifest.production_validation_issues().is_empty(),
+        "license, semver, and package name should produce a production-clean minimal manifest"
     );
 }

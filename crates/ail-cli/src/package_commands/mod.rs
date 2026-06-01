@@ -54,8 +54,8 @@ use audit::audit_package_lockfile;
 use compat::{package_compatibility_issues_for_install, package_compatibility_issues_for_verify};
 pub(crate) use dispatch::cmd_package;
 use install::install_package_from_registry;
-use manifest::load_or_create_package_manifest;
 pub(crate) use manifest::package_manifest_for_current_graph;
+use manifest::{load_or_create_package_manifest, package_manifest_for_current_graph_with_metadata};
 use parse::{
     parse_advisory_severity, parse_package_spec, validate_required_package_metadata_field,
 };

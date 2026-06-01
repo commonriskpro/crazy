@@ -14,16 +14,36 @@ pub(crate) async fn cmd_package(
     store: &StoreHandle,
 ) -> Result<(), CliError> {
     match cmd {
-        PackageCmd::Init { name, version } => {
+        PackageCmd::Init {
+            name,
+            version,
+            license,
+        } => {
             let package_name = name.unwrap_or_else(|| "local.package".to_string());
-            let manifest =
-                package_manifest_for_current_graph(store, &package_name, &version).await?;
+            let license = license
+                .map(|value| validate_required_package_metadata_field("license", value))
+                .transpose()?;
+            let manifest = package_manifest_for_current_graph_with_metadata(
+                store,
+                &package_name,
+                &version,
+                license,
+            )
+            .await?;
             save_package_manifest(store, &manifest)?;
             let hash = manifest
                 .blake3_hex()
                 .map_err(|e| CliError::Domain(format!("package hash failed: {e}")))?;
+            let production_issues = manifest.production_validation_issues();
+            let production_lint = if production_issues.is_empty() {
+                "passed"
+            } else {
+                "warning"
+            };
             let human_msg = format!(
-                "package initialized\nname: {package_name}\nversion: {version}\nmanifest_hash: {hash}"
+                "package initialized\nname: {package_name}\nversion: {version}\nlicense: {}\nmanifest_hash: {hash}\nproduction_lint: {production_lint}\nproduction_issue_count: {}",
+                manifest.license.as_deref().unwrap_or("none"),
+                production_issues.len()
             );
             print_response(
                 mode,
@@ -32,6 +52,12 @@ pub(crate) async fn cmd_package(
                     "initialized": true,
                     "manifest": package_manifest_to_json(&manifest)?,
                     "manifest_hash": hash,
+                    "production_lint": production_lint,
+                    "production_issue_count": production_issues.len(),
+                    "production_issues": production_issues
+                        .iter()
+                        .map(package_manifest_issue_to_json)
+                        .collect::<Vec<_>>(),
                 }),
             );
         }
