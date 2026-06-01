@@ -568,6 +568,14 @@ fn lsp_diagnose_reports_non_finite_source_numeric_literals() {
             .expect("diagnostic message")
             .contains("unsupported source numeric literal `NaN`")
     );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_EXPR_UNSUPPORTED_NUMERIC"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.expr.literal"
+    );
 }
 #[test]
 fn lsp_diagnose_accepts_source_infix_addition() {
@@ -793,6 +801,14 @@ fn lsp_diagnose_reports_unsupported_source_expression_syntax() {
             .expect("diagnostic message")
             .contains("unsupported source expression `1 ** 2`")
     );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_EXPR_UNSUPPORTED"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.expr.unsupported"
+    );
 }
 #[test]
 fn lsp_diagnose_reports_unsupported_source_string_escapes() {
@@ -823,6 +839,14 @@ fn lsp_diagnose_reports_unsupported_source_string_escapes() {
             .as_str()
             .expect("diagnostic message")
             .contains("malformed string literal")
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["code"],
+        "AIL_SOURCE_EXPR_MALFORMED_STRING"
+    );
+    assert_eq!(
+        v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
+        "source.expr.literal"
     );
 }
 #[test]

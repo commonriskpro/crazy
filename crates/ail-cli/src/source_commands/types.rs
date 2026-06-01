@@ -104,14 +104,18 @@ pub(super) fn infer_source_expr_type(
         return Ok("Text".to_string());
     }
     if is_malformed_source_string(expr) {
-        return Err(CliError::ParseError(format!(
-            "malformed string literal `{expr}`"
-        )));
+        return Err(source_expr_error(
+            "AIL_SOURCE_EXPR_MALFORMED_STRING",
+            "source.expr.literal",
+            format!("malformed string literal `{expr}`"),
+        ));
     }
     if is_unsupported_source_numeric_literal(expr) {
-        return Err(CliError::ParseError(format!(
-            "unsupported source numeric literal `{expr}`"
-        )));
+        return Err(source_expr_error(
+            "AIL_SOURCE_EXPR_UNSUPPORTED_NUMERIC",
+            "source.expr.literal",
+            format!("unsupported source numeric literal `{expr}`"),
+        ));
     }
     if expr.parse::<i64>().is_ok() {
         return Ok("Int".to_string());
@@ -131,9 +135,11 @@ pub(super) fn infer_source_expr_type(
         return Ok(constant.return_type.clone());
     }
     let Some((func, args)) = parse_source_call(expr) else {
-        return Err(CliError::ParseError(format!(
-            "unsupported source expression `{expr}`"
-        )));
+        return Err(source_expr_error(
+            "AIL_SOURCE_EXPR_UNSUPPORTED",
+            "source.expr.unsupported",
+            format!("unsupported source expression `{expr}`"),
+        ));
     };
     infer_source_call_type(&func, &args, scope, functions)
 }
@@ -1008,6 +1014,10 @@ pub(super) fn validate_source_type_match(
         return Ok(());
     }
     Err(source_type_mismatch_error(context, expected, actual))
+}
+
+fn source_expr_error(code: &str, category: &str, message: impl AsRef<str>) -> CliError {
+    CliError::ParseError(format!("{} [{code}] category={category}", message.as_ref()))
 }
 
 fn source_type_mismatch_error(context: &str, expected: &str, actual: &str) -> CliError {
