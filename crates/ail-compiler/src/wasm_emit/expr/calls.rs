@@ -116,6 +116,24 @@ pub(super) fn emit_call_expr<'a>(
     }
     if matches!(
         func.as_str(),
+        "time.duration_since" | "time_duration_since" | "std.time.duration_since"
+    ) {
+        return emit_time_duration_since(args, ctx, insns);
+    }
+    if matches!(
+        func.as_str(),
+        "time.add_duration" | "time_add_duration" | "std.time.add_duration"
+    ) {
+        return emit_time_add_duration(args, ctx, insns);
+    }
+    if matches!(
+        func.as_str(),
+        "time.instant_to_ms" | "time_instant_to_ms" | "std.time.instant_to_ms"
+    ) {
+        return emit_time_instant_to_ms(args, ctx, insns);
+    }
+    if matches!(
+        func.as_str(),
         "bytes.length" | "bytes_length" | "std.bytes.length"
     ) {
         return emit_bytes_length(args, ctx, insns);
@@ -150,6 +168,70 @@ pub(super) fn emit_call_expr<'a>(
         Some(ty)
     } else if let Some(idx) = functions.get(func) {
         insns.push(Instruction::Call(*idx));
+        Some(ValType::I64)
+    } else {
+        insns.push(Instruction::Unreachable);
+        None
+    }
+}
+
+fn emit_time_duration_since<'a>(
+    args: &[String],
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [later, earlier] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+    let Some((later_idx, _)) = ctx.lookup(later) else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+    let Some((earlier_idx, _)) = ctx.lookup(earlier) else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+    insns.push(Instruction::LocalGet(later_idx));
+    insns.push(Instruction::LocalGet(earlier_idx));
+    insns.push(Instruction::I64Sub);
+    Some(ValType::I64)
+}
+
+fn emit_time_add_duration<'a>(
+    args: &[String],
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [instant, duration] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+    let Some((instant_idx, _)) = ctx.lookup(instant) else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+    let Some((duration_idx, _)) = ctx.lookup(duration) else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+    insns.push(Instruction::LocalGet(instant_idx));
+    insns.push(Instruction::LocalGet(duration_idx));
+    insns.push(Instruction::I64Add);
+    Some(ValType::I64)
+}
+
+fn emit_time_instant_to_ms<'a>(
+    args: &[String],
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [instant] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+    if let Some((idx, _)) = ctx.lookup(instant) {
+        insns.push(Instruction::LocalGet(idx));
         Some(ValType::I64)
     } else {
         insns.push(Instruction::Unreachable);

@@ -330,6 +330,59 @@ fn bytes_empty_of_file_read_compares_packed_length_to_zero() {
 }
 
 #[test]
+fn time_arithmetic_after_clock_effect_emits_add_and_sub() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.time_delta".to_string(),
+        expr: AnfExpr::Let {
+            name: "now".to_string(),
+            value: Box::new(AnfExpr::EffectCall {
+                capability: "clock.now".to_string(),
+                func: "now".to_string(),
+                args: vec![],
+            }),
+            body: Box::new(AnfExpr::Let {
+                name: "delta".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(250))),
+                body: Box::new(AnfExpr::Let {
+                    name: "later".to_string(),
+                    value: Box::new(AnfExpr::Call {
+                        func: "std.time.add_duration".to_string(),
+                        args: vec!["now".to_string(), "delta".to_string()],
+                    }),
+                    body: Box::new(AnfExpr::Call {
+                        func: "std.time.duration_since".to_string(),
+                        args: vec!["later".to_string(), "now".to_string()],
+                    }),
+                }),
+            }),
+        },
+    };
+    let artifact = emit_wasm(&sealed_anf(vec![binding])).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+    let mut saw_add = false;
+    let mut saw_sub = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                match reader.read().unwrap() {
+                    Operator::I64Add => saw_add = true,
+                    Operator::I64Sub => saw_sub = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    assert!(saw_add, "std.time.add_duration must emit I64Add");
+    assert!(saw_sub, "std.time.duration_since must emit I64Sub");
+}
+
+#[test]
 fn effect_call_structured_return_emits_host_call_write_import() {
     use wasmparser::{Parser, Payload};
 

@@ -425,6 +425,39 @@ grant main clock.now\n",
 }
 
 #[test]
+fn run_file_executes_ail_source_time_arithmetic_with_clock_grant() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("time_arithmetic.ail");
+    source
+        .write_str(
+            "capability clock.now\n\
+fn main() -> Int {\n\
+  let now = time_now()\n\
+  let later = time_add_duration(now, 250)\n\
+  return time_duration_since(later, time_instant_to_ms(now))\n\
+}\n\
+grant main clock.now\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--grant",
+            "clock.now",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.main"))
+        .stdout(predicate::str::contains("result: 250"));
+}
+
+#[test]
 fn run_file_executes_ail_source_length_helpers() {
     use assert_fs::prelude::*;
 
