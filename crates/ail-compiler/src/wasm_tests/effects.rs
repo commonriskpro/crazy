@@ -279,6 +279,57 @@ fn bytes_length_of_file_read_uses_packed_length() {
 }
 
 #[test]
+fn bytes_empty_of_file_read_compares_packed_length_to_zero() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.read_file_empty".to_string(),
+        expr: AnfExpr::Let {
+            name: "path".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text(
+                "empty.bin".to_string(),
+            ))),
+            body: Box::new(AnfExpr::Let {
+                name: "data".to_string(),
+                value: Box::new(AnfExpr::EffectCall {
+                    capability: "file.read".to_string(),
+                    func: "read".to_string(),
+                    args: vec!["path".to_string()],
+                }),
+                body: Box::new(AnfExpr::Call {
+                    func: "std.bytes.empty".to_string(),
+                    args: vec!["data".to_string()],
+                }),
+            }),
+        },
+    };
+    let artifact = emit_wasm(&sealed_anf(vec![binding])).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+    let mut saw_len_shift = false;
+    let mut saw_eqz = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                match reader.read().unwrap() {
+                    Operator::I64ShrU => saw_len_shift = true,
+                    Operator::I64Eqz => saw_eqz = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    assert!(
+        saw_len_shift,
+        "std.bytes.empty must read len from packed Bytes high bits"
+    );
+    assert!(saw_eqz, "std.bytes.empty must compare byte length to zero");
+}
+
+#[test]
 fn effect_call_structured_return_emits_host_call_write_import() {
     use wasmparser::{Parser, Payload};
 

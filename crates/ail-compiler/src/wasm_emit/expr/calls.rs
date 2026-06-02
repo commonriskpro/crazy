@@ -122,6 +122,12 @@ pub(super) fn emit_call_expr<'a>(
     }
     if matches!(
         func.as_str(),
+        "bytes.empty" | "bytes_empty" | "std.bytes.empty"
+    ) {
+        return emit_bytes_empty(args, ctx, insns);
+    }
+    if matches!(
+        func.as_str(),
         "path.from_text"
             | "path_from_text"
             | "std.path.from_text"
@@ -164,6 +170,28 @@ fn emit_bytes_length<'a>(
         insns.push(Instruction::LocalGet(idx));
         insns.push(Instruction::I64Const(32));
         insns.push(Instruction::I64ShrU);
+        Some(ValType::I64)
+    } else {
+        insns.push(Instruction::Unreachable);
+        None
+    }
+}
+
+fn emit_bytes_empty<'a>(
+    args: &[String],
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [arg] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+    if let Some((idx, _)) = ctx.lookup(arg) {
+        insns.push(Instruction::LocalGet(idx));
+        insns.push(Instruction::I64Const(32));
+        insns.push(Instruction::I64ShrU);
+        insns.push(Instruction::I64Eqz);
+        insns.push(Instruction::I64ExtendI32U);
         Some(ValType::I64)
     } else {
         insns.push(Instruction::Unreachable);

@@ -303,6 +303,66 @@ grant main file.read\n",
 }
 
 #[test]
+fn run_file_processes_ail_source_fs_read_file_bytes_empty() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let empty = dir.child("empty.bin");
+    empty
+        .write_binary(b"")
+        .expect("empty fixture must be written");
+    let full = dir.child("full.bin");
+    full.write_binary(b"AIL")
+        .expect("full fixture must be written");
+    let source = dir.child("file_read_empty.ail");
+    source
+        .write_str(
+            "capability file.read\n\
+fn empty_file() -> Bool {\n\
+  let data = fs_read_file(path_from_text(\"empty.bin\"))\n\
+  return bytes_empty(data)\n\
+}\n\
+fn full_file() -> Bool {\n\
+  let data = fs_read_file(path_from_text(\"full.bin\"))\n\
+  return bytes_empty(data)\n\
+}\n\
+grant empty_file file.read\n\
+grant full_file file.read\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--grant",
+            "file.read",
+            "fn.empty_file",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.empty_file"))
+        .stdout(predicate::str::contains("result: 1"));
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--grant",
+            "file.read",
+            "fn.full_file",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.full_file"))
+        .stdout(predicate::str::contains("result: 0"));
+}
+
+#[test]
 fn run_file_executes_ail_source_random_next_int_with_grant() {
     use assert_fs::prelude::*;
 
