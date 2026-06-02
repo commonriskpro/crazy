@@ -363,6 +363,62 @@ grant full_file file.read\n",
 }
 
 #[test]
+fn run_file_processes_ail_source_fs_read_file_bytes_at() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let data = dir.child("payload.bin");
+    data.write_binary(b"AIL")
+        .expect("data fixture must be written");
+    let source = dir.child("file_read_byte_at.ail");
+    source
+        .write_str(
+            "capability file.read\n\
+fn second_byte() -> Int {\n\
+  let data = fs_read_file(path_from_text(\"payload.bin\"))\n\
+  return unwrap_or(bytes_at(data, 1), -1)\n\
+}\n\
+fn missing_byte() -> Int {\n\
+  let data = fs_read_file(path_from_text(\"payload.bin\"))\n\
+  return unwrap_or(bytes_at(data, 9), -1)\n\
+}\n\
+grant second_byte file.read\n\
+grant missing_byte file.read\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--grant",
+            "file.read",
+            "fn.second_byte",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.second_byte"))
+        .stdout(predicate::str::contains("result: 73"));
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--grant",
+            "file.read",
+            "fn.missing_byte",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.missing_byte"))
+        .stdout(predicate::str::contains("result: -1"));
+}
+
+#[test]
 fn run_file_executes_ail_source_random_next_int_with_grant() {
     use assert_fs::prelude::*;
 

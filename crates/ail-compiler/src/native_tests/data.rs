@@ -255,3 +255,40 @@ fn native_bytes_empty_slice_compiles() {
         result.err()
     );
 }
+
+#[test]
+fn native_bytes_at_call_compiles() {
+    use crate::anf::{AnfBinding, AnfExpr};
+    use crate::core_ir::LiteralValue;
+    use cranelift_codegen::ir::types;
+
+    let anf = anf_for_binding(AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn_op".to_string(),
+        expr: AnfExpr::Let {
+            name: "data".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Bytes(b"AIL".to_vec()))),
+            body: Box::new(AnfExpr::Let {
+                name: "index".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                body: Box::new(AnfExpr::Call {
+                    func: "std.bytes.at".to_string(),
+                    args: vec!["data".to_string(), "index".to_string()],
+                }),
+            }),
+        },
+    });
+    let art = emit_native(&anf);
+    assert!(
+        art.is_ok(),
+        "std.bytes.at must lower in native backend without trapping at compile time: {:?}",
+        art.err()
+    );
+    assert_eq!(
+        infer_cranelift_return_type(&AnfExpr::Call {
+            func: "std.bytes.at".to_string(),
+            args: vec!["data".to_string(), "index".to_string()],
+        }),
+        Some(types::I64)
+    );
+}

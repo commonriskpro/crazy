@@ -89,7 +89,14 @@ pub(crate) fn infer_expr_type(
         | AnfExpr::ListNew(_)
         | AnfExpr::Lambda { .. }
         | AnfExpr::Seq(_) => Some(ValType::I32),
-        AnfExpr::FieldGet { .. } | AnfExpr::Call { .. } => Some(ValType::I64),
+        AnfExpr::FieldGet { .. } => Some(ValType::I64),
+        AnfExpr::Call { func, args }
+            if matches!(func.as_str(), "bytes.at" | "bytes_at" | "std.bytes.at")
+                && args.len() == 2 =>
+        {
+            Some(ValType::I32)
+        }
+        AnfExpr::Call { .. } => Some(ValType::I64),
         AnfExpr::EffectCall { .. } => Some(ValType::I64),
         // ── Cell primitives ───────────────────────────────────────────────
         // CellNew returns an I32 pointer; CellGet returns the I64 value;

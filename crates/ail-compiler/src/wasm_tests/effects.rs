@@ -330,6 +330,70 @@ fn bytes_empty_of_file_read_compares_packed_length_to_zero() {
 }
 
 #[test]
+fn bytes_at_of_file_read_emits_option_byte_load() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.read_file_byte".to_string(),
+        expr: AnfExpr::Let {
+            name: "path".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text(
+                "payload.bin".to_string(),
+            ))),
+            body: Box::new(AnfExpr::Let {
+                name: "data".to_string(),
+                value: Box::new(AnfExpr::EffectCall {
+                    capability: "file.read".to_string(),
+                    func: "read".to_string(),
+                    args: vec!["path".to_string()],
+                }),
+                body: Box::new(AnfExpr::Let {
+                    name: "index".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                    body: Box::new(AnfExpr::Call {
+                        func: "std.bytes.at".to_string(),
+                        args: vec!["data".to_string(), "index".to_string()],
+                    }),
+                }),
+            }),
+        },
+    };
+    let anf = sealed_anf(vec![binding]);
+    let layout = EffectDataLayout::for_bindings(&anf.bindings);
+    assert!(
+        layout.needs_memory,
+        "std.bytes.at must allocate the returned Option variant"
+    );
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+    let mut saw_len_shift = false;
+    let mut saw_byte_load = false;
+    let mut saw_some_tag = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                match reader.read().unwrap() {
+                    Operator::I64ShrU => saw_len_shift = true,
+                    Operator::I32Load8U { .. } => saw_byte_load = true,
+                    Operator::I32Const { value: 1 } => saw_some_tag = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    assert!(
+        saw_len_shift,
+        "std.bytes.at must read len from packed Bytes high bits"
+    );
+    assert!(saw_byte_load, "std.bytes.at must load one byte from memory");
+    assert!(saw_some_tag, "std.bytes.at must write the Some tag on hit");
+}
+
+#[test]
 fn time_arithmetic_after_clock_effect_emits_add_and_sub() {
     use wasmparser::{Operator, Parser, Payload};
 

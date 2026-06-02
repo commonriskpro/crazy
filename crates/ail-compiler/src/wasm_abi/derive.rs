@@ -111,6 +111,12 @@ fn derive_wasm_type_with_locals(
             WasmTypeDescriptor::Scalar(WasmScalarType::I64)
         }
         AnfExpr::Call { func, args }
+            if matches!(func.as_str(), "bytes.at" | "bytes_at" | "std.bytes.at")
+                && args.len() == 2 =>
+        {
+            WasmTypeDescriptor::Option(Box::new(WasmTypeDescriptor::Scalar(WasmScalarType::I64)))
+        }
+        AnfExpr::Call { func, args }
             if matches!(
                 func.as_str(),
                 "text.starts_with" | "text_starts_with" | "text.ends_with" | "text_ends_with"

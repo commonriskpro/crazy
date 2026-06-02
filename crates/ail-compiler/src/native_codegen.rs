@@ -210,7 +210,8 @@ pub(crate) fn infer_cranelift_return_type(
             | "int.saturating_sub" | "int_saturating_sub"
             | "int.saturating_mul" | "int_saturating_mul"
             | "int.div_or" | "int_div_or"
-            | "int.rem_or" | "int_rem_or" => Some(types::I64),
+            | "int.rem_or" | "int_rem_or"
+            | "bytes.at" | "bytes_at" | "std.bytes.at" => Some(types::I64),
             "i64.eq" | "==" | "eq"
             | "i64.ne" | "!=" | "ne"
             | "i64.lt_s" | "<" | "lt"

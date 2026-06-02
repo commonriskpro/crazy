@@ -138,6 +138,9 @@ pub(super) fn emit_call_expr<'a>(
     ) {
         return emit_bytes_length(args, ctx, insns);
     }
+    if matches!(func.as_str(), "bytes.at" | "bytes_at" | "std.bytes.at") {
+        return emit_bytes_at(args, ctx, insns);
+    }
     if matches!(
         func.as_str(),
         "bytes.empty" | "bytes_empty" | "std.bytes.empty"
@@ -257,6 +260,88 @@ fn emit_bytes_length<'a>(
         insns.push(Instruction::Unreachable);
         None
     }
+}
+
+fn emit_bytes_at<'a>(
+    args: &[String],
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [bytes_arg, index_arg] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+    let Some((bytes_idx, _)) = ctx.lookup(bytes_arg) else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+    let Some((index_idx, _)) = ctx.lookup(index_arg) else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+
+    let packed = ctx.bind_temp(ValType::I64);
+    let len = ctx.bind_temp(ValType::I64);
+    let ptr = ctx.bind_temp(ValType::I32);
+    let index = ctx.bind_temp(ValType::I64);
+    let result_ptr = ctx.bind_temp(ValType::I32);
+
+    insns.push(Instruction::LocalGet(bytes_idx));
+    insns.push(Instruction::LocalSet(packed));
+    insns.push(Instruction::LocalGet(packed));
+    insns.push(Instruction::I64Const(32));
+    insns.push(Instruction::I64ShrU);
+    insns.push(Instruction::LocalSet(len));
+    insns.push(Instruction::LocalGet(packed));
+    insns.push(Instruction::I32WrapI64);
+    insns.push(Instruction::LocalSet(ptr));
+    insns.push(Instruction::LocalGet(index_idx));
+    insns.push(Instruction::LocalSet(index));
+
+    emit_alloc(16, insns);
+    insns.push(Instruction::LocalSet(result_ptr));
+    insns.push(Instruction::LocalGet(result_ptr));
+    insns.push(Instruction::I32Const(ctx.assign_tag("None") as i32));
+    insns.push(Instruction::I32Store(wasm_encoder::MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    }));
+    insns.push(Instruction::LocalGet(result_ptr));
+    insns.push(Instruction::I64Const(0));
+    store_i64_at(8, insns);
+
+    insns.push(Instruction::LocalGet(index));
+    insns.push(Instruction::I64Const(0));
+    insns.push(Instruction::I64GeS);
+    insns.push(Instruction::If(BlockType::Empty));
+
+    insns.push(Instruction::LocalGet(index));
+    insns.push(Instruction::LocalGet(len));
+    insns.push(Instruction::I64LtS);
+    insns.push(Instruction::If(BlockType::Empty));
+
+    insns.push(Instruction::LocalGet(result_ptr));
+    insns.push(Instruction::I32Const(ctx.assign_tag("Some") as i32));
+    insns.push(Instruction::I32Store(wasm_encoder::MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    }));
+    insns.push(Instruction::LocalGet(result_ptr));
+    insns.push(Instruction::LocalGet(ptr));
+    insns.push(Instruction::LocalGet(index));
+    insns.push(Instruction::I32WrapI64);
+    insns.push(Instruction::I32Add);
+    load_i32_u8_at(0, insns);
+    insns.push(Instruction::I64ExtendI32U);
+    store_i64_at(8, insns);
+
+    insns.push(Instruction::End);
+    insns.push(Instruction::End);
+
+    insns.push(Instruction::LocalGet(result_ptr));
+    Some(ValType::I32)
 }
 
 fn emit_bytes_empty<'a>(

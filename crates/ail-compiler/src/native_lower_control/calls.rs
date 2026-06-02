@@ -1,4 +1,7 @@
-use cranelift_codegen::ir::{InstBuilder, TrapCode, condcodes::IntCC, types};
+use cranelift_codegen::ir::{
+    InstBuilder, MemFlags, StackSlotData, TrapCode, condcodes::IntCC, stackslot::StackSlotKind,
+    types,
+};
 use cranelift_frontend::FunctionBuilder;
 
 use crate::native_codegen::{LowerResult, NativeCodegenCtx};
@@ -50,6 +53,9 @@ pub(super) fn lower_call(
     }
     if matches!(func, "bytes.length" | "bytes_length" | "std.bytes.length") {
         return lower_bytes_length_call(args, ctx, builder);
+    }
+    if matches!(func, "bytes.at" | "bytes_at" | "std.bytes.at") {
+        return lower_bytes_at_call(args, ctx, builder);
     }
     if matches!(func, "bytes.empty" | "bytes_empty" | "std.bytes.empty") {
         return lower_bytes_empty_call(args, ctx, builder);
@@ -184,6 +190,58 @@ fn lower_bytes_length_call(
             LowerResult::Terminated
         }
     }
+}
+
+fn lower_bytes_at_call(
+    args: &[String],
+    ctx: &mut NativeCodegenCtx<'_>,
+    builder: &mut FunctionBuilder<'_>,
+) -> LowerResult {
+    let [bytes_arg, index_arg] = args else {
+        builder.ins().trap(TrapCode::user(1).unwrap());
+        return LowerResult::Terminated;
+    };
+    let bytes = ctx.lookup(bytes_arg.as_str()).map(|(v, _)| v);
+    let index = ctx.lookup(index_arg.as_str()).map(|(v, _)| v);
+    let (Some(bytes), Some(index)) = (bytes, index) else {
+        builder.ins().trap(TrapCode::user(1).unwrap());
+        return LowerResult::Terminated;
+    };
+
+    let slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3));
+    let none_tag = builder.ins().iconst(types::I64, 0);
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder.ins().stack_store(none_tag, slot, 0);
+    builder.ins().stack_store(zero, slot, 8);
+
+    let len = builder.ins().ushr_imm(bytes, 32);
+    let index_non_negative = builder
+        .ins()
+        .icmp_imm(IntCC::SignedGreaterThanOrEqual, index, 0);
+    let index_in_range = builder.ins().icmp(IntCC::SignedLessThan, index, len);
+    let in_bounds = builder.ins().band(index_non_negative, index_in_range);
+
+    let hit_block = builder.create_block();
+    let done_block = builder.create_block();
+    builder
+        .ins()
+        .brif(in_bounds, hit_block, &[], done_block, &[]);
+
+    builder.switch_to_block(hit_block);
+    builder.seal_block(hit_block);
+    let some_tag = builder.ins().iconst(types::I64, 1);
+    builder.ins().stack_store(some_tag, slot, 0);
+    let ptr = builder.ins().band_imm(bytes, 0xffff_ffff);
+    let addr = builder.ins().iadd(ptr, index);
+    let byte = builder.ins().load(types::I8, MemFlags::trusted(), addr, 0);
+    let byte_i64 = builder.ins().uextend(types::I64, byte);
+    builder.ins().stack_store(byte_i64, slot, 8);
+    builder.ins().jump(done_block, &[]);
+
+    builder.switch_to_block(done_block);
+    builder.seal_block(done_block);
+    LowerResult::Value(builder.ins().stack_addr(types::I64, slot, 0))
 }
 
 fn lower_bytes_empty_call(
