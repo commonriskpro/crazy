@@ -579,6 +579,9 @@ fn code_actions_for_diagnostic(diagnostic: &Value) -> Vec<Value> {
         .filter(|code| is_stable_identifier(code))
         .unwrap_or("inline_edit");
     let title = code_action_repair_title(repair_code, code);
+    let edit_count = workspace_edit_count(&edit);
+    let edit_document_uris = workspace_edit_document_uris(&edit);
+    let edit_document_count = edit_document_uris.len();
     vec![json!({
         "title": title,
         "kind": "quickfix",
@@ -589,8 +592,32 @@ fn code_actions_for_diagnostic(diagnostic: &Value) -> Vec<Value> {
             "code": "AIL_CODE_ACTION_REPAIR",
             "diagnosticCode": code,
             "repairCode": repair_code,
+            "editCount": edit_count,
+            "editDocumentCount": edit_document_count,
+            "editDocumentUris": edit_document_uris,
         }
     })]
+}
+
+fn workspace_edit_count(edit: &Value) -> usize {
+    edit["changes"]
+        .as_object()
+        .map(|changes| {
+            changes
+                .values()
+                .map(|edits| edits.as_array().map(Vec::len).unwrap_or(0))
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+fn workspace_edit_document_uris(edit: &Value) -> Vec<String> {
+    let mut uris = edit["changes"]
+        .as_object()
+        .map(|changes| changes.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    uris.sort();
+    uris
 }
 
 fn code_action_repair_title(repair_code: &str, diagnostic_code: &str) -> String {

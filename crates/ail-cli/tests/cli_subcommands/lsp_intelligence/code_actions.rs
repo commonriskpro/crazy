@@ -179,6 +179,12 @@ fn lsp_code_action_removes_ignored_expression_statement() {
         result[0]["data"]["repairCode"],
         "remove.ignored_expression_statement"
     );
+    assert_eq!(result[0]["data"]["editCount"], 1);
+    assert_eq!(result[0]["data"]["editDocumentCount"], 1);
+    assert_eq!(
+        result[0]["data"]["editDocumentUris"],
+        serde_json::json!([uri])
+    );
     assert_eq!(result[0]["edit"]["changes"][uri][0]["newText"], "");
     assert_eq!(
         result[0]["edit"]["changes"][uri][0]["range"]["start"]["line"],
@@ -207,6 +213,12 @@ fn lsp_code_action_prefixes_unused_binding_with_underscore() {
     assert_eq!(
         result[0]["data"]["repairCode"],
         "prefix.unused_binding_with_underscore"
+    );
+    assert_eq!(result[0]["data"]["editCount"], 1);
+    assert_eq!(result[0]["data"]["editDocumentCount"], 1);
+    assert_eq!(
+        result[0]["data"]["editDocumentUris"],
+        serde_json::json!([uri])
     );
     assert_eq!(result[0]["edit"]["changes"][uri][0]["newText"], "_");
     assert_eq!(
