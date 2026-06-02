@@ -769,3 +769,27 @@ fn clock_handler_unknown_operation_returns_custom_error() {
         other => panic!("expected HostError::Custom, got {other:?}"),
     }
 }
+
+#[test]
+fn file_read_handler_reads_payload_path_bytes() {
+    let dir = std::env::temp_dir().join(format!("ail-file-read-handler-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir must be created");
+    let file = dir.join("data.bin");
+    std::fs::write(&file, b"AIL!").expect("fixture file must be written");
+
+    let handler = FileReadHandler::new();
+    let cap = CapabilityId::new("file.read");
+    let result = handler
+        .handle(
+            &cap,
+            "read",
+            file.to_str()
+                .expect("fixture path must be UTF-8")
+                .as_bytes(),
+        )
+        .expect("file.read must return file bytes");
+    assert_eq!(result, b"AIL!");
+
+    let _ = std::fs::remove_file(&file);
+    let _ = std::fs::remove_dir(&dir);
+}

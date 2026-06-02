@@ -17,8 +17,8 @@ use crate::core_ir::LiteralValue;
 use crate::error::CompileError;
 use crate::pattern_string::{is_unsupported_pattern_shape, parse_constructor_pattern};
 use crate::wasm_abi::{
-    EffectDataLayout, RESULT_BUFFER_MAX, binding_params, binding_result, export_name,
-    infer_expr_type, record_layout_fields, well_known_variant_tag,
+    EffectDataLayout, RESULT_BUFFER_MAX, binding_params, binding_result, effect_call_returns_bytes,
+    export_name, infer_expr_type, record_layout_fields, well_known_variant_tag,
 };
 
 mod builder;

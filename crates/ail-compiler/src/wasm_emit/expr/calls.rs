@@ -207,10 +207,30 @@ pub(super) fn emit_effect_call_expr<'a>(
         insns.push(Instruction::I32Const(ctx.effect_data.result_buffer_offset));
         insns.push(Instruction::I32Const(RESULT_BUFFER_MAX));
         insns.push(Instruction::Call(1));
-        // Extend the i32 return to i64 to match the standard EffectCall return type.
-        insns.push(Instruction::I64ExtendI32S);
+        if effect_call_returns_bytes(capability, func) {
+            emit_host_call_write_packed_buffer(ctx, insns);
+        } else {
+            // Extend the i32 return to i64 to match the standard EffectCall return type.
+            insns.push(Instruction::I64ExtendI32S);
+        }
     } else {
         insns.push(Instruction::Call(0));
     }
     Some(ValType::I64)
+}
+
+fn emit_host_call_write_packed_buffer<'a>(
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) {
+    let len_local = ctx.bind_temp(ValType::I32);
+    insns.push(Instruction::LocalSet(len_local));
+    insns.push(Instruction::LocalGet(len_local));
+    insns.push(Instruction::I64ExtendI32U);
+    insns.push(Instruction::I64Const(32));
+    insns.push(Instruction::I64Shl);
+    insns.push(Instruction::I64Const(
+        ctx.effect_data.result_buffer_offset as i64,
+    ));
+    insns.push(Instruction::I64Or);
 }

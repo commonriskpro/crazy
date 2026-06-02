@@ -231,6 +231,10 @@ pub struct ClockHandler {
     caps: Vec<CapabilityId>,
 }
 
+pub struct FileReadHandler {
+    caps: Vec<CapabilityId>,
+}
+
 impl ClockHandler {
     pub fn new() -> Self {
         Self {
@@ -279,6 +283,48 @@ impl Handler for ClockHandler {
                 "unknown clock operation: {other}"
             ))),
         }
+    }
+}
+
+impl FileReadHandler {
+    pub fn new() -> Self {
+        Self {
+            caps: vec![CapabilityId::new("file.read")],
+        }
+    }
+}
+
+impl Default for FileReadHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Handler for FileReadHandler {
+    fn name(&self) -> &str {
+        "file.read"
+    }
+
+    fn capabilities(&self) -> &[CapabilityId] {
+        &self.caps
+    }
+
+    fn handle(
+        &self,
+        _capability: &CapabilityId,
+        operation: &str,
+        payload: &[u8],
+    ) -> HostResult<Vec<u8>> {
+        if operation != "read" {
+            return Err(HostError::Custom(format!(
+                "unknown file.read operation: {operation}"
+            )));
+        }
+        let path = std::str::from_utf8(payload).map_err(|e| {
+            HostError::PayloadDecodeError(format!("file.read path is not UTF-8: {e}"))
+        })?;
+        std::fs::read(path)
+            .map_err(|e| HostError::Custom(format!("file.read failed for `{path}`: {e}")))
     }
 }
 

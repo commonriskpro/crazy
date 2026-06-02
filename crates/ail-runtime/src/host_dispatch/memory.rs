@@ -50,7 +50,9 @@ pub(super) fn handler_payload(
     args_bytes: &[u8],
     max_payload_bytes: Option<u64>,
 ) -> Option<Vec<u8>> {
-    if cap.as_str() == "log.write" && operation == "write" {
+    if (cap.as_str() == "log.write" && operation == "write")
+        || (cap.as_str() == "file.read" && operation == "read")
+    {
         let payload = decode_packed_text_arg(caller, args_bytes, max_payload_bytes)?;
         std::str::from_utf8(&payload).ok()?;
         Some(payload)

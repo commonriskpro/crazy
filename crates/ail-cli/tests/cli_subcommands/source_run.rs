@@ -236,6 +236,38 @@ fn config_path_text() -> Text = path_to_text(path_from_text(\"config/app.toml\")
 }
 
 #[test]
+fn run_file_executes_ail_source_fs_read_file_bytes_with_grant() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let data = dir.child("data.bin");
+    data.write_binary(b"AIL!")
+        .expect("data fixture must be written");
+    let source = dir.child("file_read.ail");
+    source
+        .write_str(
+            "capability file.read\n\
+fn main() -> Bytes = fs_read_file(path_from_text(\"data.bin\"))\n\
+grant main file.read\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--grant",
+            "file.read",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.main"))
+        .stdout(predicate::str::contains("result: bytes[41 49 4c 21]"));
+}
+
+#[test]
 fn run_file_executes_ail_source_random_next_int_with_grant() {
     use assert_fs::prelude::*;
 

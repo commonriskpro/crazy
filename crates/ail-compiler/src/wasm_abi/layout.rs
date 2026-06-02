@@ -158,6 +158,10 @@ impl EffectDataLayout {
                 self.needs_host_call = true;
                 self.intern(capability);
                 self.intern(func);
+                if effect_call_returns_bytes(capability, func) {
+                    self.needs_host_call_write = true;
+                    self.needs_memory = true;
+                }
             }
             AnfExpr::Call { func, args }
                 if matches!(func.as_str(), "concat" | "text.concat") && args.len() == 2 =>
@@ -358,4 +362,8 @@ impl EffectDataLayout {
             .map(|(d, ptr)| (*ptr, d.len() as i32))
             .expect("byte literal not interned; call intern_bytes first")
     }
+}
+
+pub(crate) fn effect_call_returns_bytes(capability: &str, func: &str) -> bool {
+    capability == "file.read" && func == "read"
 }

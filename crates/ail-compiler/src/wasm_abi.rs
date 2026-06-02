@@ -47,8 +47,8 @@ pub(crate) use bindings::{
 };
 pub(crate) use infer::{WasmSignature, infer_expr_type, literal_type};
 pub(crate) use layout::{
-    EffectDataLayout, MAX_ARGS_BYTES, RESULT_BUFFER_MAX, has_effect_call, is_structured_descriptor,
-    record_layout_fields, well_known_variant_tag,
+    EffectDataLayout, MAX_ARGS_BYTES, RESULT_BUFFER_MAX, effect_call_returns_bytes,
+    has_effect_call, is_structured_descriptor, record_layout_fields, well_known_variant_tag,
 };
 
 #[cfg(test)]

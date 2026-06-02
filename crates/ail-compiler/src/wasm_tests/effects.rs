@@ -177,6 +177,62 @@ fn effect_call_with_record_result_anf() -> AnfIr {
     sealed_anf(vec![binding])
 }
 
+fn file_read_bytes_effect_call_anf() -> AnfIr {
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.read_file".to_string(),
+        expr: AnfExpr::Let {
+            name: "path".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("data.bin".to_string()))),
+            body: Box::new(AnfExpr::EffectCall {
+                capability: "file.read".to_string(),
+                func: "read".to_string(),
+                args: vec!["path".to_string()],
+            }),
+        },
+    };
+    sealed_anf(vec![binding])
+}
+
+#[test]
+fn file_read_bytes_effect_call_uses_host_call_write_buffer() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let anf = file_read_bytes_effect_call_anf();
+    let layout = EffectDataLayout::for_bindings(&anf.bindings);
+    assert!(
+        layout.needs_host_call_write,
+        "file.read/read returns Bytes and must use host_call_write"
+    );
+
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+    let mut saw_host_call_write = false;
+    let mut saw_pack_or = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                match reader.read().unwrap() {
+                    Operator::Call { function_index: 1 } => saw_host_call_write = true,
+                    Operator::I64Or => saw_pack_or = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    assert!(
+        saw_host_call_write,
+        "file.read/read must call host_call_write"
+    );
+    assert!(
+        saw_pack_or,
+        "file.read/read must pack result ptr/len for Bytes ABI"
+    );
+}
+
 #[test]
 fn effect_call_structured_return_emits_host_call_write_import() {
     use wasmparser::{Parser, Payload};

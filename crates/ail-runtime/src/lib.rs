@@ -72,7 +72,7 @@ pub use audit::{
 };
 pub use codec::{HandleId, HandleRegistry, StructuredValue, ValueDecoder, ValueLayout};
 pub use error::{PreflightFailure, RuntimeError, RuntimeResult};
-pub use handler::{ClockHandler, Handler, InMemoryHandler, LogHandler};
+pub use handler::{ClockHandler, FileReadHandler, Handler, InMemoryHandler, LogHandler};
 pub use host::{
     CapabilityCallMode, RuntimeArg, RuntimeHost, RuntimeInstance, RuntimeValue, TraceContext,
 };

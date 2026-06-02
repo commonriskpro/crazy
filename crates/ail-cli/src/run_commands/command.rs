@@ -119,10 +119,12 @@ pub(crate) async fn cmd_run(
     let log_handler = Arc::new(LogHandler::new());
     let clock_handler = Arc::new(ClockHandler::new());
     let random_handler = Arc::new(SeededRandom::new(1));
+    let file_read_handler = Arc::new(FileReadHandler::new());
     let mut host = RuntimeHost::new()
         .with_handler(log_handler.clone())
         .with_handler(clock_handler)
-        .with_handler(random_handler);
+        .with_handler(random_handler)
+        .with_handler(file_read_handler);
     let result = host.validate_and_instantiate(&artifact.wasm, &manifest, &runtime_profile);
 
     match result {
