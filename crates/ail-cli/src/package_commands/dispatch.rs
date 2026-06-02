@@ -475,14 +475,18 @@ pub(crate) async fn cmd_package(
                 save_package_lockfile(store, &lockfile)?;
             }
             let accepted_assumptions = lockfile.entries[index].accepted_assumptions.clone();
+            let missing_assumptions =
+                missing_package_assumption_ids(manifest, &accepted_assumptions);
+            let assumptions_valid = missing_assumptions.is_empty();
             let status = if already_accepted {
                 "already_accepted"
             } else {
                 "accepted"
             };
             let human_msg = format!(
-                "package assumption {status}\npackage: {locked_name}\nversion: {locked_version}\nassumption: {assumption}\naccepted_assumptions: {}",
-                accepted_assumptions.join(", ")
+                "package assumption {status}\npackage: {locked_name}\nversion: {locked_version}\nassumption: {assumption}\naccepted_assumptions: {}\nmissing_assumptions: {}\nassumptions_valid: {assumptions_valid}",
+                format_package_string_list(&accepted_assumptions),
+                format_package_string_list(&missing_assumptions)
             );
             print_response(
                 mode,
@@ -494,6 +498,8 @@ pub(crate) async fn cmd_package(
                     "assumption": assumption,
                     "accepted": !already_accepted,
                     "accepted_assumptions": accepted_assumptions,
+                    "missing_assumptions": missing_assumptions,
+                    "assumptions_valid": assumptions_valid,
                 }),
             );
         }
