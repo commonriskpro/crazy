@@ -458,6 +458,8 @@ fn package_audit_blocks_unaccepted_package_assumption() {
     assert_eq!(v["data"]["status"], "blocked");
     assert_eq!(v["data"]["assumptions_valid"], false);
     assert_eq!(v["data"]["summary"]["assumptions"], 1);
+    assert_eq!(v["data"]["remediation_action_count"], 1);
+    assert_eq!(v["data"]["summary"]["remediation_actions"], 1);
     assert_eq!(v["data"]["issues"][0]["kind"], "assumption");
     assert_eq!(
         v["data"]["issues"][0]["assumption_id"],
@@ -705,6 +707,8 @@ fn package_audit_signed_registry_advisory_blocks() {
     assert_eq!(v["data"]["status"], "blocked");
     assert_eq!(v["data"]["summary"]["advisories"], 1);
     assert_eq!(v["data"]["summary"]["blocked"], 1);
+    assert_eq!(v["data"]["remediation_action_count"], 1);
+    assert_eq!(v["data"]["summary"]["remediation_actions"], 1);
     let issue = &v["data"]["issues"][0];
     assert_eq!(issue["package"], "signed.vuln");
     assert_eq!(issue["version"], "1.0.0");
@@ -814,6 +818,8 @@ fn package_audit_consumes_cli_created_yank_metadata() {
     let v = parse_json_output(&output);
     assert_eq!(v["data"]["status"], "blocked");
     assert_eq!(v["data"]["summary"]["yanked"], 1);
+    assert_eq!(v["data"]["remediation_action_count"], 1);
+    assert_eq!(v["data"]["summary"]["remediation_actions"], 1);
     assert_eq!(v["data"]["issues"][0]["kind"], "yanked");
     assert_eq!(v["data"]["issues"][0]["status"], "blocked");
     assert_eq!(v["data"]["issues"][0]["reason"], "cli yank blocks audit");

@@ -1491,6 +1491,7 @@ pub(crate) async fn cmd_package(
                 .filter(|issue| issue["kind"] == "advisory")
                 .cloned()
                 .collect::<Vec<_>>();
+            let remediation_action_count = remediation_actions.len();
             print_response(
                 mode,
                 &human_msg,
@@ -1502,6 +1503,7 @@ pub(crate) async fn cmd_package(
                     "packages_checked": packages_checked,
                     "assumptions_valid": assumption_issue_count == 0,
                     "packages_missing_assumptions": packages_missing_assumptions,
+                    "remediation_action_count": remediation_action_count,
                     "remediation_actions": remediation_actions,
                     "unsafe_surface": unsafe_surface_json,
                     "summary": {
@@ -1512,6 +1514,7 @@ pub(crate) async fn cmd_package(
                         "assumptions": assumption_issue_count,
                         "blocked": blocked_count,
                         "warnings": warning_count,
+                        "remediation_actions": remediation_action_count,
                     },
                 }),
             );
