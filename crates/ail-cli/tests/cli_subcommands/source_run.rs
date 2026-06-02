@@ -81,6 +81,32 @@ fn run_file_requires_default_entrypoint_without_explicit_function() {
             "pass an explicit function name such as `fn.helper`",
         ));
 }
+
+#[test]
+fn run_file_rejects_missing_explicit_source_function() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("library.ail");
+    source
+        .write_str("fn helper() -> Int = 1\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.missing",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "source function `fn.missing` is not declared",
+        ))
+        .stderr(predicate::str::contains("inspect function_names"));
+}
 #[test]
 fn run_file_executes_ail_source_block_with_let_statement() {
     use assert_fs::prelude::*;

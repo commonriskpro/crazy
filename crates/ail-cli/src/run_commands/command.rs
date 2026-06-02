@@ -33,21 +33,6 @@ pub(crate) async fn cmd_run(
     }
 
     let source_graph = source_file.map(load_source_graph_with_entry).transpose()?;
-    if module.is_none() {
-        if let Some(source) = source_graph.as_ref() {
-            let default_entry_exists = crate::source_commands::source_return_descriptor_for_module(
-                &source.graph,
-                source.default_entry.as_str(),
-            )
-            .is_some();
-            if !default_entry_exists {
-                return Err(CliError::Domain(format!(
-                    "source file has no default entrypoint `{}`; pass an explicit function name such as `fn.helper` or add `fn main`",
-                    source.default_entry
-                )));
-            }
-        }
-    }
     let module_name = if let Some(module) = module {
         module
     } else if let Some(source) = source_graph.as_ref() {
@@ -55,6 +40,24 @@ pub(crate) async fn cmd_run(
     } else {
         "(default)"
     };
+    if let Some(source) = source_graph.as_ref() {
+        let source_function_declared = source
+            .graph
+            .nodes
+            .iter()
+            .any(|node| node.kind == NodeKind::Function && node.name == module_name);
+        if !source_function_declared {
+            if module.is_none() {
+                return Err(CliError::Domain(format!(
+                    "source file has no default entrypoint `{}`; pass an explicit function name such as `fn.helper` or add `fn main`",
+                    source.default_entry
+                )));
+            }
+            return Err(CliError::Domain(format!(
+                "source function `{module_name}` is not declared; run `ail check --file --json` to inspect function_names"
+            )));
+        }
+    }
 
     // Built-in targets have no associated semantic graph, so their runtime
     // capability requirements are empty by definition.  Project graph targets

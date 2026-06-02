@@ -26,7 +26,7 @@ use ail_runtime::{
 };
 use serde_json::{Value, json};
 
-use ail_core::semantic_graph::SemanticGraph;
+use ail_core::semantic_graph::{NodeKind, SemanticGraph};
 
 use crate::builtin_targets::runtime_anf_for_target;
 use crate::cli::load_current_graph_for_cli;
