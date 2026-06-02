@@ -724,9 +724,48 @@ fn package_install_json_surfaces_manifest_metadata_and_warnings() {
     assert_eq!(v["data"]["capabilities"][0], "file.read");
     assert_eq!(v["data"]["exported_capabilities"][0], "clock.now");
     assert_eq!(v["data"]["assumptions"][0]["id"], "assume-sandboxed-path");
+    assert_eq!(v["data"]["missing_assumptions"][0], "assume-sandboxed-path");
+    assert_eq!(v["data"]["accepted_assumptions"], Value::Array(vec![]));
+    assert_eq!(v["data"]["assumptions_valid"], false);
     assert_eq!(v["data"]["unsafe_surface"][0]["name"], "runtime_files_read");
     assert_eq!(v["data"]["advisories"][0]["status"], "warning");
     assert_eq!(v["data"]["capabilities_granted"], false);
+}
+
+#[test]
+fn package_install_json_surfaces_accepted_assumption_status() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let mut manifest = test_package_manifest("assumed.pkg", "1.0.0", TrustLevel::Assumed);
+    manifest.assumptions = vec![PackageAssumption {
+        id: "assume-reviewed-vendor".to_string(),
+        claim: "vendor process was reviewed".to_string(),
+        boundary: "boundary.vendor".to_string(),
+        owner: "security".to_string(),
+        expires: None,
+        state: AssumptionState::Active,
+    }];
+    write_legacy_package_registry(dir.path(), std::slice::from_ref(&manifest));
+    let mut lockfile = lockfile_for_manifest(&manifest);
+    lockfile.entries[0].accepted_assumptions = vec!["assume-reviewed-vendor".to_string()];
+    write_package_lockfile(dir.path(), &lockfile);
+
+    let output = ail()
+        .args(["package", "install", "assumed.pkg@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(
+        v["data"]["accepted_assumptions"][0],
+        "assume-reviewed-vendor"
+    );
+    assert_eq!(v["data"]["missing_assumptions"], Value::Array(vec![]));
+    assert_eq!(v["data"]["assumptions_valid"], true);
 }
 
 #[test]

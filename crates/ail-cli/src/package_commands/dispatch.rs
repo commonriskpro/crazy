@@ -115,6 +115,18 @@ fn format_package_unsafe_surface(manifest: &PackageManifest) -> String {
     }
 }
 
+fn missing_package_assumption_ids(
+    manifest: &PackageManifest,
+    accepted_assumptions: &[String],
+) -> Vec<String> {
+    manifest
+        .assumptions
+        .iter()
+        .filter(|assumption| !accepted_assumptions.contains(&assumption.id))
+        .map(|assumption| assumption.id.clone())
+        .collect()
+}
+
 fn format_package_advisories(advisories: &[PackageAuditIssue]) -> String {
     if advisories.is_empty() {
         "[]".to_string()
@@ -231,12 +243,16 @@ pub(crate) async fn cmd_package(
             };
             let entry = &installed.entry;
             let manifest = &installed.manifest;
+            let accepted_assumptions = entry.accepted_assumptions.clone();
+            let missing_assumptions =
+                missing_package_assumption_ids(manifest, &accepted_assumptions);
+            let assumptions_valid = missing_assumptions.is_empty();
             let verification_report_status =
                 verification_report_status(installed.verification_report.is_some());
             let repro_evidence_status =
                 reproducible_evidence_status(installed.reproducible_evidence.is_some());
             let human_msg = format!(
-                "added: {package}\nname: {}\nversion: {}\nrequested_version: {}\nresolved_version: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\ncapabilities: {}\nexported_capabilities: {}\nassumptions: {}\nunsafe_surface: {}\nadvisories: {}\nnote: package install does not grant capabilities{}",
+                "added: {package}\nname: {}\nversion: {}\nrequested_version: {}\nresolved_version: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\ncapabilities: {}\nexported_capabilities: {}\nassumptions: {}\naccepted_assumptions: {}\nmissing_assumptions: {}\nassumptions_valid: {}\nunsafe_surface: {}\nadvisories: {}\nnote: package install does not grant capabilities{}",
                 entry.name,
                 entry.version,
                 entry.requested_version.as_deref().unwrap_or(&entry.version),
@@ -248,6 +264,9 @@ pub(crate) async fn cmd_package(
                 format_package_string_list(&manifest.required_capabilities),
                 format_package_string_list(&manifest.exported_capabilities),
                 format_package_assumptions(manifest),
+                format_package_string_list(&accepted_assumptions),
+                format_package_string_list(&missing_assumptions),
+                assumptions_valid,
                 format_package_unsafe_surface(manifest),
                 format_package_advisories(&installed.advisory_issues),
                 format_warnings_for_human(&installed.warnings)
@@ -275,6 +294,9 @@ pub(crate) async fn cmd_package(
                     "capabilities": &manifest.required_capabilities,
                     "exported_capabilities": &manifest.exported_capabilities,
                     "assumptions": &manifest.assumptions,
+                    "accepted_assumptions": accepted_assumptions,
+                    "missing_assumptions": missing_assumptions,
+                    "assumptions_valid": assumptions_valid,
                     "unsafe_surface": &manifest.unsafe_surface,
                     "advisories": installed.advisory_issues.iter().map(PackageAuditIssue::to_json).collect::<Vec<_>>(),
                     "capabilities_granted": false,
@@ -302,12 +324,16 @@ pub(crate) async fn cmd_package(
             };
             let entry = &installed.entry;
             let manifest = &installed.manifest;
+            let accepted_assumptions = entry.accepted_assumptions.clone();
+            let missing_assumptions =
+                missing_package_assumption_ids(manifest, &accepted_assumptions);
+            let assumptions_valid = missing_assumptions.is_empty();
             let verification_report_status =
                 verification_report_status(installed.verification_report.is_some());
             let repro_evidence_status =
                 reproducible_evidence_status(installed.reproducible_evidence.is_some());
             let human_msg = format!(
-                "installed: {}@{}\nrequested_version: {}\nresolved_version: {}\ntrust: {:?}\npackage_hash: {}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\ncapabilities: {}\nexported_capabilities: {}\nassumptions: {}\nunsafe_surface: {}\nadvisories: {}\nnote: package install does not grant capabilities{}",
+                "installed: {}@{}\nrequested_version: {}\nresolved_version: {}\ntrust: {:?}\npackage_hash: {}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\ncapabilities: {}\nexported_capabilities: {}\nassumptions: {}\naccepted_assumptions: {}\nmissing_assumptions: {}\nassumptions_valid: {}\nunsafe_surface: {}\nadvisories: {}\nnote: package install does not grant capabilities{}",
                 entry.name,
                 entry.version,
                 entry.requested_version.as_deref().unwrap_or(&entry.version),
@@ -320,6 +346,9 @@ pub(crate) async fn cmd_package(
                 format_package_string_list(&manifest.required_capabilities),
                 format_package_string_list(&manifest.exported_capabilities),
                 format_package_assumptions(manifest),
+                format_package_string_list(&accepted_assumptions),
+                format_package_string_list(&missing_assumptions),
+                assumptions_valid,
                 format_package_unsafe_surface(manifest),
                 format_package_advisories(&installed.advisory_issues),
                 format_warnings_for_human(&installed.warnings)
@@ -348,6 +377,9 @@ pub(crate) async fn cmd_package(
                     "capabilities": &manifest.required_capabilities,
                     "exported_capabilities": &manifest.exported_capabilities,
                     "assumptions": &manifest.assumptions,
+                    "accepted_assumptions": accepted_assumptions,
+                    "missing_assumptions": missing_assumptions,
+                    "assumptions_valid": assumptions_valid,
                     "unsafe_surface": &manifest.unsafe_surface,
                     "advisories": installed.advisory_issues.iter().map(PackageAuditIssue::to_json).collect::<Vec<_>>(),
                     "capabilities_granted": false,
