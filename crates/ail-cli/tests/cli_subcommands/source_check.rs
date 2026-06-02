@@ -56,6 +56,11 @@ fn check_file_validates_ail_source_without_execution() {
         serde_json::json!(["log.write"])
     );
     assert_eq!(v["data"]["default_entry"], "fn.main");
+    assert_eq!(v["data"]["default_entry_exists"], true);
+    assert_eq!(
+        v["data"]["entrypoint_candidates"],
+        serde_json::json!(["fn.main"])
+    );
     assert!(
         v["data"]["graph_nodes"].as_u64().unwrap() >= 2,
         "check must materialize source into a semantic graph"
@@ -63,6 +68,35 @@ fn check_file_validates_ail_source_without_execution() {
     assert!(
         v["data"]["graph_edges"].as_u64().is_some(),
         "check must report graph edge materialization"
+    );
+}
+
+#[test]
+fn check_file_reports_missing_default_entrypoint() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("library.ail");
+    source
+        .write_str("fn helper() -> Int = 1\n")
+        .expect("source fixture must be written");
+
+    let output = ail()
+        .args(["check", "--file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["default_entry"], "fn.main");
+    assert_eq!(v["data"]["default_entry_exists"], false);
+    assert_eq!(
+        v["data"]["entrypoint_candidates"],
+        serde_json::Value::Array(vec![])
     );
 }
 #[test]

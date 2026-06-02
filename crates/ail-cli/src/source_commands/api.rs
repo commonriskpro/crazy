@@ -42,6 +42,15 @@ pub(crate) fn cmd_check_source(mode: OutputMode, path: &Path) -> Result<(), CliE
         .iter()
         .map(|function| function.name.clone())
         .collect::<Vec<_>>();
+    let default_entry_exists = function_names.iter().any(|name| name == &default_entry);
+    let entrypoint_candidates = function_names
+        .iter()
+        .filter(|name| {
+            let name = name.as_str();
+            name == default_entry.as_str() || name == "fn.main" || name.ends_with(".main")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     let test_names = program
         .tests
         .iter()
@@ -75,6 +84,8 @@ pub(crate) fn cmd_check_source(mode: OutputMode, path: &Path) -> Result<(), CliE
             "item_count": item_count,
             "module": program.module.as_deref(),
             "default_entry": default_entry,
+            "default_entry_exists": default_entry_exists,
+            "entrypoint_candidates": entrypoint_candidates,
             "imports": program.imports.len(),
             "import_paths": import_paths,
             "capabilities": program.capabilities.len(),
