@@ -37,6 +37,14 @@ end
     assert_eq!(v["data"]["diagnostic_count"], 1);
     assert_eq!(v["data"]["error_count"], 1);
     assert_eq!(v["data"]["diagnostics"][0]["source"], "ail-acl-schema");
+    assert_eq!(
+        v["data"]["diagnostic_sources"],
+        serde_json::json!(["ail-acl-schema"])
+    );
+    assert_eq!(
+        v["data"]["diagnostic_families"],
+        serde_json::Value::Array(vec![])
+    );
     assert_eq!(v["data"]["diagnostics"][0]["severity"], 1);
     assert!(
         v["data"]["diagnostics"][0]["message"]

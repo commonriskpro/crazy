@@ -65,6 +65,8 @@ fn cmd_lsp_diagnose(mode: OutputMode, path: PathBuf) -> Result<(), CliError> {
         .count();
     let diagnostic_codes = diagnostic_codes(&diagnostics);
     let diagnostic_categories = diagnostic_categories(&diagnostics);
+    let diagnostic_sources = diagnostic_sources(&diagnostics);
+    let diagnostic_families = diagnostic_families(&diagnostics);
     let repair_codes = diagnostic_repair_codes(&diagnostics);
     let repair_suggestions = diagnostic_repair_suggestions(&diagnostics);
     let repair_count = repair_suggestions.len();
@@ -100,6 +102,8 @@ fn cmd_lsp_diagnose(mode: OutputMode, path: PathBuf) -> Result<(), CliError> {
             "warning_count": warning_count,
             "diagnostic_codes": diagnostic_codes,
             "diagnostic_categories": diagnostic_categories,
+            "diagnostic_sources": diagnostic_sources,
+            "diagnostic_families": diagnostic_families,
             "repair_count": repair_count,
             "repair_codes": repair_codes,
             "repair_suggestions": repair_suggestions,
@@ -120,6 +124,20 @@ fn diagnostic_categories(diagnostics: &[Value]) -> Vec<String> {
     diagnostics
         .iter()
         .filter_map(|diagnostic| diagnostic["data"]["ailDiagnostic"]["category"].as_str())
+        .fold(Vec::new(), push_unique)
+}
+
+fn diagnostic_sources(diagnostics: &[Value]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic["source"].as_str())
+        .fold(Vec::new(), push_unique)
+}
+
+fn diagnostic_families(diagnostics: &[Value]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic["data"]["ailDiagnostic"]["family"].as_str())
         .fold(Vec::new(), push_unique)
 }
 

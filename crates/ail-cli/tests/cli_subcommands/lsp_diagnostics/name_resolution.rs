@@ -36,6 +36,14 @@ fn lsp_diagnose_reports_ail_source_duplicate_function_code() {
         v["data"]["diagnostic_categories"][0],
         "source.symbol.duplicate"
     );
+    assert_eq!(
+        v["data"]["diagnostic_sources"],
+        serde_json::json!(["ail-source-parser"])
+    );
+    assert_eq!(
+        v["data"]["diagnostic_families"],
+        serde_json::json!(["AIL_SOURCE_PARSER"])
+    );
     assert_eq!(v["data"]["repair_count"], 0);
     assert_eq!(v["data"]["repair_codes"], serde_json::Value::Array(vec![]));
     assert_eq!(
