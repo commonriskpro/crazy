@@ -1159,6 +1159,10 @@ fn package_explain_json_surfaces_manifest_risk_metadata() {
     assert_eq!(v["data"]["missing_assumptions"][0], "assume-sandboxed-path");
     assert_eq!(v["data"]["accepted_assumptions"], Value::Array(vec![]));
     assert_eq!(v["data"]["assumptions_valid"], false);
+    assert_eq!(
+        v["data"]["assumption_accept_commands"][0],
+        "ail package accept-assumption runtime.files@1.0.0 assume-sandboxed-path"
+    );
     assert_eq!(v["data"]["unsafe_surface"][0]["name"], "runtime_files_read");
     assert!(
         v["data"]["advisories"]
@@ -1176,6 +1180,15 @@ fn package_explain_json_surfaces_manifest_risk_metadata() {
             .any(|issue| issue["kind"] == "advisory" && issue["status"] == "warning"),
         "explain must surface non-blocking advisory warnings; got: {v}"
     );
+
+    ail()
+        .args(["package", "explain", "runtime.files@1.0.0"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "remediation: ail package accept-assumption runtime.files@1.0.0 assume-sandboxed-path",
+        ));
 }
 
 #[test]
@@ -1212,6 +1225,10 @@ fn package_explain_json_surfaces_accepted_assumption_status() {
     );
     assert_eq!(v["data"]["missing_assumptions"], Value::Array(vec![]));
     assert_eq!(v["data"]["assumptions_valid"], true);
+    assert_eq!(
+        v["data"]["assumption_accept_commands"],
+        Value::Array(vec![])
+    );
 }
 
 #[test]

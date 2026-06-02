@@ -1660,11 +1660,20 @@ pub(crate) async fn cmd_package(
                 .map(|assumption| assumption.id.clone())
                 .collect::<Vec<_>>();
             let assumptions_valid = missing_assumptions.is_empty();
+            let assumption_accept_commands = missing_assumptions
+                .iter()
+                .map(|assumption| {
+                    format!(
+                        "ail package accept-assumption {}@{} {}",
+                        manifest.name, manifest.version, assumption
+                    )
+                })
+                .collect::<Vec<_>>();
             let risk_issues = package_risk_issues_for_manifest(&registry, &advisories, &manifest);
             let warnings = lookup.warning.into_iter().collect::<Vec<_>>();
             let verification_report_status =
                 verification_report_status(manifest.verification_report.is_some());
-            let human_msg = format!(
+            let mut human_msg = format!(
                 "package: {package}\nname: {}\nversion: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\ncapabilities: {}\nexported_capabilities: {}\nassumptions: {}\naccepted_assumptions: {}\nmissing_assumptions: {}\nassumptions_valid: {}\nunsafe_surface: {}\nadvisories: {}{}",
                 manifest.name,
                 manifest.version,
@@ -1680,6 +1689,12 @@ pub(crate) async fn cmd_package(
                 format_package_advisories(&risk_issues),
                 format_warnings_for_human(&warnings)
             );
+            if !assumption_accept_commands.is_empty() {
+                human_msg.push_str(&format!(
+                    "\nremediation: {}",
+                    assumption_accept_commands.join("; ")
+                ));
+            }
             print_response(
                 mode,
                 &human_msg,
@@ -1697,6 +1712,7 @@ pub(crate) async fn cmd_package(
                     "accepted_assumptions": accepted_assumptions,
                     "missing_assumptions": missing_assumptions,
                     "assumptions_valid": assumptions_valid,
+                    "assumption_accept_commands": assumption_accept_commands,
                     "unsafe_surface": &manifest.unsafe_surface,
                     "advisories": risk_issues.iter().map(PackageAuditIssue::to_json).collect::<Vec<_>>(),
                     "warnings": warnings,
