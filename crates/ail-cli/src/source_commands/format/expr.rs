@@ -741,6 +741,35 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if let Some((helper, arity)) = source_fs_helper(&func)
+        && args.len() == arity
+    {
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if let Some((helper, effect_args)) = source_fs_effect_call_helper(&func, &args) {
+        return (
+            format!(
+                "{helper}({})",
+                effect_args
+                    .iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "option.unwrap_or" && args.len() == 2 {
         return (
             format!(
@@ -1065,6 +1094,32 @@ pub(super) fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn source_fs_effect_call_helper<'a>(
+    func: &str,
+    args: &'a [String],
+) -> Option<(&'static str, &'a [String])> {
+    if func != "effect_call" || args.len() < 2 {
+        return None;
+    }
+    match (args[0].as_str(), args[1].as_str(), args.len()) {
+        ("file.read", "read", 3) => Some(("fs_read_file", &args[2..])),
+        ("file.write", "write", 4) => Some(("fs_write", &args[2..])),
+        ("file.delete", "delete", 3) => Some(("fs_delete", &args[2..])),
+        ("file.list", "list", 3) => Some(("fs_list", &args[2..])),
+        _ => None,
+    }
+}
+
+fn source_fs_helper(func: &str) -> Option<(&'static str, usize)> {
+    match func {
+        "fs.read_file" | "std.fs.read_file" => Some(("fs_read_file", 1)),
+        "fs.write" | "std.fs.write" => Some(("fs_write", 2)),
+        "fs.delete" | "std.fs.delete" => Some(("fs_delete", 1)),
+        "fs.list" | "std.fs.list" => Some(("fs_list", 1)),
+        _ => None,
+    }
 }
 
 fn source_env_effect_call_helper<'a>(

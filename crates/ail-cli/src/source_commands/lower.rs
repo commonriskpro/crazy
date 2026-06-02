@@ -10,6 +10,7 @@ mod control;
 mod crypto;
 mod encoding;
 mod env;
+mod fs;
 mod int;
 mod json;
 mod match_expr;
@@ -26,6 +27,7 @@ pub(super) use control::*;
 pub(super) use crypto::*;
 pub(super) use encoding::*;
 pub(super) use env::*;
+pub(super) use fs::*;
 pub(super) use int::*;
 pub(super) use json::*;
 pub(super) use match_expr::*;
@@ -47,6 +49,7 @@ pub(super) enum SourceLowerDiagnostic {
     CryptoHelper,
     EncodingHelper,
     EnvHelper,
+    FsHelper,
     Expression,
     FieldAccess,
     IndexExpression,
@@ -78,6 +81,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::CryptoHelper => "AIL_SOURCE_LOWER_CRYPTO_HELPER",
             SourceLowerDiagnostic::EncodingHelper => "AIL_SOURCE_LOWER_ENCODING_HELPER",
             SourceLowerDiagnostic::EnvHelper => "AIL_SOURCE_LOWER_ENV_HELPER",
+            SourceLowerDiagnostic::FsHelper => "AIL_SOURCE_LOWER_FS_HELPER",
             SourceLowerDiagnostic::Expression => "AIL_SOURCE_LOWER_EXPRESSION",
             SourceLowerDiagnostic::FieldAccess => "AIL_SOURCE_LOWER_FIELD_ACCESS",
             SourceLowerDiagnostic::IndexExpression => "AIL_SOURCE_LOWER_INDEX_EXPRESSION",
@@ -108,6 +112,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::CryptoHelper => "source.lower.crypto",
             SourceLowerDiagnostic::EncodingHelper => "source.lower.encoding",
             SourceLowerDiagnostic::EnvHelper => "source.lower.env",
+            SourceLowerDiagnostic::FsHelper => "source.lower.fs",
             SourceLowerDiagnostic::Expression => "source.lower.expression",
             SourceLowerDiagnostic::IntHelper => "source.lower.int",
             SourceLowerDiagnostic::JsonHelper => "source.lower.json",
@@ -456,6 +461,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_env_helper_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
+    if let Some(lowered) = lower_source_fs_helper_expr(expr, line_num)? {
         return Ok(lowered);
     }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {

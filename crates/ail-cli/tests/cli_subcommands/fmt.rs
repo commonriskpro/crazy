@@ -324,6 +324,55 @@ grant all_vars env.read\n",
 }
 
 #[test]
+fn fmt_file_json_outputs_canonical_ail_source_fs_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let source = dir.child("fs.ail");
+    source
+        .write_str(
+            "capability file.read\n\
+capability file.write\n\
+capability file.delete\n\
+capability file.list\n\
+fn read_config(path:Text)->Bytes=std.fs.read_file(path)\n\
+fn write_config(path:Text,data:Bytes)->Unit=fs.write(path,data)\n\
+fn remove_config(path:Text)->Unit=std.fs.delete(path)\n\
+fn list_configs(path:Text)->List<Text>=fs.list(path)\n\
+grant read_config file.read\n\
+grant write_config file.write\n\
+grant remove_config file.delete\n\
+grant list_configs file.list\n",
+        )
+        .expect("write source");
+
+    let output = ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["item_count"], 12);
+    let formatted = v["data"]["formatted"]
+        .as_str()
+        .expect("formatted must be string");
+
+    assert!(formatted.contains("fn read_config(path: Text) -> Bytes = fs_read_file(path)\n"));
+    assert!(
+        formatted
+            .contains("fn write_config(path: Text, data: Bytes) -> Unit = fs_write(path, data)\n")
+    );
+    assert!(formatted.contains("fn remove_config(path: Text) -> Unit = fs_delete(path)\n"));
+    assert!(formatted.contains("fn list_configs(path: Text) -> List<Text> = fs_list(path)\n"));
+}
+
+#[test]
 fn fmt_file_json_outputs_canonical_ail_source_encoding_helpers() {
     use assert_fs::prelude::*;
 

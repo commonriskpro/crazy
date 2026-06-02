@@ -313,6 +313,36 @@ grant all_vars env.read
 }
 
 #[test]
+fn formats_source_fs_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+capability file.read
+capability file.write
+capability file.delete
+capability file.list
+fn read_config(path:Text)->Bytes=std.fs.read_file(path)
+fn write_config(path:Text,data:Bytes)->Unit=fs.write(path,data)
+fn remove_config(path:Text)->Unit=std.fs.delete(path)
+fn list_configs(path:Text)->List<Text>=fs.list(path)
+grant read_config file.read
+grant write_config file.write
+grant remove_config file.delete
+grant list_configs file.list
+"#,
+    )
+    .expect("source fs helpers must format");
+
+    assert_eq!(item_count, 12);
+    assert!(formatted.contains("fn read_config(path: Text) -> Bytes = fs_read_file(path)\n"));
+    assert!(
+        formatted
+            .contains("fn write_config(path: Text, data: Bytes) -> Unit = fs_write(path, data)\n")
+    );
+    assert!(formatted.contains("fn remove_config(path: Text) -> Unit = fs_delete(path)\n"));
+    assert!(formatted.contains("fn list_configs(path: Text) -> List<Text> = fs_list(path)\n"));
+}
+
+#[test]
 fn formats_source_encoding_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"

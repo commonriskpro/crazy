@@ -388,6 +388,9 @@ pub(super) fn infer_source_call_type(
         | "env.list" | "env_list" | "std.env.list" => {
             infer_source_env_helper_type(func, args, scope, functions)
         }
+        "fs.read_file" | "fs_read_file" | "std.fs.read_file" | "fs.write" | "fs_write"
+        | "std.fs.write" | "fs.delete" | "fs_delete" | "std.fs.delete" | "fs.list" | "fs_list"
+        | "std.fs.list" => infer_source_fs_helper_type(func, args, scope, functions),
         "record" => infer_source_record_type(args, scope, functions),
         "field" => infer_source_field_type(args, scope, functions),
         "update" => infer_source_update_type(args, scope, functions),
@@ -911,6 +914,34 @@ fn require_source_map_text_key_type<'a>(
     Ok(Some(value_ty))
 }
 
+pub(super) fn infer_source_fs_helper_type(
+    func: &str,
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let (expected, return_ty) = match func {
+        "fs.read_file" | "fs_read_file" | "std.fs.read_file" => (&["Text"][..], "Bytes"),
+        "fs.write" | "fs_write" | "std.fs.write" => (&["Text", "Bytes"][..], "Unit"),
+        "fs.delete" | "fs_delete" | "std.fs.delete" => (&["Text"][..], "Unit"),
+        "fs.list" | "fs_list" | "std.fs.list" => (&["Text"][..], "List<Text>"),
+        _ => unreachable!("checked source fs helper"),
+    };
+    if args.len() != expected.len() {
+        return Err(source_expr_error(
+            "AIL_SOURCE_FS_ARITY",
+            "source.fs.arity",
+            format!(
+                "function call `{func}` expects {} argument(s), got {}",
+                expected.len(),
+                args.len()
+            ),
+        ));
+    }
+    validate_source_arg_types(func, args, scope, functions, expected)?;
+    Ok(return_ty.to_string())
+}
+
 pub(super) fn infer_source_env_helper_type(
     func: &str,
     args: &[String],
@@ -979,6 +1010,50 @@ pub(super) fn infer_source_effect_call_type(
                     &[],
                 )?;
                 return Ok("Map<Text,Text>".to_string());
+            }
+            ("file.read", "read") => {
+                validate_source_effect_call_arity(capability, operation, args, 1)?;
+                validate_source_arg_types(
+                    "effect_call(file.read, read)",
+                    &args[2..],
+                    scope,
+                    functions,
+                    &["Text"],
+                )?;
+                return Ok("Bytes".to_string());
+            }
+            ("file.write", "write") => {
+                validate_source_effect_call_arity(capability, operation, args, 2)?;
+                validate_source_arg_types(
+                    "effect_call(file.write, write)",
+                    &args[2..],
+                    scope,
+                    functions,
+                    &["Text", "Bytes"],
+                )?;
+                return Ok("Unit".to_string());
+            }
+            ("file.delete", "delete") => {
+                validate_source_effect_call_arity(capability, operation, args, 1)?;
+                validate_source_arg_types(
+                    "effect_call(file.delete, delete)",
+                    &args[2..],
+                    scope,
+                    functions,
+                    &["Text"],
+                )?;
+                return Ok("Unit".to_string());
+            }
+            ("file.list", "list") => {
+                validate_source_effect_call_arity(capability, operation, args, 1)?;
+                validate_source_arg_types(
+                    "effect_call(file.list, list)",
+                    &args[2..],
+                    scope,
+                    functions,
+                    &["Text"],
+                )?;
+                return Ok("List<Text>".to_string());
             }
             _ => {}
         }

@@ -1456,6 +1456,112 @@ grant read_var env.read
 }
 
 #[test]
+fn lowers_and_types_source_fs_helpers() {
+    let program = parse_ail_source(
+        r#"
+capability file.read
+capability file.write
+capability file.delete
+capability file.list
+fn read_config(path: Text) -> Bytes = fs_read_file(path)
+fn write_config(path: Text, data: Bytes) -> Unit = fs.write(path, data)
+fn remove_config(path: Text) -> Unit = std.fs.delete(path)
+fn list_configs(path: Text) -> List<Text> = fs.list(path)
+grant read_config file.read
+grant write_config file.write
+grant remove_config file.delete
+grant list_configs file.list
+"#,
+    )
+    .expect("source fs helpers must parse");
+    validate_source_program_grants(&program).expect("fs grants must validate");
+    validate_source_program_effect_calls(&program).expect("fs helper effects must require grants");
+    validate_source_program_types(&program).expect("source fs helpers must type-check");
+    let acl = source_program_to_acl(&program, "source_fs".to_string());
+
+    assert_eq!(
+        program.functions[0].body,
+        "effect_call(file.read, read, path)"
+    );
+    assert_eq!(
+        program.functions[1].body,
+        "effect_call(file.write, write, path, data)"
+    );
+    assert_eq!(
+        program.functions[2].body,
+        "effect_call(file.delete, delete, path)"
+    );
+    assert_eq!(
+        program.functions[3].body,
+        "effect_call(file.list, list, path)"
+    );
+    assert!(acl.contains(
+        "op create_function id=fn.read_config return=Bytes body=effect_call(file.read, read, path)"
+    ));
+    assert!(acl.contains(
+        "op create_function id=fn.list_configs return=List<Text> body=effect_call(file.list, list, path)"
+    ));
+    assert!(acl.contains("op grant target=fn.read_config capability=file.read"));
+    assert!(acl.contains("op grant target=fn.write_config capability=file.write"));
+}
+
+#[test]
+fn rejects_source_fs_helper_missing_grant() {
+    let program = parse_ail_source(
+        r#"
+capability file.read
+fn read_config(path: Text) -> Bytes = fs_read_file(path)
+"#,
+    )
+    .expect("source fs helper must parse before grant validation");
+
+    assert_lowering_diagnostic(
+        validate_source_program_effect_calls(&program),
+        "AIL_SOURCE_EFFECT_GRANT_MISSING",
+        "source.effect.grant",
+        "capability `file.read` without a grant",
+    );
+}
+
+#[test]
+fn rejects_source_fs_helper_type_mismatch() {
+    let program = parse_ail_source(
+        r#"
+capability file.read
+fn read_config(path: Int) -> Bytes = fs_read_file(path)
+grant read_config file.read
+"#,
+    )
+    .expect("source fs helper must parse before type validation");
+
+    assert_lowering_diagnostic(
+        validate_source_program_types(&program),
+        "AIL_SOURCE_TYPE_MISMATCH",
+        "source.type.mismatch",
+        "expected Text, got Int",
+    );
+}
+
+#[test]
+fn rejects_source_fs_effect_call_arity_mismatch() {
+    let program = parse_ail_source(
+        r#"
+capability file.read
+fn read_config(path: Text) -> Bytes = effect_call(file.read, read, path, "extra")
+grant read_config file.read
+"#,
+    )
+    .expect("source fs effect call must parse before type validation");
+
+    assert_lowering_diagnostic(
+        validate_source_program_types(&program),
+        "AIL_SOURCE_EFFECT_ARITY",
+        "source.effect.arity",
+        "expects 1 argument(s), got 2",
+    );
+}
+
+#[test]
 fn lowers_and_types_source_encoding_helpers() {
     let program = parse_ail_source(
         r#"

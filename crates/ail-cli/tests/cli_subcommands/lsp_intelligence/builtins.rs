@@ -641,6 +641,59 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "hover must explain env_get; got: {env_hover}"
     );
 
+    let fs_completion_output = ail()
+        .args(["lsp", "--complete", "fs_", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let fs_completion = parse_json_output(&fs_completion_output);
+    let fs_items = fs_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["fs_read_file", "fs_write", "fs_delete", "fs_list"]
+            .iter()
+            .all(|label| fs_items
+                .iter()
+                .any(|item| item["label"] == *label && item["detail"] == "AIL source FS helper")),
+        "completion must include AIL source FS helpers; got: {fs_items:?}"
+    );
+
+    let dotted_fs_completion_output = ail()
+        .args(["lsp", "--complete", "fs.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_fs_completion = parse_json_output(&dotted_fs_completion_output);
+    let dotted_fs_items = dotted_fs_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["fs.read_file", "fs.write", "fs.delete", "fs.list"]
+            .iter()
+            .all(|label| dotted_fs_items
+                .iter()
+                .any(|item| item["label"] == *label && item["detail"] == "AIL source FS helper")),
+        "completion must include dotted FS helpers; got: {dotted_fs_items:?}"
+    );
+
+    let fs_hover_output = ail()
+        .args(["lsp", "--hover-token", "fs_read_file", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let fs_hover = parse_json_output(&fs_hover_output);
+    assert!(
+        fs_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("path is Text"),
+        "hover must explain fs_read_file; got: {fs_hover}"
+    );
+
     let numeric_completion_output = ail()
         .args(["lsp", "--complete", "numeric_", "--json"])
         .assert()
