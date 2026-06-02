@@ -652,6 +652,21 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if let Some((helper, arity)) = source_random_helper(&func)
+        && args.len() == arity
+    {
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if let Some((helper, arity)) = source_encoding_helper(&func)
         && args.len() == arity
     {
@@ -1209,6 +1224,13 @@ fn source_encoding_helper(func: &str) -> Option<(&'static str, usize)> {
         }
         "encoding.hex_encode" | "std.encoding.hex_encode" => Some(("encoding_hex_encode", 1)),
         "encoding.hex_decode" | "std.encoding.hex_decode" => Some(("encoding_hex_decode", 1)),
+        _ => None,
+    }
+}
+
+fn source_random_helper(func: &str) -> Option<(&'static str, usize)> {
+    match func {
+        "random.next_int" | "std.random.next_int" => Some(("random_next_int", 0)),
         _ => None,
     }
 }

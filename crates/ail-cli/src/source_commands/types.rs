@@ -1046,6 +1046,17 @@ pub(super) fn infer_source_effect_call_type(
                 )?;
                 return Ok("Map<Text,Text>".to_string());
             }
+            ("random.int", "next_int") => {
+                validate_source_effect_call_arity(capability, operation, args, 0)?;
+                validate_source_arg_types(
+                    "effect_call(random.int, next_int)",
+                    &args[2..],
+                    scope,
+                    functions,
+                    &[],
+                )?;
+                return Ok("Int".to_string());
+            }
             ("file.read", "read") => {
                 validate_source_effect_call_arity(capability, operation, args, 1)?;
                 validate_source_path_arg_type(
@@ -1253,6 +1264,23 @@ pub(super) fn infer_source_encoding_helper_type(
     }
     validate_source_arg_types(func, args, scope, functions, expected)?;
     Ok(return_ty.to_string())
+}
+
+pub(super) fn infer_source_random_helper_type(
+    func: &str,
+    args: &[String],
+) -> Result<String, CliError> {
+    if !args.is_empty() {
+        return Err(source_expr_error(
+            "AIL_SOURCE_RANDOM_ARITY",
+            "source.random.arity",
+            format!(
+                "function call `{func}` expects 0 argument(s), got {}",
+                args.len()
+            ),
+        ));
+    }
+    Ok("Int".to_string())
 }
 
 pub(super) fn infer_source_time_helper_type(

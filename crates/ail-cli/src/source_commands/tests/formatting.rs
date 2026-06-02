@@ -387,6 +387,22 @@ fn from_hex(value:Text)->Result<Bytes,Text>=encoding.hex_decode(value)
 }
 
 #[test]
+fn formats_source_random_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn next()->Int=std.random.next_int()
+"#,
+    )
+    .expect("source random helpers must format");
+
+    assert_eq!(item_count, 1);
+    assert!(formatted.contains(
+        "fn next() -> Int = random_next_int()
+"
+    ));
+}
+
+#[test]
 fn formats_source_time_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"

@@ -94,6 +94,10 @@ fn seeded_random_declares_random_capability() {
         caps.iter().any(|c| c.as_str() == "random.next_u64"),
         "SeededRandom must declare random.next_u64"
     );
+    assert!(
+        caps.iter().any(|c| c.as_str() == "random.int"),
+        "SeededRandom must declare source/stdlib random.int"
+    );
 }
 
 #[test]
@@ -104,6 +108,20 @@ fn seeded_random_next_u64_returns_8_bytes() {
         .handle(&cap, "next_u64", &[])
         .expect("next_u64 must succeed");
     assert_eq!(bytes.len(), 8, "SeededRandom must return exactly 8 bytes");
+}
+
+#[test]
+fn seeded_random_next_int_alias_returns_8_bytes() {
+    let r = SeededRandom::new(42);
+    let cap = CapabilityId::new("random.int");
+    let bytes = r
+        .handle(&cap, "next_int", &[])
+        .expect("next_int must succeed");
+    assert_eq!(
+        bytes.len(),
+        8,
+        "SeededRandom next_int must return i64 bytes"
+    );
 }
 
 #[test]

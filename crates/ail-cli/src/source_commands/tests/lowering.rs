@@ -1674,6 +1674,28 @@ fn rejects_source_encoding_helper_type_mismatch() {
 }
 
 #[test]
+fn lowers_and_types_source_random_helpers() {
+    let program = parse_ail_source(
+        r#"
+capability random.int
+fn next() -> Int = random_next_int()
+grant next random.int
+"#,
+    )
+    .expect("source random helper must parse and type-check");
+    let acl = source_program_to_acl(&program, "source_random".to_string());
+
+    assert_eq!(
+        program.functions[0].body,
+        "effect_call(random.int, next_int)"
+    );
+    assert!(acl.contains(
+        "op create_function id=fn.next return=Int body=effect_call(random.int, next_int)"
+    ));
+    assert!(acl.contains("op grant target=fn.next capability=random.int"));
+}
+
+#[test]
 fn lowers_and_types_source_time_helpers() {
     let program = parse_ail_source(
         r#"

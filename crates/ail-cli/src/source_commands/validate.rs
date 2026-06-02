@@ -872,8 +872,17 @@ pub(super) fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         "tuple.get" | "tuple_get" => SourceArity::Exact(2),
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
-        "none" | "None" | "env.list" | "env_list" | "std.env.list" | "time.now" | "time_now"
-        | "std.time.now" => SourceArity::Exact(0),
+        "none"
+        | "None"
+        | "env.list"
+        | "env_list"
+        | "std.env.list"
+        | "time.now"
+        | "time_now"
+        | "std.time.now"
+        | "random.next_int"
+        | "random_next_int"
+        | "std.random.next_int" => SourceArity::Exact(0),
         "not"
         | "len"
         | "text.len"

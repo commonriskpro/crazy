@@ -875,6 +875,24 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "hover must explain encoding_base64_decode; got: {encoding_hover}"
     );
 
+    let random_completion_output = ail()
+        .args(["lsp", "--complete", "random_", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let random_completion = parse_json_output(&random_completion_output);
+    let random_items = random_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        random_items
+            .iter()
+            .any(|item| item["label"] == "random_next_int"
+                && item["detail"] == "AIL source Random helper"),
+        "completion must include random_next_int; got: {random_items:?}"
+    );
+
     let time_completion_output = ail()
         .args(["lsp", "--complete", "time_", "--json"])
         .assert()

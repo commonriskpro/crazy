@@ -1142,6 +1142,18 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "encoding.hex_decode(${1:text})",
     },
     AclSymbol {
+        label: "random_next_int",
+        detail: "AIL source Random helper",
+        documentation: "Reads a deterministic replay-safe Int through the random.int capability; requires an explicit grant.",
+        insert_text: "random_next_int()",
+    },
+    AclSymbol {
+        label: "random.next_int",
+        detail: "AIL source Random helper",
+        documentation: "Dotted alias that reads a deterministic replay-safe Int through random.int.",
+        insert_text: "random.next_int()",
+    },
+    AclSymbol {
         label: "time_now",
         detail: "AIL source Time helper",
         documentation: "Reads the current epoch-millisecond Int through the clock.now capability; requires an explicit grant.",

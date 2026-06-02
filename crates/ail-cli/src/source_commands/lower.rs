@@ -17,6 +17,7 @@ mod match_expr;
 mod numeric;
 mod option_result;
 mod path;
+mod random;
 mod syntax_helpers;
 mod text;
 mod time;
@@ -35,6 +36,7 @@ pub(super) use match_expr::*;
 pub(super) use numeric::*;
 pub(super) use option_result::*;
 pub(super) use path::*;
+pub(super) use random::*;
 pub(super) use syntax_helpers::*;
 pub(super) use text::*;
 pub(super) use time::*;
@@ -52,6 +54,7 @@ pub(super) enum SourceLowerDiagnostic {
     EncodingHelper,
     EnvHelper,
     FsHelper,
+    RandomHelper,
     Expression,
     FieldAccess,
     IndexExpression,
@@ -85,6 +88,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::EncodingHelper => "AIL_SOURCE_LOWER_ENCODING_HELPER",
             SourceLowerDiagnostic::EnvHelper => "AIL_SOURCE_LOWER_ENV_HELPER",
             SourceLowerDiagnostic::FsHelper => "AIL_SOURCE_LOWER_FS_HELPER",
+            SourceLowerDiagnostic::RandomHelper => "AIL_SOURCE_LOWER_RANDOM_HELPER",
             SourceLowerDiagnostic::Expression => "AIL_SOURCE_LOWER_EXPRESSION",
             SourceLowerDiagnostic::FieldAccess => "AIL_SOURCE_LOWER_FIELD_ACCESS",
             SourceLowerDiagnostic::IndexExpression => "AIL_SOURCE_LOWER_INDEX_EXPRESSION",
@@ -117,6 +121,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::EncodingHelper => "source.lower.encoding",
             SourceLowerDiagnostic::EnvHelper => "source.lower.env",
             SourceLowerDiagnostic::FsHelper => "source.lower.fs",
+            SourceLowerDiagnostic::RandomHelper => "source.lower.random",
             SourceLowerDiagnostic::Expression => "source.lower.expression",
             SourceLowerDiagnostic::IntHelper => "source.lower.int",
             SourceLowerDiagnostic::JsonHelper => "source.lower.json",
@@ -451,6 +456,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_time_helper_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
+    if let Some(lowered) = lower_source_random_helper_expr(expr, line_num)? {
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_encoding_helper_expr(expr, line_num)? {

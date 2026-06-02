@@ -275,7 +275,10 @@ impl SeededRandom {
         let initial = if seed == 0 { 1 } else { seed };
         SeededRandom {
             state: AtomicU64::new(initial),
-            caps: vec![CapabilityId::new("random.next_u64")],
+            caps: vec![
+                CapabilityId::new("random.next_u64"),
+                CapabilityId::new("random.int"),
+            ],
         }
     }
 
@@ -314,12 +317,12 @@ impl Handler for SeededRandom {
         operation: &str,
         _payload: &[u8],
     ) -> HostResult<Vec<u8>> {
-        if operation != "next_u64" {
-            return Err(HostError::Custom(format!(
-                "unknown SeededRandom operation: {operation}"
-            )));
+        match operation {
+            "next_u64" | "next_int" => Ok(self.next().to_le_bytes().to_vec()),
+            other => Err(HostError::Custom(format!(
+                "unknown SeededRandom operation: {other}"
+            ))),
         }
-        Ok(self.next().to_le_bytes().to_vec())
     }
 }
 
