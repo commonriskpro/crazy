@@ -13,7 +13,9 @@ fn check_file_validates_ail_source_without_execution() {
         .expect("imported source fixture must be written");
     let source = dir.child("main.ail");
     source
-        .write_str("use \"./math.ail\"\nfn main() -> Int = math.add_pair(20, 22)\n")
+        .write_str(
+            "use \"./math.ail\"\ncapability log.write\nconst answer: Int = 42\nfn main() -> Int = math.add_pair(answer, 0)\ntest smoke = eq(main(), 42)\ngrant main log.write\n",
+        )
         .expect("source fixture must be written");
 
     let output = ail()
@@ -29,7 +31,30 @@ fn check_file_validates_ail_source_without_execution() {
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["language"], "ail-source");
     assert_eq!(v["data"]["functions"], 2);
+    assert_eq!(
+        v["data"]["function_names"],
+        serde_json::json!(["fn.math.add_pair", "fn.main"])
+    );
     assert_eq!(v["data"]["imports"], 1);
+    assert_eq!(v["data"]["import_paths"], serde_json::json!(["./math.ail"]));
+    assert_eq!(v["data"]["capabilities"], 1);
+    assert_eq!(
+        v["data"]["capability_names"],
+        serde_json::json!(["log.write"])
+    );
+    assert_eq!(v["data"]["constants"], 1);
+    assert_eq!(
+        v["data"]["constant_names"],
+        serde_json::json!(["fn.answer"])
+    );
+    assert_eq!(v["data"]["tests"], 1);
+    assert_eq!(v["data"]["test_names"], serde_json::json!(["test.smoke"]));
+    assert_eq!(v["data"]["grants"], 1);
+    assert_eq!(v["data"]["grant_targets"], serde_json::json!(["fn.main"]));
+    assert_eq!(
+        v["data"]["granted_capabilities"],
+        serde_json::json!(["log.write"])
+    );
     assert_eq!(v["data"]["default_entry"], "fn.main");
     assert!(
         v["data"]["graph_nodes"].as_u64().unwrap() >= 2,

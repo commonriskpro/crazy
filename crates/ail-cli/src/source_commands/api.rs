@@ -30,6 +30,33 @@ pub(crate) fn cmd_check_source(mode: OutputMode, path: &Path) -> Result<(), CliE
         + program.functions.len()
         + program.tests.len()
         + program.grants.len();
+    let import_paths = program.imports.clone();
+    let capability_names = program.capabilities.clone();
+    let constant_names = program
+        .constants
+        .iter()
+        .map(|constant| constant.name.clone())
+        .collect::<Vec<_>>();
+    let function_names = program
+        .functions
+        .iter()
+        .map(|function| function.name.clone())
+        .collect::<Vec<_>>();
+    let test_names = program
+        .tests
+        .iter()
+        .map(|test| test.name.clone())
+        .collect::<Vec<_>>();
+    let grant_targets = program
+        .grants
+        .iter()
+        .map(|grant| grant.target.clone())
+        .collect::<Vec<_>>();
+    let granted_capabilities = program
+        .grants
+        .iter()
+        .map(|grant| grant.capability.clone())
+        .collect::<Vec<_>>();
     let human_msg = format!(
         "AIL check: ok\nfile: {}\nitems: {item_count}\nfunctions: {}\ntests: {}\ndefault_entry: {}\ngraph_nodes: {}\ngraph_edges: {}",
         path.display(),
@@ -49,10 +76,18 @@ pub(crate) fn cmd_check_source(mode: OutputMode, path: &Path) -> Result<(), CliE
             "module": program.module.as_deref(),
             "default_entry": default_entry,
             "imports": program.imports.len(),
+            "import_paths": import_paths,
             "capabilities": program.capabilities.len(),
+            "capability_names": capability_names,
+            "constants": program.constants.len(),
+            "constant_names": constant_names,
             "functions": program.functions.len(),
+            "function_names": function_names,
             "tests": program.tests.len(),
+            "test_names": test_names,
             "grants": program.grants.len(),
+            "grant_targets": grant_targets,
+            "granted_capabilities": granted_capabilities,
             "graph_nodes": graph.nodes.len(),
             "graph_edges": graph.edges.len(),
         }),
