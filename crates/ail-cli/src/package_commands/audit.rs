@@ -55,6 +55,18 @@ pub(super) fn audit_package_lockfile(
                 advisory,
             ));
         }
+
+        if let Some(manifest) = registry.lookup_by_name_version(&entry.name, &entry.version) {
+            for assumption in &manifest.assumptions {
+                if !entry.accepted_assumptions.contains(&assumption.id) {
+                    issues.push(PackageAuditIssue::unaccepted_assumption(
+                        &entry.name,
+                        &entry.version,
+                        &assumption.id,
+                    ));
+                }
+            }
+        }
     }
 
     issues

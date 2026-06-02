@@ -327,7 +327,9 @@ fn package_audit_json_surfaces_audited_package_metadata() {
         description: "host filesystem bridge".to_string(),
     }];
     write_legacy_package_registry(dir.path(), std::slice::from_ref(&manifest));
-    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+    let mut lockfile = lockfile_for_manifest(&manifest);
+    lockfile.entries[0].accepted_assumptions = vec!["assume-sandboxed-path".to_string()];
+    write_package_lockfile(dir.path(), &lockfile);
 
     let output = ail()
         .args(["package", "audit", "--json"])
@@ -347,6 +349,47 @@ fn package_audit_json_surfaces_audited_package_metadata() {
     assert_eq!(v["data"]["packages"][0]["assumptions_count"], 1);
     assert_eq!(v["data"]["packages"][0]["unsafe_surface_count"], 1);
     assert_eq!(v["data"]["packages"][0]["risk_status"], "clean");
+    assert_eq!(v["data"]["assumptions_valid"], true);
+    assert_eq!(v["data"]["unsafe_surface"][0]["name"], "runtime_files_read");
+}
+
+#[test]
+fn package_audit_blocks_unaccepted_package_assumption() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let mut manifest = test_package_manifest("assumed.pkg", "1.0.0", TrustLevel::Assumed);
+    manifest.assumptions = vec![PackageAssumption {
+        id: "assume-reviewed-vendor".to_string(),
+        claim: "vendor process was reviewed".to_string(),
+        boundary: "boundary.vendor".to_string(),
+        owner: "security".to_string(),
+        expires: None,
+        state: AssumptionState::Active,
+    }];
+    write_legacy_package_registry(dir.path(), std::slice::from_ref(&manifest));
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "audit", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("package audit blocked"))
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["status"], "blocked");
+    assert_eq!(v["data"]["assumptions_valid"], false);
+    assert_eq!(v["data"]["summary"]["assumptions"], 1);
+    assert_eq!(v["data"]["issues"][0]["kind"], "assumption");
+    assert_eq!(
+        v["data"]["issues"][0]["assumption_id"],
+        "assume-reviewed-vendor"
+    );
+    assert_eq!(v["data"]["packages"][0]["risk_status"], "blocked");
+    assert_eq!(v["data"]["packages"][0]["blocked_issues"], 1);
 }
 
 #[test]

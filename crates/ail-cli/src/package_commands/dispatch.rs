@@ -1115,6 +1115,10 @@ pub(crate) async fn cmd_package(
                 .filter(|issue| issue.kind == "advisory")
                 .count();
             let yanked_count = issues.iter().filter(|issue| issue.kind == "yanked").count();
+            let assumption_issue_count = issues
+                .iter()
+                .filter(|issue| issue.kind == "assumption")
+                .count();
             let blocked_count = issues
                 .iter()
                 .filter(|issue| issue.status == "blocked")
@@ -1145,6 +1149,26 @@ pub(crate) async fn cmd_package(
                     issue_lines.join("\n")
                 )
             };
+            let unsafe_surface_json = lockfile
+                .entries
+                .iter()
+                .flat_map(|entry| {
+                    registry
+                        .lookup_by_name_version(&entry.name, &entry.version)
+                        .into_iter()
+                        .flat_map(move |manifest| {
+                            manifest.unsafe_surface.iter().map(move |surface| {
+                                json!({
+                                    "package": &entry.name,
+                                    "version": &entry.version,
+                                    "kind": &surface.kind,
+                                    "name": &surface.name,
+                                    "description": &surface.description,
+                                })
+                            })
+                        })
+                })
+                .collect::<Vec<_>>();
             let audited_packages = lockfile
                 .entries
                 .iter()
@@ -1207,13 +1231,14 @@ pub(crate) async fn cmd_package(
                     "advisories": advisory_json,
                     "packages": audited_packages,
                     "packages_checked": packages_checked,
-                    "assumptions_valid": true,
-                    "unsafe_surface": [],
+                    "assumptions_valid": assumption_issue_count == 0,
+                    "unsafe_surface": unsafe_surface_json,
                     "summary": {
                         "packages_checked": packages_checked,
                         "issues": issues.len(),
                         "advisories": advisory_count,
                         "yanked": yanked_count,
+                        "assumptions": assumption_issue_count,
                         "blocked": blocked_count,
                         "warnings": warning_count,
                     },

@@ -161,6 +161,7 @@ pub(crate) struct PackageAuditIssue {
     pub(crate) status: &'static str,
     pub(crate) advisory_id: Option<String>,
     pub(crate) advisory_title: Option<String>,
+    pub(crate) assumption_id: Option<String>,
     pub(crate) severity: Option<String>,
     pub(crate) affected_range: Option<String>,
     pub(crate) reason: Option<String>,
@@ -446,6 +447,7 @@ impl PackageAuditIssue {
             status: if blocked { "blocked" } else { "warning" },
             advisory_id: Some(advisory.id.clone()),
             advisory_title: Some(advisory.reason.clone()),
+            assumption_id: None,
             severity: Some(advisory.severity.to_string()),
             affected_range: Some(advisory.affected_constraint.clone()),
             reason: Some(advisory.reason.clone()),
@@ -460,9 +462,25 @@ impl PackageAuditIssue {
             status: "blocked",
             advisory_id: None,
             advisory_title: None,
+            assumption_id: None,
             severity: None,
             affected_range: None,
             reason: Some(yank.reason.clone()),
+        }
+    }
+
+    pub(crate) fn unaccepted_assumption(package: &str, version: &str, assumption_id: &str) -> Self {
+        Self {
+            package: package.to_string(),
+            version: version.to_string(),
+            kind: "assumption",
+            status: "blocked",
+            advisory_id: None,
+            advisory_title: None,
+            assumption_id: Some(assumption_id.to_string()),
+            severity: None,
+            affected_range: None,
+            reason: Some("package assumption was not accepted in the lockfile".to_string()),
         }
     }
 
@@ -475,6 +493,7 @@ impl PackageAuditIssue {
             "advisory_id": &self.advisory_id,
             "advisory_title": &self.advisory_title,
             "title": &self.advisory_title,
+            "assumption_id": &self.assumption_id,
             "severity": &self.severity,
             "affected_range": &self.affected_range,
             "reason": &self.reason,
@@ -497,6 +516,14 @@ impl PackageAuditIssue {
                 self.status,
                 self.package,
                 self.version,
+                self.reason.as_deref().unwrap_or("no reason provided")
+            ),
+            "assumption" => format!(
+                "- assumption {} {}@{} {}: {}",
+                self.status,
+                self.package,
+                self.version,
+                self.assumption_id.as_deref().unwrap_or("unknown"),
                 self.reason.as_deref().unwrap_or("no reason provided")
             ),
             _ => format!("- {} {}@{}", self.kind, self.package, self.version),
