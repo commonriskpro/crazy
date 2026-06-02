@@ -26,6 +26,7 @@ fn lsp_diagnose_accepts_source_list_literals() {
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostics_status"], "clean");
     assert_eq!(v["data"]["diagnostic_count"], 0);
     assert_eq!(v["data"]["error_count"], 0);
 }

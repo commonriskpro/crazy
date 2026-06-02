@@ -24,6 +24,7 @@ fn lsp_diagnose_reports_ail_source_duplicate_function_code() {
     let v = parse_json_output(&output);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["diagnostics_status"], "error");
     assert_eq!(v["data"]["diagnostic_count"], 1);
     assert_eq!(v["data"]["error_count"], 1);
     assert_eq!(v["data"]["warning_count"], 0);

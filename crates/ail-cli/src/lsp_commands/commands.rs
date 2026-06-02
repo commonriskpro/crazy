@@ -67,11 +67,18 @@ fn cmd_lsp_diagnose(mode: OutputMode, path: PathBuf) -> Result<(), CliError> {
     let diagnostic_categories = diagnostic_categories(&diagnostics);
     let repair_codes = diagnostic_repair_codes(&diagnostics);
     let repair_count = repair_codes.len();
+    let diagnostics_status = if failed > 0 {
+        "error"
+    } else if warning_count > 0 {
+        "warning"
+    } else {
+        "clean"
+    };
     let human_msg = if diagnostics.is_empty() {
-        format!("LSP diagnostics: ok\nfile: {}", path.display())
+        format!("LSP diagnostics: clean\nfile: {}", path.display())
     } else {
         format!(
-            "LSP diagnostics: {failed} error(s), {warning_count} warning(s), {repair_count} repair(s)\nfile: {}\n{}",
+            "LSP diagnostics: {diagnostics_status}\nerrors: {failed}\nwarnings: {warning_count}\nrepairs: {repair_count}\nfile: {}\n{}",
             path.display(),
             diagnostics
                 .iter()
@@ -85,6 +92,7 @@ fn cmd_lsp_diagnose(mode: OutputMode, path: PathBuf) -> Result<(), CliError> {
         &human_msg,
         json!({
             "uri": uri,
+            "diagnostics_status": diagnostics_status,
             "diagnostics": diagnostics,
             "diagnostic_count": diagnostic_count,
             "error_count": failed,
