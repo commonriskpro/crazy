@@ -7,7 +7,8 @@
 mod common;
 
 use ail_package::{
-    AdvisorySeverity, CompatibilityClass, Lockfile, SecurityAdvisory, TrustLevel, YankRecord,
+    AdvisorySeverity, AssumptionState, CompatibilityClass, Lockfile, PackageAssumption,
+    SecurityAdvisory, TrustLevel, UnsafeSurfaceEntry, YankRecord,
 };
 use common::package_helpers::{
     TestPackageRegistryFile, TestPackageRegistryFileWithCompatibility, compatibility_metadata,
@@ -306,6 +307,49 @@ fn package_audit_clean_lockfile_is_explicit_json() {
 }
 
 #[test]
+fn package_audit_json_surfaces_audited_package_metadata() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let mut manifest = test_package_manifest("runtime.files", "1.0.0", TrustLevel::Assumed);
+    manifest.required_capabilities = vec!["file.read".to_string()];
+    manifest.exported_capabilities = vec!["clock.now".to_string()];
+    manifest.assumptions = vec![PackageAssumption {
+        id: "assume-sandboxed-path".to_string(),
+        claim: "file reads are sandboxed".to_string(),
+        boundary: "boundary.local_fs".to_string(),
+        owner: "runtime-team".to_string(),
+        expires: None,
+        state: AssumptionState::Active,
+    }];
+    manifest.unsafe_surface = vec![UnsafeSurfaceEntry {
+        kind: "ffi".to_string(),
+        name: "runtime_files_read".to_string(),
+        description: "host filesystem bridge".to_string(),
+    }];
+    write_legacy_package_registry(dir.path(), std::slice::from_ref(&manifest));
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "audit", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["packages"][0]["name"], "runtime.files");
+    assert_eq!(v["data"]["packages"][0]["capabilities"][0], "file.read");
+    assert_eq!(
+        v["data"]["packages"][0]["exported_capabilities"][0],
+        "clock.now"
+    );
+    assert_eq!(v["data"]["packages"][0]["assumptions_count"], 1);
+    assert_eq!(v["data"]["packages"][0]["unsafe_surface_count"], 1);
+    assert_eq!(v["data"]["packages"][0]["risk_status"], "clean");
+}
+
+#[test]
 fn package_audit_signed_registry_advisory_blocks() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
@@ -527,6 +571,8 @@ fn package_audit_detects_yanked_lockfile_entry() {
     assert_eq!(issue["status"], "blocked");
     assert_eq!(issue["package"], "yanked.pkg");
     assert_eq!(issue["reason"], "bad release");
+    assert_eq!(v["data"]["packages"][0]["risk_status"], "blocked");
+    assert_eq!(v["data"]["packages"][0]["blocked_issues"], 1);
 }
 
 #[test]
@@ -563,6 +609,8 @@ fn package_audit_low_advisory_warns_without_failing() {
     assert_eq!(v["data"]["status"], "warning");
     assert_eq!(v["data"]["summary"]["warnings"], 1);
     assert_eq!(v["data"]["issues"][0]["status"], "warning");
+    assert_eq!(v["data"]["packages"][0]["risk_status"], "warning");
+    assert_eq!(v["data"]["packages"][0]["warning_issues"], 1);
 }
 
 #[test]

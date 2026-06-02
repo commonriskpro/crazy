@@ -1145,6 +1145,50 @@ pub(crate) async fn cmd_package(
                     issue_lines.join("\n")
                 )
             };
+            let audited_packages = lockfile
+                .entries
+                .iter()
+                .map(|entry| {
+                    let manifest = registry.lookup_by_name_version(&entry.name, &entry.version);
+                    let package_issues = issues
+                        .iter()
+                        .filter(|issue| issue.package == entry.name && issue.version == entry.version)
+                        .collect::<Vec<_>>();
+                    let package_blocked = package_issues
+                        .iter()
+                        .filter(|issue| issue.status == "blocked")
+                        .count();
+                    let package_warnings = package_issues
+                        .iter()
+                        .filter(|issue| issue.status == "warning")
+                        .count();
+                    json!({
+                        "name": &entry.name,
+                        "version": &entry.version,
+                        "trust": entry.trust_level.to_string(),
+                        "manifest_present": manifest.is_some(),
+                        "capabilities": manifest
+                            .map(|manifest| manifest.required_capabilities.clone())
+                            .unwrap_or_default(),
+                        "exported_capabilities": manifest
+                            .map(|manifest| manifest.exported_capabilities.clone())
+                            .unwrap_or_default(),
+                        "assumptions_count": manifest.map(|manifest| manifest.assumptions.len()).unwrap_or(0),
+                        "unsafe_surface_count": manifest
+                            .map(|manifest| manifest.unsafe_surface.len())
+                            .unwrap_or(0),
+                        "risk_status": if package_blocked > 0 {
+                            "blocked"
+                        } else if package_warnings > 0 {
+                            "warning"
+                        } else {
+                            "clean"
+                        },
+                        "blocked_issues": package_blocked,
+                        "warning_issues": package_warnings,
+                    })
+                })
+                .collect::<Vec<_>>();
             let issue_json = issues
                 .iter()
                 .map(PackageAuditIssue::to_json)
@@ -1161,6 +1205,7 @@ pub(crate) async fn cmd_package(
                     "status": audit_status,
                     "issues": issue_json,
                     "advisories": advisory_json,
+                    "packages": audited_packages,
                     "packages_checked": packages_checked,
                     "assumptions_valid": true,
                     "unsafe_surface": [],
