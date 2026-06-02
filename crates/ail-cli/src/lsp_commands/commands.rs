@@ -156,15 +156,43 @@ fn push_unique(mut values: Vec<String>, value: &str) -> Vec<String> {
 
 fn cmd_lsp_complete(mode: OutputMode, prefix: &str) -> Result<(), CliError> {
     let items = completion_items(prefix);
+    let completion_count = items.len();
+    let completion_labels = completion_labels(&items);
+    let completion_kinds = completion_kinds(&items);
     print_response(
         mode,
-        &format!("LSP completions: {} item(s)", items.len()),
+        &format!("LSP completions: {completion_count} item(s)"),
         json!({
             "prefix": prefix,
+            "completion_count": completion_count,
+            "completion_labels": completion_labels,
+            "completion_kinds": completion_kinds,
             "items": items,
         }),
     );
     Ok(())
+}
+
+fn completion_labels(items: &[Value]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|item| item["label"].as_str())
+        .map(str::to_string)
+        .collect()
+}
+
+fn completion_kinds(items: &[Value]) -> Vec<u64> {
+    items
+        .iter()
+        .filter_map(|item| item["kind"].as_u64())
+        .fold(Vec::new(), push_unique_u64)
+}
+
+fn push_unique_u64(mut values: Vec<u64>, value: u64) -> Vec<u64> {
+    if !values.contains(&value) {
+        values.push(value);
+    }
+    values
 }
 
 fn cmd_lsp_hover(mode: OutputMode, token: &str) -> Result<(), CliError> {

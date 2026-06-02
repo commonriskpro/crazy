@@ -15,6 +15,23 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
     let items = completion["data"]["items"]
         .as_array()
         .expect("completion items must be an array");
+    assert_eq!(completion["data"]["completion_count"], items.len());
+    assert!(
+        completion["data"]["completion_labels"]
+            .as_array()
+            .expect("completion labels must be an array")
+            .iter()
+            .any(|label| label == "effect_call"),
+        "completion labels must summarize result labels; got: {completion}"
+    );
+    assert!(
+        completion["data"]["completion_kinds"]
+            .as_array()
+            .expect("completion kinds must be an array")
+            .iter()
+            .all(|kind| kind.as_u64().is_some()),
+        "completion kinds must summarize numeric LSP completion kinds; got: {completion}"
+    );
     assert!(
         items.iter().any(|item| item["label"] == "effect_call"
             && item["insertText"]
