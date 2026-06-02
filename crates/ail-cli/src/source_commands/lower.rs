@@ -333,9 +333,6 @@ pub(super) fn source_expr_to_acl_body(expr: &str, constants: &BTreeMap<String, S
             source_expr_to_acl_body(&args[2], constants)
         );
     }
-    if matches!(func.as_str(), "std.path.from_text" | "std.path.to_text") && args.len() == 1 {
-        return source_expr_to_acl_body(&args[0], constants);
-    }
     format!(
         "{}({})",
         func,

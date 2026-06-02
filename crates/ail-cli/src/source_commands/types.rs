@@ -953,7 +953,7 @@ pub(super) fn infer_source_fs_helper_type(
         "fs.read_file" | "fs_read_file" | "std.fs.read_file" => (1, "Bytes"),
         "fs.write" | "fs_write" | "std.fs.write" => (2, "Unit"),
         "fs.delete" | "fs_delete" | "std.fs.delete" => (1, "Unit"),
-        "fs.list" | "fs_list" | "std.fs.list" => (1, "List<Text>"),
+        "fs.list" | "fs_list" | "std.fs.list" => (1, "List<Path>"),
         _ => unreachable!("checked source fs helper"),
     };
     if args.len() != expected_len {
@@ -1093,7 +1093,7 @@ pub(super) fn infer_source_effect_call_type(
                     scope,
                     functions,
                 )?;
-                return Ok("List<Text>".to_string());
+                return Ok("List<Path>".to_string());
             }
             _ => {}
         }

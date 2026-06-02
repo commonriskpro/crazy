@@ -376,7 +376,7 @@ capability file.list\n\
 fn read_config(path:Text)->Bytes=std.fs.read_file(path)\n\
 fn write_config(path:Text,data:Bytes)->Unit=fs.write(path,data)\n\
 fn remove_config(path:Text)->Unit=std.fs.delete(path)\n\
-fn list_configs(path:Text)->List<Text>=fs.list(path)\n\
+fn list_configs(path:Text)->List<Path>=fs.list(path)\n\
 grant read_config file.read\n\
 grant write_config file.write\n\
 grant remove_config file.delete\n\
@@ -407,7 +407,7 @@ grant list_configs file.list\n",
             .contains("fn write_config(path: Text, data: Bytes) -> Unit = fs_write(path, data)\n")
     );
     assert!(formatted.contains("fn remove_config(path: Text) -> Unit = fs_delete(path)\n"));
-    assert!(formatted.contains("fn list_configs(path: Text) -> List<Text> = fs_list(path)\n"));
+    assert!(formatted.contains("fn list_configs(path: Text) -> List<Path> = fs_list(path)\n"));
 }
 
 #[test]

@@ -637,7 +637,7 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         path_hover["data"]["hover"]["contents"]["value"]
             .as_str()
             .expect("hover markdown")
-            .contains("erased to the Text runtime carrier"),
+            .contains("runtime Path value"),
         "hover must explain path_from_text; got: {path_hover}"
     );
 

@@ -119,6 +119,17 @@ fn v1_functions_numeric_has_extra_narrowing_helpers() {
 }
 
 #[test]
+fn v1_functions_path_has_text_adapters() {
+    let reg = v1_registry_with_functions();
+    for id in ["std.path.from_text", "std.path.to_text"] {
+        assert!(
+            reg.entries.iter().any(|e| e.id.0 == id),
+            "registry must contain {id}"
+        );
+    }
+}
+
+#[test]
 fn v1_functions_testing_has_assert_approx() {
     let reg = v1_registry_with_functions();
     assert!(

@@ -235,6 +235,24 @@ pub(super) fn result_unwrap_or(args: &[StdlibValue]) -> Result<StdlibValue, Stdl
         .unwrap_or_else(|_| args[1].clone()))
 }
 
+// ── Path adapters ─────────────────────────────────────────────────────────
+
+pub(super) fn path_from_text(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::Text(path) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Text" });
+    };
+    Ok(StdlibValue::Path(path.clone()))
+}
+
+pub(super) fn path_to_text(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {
+    expect_arity(args, 1)?;
+    let StdlibValue::Path(path) = &args[0] else {
+        return Err(StdlibExecError::Type { expected: "Path" });
+    };
+    Ok(StdlibValue::Text(path.clone()))
+}
+
 // ── Tuple adapters ────────────────────────────────────────────────────────
 
 pub(super) fn tuple_length(args: &[StdlibValue]) -> Result<StdlibValue, StdlibExecError> {

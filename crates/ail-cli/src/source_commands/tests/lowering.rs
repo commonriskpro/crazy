@@ -1377,8 +1377,14 @@ fn raw_path(path: Path) -> Text = path.to_text(path)
 
     assert_eq!(program.functions[0].body, "std.path.from_text(raw)");
     assert_eq!(program.functions[1].body, "std.path.to_text(path)");
-    assert!(acl.contains("op create_function id=fn.config_path return=Path body=raw"));
-    assert!(acl.contains("op create_function id=fn.raw_path return=Text body=path"));
+    assert!(
+        acl.contains(
+            "op create_function id=fn.config_path return=Path body=std.path.from_text(raw)"
+        )
+    );
+    assert!(
+        acl.contains("op create_function id=fn.raw_path return=Text body=std.path.to_text(path)")
+    );
 }
 
 #[test]
@@ -1530,7 +1536,7 @@ capability file.list
 fn read_config(path: Text) -> Bytes = fs_read_file(path)
 fn write_config(path: Text, data: Bytes) -> Unit = fs.write(path, data)
 fn remove_config(path: Text) -> Unit = std.fs.delete(path)
-fn list_configs(path: Text) -> List<Text> = fs.list(path)
+fn list_configs(path: Text) -> List<Path> = fs.list(path)
 grant read_config file.read
 grant write_config file.write
 grant remove_config file.delete
@@ -1563,7 +1569,7 @@ grant list_configs file.list
         "op create_function id=fn.read_config return=Bytes body=effect_call(file.read, read, path)"
     ));
     assert!(acl.contains(
-        "op create_function id=fn.list_configs return=List<Text> body=effect_call(file.list, list, path)"
+        "op create_function id=fn.list_configs return=List<Path> body=effect_call(file.list, list, path)"
     ));
     assert!(acl.contains("op grant target=fn.read_config capability=file.read"));
     assert!(acl.contains("op grant target=fn.write_config capability=file.write"));

@@ -892,7 +892,7 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
     AclSymbol {
         label: "path_from_text",
         detail: "AIL source Path helper",
-        documentation: "Treats Text as a source Path value. Path is erased to the Text runtime carrier today.",
+        documentation: "Converts Text into a runtime Path value for filesystem APIs.",
         insert_text: "path_from_text(${1:text})",
     },
     AclSymbol {
@@ -904,7 +904,7 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
     AclSymbol {
         label: "path_to_text",
         detail: "AIL source Path helper",
-        documentation: "Converts a source Path value back to its Text runtime carrier.",
+        documentation: "Converts a runtime Path value back to Text.",
         insert_text: "path_to_text(${1:path})",
     },
     AclSymbol {
@@ -970,7 +970,7 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
     AclSymbol {
         label: "fs.write",
         detail: "AIL source FS helper",
-        documentation: "Dotted alias that writes Bytes to a Text path through file.write.",
+        documentation: "Dotted alias that writes Bytes to a Path or Text path through file.write.",
         insert_text: "fs.write(${1:path}, ${2:bytes})",
     },
     AclSymbol {
@@ -982,13 +982,13 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
     AclSymbol {
         label: "fs.delete",
         detail: "AIL source FS helper",
-        documentation: "Dotted alias that deletes a Text path through file.delete.",
+        documentation: "Dotted alias that deletes a Path or Text path through file.delete.",
         insert_text: "fs.delete(${1:path})",
     },
     AclSymbol {
         label: "fs_list",
         detail: "AIL source FS helper",
-        documentation: "Lists a Path or Text directory path through file.list as List<Text>; the source item needs an explicit grant.",
+        documentation: "Lists a Path or Text directory path through file.list as List<Path>; the source item needs an explicit grant.",
         insert_text: "fs_list(${1:path})",
     },
     AclSymbol {

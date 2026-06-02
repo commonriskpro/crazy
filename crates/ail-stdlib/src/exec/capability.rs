@@ -35,7 +35,7 @@ pub trait StdlibCapabilityDispatch {
 /// ```
 pub struct InMemoryCapabilityHost {
     env: BTreeMap<String, String>,
-    files: BTreeMap<String, Vec<u8>>,
+    files: RefCell<BTreeMap<String, Vec<u8>>>,
     stdout: RefCell<Vec<u8>>,
     logs: RefCell<Vec<(String, String)>>,
     fixed_clock: Option<i64>,
@@ -47,7 +47,7 @@ impl InMemoryCapabilityHost {
     pub fn new() -> Self {
         Self {
             env: BTreeMap::new(),
-            files: BTreeMap::new(),
+            files: RefCell::new(BTreeMap::new()),
             stdout: RefCell::new(Vec::new()),
             logs: RefCell::new(Vec::new()),
             fixed_clock: None,
@@ -62,7 +62,9 @@ impl InMemoryCapabilityHost {
     }
 
     pub fn with_file(mut self, path: &str, content: &[u8]) -> Self {
-        self.files.insert(path.to_string(), content.to_vec());
+        self.files
+            .get_mut()
+            .insert(path.to_string(), content.to_vec());
         self
     }
 
@@ -159,23 +161,49 @@ impl StdlibCapabilityDispatch for InMemoryCapabilityHost {
 
             // ── file.read ─────────────────────────────────────────────────
             ("file.read", "read") | ("file.read", "open") | ("file.read", "stat") => {
-                let StdlibValue::Text(path) = args.first().ok_or(StdlibExecError::Arity {
-                    expected: 1,
-                    actual: 0,
-                })?
-                else {
-                    return Err(StdlibExecError::Type { expected: "Text" });
-                };
-                match (operation, self.files.get(path)) {
+                let path = path_arg(args.first())?;
+                let files = self.files.borrow();
+                match (operation, files.get(path)) {
                     ("read", Some(content)) => Ok(StdlibValue::Bytes(content.clone())),
                     ("open", _) => Ok(StdlibValue::Unit),
                     ("stat", _) => Ok(StdlibValue::Unit),
                     _ => Err(StdlibExecError::Message(format!("file not found: {path}"))),
                 }
             }
-            ("file.write", "write") => Ok(StdlibValue::Unit),
-            ("file.delete", "delete") => Ok(StdlibValue::Unit),
-            ("file.list", "list") => Ok(StdlibValue::List(vec![])),
+            ("file.write", "write") => {
+                let path = path_arg(args.first())?.to_string();
+                let StdlibValue::Bytes(bytes) = args.get(1).ok_or(StdlibExecError::Arity {
+                    expected: 2,
+                    actual: args.len(),
+                })?
+                else {
+                    return Err(StdlibExecError::Type { expected: "Bytes" });
+                };
+                self.files.borrow_mut().insert(path, bytes.clone());
+                Ok(StdlibValue::Unit)
+            }
+            ("file.delete", "delete") => {
+                let path = path_arg(args.first())?;
+                self.files.borrow_mut().remove(path);
+                Ok(StdlibValue::Unit)
+            }
+            ("file.list", "list") => {
+                let path = path_arg(args.first())?;
+                let prefix = if path.ends_with('/') {
+                    path.to_string()
+                } else {
+                    format!("{path}/")
+                };
+                let paths = self
+                    .files
+                    .borrow()
+                    .keys()
+                    .filter(|candidate| path.is_empty() || candidate.starts_with(&prefix))
+                    .cloned()
+                    .map(StdlibValue::Path)
+                    .collect();
+                Ok(StdlibValue::List(paths))
+            }
 
             // ── log.write ─────────────────────────────────────────────────
             ("log.write", "log") => {
@@ -237,5 +265,17 @@ impl StdlibCapabilityDispatch for InMemoryCapabilityHost {
                 operation: operation.to_string(),
             }),
         }
+    }
+}
+
+fn path_arg(arg: Option<&StdlibValue>) -> Result<&str, StdlibExecError> {
+    match arg.ok_or(StdlibExecError::Arity {
+        expected: 1,
+        actual: 0,
+    })? {
+        StdlibValue::Path(path) | StdlibValue::Text(path) => Ok(path),
+        _ => Err(StdlibExecError::Type {
+            expected: "Path or Text",
+        }),
     }
 }
