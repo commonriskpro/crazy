@@ -127,6 +127,33 @@ fn missing_package_assumption_ids(
         .collect()
 }
 
+fn lockfile_entry_with_assumption_status_to_json(
+    entry: &LockfileEntry,
+    manifest: Option<&PackageManifest>,
+) -> serde_json::Value {
+    let mut value = lockfile_entry_to_json(entry);
+    let missing_assumptions = manifest
+        .map(|manifest| missing_package_assumption_ids(manifest, &entry.accepted_assumptions))
+        .unwrap_or_default();
+    let assumptions_valid = missing_assumptions.is_empty();
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "assumptions_count".to_string(),
+            json!(
+                manifest
+                    .map(|manifest| manifest.assumptions.len())
+                    .unwrap_or(0)
+            ),
+        );
+        object.insert(
+            "missing_assumptions".to_string(),
+            json!(missing_assumptions),
+        );
+        object.insert("assumptions_valid".to_string(), json!(assumptions_valid));
+    }
+    value
+}
+
 fn format_package_advisories(advisories: &[PackageAuditIssue]) -> String {
     if advisories.is_empty() {
         "[]".to_string()
@@ -647,6 +674,16 @@ pub(crate) async fn cmd_package(
                 "ok"
             };
             let compatibility_ok = !compatibility_blocked;
+            let assumptions_valid = lockfile.entries.iter().all(|entry| {
+                registry
+                    .lookup_by_name_version(&entry.name, &entry.version)
+                    .map(|manifest| {
+                        missing_package_assumption_ids(manifest, &entry.accepted_assumptions)
+                            .is_empty()
+                    })
+                    .unwrap_or(true)
+            });
+            let assumptions_integrity = if assumptions_valid { "ok" } else { "warning" };
             // 4G: reproducible evidence integrity — warn-only (advisory, not a blocker).
             let repro_evidence_integrity = if verified_packages_missing_evidence.is_empty() {
                 "ok"
@@ -672,7 +709,7 @@ pub(crate) async fn cmd_package(
                 "verification failed"
             };
             let mut human_msg = format!(
-                "packages: {packages_summary}\nhash_integrity: {}\nsignature_integrity: {}\nverification_report_integrity: {}\nlockfile_reproducibility: {}\ncompatibility_integrity: {}\nreproducible_evidence_integrity: {}\nlock_file: {}\npackages_checked: {}\nwarnings: {}",
+                "packages: {packages_summary}\nhash_integrity: {}\nsignature_integrity: {}\nverification_report_integrity: {}\nlockfile_reproducibility: {}\ncompatibility_integrity: {}\nassumptions_integrity: {assumptions_integrity}\nreproducible_evidence_integrity: {}\nlock_file: {}\npackages_checked: {}\nwarnings: {}",
                 if hash_ok { "ok" } else { "mismatch" },
                 if signature_ok { "ok" } else { "failed" },
                 if report_hash_ok { "ok" } else { "mismatch" },
@@ -734,6 +771,8 @@ pub(crate) async fn cmd_package(
                     .map(LockfileReproducibilityCliIssue::to_json)
                     .collect::<Vec<_>>(),
                 "compatibility_integrity": compatibility_integrity,
+                "assumptions_integrity": assumptions_integrity,
+                "assumptions_valid": assumptions_valid,
                 "reproducible_evidence_integrity": repro_evidence_integrity,
                 "verified_packages_missing_evidence": verified_packages_missing_evidence,
                 "lock_file": if verified { "consistent" } else { "inconsistent" },
@@ -751,7 +790,12 @@ pub(crate) async fn cmd_package(
                 "packages": lockfile
                     .entries
                     .iter()
-                    .map(lockfile_entry_to_json)
+                    .map(|entry| {
+                        lockfile_entry_with_assumption_status_to_json(
+                            entry,
+                            registry.lookup_by_name_version(&entry.name, &entry.version),
+                        )
+                    })
                     .collect::<Vec<_>>(),
             });
             if !signature_ok {

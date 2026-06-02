@@ -275,6 +275,47 @@ fn package_verify_reports_migration_metadata_warning_json_shape() {
     assert!(issue["migration_hash"].is_string());
 }
 
+#[test]
+fn package_verify_json_surfaces_assumption_status_per_locked_package() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let mut manifest = test_package_manifest("verify.assumptions", "1.0.0", TrustLevel::Assumed);
+    manifest.assumptions = vec![PackageAssumption {
+        id: "assume-reviewed-vendor".to_string(),
+        claim: "vendor process was reviewed".to_string(),
+        boundary: "boundary.vendor".to_string(),
+        owner: "security".to_string(),
+        expires: None,
+        state: AssumptionState::Active,
+    }];
+    write_legacy_package_registry(dir.path(), std::slice::from_ref(&manifest));
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args(["package", "verify", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["verified"], true);
+    assert_eq!(v["data"]["assumptions_integrity"], "warning");
+    assert_eq!(v["data"]["assumptions_valid"], false);
+    assert_eq!(v["data"]["packages"][0]["name"], "verify.assumptions");
+    assert_eq!(v["data"]["packages"][0]["assumptions_count"], 1);
+    assert_eq!(
+        v["data"]["packages"][0]["accepted_assumptions"],
+        Value::Array(vec![])
+    );
+    assert_eq!(
+        v["data"]["packages"][0]["missing_assumptions"][0],
+        "assume-reviewed-vendor"
+    );
+    assert_eq!(v["data"]["packages"][0]["assumptions_valid"], false);
+}
+
 // ── G31: audit ────────────────────────────────────────────────────────────────
 
 #[test]
