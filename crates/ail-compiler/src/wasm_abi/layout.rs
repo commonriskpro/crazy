@@ -227,6 +227,14 @@ impl EffectDataLayout {
             {
                 self.needs_memory = true;
             }
+            AnfExpr::Call { func, args }
+                if matches!(
+                    func.as_str(),
+                    "bytes.slice" | "bytes_slice" | "std.bytes.slice"
+                ) && args.len() == 3 =>
+            {
+                self.needs_memory = true;
+            }
             AnfExpr::Let { value, body, .. } => {
                 self.collect_expr(value);
                 self.collect_expr(body);

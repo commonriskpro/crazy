@@ -119,6 +119,14 @@ fn derive_wasm_type_with_locals(
         AnfExpr::Call { func, args }
             if matches!(
                 func.as_str(),
+                "bytes.slice" | "bytes_slice" | "std.bytes.slice"
+            ) && args.len() == 3 =>
+        {
+            WasmTypeDescriptor::Option(Box::new(WasmTypeDescriptor::Bytes))
+        }
+        AnfExpr::Call { func, args }
+            if matches!(
+                func.as_str(),
                 "text.starts_with" | "text_starts_with" | "text.ends_with" | "text_ends_with"
             ) && args.len() == 2 =>
         {

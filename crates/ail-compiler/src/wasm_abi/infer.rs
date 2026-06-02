@@ -96,6 +96,12 @@ pub(crate) fn infer_expr_type(
         {
             Some(ValType::I32)
         }
+        AnfExpr::Call { func, args }
+            if matches!(func.as_str(), "bytes.slice" | "bytes_slice" | "std.bytes.slice")
+                && args.len() == 3 =>
+        {
+            Some(ValType::I32)
+        }
         AnfExpr::Call { .. } => Some(ValType::I64),
         AnfExpr::EffectCall { .. } => Some(ValType::I64),
         // ── Cell primitives ───────────────────────────────────────────────

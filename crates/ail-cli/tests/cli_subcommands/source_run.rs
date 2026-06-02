@@ -419,6 +419,70 @@ grant missing_byte file.read\n",
 }
 
 #[test]
+fn run_file_processes_ail_source_fs_read_file_bytes_slice() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let data = dir.child("payload.bin");
+    data.write_binary(b"ZAIL!")
+        .expect("data fixture must be written");
+    let empty = dir.child("empty.bin");
+    empty
+        .write_binary(b"")
+        .expect("empty fixture must be written");
+    let source = dir.child("file_read_slice.ail");
+    source
+        .write_str(
+            "capability file.read\n\
+fn slice_hit() -> Int {\n\
+  let data = fs_read_file(path_from_text(\"payload.bin\"))\n\
+  let empty = fs_read_file(path_from_text(\"empty.bin\"))\n\
+  let piece = unwrap_or(bytes_slice(data, 1, 4), empty)\n\
+  return bytes_length(piece) + unwrap_or(bytes_at(piece, 0), -1)\n\
+}\n\
+fn slice_miss() -> Int {\n\
+  let data = fs_read_file(path_from_text(\"payload.bin\"))\n\
+  let empty = fs_read_file(path_from_text(\"empty.bin\"))\n\
+  let piece = unwrap_or(bytes_slice(data, 7, 9), empty)\n\
+  return bytes_length(piece)\n\
+}\n\
+grant slice_hit file.read\n\
+grant slice_miss file.read\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--grant",
+            "file.read",
+            "fn.slice_hit",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.slice_hit"))
+        .stdout(predicate::str::contains("result: 68"));
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--grant",
+            "file.read",
+            "fn.slice_miss",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.slice_miss"))
+        .stdout(predicate::str::contains("result: 0"));
+}
+
+#[test]
 fn run_file_executes_ail_source_random_next_int_with_grant() {
     use assert_fs::prelude::*;
 

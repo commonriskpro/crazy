@@ -394,6 +394,86 @@ fn bytes_at_of_file_read_emits_option_byte_load() {
 }
 
 #[test]
+fn bytes_slice_of_file_read_emits_option_copy() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.read_file_slice".to_string(),
+        expr: AnfExpr::Let {
+            name: "path".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text(
+                "payload.bin".to_string(),
+            ))),
+            body: Box::new(AnfExpr::Let {
+                name: "data".to_string(),
+                value: Box::new(AnfExpr::EffectCall {
+                    capability: "file.read".to_string(),
+                    func: "read".to_string(),
+                    args: vec!["path".to_string()],
+                }),
+                body: Box::new(AnfExpr::Let {
+                    name: "start".to_string(),
+                    value: Box::new(AnfExpr::Literal(LiteralValue::Int(1))),
+                    body: Box::new(AnfExpr::Let {
+                        name: "end".to_string(),
+                        value: Box::new(AnfExpr::Literal(LiteralValue::Int(4))),
+                        body: Box::new(AnfExpr::Call {
+                            func: "std.bytes.slice".to_string(),
+                            args: vec!["data".to_string(), "start".to_string(), "end".to_string()],
+                        }),
+                    }),
+                }),
+            }),
+        },
+    };
+    let anf = sealed_anf(vec![binding]);
+    let layout = EffectDataLayout::for_bindings(&anf.bindings);
+    assert!(
+        layout.needs_memory,
+        "std.bytes.slice must allocate the returned Option<Bytes> variant and slice payload"
+    );
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+    let mut saw_len_shift = false;
+    let mut saw_memory_copy = false;
+    let mut saw_pack_or = false;
+    let mut saw_some_tag = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                match reader.read().unwrap() {
+                    Operator::I64ShrU => saw_len_shift = true,
+                    Operator::MemoryCopy { .. } => saw_memory_copy = true,
+                    Operator::I64Or => saw_pack_or = true,
+                    Operator::I32Const { value: 1 } => saw_some_tag = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    assert!(
+        saw_len_shift,
+        "std.bytes.slice must read len from packed Bytes high bits"
+    );
+    assert!(
+        saw_memory_copy,
+        "std.bytes.slice must copy the selected byte range"
+    );
+    assert!(
+        saw_pack_or,
+        "std.bytes.slice must pack slice len/ptr payload"
+    );
+    assert!(
+        saw_some_tag,
+        "std.bytes.slice must write the Some tag on hit"
+    );
+}
+
+#[test]
 fn time_arithmetic_after_clock_effect_emits_add_and_sub() {
     use wasmparser::{Operator, Parser, Payload};
 
