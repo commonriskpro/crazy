@@ -588,6 +588,59 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "hover must explain json_parse; got: {json_hover}"
     );
 
+    let env_completion_output = ail()
+        .args(["lsp", "--complete", "env_", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let env_completion = parse_json_output(&env_completion_output);
+    let env_items = env_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["env_get", "env_set", "env_list"]
+            .iter()
+            .all(|label| env_items
+                .iter()
+                .any(|item| item["label"] == *label && item["detail"] == "AIL source Env helper")),
+        "completion must include AIL source Env helpers; got: {env_items:?}"
+    );
+
+    let dotted_env_completion_output = ail()
+        .args(["lsp", "--complete", "env.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_env_completion = parse_json_output(&dotted_env_completion_output);
+    let dotted_env_items = dotted_env_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["env.get", "env.set", "env.list"]
+            .iter()
+            .all(|label| dotted_env_items
+                .iter()
+                .any(|item| item["label"] == *label && item["detail"] == "AIL source Env helper")),
+        "completion must include dotted Env helpers; got: {dotted_env_items:?}"
+    );
+
+    let env_hover_output = ail()
+        .args(["lsp", "--hover-token", "env_get", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let env_hover = parse_json_output(&env_hover_output);
+    assert!(
+        env_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("requires an explicit grant"),
+        "hover must explain env_get; got: {env_hover}"
+    );
+
     let numeric_completion_output = ail()
         .args(["lsp", "--complete", "numeric_", "--json"])
         .assert()

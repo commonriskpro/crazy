@@ -289,6 +289,30 @@ fn emitted(value:Json)->Text=json.stringify(value)
 }
 
 #[test]
+fn formats_source_env_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+capability env.read
+capability env.write
+fn read_var(key:Text)->Option<Text>=std.env.get(key)
+fn write_var(key:Text,value:Text)->Unit=env.set(key,value)
+fn all_vars()->Map<Text,Text>=std.env.list()
+grant read_var env.read
+grant write_var env.write
+grant all_vars env.read
+"#,
+    )
+    .expect("source env helpers must format");
+
+    assert_eq!(item_count, 8);
+    assert!(formatted.contains("fn read_var(key: Text) -> Option<Text> = env_get(key)\n"));
+    assert!(
+        formatted.contains("fn write_var(key: Text, value: Text) -> Unit = env_set(key, value)\n")
+    );
+    assert!(formatted.contains("fn all_vars() -> Map<Text,Text> = env_list()\n"));
+}
+
+#[test]
 fn formats_source_encoding_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"

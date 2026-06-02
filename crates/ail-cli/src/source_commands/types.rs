@@ -384,6 +384,10 @@ pub(super) fn infer_source_call_type(
         }
         "json.parse" | "json_parse" | "std.json.parse" | "json.stringify" | "json_stringify"
         | "std.json.stringify" => infer_source_json_helper_type(func, args, scope, functions),
+        "env.get" | "env_get" | "std.env.get" | "env.set" | "env_set" | "std.env.set"
+        | "env.list" | "env_list" | "std.env.list" => {
+            infer_source_env_helper_type(func, args, scope, functions)
+        }
         "record" => infer_source_record_type(args, scope, functions),
         "field" => infer_source_field_type(args, scope, functions),
         "update" => infer_source_update_type(args, scope, functions),
@@ -405,12 +409,7 @@ pub(super) fn infer_source_call_type(
             validate_source_arg_types(func, args, scope, functions, &["Text"])?;
             Ok("Int".to_string())
         }
-        "effect_call" => {
-            for arg in &args[2..] {
-                infer_source_expr_type(arg, scope, functions)?;
-            }
-            Ok("Int".to_string())
-        }
+        "effect_call" => infer_source_effect_call_type(args, scope, functions),
         unsupported if is_untyped_source_builtin(unsupported) => {
             for arg in args {
                 infer_source_expr_type(arg, scope, functions)?;
@@ -910,6 +909,103 @@ fn require_source_map_text_key_type<'a>(
         ));
     }
     Ok(Some(value_ty))
+}
+
+pub(super) fn infer_source_env_helper_type(
+    func: &str,
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let (expected, return_ty) = match func {
+        "env.get" | "env_get" | "std.env.get" => (&["Text"][..], "Option<Text>"),
+        "env.set" | "env_set" | "std.env.set" => (&["Text", "Text"][..], "Unit"),
+        "env.list" | "env_list" | "std.env.list" => (&[][..], "Map<Text,Text>"),
+        _ => unreachable!("checked source env helper"),
+    };
+    if args.len() != expected.len() {
+        return Err(source_expr_error(
+            "AIL_SOURCE_ENV_ARITY",
+            "source.env.arity",
+            format!(
+                "function call `{func}` expects {} argument(s), got {}",
+                expected.len(),
+                args.len()
+            ),
+        ));
+    }
+    validate_source_arg_types(func, args, scope, functions, expected)?;
+    Ok(return_ty.to_string())
+}
+
+pub(super) fn infer_source_effect_call_type(
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    if args.len() >= 2 {
+        let capability = args[0].trim();
+        let operation = args[1].trim();
+        match (capability, operation) {
+            ("env.read", "get") => {
+                validate_source_effect_call_arity(capability, operation, args, 1)?;
+                validate_source_arg_types(
+                    "effect_call(env.read, get)",
+                    &args[2..],
+                    scope,
+                    functions,
+                    &["Text"],
+                )?;
+                return Ok("Option<Text>".to_string());
+            }
+            ("env.write", "set") => {
+                validate_source_effect_call_arity(capability, operation, args, 2)?;
+                validate_source_arg_types(
+                    "effect_call(env.write, set)",
+                    &args[2..],
+                    scope,
+                    functions,
+                    &["Text", "Text"],
+                )?;
+                return Ok("Unit".to_string());
+            }
+            ("env.read", "list") => {
+                validate_source_effect_call_arity(capability, operation, args, 0)?;
+                validate_source_arg_types(
+                    "effect_call(env.read, list)",
+                    &args[2..],
+                    scope,
+                    functions,
+                    &[],
+                )?;
+                return Ok("Map<Text,Text>".to_string());
+            }
+            _ => {}
+        }
+    }
+    for arg in &args[2..] {
+        infer_source_expr_type(arg, scope, functions)?;
+    }
+    Ok("Int".to_string())
+}
+
+fn validate_source_effect_call_arity(
+    capability: &str,
+    operation: &str,
+    args: &[String],
+    expected: usize,
+) -> Result<(), CliError> {
+    let actual = args.len().saturating_sub(2);
+    if actual == expected {
+        return Ok(());
+    }
+    Err(source_expr_error(
+        "AIL_SOURCE_EFFECT_ARITY",
+        "source.effect.arity",
+        format!(
+            "effect_call({capability}, {operation}) expects {expected} argument(s), got {actual}"
+        ),
+    ))
 }
 
 pub(super) fn infer_source_json_helper_type(

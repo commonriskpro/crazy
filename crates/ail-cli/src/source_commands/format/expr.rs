@@ -712,6 +712,35 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if let Some((helper, arity)) = source_env_helper(&func)
+        && args.len() == arity
+    {
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
+    if let Some((helper, effect_args)) = source_env_effect_call_helper(&func, &args) {
+        return (
+            format!(
+                "{helper}({})",
+                effect_args
+                    .iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "option.unwrap_or" && args.len() == 2 {
         return (
             format!(
@@ -1036,6 +1065,30 @@ pub(super) fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn source_env_effect_call_helper<'a>(
+    func: &str,
+    args: &'a [String],
+) -> Option<(&'static str, &'a [String])> {
+    if func != "effect_call" || args.len() < 2 {
+        return None;
+    }
+    match (args[0].as_str(), args[1].as_str(), args.len()) {
+        ("env.read", "get", 3) => Some(("env_get", &args[2..])),
+        ("env.write", "set", 4) => Some(("env_set", &args[2..])),
+        ("env.read", "list", 2) => Some(("env_list", &args[2..])),
+        _ => None,
+    }
+}
+
+fn source_env_helper(func: &str) -> Option<(&'static str, usize)> {
+    match func {
+        "env.get" | "std.env.get" => Some(("env_get", 1)),
+        "env.set" | "std.env.set" => Some(("env_set", 2)),
+        "env.list" | "std.env.list" => Some(("env_list", 0)),
+        _ => None,
+    }
 }
 
 fn source_json_helper(func: &str) -> Option<(&'static str, usize)> {

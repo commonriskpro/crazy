@@ -862,16 +862,18 @@ pub(super) fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         | "int.rem_or" | "int.sub_or" | "int.mul_or" | "int_clamp" | "int_add_or"
         | "int_sub_or" | "int_mul_or" | "int_div_or" | "int_rem_or" | "map.insert"
         | "map_insert" => SourceArity::Exact(3),
-        "field" | "index" | "list.get" | "list_get" | "list.push" | "list_push" | "list.concat"
-        | "list_concat" | "queue.push_back" | "queue_push_back" | "set.contains"
-        | "set_contains" | "set.insert" | "set_insert" | "map.get" | "map_get"
-        | "map.contains_key" | "map_contains_key" | "unwrap_or" | "option.unwrap_or"
-        | "option_unwrap_or" | "result.unwrap_or" | "result_unwrap_or" | "ok_or"
-        | "option.ok_or" | "option_ok_or" | "first_or" | "last_or" => SourceArity::Exact(2),
+        "env.set" | "env_set" | "std.env.set" | "field" | "index" | "list.get" | "list_get"
+        | "list.push" | "list_push" | "list.concat" | "list_concat" | "queue.push_back"
+        | "queue_push_back" | "set.contains" | "set_contains" | "set.insert" | "set_insert"
+        | "map.get" | "map_get" | "map.contains_key" | "map_contains_key" | "unwrap_or"
+        | "option.unwrap_or" | "option_unwrap_or" | "result.unwrap_or" | "result_unwrap_or"
+        | "ok_or" | "option.ok_or" | "option_ok_or" | "first_or" | "last_or" => {
+            SourceArity::Exact(2)
+        }
         "tuple.get" | "tuple_get" => SourceArity::Exact(2),
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
-        "none" | "None" => SourceArity::Exact(0),
+        "none" | "None" | "env.list" | "env_list" | "std.env.list" => SourceArity::Exact(0),
         "not"
         | "len"
         | "text.len"
@@ -902,6 +904,9 @@ pub(super) fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         | "set_length"
         | "map.length"
         | "map_length"
+        | "env.get"
+        | "env_get"
+        | "std.env.get"
         | "json.parse"
         | "json_parse"
         | "std.json.parse"

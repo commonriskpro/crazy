@@ -890,6 +890,42 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "json.stringify(${1:value})",
     },
     AclSymbol {
+        label: "env_get",
+        detail: "AIL source Env helper",
+        documentation: "Reads an environment variable through env.read and returns Option<Text>; requires an explicit grant.",
+        insert_text: "env_get(${1:key})",
+    },
+    AclSymbol {
+        label: "env.get",
+        detail: "AIL source Env helper",
+        documentation: "Dotted alias that reads an environment variable through env.read.",
+        insert_text: "env.get(${1:key})",
+    },
+    AclSymbol {
+        label: "env_set",
+        detail: "AIL source Env helper",
+        documentation: "Writes an environment variable through env.write and returns Unit; requires an explicit grant.",
+        insert_text: "env_set(${1:key}, ${2:value})",
+    },
+    AclSymbol {
+        label: "env.set",
+        detail: "AIL source Env helper",
+        documentation: "Dotted alias that writes an environment variable through env.write.",
+        insert_text: "env.set(${1:key}, ${2:value})",
+    },
+    AclSymbol {
+        label: "env_list",
+        detail: "AIL source Env helper",
+        documentation: "Lists environment variables through env.read as Map<Text,Text>; requires an explicit grant.",
+        insert_text: "env_list()",
+    },
+    AclSymbol {
+        label: "env.list",
+        detail: "AIL source Env helper",
+        documentation: "Dotted alias that lists environment variables through env.read.",
+        insert_text: "env.list()",
+    },
+    AclSymbol {
         label: "numeric_narrow_to_i32",
         detail: "AIL source Numeric helper",
         documentation: "Narrows an Int to the signed 32-bit range, returning Result<Int,Text> on overflow.",

@@ -281,6 +281,49 @@ fn emitted(value:Json)->Text=json.stringify(value)\n",
 }
 
 #[test]
+fn fmt_file_json_outputs_canonical_ail_source_env_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let source = dir.child("env.ail");
+    source
+        .write_str(
+            "capability env.read\n\
+capability env.write\n\
+fn read_var(key:Text)->Option<Text>=std.env.get(key)\n\
+fn write_var(key:Text,value:Text)->Unit=env.set(key,value)\n\
+fn all_vars()->Map<Text,Text>=std.env.list()\n\
+grant read_var env.read\n\
+grant write_var env.write\n\
+grant all_vars env.read\n",
+        )
+        .expect("write source");
+
+    let output = ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["item_count"], 8);
+    let formatted = v["data"]["formatted"]
+        .as_str()
+        .expect("formatted must be string");
+
+    assert!(formatted.contains("fn read_var(key: Text) -> Option<Text> = env_get(key)\n"));
+    assert!(
+        formatted.contains("fn write_var(key: Text, value: Text) -> Unit = env_set(key, value)\n")
+    );
+    assert!(formatted.contains("fn all_vars() -> Map<Text,Text> = env_list()\n"));
+}
+
+#[test]
 fn fmt_file_json_outputs_canonical_ail_source_encoding_helpers() {
     use assert_fs::prelude::*;
 

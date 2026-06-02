@@ -1364,6 +1364,98 @@ fn rejects_source_json_helper_type_mismatch() {
 }
 
 #[test]
+fn lowers_and_types_source_env_helpers() {
+    let program = parse_ail_source(
+        r#"
+capability env.read
+capability env.write
+fn read_var(key: Text) -> Option<Text> = env_get(key)
+fn write_var(key: Text, value: Text) -> Unit = env.set(key, value)
+fn all_vars() -> Map<Text,Text> = std.env.list()
+grant read_var env.read
+grant write_var env.write
+grant all_vars env.read
+"#,
+    )
+    .expect("source env helpers must parse");
+    validate_source_program_grants(&program).expect("env grants must validate");
+    validate_source_program_effect_calls(&program).expect("env helper effects must require grants");
+    validate_source_program_types(&program).expect("source env helpers must type-check");
+    let acl = source_program_to_acl(&program, "source_env".to_string());
+
+    assert_eq!(program.functions[0].body, "effect_call(env.read, get, key)");
+    assert_eq!(
+        program.functions[1].body,
+        "effect_call(env.write, set, key, value)"
+    );
+    assert_eq!(program.functions[2].body, "effect_call(env.read, list)");
+    assert!(acl.contains(
+        "op create_function id=fn.read_var return=Option<Text> body=effect_call(env.read, get, key)"
+    ));
+    assert!(acl.contains(
+        "op create_function id=fn.all_vars return=Map<Text,Text> body=effect_call(env.read, list)"
+    ));
+    assert!(acl.contains("op grant target=fn.read_var capability=env.read"));
+    assert!(acl.contains("op grant target=fn.write_var capability=env.write"));
+}
+
+#[test]
+fn rejects_source_env_helper_missing_grant() {
+    let program = parse_ail_source(
+        r#"
+capability env.read
+fn read_var(key: Text) -> Option<Text> = env_get(key)
+"#,
+    )
+    .expect("source env helper must parse before grant validation");
+
+    assert_lowering_diagnostic(
+        validate_source_program_effect_calls(&program),
+        "AIL_SOURCE_EFFECT_GRANT_MISSING",
+        "source.effect.grant",
+        "capability `env.read` without a grant",
+    );
+}
+
+#[test]
+fn rejects_source_env_helper_type_mismatch() {
+    let program = parse_ail_source(
+        r#"
+capability env.read
+fn read_var(key: Int) -> Option<Text> = env_get(key)
+grant read_var env.read
+"#,
+    )
+    .expect("source env helper must parse before type validation");
+
+    assert_lowering_diagnostic(
+        validate_source_program_types(&program),
+        "AIL_SOURCE_TYPE_MISMATCH",
+        "source.type.mismatch",
+        "expected Text, got Int",
+    );
+}
+
+#[test]
+fn rejects_source_env_effect_call_arity_mismatch() {
+    let program = parse_ail_source(
+        r#"
+capability env.read
+fn read_var(key: Text) -> Option<Text> = effect_call(env.read, get, key, "extra")
+grant read_var env.read
+"#,
+    )
+    .expect("source env effect call must parse before type validation");
+
+    assert_lowering_diagnostic(
+        validate_source_program_types(&program),
+        "AIL_SOURCE_EFFECT_ARITY",
+        "source.effect.arity",
+        "expects 1 argument(s), got 2",
+    );
+}
+
+#[test]
 fn lowers_and_types_source_encoding_helpers() {
     let program = parse_ail_source(
         r#"
