@@ -890,6 +890,30 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "json.stringify(${1:value})",
     },
     AclSymbol {
+        label: "path_from_text",
+        detail: "AIL source Path helper",
+        documentation: "Treats Text as a source Path value. Path is erased to the Text runtime carrier today.",
+        insert_text: "path_from_text(${1:text})",
+    },
+    AclSymbol {
+        label: "path.from_text",
+        detail: "AIL source Path helper",
+        documentation: "Dotted alias that treats Text as a source Path value.",
+        insert_text: "path.from_text(${1:text})",
+    },
+    AclSymbol {
+        label: "path_to_text",
+        detail: "AIL source Path helper",
+        documentation: "Converts a source Path value back to its Text runtime carrier.",
+        insert_text: "path_to_text(${1:path})",
+    },
+    AclSymbol {
+        label: "path.to_text",
+        detail: "AIL source Path helper",
+        documentation: "Dotted alias that converts a source Path value back to Text.",
+        insert_text: "path.to_text(${1:path})",
+    },
+    AclSymbol {
         label: "env_get",
         detail: "AIL source Env helper",
         documentation: "Reads an environment variable through env.read and returns Option<Text>; requires an explicit grant.",
@@ -928,7 +952,7 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
     AclSymbol {
         label: "fs_read_file",
         detail: "AIL source FS helper",
-        documentation: "Reads file contents as Bytes through file.read; path is Text and the source item needs an explicit grant.",
+        documentation: "Reads file contents as Bytes through file.read; path is Path or Text and the source item needs an explicit grant.",
         insert_text: "fs_read_file(${1:path})",
     },
     AclSymbol {
@@ -940,7 +964,7 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
     AclSymbol {
         label: "fs_write",
         detail: "AIL source FS helper",
-        documentation: "Writes Bytes to a Text path through file.write; the source item needs an explicit grant.",
+        documentation: "Writes Bytes to a Path or Text path through file.write; the source item needs an explicit grant.",
         insert_text: "fs_write(${1:path}, ${2:bytes})",
     },
     AclSymbol {
@@ -952,7 +976,7 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
     AclSymbol {
         label: "fs_delete",
         detail: "AIL source FS helper",
-        documentation: "Deletes a Text path through file.delete; the source item needs an explicit grant.",
+        documentation: "Deletes a Path or Text path through file.delete; the source item needs an explicit grant.",
         insert_text: "fs_delete(${1:path})",
     },
     AclSymbol {
@@ -964,7 +988,7 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
     AclSymbol {
         label: "fs_list",
         detail: "AIL source FS helper",
-        documentation: "Lists a Text directory path through file.list as List<Text>; the source item needs an explicit grant.",
+        documentation: "Lists a Path or Text directory path through file.list as List<Text>; the source item needs an explicit grant.",
         insert_text: "fs_list(${1:path})",
     },
     AclSymbol {

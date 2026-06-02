@@ -82,6 +82,16 @@ fn parses_json_primitive_source_type_alias() {
 }
 
 #[test]
+fn parses_path_primitive_source_type_alias() {
+    let program = parse_ail_source("fn raw(path: path) -> Text = path.to_text(path)\n")
+        .expect("Path source type alias must parse");
+
+    assert_eq!(program.functions[0].params[0].ty, "Path");
+    assert_eq!(program.functions[0].return_type, "Text");
+    assert_eq!(program.functions[0].body, "std.path.to_text(path)");
+}
+
+#[test]
 fn parses_source_block_expression_statements() {
     let program = parse_ail_source(
         r#"capability log.write

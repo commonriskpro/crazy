@@ -588,6 +588,59 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "hover must explain json_parse; got: {json_hover}"
     );
 
+    let path_completion_output = ail()
+        .args(["lsp", "--complete", "path_", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let path_completion = parse_json_output(&path_completion_output);
+    let path_items = path_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["path_from_text", "path_to_text"]
+            .iter()
+            .all(|label| path_items
+                .iter()
+                .any(|item| item["label"] == *label && item["detail"] == "AIL source Path helper")),
+        "completion must include AIL source Path helpers; got: {path_items:?}"
+    );
+
+    let dotted_path_completion_output = ail()
+        .args(["lsp", "--complete", "path.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_path_completion = parse_json_output(&dotted_path_completion_output);
+    let dotted_path_items = dotted_path_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["path.from_text", "path.to_text"]
+            .iter()
+            .all(|label| dotted_path_items
+                .iter()
+                .any(|item| item["label"] == *label && item["detail"] == "AIL source Path helper")),
+        "completion must include dotted Path helpers; got: {dotted_path_items:?}"
+    );
+
+    let path_hover_output = ail()
+        .args(["lsp", "--hover-token", "path_from_text", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let path_hover = parse_json_output(&path_hover_output);
+    assert!(
+        path_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("erased to the Text runtime carrier"),
+        "hover must explain path_from_text; got: {path_hover}"
+    );
+
     let env_completion_output = ail()
         .args(["lsp", "--complete", "env_", "--json"])
         .assert()
@@ -690,7 +743,7 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         fs_hover["data"]["hover"]["contents"]["value"]
             .as_str()
             .expect("hover markdown")
-            .contains("path is Text"),
+            .contains("path is Path or Text"),
         "hover must explain fs_read_file; got: {fs_hover}"
     );
 

@@ -384,6 +384,10 @@ pub(super) fn infer_source_call_type(
         }
         "json.parse" | "json_parse" | "std.json.parse" | "json.stringify" | "json_stringify"
         | "std.json.stringify" => infer_source_json_helper_type(func, args, scope, functions),
+        "path.from_text" | "path_from_text" | "std.path.from_text" | "path.to_text"
+        | "path_to_text" | "std.path.to_text" => {
+            infer_source_path_helper_type(func, args, scope, functions)
+        }
         "env.get" | "env_get" | "std.env.get" | "env.set" | "env_set" | "std.env.set"
         | "env.list" | "env_list" | "std.env.list" => {
             infer_source_env_helper_type(func, args, scope, functions)
@@ -914,31 +918,59 @@ fn require_source_map_text_key_type<'a>(
     Ok(Some(value_ty))
 }
 
-pub(super) fn infer_source_fs_helper_type(
+pub(super) fn infer_source_path_helper_type(
     func: &str,
     args: &[String],
     scope: &mut BTreeMap<String, String>,
     functions: &BTreeMap<&str, SourceCallable>,
 ) -> Result<String, CliError> {
     let (expected, return_ty) = match func {
-        "fs.read_file" | "fs_read_file" | "std.fs.read_file" => (&["Text"][..], "Bytes"),
-        "fs.write" | "fs_write" | "std.fs.write" => (&["Text", "Bytes"][..], "Unit"),
-        "fs.delete" | "fs_delete" | "std.fs.delete" => (&["Text"][..], "Unit"),
-        "fs.list" | "fs_list" | "std.fs.list" => (&["Text"][..], "List<Text>"),
+        "path.from_text" | "path_from_text" | "std.path.from_text" => ("Text", "Path"),
+        "path.to_text" | "path_to_text" | "std.path.to_text" => ("Path", "Text"),
+        _ => unreachable!("checked source path helper"),
+    };
+    if args.len() != 1 {
+        return Err(source_expr_error(
+            "AIL_SOURCE_PATH_ARITY",
+            "source.path.arity",
+            format!(
+                "function call `{func}` expects 1 argument(s), got {}",
+                args.len()
+            ),
+        ));
+    }
+    validate_source_arg_types(func, args, scope, functions, &[expected])?;
+    Ok(return_ty.to_string())
+}
+
+pub(super) fn infer_source_fs_helper_type(
+    func: &str,
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let (expected_len, return_ty) = match func {
+        "fs.read_file" | "fs_read_file" | "std.fs.read_file" => (1, "Bytes"),
+        "fs.write" | "fs_write" | "std.fs.write" => (2, "Unit"),
+        "fs.delete" | "fs_delete" | "std.fs.delete" => (1, "Unit"),
+        "fs.list" | "fs_list" | "std.fs.list" => (1, "List<Text>"),
         _ => unreachable!("checked source fs helper"),
     };
-    if args.len() != expected.len() {
+    if args.len() != expected_len {
         return Err(source_expr_error(
             "AIL_SOURCE_FS_ARITY",
             "source.fs.arity",
             format!(
                 "function call `{func}` expects {} argument(s), got {}",
-                expected.len(),
+                expected_len,
                 args.len()
             ),
         ));
     }
-    validate_source_arg_types(func, args, scope, functions, expected)?;
+    validate_source_path_arg_type(func, args, 0, scope, functions)?;
+    if matches!(func, "fs.write" | "fs_write" | "std.fs.write") {
+        validate_source_arg_type_at(func, args, 1, "Bytes", scope, functions)?;
+    }
     Ok(return_ty.to_string())
 }
 
@@ -1013,45 +1045,53 @@ pub(super) fn infer_source_effect_call_type(
             }
             ("file.read", "read") => {
                 validate_source_effect_call_arity(capability, operation, args, 1)?;
-                validate_source_arg_types(
+                validate_source_path_arg_type(
                     "effect_call(file.read, read)",
                     &args[2..],
+                    0,
                     scope,
                     functions,
-                    &["Text"],
                 )?;
                 return Ok("Bytes".to_string());
             }
             ("file.write", "write") => {
                 validate_source_effect_call_arity(capability, operation, args, 2)?;
-                validate_source_arg_types(
+                validate_source_path_arg_type(
                     "effect_call(file.write, write)",
                     &args[2..],
+                    0,
                     scope,
                     functions,
-                    &["Text", "Bytes"],
+                )?;
+                validate_source_arg_type_at(
+                    "effect_call(file.write, write)",
+                    &args[2..],
+                    1,
+                    "Bytes",
+                    scope,
+                    functions,
                 )?;
                 return Ok("Unit".to_string());
             }
             ("file.delete", "delete") => {
                 validate_source_effect_call_arity(capability, operation, args, 1)?;
-                validate_source_arg_types(
+                validate_source_path_arg_type(
                     "effect_call(file.delete, delete)",
                     &args[2..],
+                    0,
                     scope,
                     functions,
-                    &["Text"],
                 )?;
                 return Ok("Unit".to_string());
             }
             ("file.list", "list") => {
                 validate_source_effect_call_arity(capability, operation, args, 1)?;
-                validate_source_arg_types(
+                validate_source_path_arg_type(
                     "effect_call(file.list, list)",
                     &args[2..],
+                    0,
                     scope,
                     functions,
-                    &["Text"],
                 )?;
                 return Ok("List<Text>".to_string());
             }
@@ -1402,14 +1442,43 @@ pub(super) fn validate_source_arg_types(
     expected: &[&str],
 ) -> Result<(), CliError> {
     for (idx, expected_ty) in expected.iter().enumerate() {
-        let actual = infer_source_expr_type(&args[idx], scope, functions)?;
-        validate_source_type_match(
-            expected_ty,
-            &actual,
-            &format!("{call} argument {}", idx + 1),
-        )?;
+        validate_source_arg_type_at(call, args, idx, expected_ty, scope, functions)?;
     }
     Ok(())
+}
+
+fn validate_source_arg_type_at(
+    call: &str,
+    args: &[String],
+    idx: usize,
+    expected_ty: &str,
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<(), CliError> {
+    let actual = infer_source_expr_type(&args[idx], scope, functions)?;
+    validate_source_type_match(
+        expected_ty,
+        &actual,
+        &format!("{call} argument {}", idx + 1),
+    )
+}
+
+fn validate_source_path_arg_type(
+    call: &str,
+    args: &[String],
+    idx: usize,
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<(), CliError> {
+    let actual = infer_source_expr_type(&args[idx], scope, functions)?;
+    if source_type_matches("Path", &actual) || source_type_matches("Text", &actual) {
+        return Ok(());
+    }
+    Err(source_type_mismatch_error(
+        &format!("{call} argument {}", idx + 1),
+        "Path or Text",
+        &actual,
+    ))
 }
 
 pub(super) fn validate_source_type_match(

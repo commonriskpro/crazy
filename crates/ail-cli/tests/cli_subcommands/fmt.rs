@@ -281,6 +281,44 @@ fn emitted(value:Json)->Text=json.stringify(value)\n",
 }
 
 #[test]
+fn fmt_file_json_outputs_canonical_ail_source_path_fs_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let source = dir.child("path.ail");
+    source
+        .write_str(
+            "capability file.read\n\
+fn config_path(raw:Text)->Path=std.path.from_text(raw)\n\
+fn raw_path(path:Path)->Text=path.to_text(path)\n\
+fn read_config(path:path)->Bytes=std.fs.read_file(path)\n\
+grant read_config file.read\n",
+        )
+        .expect("write source");
+
+    let output = ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["item_count"], 5);
+    let formatted = v["data"]["formatted"]
+        .as_str()
+        .expect("formatted must be string");
+
+    assert!(formatted.contains("fn config_path(raw: Text) -> Path = path_from_text(raw)\n"));
+    assert!(formatted.contains("fn raw_path(path: Path) -> Text = path_to_text(path)\n"));
+    assert!(formatted.contains("fn read_config(path: Path) -> Bytes = fs_read_file(path)\n"));
+}
+
+#[test]
 fn fmt_file_json_outputs_canonical_ail_source_env_helpers() {
     use assert_fs::prelude::*;
 

@@ -712,6 +712,21 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if let Some((helper, arity)) = source_path_helper(&func)
+        && args.len() == arity
+    {
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if let Some((helper, arity)) = source_env_helper(&func)
         && args.len() == arity
     {
@@ -1150,6 +1165,14 @@ fn source_json_helper(func: &str) -> Option<(&'static str, usize)> {
     match func {
         "json.parse" | "std.json.parse" => Some(("json_parse", 1)),
         "json.stringify" | "std.json.stringify" => Some(("json_stringify", 1)),
+        _ => None,
+    }
+}
+
+fn source_path_helper(func: &str) -> Option<(&'static str, usize)> {
+    match func {
+        "path.from_text" | "std.path.from_text" => Some(("path_from_text", 1)),
+        "path.to_text" | "std.path.to_text" => Some(("path_to_text", 1)),
         _ => None,
     }
 }

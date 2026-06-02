@@ -56,6 +56,12 @@ pub(super) const AIL_SOURCE_SYNTAX_SYMBOLS: &[AclSymbol] = &[
         insert_text: "Json",
     },
     AclSymbol {
+        label: "Path",
+        detail: "AIL source builtin type",
+        documentation: "Filesystem path type used by source path and filesystem helpers.",
+        insert_text: "Path",
+    },
+    AclSymbol {
         label: "Unit",
         detail: "AIL source builtin type",
         documentation: "Unit type for functions that complete without a meaningful value.",

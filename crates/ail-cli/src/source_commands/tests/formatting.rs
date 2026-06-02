@@ -289,6 +289,25 @@ fn emitted(value:Json)->Text=json.stringify(value)
 }
 
 #[test]
+fn formats_source_path_types_with_fs_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+capability file.read
+fn config_path(raw:Text)->Path=std.path.from_text(raw)
+fn raw_path(path:Path)->Text=path.to_text(path)
+fn read_config(path:path)->Bytes=std.fs.read_file(path)
+grant read_config file.read
+"#,
+    )
+    .expect("source Path fs helper must format");
+
+    assert_eq!(item_count, 5);
+    assert!(formatted.contains("fn config_path(raw: Text) -> Path = path_from_text(raw)\n"));
+    assert!(formatted.contains("fn raw_path(path: Path) -> Text = path_to_text(path)\n"));
+    assert!(formatted.contains("fn read_config(path: Path) -> Bytes = fs_read_file(path)\n"));
+}
+
+#[test]
 fn formats_source_env_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"

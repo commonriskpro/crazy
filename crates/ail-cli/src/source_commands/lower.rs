@@ -16,6 +16,7 @@ mod json;
 mod match_expr;
 mod numeric;
 mod option_result;
+mod path;
 mod syntax_helpers;
 mod text;
 mod time;
@@ -33,6 +34,7 @@ pub(super) use json::*;
 pub(super) use match_expr::*;
 pub(super) use numeric::*;
 pub(super) use option_result::*;
+pub(super) use path::*;
 pub(super) use syntax_helpers::*;
 pub(super) use text::*;
 pub(super) use time::*;
@@ -56,6 +58,7 @@ pub(super) enum SourceLowerDiagnostic {
     IntHelper,
     JsonHelper,
     NumericHelper,
+    PathHelper,
     ListLiteral,
     MatchExpression,
     OptionResultHelper,
@@ -88,6 +91,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::IntHelper => "AIL_SOURCE_LOWER_INT_HELPER",
             SourceLowerDiagnostic::JsonHelper => "AIL_SOURCE_LOWER_JSON_HELPER",
             SourceLowerDiagnostic::NumericHelper => "AIL_SOURCE_LOWER_NUMERIC_HELPER",
+            SourceLowerDiagnostic::PathHelper => "AIL_SOURCE_LOWER_PATH_HELPER",
             SourceLowerDiagnostic::ListLiteral => "AIL_SOURCE_LOWER_LIST_LITERAL",
             SourceLowerDiagnostic::MatchExpression => "AIL_SOURCE_LOWER_MATCH_EXPRESSION",
             SourceLowerDiagnostic::OptionResultHelper => "AIL_SOURCE_LOWER_OPTION_RESULT_HELPER",
@@ -117,6 +121,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::IntHelper => "source.lower.int",
             SourceLowerDiagnostic::JsonHelper => "source.lower.json",
             SourceLowerDiagnostic::NumericHelper => "source.lower.numeric",
+            SourceLowerDiagnostic::PathHelper => "source.lower.path",
             SourceLowerDiagnostic::MatchExpression => "source.lower.match",
             SourceLowerDiagnostic::OptionResultHelper => "source.lower.option_result",
             SourceLowerDiagnostic::CollectionArity
@@ -328,6 +333,9 @@ pub(super) fn source_expr_to_acl_body(expr: &str, constants: &BTreeMap<String, S
             source_expr_to_acl_body(&args[2], constants)
         );
     }
+    if matches!(func.as_str(), "std.path.from_text" | "std.path.to_text") && args.len() == 1 {
+        return source_expr_to_acl_body(&args[0], constants);
+    }
     format!(
         "{}({})",
         func,
@@ -458,6 +466,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_json_helper_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
+    if let Some(lowered) = lower_source_path_helper_expr(expr, line_num)? {
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_env_helper_expr(expr, line_num)? {

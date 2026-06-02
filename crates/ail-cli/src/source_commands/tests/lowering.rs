@@ -1364,6 +1364,70 @@ fn rejects_source_json_helper_type_mismatch() {
 }
 
 #[test]
+fn lowers_and_types_source_path_helpers() {
+    let program = parse_ail_source(
+        r#"
+fn config_path(raw: Text) -> Path = path_from_text(raw)
+fn raw_path(path: Path) -> Text = path.to_text(path)
+"#,
+    )
+    .expect("source path helpers must parse and type-check");
+    validate_source_program_types(&program).expect("source path helpers must type-check");
+    let acl = source_program_to_acl(&program, "source_path".to_string());
+
+    assert_eq!(program.functions[0].body, "std.path.from_text(raw)");
+    assert_eq!(program.functions[1].body, "std.path.to_text(path)");
+    assert!(acl.contains("op create_function id=fn.config_path return=Path body=raw"));
+    assert!(acl.contains("op create_function id=fn.raw_path return=Text body=path"));
+}
+
+#[test]
+fn source_fs_helpers_accept_path_values() {
+    let program = parse_ail_source(
+        r#"
+capability file.read
+fn read_config(path: Path) -> Bytes = fs_read_file(path)
+grant read_config file.read
+"#,
+    )
+    .expect("source fs helpers must accept Path arguments");
+    validate_source_program_grants(&program).expect("fs grants must validate");
+    validate_source_program_effect_calls(&program).expect("fs helper effects must require grants");
+    validate_source_program_types(&program).expect("source fs helpers must type-check with Path");
+
+    assert_eq!(
+        program.functions[0].body,
+        "effect_call(file.read, read, path)"
+    );
+}
+
+#[test]
+fn source_file_effect_calls_accept_path_values() {
+    let program = parse_ail_source(
+        r#"
+capability file.read
+fn read_config(path: Path) -> Bytes = effect_call(file.read, read, path)
+grant read_config file.read
+"#,
+    )
+    .expect("source file effect calls must accept Path arguments");
+    validate_source_program_grants(&program).expect("fs grants must validate");
+    validate_source_program_effect_calls(&program).expect("fs effect calls must require grants");
+    validate_source_program_types(&program).expect("source file effect calls must type-check");
+}
+
+#[test]
+fn rejects_source_path_helper_type_mismatch() {
+    assert_lowering_diagnostic(
+        parse_ail_source("fn bad(flag: Bool) -> Path = path_from_text(flag)\n")
+            .map(|_| String::new()),
+        "AIL_SOURCE_TYPE_MISMATCH",
+        "source.type.mismatch",
+        "expected Text, got Bool",
+    );
+}
+
+#[test]
 fn lowers_and_types_source_env_helpers() {
     let program = parse_ail_source(
         r#"
@@ -1538,7 +1602,7 @@ grant read_config file.read
         validate_source_program_types(&program),
         "AIL_SOURCE_TYPE_MISMATCH",
         "source.type.mismatch",
-        "expected Text, got Int",
+        "expected Path or Text, got Int",
     );
 }
 
