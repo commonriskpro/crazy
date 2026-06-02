@@ -54,6 +54,33 @@ fn run_file_executes_ail_source_function_with_typed_params() {
         .stdout(predicate::str::contains("module: fn.add_pair"))
         .stdout(predicate::str::contains("result: 42"));
 }
+
+#[test]
+fn run_file_requires_default_entrypoint_without_explicit_function() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("library.ail");
+    source
+        .write_str("fn helper() -> Int = 1\n")
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "source file has no default entrypoint `fn.main`",
+        ))
+        .stderr(predicate::str::contains(
+            "pass an explicit function name such as `fn.helper`",
+        ));
+}
 #[test]
 fn run_file_executes_ail_source_block_with_let_statement() {
     use assert_fs::prelude::*;
