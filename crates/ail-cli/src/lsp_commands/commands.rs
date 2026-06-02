@@ -66,7 +66,8 @@ fn cmd_lsp_diagnose(mode: OutputMode, path: PathBuf) -> Result<(), CliError> {
     let diagnostic_codes = diagnostic_codes(&diagnostics);
     let diagnostic_categories = diagnostic_categories(&diagnostics);
     let repair_codes = diagnostic_repair_codes(&diagnostics);
-    let repair_count = repair_codes.len();
+    let repair_suggestions = diagnostic_repair_suggestions(&diagnostics);
+    let repair_count = repair_suggestions.len();
     let diagnostics_status = if failed > 0 {
         "error"
     } else if warning_count > 0 {
@@ -101,6 +102,7 @@ fn cmd_lsp_diagnose(mode: OutputMode, path: PathBuf) -> Result<(), CliError> {
             "diagnostic_categories": diagnostic_categories,
             "repair_count": repair_count,
             "repair_codes": repair_codes,
+            "repair_suggestions": repair_suggestions,
             "language": language_for_uri(&uri),
         }),
     );
@@ -126,6 +128,23 @@ fn diagnostic_repair_codes(diagnostics: &[Value]) -> Vec<String> {
         .iter()
         .filter_map(|diagnostic| diagnostic["data"]["ailRepair"]["code"].as_str())
         .fold(Vec::new(), push_unique)
+}
+
+fn diagnostic_repair_suggestions(diagnostics: &[Value]) -> Vec<Value> {
+    diagnostics
+        .iter()
+        .filter_map(|diagnostic| {
+            let repair = &diagnostic["data"]["ailRepair"];
+            let repair_code = repair["code"].as_str()?;
+            Some(json!({
+                "diagnostic_code": diagnostic["code"].clone(),
+                "diagnostic_message": diagnostic["message"].clone(),
+                "repair_code": repair_code,
+                "range": diagnostic["range"].clone(),
+                "edit": repair["edit"].clone(),
+            }))
+        })
+        .collect()
 }
 
 fn push_unique(mut values: Vec<String>, value: &str) -> Vec<String> {

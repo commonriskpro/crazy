@@ -38,6 +38,10 @@ fn lsp_diagnose_reports_ail_source_duplicate_function_code() {
     );
     assert_eq!(v["data"]["repair_count"], 0);
     assert_eq!(v["data"]["repair_codes"], serde_json::Value::Array(vec![]));
+    assert_eq!(
+        v["data"]["repair_suggestions"],
+        serde_json::Value::Array(vec![])
+    );
     assert!(
         v["data"]["diagnostics"][0]["message"]
             .as_str()

@@ -237,6 +237,14 @@ fn lsp_diagnose_warns_for_ignored_pure_expression_statements() {
         v["data"]["repair_codes"][0],
         "remove.ignored_expression_statement"
     );
+    assert_eq!(
+        v["data"]["repair_suggestions"][0]["diagnostic_code"],
+        "AIL_SOURCE_LSP_IGNORED_EXPRESSION"
+    );
+    assert_eq!(
+        v["data"]["repair_suggestions"][0]["repair_code"],
+        "remove.ignored_expression_statement"
+    );
     assert_eq!(v["data"]["diagnostics"][0]["severity"], 2);
     assert_eq!(
         v["data"]["diagnostics"][0]["code"],
@@ -248,8 +256,12 @@ fn lsp_diagnose_warns_for_ignored_pure_expression_statements() {
     );
     let uri = format!("file://{}", source.path().display());
     assert_eq!(
-        v["data"]["diagnostics"][0]["data"]["ailRepair"]["edit"]["changes"][uri.as_str()][0]["newText"],
+        v["data"]["repair_suggestions"][0]["edit"]["changes"][uri.as_str()][0]["newText"],
         ""
+    );
+    assert_eq!(
+        v["data"]["repair_suggestions"][0]["range"],
+        v["data"]["diagnostics"][0]["range"]
     );
     assert_eq!(
         v["data"]["diagnostics"][0]["data"]["ailDiagnostic"]["category"],
