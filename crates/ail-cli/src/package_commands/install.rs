@@ -139,27 +139,9 @@ fn package_advisory_issues_for_install(
     manifest: &PackageManifest,
 ) -> Result<Vec<PackageAuditIssue>, CliError> {
     let file = load_local_package_registry_file_for_read(store)?;
-    let mut issues = Vec::new();
-
-    if let Some(yank) = registry
-        .yank_records()
-        .iter()
-        .find(|yank| yank.name == manifest.name && yank.version == manifest.version)
-    {
-        issues.push(PackageAuditIssue::yanked(
-            &manifest.name,
-            &manifest.version,
-            yank,
-        ));
-    }
-
-    issues.extend(
-        AdvisoryChecker::matches(&manifest.name, &manifest.version, &file.advisories)
-            .into_iter()
-            .map(|advisory| {
-                PackageAuditIssue::advisory(&manifest.name, &manifest.version, advisory)
-            }),
-    );
-
-    Ok(issues)
+    Ok(package_risk_issues_for_manifest(
+        registry,
+        &file.advisories,
+        manifest,
+    ))
 }

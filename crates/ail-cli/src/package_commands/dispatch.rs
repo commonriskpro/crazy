@@ -1342,21 +1342,24 @@ pub(crate) async fn cmd_package(
         }
         PackageCmd::Explain { package } => {
             let (name, version) = package.split_once('@').unwrap_or((&package, "latest"));
-            let registry = load_package_registry(store)?;
+            let (registry, advisories) = load_package_registry_with_advisories(store)?;
             let lookup = trusted_package_lookup(&registry, name, version)?;
             let manifest = lookup.manifest;
+            let risk_issues = package_risk_issues_for_manifest(&registry, &advisories, &manifest);
             let warnings = lookup.warning.into_iter().collect::<Vec<_>>();
             let verification_report_status =
                 verification_report_status(manifest.verification_report.is_some());
             let human_msg = format!(
-                "package: {package}\nname: {}\nversion: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\ncapabilities: {:?}\nassumptions: {}\nunsafe_surface: {}\nadvisories: []{}",
+                "package: {package}\nname: {}\nversion: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\ncapabilities: {}\nexported_capabilities: {}\nassumptions: {}\nunsafe_surface: {}\nadvisories: {}{}",
                 manifest.name,
                 manifest.version,
                 manifest.trust_level,
                 lookup.signature_status,
-                manifest.required_capabilities,
-                manifest.assumptions.len(),
-                manifest.unsafe_surface.len(),
+                format_package_string_list(&manifest.required_capabilities),
+                format_package_string_list(&manifest.exported_capabilities),
+                format_package_assumptions(&manifest),
+                format_package_unsafe_surface(&manifest),
+                format_package_advisories(&risk_issues),
                 format_warnings_for_human(&warnings)
             );
             print_response(
@@ -1364,16 +1367,17 @@ pub(crate) async fn cmd_package(
                 &human_msg,
                 json!({
                     "package": package,
-                    "name": manifest.name,
-                    "version": manifest.version,
+                    "name": &manifest.name,
+                    "version": &manifest.version,
                     "trust": manifest.trust_level.to_string(),
                     "signature_status": lookup.signature_status,
-                    "verification_report": manifest.verification_report,
+                    "verification_report": &manifest.verification_report,
                     "verification_report_status": verification_report_status,
-                    "capabilities": manifest.required_capabilities,
-                    "assumptions": manifest.assumptions,
-                    "unsafe_surface": manifest.unsafe_surface,
-                    "advisories": [],
+                    "capabilities": &manifest.required_capabilities,
+                    "exported_capabilities": &manifest.exported_capabilities,
+                    "assumptions": &manifest.assumptions,
+                    "unsafe_surface": &manifest.unsafe_surface,
+                    "advisories": risk_issues.iter().map(PackageAuditIssue::to_json).collect::<Vec<_>>(),
                     "warnings": warnings,
                 }),
             );

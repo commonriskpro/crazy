@@ -1065,6 +1065,78 @@ fn package_legacy_verified_unsigned_explain_fails() {
 }
 
 #[test]
+fn package_explain_json_surfaces_manifest_risk_metadata() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let mut manifest = test_package_manifest("runtime.files", "1.0.0", TrustLevel::Assumed);
+    manifest.required_capabilities = vec!["file.read".to_string()];
+    manifest.exported_capabilities = vec!["clock.now".to_string()];
+    manifest.assumptions = vec![PackageAssumption {
+        id: "assume-sandboxed-path".to_string(),
+        claim: "file reads are sandboxed".to_string(),
+        boundary: "boundary.local_fs".to_string(),
+        owner: "runtime-team".to_string(),
+        expires: None,
+        state: AssumptionState::Active,
+    }];
+    manifest.unsafe_surface = vec![UnsafeSurfaceEntry {
+        kind: "ffi".to_string(),
+        name: "runtime_files_read".to_string(),
+        description: "host filesystem bridge".to_string(),
+    }];
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![],
+            legacy_manifests: vec![manifest],
+            advisories: vec![SecurityAdvisory {
+                id: "adv-files-low".to_string(),
+                package: "runtime.files".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::Low,
+                reason: "review filesystem sandbox policy".to_string(),
+            }],
+            yanked: vec![ail_package::YankRecord {
+                name: "runtime.files".to_string(),
+                version: "1.0.0".to_string(),
+                reason: "superseded by sandboxed runtime".to_string(),
+            }],
+        },
+    );
+
+    let output = ail()
+        .args(["package", "explain", "runtime.files@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["capabilities"][0], "file.read");
+    assert_eq!(v["data"]["exported_capabilities"][0], "clock.now");
+    assert_eq!(v["data"]["assumptions"][0]["id"], "assume-sandboxed-path");
+    assert_eq!(v["data"]["unsafe_surface"][0]["name"], "runtime_files_read");
+    assert!(
+        v["data"]["advisories"]
+            .as_array()
+            .expect("advisories must be an array")
+            .iter()
+            .any(|issue| issue["kind"] == "yanked" && issue["status"] == "blocked"),
+        "explain must surface local yank risk; got: {v}"
+    );
+    assert!(
+        v["data"]["advisories"]
+            .as_array()
+            .expect("advisories must be an array")
+            .iter()
+            .any(|issue| issue["kind"] == "advisory" && issue["status"] == "warning"),
+        "explain must surface non-blocking advisory warnings; got: {v}"
+    );
+}
+
+#[test]
 fn package_legacy_unsigned_explain_is_explicit() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();

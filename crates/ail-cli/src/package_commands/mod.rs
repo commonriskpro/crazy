@@ -51,7 +51,7 @@ mod manifest;
 mod parse;
 mod verify;
 
-use audit::audit_package_lockfile;
+use audit::{audit_package_lockfile, package_risk_issues_for_manifest};
 use compat::{package_compatibility_issues_for_install, package_compatibility_issues_for_verify};
 pub(crate) use dispatch::cmd_package;
 use install::install_package_from_registry;
