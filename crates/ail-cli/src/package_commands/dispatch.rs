@@ -1498,12 +1498,26 @@ pub(crate) async fn cmd_package(
             let (registry, advisories) = load_package_registry_with_advisories(store)?;
             let lookup = trusted_package_lookup(&registry, name, version)?;
             let manifest = lookup.manifest;
+            let lockfile = load_package_lockfile(store)?;
+            let accepted_assumptions = lockfile
+                .entries
+                .iter()
+                .find(|entry| entry.name == manifest.name && entry.version == manifest.version)
+                .map(|entry| entry.accepted_assumptions.clone())
+                .unwrap_or_default();
+            let missing_assumptions = manifest
+                .assumptions
+                .iter()
+                .filter(|assumption| !accepted_assumptions.contains(&assumption.id))
+                .map(|assumption| assumption.id.clone())
+                .collect::<Vec<_>>();
+            let assumptions_valid = missing_assumptions.is_empty();
             let risk_issues = package_risk_issues_for_manifest(&registry, &advisories, &manifest);
             let warnings = lookup.warning.into_iter().collect::<Vec<_>>();
             let verification_report_status =
                 verification_report_status(manifest.verification_report.is_some());
             let human_msg = format!(
-                "package: {package}\nname: {}\nversion: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\ncapabilities: {}\nexported_capabilities: {}\nassumptions: {}\nunsafe_surface: {}\nadvisories: {}{}",
+                "package: {package}\nname: {}\nversion: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\ncapabilities: {}\nexported_capabilities: {}\nassumptions: {}\naccepted_assumptions: {}\nmissing_assumptions: {}\nassumptions_valid: {}\nunsafe_surface: {}\nadvisories: {}{}",
                 manifest.name,
                 manifest.version,
                 manifest.trust_level,
@@ -1511,6 +1525,9 @@ pub(crate) async fn cmd_package(
                 format_package_string_list(&manifest.required_capabilities),
                 format_package_string_list(&manifest.exported_capabilities),
                 format_package_assumptions(&manifest),
+                format_package_string_list(&accepted_assumptions),
+                format_package_string_list(&missing_assumptions),
+                assumptions_valid,
                 format_package_unsafe_surface(&manifest),
                 format_package_advisories(&risk_issues),
                 format_warnings_for_human(&warnings)
@@ -1529,6 +1546,9 @@ pub(crate) async fn cmd_package(
                     "capabilities": &manifest.required_capabilities,
                     "exported_capabilities": &manifest.exported_capabilities,
                     "assumptions": &manifest.assumptions,
+                    "accepted_assumptions": accepted_assumptions,
+                    "missing_assumptions": missing_assumptions,
+                    "assumptions_valid": assumptions_valid,
                     "unsafe_surface": &manifest.unsafe_surface,
                     "advisories": risk_issues.iter().map(PackageAuditIssue::to_json).collect::<Vec<_>>(),
                     "warnings": warnings,
