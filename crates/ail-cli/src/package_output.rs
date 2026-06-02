@@ -667,6 +667,25 @@ pub(crate) fn package_compatibility_issue_to_json(issue: &PackageCompatibilityCl
     })
 }
 
+pub(crate) fn package_compatibility_remediation_action(
+    issue: &PackageCompatibilityCliIssue,
+) -> Value {
+    let action = if issue.kind == "migration" {
+        "review_migration_metadata"
+    } else {
+        "review_compatibility_metadata"
+    };
+    json!({
+        "action": action,
+        "package": &issue.package,
+        "current_version": &issue.current_version,
+        "target_version": &issue.target_version,
+        "kind": issue.kind,
+        "status": issue.status,
+        "command": ["ail", "package", "search", &issue.package],
+    })
+}
+
 pub(crate) fn verification_report_hash_mismatch_to_json(
     mismatch: &VerificationReportHashMismatch,
 ) -> Value {
@@ -685,10 +704,17 @@ pub(crate) fn emit_package_compatibility_blocked(
     issues: &[PackageCompatibilityCliIssue],
 ) {
     if mode == OutputMode::Json {
+        let remediation_actions = issues
+            .iter()
+            .map(package_compatibility_remediation_action)
+            .collect::<Vec<_>>();
+        let remediation_action_count = remediation_actions.len();
         print_error_response(json!({
             "error": "package_compatibility_blocked",
             "message": format!("package compatibility blocked: {} blocked issue(s)", issues.len()),
             "compatibility_issues": issues.iter().map(package_compatibility_issue_to_json).collect::<Vec<_>>(),
+            "remediation_action_count": remediation_action_count,
+            "remediation_actions": remediation_actions,
         }));
     }
 }

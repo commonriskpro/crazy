@@ -97,6 +97,18 @@ fn package_install_breaking_upgrade_without_migration_metadata_is_blocked() {
     assert_eq!(issue["kind"], "migration");
     assert_eq!(issue["status"], "blocked");
     assert_eq!(issue["migration_hash"], Value::Null);
+    assert_eq!(v["data"]["remediation_action_count"], 1);
+    let remediation = &v["data"]["remediation_actions"][0];
+    assert_eq!(remediation["action"], "review_migration_metadata");
+    assert_eq!(remediation["package"], "breaking.pkg");
+    assert_eq!(remediation["current_version"], "1.0.0");
+    assert_eq!(remediation["target_version"], "2.0.0");
+    assert_eq!(remediation["kind"], "migration");
+    assert_eq!(remediation["status"], "blocked");
+    assert_eq!(
+        remediation["command"],
+        serde_json::json!(["ail", "package", "search", "breaking.pkg"])
+    );
 }
 
 #[test]
