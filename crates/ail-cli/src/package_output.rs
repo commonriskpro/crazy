@@ -26,10 +26,12 @@ pub(crate) struct LocalPackageLookup {
 /// Data collected after successfully installing a package.
 pub(crate) struct InstalledPackage {
     pub(crate) entry: ail_package::LockfileEntry,
+    pub(crate) manifest: PackageManifest,
     pub(crate) signature_status: &'static str,
     pub(crate) verification_report: Option<ail_package::PackageVerificationReport>,
     /// Locally-recorded reproducible-build evidence from the package manifest.
     pub(crate) reproducible_evidence: Option<ail_package::ReproducibleBuildEvidence>,
+    pub(crate) advisory_issues: Vec<PackageAuditIssue>,
     pub(crate) lockfile_hash: String,
     pub(crate) installed_package_count: usize,
     pub(crate) lockfile_reproducibility: &'static str,

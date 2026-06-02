@@ -81,6 +81,52 @@ fn is_package_blake3_hex(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
+fn format_package_string_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "[]".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn format_package_assumptions(manifest: &PackageManifest) -> String {
+    if manifest.assumptions.is_empty() {
+        "[]".to_string()
+    } else {
+        manifest
+            .assumptions
+            .iter()
+            .map(|assumption| assumption.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn format_package_unsafe_surface(manifest: &PackageManifest) -> String {
+    if manifest.unsafe_surface.is_empty() {
+        "[]".to_string()
+    } else {
+        manifest
+            .unsafe_surface
+            .iter()
+            .map(|surface| surface.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn format_package_advisories(advisories: &[PackageAuditIssue]) -> String {
+    if advisories.is_empty() {
+        "[]".to_string()
+    } else {
+        advisories
+            .iter()
+            .map(|issue| format!("{}:{}", issue.kind, issue.status))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 /// `ail package <add|lint|verify|publish|audit|explain>` — manage packages.
 ///
 /// Rules:
@@ -184,12 +230,13 @@ pub(crate) async fn cmd_package(
                 }
             };
             let entry = &installed.entry;
+            let manifest = &installed.manifest;
             let verification_report_status =
                 verification_report_status(installed.verification_report.is_some());
             let repro_evidence_status =
                 reproducible_evidence_status(installed.reproducible_evidence.is_some());
             let human_msg = format!(
-                "added: {package}\nname: {}\nversion: {}\nrequested_version: {}\nresolved_version: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\ncapabilities: []\nassumptions: []\nunsafe_surface: []\nadvisories: []\nnote: package install does not grant capabilities{}",
+                "added: {package}\nname: {}\nversion: {}\nrequested_version: {}\nresolved_version: {}\ntrust: {:?}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\ncapabilities: {}\nexported_capabilities: {}\nassumptions: {}\nunsafe_surface: {}\nadvisories: {}\nnote: package install does not grant capabilities{}",
                 entry.name,
                 entry.version,
                 entry.requested_version.as_deref().unwrap_or(&entry.version),
@@ -198,6 +245,11 @@ pub(crate) async fn cmd_package(
                 installed.signature_status,
                 installed.lockfile_reproducibility,
                 installed.installed_package_count,
+                format_package_string_list(&manifest.required_capabilities),
+                format_package_string_list(&manifest.exported_capabilities),
+                format_package_assumptions(manifest),
+                format_package_unsafe_surface(manifest),
+                format_package_advisories(&installed.advisory_issues),
                 format_warnings_for_human(&installed.warnings)
             );
             print_response(
@@ -220,10 +272,11 @@ pub(crate) async fn cmd_package(
                     "installed_package_count": installed.installed_package_count,
                     "lockfile_reproducibility": installed.lockfile_reproducibility,
                     "lockfile_reproducibility_issues": installed.lockfile_reproducibility_issues.iter().map(LockfileReproducibilityCliIssue::to_json).collect::<Vec<_>>(),
-                    "capabilities": [],
-                    "assumptions": [],
-                    "unsafe_surface": [],
-                    "advisories": [],
+                    "capabilities": &manifest.required_capabilities,
+                    "exported_capabilities": &manifest.exported_capabilities,
+                    "assumptions": &manifest.assumptions,
+                    "unsafe_surface": &manifest.unsafe_surface,
+                    "advisories": installed.advisory_issues.iter().map(PackageAuditIssue::to_json).collect::<Vec<_>>(),
                     "capabilities_granted": false,
                     "warnings": installed.warnings,
                     "compatibility_issues": installed.compatibility_issues.iter().map(package_compatibility_issue_to_json).collect::<Vec<_>>(),
@@ -248,12 +301,13 @@ pub(crate) async fn cmd_package(
                 }
             };
             let entry = &installed.entry;
+            let manifest = &installed.manifest;
             let verification_report_status =
                 verification_report_status(installed.verification_report.is_some());
             let repro_evidence_status =
                 reproducible_evidence_status(installed.reproducible_evidence.is_some());
             let human_msg = format!(
-                "installed: {}@{}\nrequested_version: {}\nresolved_version: {}\ntrust: {:?}\npackage_hash: {}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\nnote: package install does not grant capabilities{}",
+                "installed: {}@{}\nrequested_version: {}\nresolved_version: {}\ntrust: {:?}\npackage_hash: {}\nsignature: {}\nverification_report: {verification_report_status}\nreproducible_evidence: {repro_evidence_status}\nlockfile_reproducibility: {}\ninstalled_package_count: {}\ncapabilities: {}\nexported_capabilities: {}\nassumptions: {}\nunsafe_surface: {}\nadvisories: {}\nnote: package install does not grant capabilities{}",
                 entry.name,
                 entry.version,
                 entry.requested_version.as_deref().unwrap_or(&entry.version),
@@ -263,6 +317,11 @@ pub(crate) async fn cmd_package(
                 installed.signature_status,
                 installed.lockfile_reproducibility,
                 installed.installed_package_count,
+                format_package_string_list(&manifest.required_capabilities),
+                format_package_string_list(&manifest.exported_capabilities),
+                format_package_assumptions(manifest),
+                format_package_unsafe_surface(manifest),
+                format_package_advisories(&installed.advisory_issues),
                 format_warnings_for_human(&installed.warnings)
             );
             print_response(
@@ -286,6 +345,11 @@ pub(crate) async fn cmd_package(
                     "installed_package_count": installed.installed_package_count,
                     "lockfile_reproducibility": installed.lockfile_reproducibility,
                     "lockfile_reproducibility_issues": installed.lockfile_reproducibility_issues.iter().map(LockfileReproducibilityCliIssue::to_json).collect::<Vec<_>>(),
+                    "capabilities": &manifest.required_capabilities,
+                    "exported_capabilities": &manifest.exported_capabilities,
+                    "assumptions": &manifest.assumptions,
+                    "unsafe_surface": &manifest.unsafe_surface,
+                    "advisories": installed.advisory_issues.iter().map(PackageAuditIssue::to_json).collect::<Vec<_>>(),
                     "capabilities_granted": false,
                     "warnings": installed.warnings,
                     "compatibility_issues": installed.compatibility_issues.iter().map(package_compatibility_issue_to_json).collect::<Vec<_>>(),

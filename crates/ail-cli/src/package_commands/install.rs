@@ -109,9 +109,11 @@ pub(super) fn install_package_from_registry(
     Ok(PackageInstallResult::Installed(Box::new(
         InstalledPackage {
             entry: stored_entry,
+            manifest: manifest.clone(),
             signature_status: lookup.signature_status,
             verification_report: manifest.verification_report.clone(),
             reproducible_evidence: manifest.reproducible_evidence.clone(),
+            advisory_issues,
             lockfile_hash,
             installed_package_count: lockfile.len(),
             lockfile_reproducibility,

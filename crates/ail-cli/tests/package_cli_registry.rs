@@ -6,8 +6,9 @@
 mod common;
 
 use ail_package::{
-    AdvisorySeverity, ArtifactHashEntry, Lockfile, LockfileEntry, PackageManifest, Provenance,
-    SecurityAdvisory, TrustLevel,
+    AdvisorySeverity, ArtifactHashEntry, AssumptionState, Lockfile, LockfileEntry,
+    PackageAssumption, PackageManifest, Provenance, SecurityAdvisory, TrustLevel,
+    UnsafeSurfaceEntry,
 };
 use common::package_helpers::{
     TestPackageRegistryFile, lockfile_for_manifest, package_lockfile_path,
@@ -650,6 +651,82 @@ fn package_install_resolver_failure_reports_stable_redacted_diagnostic() {
     assert_eq!(v["data"]["category"], "resolver");
     assert!(!stdout.contains("registry-token-secret"));
     assert!(!stderr.contains("registry-token-secret"));
+}
+
+#[test]
+fn package_add_human_surfaces_manifest_capabilities() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let mut manifest = test_package_manifest("runtime.files", "1.0.0", TrustLevel::Assumed);
+    manifest.required_capabilities = vec!["file.read".to_string()];
+    manifest.exported_capabilities = vec!["clock.now".to_string()];
+    write_legacy_package_registry(dir.path(), &[manifest]);
+
+    ail()
+        .args(["package", "add", "runtime.files@1.0.0"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("capabilities: file.read"))
+        .stdout(predicate::str::contains("exported_capabilities: clock.now"))
+        .stdout(predicate::str::contains(
+            "note: package install does not grant capabilities",
+        ));
+}
+
+#[test]
+fn package_install_json_surfaces_manifest_metadata_and_warnings() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let mut manifest = test_package_manifest("runtime.files", "1.0.0", TrustLevel::Assumed);
+    manifest.required_capabilities = vec!["file.read".to_string()];
+    manifest.exported_capabilities = vec!["clock.now".to_string()];
+    manifest.assumptions = vec![PackageAssumption {
+        id: "assume-sandboxed-path".to_string(),
+        claim: "file reads are sandboxed".to_string(),
+        boundary: "boundary.local_fs".to_string(),
+        owner: "runtime-team".to_string(),
+        expires: None,
+        state: AssumptionState::Active,
+    }];
+    manifest.unsafe_surface = vec![UnsafeSurfaceEntry {
+        kind: "ffi".to_string(),
+        name: "runtime_files_read".to_string(),
+        description: "host filesystem bridge".to_string(),
+    }];
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![],
+            legacy_manifests: vec![manifest],
+            advisories: vec![SecurityAdvisory {
+                id: "adv-files-low".to_string(),
+                package: "runtime.files".to_string(),
+                affected_constraint: "<2.0.0".to_string(),
+                severity: AdvisorySeverity::Low,
+                reason: "review filesystem sandbox policy".to_string(),
+            }],
+            yanked: vec![],
+        },
+    );
+
+    let output = ail()
+        .args(["package", "install", "runtime.files@1.0.0", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["capabilities"][0], "file.read");
+    assert_eq!(v["data"]["exported_capabilities"][0], "clock.now");
+    assert_eq!(v["data"]["assumptions"][0]["id"], "assume-sandboxed-path");
+    assert_eq!(v["data"]["unsafe_surface"][0]["name"], "runtime_files_read");
+    assert_eq!(v["data"]["advisories"][0]["status"], "warning");
+    assert_eq!(v["data"]["capabilities_granted"], false);
 }
 
 #[test]
