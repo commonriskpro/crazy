@@ -382,6 +382,8 @@ pub(super) fn infer_source_call_type(
         | "std.numeric.narrow_to_u8" => {
             infer_source_numeric_helper_type(func, args, scope, functions)
         }
+        "json.parse" | "json_parse" | "std.json.parse" | "json.stringify" | "json_stringify"
+        | "std.json.stringify" => infer_source_json_helper_type(func, args, scope, functions),
         "record" => infer_source_record_type(args, scope, functions),
         "field" => infer_source_field_type(args, scope, functions),
         "update" => infer_source_update_type(args, scope, functions),
@@ -908,6 +910,32 @@ fn require_source_map_text_key_type<'a>(
         ));
     }
     Ok(Some(value_ty))
+}
+
+pub(super) fn infer_source_json_helper_type(
+    func: &str,
+    args: &[String],
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+) -> Result<String, CliError> {
+    let (expected, return_ty) = match func {
+        "json.parse" | "json_parse" | "std.json.parse" => (&["Text"][..], "Result<Json,Text>"),
+        "json.stringify" | "json_stringify" | "std.json.stringify" => (&["Json"][..], "Text"),
+        _ => unreachable!("checked source json helper"),
+    };
+    if args.len() != expected.len() {
+        return Err(source_expr_error(
+            "AIL_SOURCE_JSON_ARITY",
+            "source.json.arity",
+            format!(
+                "function call `{func}` expects {} argument(s), got {}",
+                expected.len(),
+                args.len()
+            ),
+        ));
+    }
+    validate_source_arg_types(func, args, scope, functions, expected)?;
+    Ok(return_ty.to_string())
 }
 
 pub(super) fn infer_source_numeric_helper_type(

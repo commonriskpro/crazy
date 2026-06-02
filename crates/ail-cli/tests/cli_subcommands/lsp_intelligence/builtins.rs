@@ -535,6 +535,59 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         "hover must explain crypto_constant_time_eq; got: {crypto_hover}"
     );
 
+    let json_completion_output = ail()
+        .args(["lsp", "--complete", "json_", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let json_completion = parse_json_output(&json_completion_output);
+    let json_items = json_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["json_parse", "json_stringify"]
+            .iter()
+            .all(|label| json_items
+                .iter()
+                .any(|item| item["label"] == *label && item["detail"] == "AIL source JSON helper")),
+        "completion must include AIL source JSON helpers; got: {json_items:?}"
+    );
+
+    let dotted_json_completion_output = ail()
+        .args(["lsp", "--complete", "json.", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dotted_json_completion = parse_json_output(&dotted_json_completion_output);
+    let dotted_json_items = dotted_json_completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        ["json.parse", "json.stringify"]
+            .iter()
+            .all(|label| dotted_json_items
+                .iter()
+                .any(|item| item["label"] == *label && item["detail"] == "AIL source JSON helper")),
+        "completion must include dotted JSON helpers; got: {dotted_json_items:?}"
+    );
+
+    let json_hover_output = ail()
+        .args(["lsp", "--hover-token", "json_parse", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let json_hover = parse_json_output(&json_hover_output);
+    assert!(
+        json_hover["data"]["hover"]["contents"]["value"]
+            .as_str()
+            .expect("hover markdown")
+            .contains("Result<Json,Text>"),
+        "hover must explain json_parse; got: {json_hover}"
+    );
+
     let numeric_completion_output = ail()
         .args(["lsp", "--complete", "numeric_", "--json"])
         .assert()

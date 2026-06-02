@@ -10,6 +10,7 @@ mod control;
 mod crypto;
 mod encoding;
 mod int;
+mod json;
 mod match_expr;
 mod numeric;
 mod option_result;
@@ -24,6 +25,7 @@ pub(super) use control::*;
 pub(super) use crypto::*;
 pub(super) use encoding::*;
 pub(super) use int::*;
+pub(super) use json::*;
 pub(super) use match_expr::*;
 pub(super) use numeric::*;
 pub(super) use option_result::*;
@@ -46,6 +48,7 @@ pub(super) enum SourceLowerDiagnostic {
     FieldAccess,
     IndexExpression,
     IntHelper,
+    JsonHelper,
     NumericHelper,
     ListLiteral,
     MatchExpression,
@@ -75,6 +78,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::FieldAccess => "AIL_SOURCE_LOWER_FIELD_ACCESS",
             SourceLowerDiagnostic::IndexExpression => "AIL_SOURCE_LOWER_INDEX_EXPRESSION",
             SourceLowerDiagnostic::IntHelper => "AIL_SOURCE_LOWER_INT_HELPER",
+            SourceLowerDiagnostic::JsonHelper => "AIL_SOURCE_LOWER_JSON_HELPER",
             SourceLowerDiagnostic::NumericHelper => "AIL_SOURCE_LOWER_NUMERIC_HELPER",
             SourceLowerDiagnostic::ListLiteral => "AIL_SOURCE_LOWER_LIST_LITERAL",
             SourceLowerDiagnostic::MatchExpression => "AIL_SOURCE_LOWER_MATCH_EXPRESSION",
@@ -101,6 +105,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::EncodingHelper => "source.lower.encoding",
             SourceLowerDiagnostic::Expression => "source.lower.expression",
             SourceLowerDiagnostic::IntHelper => "source.lower.int",
+            SourceLowerDiagnostic::JsonHelper => "source.lower.json",
             SourceLowerDiagnostic::NumericHelper => "source.lower.numeric",
             SourceLowerDiagnostic::MatchExpression => "source.lower.match",
             SourceLowerDiagnostic::OptionResultHelper => "source.lower.option_result",
@@ -440,6 +445,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
         return Ok(lowered);
     }
     if let Some(lowered) = lower_source_numeric_helper_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
+    if let Some(lowered) = lower_source_json_helper_expr(expr, line_num)? {
         return Ok(lowered);
     }
     if let Some(literal) = parse_source_record_literal(expr, line_num)? {

@@ -143,6 +143,30 @@ fn lsp_completion_covers_source_unit_type() {
 }
 
 #[test]
+fn lsp_completion_covers_source_json_type() {
+    let completion_output = ail()
+        .args(["lsp", "--complete", "Json", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let completion = parse_json_output(&completion_output);
+    assert_eq!(completion["status"], "ok");
+    let items = completion["data"]["items"]
+        .as_array()
+        .expect("completion items must be an array");
+    assert!(
+        items.iter().any(|item| item["label"] == "Json"
+            && item["insertText"].as_str().expect("insertText") == "Json"
+            && item["documentation"]["value"]
+                .as_str()
+                .expect("documentation")
+                .contains("std.json parse and stringify")),
+        "completion must include Json type snippet; got: {items:?}"
+    );
+}
+
+#[test]
 fn lsp_completion_and_hover_cover_source_unit_literal() {
     let completion_output = ail()
         .args(["lsp", "--complete", "()", "--json"])

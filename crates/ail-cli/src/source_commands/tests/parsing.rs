@@ -72,6 +72,16 @@ fn parses_bytes_primitive_source_type_alias() {
 }
 
 #[test]
+fn parses_json_primitive_source_type_alias() {
+    let program = parse_ail_source("fn emit(value: json) -> Text = json.stringify(value)\n")
+        .expect("Json source type alias must parse");
+
+    assert_eq!(program.functions[0].params[0].ty, "Json");
+    assert_eq!(program.functions[0].return_type, "Text");
+    assert_eq!(program.functions[0].body, "std.json.stringify(value)");
+}
+
+#[test]
 fn parses_source_block_expression_statements() {
     let program = parse_ail_source(
         r#"capability log.write

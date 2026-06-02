@@ -866,6 +866,30 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "map.insert(${1:map}, ${2:key}, ${3:value})",
     },
     AclSymbol {
+        label: "json_parse",
+        detail: "AIL source JSON helper",
+        documentation: "Parses JSON Text into Result<Json,Text> with a textual parse error.",
+        insert_text: "json_parse(${1:text})",
+    },
+    AclSymbol {
+        label: "json.parse",
+        detail: "AIL source JSON helper",
+        documentation: "Dotted alias that parses JSON Text into Result<Json,Text>.",
+        insert_text: "json.parse(${1:text})",
+    },
+    AclSymbol {
+        label: "json_stringify",
+        detail: "AIL source JSON helper",
+        documentation: "Serializes a Json value into canonical JSON Text.",
+        insert_text: "json_stringify(${1:value})",
+    },
+    AclSymbol {
+        label: "json.stringify",
+        detail: "AIL source JSON helper",
+        documentation: "Dotted alias that serializes a Json value into canonical JSON Text.",
+        insert_text: "json.stringify(${1:value})",
+    },
+    AclSymbol {
         label: "numeric_narrow_to_i32",
         detail: "AIL source Numeric helper",
         documentation: "Narrows an Int to the signed 32-bit range, returning Result<Int,Text> on overflow.",

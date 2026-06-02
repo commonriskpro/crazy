@@ -697,6 +697,21 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if let Some((helper, arity)) = source_json_helper(&func)
+        && args.len() == arity
+    {
+        return (
+            format!(
+                "{helper}({})",
+                args.iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "option.unwrap_or" && args.len() == 2 {
         return (
             format!(
@@ -1021,6 +1036,14 @@ pub(super) fn format_source_expr_node(
         ),
         CALL_PRECEDENCE,
     )
+}
+
+fn source_json_helper(func: &str) -> Option<(&'static str, usize)> {
+    match func {
+        "json.parse" | "std.json.parse" => Some(("json_parse", 1)),
+        "json.stringify" | "std.json.stringify" => Some(("json_stringify", 1)),
+        _ => None,
+    }
 }
 
 fn source_numeric_helper(func: &str) -> Option<(&'static str, usize)> {

@@ -1332,6 +1332,38 @@ fn rejects_source_numeric_narrow_type_mismatch() {
 }
 
 #[test]
+fn lowers_and_types_source_json_helpers() {
+    let program = parse_ail_source(
+        r#"
+fn parsed(value: Text) -> Result<Json,Text> = json_parse(value)
+fn emitted(value: Json) -> Text = json.stringify(value)
+"#,
+    )
+    .expect("source json helpers must parse and type-check");
+    let acl = source_program_to_acl(&program, "source_json".to_string());
+
+    assert_eq!(program.functions[0].body, "std.json.parse(value)");
+    assert_eq!(program.functions[1].body, "std.json.stringify(value)");
+    assert!(acl.contains(
+        "op create_function id=fn.parsed return=Result<Json,Text> body=std.json.parse(value)"
+    ));
+    assert!(
+        acl.contains("op create_function id=fn.emitted return=Text body=std.json.stringify(value)")
+    );
+}
+
+#[test]
+fn rejects_source_json_helper_type_mismatch() {
+    assert_lowering_diagnostic(
+        parse_ail_source("fn bad(input: Int) -> Result<Json,Text> = json.parse(input)\n")
+            .map(|_| String::new()),
+        "AIL_SOURCE_TYPE_MISMATCH",
+        "source.type.mismatch",
+        "expected Text, got Int",
+    );
+}
+
+#[test]
 fn lowers_and_types_source_encoding_helpers() {
     let program = parse_ail_source(
         r#"

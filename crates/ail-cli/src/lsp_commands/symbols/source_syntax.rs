@@ -50,6 +50,12 @@ pub(super) const AIL_SOURCE_SYNTAX_SYMBOLS: &[AclSymbol] = &[
         insert_text: "Bytes",
     },
     AclSymbol {
+        label: "Json",
+        detail: "AIL source builtin type",
+        documentation: "Structured JSON value type used by std.json parse and stringify helpers.",
+        insert_text: "Json",
+    },
+    AclSymbol {
         label: "Unit",
         detail: "AIL source builtin type",
         documentation: "Unit type for functions that complete without a meaningful value.",

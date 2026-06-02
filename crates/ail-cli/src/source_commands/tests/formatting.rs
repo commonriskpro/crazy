@@ -272,6 +272,23 @@ fn byteish(value:Int)->Result<Int,Text>=std.numeric.narrow_to_u8(value)
 }
 
 #[test]
+fn formats_source_json_helpers() {
+    let (formatted, item_count) = format_ail_source(
+        r#"
+fn parsed(value:Text)->Result<Json,Text>=std.json.parse(value)
+fn emitted(value:Json)->Text=json.stringify(value)
+"#,
+    )
+    .expect("source json helpers must format");
+
+    assert_eq!(item_count, 2);
+    assert!(
+        formatted.contains("fn parsed(value: Text) -> Result<Json,Text> = json_parse(value)\n")
+    );
+    assert!(formatted.contains("fn emitted(value: Json) -> Text = json_stringify(value)\n"));
+}
+
+#[test]
 fn formats_source_encoding_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"

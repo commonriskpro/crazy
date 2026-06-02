@@ -245,6 +245,42 @@ fn byteish(value:Int)->Result<Int,Text>=numeric.narrow_to_u8(value)\n",
 }
 
 #[test]
+fn fmt_file_json_outputs_canonical_ail_source_json_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir");
+    let source = dir.child("json.ail");
+    source
+        .write_str(
+            "fn parsed(value:Text)->Result<Json,Text>=std.json.parse(value)\n\
+fn emitted(value:Json)->Text=json.stringify(value)\n",
+        )
+        .expect("write source");
+
+    let output = ail()
+        .args(["fmt", "--file"])
+        .arg(source.path())
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["language"], "ail-source");
+    assert_eq!(v["data"]["item_count"], 2);
+    let formatted = v["data"]["formatted"]
+        .as_str()
+        .expect("formatted must be string");
+
+    assert!(
+        formatted.contains("fn parsed(value: Text) -> Result<Json,Text> = json_parse(value)\n")
+    );
+    assert!(formatted.contains("fn emitted(value: Json) -> Text = json_stringify(value)\n"));
+}
+
+#[test]
 fn fmt_file_json_outputs_canonical_ail_source_encoding_helpers() {
     use assert_fs::prelude::*;
 
