@@ -141,6 +141,14 @@ fn lsp_code_actions_are_deterministically_ordered_and_emit_single_repairs() {
 
     assert_eq!(repair_codes, ["replace.earlier", "replace.later"]);
     assert_eq!(
+        result[0]["title"],
+        "AIL: apply replace.earlier for AIL_SOURCE_PARSER"
+    );
+    assert_eq!(
+        result[1]["title"],
+        "AIL: apply replace.later for AIL_SOURCE_PARSER"
+    );
+    assert_eq!(
         result[0]["edit"]["changes"][uri][0]["newText"],
         "module earlier\n"
     );
@@ -159,6 +167,10 @@ fn lsp_code_action_removes_ignored_expression_statement() {
     let result = code_action_result(vec![open, code_action], 25);
 
     assert_eq!(result[0]["kind"], "quickfix");
+    assert_eq!(
+        result[0]["title"],
+        "AIL: remove ignored expression statement"
+    );
     assert_eq!(
         result[0]["data"]["diagnosticCode"],
         "AIL_SOURCE_LSP_IGNORED_EXPRESSION"
@@ -187,6 +199,7 @@ fn lsp_code_action_prefixes_unused_binding_with_underscore() {
     let result = code_action_result(vec![open, code_action], 26);
 
     assert_eq!(result[0]["kind"], "quickfix");
+    assert_eq!(result[0]["title"], "AIL: prefix unused binding with `_`");
     assert_eq!(
         result[0]["data"]["diagnosticCode"],
         "AIL_SOURCE_LSP_UNUSED_BINDING"

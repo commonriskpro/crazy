@@ -578,8 +578,9 @@ fn code_actions_for_diagnostic(diagnostic: &Value) -> Vec<Value> {
         .and_then(|value| value.as_str())
         .filter(|code| is_stable_identifier(code))
         .unwrap_or("inline_edit");
+    let title = code_action_repair_title(repair_code, code);
     vec![json!({
-        "title": "AIL: apply diagnostic repair",
+        "title": title,
         "kind": "quickfix",
         "isPreferred": true,
         "diagnostics": [diagnostic.clone()],
@@ -590,6 +591,18 @@ fn code_actions_for_diagnostic(diagnostic: &Value) -> Vec<Value> {
             "repairCode": repair_code,
         }
     })]
+}
+
+fn code_action_repair_title(repair_code: &str, diagnostic_code: &str) -> String {
+    match repair_code {
+        "remove.ignored_expression_statement" => {
+            "AIL: remove ignored expression statement".to_string()
+        }
+        "prefix.unused_binding_with_underscore" => {
+            "AIL: prefix unused binding with `_`".to_string()
+        }
+        _ => format!("AIL: apply {repair_code} for {diagnostic_code}"),
+    }
 }
 
 fn diagnostic_code(diagnostic: &Value) -> Option<&str> {
