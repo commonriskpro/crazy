@@ -19,6 +19,17 @@ pub(super) fn lower_call(
     if let Some(result) = int_ops::try_lower_int_call(func, args, ctx, builder) {
         return result;
     }
+    if matches!(
+        func,
+        "path.from_text"
+            | "path_from_text"
+            | "std.path.from_text"
+            | "path.to_text"
+            | "path_to_text"
+            | "std.path.to_text"
+    ) {
+        return lower_path_identity_call(args, ctx, builder);
+    }
 
     match func {
         // ── binary comparisons → I8 ────────────────────────────
@@ -67,6 +78,24 @@ pub(super) fn lower_call(
             }
         }
         _ => {
+            builder.ins().trap(TrapCode::user(1).unwrap());
+            LowerResult::Terminated
+        }
+    }
+}
+
+fn lower_path_identity_call(
+    args: &[String],
+    ctx: &mut NativeCodegenCtx<'_>,
+    builder: &mut FunctionBuilder<'_>,
+) -> LowerResult {
+    let [arg] = args else {
+        builder.ins().trap(TrapCode::user(1).unwrap());
+        return LowerResult::Terminated;
+    };
+    match ctx.lookup(arg.as_str()).map(|(v, _)| v) {
+        Some(value) => LowerResult::Value(value),
+        None => {
             builder.ins().trap(TrapCode::user(1).unwrap());
             LowerResult::Terminated
         }

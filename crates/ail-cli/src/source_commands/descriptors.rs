@@ -36,7 +36,7 @@ fn source_type_descriptor(ty: &str) -> Option<WasmTypeDescriptor> {
     match ty {
         "Int" | "Bool" => Some(WasmTypeDescriptor::Scalar(WasmScalarType::I64)),
         "Float" => Some(WasmTypeDescriptor::Scalar(WasmScalarType::F64)),
-        "Text" => Some(WasmTypeDescriptor::Text),
+        "Text" | "Path" => Some(WasmTypeDescriptor::Text),
         "Bytes" => Some(WasmTypeDescriptor::Bytes),
         "Handle" => Some(WasmTypeDescriptor::Handle),
         _ => {
@@ -73,6 +73,40 @@ fn source_type_descriptor(ty: &str) -> Option<WasmTypeDescriptor> {
                 _ => None,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_path_uses_text_wasm_descriptor() {
+        assert_eq!(
+            source_type_descriptor("Path"),
+            Some(WasmTypeDescriptor::Text)
+        );
+    }
+
+    #[test]
+    fn source_path_compounds_use_text_wasm_descriptor() {
+        assert_eq!(
+            source_type_descriptor("List<Path>"),
+            Some(WasmTypeDescriptor::List(Box::new(WasmTypeDescriptor::Text)))
+        );
+        assert_eq!(
+            source_type_descriptor("Option<Path>"),
+            Some(WasmTypeDescriptor::Option(Box::new(
+                WasmTypeDescriptor::Text
+            )))
+        );
+        assert_eq!(
+            source_type_descriptor("Result<Path, Text>"),
+            Some(WasmTypeDescriptor::Result {
+                ok: Box::new(WasmTypeDescriptor::Text),
+                err: Box::new(WasmTypeDescriptor::Text),
+            })
+        );
     }
 }
 

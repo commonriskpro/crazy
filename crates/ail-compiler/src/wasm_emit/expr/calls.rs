@@ -114,6 +114,17 @@ pub(super) fn emit_call_expr<'a>(
     if matches!(func.as_str(), "text.ends_with" | "text_ends_with") {
         return emit_text_boundary_match(args, ctx, insns, true);
     }
+    if matches!(
+        func.as_str(),
+        "path.from_text"
+            | "path_from_text"
+            | "std.path.from_text"
+            | "path.to_text"
+            | "path_to_text"
+            | "std.path.to_text"
+    ) {
+        return emit_path_identity_call(args, ctx, insns);
+    }
 
     for arg_name in args {
         if let Some((idx, _)) = ctx.lookup(arg_name) {
@@ -128,6 +139,24 @@ pub(super) fn emit_call_expr<'a>(
     } else if let Some(idx) = functions.get(func) {
         insns.push(Instruction::Call(*idx));
         Some(ValType::I64)
+    } else {
+        insns.push(Instruction::Unreachable);
+        None
+    }
+}
+
+fn emit_path_identity_call<'a>(
+    args: &[String],
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [arg] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+    if let Some((idx, ty)) = ctx.lookup(arg) {
+        insns.push(Instruction::LocalGet(idx));
+        Some(ty)
     } else {
         insns.push(Instruction::Unreachable);
         None

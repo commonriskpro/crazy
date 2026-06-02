@@ -196,6 +196,46 @@ fn run_file_executes_ail_source_text_trim_helper() {
 }
 
 #[test]
+fn run_file_executes_ail_source_path_helpers() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("path_helpers.ail");
+    source
+        .write_str(
+            "fn config_path() -> Path = path_from_text(\"config/app.toml\")\n\
+fn config_path_text() -> Text = path_to_text(path_from_text(\"config/app.toml\"))\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.config_path",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.config_path"))
+        .stdout(predicate::str::contains("result: config/app.toml"));
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "fn.config_path_text",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.config_path_text"))
+        .stdout(predicate::str::contains("result: config/app.toml"));
+}
+
+#[test]
 fn run_file_executes_ail_source_length_helpers() {
     use assert_fs::prelude::*;
 
