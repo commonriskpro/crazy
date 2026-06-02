@@ -14,7 +14,9 @@ fn clamp(x: Int) -> Int = if x == 0 {\n\
 } else {\n\
     return x\n\
 }\n\
-test smoke = add_pair(1, 2) == 3\n";
+test smoke = add_pair(1, 2) == 3\n\
+effect Log where capability log.write requires proof ensures policy allow\n\
+foreach item in items then record case enum struct type as false true\n";
     source
         .write_str(source_text)
         .expect("source fixture must be written");
@@ -119,6 +121,23 @@ test smoke = add_pair(1, 2) == 3\n";
         ("test", "keyword"),
         ("==", "operator"),
         ("3", "number"),
+        ("effect", "keyword"),
+        ("where", "keyword"),
+        ("requires", "keyword"),
+        ("proof", "keyword"),
+        ("ensures", "keyword"),
+        ("policy", "keyword"),
+        ("foreach", "keyword"),
+        ("in", "keyword"),
+        ("then", "keyword"),
+        ("record", "keyword"),
+        ("case", "keyword"),
+        ("enum", "keyword"),
+        ("struct", "keyword"),
+        ("type", "keyword"),
+        ("as", "keyword"),
+        ("false", "keyword"),
+        ("true", "keyword"),
     ] {
         assert!(
             labeled_tokens.contains(&expected),
