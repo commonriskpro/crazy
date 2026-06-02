@@ -1321,7 +1321,31 @@ pub(crate) async fn cmd_package(
                 .iter()
                 .map(PackageAuditIssue::to_human_line)
                 .collect::<Vec<_>>();
-            let human_msg = if issue_lines.is_empty() {
+            let mut packages_missing_assumptions = Vec::new();
+            let mut missing_assumption_lines = Vec::new();
+            for entry in &lockfile.entries {
+                let Some(manifest) = registry.lookup_by_name_version(&entry.name, &entry.version)
+                else {
+                    continue;
+                };
+                let missing_assumptions =
+                    missing_package_assumption_ids(manifest, &entry.accepted_assumptions);
+                if missing_assumptions.is_empty() {
+                    continue;
+                }
+                missing_assumption_lines.push(format!(
+                    "{}@{}: {}",
+                    entry.name,
+                    entry.version,
+                    missing_assumptions.join(", ")
+                ));
+                packages_missing_assumptions.push(json!({
+                    "name": &entry.name,
+                    "version": &entry.version,
+                    "missing_assumptions": missing_assumptions,
+                }));
+            }
+            let mut human_msg = if issue_lines.is_empty() {
                 format!(
                     "audit: clean\npackages_checked: {packages_checked}\nissues: 0\nblocked: 0\nwarnings: 0"
                 )
@@ -1332,6 +1356,13 @@ pub(crate) async fn cmd_package(
                     issue_lines.join("\n")
                 )
             };
+            if !missing_assumption_lines.is_empty() {
+                human_msg.push_str(&format!(
+                    "\nremediation: run `ail package accept-assumption` for {} package(s): {}",
+                    missing_assumption_lines.len(),
+                    missing_assumption_lines.join("; ")
+                ));
+            }
             let unsafe_surface_json = lockfile
                 .entries
                 .iter()
@@ -1425,6 +1456,7 @@ pub(crate) async fn cmd_package(
                     "packages": audited_packages,
                     "packages_checked": packages_checked,
                     "assumptions_valid": assumption_issue_count == 0,
+                    "packages_missing_assumptions": packages_missing_assumptions,
                     "unsafe_surface": unsafe_surface_json,
                     "summary": {
                         "packages_checked": packages_checked,

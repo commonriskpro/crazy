@@ -464,6 +464,18 @@ fn package_audit_blocks_unaccepted_package_assumption() {
         "assume-reviewed-vendor"
     );
     assert_eq!(
+        v["data"]["packages_missing_assumptions"][0]["name"],
+        "assumed.pkg"
+    );
+    assert_eq!(
+        v["data"]["packages_missing_assumptions"][0]["version"],
+        "1.0.0"
+    );
+    assert_eq!(
+        v["data"]["packages_missing_assumptions"][0]["missing_assumptions"][0],
+        "assume-reviewed-vendor"
+    );
+    assert_eq!(
         v["data"]["packages"][0]["accepted_assumptions"],
         Value::Array(vec![])
     );
@@ -474,6 +486,20 @@ fn package_audit_blocks_unaccepted_package_assumption() {
     assert_eq!(v["data"]["packages"][0]["assumptions_valid"], false);
     assert_eq!(v["data"]["packages"][0]["risk_status"], "blocked");
     assert_eq!(v["data"]["packages"][0]["blocked_issues"], 1);
+
+    ail()
+        .args(["package", "audit"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains(
+            "remediation: run `ail package accept-assumption`",
+        ))
+        .stdout(predicate::str::contains(
+            "assumed.pkg@1.0.0: assume-reviewed-vendor",
+        ))
+        .stderr(predicate::str::contains("package audit blocked"));
 }
 
 #[test]
