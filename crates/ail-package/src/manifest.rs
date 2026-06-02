@@ -534,6 +534,80 @@ impl PackageManifest {
         Ok(hasher.finalize().to_hex().to_string())
     }
 
+    /// Return true when this manifest should be returned for a package search query.
+    ///
+    /// Search is intentionally broader than package-name matching: production
+    /// users need to discover packages by capability, handler, public export,
+    /// contract, boundary, license, trust tier, and imported dependency names.
+    /// An empty query matches all packages, preserving the old `contains("")`
+    /// behavior from the registry clients.
+    pub fn matches_search_query(&self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return true;
+        }
+
+        let matches = |value: &str| value.to_lowercase().contains(&query);
+        matches(&self.name)
+            || matches(&self.version)
+            || matches(&self.trust_level.to_string())
+            || self.license.as_deref().is_some_and(matches)
+            || self
+                .required_capabilities
+                .iter()
+                .any(|value| matches(value))
+            || self
+                .exported_capabilities
+                .iter()
+                .any(|value| matches(value))
+            || self.assumptions.iter().any(|assumption| {
+                matches(&assumption.id)
+                    || matches(&assumption.claim)
+                    || matches(&assumption.boundary)
+                    || matches(&assumption.owner)
+            })
+            || self.unsafe_surface.iter().any(|surface| {
+                matches(&surface.kind) || matches(&surface.name) || matches(&surface.description)
+            })
+            || self.handlers.iter().any(|handler| {
+                matches(&handler.capability)
+                    || matches(&handler.handler_name)
+                    || matches(&handler.trust_level.to_string())
+            })
+            || self.contracts.iter().any(|value| matches(value))
+            || self.exports.iter().any(|export| {
+                matches(&export.name)
+                    || matches(&export.signature)
+                    || matches(&export.visibility.to_string())
+                    || matches(&export.stability.to_string())
+                    || export.effects.iter().any(|value| matches(value))
+                    || export.contracts.iter().any(|value| matches(value))
+                    || export
+                        .trust_state
+                        .is_some_and(|trust| matches(&trust.to_string()))
+            })
+            || self.imports.iter().any(|import| {
+                matches(&import.source_package)
+                    || import.items.iter().any(|value| matches(value))
+                    || import.version_constraint.as_deref().is_some_and(matches)
+            })
+            || self.boundaries.iter().any(|value| matches(value))
+            || self.provenance.as_ref().is_some_and(|provenance| {
+                provenance.url.as_deref().is_some_and(matches)
+                    || provenance.source_repository.as_deref().is_some_and(matches)
+                    || provenance.commit_hash.as_deref().is_some_and(matches)
+                    || provenance.build_id.as_deref().is_some_and(matches)
+            })
+            || self.verification_report.as_ref().is_some_and(|report| {
+                matches(&report.package)
+                    || matches(&report.version)
+                    || report.exports_verified.iter().any(|value| matches(value))
+                    || report.effects_declared.iter().any(|value| matches(value))
+                    || report.assumptions.iter().any(|value| matches(value))
+                    || report.unsafe_surface.iter().any(|value| matches(value))
+            })
+    }
+
     /// Validate structural invariants.
     ///
     /// Enforces the following rules:
@@ -942,6 +1016,35 @@ mod tests {
         let m = PackageManifest::from_def(def);
         let hex = m.blake3_hex().expect("blake3_hex must succeed");
         assert_eq!(hex.len(), 64, "BLAKE3 hex must be 64 characters");
+    }
+
+    #[test]
+    fn manifest_search_matches_capabilities_and_exports() {
+        let mut def = minimal_def(TrustLevel::Verified);
+        def.required_capabilities = vec!["file.read".to_string()];
+        def.exported_capabilities = vec!["clock.now".to_string()];
+        def.handlers = vec![HandlerExport {
+            capability: "log.write".to_string(),
+            handler_name: "ConsoleLogger".to_string(),
+            trust_level: TrustLevel::Verified,
+        }];
+        def.exports = vec![ExportDeclaration {
+            name: "read_config".to_string(),
+            signature: "Path -> Bytes".to_string(),
+            effects: vec!["file.read".to_string()],
+            contracts: vec!["no_parent_traversal".to_string()],
+            visibility: crate::export::ExportVisibility::Public,
+            stability: crate::export::ExportStability::Stable,
+            trust_state: None,
+        }];
+        let manifest = PackageManifest::from_def(def);
+
+        assert!(manifest.matches_search_query("file.read"));
+        assert!(manifest.matches_search_query("clock.now"));
+        assert!(manifest.matches_search_query("ConsoleLogger"));
+        assert!(manifest.matches_search_query("read_config"));
+        assert!(manifest.matches_search_query("no_parent_traversal"));
+        assert!(!manifest.matches_search_query("network.connect"));
     }
 
     // ── validate_rejects_unsafe_without_surface ───────────────────────────

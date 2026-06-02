@@ -54,6 +54,38 @@ fn package_publish_persists_signed_registry_record() {
 }
 
 #[test]
+fn package_search_json_finds_registry_package_by_capability() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+
+    let mut manifest = test_package_manifest("runtime.files", "1.0.0", TrustLevel::Verified);
+    manifest.required_capabilities = vec!["file.read".to_string()];
+    write_package_registry_file(
+        dir.path(),
+        &TestPackageRegistryFile {
+            signed_packages: vec![],
+            legacy_manifests: vec![manifest],
+            advisories: vec![],
+            yanked: vec![],
+        },
+    );
+
+    let output = ail()
+        .args(["package", "search", "file.read", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["data"]["query"], "file.read");
+    assert_eq!(v["data"]["results"][0]["name"], "runtime.files");
+    assert_eq!(v["data"]["results"][0]["latest_version"], "1.0.0");
+}
+
+#[test]
 fn package_publish_production_blocks_incomplete_manifest() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();

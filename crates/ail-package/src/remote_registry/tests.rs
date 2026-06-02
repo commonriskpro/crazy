@@ -126,6 +126,25 @@ fn in_memory_client_publish_persists_for_search() {
     assert!(!search.truncated);
 }
 
+#[test]
+fn in_memory_client_search_matches_capability_keywords() {
+    let client = InMemoryRegistryClient::new();
+    let mut manifest = make_manifest("runtime.files", "1.0.0");
+    manifest.required_capabilities = vec!["file.read".to_string()];
+    client.registry.register(manifest);
+
+    let search = client
+        .search(SearchRequest {
+            query: "file.read".to_string(),
+            limit: None,
+        })
+        .expect("search");
+
+    assert_eq!(search.results.len(), 1);
+    assert_eq!(search.results[0].name, "runtime.files");
+    assert_eq!(search.results[0].latest_version, "1.0.0");
+}
+
 // ── in_memory_client_search_dedupes_by_package_with_latest_version ────
 // Spec scenario: "Search returns one package row with the latest version"
 #[test]

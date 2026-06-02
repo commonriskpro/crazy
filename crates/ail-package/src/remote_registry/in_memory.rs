@@ -248,14 +248,14 @@ impl RegistryClient for InMemoryRegistryClient {
         let mut by_name: BTreeMap<String, PackageManifest> = BTreeMap::new();
 
         for m in self.registry.all() {
-            if m.name.to_lowercase().contains(&query) {
+            if m.matches_search_query(&query) {
                 insert_latest(&mut by_name, m.clone());
             }
         }
 
         for signed in self.signed_packages.borrow().iter() {
             let m = &signed.manifest;
-            if m.name.to_lowercase().contains(&query) {
+            if m.matches_search_query(&query) {
                 insert_latest(&mut by_name, m.clone());
             }
         }

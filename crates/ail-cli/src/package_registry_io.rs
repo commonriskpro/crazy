@@ -119,7 +119,7 @@ impl RegistryClient for LocalRegistryClient {
             .registry
             .all()
             .iter()
-            .filter(|manifest| manifest.name.to_lowercase().contains(&query))
+            .filter(|manifest| manifest.matches_search_query(&query))
             .collect::<Vec<_>>();
         let results = matching
             .iter()
