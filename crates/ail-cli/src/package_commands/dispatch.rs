@@ -674,15 +674,31 @@ pub(crate) async fn cmd_package(
                 "ok"
             };
             let compatibility_ok = !compatibility_blocked;
-            let assumptions_valid = lockfile.entries.iter().all(|entry| {
-                registry
-                    .lookup_by_name_version(&entry.name, &entry.version)
-                    .map(|manifest| {
-                        missing_package_assumption_ids(manifest, &entry.accepted_assumptions)
-                            .is_empty()
-                    })
-                    .unwrap_or(true)
-            });
+            let mut packages_missing_assumptions = Vec::new();
+            let mut missing_assumption_lines = Vec::new();
+            for entry in &lockfile.entries {
+                let Some(manifest) = registry.lookup_by_name_version(&entry.name, &entry.version)
+                else {
+                    continue;
+                };
+                let missing_assumptions =
+                    missing_package_assumption_ids(manifest, &entry.accepted_assumptions);
+                if missing_assumptions.is_empty() {
+                    continue;
+                }
+                missing_assumption_lines.push(format!(
+                    "{}@{}: {}",
+                    entry.name,
+                    entry.version,
+                    missing_assumptions.join(", ")
+                ));
+                packages_missing_assumptions.push(json!({
+                    "name": &entry.name,
+                    "version": &entry.version,
+                    "missing_assumptions": missing_assumptions,
+                }));
+            }
+            let assumptions_valid = packages_missing_assumptions.is_empty();
             let assumptions_integrity = if assumptions_valid { "ok" } else { "warning" };
             // 4G: reproducible evidence integrity — warn-only (advisory, not a blocker).
             let repro_evidence_integrity = if verified_packages_missing_evidence.is_empty() {
@@ -738,6 +754,13 @@ pub(crate) async fn cmd_package(
                     verified_packages_missing_evidence.join(", ")
                 ));
             }
+            if !missing_assumption_lines.is_empty() {
+                human_msg.push_str(&format!(
+                    "\nWARNING: {} package(s) missing accepted assumptions — run `ail package accept-assumption`: {}",
+                    missing_assumption_lines.len(),
+                    missing_assumption_lines.join("; ")
+                ));
+            }
             if !signature_failures.is_empty() {
                 human_msg.push_str(&format!(
                     "\nsignature_failures: {}\n{}",
@@ -773,6 +796,7 @@ pub(crate) async fn cmd_package(
                 "compatibility_integrity": compatibility_integrity,
                 "assumptions_integrity": assumptions_integrity,
                 "assumptions_valid": assumptions_valid,
+                "packages_missing_assumptions": packages_missing_assumptions,
                 "reproducible_evidence_integrity": repro_evidence_integrity,
                 "verified_packages_missing_evidence": verified_packages_missing_evidence,
                 "lock_file": if verified { "consistent" } else { "inconsistent" },

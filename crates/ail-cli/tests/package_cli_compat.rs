@@ -303,6 +303,18 @@ fn package_verify_json_surfaces_assumption_status_per_locked_package() {
     assert_eq!(v["data"]["verified"], true);
     assert_eq!(v["data"]["assumptions_integrity"], "warning");
     assert_eq!(v["data"]["assumptions_valid"], false);
+    assert_eq!(
+        v["data"]["packages_missing_assumptions"][0]["name"],
+        "verify.assumptions"
+    );
+    assert_eq!(
+        v["data"]["packages_missing_assumptions"][0]["version"],
+        "1.0.0"
+    );
+    assert_eq!(
+        v["data"]["packages_missing_assumptions"][0]["missing_assumptions"][0],
+        "assume-reviewed-vendor"
+    );
     assert_eq!(v["data"]["packages"][0]["name"], "verify.assumptions");
     assert_eq!(v["data"]["packages"][0]["assumptions_count"], 1);
     assert_eq!(
@@ -314,6 +326,19 @@ fn package_verify_json_surfaces_assumption_status_per_locked_package() {
         "assume-reviewed-vendor"
     );
     assert_eq!(v["data"]["packages"][0]["assumptions_valid"], false);
+
+    ail()
+        .args(["package", "verify"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "WARNING: 1 package(s) missing accepted assumptions",
+        ))
+        .stdout(predicate::str::contains(
+            "verify.assumptions@1.0.0: assume-reviewed-vendor",
+        ))
+        .stdout(predicate::str::contains("ail package accept-assumption"));
 }
 
 // ── G31: audit ────────────────────────────────────────────────────────────────
