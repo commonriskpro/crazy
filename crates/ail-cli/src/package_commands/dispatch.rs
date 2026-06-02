@@ -1329,6 +1329,7 @@ pub(crate) async fn cmd_package(
                 .collect::<Vec<_>>();
             let mut packages_missing_assumptions = Vec::new();
             let mut missing_assumption_lines = Vec::new();
+            let mut remediation_actions = Vec::new();
             for entry in &lockfile.entries {
                 let Some(manifest) = registry.lookup_by_name_version(&entry.name, &entry.version)
                 else {
@@ -1339,12 +1340,26 @@ pub(crate) async fn cmd_package(
                 if missing_assumptions.is_empty() {
                     continue;
                 }
+                let package_spec = format!("{}@{}", entry.name, entry.version);
                 missing_assumption_lines.push(format!(
-                    "{}@{}: {}",
-                    entry.name,
-                    entry.version,
+                    "{package_spec}: {}",
                     missing_assumptions.join(", ")
                 ));
+                for assumption in &missing_assumptions {
+                    remediation_actions.push(json!({
+                        "action": "accept_assumption",
+                        "package": &entry.name,
+                        "version": &entry.version,
+                        "assumption": assumption,
+                        "command": [
+                            "ail",
+                            "package",
+                            "accept-assumption",
+                            &package_spec,
+                            assumption,
+                        ],
+                    }));
+                }
                 packages_missing_assumptions.push(json!({
                     "name": &entry.name,
                     "version": &entry.version,
@@ -1463,6 +1478,7 @@ pub(crate) async fn cmd_package(
                     "packages_checked": packages_checked,
                     "assumptions_valid": assumption_issue_count == 0,
                     "packages_missing_assumptions": packages_missing_assumptions,
+                    "remediation_actions": remediation_actions,
                     "unsafe_surface": unsafe_surface_json,
                     "summary": {
                         "packages_checked": packages_checked,

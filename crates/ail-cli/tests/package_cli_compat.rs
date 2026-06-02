@@ -486,6 +486,21 @@ fn package_audit_blocks_unaccepted_package_assumption() {
     assert_eq!(v["data"]["packages"][0]["assumptions_valid"], false);
     assert_eq!(v["data"]["packages"][0]["risk_status"], "blocked");
     assert_eq!(v["data"]["packages"][0]["blocked_issues"], 1);
+    let remediation = &v["data"]["remediation_actions"][0];
+    assert_eq!(remediation["action"], "accept_assumption");
+    assert_eq!(remediation["package"], "assumed.pkg");
+    assert_eq!(remediation["version"], "1.0.0");
+    assert_eq!(remediation["assumption"], "assume-reviewed-vendor");
+    assert_eq!(
+        remediation["command"],
+        serde_json::json!([
+            "ail",
+            "package",
+            "accept-assumption",
+            "assumed.pkg@1.0.0",
+            "assume-reviewed-vendor"
+        ])
+    );
 
     ail()
         .args(["package", "audit"])
