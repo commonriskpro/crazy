@@ -109,7 +109,24 @@ fn lsp_references_resolve_ail_source_imported_function_uses() {
 
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["token"], "math.add_pair");
+    assert_eq!(v["data"]["references_found"], true);
     assert_eq!(v["data"]["reference_count"], 3);
+    let reference_uris = v["data"]["reference_uris"]
+        .as_array()
+        .expect("reference uris must be an array");
+    assert_eq!(reference_uris.len(), 2);
+    assert!(
+        reference_uris[0]
+            .as_str()
+            .expect("first reference uri")
+            .ends_with("main.ail")
+    );
+    assert!(
+        reference_uris[1]
+            .as_str()
+            .expect("second reference uri")
+            .ends_with("math.ail")
+    );
     assert_eq!(refs[0]["range"]["start"]["line"], 1);
     assert_eq!(refs[1]["range"]["start"]["line"], 2);
     assert!(
@@ -272,7 +289,15 @@ fn main() -> Int = helper()\n",
 
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["token"], "helper");
+    assert_eq!(v["data"]["references_found"], false);
     assert_eq!(v["data"]["reference_count"], 0);
+    assert_eq!(
+        v["data"]["reference_uris"]
+            .as_array()
+            .expect("empty reference uris must be an array")
+            .len(),
+        0
+    );
     assert_eq!(
         v["data"]["references"]
             .as_array()

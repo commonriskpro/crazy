@@ -282,15 +282,27 @@ fn cmd_lsp_references(
     let text = std::fs::read_to_string(&path)?;
     let uri = format!("file://{}", path.display());
     let references = references_for_token(&uri, &text, token);
+    let reference_count = references.len();
+    let reference_uris = reference_uris(&references);
+    let references_found = reference_count > 0;
     print_response(
         mode,
-        &format!("LSP references: {} location(s)", references.len()),
+        &format!("LSP references: {reference_count} location(s)"),
         json!({
             "token": token,
             "uri": uri,
+            "references_found": references_found,
+            "reference_count": reference_count,
+            "reference_uris": reference_uris,
             "references": references,
-            "reference_count": references.len(),
         }),
     );
     Ok(())
+}
+
+fn reference_uris(references: &[Value]) -> Vec<String> {
+    references
+        .iter()
+        .filter_map(|reference| reference["uri"].as_str())
+        .fold(Vec::new(), push_unique)
 }
