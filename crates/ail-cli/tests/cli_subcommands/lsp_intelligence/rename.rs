@@ -87,6 +87,22 @@ fn lsp_rename_candidates_reports_symbol_kind_and_open_document_references() {
     assert_eq!(candidate["range"]["start"]["character"], 19);
     assert_eq!(candidate["range"]["end"]["character"], 32);
     assert_eq!(candidate["referenceCount"], 2);
+    let reference_uris = candidate["referenceUris"]
+        .as_array()
+        .expect("rename reference uris must be an array");
+    assert_eq!(reference_uris.len(), 2);
+    assert!(
+        reference_uris[0]
+            .as_str()
+            .expect("first rename reference uri")
+            .ends_with("main.ail")
+    );
+    assert!(
+        reference_uris[1]
+            .as_str()
+            .expect("second rename reference uri")
+            .ends_with("math.ail")
+    );
     assert_eq!(references.len(), 2);
     assert!(references.iter().any(|reference| {
         reference["uri"]
@@ -620,6 +636,17 @@ fn lsp_rename_edits_cover_source_block_tests() {
 
     assert_eq!(result["canRename"], true);
     assert_eq!(result["referenceToken"], "test.smoke");
+    assert_eq!(result["documentCount"], 1);
+    let document_uris = result["documentUris"]
+        .as_array()
+        .expect("rename document uris must be an array");
+    assert_eq!(document_uris.len(), 1);
+    assert!(
+        document_uris[0]
+            .as_str()
+            .expect("rename document uri")
+            .ends_with("main.ail")
+    );
     assert_eq!(result["editCount"], 2);
     assert_eq!(edits.len(), 2);
     assert_eq!(edits[0]["newText"], "addition");

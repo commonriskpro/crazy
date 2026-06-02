@@ -115,6 +115,7 @@ pub(super) fn rename_edits_at_position(
     }
 
     let document_count = changes.len();
+    let document_uris = changes.keys().cloned().collect::<Vec<_>>();
     let edit_count = changes.values().map(Vec::len).sum::<usize>();
     json!({
         "canRename": true,
@@ -123,6 +124,7 @@ pub(super) fn rename_edits_at_position(
         "symbolKind": candidate["symbolKind"].clone(),
         "newName": new_name,
         "documentCount": document_count,
+        "documentUris": document_uris,
         "editCount": edit_count,
         "workspaceEdit": {
             "changes": changes
@@ -213,6 +215,7 @@ pub(super) fn rename_candidate_at_position(
         references_for_token_with_workspace(uri, text, &symbol.name, workspace_documents);
     sort_locations(&mut references);
     let reference_count = references.len();
+    let reference_uris = location_uris(&references);
     let range = token_range_json(line, &token_range);
     json!({
         "canRename": true,
@@ -223,6 +226,7 @@ pub(super) fn rename_candidate_at_position(
         "placeholder": symbol_local_name(&symbol.name),
         "references": references,
         "referenceCount": reference_count,
+        "referenceUris": reference_uris,
     })
 }
 
@@ -493,6 +497,18 @@ fn sort_locations(locations: &mut [Value]) {
             .cmp(&location_sort_key(right))
             .then_with(|| left.to_string().cmp(&right.to_string()))
     });
+}
+
+fn location_uris(locations: &[Value]) -> Vec<String> {
+    locations
+        .iter()
+        .filter_map(|location| location["uri"].as_str())
+        .fold(Vec::new(), |mut uris, uri| {
+            if !uris.iter().any(|existing| existing == uri) {
+                uris.push(uri.to_string());
+            }
+            uris
+        })
 }
 
 fn location_sort_key(location: &Value) -> (String, u64, u64, u64, u64) {
