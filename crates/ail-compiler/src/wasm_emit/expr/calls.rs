@@ -149,6 +149,12 @@ pub(super) fn emit_call_expr<'a>(
     }
     if matches!(
         func.as_str(),
+        "bytes.concat" | "bytes_concat" | "std.bytes.concat"
+    ) {
+        return emit_text_concat(args, ctx, insns);
+    }
+    if matches!(
+        func.as_str(),
         "bytes.empty" | "bytes_empty" | "std.bytes.empty"
     ) {
         return emit_bytes_empty(args, ctx, insns);

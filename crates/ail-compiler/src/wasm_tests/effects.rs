@@ -474,6 +474,78 @@ fn bytes_slice_of_file_read_emits_option_copy() {
 }
 
 #[test]
+fn bytes_concat_of_file_reads_emits_two_copies_and_packs_bytes() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.read_file_concat".to_string(),
+        expr: AnfExpr::Let {
+            name: "left_path".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("left.bin".to_string()))),
+            body: Box::new(AnfExpr::Let {
+                name: "right_path".to_string(),
+                value: Box::new(AnfExpr::Literal(LiteralValue::Text(
+                    "right.bin".to_string(),
+                ))),
+                body: Box::new(AnfExpr::Let {
+                    name: "left".to_string(),
+                    value: Box::new(AnfExpr::EffectCall {
+                        capability: "file.read".to_string(),
+                        func: "read".to_string(),
+                        args: vec!["left_path".to_string()],
+                    }),
+                    body: Box::new(AnfExpr::Let {
+                        name: "right".to_string(),
+                        value: Box::new(AnfExpr::EffectCall {
+                            capability: "file.read".to_string(),
+                            func: "read".to_string(),
+                            args: vec!["right_path".to_string()],
+                        }),
+                        body: Box::new(AnfExpr::Call {
+                            func: "std.bytes.concat".to_string(),
+                            args: vec!["left".to_string(), "right".to_string()],
+                        }),
+                    }),
+                }),
+            }),
+        },
+    };
+    let anf = sealed_anf(vec![binding]);
+    let layout = EffectDataLayout::for_bindings(&anf.bindings);
+    assert!(
+        layout.needs_memory,
+        "std.bytes.concat must allocate the merged Bytes payload"
+    );
+    let artifact = emit_wasm(&anf).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+    let mut memory_copy_count = 0usize;
+    let mut saw_len_add = false;
+    let mut saw_pack_or = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                match reader.read().unwrap() {
+                    Operator::MemoryCopy { .. } => memory_copy_count += 1,
+                    Operator::I32Add => saw_len_add = true,
+                    Operator::I64Or => saw_pack_or = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    assert!(
+        memory_copy_count >= 2,
+        "std.bytes.concat must copy both left and right buffers"
+    );
+    assert!(saw_len_add, "std.bytes.concat must add both byte lengths");
+    assert!(saw_pack_or, "std.bytes.concat must pack merged len/ptr");
+}
+
+#[test]
 fn time_arithmetic_after_clock_effect_emits_add_and_sub() {
     use wasmparser::{Operator, Parser, Payload};
 

@@ -483,6 +483,53 @@ grant slice_miss file.read\n",
 }
 
 #[test]
+fn run_file_processes_ail_source_fs_read_file_bytes_concat() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let left = dir.child("left.bin");
+    left.write_binary(b"AI")
+        .expect("left fixture must be written");
+    let right = dir.child("right.bin");
+    right
+        .write_binary(b"L!")
+        .expect("right fixture must be written");
+    let empty = dir.child("empty.bin");
+    empty
+        .write_binary(b"")
+        .expect("empty fixture must be written");
+    let source = dir.child("file_read_concat.ail");
+    source
+        .write_str(
+            "capability file.read\n\
+fn main() -> Int {\n\
+  let left = fs_read_file(path_from_text(\"left.bin\"))\n\
+  let right = fs_read_file(path_from_text(\"right.bin\"))\n\
+  let empty = fs_read_file(path_from_text(\"empty.bin\"))\n\
+  let suffix = unwrap_or(bytes_slice(right, 0, 2), empty)\n\
+  let merged = bytes_concat(left, suffix)\n\
+  return bytes_length(merged) + unwrap_or(bytes_at(merged, 2), 0)\n\
+}\n\
+grant main file.read\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--grant",
+            "file.read",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.main"))
+        .stdout(predicate::str::contains("result: 80"));
+}
+
+#[test]
 fn run_file_executes_ail_source_random_next_int_with_grant() {
     use assert_fs::prelude::*;
 
