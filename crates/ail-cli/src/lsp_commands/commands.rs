@@ -197,15 +197,27 @@ fn push_unique_u64(mut values: Vec<u64>, value: u64) -> Vec<u64> {
 
 fn cmd_lsp_hover(mode: OutputMode, token: &str) -> Result<(), CliError> {
     let hover = hover_for_token(token);
+    let hover_found = !hover.is_null();
+    let hover_kind = hover["contents"]["kind"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| "none".to_string());
+    let hover_markdown = hover["contents"]["value"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_default();
     print_response(
         mode,
-        if hover.is_null() {
+        if !hover_found {
             "LSP hover: no information"
         } else {
             "LSP hover: found"
         },
         json!({
             "token": token,
+            "hover_found": hover_found,
+            "hover_kind": hover_kind,
+            "hover_markdown": hover_markdown,
             "hover": hover,
         }),
     );

@@ -70,6 +70,15 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         .clone();
     let hover = parse_json_output(&hover_output);
     assert_eq!(hover["status"], "ok");
+    assert_eq!(hover["data"]["hover_found"], true);
+    assert_eq!(hover["data"]["hover_kind"], "markdown");
+    assert!(
+        hover["data"]["hover_markdown"]
+            .as_str()
+            .expect("top-level hover markdown")
+            .contains("explicit grant"),
+        "top-level hover markdown must summarize hover contents; got: {hover}"
+    );
     assert!(
         hover["data"]["hover"]["contents"]["value"]
             .as_str()
@@ -85,6 +94,7 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         .get_output()
         .clone();
     let print_hover = parse_json_output(&print_hover_output);
+    assert_eq!(print_hover["data"]["hover_found"], true);
     assert!(
         print_hover["data"]["hover"]["contents"]["value"]
             .as_str()
@@ -92,6 +102,18 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
             .contains("requires capability log.write"),
         "hover must explain log_write grants; got: {print_hover}"
     );
+
+    let missing_hover_output = ail()
+        .args(["lsp", "--hover-token", "__missing_hover_symbol__", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let missing_hover = parse_json_output(&missing_hover_output);
+    assert_eq!(missing_hover["data"]["hover_found"], false);
+    assert_eq!(missing_hover["data"]["hover_kind"], "none");
+    assert_eq!(missing_hover["data"]["hover_markdown"], "");
+    assert_eq!(missing_hover["data"]["hover"], serde_json::Value::Null);
 
     let first_or_completion_output = ail()
         .args(["lsp", "--complete", "first", "--json"])
