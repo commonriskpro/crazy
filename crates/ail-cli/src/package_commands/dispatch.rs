@@ -356,6 +356,89 @@ pub(crate) async fn cmd_package(
                 }),
             );
         }
+
+        PackageCmd::AcceptAssumption {
+            package,
+            assumption,
+        } => {
+            let (name, requested_version) = parse_package_spec(&package);
+            let assumption = validate_required_package_metadata_field("assumption", assumption)?;
+            let registry = load_package_registry(store)?;
+            let mut lockfile = load_package_lockfile(store)?;
+            let matching_indices = lockfile
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    entry.name == name
+                        && (requested_version == "latest" || entry.version == requested_version)
+                })
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let index = match matching_indices.as_slice() {
+                [index] => *index,
+                [] => {
+                    return Err(CliError::NotFound(format!(
+                        "locked package not found: {name}@{requested_version}"
+                    )));
+                }
+                _ => {
+                    return Err(CliError::Domain(format!(
+                        "multiple locked versions for {name}; use an exact package@version"
+                    )));
+                }
+            };
+            let locked_name = lockfile.entries[index].name.clone();
+            let locked_version = lockfile.entries[index].version.clone();
+            let manifest = registry
+                .lookup_by_name_version(&locked_name, &locked_version)
+                .ok_or_else(|| {
+                    CliError::NotFound(format!(
+                        "package manifest not found for locked package: {locked_name}@{locked_version}"
+                    ))
+                })?;
+            if !manifest
+                .assumptions
+                .iter()
+                .any(|declared| declared.id == assumption)
+            {
+                return Err(CliError::Domain(format!(
+                    "package {locked_name}@{locked_version} does not declare assumption {assumption}"
+                )));
+            }
+
+            let entry = &mut lockfile.entries[index];
+            let already_accepted = entry.accepted_assumptions.contains(&assumption);
+            if !already_accepted {
+                entry.accepted_assumptions.push(assumption.clone());
+                entry.accepted_assumptions.sort();
+                entry.accepted_assumptions.dedup();
+                save_package_lockfile(store, &lockfile)?;
+            }
+            let accepted_assumptions = lockfile.entries[index].accepted_assumptions.clone();
+            let status = if already_accepted {
+                "already_accepted"
+            } else {
+                "accepted"
+            };
+            let human_msg = format!(
+                "package assumption {status}\npackage: {locked_name}\nversion: {locked_version}\nassumption: {assumption}\naccepted_assumptions: {}",
+                accepted_assumptions.join(", ")
+            );
+            print_response(
+                mode,
+                &human_msg,
+                json!({
+                    "status": status,
+                    "package": locked_name,
+                    "version": locked_version,
+                    "assumption": assumption,
+                    "accepted": !already_accepted,
+                    "accepted_assumptions": accepted_assumptions,
+                }),
+            );
+        }
+
         PackageCmd::Search { query } => {
             let registry = load_package_registry(store)?;
             let client = LocalRegistryClient { registry };

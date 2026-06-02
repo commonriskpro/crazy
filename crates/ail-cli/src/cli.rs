@@ -578,6 +578,13 @@ pub(crate) enum PackageCmd {
         /// Package specifier in `name@version` form; latest local match if version omitted.
         package: String,
     },
+    /// Accept a package assumption for the locked dependency version.
+    AcceptAssumption {
+        /// Package specifier in `name@version` form; version may be omitted if one version is locked.
+        package: String,
+        /// Assumption id declared by the resolved package manifest.
+        assumption: String,
+    },
     /// Search available packages in the local registry.
     Search {
         /// Search query.

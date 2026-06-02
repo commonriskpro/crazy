@@ -393,6 +393,89 @@ fn package_audit_blocks_unaccepted_package_assumption() {
 }
 
 #[test]
+fn package_accept_assumption_updates_lockfile_and_unblocks_audit() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let mut manifest = test_package_manifest("assumed.pkg", "1.0.0", TrustLevel::Assumed);
+    manifest.assumptions = vec![PackageAssumption {
+        id: "assume-reviewed-vendor".to_string(),
+        claim: "vendor process was reviewed".to_string(),
+        boundary: "boundary.vendor".to_string(),
+        owner: "security".to_string(),
+        expires: None,
+        state: AssumptionState::Active,
+    }];
+    write_legacy_package_registry(dir.path(), std::slice::from_ref(&manifest));
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    let output = ail()
+        .args([
+            "package",
+            "accept-assumption",
+            "assumed.pkg@1.0.0",
+            "assume-reviewed-vendor",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v = parse_json_output(&output);
+    assert_eq!(v["data"]["status"], "accepted");
+    assert_eq!(v["data"]["assumption"], "assume-reviewed-vendor");
+    let lockfile_bytes = fs::read(package_lockfile_path(dir.path())).expect("lockfile must exist");
+    let lockfile: Lockfile =
+        ciborium::from_reader(lockfile_bytes.as_slice()).expect("lockfile must decode");
+    assert_eq!(
+        lockfile.entries[0].accepted_assumptions,
+        vec!["assume-reviewed-vendor".to_string()]
+    );
+
+    let audit_output = ail()
+        .args(["package", "audit", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let audit = parse_json_output(&audit_output);
+    assert_eq!(audit["data"]["assumptions_valid"], true);
+    assert_eq!(audit["data"]["summary"]["assumptions"], 0);
+}
+
+#[test]
+fn package_accept_assumption_rejects_undeclared_assumption() {
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    ail().arg("init").current_dir(dir.path()).assert().success();
+    let mut manifest = test_package_manifest("assumed.pkg", "1.0.0", TrustLevel::Assumed);
+    manifest.assumptions = vec![PackageAssumption {
+        id: "assume-reviewed-vendor".to_string(),
+        claim: "vendor process was reviewed".to_string(),
+        boundary: "boundary.vendor".to_string(),
+        owner: "security".to_string(),
+        expires: None,
+        state: AssumptionState::Active,
+    }];
+    write_legacy_package_registry(dir.path(), std::slice::from_ref(&manifest));
+    write_package_lockfile(dir.path(), &lockfile_for_manifest(&manifest));
+
+    ail()
+        .args([
+            "package",
+            "accept-assumption",
+            "assumed.pkg@1.0.0",
+            "unknown-assumption",
+            "--json",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not declare assumption"));
+}
+
+#[test]
 fn package_audit_signed_registry_advisory_blocks() {
     let dir = assert_fs::TempDir::new().expect("temp dir must be created");
     ail().arg("init").current_dir(dir.path()).assert().success();
