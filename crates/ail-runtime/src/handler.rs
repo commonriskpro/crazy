@@ -234,7 +234,7 @@ pub struct ClockHandler {
 impl ClockHandler {
     pub fn new() -> Self {
         Self {
-            caps: vec![CapabilityId::new("clock")],
+            caps: vec![CapabilityId::new("clock"), CapabilityId::new("clock.now")],
         }
     }
 }

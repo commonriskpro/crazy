@@ -19,9 +19,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use ail_runtime::{
-    AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, LogHandler, PreflightFailure,
-    ResourceLimits, RuntimeArg, RuntimeError, RuntimeHost, RuntimeProfile, RuntimeReportStatus,
-    RuntimeValue, StructuredValue, ValueLayout, blake3_hex_of,
+    AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, ClockHandler, LogHandler,
+    PreflightFailure, ResourceLimits, RuntimeArg, RuntimeError, RuntimeHost, RuntimeProfile,
+    RuntimeReportStatus, RuntimeValue, StructuredValue, ValueLayout, blake3_hex_of,
 };
 use serde_json::{Value, json};
 

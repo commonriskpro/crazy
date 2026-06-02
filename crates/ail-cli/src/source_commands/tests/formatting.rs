@@ -390,6 +390,7 @@ fn from_hex(value:Text)->Result<Bytes,Text>=encoding.hex_decode(value)
 fn formats_source_time_helpers() {
     let (formatted, item_count) = format_ail_source(
         r#"
+fn now()->Int=std.time.now()
 fn elapsed(later:Int,earlier:Int)->Int=std.time.duration_since(later,earlier)
 fn deadline(start:Int,delta:Int)->Int=time.add_duration(start,delta)
 fn millis(value:Int)->Int=std.time.instant_to_ms(value)
@@ -397,7 +398,8 @@ fn millis(value:Int)->Int=std.time.instant_to_ms(value)
     )
     .expect("source time helpers must format");
 
-    assert_eq!(item_count, 3);
+    assert_eq!(item_count, 4);
+    assert!(formatted.contains("fn now() -> Int = time_now()\n"));
     assert!(formatted.contains(
         "fn elapsed(later: Int, earlier: Int) -> Int = time_duration_since(later, earlier)\n"
     ));

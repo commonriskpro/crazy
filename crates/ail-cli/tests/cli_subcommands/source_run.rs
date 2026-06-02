@@ -236,6 +236,38 @@ fn config_path_text() -> Text = path_to_text(path_from_text(\"config/app.toml\")
 }
 
 #[test]
+fn run_file_executes_ail_source_time_now_with_clock_grant() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let source = dir.child("time_now.ail");
+    source
+        .write_str(
+            "capability clock.now\n\
+fn main() -> Int = time_now()\n\
+grant main clock.now\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--grant",
+            "clock.now",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.main"))
+        .stdout(
+            predicate::str::is_match(r"result: [1-9][0-9]{12}")
+                .expect("epoch-ms result regex must compile"),
+        );
+}
+
+#[test]
 fn run_file_executes_ail_source_length_helpers() {
     use assert_fs::prelude::*;
 

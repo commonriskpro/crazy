@@ -736,6 +736,23 @@ fn clock_handler_now_operation_succeeds() {
 /// `"elapsed"`) must return `HostError::Custom` whose message contains
 /// `"unknown clock operation: elapsed"`.
 #[test]
+#[test]
+fn clock_handler_declares_clock_now_alias_capability() {
+    let handler = ClockHandler::new();
+    assert!(
+        handler
+            .capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == "clock.now"),
+        "ClockHandler must serve source/stdlib clock.now capability"
+    );
+    let cap = CapabilityId::new("clock.now");
+    let result = handler
+        .handle(&cap, "now", &[])
+        .expect("clock.now alias must dispatch now");
+    assert_eq!(result.len(), 8, "clock.now alias must return i64 bytes");
+}
+
 fn clock_handler_unknown_operation_returns_custom_error() {
     let handler = ClockHandler::new();
     let cap = CapabilityId::new("clock");

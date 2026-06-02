@@ -1142,6 +1142,18 @@ pub(super) const AIL_SOURCE_BUILTIN_SYMBOLS: &[AclSymbol] = &[
         insert_text: "encoding.hex_decode(${1:text})",
     },
     AclSymbol {
+        label: "time_now",
+        detail: "AIL source Time helper",
+        documentation: "Reads the current epoch-millisecond Int through the clock.now capability; requires an explicit grant.",
+        insert_text: "time_now()",
+    },
+    AclSymbol {
+        label: "time.now",
+        detail: "AIL source Time helper",
+        documentation: "Dotted alias that reads the current epoch-millisecond Int through clock.now.",
+        insert_text: "time.now()",
+    },
+    AclSymbol {
         label: "time_duration_since",
         detail: "AIL source Time helper",
         documentation: "Returns later_ms - earlier_ms for two epoch-millisecond Int instants.",

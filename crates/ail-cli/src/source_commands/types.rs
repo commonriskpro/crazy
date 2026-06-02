@@ -331,7 +331,10 @@ pub(super) fn infer_source_call_type(
         | "std.bytes.at" | "bytes.slice" | "bytes_slice" | "std.bytes.slice" | "bytes.concat"
         | "bytes_concat" | "std.bytes.concat" | "bytes.empty" | "bytes_empty"
         | "std.bytes.empty" => infer_source_bytes_helper_type(func, args, scope, functions),
-        "time.duration_since"
+        "time.now"
+        | "time_now"
+        | "std.time.now"
+        | "time.duration_since"
         | "time_duration_since"
         | "std.time.duration_since"
         | "time.add_duration"
@@ -1259,6 +1262,7 @@ pub(super) fn infer_source_time_helper_type(
     functions: &BTreeMap<&str, SourceCallable>,
 ) -> Result<String, CliError> {
     let expected = match func {
+        "time.now" | "time_now" | "std.time.now" => &[][..],
         "time.duration_since" | "time_duration_since" | "std.time.duration_since" => {
             &["Int", "Int"][..]
         }

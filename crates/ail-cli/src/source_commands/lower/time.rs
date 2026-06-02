@@ -7,7 +7,7 @@ pub(super) fn lower_source_time_helper_expr(
     let Some((func, args)) = parse_source_call(expr) else {
         return Ok(None);
     };
-    let Some((lowered_func, arity, usage)) = source_time_helper_lowering(&func) else {
+    let Some((lowering, arity, usage)) = source_time_helper_lowering(&func) else {
         return Ok(None);
     };
     if args.len() != arity {
@@ -17,6 +17,12 @@ pub(super) fn lower_source_time_helper_expr(
             format!("{func} requires `{usage}`"),
         ));
     }
+    if lowering == SourceTimeLowering::ClockNow {
+        return Ok(Some("effect_call(clock.now, now)".to_string()));
+    }
+    let SourceTimeLowering::Pure(lowered_func) = lowering else {
+        unreachable!("checked source time lowering")
+    };
     Ok(Some(format!(
         "{lowered_func}({})",
         args.iter()
@@ -26,20 +32,29 @@ pub(super) fn lower_source_time_helper_expr(
     )))
 }
 
-fn source_time_helper_lowering(func: &str) -> Option<(&'static str, usize, &'static str)> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceTimeLowering {
+    ClockNow,
+    Pure(&'static str),
+}
+
+fn source_time_helper_lowering(func: &str) -> Option<(SourceTimeLowering, usize, &'static str)> {
     match func {
+        "time.now" | "time_now" | "std.time.now" => {
+            Some((SourceTimeLowering::ClockNow, 0, "time_now()"))
+        }
         "time.duration_since" | "time_duration_since" | "std.time.duration_since" => Some((
-            "std.time.duration_since",
+            SourceTimeLowering::Pure("std.time.duration_since"),
             2,
             "time_duration_since(later_ms, earlier_ms)",
         )),
         "time.add_duration" | "time_add_duration" | "std.time.add_duration" => Some((
-            "std.time.add_duration",
+            SourceTimeLowering::Pure("std.time.add_duration"),
             2,
             "time_add_duration(instant_ms, duration_ms)",
         )),
         "time.instant_to_ms" | "time_instant_to_ms" | "std.time.instant_to_ms" => Some((
-            "std.time.instant_to_ms",
+            SourceTimeLowering::Pure("std.time.instant_to_ms"),
             1,
             "time_instant_to_ms(instant_ms)",
         )),

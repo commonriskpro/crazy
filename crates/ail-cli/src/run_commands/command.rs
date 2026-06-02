@@ -117,7 +117,10 @@ pub(crate) async fn cmd_run(
     );
 
     let log_handler = Arc::new(LogHandler::new());
-    let mut host = RuntimeHost::new().with_handler(log_handler.clone());
+    let clock_handler = Arc::new(ClockHandler::new());
+    let mut host = RuntimeHost::new()
+        .with_handler(log_handler.clone())
+        .with_handler(clock_handler);
     let result = host.validate_and_instantiate(&artifact.wasm, &manifest, &runtime_profile);
 
     match result {

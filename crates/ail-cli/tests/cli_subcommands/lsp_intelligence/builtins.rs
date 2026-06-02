@@ -887,6 +887,7 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         .expect("completion items must be an array");
     assert!(
         [
+            "time_now",
             "time_duration_since",
             "time_add_duration",
             "time_instant_to_ms",
@@ -910,6 +911,7 @@ fn lsp_completion_and_hover_cover_ail_source_builtins() {
         .expect("completion items must be an array");
     assert!(
         [
+            "time.now",
             "time.duration_since",
             "time.add_duration",
             "time.instant_to_ms",

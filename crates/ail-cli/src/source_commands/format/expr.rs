@@ -1215,6 +1215,7 @@ fn source_encoding_helper(func: &str) -> Option<(&'static str, usize)> {
 
 fn source_time_helper(func: &str) -> Option<(&'static str, usize)> {
     match func {
+        "time.now" | "std.time.now" => Some(("time_now", 0)),
         "time.duration_since" | "std.time.duration_since" => Some(("time_duration_since", 2)),
         "time.add_duration" | "std.time.add_duration" => Some(("time_add_duration", 2)),
         "time.instant_to_ms" | "std.time.instant_to_ms" => Some(("time_instant_to_ms", 1)),
