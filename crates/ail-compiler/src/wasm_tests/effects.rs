@@ -234,6 +234,51 @@ fn file_read_bytes_effect_call_uses_host_call_write_buffer() {
 }
 
 #[test]
+fn bytes_length_of_file_read_uses_packed_length() {
+    use wasmparser::{Operator, Parser, Payload};
+
+    let binding = AnfBinding {
+        source_ref: NodeRef(0),
+        name: "fn.read_file_len".to_string(),
+        expr: AnfExpr::Let {
+            name: "path".to_string(),
+            value: Box::new(AnfExpr::Literal(LiteralValue::Text("data.bin".to_string()))),
+            body: Box::new(AnfExpr::Let {
+                name: "data".to_string(),
+                value: Box::new(AnfExpr::EffectCall {
+                    capability: "file.read".to_string(),
+                    func: "read".to_string(),
+                    args: vec!["path".to_string()],
+                }),
+                body: Box::new(AnfExpr::Call {
+                    func: "std.bytes.length".to_string(),
+                    args: vec!["data".to_string()],
+                }),
+            }),
+        },
+    };
+    let artifact = emit_wasm(&sealed_anf(vec![binding])).expect("emit_wasm must succeed");
+    wasmparser::validate(&artifact.wasm).expect("wasm must validate");
+
+    let mut saw_len_shift = false;
+    for payload in Parser::new(0).parse_all(&artifact.wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            let mut reader = body.get_operators_reader().unwrap();
+            while !reader.eof() {
+                if let Operator::I64ShrU = reader.read().unwrap() {
+                    saw_len_shift = true;
+                }
+            }
+        }
+    }
+
+    assert!(
+        saw_len_shift,
+        "std.bytes.length must read len from packed Bytes high bits"
+    );
+}
+
+#[test]
 fn effect_call_structured_return_emits_host_call_write_import() {
     use wasmparser::{Parser, Payload};
 

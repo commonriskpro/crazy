@@ -268,6 +268,41 @@ grant main file.read\n",
 }
 
 #[test]
+fn run_file_processes_ail_source_fs_read_file_bytes_length() {
+    use assert_fs::prelude::*;
+
+    let dir = assert_fs::TempDir::new().expect("temp dir must be created");
+    let data = dir.child("payload.bin");
+    data.write_binary(b"general-purpose")
+        .expect("data fixture must be written");
+    let source = dir.child("file_read_len.ail");
+    source
+        .write_str(
+            "capability file.read\n\
+fn main() -> Int {\n\
+  let data = fs_read_file(path_from_text(\"payload.bin\"))\n\
+  return bytes_length(data)\n\
+}\n\
+grant main file.read\n",
+        )
+        .expect("source fixture must be written");
+
+    ail()
+        .args([
+            "run",
+            "--file",
+            source.path().to_str().expect("path must be UTF-8"),
+            "--grant",
+            "file.read",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("module: fn.main"))
+        .stdout(predicate::str::contains("result: 15"));
+}
+
+#[test]
 fn run_file_executes_ail_source_random_next_int_with_grant() {
     use assert_fs::prelude::*;
 

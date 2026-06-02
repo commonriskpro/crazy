@@ -30,6 +30,9 @@ pub(super) fn lower_call(
     ) {
         return lower_path_identity_call(args, ctx, builder);
     }
+    if matches!(func, "bytes.length" | "bytes_length" | "std.bytes.length") {
+        return lower_bytes_length_call(args, ctx, builder);
+    }
 
     match func {
         // ── binary comparisons → I8 ────────────────────────────
@@ -78,6 +81,24 @@ pub(super) fn lower_call(
             }
         }
         _ => {
+            builder.ins().trap(TrapCode::user(1).unwrap());
+            LowerResult::Terminated
+        }
+    }
+}
+
+fn lower_bytes_length_call(
+    args: &[String],
+    ctx: &mut NativeCodegenCtx<'_>,
+    builder: &mut FunctionBuilder<'_>,
+) -> LowerResult {
+    let [arg] = args else {
+        builder.ins().trap(TrapCode::user(1).unwrap());
+        return LowerResult::Terminated;
+    };
+    match ctx.lookup(arg.as_str()).map(|(v, _)| v) {
+        Some(value) => LowerResult::Value(builder.ins().ushr_imm(value, 32)),
+        None => {
             builder.ins().trap(TrapCode::user(1).unwrap());
             LowerResult::Terminated
         }

@@ -116,6 +116,12 @@ pub(super) fn emit_call_expr<'a>(
     }
     if matches!(
         func.as_str(),
+        "bytes.length" | "bytes_length" | "std.bytes.length"
+    ) {
+        return emit_bytes_length(args, ctx, insns);
+    }
+    if matches!(
+        func.as_str(),
         "path.from_text"
             | "path_from_text"
             | "std.path.from_text"
@@ -138,6 +144,26 @@ pub(super) fn emit_call_expr<'a>(
         Some(ty)
     } else if let Some(idx) = functions.get(func) {
         insns.push(Instruction::Call(*idx));
+        Some(ValType::I64)
+    } else {
+        insns.push(Instruction::Unreachable);
+        None
+    }
+}
+
+fn emit_bytes_length<'a>(
+    args: &[String],
+    ctx: &mut WasmCodegenCtx<'a>,
+    insns: &mut Vec<Instruction<'a>>,
+) -> Option<ValType> {
+    let [arg] = args else {
+        insns.push(Instruction::Unreachable);
+        return None;
+    };
+    if let Some((idx, _)) = ctx.lookup(arg) {
+        insns.push(Instruction::LocalGet(idx));
+        insns.push(Instruction::I64Const(32));
+        insns.push(Instruction::I64ShrU);
         Some(ValType::I64)
     } else {
         insns.push(Instruction::Unreachable);
