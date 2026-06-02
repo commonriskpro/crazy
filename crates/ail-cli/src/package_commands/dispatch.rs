@@ -1289,6 +1289,13 @@ pub(crate) async fn cmd_package(
                 .iter()
                 .map(|entry| {
                     let manifest = registry.lookup_by_name_version(&entry.name, &entry.version);
+                    let accepted_assumptions = entry.accepted_assumptions.clone();
+                    let missing_assumptions = manifest
+                        .map(|manifest| {
+                            missing_package_assumption_ids(manifest, &accepted_assumptions)
+                        })
+                        .unwrap_or_default();
+                    let assumptions_valid = missing_assumptions.is_empty();
                     let package_issues = issues
                         .iter()
                         .filter(|issue| issue.package == entry.name && issue.version == entry.version)
@@ -1313,6 +1320,9 @@ pub(crate) async fn cmd_package(
                             .map(|manifest| manifest.exported_capabilities.clone())
                             .unwrap_or_default(),
                         "assumptions_count": manifest.map(|manifest| manifest.assumptions.len()).unwrap_or(0),
+                        "accepted_assumptions": accepted_assumptions,
+                        "missing_assumptions": missing_assumptions,
+                        "assumptions_valid": assumptions_valid,
                         "unsafe_surface_count": manifest
                             .map(|manifest| manifest.unsafe_surface.len())
                             .unwrap_or(0),

@@ -347,6 +347,15 @@ fn package_audit_json_surfaces_audited_package_metadata() {
         "clock.now"
     );
     assert_eq!(v["data"]["packages"][0]["assumptions_count"], 1);
+    assert_eq!(
+        v["data"]["packages"][0]["accepted_assumptions"][0],
+        "assume-sandboxed-path"
+    );
+    assert_eq!(
+        v["data"]["packages"][0]["missing_assumptions"],
+        Value::Array(vec![])
+    );
+    assert_eq!(v["data"]["packages"][0]["assumptions_valid"], true);
     assert_eq!(v["data"]["packages"][0]["unsafe_surface_count"], 1);
     assert_eq!(v["data"]["packages"][0]["risk_status"], "clean");
     assert_eq!(v["data"]["assumptions_valid"], true);
@@ -388,6 +397,15 @@ fn package_audit_blocks_unaccepted_package_assumption() {
         v["data"]["issues"][0]["assumption_id"],
         "assume-reviewed-vendor"
     );
+    assert_eq!(
+        v["data"]["packages"][0]["accepted_assumptions"],
+        Value::Array(vec![])
+    );
+    assert_eq!(
+        v["data"]["packages"][0]["missing_assumptions"][0],
+        "assume-reviewed-vendor"
+    );
+    assert_eq!(v["data"]["packages"][0]["assumptions_valid"], false);
     assert_eq!(v["data"]["packages"][0]["risk_status"], "blocked");
     assert_eq!(v["data"]["packages"][0]["blocked_issues"], 1);
 }
