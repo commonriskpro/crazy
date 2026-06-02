@@ -41,6 +41,11 @@ fn fmt_file_json_outputs_canonical_acl() {
         "fmt must phase-order create before verify; got:\n{formatted}"
     );
     assert_eq!(v["data"]["changed"], true);
+    assert_eq!(v["data"]["descriptor"]["input"], "file");
+    assert_eq!(v["data"]["descriptor"]["extension"], "acl");
+    assert_eq!(v["data"]["descriptor"]["language"], "acl");
+    assert_eq!(v["data"]["descriptor"]["mode"], "print");
+    assert_eq!(v["data"]["descriptor"]["changed"], true);
 }
 /// Spec scenario: ail fmt --write rewrites the file so --check passes.
 #[test]
@@ -730,6 +735,11 @@ fn fmt_stdin_json_detects_ail_source() {
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["language"], "ail-source");
     assert_eq!(v["data"]["item_count"], 1);
+    assert_eq!(v["data"]["descriptor"]["input"], "stdin");
+    assert_eq!(v["data"]["descriptor"]["extension"], "none");
+    assert_eq!(v["data"]["descriptor"]["language"], "ail-source");
+    assert_eq!(v["data"]["descriptor"]["mode"], "print");
+    assert_eq!(v["data"]["descriptor"]["changed"], true);
     assert_eq!(
         v["data"]["formatted"].as_str().expect("formatted string"),
         "fn add_pair(x: Int, y: Int) -> Int = x + y\n"

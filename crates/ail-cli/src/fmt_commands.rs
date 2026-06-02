@@ -598,6 +598,15 @@ pub(crate) fn cmd_fmt(
         outcome.formatted.clone()
     };
 
+    let descriptor = redacted_fmt_descriptor(
+        file.as_deref(),
+        FmtLanguage::from_language_name(outcome.language),
+        check,
+        write,
+        Some(outcome.changed),
+    )
+    .to_json();
+
     print_response(
         mode,
         &human_msg,
@@ -609,6 +618,7 @@ pub(crate) fn cmd_fmt(
             "op_count": outcome.op_count,
             "item_count": outcome.item_count,
             "language": outcome.language,
+            "descriptor": descriptor,
         }),
     );
     Ok(())
