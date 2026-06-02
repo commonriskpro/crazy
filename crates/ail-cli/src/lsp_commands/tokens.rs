@@ -361,5 +361,5 @@ fn source_operator_at_start(text: &str) -> Option<&'static str> {
 
 const SOURCE_OPERATORS: &[&str] = &[
     "...", "->", "++", "&&", "||", "==", "!=", ">=", "<=", "+", "-", "*", "/", "%", "!", ">", "<",
-    "=",
+    "=", ".", ":", ",",
 ];

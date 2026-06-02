@@ -9,6 +9,8 @@ fn lsp_semantic_tokens_are_stable_ordered_and_typed_for_source_documents() {
     let source_text = "module math\n\
 fn add_pair(x: Int, y: Int) -> Int = x + y // sum\n\
 const greeting: Text = \"hello // world\"\n\
+const person: Record<age:Int, name:Text> = record(age, 42, name, \"Ada\")\n\
+fn age(person: Record<age:Int, name:Text>) -> Int = person.age\n\
 fn clamp(x: Int) -> Int = if x == 0 {\n\
     return 1\n\
 } else {\n\
@@ -113,6 +115,10 @@ foreach item in items then record case enum struct type as false true\n";
         ("x", "variable"),
         ("Int", "type"),
         ("+", "operator"),
+        (":", "operator"),
+        (",", "operator"),
+        (".", "operator"),
+        ("Record", "type"),
         ("\"hello // world\"", "string"),
         ("// sum", "comment"),
         ("if", "keyword"),
