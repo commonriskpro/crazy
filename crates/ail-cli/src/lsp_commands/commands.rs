@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::error::CliError;
 use crate::output::{OutputMode, print_response};
@@ -59,11 +59,19 @@ fn cmd_lsp_diagnose(mode: OutputMode, path: PathBuf) -> Result<(), CliError> {
         .iter()
         .filter(|diagnostic| diagnostic["severity"] == 1)
         .count();
+    let warning_count = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic["severity"] == 2)
+        .count();
+    let diagnostic_codes = diagnostic_codes(&diagnostics);
+    let diagnostic_categories = diagnostic_categories(&diagnostics);
+    let repair_codes = diagnostic_repair_codes(&diagnostics);
+    let repair_count = repair_codes.len();
     let human_msg = if diagnostics.is_empty() {
         format!("LSP diagnostics: ok\nfile: {}", path.display())
     } else {
         format!(
-            "LSP diagnostics: {failed} error(s)\nfile: {}\n{}",
+            "LSP diagnostics: {failed} error(s), {warning_count} warning(s), {repair_count} repair(s)\nfile: {}\n{}",
             path.display(),
             diagnostics
                 .iter()
@@ -80,10 +88,43 @@ fn cmd_lsp_diagnose(mode: OutputMode, path: PathBuf) -> Result<(), CliError> {
             "diagnostics": diagnostics,
             "diagnostic_count": diagnostic_count,
             "error_count": failed,
+            "warning_count": warning_count,
+            "diagnostic_codes": diagnostic_codes,
+            "diagnostic_categories": diagnostic_categories,
+            "repair_count": repair_count,
+            "repair_codes": repair_codes,
             "language": language_for_uri(&uri),
         }),
     );
     Ok(())
+}
+
+fn diagnostic_codes(diagnostics: &[Value]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic["code"].as_str())
+        .fold(Vec::new(), push_unique)
+}
+
+fn diagnostic_categories(diagnostics: &[Value]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic["data"]["ailDiagnostic"]["category"].as_str())
+        .fold(Vec::new(), push_unique)
+}
+
+fn diagnostic_repair_codes(diagnostics: &[Value]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic["data"]["ailRepair"]["code"].as_str())
+        .fold(Vec::new(), push_unique)
+}
+
+fn push_unique(mut values: Vec<String>, value: &str) -> Vec<String> {
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
+    values
 }
 
 fn cmd_lsp_complete(mode: OutputMode, prefix: &str) -> Result<(), CliError> {

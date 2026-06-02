@@ -221,6 +221,20 @@ fn lsp_diagnose_warns_for_ignored_pure_expression_statements() {
     assert_eq!(v["data"]["language"], "ail-source");
     assert_eq!(v["data"]["diagnostic_count"], 1);
     assert_eq!(v["data"]["error_count"], 0);
+    assert_eq!(v["data"]["warning_count"], 1);
+    assert_eq!(
+        v["data"]["diagnostic_codes"][0],
+        "AIL_SOURCE_LSP_IGNORED_EXPRESSION"
+    );
+    assert_eq!(
+        v["data"]["diagnostic_categories"][0],
+        "source.lsp.ignored_expression"
+    );
+    assert_eq!(v["data"]["repair_count"], 1);
+    assert_eq!(
+        v["data"]["repair_codes"][0],
+        "remove.ignored_expression_statement"
+    );
     assert_eq!(v["data"]["diagnostics"][0]["severity"], 2);
     assert_eq!(
         v["data"]["diagnostics"][0]["code"],
