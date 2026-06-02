@@ -237,16 +237,32 @@ fn cmd_lsp_definition(
     let text = std::fs::read_to_string(&path)?;
     let uri = format!("file://{}", path.display());
     let definition = definition_for_token(&uri, &text, token);
+    let definition_uri = definition
+        .get("uri")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let definition_line = definition
+        .pointer("/range/start/line")
+        .and_then(Value::as_u64);
+    let definition_character = definition
+        .pointer("/range/start/character")
+        .and_then(Value::as_u64);
+    let definition_found =
+        definition_uri.is_some() && definition_line.is_some() && definition_character.is_some();
     print_response(
         mode,
-        if definition.is_null() {
-            "LSP definition: not found"
-        } else {
+        if definition_found {
             "LSP definition: found"
+        } else {
+            "LSP definition: not found"
         },
         json!({
             "token": token,
             "uri": uri,
+            "definition_found": definition_found,
+            "definition_uri": definition_uri,
+            "definition_line": definition_line,
+            "definition_character": definition_character,
             "definition": definition,
         }),
     );

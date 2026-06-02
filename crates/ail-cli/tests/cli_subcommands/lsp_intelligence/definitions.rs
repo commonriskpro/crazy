@@ -96,8 +96,17 @@ fn lsp_definition_resolves_ail_source_imported_function() {
 
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["token"], "math.add_pair");
+    assert_eq!(v["data"]["definition_found"], true);
+    assert_eq!(v["data"]["definition_line"], 1);
+    assert_eq!(v["data"]["definition_character"], 3);
     assert_eq!(v["data"]["definition"]["range"]["start"]["line"], 1);
     assert_eq!(v["data"]["definition"]["range"]["start"]["character"], 3);
+    assert!(
+        v["data"]["definition_uri"]
+            .as_str()
+            .expect("summary definition uri")
+            .ends_with("math.ail")
+    );
     assert!(
         v["data"]["definition"]["uri"]
             .as_str()
@@ -307,6 +316,10 @@ fn main() -> Int = helper()\n",
 
     assert_eq!(v["status"], "ok");
     assert_eq!(v["data"]["token"], "helper");
+    assert_eq!(v["data"]["definition_found"], false);
+    assert_eq!(v["data"]["definition_uri"], serde_json::Value::Null);
+    assert_eq!(v["data"]["definition_line"], serde_json::Value::Null);
+    assert_eq!(v["data"]["definition_character"], serde_json::Value::Null);
     assert_eq!(
         v["data"]["definition"]
             .as_array()
