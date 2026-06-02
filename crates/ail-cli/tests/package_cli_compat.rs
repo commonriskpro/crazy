@@ -713,6 +713,16 @@ fn package_audit_signed_registry_advisory_blocks() {
     assert_eq!(issue["advisory_id"], "adv_signed_001");
     assert_eq!(issue["severity"], "high");
     assert_eq!(issue["affected_range"], "<1.2.0");
+    let remediation = &v["data"]["remediation_actions"][0];
+    assert_eq!(remediation["action"], "review_advisory");
+    assert_eq!(remediation["package"], "signed.vuln");
+    assert_eq!(remediation["version"], "1.0.0");
+    assert_eq!(remediation["advisory_id"], "adv_signed_001");
+    assert_eq!(remediation["severity"], "high");
+    assert_eq!(
+        remediation["command"],
+        serde_json::json!(["ail", "package", "search", "signed.vuln"])
+    );
 }
 
 #[test]
@@ -807,6 +817,15 @@ fn package_audit_consumes_cli_created_yank_metadata() {
     assert_eq!(v["data"]["issues"][0]["kind"], "yanked");
     assert_eq!(v["data"]["issues"][0]["status"], "blocked");
     assert_eq!(v["data"]["issues"][0]["reason"], "cli yank blocks audit");
+    let remediation = &v["data"]["remediation_actions"][0];
+    assert_eq!(remediation["action"], "select_non_yanked_version");
+    assert_eq!(remediation["package"], "local.package");
+    assert_eq!(remediation["version"], "0.1.0");
+    assert_eq!(remediation["reason"], "cli yank blocks audit");
+    assert_eq!(
+        remediation["command"],
+        serde_json::json!(["ail", "package", "search", "local.package"])
+    );
 }
 
 #[test]

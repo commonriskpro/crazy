@@ -166,6 +166,27 @@ fn format_package_advisories(advisories: &[PackageAuditIssue]) -> String {
     }
 }
 
+fn package_audit_issue_remediation_action(issue: &PackageAuditIssue) -> Option<serde_json::Value> {
+    match issue.kind {
+        "advisory" => Some(json!({
+            "action": "review_advisory",
+            "package": &issue.package,
+            "version": &issue.version,
+            "advisory_id": &issue.advisory_id,
+            "severity": &issue.severity,
+            "command": ["ail", "package", "search", &issue.package],
+        })),
+        "yanked" => Some(json!({
+            "action": "select_non_yanked_version",
+            "package": &issue.package,
+            "version": &issue.version,
+            "reason": &issue.reason,
+            "command": ["ail", "package", "search", &issue.package],
+        })),
+        _ => None,
+    }
+}
+
 /// `ail package <add|lint|verify|publish|audit|explain>` — manage packages.
 ///
 /// Rules:
@@ -1327,9 +1348,12 @@ pub(crate) async fn cmd_package(
                 .iter()
                 .map(PackageAuditIssue::to_human_line)
                 .collect::<Vec<_>>();
+            let mut remediation_actions = issues
+                .iter()
+                .filter_map(package_audit_issue_remediation_action)
+                .collect::<Vec<_>>();
             let mut packages_missing_assumptions = Vec::new();
             let mut missing_assumption_lines = Vec::new();
-            let mut remediation_actions = Vec::new();
             for entry in &lockfile.entries {
                 let Some(manifest) = registry.lookup_by_name_version(&entry.name, &entry.version)
                 else {
