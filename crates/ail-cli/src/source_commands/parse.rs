@@ -157,6 +157,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
     qualify_source_program_module(&mut program);
     resolve_source_program_grants(&mut program)?;
     validate_source_program_symbols(&program)?;
+    validate_source_program_helper_types(&program)?;
     Ok(program)
 }
 

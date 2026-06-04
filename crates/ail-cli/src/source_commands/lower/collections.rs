@@ -224,6 +224,32 @@ pub(super) fn lower_source_set_helper_expr(
     )))
 }
 
+/// Lower the bare `set`, `map`, and `tuple` collection constructors.
+///
+/// The constructor name is preserved while each argument is lowered
+/// recursively, so nested expressions such as `set(1, 2 + 3)` become
+/// `set(1, add(2, 3))`. Re-lowering already-lowered output is a no-op because
+/// the lowered argument forms (literals, `add(..)`, etc.) pass through
+/// unchanged.
+pub(super) fn lower_source_collection_constructor_expr(
+    expr: &str,
+    line_num: usize,
+) -> Result<Option<String>, CliError> {
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(None);
+    };
+    if !matches!(func.as_str(), "set" | "map" | "tuple") {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "{func}({})",
+        args.iter()
+            .map(|arg| lower_source_expr(arg, line_num))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(", ")
+    )))
+}
+
 pub(super) fn lower_source_map_helper_expr(
     expr: &str,
     line_num: usize,

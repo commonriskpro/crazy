@@ -35,6 +35,165 @@ pub(super) fn validate_source_program_types(program: &SourceProgram) -> Result<(
     Ok(())
 }
 
+/// Validate the argument types of pure `std.*` helper calls eagerly during parse.
+///
+/// Effect-producing helpers (`env.*`, `fs.*`, `random.*`, `time.now`) lower to
+/// `effect_call(...)` and depend on grant/capability resolution, so their type
+/// checking stays deferred to [`validate_source_program_types`]. Pure helpers
+/// (`crypto`, `bytes`, `json`, `path`, `numeric`, `encoding`, and the pure
+/// `time` arithmetic helpers) only depend on the local parameter scope, so a
+/// type mismatch can be reported as soon as the source file is parsed.
+pub(super) fn validate_source_program_helper_types(
+    program: &SourceProgram,
+) -> Result<(), CliError> {
+    let functions = source_callable_types(program);
+
+    for constant in &program.constants {
+        let mut scope = BTreeMap::new();
+        check_source_helper_types(&constant.body, &mut scope, &functions, constant.line_num)?;
+    }
+    for function in &program.functions {
+        let mut scope = function
+            .params
+            .iter()
+            .map(|param| (param.name.clone(), param.ty.clone()))
+            .collect::<BTreeMap<_, _>>();
+        check_source_helper_types(&function.body, &mut scope, &functions, function.line_num)?;
+    }
+    for test in &program.tests {
+        let mut scope = BTreeMap::new();
+        check_source_helper_types(&test.body, &mut scope, &functions, test.line_num)?;
+    }
+    Ok(())
+}
+
+fn check_source_helper_types(
+    expr: &str,
+    scope: &mut BTreeMap<String, String>,
+    functions: &BTreeMap<&str, SourceCallable>,
+    line_num: usize,
+) -> Result<(), CliError> {
+    let Some((func, args)) = parse_source_call(expr.trim()) else {
+        return Ok(());
+    };
+    match func.as_str() {
+        // Track `let` bindings so helper arguments referencing locals resolve to
+        // a concrete type. Inference for the bound value is best-effort: an
+        // effect-call value stays lenient (Unknown) instead of failing here.
+        "let" if args.len() == 3 => {
+            check_source_helper_types(&args[1], scope, functions, line_num)?;
+            let value_ty = infer_source_expr_type(&args[1], scope, functions)
+                .unwrap_or_else(|_| "Unknown".to_string());
+            let mut inner_scope = scope.clone();
+            inner_scope.insert(args[0].clone(), value_ty);
+            check_source_helper_types(&args[2], &mut inner_scope, functions, line_num)?;
+        }
+        "let_typed" if args.len() == 5 => {
+            check_source_helper_types(&args[3], scope, functions, line_num)?;
+            let mut inner_scope = scope.clone();
+            inner_scope.insert(args[0].clone(), args[1].clone());
+            check_source_helper_types(&args[4], &mut inner_scope, functions, line_num)?;
+        }
+        // `match` arms may bind pattern variables that are not present in the
+        // current scope; defer those to the full type-validation pass.
+        "match" => {}
+        _ if is_pure_source_std_helper(&func) => {
+            infer_source_call_type(&func, &args, scope, functions)
+                .map_err(|err| source_error_at_line(err, line_num))?;
+        }
+        // Skip the capability/operation identifiers but still inspect payloads.
+        "effect_call" => {
+            for arg in args.iter().skip(2) {
+                check_source_helper_types(arg, scope, functions, line_num)?;
+            }
+        }
+        _ => {
+            for arg in &args {
+                check_source_helper_types(arg, scope, functions, line_num)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_pure_source_std_helper(func: &str) -> bool {
+    matches!(
+        func,
+        "crypto.hash"
+            | "crypto_hash"
+            | "std.crypto.hash"
+            | "crypto.hmac"
+            | "crypto_hmac"
+            | "std.crypto.hmac"
+            | "crypto.constant_time_eq"
+            | "crypto_constant_time_eq"
+            | "std.crypto.constant_time_eq"
+            | "bytes.length"
+            | "bytes_length"
+            | "std.bytes.length"
+            | "bytes.at"
+            | "bytes_at"
+            | "std.bytes.at"
+            | "bytes.slice"
+            | "bytes_slice"
+            | "std.bytes.slice"
+            | "bytes.concat"
+            | "bytes_concat"
+            | "std.bytes.concat"
+            | "bytes.empty"
+            | "bytes_empty"
+            | "std.bytes.empty"
+            | "json.parse"
+            | "json_parse"
+            | "std.json.parse"
+            | "json.stringify"
+            | "json_stringify"
+            | "std.json.stringify"
+            | "path.from_text"
+            | "path_from_text"
+            | "std.path.from_text"
+            | "path.to_text"
+            | "path_to_text"
+            | "std.path.to_text"
+            | "numeric.narrow_to_i32"
+            | "numeric_narrow_to_i32"
+            | "std.numeric.narrow_to_i32"
+            | "numeric.narrow_to_u32"
+            | "numeric_narrow_to_u32"
+            | "std.numeric.narrow_to_u32"
+            | "numeric.narrow_to_u64"
+            | "numeric_narrow_to_u64"
+            | "std.numeric.narrow_to_u64"
+            | "numeric.narrow_to_i16"
+            | "numeric_narrow_to_i16"
+            | "std.numeric.narrow_to_i16"
+            | "numeric.narrow_to_u8"
+            | "numeric_narrow_to_u8"
+            | "std.numeric.narrow_to_u8"
+            | "encoding.base64_encode"
+            | "encoding_base64_encode"
+            | "std.encoding.base64_encode"
+            | "encoding.hex_encode"
+            | "encoding_hex_encode"
+            | "std.encoding.hex_encode"
+            | "encoding.base64_decode"
+            | "encoding_base64_decode"
+            | "std.encoding.base64_decode"
+            | "encoding.hex_decode"
+            | "encoding_hex_decode"
+            | "std.encoding.hex_decode"
+            | "time.duration_since"
+            | "time_duration_since"
+            | "std.time.duration_since"
+            | "time.add_duration"
+            | "time_add_duration"
+            | "std.time.add_duration"
+            | "time.instant_to_ms"
+            | "time_instant_to_ms"
+            | "std.time.instant_to_ms"
+    )
+}
+
 pub(super) fn source_callable_types(program: &SourceProgram) -> BTreeMap<&str, SourceCallable> {
     program
         .constants

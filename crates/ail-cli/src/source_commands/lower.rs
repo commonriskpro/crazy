@@ -453,6 +453,9 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
     if let Some(lowered) = lower_source_map_helper_expr(expr, line_num)? {
         return Ok(lowered);
     }
+    if let Some(lowered) = lower_source_collection_constructor_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
     if let Some(lowered) = lower_source_bytes_helper_expr(expr, line_num)? {
         return Ok(lowered);
     }
