@@ -867,6 +867,7 @@ fn stdlib_to_json(v: &StdlibValue) -> json::Json {
         StdlibValue::Int(n) => json::Json::Number(*n as f64),
         StdlibValue::Float(f) => json::Json::Number(*f),
         StdlibValue::Text(s) => json::Json::Str(s.clone()),
+        StdlibValue::Path(p) => json::Json::Str(p.clone()),
         StdlibValue::Bytes(b) => json::Json::Str(encoding::hex_encode(b)),
         StdlibValue::List(items) => json::Json::Array(items.iter().map(stdlib_to_json).collect()),
         StdlibValue::Tuple(items) => json::Json::Array(items.iter().map(stdlib_to_json).collect()),

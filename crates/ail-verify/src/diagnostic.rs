@@ -72,7 +72,7 @@ pub enum DiagnosticSeverity {
 /// Variants are intentionally non-exhaustive in spirit — new variants must be
 /// added here and handled by all downstream consumers (exhaustive match will
 /// cause compile errors, which is intentional).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum RepairOption {
     /// A single graph operation the toolchain can apply directly.
     DirectOp(ChangeSetOp),

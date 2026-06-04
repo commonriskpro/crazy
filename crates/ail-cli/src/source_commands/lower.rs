@@ -2,6 +2,7 @@ use super::model::*;
 use super::parse::*;
 use super::syntax::*;
 use super::types::*;
+use super::validate::*;
 use super::*;
 
 mod bytes;

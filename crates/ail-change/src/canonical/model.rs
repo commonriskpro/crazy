@@ -1,5 +1,6 @@
 use super::*;
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalMeta {
     /// Identity of the change author.
     pub author: String,

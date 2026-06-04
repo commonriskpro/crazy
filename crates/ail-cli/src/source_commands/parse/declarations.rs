@@ -179,7 +179,7 @@ pub(super) fn parse_source_function(
         source_parse_error_for_fragment(
             line_num,
             SourceParseDiagnostic::InvalidDeclaration,
-            return_and_body,
+            &return_and_body,
             "function declaration requires `= body`",
         )
     })?;
@@ -462,7 +462,7 @@ fn source_brace_delta(statement: &str) -> isize {
     delta
 }
 
-pub(super) fn source_block_to_expr(lines: &[(usize, usize, String)]) -> Result<String, CliError> {
+pub(crate) fn source_block_to_expr(lines: &[(usize, usize, String)]) -> Result<String, CliError> {
     let Some((last_line, _last_column, last_statement)) = lines.last() else {
         return Err(source_parse_error(
             1,
@@ -503,7 +503,7 @@ pub(super) fn source_block_to_expr(lines: &[(usize, usize, String)]) -> Result<S
         let binding_column = trimmed_fragment_column(rest_column, binding);
         let binding = binding.trim();
         let value = value.trim();
-        let (name, ty) = if let Some((name, ty)) = binding.split_once(':') {
+        let (name, name_column, ty) = if let Some((name, ty)) = binding.split_once(':') {
             let name_column = trimmed_fragment_column(binding_column, name);
             let ty_column = trimmed_fragment_column(binding_column + name.chars().count() + 1, ty);
             let name = name.trim();

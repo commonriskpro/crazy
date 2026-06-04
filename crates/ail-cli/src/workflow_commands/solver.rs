@@ -7,7 +7,7 @@ use super::*;
 /// `Simple` is always available; `Z3` is only present when the `z3-solver`
 /// cargo feature is compiled in.  The enum implements `Solver` by delegating
 /// to the inner type, so it coerces directly to `&dyn Solver`.
-enum AnySolver {
+pub(super) enum AnySolver {
     Simple(SimpleSolver),
     #[cfg(feature = "z3-solver")]
     Z3(ail_verify::z3_solver::Z3Solver),

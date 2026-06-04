@@ -25,7 +25,7 @@ mod write_dispatch;
 pub(crate) use diagnostics::diagnose_wasm_bridge_module;
 pub(crate) use dispatch::dispatch_host_call;
 pub(crate) use instantiate::instantiate_inner;
-pub(crate) use limits::{ClockFn, check_rate_limits, default_clock_fn};
+pub(crate) use limits::{ClockFn, check_rate_limits, default_clock_fn, unix_timestamp_micros};
 pub(crate) use state::HostState;
 pub(crate) use write_dispatch::dispatch_host_call_write;
 

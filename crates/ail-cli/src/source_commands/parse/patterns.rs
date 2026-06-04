@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn validate_source_match_pattern(pattern: &str) -> Result<(), CliError> {
+pub(crate) fn validate_source_match_pattern(pattern: &str) -> Result<(), CliError> {
     let pattern = pattern.trim();
     if pattern == "_" || pattern == "None" || pattern == "true" || pattern == "false" {
         return Ok(());
@@ -136,13 +136,13 @@ pub(super) fn validate_source_constructor_tag(tag: &str) -> Result<(), CliError>
     ))
 }
 
-pub(super) fn source_match_pattern_binding(pattern: &str) -> Option<&str> {
+pub(crate) fn source_match_pattern_binding(pattern: &str) -> Option<&str> {
     let (_, binding) = source_constructor_pattern(pattern)?;
     let binding = binding?;
     (binding != "_").then_some(binding)
 }
 
-pub(super) fn source_match_pattern_binding_type<'a>(
+pub(crate) fn source_match_pattern_binding_type<'a>(
     pattern: &'a str,
     scrutinee_ty: &str,
 ) -> Result<Option<(&'a str, String)>, CliError> {
@@ -172,7 +172,7 @@ pub(super) fn source_match_pattern_binding_type<'a>(
     }
 }
 
-pub(super) fn validate_source_match_pattern_type(
+pub(crate) fn validate_source_match_pattern_type(
     pattern: &str,
     scrutinee_ty: &str,
 ) -> Result<(), CliError> {
@@ -196,7 +196,7 @@ pub(super) fn validate_source_match_pattern_type(
     }
 }
 
-pub(super) fn validate_source_match_reachable(arms: &[String]) -> Result<(), CliError> {
+pub(crate) fn validate_source_match_reachable(arms: &[String]) -> Result<(), CliError> {
     let mut seen = BTreeSet::new();
     let mut saw_wildcard = false;
 
@@ -220,7 +220,7 @@ pub(super) fn validate_source_match_reachable(arms: &[String]) -> Result<(), Cli
     Ok(())
 }
 
-pub(super) fn validate_source_match_exhaustive(
+pub(crate) fn validate_source_match_exhaustive(
     arms: &[String],
     scrutinee_ty: &str,
 ) -> Result<(), CliError> {
@@ -314,7 +314,7 @@ pub(super) fn source_pattern_tag(pattern: &str) -> Option<&str> {
     source_constructor_pattern(pattern).map(|(tag, _)| tag)
 }
 
-pub(super) fn source_constructor_pattern(pattern: &str) -> Option<(&str, Option<&str>)> {
+pub(crate) fn source_constructor_pattern(pattern: &str) -> Option<(&str, Option<&str>)> {
     let trimmed = pattern.trim();
     let first = trimmed.chars().next()?;
     if !first.is_ascii_uppercase() {
@@ -332,7 +332,7 @@ pub(super) fn source_constructor_pattern(pattern: &str) -> Option<(&str, Option<
     }
 }
 
-pub(super) fn normalize_source_match_pattern(
+pub(crate) fn normalize_source_match_pattern(
     pattern: &str,
     line_num: usize,
 ) -> Result<String, CliError> {

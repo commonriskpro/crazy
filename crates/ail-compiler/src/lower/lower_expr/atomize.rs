@@ -23,7 +23,7 @@ use super::{lower_core_expr_to_anf, lower_core_expr_to_anf_local};
 ///
 /// The pushed binding carries the same `source_ref` as the enclosing node
 /// (provenance is preserved for synthetic temporaries).
-pub(super) fn atomize(
+pub(crate) fn atomize(
     expr: &CoreExpr,
     fresh: &mut u32,
     source_ref: NodeRef,
@@ -43,7 +43,7 @@ pub(super) fn atomize(
     name
 }
 
-pub(super) fn atomize_local(
+pub(crate) fn atomize_local(
     expr: &CoreExpr,
     fresh: &mut u32,
     source_ref: NodeRef,
@@ -57,7 +57,7 @@ pub(super) fn atomize_local(
     (name.clone(), Some((name, value)))
 }
 
-pub(super) fn wrap_local_bindings(mut bindings: Vec<(String, AnfExpr)>, body: AnfExpr) -> AnfExpr {
+pub(crate) fn wrap_local_bindings(mut bindings: Vec<(String, AnfExpr)>, body: AnfExpr) -> AnfExpr {
     bindings.reverse();
     bindings
         .into_iter()
@@ -68,7 +68,7 @@ pub(super) fn wrap_local_bindings(mut bindings: Vec<(String, AnfExpr)>, body: An
         })
 }
 
-pub(super) fn lower_core_call_to_anf(
+pub(crate) fn lower_core_call_to_anf(
     func: &str,
     args: &[CoreExpr],
     fresh: &mut u32,
@@ -92,7 +92,7 @@ pub(super) fn lower_core_call_to_anf(
     )
 }
 
-pub(super) fn lower_core_binary_to_anf(
+pub(crate) fn lower_core_binary_to_anf(
     func: &str,
     left: &CoreExpr,
     right: &CoreExpr,
@@ -102,7 +102,7 @@ pub(super) fn lower_core_binary_to_anf(
     lower_core_call_to_anf(func, &[left.clone(), right.clone()], fresh, source_ref)
 }
 
-pub(super) fn lower_core_unary_to_anf(
+pub(crate) fn lower_core_unary_to_anf(
     func: &str,
     operand: &CoreExpr,
     fresh: &mut u32,

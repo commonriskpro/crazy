@@ -19,9 +19,9 @@ use ail_compiler::{
 };
 use ail_core::semantic_graph::NodeRef;
 use ail_runtime::{
-    AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, ClockHandler, Handler,
-    HostResult, InFlightPolicy, InMemoryHandler, PreflightFailure, ResourceLimits, RuntimeError,
-    RuntimeHost, RuntimeProfile, blake3_hex_of,
+    AuditEvent, CapabilityGrant, CapabilityId, CapabilityManifest, ClockHandler, FileReadHandler,
+    Handler, HostResult, InFlightPolicy, InMemoryHandler, PreflightFailure, ResourceLimits,
+    RuntimeError, RuntimeHost, RuntimeProfile, blake3_hex_of,
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn emit_text_replace_first<'a>(
+pub(crate) fn emit_text_replace_first<'a>(
     args: &[String],
     ctx: &mut WasmCodegenCtx<'a>,
     insns: &mut Vec<Instruction<'a>>,

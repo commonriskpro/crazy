@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn emit_text_parse_int_or<'a>(
+pub(crate) fn emit_text_parse_int_or<'a>(
     args: &[String],
     ctx: &mut WasmCodegenCtx<'a>,
     insns: &mut Vec<Instruction<'a>>,

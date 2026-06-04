@@ -13,7 +13,7 @@ mod int_ops;
 /// Lower `AnfExpr::Call` — arithmetic, comparison, and unary intrinsics.
 ///
 /// Only pure register-level operations; no module references required.
-pub(super) fn lower_call(
+pub(crate) fn lower_call(
     func: &str,
     args: &[String],
     ctx: &mut NativeCodegenCtx<'_>,

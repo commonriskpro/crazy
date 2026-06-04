@@ -51,7 +51,7 @@ pub(super) fn lower_match_expr(rest: &str, line_num: usize) -> Result<String, Cl
             .find(&arm)
             .map(|idx| arm_search_start + idx)
             .unwrap_or(arm_search_start);
-        let (pattern, body) = split_source_match_arm(arm, line_num)?;
+        let (pattern, body) = split_source_match_arm(&arm, line_num)?;
         let body_line_num = source_match_arm_body_line(arms, arm_start, &arm, arms_line_num);
         let pattern = normalize_source_match_pattern(pattern, line_num)?;
         lowered.push(pattern);

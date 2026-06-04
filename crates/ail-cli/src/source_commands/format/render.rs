@@ -1,18 +1,18 @@
 use super::*;
 
-pub(super) fn render_source_import(out: &mut String, import: &str) {
+pub(crate) fn render_source_import(out: &mut String, import: &str) {
     out.push_str(&format!("use \"{import}\"\n"));
 }
 
-pub(super) fn render_source_module(out: &mut String, module: &str) {
+pub(crate) fn render_source_module(out: &mut String, module: &str) {
     out.push_str(&format!("module {module}\n"));
 }
 
-pub(super) fn render_source_capability(out: &mut String, capability: &str) {
+pub(crate) fn render_source_capability(out: &mut String, capability: &str) {
     out.push_str(&format!("capability {capability}\n"));
 }
 
-pub(super) fn render_source_const(
+pub(crate) fn render_source_const(
     out: &mut String,
     constant: &SourceConst,
     module: Option<&str>,
@@ -29,7 +29,7 @@ pub(super) fn render_source_const(
     ));
 }
 
-pub(super) fn render_source_function(
+pub(crate) fn render_source_function(
     out: &mut String,
     function: &SourceFunction,
     module: Option<&str>,
@@ -84,7 +84,7 @@ pub(super) fn render_source_function(
     out.push_str("}\n");
 }
 
-pub(super) fn render_source_test(
+pub(crate) fn render_source_test(
     out: &mut String,
     test: &SourceTest,
     module: Option<&str>,
@@ -143,7 +143,7 @@ pub(super) fn render_source_test(
     }
 }
 
-pub(super) fn render_source_grant(out: &mut String, grant: &SourceGrant, module: Option<&str>) {
+pub(crate) fn render_source_grant(out: &mut String, grant: &SourceGrant, module: Option<&str>) {
     let raw_target = grant
         .target
         .strip_prefix("fn.")

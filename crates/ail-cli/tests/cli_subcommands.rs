@@ -9,15 +9,15 @@ mod common;
 mod fmt;
 #[path = "cli_subcommands/link.rs"]
 mod link;
-#[path = "cli_subcommands/lsp_diagnostics.rs"]
+#[path = "cli_subcommands/lsp_diagnostics/mod.rs"]
 mod lsp_diagnostics;
-#[path = "cli_subcommands/lsp_intelligence.rs"]
+#[path = "cli_subcommands/lsp_intelligence/mod.rs"]
 mod lsp_intelligence;
 #[path = "cli_subcommands/project.rs"]
 mod project;
 #[path = "cli_subcommands/source_check.rs"]
 mod source_check;
-#[path = "cli_subcommands/source_compile.rs"]
+#[path = "cli_subcommands/source_compile/mod.rs"]
 mod source_compile;
 #[path = "cli_subcommands/source_run.rs"]
 mod source_run;

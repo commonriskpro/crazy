@@ -30,7 +30,7 @@ pub(super) fn validate_source_type_name_at(
     ))
 }
 
-pub(super) fn is_supported_source_type(ty: &str) -> bool {
+pub(crate) fn is_supported_source_type(ty: &str) -> bool {
     if validate_source_type_shape(ty).is_err() {
         return false;
     }
@@ -266,22 +266,22 @@ pub(super) fn source_primitive_type_alias(ty: &str) -> Option<&'static str> {
     }
 }
 
-pub(super) fn source_list_element_type(ty: &str) -> Option<&str> {
+pub(crate) fn source_list_element_type(ty: &str) -> Option<&str> {
     let inner = ty.trim().strip_prefix("List<")?.strip_suffix('>')?.trim();
     (!inner.is_empty()).then_some(inner)
 }
 
-pub(super) fn source_tuple_types(ty: &str) -> Option<Vec<&str>> {
+pub(crate) fn source_tuple_types(ty: &str) -> Option<Vec<&str>> {
     let inner = ty.trim().strip_prefix("Tuple<")?.strip_suffix('>')?.trim();
     Some(split_source_type_args(inner))
 }
 
-pub(super) fn source_set_element_type(ty: &str) -> Option<&str> {
+pub(crate) fn source_set_element_type(ty: &str) -> Option<&str> {
     let inner = ty.trim().strip_prefix("Set<")?.strip_suffix('>')?.trim();
     (!inner.is_empty()).then_some(inner)
 }
 
-pub(super) fn source_map_types(ty: &str) -> Option<(&str, &str)> {
+pub(crate) fn source_map_types(ty: &str) -> Option<(&str, &str)> {
     let inner = ty.trim().strip_prefix("Map<")?.strip_suffix('>')?.trim();
     let parts = split_source_type_args(inner);
     if parts.len() != 2 {
@@ -290,7 +290,7 @@ pub(super) fn source_map_types(ty: &str) -> Option<(&str, &str)> {
     Some((parts[0], parts[1]))
 }
 
-pub(super) fn source_record_fields(ty: &str) -> Option<Vec<(&str, &str)>> {
+pub(crate) fn source_record_fields(ty: &str) -> Option<Vec<(&str, &str)>> {
     let inner = ty.trim().strip_prefix("Record<")?.strip_suffix('>')?.trim();
     let mut seen = BTreeSet::new();
     let mut fields = Vec::new();
@@ -310,12 +310,12 @@ pub(super) fn source_record_fields(ty: &str) -> Option<Vec<(&str, &str)>> {
     Some(fields)
 }
 
-pub(super) fn source_option_element_type(ty: &str) -> Option<&str> {
+pub(crate) fn source_option_element_type(ty: &str) -> Option<&str> {
     let inner = ty.trim().strip_prefix("Option<")?.strip_suffix('>')?.trim();
     (!inner.is_empty()).then_some(inner)
 }
 
-pub(super) fn source_result_types(ty: &str) -> Option<(&str, &str)> {
+pub(crate) fn source_result_types(ty: &str) -> Option<(&str, &str)> {
     let inner = ty.trim().strip_prefix("Result<")?.strip_suffix('>')?.trim();
     let parts = split_source_type_args(inner);
     if parts.len() != 2 {
@@ -359,7 +359,7 @@ pub(super) fn split_source_param_list(params: &str) -> Vec<&str> {
     split_source_top_level_commas(params)
 }
 
-pub(super) fn normalize_source_type_name(ty: &str) -> String {
+pub(crate) fn normalize_source_type_name(ty: &str) -> String {
     let compact = compact_source_type_name(ty);
     normalize_source_type_aliases(&compact)
 }

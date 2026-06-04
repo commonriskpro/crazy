@@ -60,6 +60,8 @@ fn make_context_response(tag: &[u8]) -> ContextResponse {
         structured,
         summary: "integration test".to_string(),
         redacted: false,
+        redacted_descriptors: Vec::new(),
+        diagnostics: Vec::new(),
         redaction_state: ail_context::RedactionState::None,
         redaction_policy: None,
         truncated: false,

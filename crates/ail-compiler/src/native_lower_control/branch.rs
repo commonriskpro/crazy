@@ -7,7 +7,7 @@ use crate::native_codegen::{LowerResult, NativeCodegenCtx, infer_cranelift_retur
 
 // ── lower_if ─────────────────────────────────────────────────────────────
 
-pub(super) fn lower_if(
+pub(crate) fn lower_if(
     cond: &str,
     then_branch: &AnfExpr,
     else_branch: &AnfExpr,
@@ -70,7 +70,7 @@ pub(super) fn lower_if(
 
 // ── lower_match ───────────────────────────────────────────────────────────
 
-pub(super) fn lower_match(
+pub(crate) fn lower_match(
     scrutinee: &str,
     arms: &[AnfMatchArm],
     ctx: &mut NativeCodegenCtx<'_>,

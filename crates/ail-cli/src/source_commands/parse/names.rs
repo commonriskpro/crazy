@@ -24,7 +24,7 @@ pub(super) fn normalize_grant_target(target: &str) -> String {
     target.to_string()
 }
 
-pub(super) fn validate_source_local_name(name: &str, line_num: usize) -> Result<(), CliError> {
+pub(crate) fn validate_source_local_name(name: &str, line_num: usize) -> Result<(), CliError> {
     validate_source_local_name_at(name, line_num, 1)
 }
 
@@ -130,12 +130,12 @@ pub(super) fn validate_source_name_at(
     Ok(())
 }
 
-pub(super) fn is_valid_source_name_chars(name: &str) -> bool {
+pub(crate) fn is_valid_source_name_chars(name: &str) -> bool {
     name.chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
-pub(super) fn source_name_segments_are_valid(name: &str) -> bool {
+pub(crate) fn source_name_segments_are_valid(name: &str) -> bool {
     !name.split('.').any(str::is_empty) && first_invalid_source_name_segment(name).is_none()
 }
 
@@ -148,7 +148,7 @@ pub(super) fn first_invalid_source_name_segment(name: &str) -> Option<&str> {
     })
 }
 
-pub(super) fn normalize_function_name(name: &str) -> String {
+pub(crate) fn normalize_function_name(name: &str) -> String {
     if name.starts_with("fn.") {
         name.to_string()
     } else {
@@ -156,7 +156,7 @@ pub(super) fn normalize_function_name(name: &str) -> String {
     }
 }
 
-pub(super) fn normalize_test_name(name: &str) -> String {
+pub(crate) fn normalize_test_name(name: &str) -> String {
     if name.starts_with("test.") {
         name.to_string()
     } else {
@@ -164,7 +164,7 @@ pub(super) fn normalize_test_name(name: &str) -> String {
     }
 }
 
-pub(super) fn source_default_entry(program: &SourceProgram) -> String {
+pub(crate) fn source_default_entry(program: &SourceProgram) -> String {
     program
         .module
         .as_deref()
@@ -172,7 +172,7 @@ pub(super) fn source_default_entry(program: &SourceProgram) -> String {
         .unwrap_or_else(|| "fn.main".to_string())
 }
 
-pub(super) fn source_change_name(path: &Path) -> String {
+pub(crate) fn source_change_name(path: &Path) -> String {
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())

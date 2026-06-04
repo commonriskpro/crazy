@@ -35,7 +35,7 @@ use cranelift_object::ObjectModule;
 
 use crate::native_codegen::{LowerResult, NativeCodegenCtx, infer_cranelift_return_type};
 
-#[path = "native_lower_control.rs"]
+#[path = "native_lower_control/mod.rs"]
 mod control;
 #[path = "native_lower_data.rs"]
 mod data;

@@ -47,7 +47,7 @@ async fn cmd_change_snapshot_load_compile_flow() {
         .expect("graph root must exist");
     assert!(graph.validate().is_ok(), "stored graph must validate");
 
-    let compile = cmd_compile(OutputMode::Human, "dev", "wasm", &store).await;
+    let compile = cmd_compile(OutputMode::Human, "dev", "wasm", None, &store).await;
     assert!(
         compile.is_ok(),
         "compile must load stored graph; got: {compile:?}"

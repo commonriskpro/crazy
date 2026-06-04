@@ -231,8 +231,11 @@ pub(super) fn try_lower(
                 list: list_name,
                 func: func_name,
             }
-        } // CoreExpr::Placeholder → AnfExpr::Placeholder (no expression body).
-          // (kept last for clarity — already handled above)        _ => return None,
+        }
+
+        // CoreExpr::Placeholder → AnfExpr::Placeholder (no expression body).
+        // (kept last for clarity — already handled above)
+        _ => return None,
     };
     Some(result)
 }

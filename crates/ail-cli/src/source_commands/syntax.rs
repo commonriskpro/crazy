@@ -1,3 +1,4 @@
+use super::parse::{is_valid_source_name_chars, source_name_segments_are_valid};
 use super::*;
 
 #[derive(Clone, Copy)]

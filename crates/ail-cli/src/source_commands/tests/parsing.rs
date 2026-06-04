@@ -1,3 +1,4 @@
+use super::super::lower::*;
 use super::*;
 
 fn assert_source_parse_diagnostic(src: &str, code: &str, category: &str, detail: &str) -> String {

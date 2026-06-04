@@ -8,10 +8,17 @@
 
 mod common;
 
+#[path = "cli_g31r2/change.rs"]
 mod change;
+#[path = "cli_g31r2/change_workflows.rs"]
 mod change_workflows;
+#[path = "cli_g31r2/compile_run.rs"]
 mod compile_run;
+#[path = "cli_g31r2/context_impact.rs"]
 mod context_impact;
+#[path = "cli_g31r2/doctor_agent.rs"]
 mod doctor_agent;
+#[path = "cli_g31r2/inspect_status.rs"]
 mod inspect_status;
+#[path = "cli_g31r2/verify_apply_policy.rs"]
 mod verify_apply_policy;

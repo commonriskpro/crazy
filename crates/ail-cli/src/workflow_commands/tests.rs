@@ -83,6 +83,7 @@ fn solver_diagnostic_json_includes_repair_options_when_non_empty() {
     use serde_json::json;
 
     let s = SolverDiagnostic {
+        code: String::new(),
         obligation_id: "obl-002".into(),
         source_stage: "solver".into(),
         status: SolverDiagnosticStatus::Timeout,
@@ -189,6 +190,7 @@ fn solver_diagnostic_json_omits_repair_options_when_empty() {
     use serde_json::{Value, json};
 
     let s = SolverDiagnostic {
+        code: String::new(),
         obligation_id: "obl-002".into(),
         source_stage: "solver".into(),
         status: SolverDiagnosticStatus::Timeout,

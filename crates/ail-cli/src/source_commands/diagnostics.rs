@@ -1,3 +1,5 @@
+use super::syntax::*;
+use super::types::*;
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,7 +146,7 @@ fn source_expr_references_binding(name: &str, expr: &str) -> bool {
         return false;
     };
     match (func.as_str(), args.as_slice()) {
-        ("let", [binding, value, next]) | ("let_typed", [binding, _ty, _line, value, next])
+        ("let", [binding, value, next]) | ("let_typed", [binding, _, _, value, next])
             if binding == name =>
         {
             source_expr_references_binding(name, value)

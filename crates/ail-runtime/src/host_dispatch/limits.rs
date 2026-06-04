@@ -145,7 +145,7 @@ pub(crate) fn check_rate_limits_detailed(
     // Pass 1: check all applicable limits without mutating state.
     for (scope, max_calls_per_second) in &applicable_limits {
         let key = scope.window_key();
-        let (window_start, count) = windows.get(key).copied().unwrap_or((now, 0));
+        let (window_start, count) = windows.get(&key).copied().unwrap_or((now, 0));
         let effective_count = if now.saturating_sub(window_start) >= WINDOW_NANOS {
             0 // window expired; effective count resets to 0
         } else {
@@ -180,7 +180,7 @@ fn applicable_rate_limits(
     rate_limits: &[RateLimit],
     cap: &CapabilityId,
 ) -> BTreeMap<RateLimitScope, u64> {
-    let mut applicable = BTreeMap::new();
+    let mut applicable: BTreeMap<RateLimitScope, u64> = BTreeMap::new();
     for limit in rate_limits {
         let scope = RateLimitScope::from_limit(limit);
         if !scope.applies_to(cap) {

@@ -142,7 +142,7 @@ async fn cmd_inspect_artifact_prefers_persisted_over_on_demand() {
     let store = file_store(ail_dir.clone());
 
     // First compile so there is a persisted artifact.
-    cmd_compile(OutputMode::Human, "dev", "wasm", &store)
+    cmd_compile(OutputMode::Human, "dev", "wasm", None, &store)
         .await
         .expect("compile must succeed");
 
@@ -188,7 +188,7 @@ async fn cmd_inspect_artifact_prefers_persisted_native_over_on_demand() {
     let store = file_store(ail_dir.clone());
 
     // Compile native so there is a persisted native artifact (no WASM artifact).
-    cmd_compile(OutputMode::Human, "dev", "native", &store)
+    cmd_compile(OutputMode::Human, "dev", "native", None, &store)
         .await
         .expect("native compile must succeed");
 
@@ -330,10 +330,10 @@ async fn cmd_inspect_artifact_dot_o_resolves_native_when_both_artifacts_coexist(
     let store = file_store(ail_dir.clone());
 
     // Persist both a WASM and a native artifact so both index entries exist.
-    cmd_compile(OutputMode::Human, "dev", "wasm", &store)
+    cmd_compile(OutputMode::Human, "dev", "wasm", None, &store)
         .await
         .expect("wasm compile must succeed");
-    cmd_compile(OutputMode::Human, "dev", "native", &store)
+    cmd_compile(OutputMode::Human, "dev", "native", None, &store)
         .await
         .expect("native compile must succeed");
 

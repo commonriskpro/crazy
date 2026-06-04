@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn emit_text_eq<'a>(
+pub(crate) fn emit_text_eq<'a>(
     args: &[String],
     ctx: &mut WasmCodegenCtx<'a>,
     insns: &mut Vec<Instruction<'a>>,
@@ -78,7 +78,7 @@ pub(super) fn emit_text_eq<'a>(
     Some(ValType::I64)
 }
 
-pub(super) fn emit_text_contains<'a>(
+pub(crate) fn emit_text_contains<'a>(
     args: &[String],
     ctx: &mut WasmCodegenCtx<'a>,
     insns: &mut Vec<Instruction<'a>>,
@@ -206,7 +206,7 @@ pub(super) fn emit_text_contains<'a>(
     Some(ValType::I64)
 }
 
-pub(super) fn emit_text_index_of<'a>(
+pub(crate) fn emit_text_index_of<'a>(
     args: &[String],
     ctx: &mut WasmCodegenCtx<'a>,
     insns: &mut Vec<Instruction<'a>>,

@@ -133,7 +133,7 @@ pub(super) fn validate_text_slice_boundaries(
     issues
 }
 
-pub(super) fn emit_text_boundary_match<'a>(
+pub(crate) fn emit_text_boundary_match<'a>(
     args: &[String],
     ctx: &mut WasmCodegenCtx<'a>,
     insns: &mut Vec<Instruction<'a>>,

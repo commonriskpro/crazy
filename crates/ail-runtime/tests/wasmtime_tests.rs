@@ -8,7 +8,7 @@
 //  - Failed preflight (hash mismatch) blocks Wasmtime invocation.
 //  - RuntimeHost::new() succeeds (engine initialization is infallible from caller's view).
 
-#[path = "wasmtime/control_flow.rs"]
+#[path = "wasmtime/control_flow/mod.rs"]
 mod control_flow;
 #[path = "wasmtime/fold.rs"]
 mod fold;
@@ -16,7 +16,7 @@ mod fold;
 mod helpers;
 #[path = "wasmtime/invoke.rs"]
 mod invoke;
-#[path = "wasmtime/resources.rs"]
+#[path = "wasmtime/resources/mod.rs"]
 mod resources;
 #[path = "wasmtime/validation.rs"]
 mod validation;

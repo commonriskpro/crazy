@@ -128,7 +128,7 @@ fn in_memory_client_publish_persists_for_search() {
 
 #[test]
 fn in_memory_client_search_matches_capability_keywords() {
-    let client = InMemoryRegistryClient::new();
+    let mut client = InMemoryRegistryClient::new();
     let mut manifest = make_manifest("runtime.files", "1.0.0");
     manifest.required_capabilities = vec!["file.read".to_string()];
     client.registry.register(manifest);

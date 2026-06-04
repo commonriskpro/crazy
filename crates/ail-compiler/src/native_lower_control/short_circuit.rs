@@ -7,7 +7,7 @@ use crate::native_codegen::{LowerResult, NativeCodegenCtx};
 
 // ── lower_short_circuit_and ───────────────────────────────────────────────
 
-pub(super) fn lower_short_circuit_and(
+pub(crate) fn lower_short_circuit_and(
     left: &str,
     right: &AnfExpr,
     ctx: &mut NativeCodegenCtx<'_>,
@@ -54,7 +54,7 @@ pub(super) fn lower_short_circuit_and(
 
 // ── lower_short_circuit_or ────────────────────────────────────────────────
 
-pub(super) fn lower_short_circuit_or(
+pub(crate) fn lower_short_circuit_or(
     left: &str,
     right: &AnfExpr,
     ctx: &mut NativeCodegenCtx<'_>,

@@ -235,7 +235,8 @@ fn diagnostics_batch_sorting_is_deterministic_and_deduplicated() {
         detail: "a".to_string(),
     };
 
-    let diagnostics = sort_host_dispatch_result_diagnostics(vec![high.clone(), low.clone(), high]);
+    let diagnostics =
+        sort_host_dispatch_result_diagnostics(vec![high.clone(), low.clone(), high.clone()]);
 
     assert_eq!(diagnostics, vec![low, high]);
 }

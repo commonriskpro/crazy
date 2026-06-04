@@ -7,7 +7,7 @@ use crate::native_codegen::{LowerResult, NativeCodegenCtx};
 
 // ── lower_seq ─────────────────────────────────────────────────────────────
 
-pub(super) fn lower_seq(
+pub(crate) fn lower_seq(
     exprs: &[AnfExpr],
     ctx: &mut NativeCodegenCtx<'_>,
     builder: &mut FunctionBuilder<'_>,
@@ -30,7 +30,7 @@ pub(super) fn lower_seq(
 
 // ── lower_runtime_check ───────────────────────────────────────────────────
 
-pub(super) fn lower_runtime_check(
+pub(crate) fn lower_runtime_check(
     cond: &str,
     ctx: &mut NativeCodegenCtx<'_>,
     builder: &mut FunctionBuilder<'_>,

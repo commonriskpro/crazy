@@ -5,7 +5,7 @@ use super::*;
 async fn cmd_compile_succeeds() {
     use crate::store::memory_store;
     let store = memory_store();
-    let result = cmd_compile(OutputMode::Human, "dev", "wasm", &store).await;
+    let result = cmd_compile(OutputMode::Human, "dev", "wasm", None, &store).await;
     assert!(result.is_ok(), "cmd_compile must succeed; got: {result:?}");
 }
 
@@ -24,7 +24,7 @@ fn current_graph_for_cli_contains_executable_function() {
 async fn cmd_compile_native_target_succeeds() {
     use crate::store::memory_store;
     let store = memory_store();
-    let result = cmd_compile(OutputMode::Human, "prod", "native", &store).await;
+    let result = cmd_compile(OutputMode::Human, "prod", "native", None, &store).await;
     assert!(
         result.is_ok(),
         "cmd_compile native must succeed; got: {result:?}"
@@ -40,7 +40,7 @@ async fn cmd_compile_native_target_routes_to_native_backend() {
     use crate::store::memory_store;
     let store = memory_store();
     // Verify routing: native target must succeed (calls emit_native_with_profile).
-    let result = cmd_compile(OutputMode::Human, "dev", "native", &store).await;
+    let result = cmd_compile(OutputMode::Human, "dev", "native", None, &store).await;
     assert!(
         result.is_ok(),
         "cmd_compile native must succeed via emit_native_with_profile; got: {result:?}"
@@ -55,7 +55,7 @@ async fn cmd_compile_native_target_routes_to_native_backend() {
 async fn cmd_compile_wasm_target_still_succeeds() {
     use crate::store::memory_store;
     let store = memory_store();
-    let result = cmd_compile(OutputMode::Human, "dev", "wasm", &store).await;
+    let result = cmd_compile(OutputMode::Human, "dev", "wasm", None, &store).await;
     assert!(
         result.is_ok(),
         "cmd_compile wasm must still succeed; got: {result:?}"
@@ -76,7 +76,7 @@ async fn cmd_compile_wasm_with_file_store_persists_artifact() {
     init_file_layout(&ail_dir).expect("init layout");
     let store = file_store(ail_dir.clone());
 
-    let result = cmd_compile(OutputMode::Human, "dev", "wasm", &store).await;
+    let result = cmd_compile(OutputMode::Human, "dev", "wasm", None, &store).await;
     assert!(result.is_ok(), "compile must succeed; got: {result:?}");
 
     let wasm_dir = ail_dir.join("wasm");
@@ -139,7 +139,7 @@ async fn cmd_compile_native_with_file_store_persists_artifact() {
     init_file_layout(&ail_dir).expect("init layout");
     let store = file_store(ail_dir.clone());
 
-    let result = cmd_compile(OutputMode::Human, "dev", "native", &store).await;
+    let result = cmd_compile(OutputMode::Human, "dev", "native", None, &store).await;
     assert!(
         result.is_ok(),
         "native compile must succeed; got: {result:?}"
@@ -408,7 +408,7 @@ async fn cmd_compile_native_json_output_has_persisted_paths() {
 
     // Capture JSON output by running in Json mode (output goes to stdout;
     // we just verify the command succeeds — the persisted_paths are on disk).
-    let result = cmd_compile(OutputMode::Json, "dev", "native", &store).await;
+    let result = cmd_compile(OutputMode::Json, "dev", "native", None, &store).await;
     assert!(
         result.is_ok(),
         "native compile (Json mode) must succeed; got: {result:?}"

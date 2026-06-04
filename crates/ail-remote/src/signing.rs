@@ -222,6 +222,8 @@ mod tests {
             structured,
             summary: String::new(),
             redacted: false,
+            redacted_descriptors: Vec::new(),
+            diagnostics: Vec::new(),
             redaction_state: ail_context::RedactionState::None,
             redaction_policy: None,
             truncated: false,

@@ -1,6 +1,7 @@
 use super::model::*;
 use super::parse::*;
 use super::syntax::*;
+use super::types::*;
 use super::*;
 
 pub(super) fn qualify_source_program_module(program: &mut SourceProgram) {
@@ -621,8 +622,9 @@ pub(super) fn collect_source_calls(expr: &str, calls: &mut Vec<(String, usize)>)
     let Some((func, args)) = parse_source_call(expr) else {
         return;
     };
+    let is_match = func == "match";
     calls.push((func, args.len()));
-    if func == "match" {
+    if is_match {
         if let Some(scrutinee) = args.first() {
             collect_source_calls(scrutinee, calls);
         }

@@ -9,7 +9,7 @@ use crate::native_codegen::{
 
 // ── lower_loop ────────────────────────────────────────────────────────────
 
-pub(super) fn lower_loop(
+pub(crate) fn lower_loop(
     body: &AnfExpr,
     ctx: &mut NativeCodegenCtx<'_>,
     builder: &mut FunctionBuilder<'_>,
@@ -51,7 +51,7 @@ pub(super) fn lower_loop(
 
 // ── lower_break ───────────────────────────────────────────────────────────
 
-pub(super) fn lower_break(
+pub(crate) fn lower_break(
     value: &AnfExpr,
     ctx: &mut NativeCodegenCtx<'_>,
     builder: &mut FunctionBuilder<'_>,
@@ -78,7 +78,7 @@ pub(super) fn lower_break(
 
 // ── lower_continue ────────────────────────────────────────────────────────
 
-pub(super) fn lower_continue(
+pub(crate) fn lower_continue(
     ctx: &mut NativeCodegenCtx<'_>,
     builder: &mut FunctionBuilder<'_>,
 ) -> LowerResult {
@@ -95,7 +95,7 @@ pub(super) fn lower_continue(
 
 // ── lower_while_loop ──────────────────────────────────────────────────────
 
-pub(super) fn lower_while_loop(
+pub(crate) fn lower_while_loop(
     cond: &str,
     body: &AnfExpr,
     ctx: &mut NativeCodegenCtx<'_>,

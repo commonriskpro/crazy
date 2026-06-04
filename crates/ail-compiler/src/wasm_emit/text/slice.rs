@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn emit_text_byte_at_or<'a>(
+pub(crate) fn emit_text_byte_at_or<'a>(
     args: &[String],
     ctx: &mut WasmCodegenCtx<'a>,
     insns: &mut Vec<Instruction<'a>>,
@@ -61,7 +61,7 @@ pub(super) fn emit_text_byte_at_or<'a>(
     Some(ValType::I64)
 }
 
-pub(super) fn emit_text_slice<'a>(
+pub(crate) fn emit_text_slice<'a>(
     args: &[String],
     ctx: &mut WasmCodegenCtx<'a>,
     insns: &mut Vec<Instruction<'a>>,

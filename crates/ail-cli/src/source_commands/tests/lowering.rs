@@ -1,8 +1,10 @@
 use super::super::lower::*;
+use super::super::types::*;
+use super::super::validate::*;
 use super::*;
 
-fn assert_lowering_diagnostic(
-    result: Result<String, CliError>,
+fn assert_lowering_diagnostic<T: std::fmt::Debug>(
+    result: Result<T, CliError>,
     code: &str,
     category: &str,
     detail: &str,

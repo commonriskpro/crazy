@@ -501,14 +501,14 @@ impl HttpRegistryClient {
         }
     }
 
-    fn json_error(&self, path: Option<&str>, message: impl Into<String>) -> HttpClientError {
+    fn json_error(&self, path: Option<&str>, error: impl std::fmt::Display) -> HttpClientError {
         HttpClientError::Json {
             diagnostic: HttpRegistryDiagnostic::new(
                 HttpRegistryDiagnosticKey::RegistryJson,
                 path.map(|_| redacted_registry_endpoint(&self.addr)),
                 path,
             ),
-            message: message.into(),
+            message: error.to_string(),
         }
     }
 

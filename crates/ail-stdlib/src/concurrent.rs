@@ -202,10 +202,15 @@ impl<T> Channel<T> {
 
     /// Send a value with a machine-readable, redacted failure descriptor.
     pub fn try_send(&self, value: T) -> Result<(), ChannelSendError<T>> {
-        let mut q = self.queue.lock().map_err(|_| ChannelSendError::Issue {
-            value,
-            issue: self.issue(ChannelOperation::Send, ChannelIssueKind::Poisoned, None),
-        })?;
+        let mut q = match self.queue.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return Err(ChannelSendError::Issue {
+                    value,
+                    issue: self.issue(ChannelOperation::Send, ChannelIssueKind::Poisoned, None),
+                });
+            }
+        };
         if q.len() >= self.capacity {
             return Err(ChannelSendError::Full {
                 value,

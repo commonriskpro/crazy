@@ -10,7 +10,7 @@ use super::{
     lower_core_unary_to_anf, wrap_local_bindings,
 };
 
-pub(super) fn lower_core_expr_to_anf_local(
+pub(crate) fn lower_core_expr_to_anf_local(
     expr: &CoreExpr,
     fresh: &mut u32,
     source_ref: NodeRef,

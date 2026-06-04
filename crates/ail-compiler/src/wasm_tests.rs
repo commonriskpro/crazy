@@ -13,7 +13,7 @@ mod effects;
 mod hash;
 #[path = "wasm_tests/helpers.rs"]
 mod helpers;
-#[path = "wasm_tests/lambda_fold.rs"]
+#[path = "wasm_tests/lambda_fold/mod.rs"]
 mod lambda_fold;
 #[path = "wasm_tests/sections.rs"]
 mod sections;

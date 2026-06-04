@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn emit_text_len_from_local<'a>(
+pub(crate) fn emit_text_len_from_local<'a>(
     ctx: &WasmCodegenCtx<'a>,
     name: &str,
     insns: &mut Vec<Instruction<'a>>,
@@ -11,7 +11,7 @@ pub(super) fn emit_text_len_from_local<'a>(
     insns.push(Instruction::I32WrapI64);
 }
 
-pub(super) fn emit_list_len_from_local<'a>(
+pub(crate) fn emit_list_len_from_local<'a>(
     ctx: &WasmCodegenCtx<'a>,
     name: &str,
     insns: &mut Vec<Instruction<'a>>,
@@ -24,7 +24,7 @@ pub(super) fn emit_list_len_from_local<'a>(
     true
 }
 
-pub(super) fn emit_text_ptr_from_local<'a>(
+pub(crate) fn emit_text_ptr_from_local<'a>(
     ctx: &WasmCodegenCtx<'a>,
     name: &str,
     insns: &mut Vec<Instruction<'a>>,
@@ -33,7 +33,7 @@ pub(super) fn emit_text_ptr_from_local<'a>(
     insns.push(Instruction::I32WrapI64);
 }
 
-pub(super) fn emit_text_concat<'a>(
+pub(crate) fn emit_text_concat<'a>(
     args: &[String],
     ctx: &mut WasmCodegenCtx<'a>,
     insns: &mut Vec<Instruction<'a>>,
@@ -102,7 +102,7 @@ pub(super) fn emit_text_concat<'a>(
     Some(ValType::I64)
 }
 
-pub(super) fn load_i32_u8_at<'a>(offset: u64, insns: &mut Vec<Instruction<'a>>) {
+pub(crate) fn load_i32_u8_at<'a>(offset: u64, insns: &mut Vec<Instruction<'a>>) {
     insns.push(Instruction::I32Load8U(wasm_encoder::MemArg {
         offset,
         align: 0,
@@ -110,7 +110,7 @@ pub(super) fn load_i32_u8_at<'a>(offset: u64, insns: &mut Vec<Instruction<'a>>) 
     }));
 }
 
-pub(super) fn emit_text_utf8_boundary_test_from_locals<'a>(
+pub(crate) fn emit_text_utf8_boundary_test_from_locals<'a>(
     value_ptr: u32,
     value_len: u32,
     offset: u32,

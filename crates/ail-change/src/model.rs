@@ -57,7 +57,7 @@ pub struct ChangeSetMeta {
 /// | 2 | `Connect`, `Bind`, `Expose`, `Hide`, `Grant`, `Revoke` |
 /// | 3 | `Infer`, `Derive`, `Generate` |
 /// | 4 | `Assert`, `Lock`, `Refactor`, `Migrate`, `Approve`, `Reject`, `Deprecate`, `Annotate`, `Verify` |
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ChangeSetOp {
     // ── Phase 0: creation ────────────────────────────────────────────────
     /// Create a new node in the graph.

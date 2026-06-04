@@ -1,4 +1,4 @@
-use cranelift_codegen::ir::{InstBuilder, TrapCode, condcodes::IntCC, types};
+use cranelift_codegen::ir::{BlockArg, InstBuilder, TrapCode, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 
 use crate::native_codegen::{LowerResult, NativeCodegenCtx};

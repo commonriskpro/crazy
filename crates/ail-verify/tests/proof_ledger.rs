@@ -128,11 +128,11 @@ fn ledger_entries_are_ordered_independent_of_graph_insertion_order() {
             .iter()
             .map(|entry| {
                 (
-                    entry.id.as_str(),
-                    entry.source_stage.as_str(),
-                    entry.obligation.scope.as_str(),
+                    entry.id.to_string(),
+                    entry.source_stage.to_string(),
+                    entry.obligation.scope.to_string(),
                     entry.obligation.role,
-                    entry.obligation.predicate.as_str(),
+                    entry.obligation.predicate.to_string(),
                 )
             })
             .collect::<Vec<_>>()

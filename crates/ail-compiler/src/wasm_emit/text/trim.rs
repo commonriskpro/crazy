@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn emit_ascii_whitespace_test_from_local<'a>(
+pub(crate) fn emit_ascii_whitespace_test_from_local<'a>(
     byte: u32,
     insns: &mut Vec<Instruction<'a>>,
 ) {
@@ -21,7 +21,7 @@ pub(super) fn emit_ascii_whitespace_test_from_local<'a>(
     insns.push(Instruction::I32Or);
 }
 
-pub(super) fn emit_text_trim<'a>(
+pub(crate) fn emit_text_trim<'a>(
     args: &[String],
     ctx: &mut WasmCodegenCtx<'a>,
     insns: &mut Vec<Instruction<'a>>,

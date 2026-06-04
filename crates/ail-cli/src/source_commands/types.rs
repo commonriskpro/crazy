@@ -1457,7 +1457,7 @@ pub(super) fn infer_source_match_type(
             arm_scope.insert(binding.to_string(), ty);
         }
         let inferred = infer_source_expr_type(&pair[1], &mut arm_scope, functions)?;
-        if let Some(expected) = &branch_ty {
+        if let Some(expected) = branch_ty.as_deref() {
             validate_source_type_match(expected, &inferred, "match arms")?;
         } else {
             branch_ty = Some(inferred);

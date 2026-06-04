@@ -60,8 +60,8 @@ pub use lockfile::{
     LockfileValidationIssue, LockfileValidationIssueKind,
 };
 pub use manifest::{
-    ArtifactHashEntry, PackageDef, PackageError, PackageManifest, PackageValidationError,
-    Provenance, ReproducibleBuildEvidence,
+    ArtifactHashEntry, PackageDef, PackageError, PackageManifest, PackageManifestIssue,
+    PackageManifestIssueKind, PackageValidationError, Provenance, ReproducibleBuildEvidence,
 };
 pub use namespace::{
     ImportAlias, NamespaceKind, NamespaceOwnershipCheck, OwnershipError, PackageNamespace,

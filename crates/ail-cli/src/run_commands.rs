@@ -13,7 +13,7 @@
 
 use ail_compiler::{
     AbiDescriptor, AnfExpr, AnfIr, ArtifactManifest, WasmTypeDescriptor, emit_wasm_with_profile,
-    lower_to_anf_with_graph, lower_to_core_ir,
+    export_name, lower_to_anf_with_graph, lower_to_core_ir,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;

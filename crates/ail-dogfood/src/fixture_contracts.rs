@@ -280,7 +280,7 @@ fn issue(
     FixtureContractIssue::new(name, code, field, value)
 }
 
-fn contract_name(contract: &FixtureContract<'_>) -> &str {
+fn contract_name<'a>(contract: &FixtureContract<'a>) -> &'a str {
     let name = contract.name.trim();
     if name.is_empty() { "<unnamed>" } else { name }
 }
