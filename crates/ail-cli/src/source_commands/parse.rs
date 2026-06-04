@@ -78,7 +78,7 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
         } else if let Some(rest) = statement.strip_prefix("const ") {
             constants.push(parse_source_const(rest, *line_num, *column + 6)?);
         } else if let Some(rest) = statement.strip_prefix("fn ") {
-            if rest.trim_end().ends_with('{') {
+            if rest.trim_end().ends_with('{') && !source_decl_has_inline_body(rest) {
                 let header = rest.trim_end().trim_end_matches('{').trim();
                 let (body_lines, next_idx) = collect_braced_body(&statements, idx + 1, *line_num)?;
                 let body = source_block_to_expr(&body_lines)?;
@@ -91,9 +91,16 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
                 idx = next_idx;
                 continue;
             }
+            if source_declaration_brace_delta(rest) > 0 {
+                let (combined, next_idx) =
+                    collect_source_inline_declaration(&statements, rest, idx + 1, *line_num)?;
+                functions.push(parse_source_function(&combined, *line_num, *column + 3)?);
+                idx = next_idx;
+                continue;
+            }
             functions.push(parse_source_function(rest, *line_num, *column + 3)?);
         } else if let Some(rest) = statement.strip_prefix("test ") {
-            if rest.trim_end().ends_with('{') {
+            if rest.trim_end().ends_with('{') && !source_decl_has_inline_body(rest) {
                 let header = rest.trim_end().trim_end_matches('{').trim();
                 let (body_lines, next_idx) = collect_braced_body(&statements, idx + 1, *line_num)?;
                 let body = source_block_to_expr(&body_lines)?;
@@ -103,6 +110,13 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
                     *column + 5,
                     body,
                 )?);
+                idx = next_idx;
+                continue;
+            }
+            if source_declaration_brace_delta(rest) > 0 {
+                let (combined, next_idx) =
+                    collect_source_inline_declaration(&statements, rest, idx + 1, *line_num)?;
+                tests.push(parse_source_test(&combined, *line_num, *column + 5)?);
                 idx = next_idx;
                 continue;
             }

@@ -660,7 +660,51 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
             format!("unsupported source construct `{construct}` during lowering"),
         ));
     }
-    Ok(expr.to_string())
+    // Generic call fallback: an unrecognized `name(args)` is a plain function call
+    // (user-defined or a core op already in call form). Canonicalize value-position
+    // Option/Result constructors nested in its arguments (e.g. `eq(unwrap(None), 0)`)
+    // without rewriting helper calls or match patterns, which the formatter relies on.
+    canonicalize_source_value_constructors(expr, line_num)
+}
+
+/// Recursively canonicalize value-position `Option`/`Result` constructors
+/// (`None`, `Some(x)`, `Ok(x)`, `Err(x)`) nested inside an unrecognized call,
+/// leaving the surrounding call structure and any namespaced helper calls intact.
+///
+/// The original text is preserved verbatim when nothing changes, so existing call
+/// spacing and structural forms (`match`/`let`) are never rewritten here.
+fn canonicalize_source_value_constructors(
+    expr: &str,
+    line_num: usize,
+) -> Result<String, CliError> {
+    let expr = expr.trim();
+    if let Some(lowered) = lower_source_constructor_expr(expr, line_num)? {
+        return Ok(lowered);
+    }
+    let Some((func, args)) = parse_source_call(expr) else {
+        return Ok(expr.to_string());
+    };
+    if !is_source_ident(&func)
+        || args.is_empty()
+        || matches!(func.as_str(), "match" | "let" | "let_typed")
+    {
+        return Ok(expr.to_string());
+    }
+    let mut changed = false;
+    let canonical_args = args
+        .iter()
+        .map(|arg| {
+            let canonical = canonicalize_source_value_constructors(arg, line_num)?;
+            if canonical != arg.trim() {
+                changed = true;
+            }
+            Ok(canonical)
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    if !changed {
+        return Ok(expr.to_string());
+    }
+    Ok(format!("{func}({})", canonical_args.join(", ")))
 }
 
 fn lower_source_pipe_expr(left: &str, right: &str, line_num: usize) -> Result<String, CliError> {

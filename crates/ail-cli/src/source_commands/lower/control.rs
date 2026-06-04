@@ -24,9 +24,14 @@ pub(super) fn lower_if_expr(rest: &str, line_num: usize) -> Result<String, CliEr
             "if expression has unclosed then block",
         )
     })?;
+    // The synthetic `__ail_stmt_N` statement bindings encode the source line of
+    // each statement. Each branch must therefore be lowered with a base line that
+    // reflects where that branch's `{` actually appears, otherwise the else branch
+    // would reuse the then branch's line numbers.
+    let then_base_line = line_num + rest[..open_then].matches('\n').count();
     let then_expr = lower_source_statement_block_expr(
         &rest[open_then + 1..then_close],
-        line_num,
+        then_base_line,
         SourceLowerDiagnostic::ControlExpression,
         "if branches must be non-empty expressions",
     )?;
@@ -39,8 +44,9 @@ pub(super) fn lower_if_expr(rest: &str, line_num: usize) -> Result<String, CliEr
         )
     })?;
     let after_else = after_else.trim_start();
+    let else_base_line = line_num + rest[..rest.len() - after_else.len()].matches('\n').count();
     let else_expr = if let Some(nested_if) = after_else.strip_prefix("if ") {
-        lower_if_expr(nested_if, line_num)?
+        lower_if_expr(nested_if, else_base_line)?
     } else {
         if !after_else.starts_with('{') {
             return Err(source_lower_error(
@@ -65,7 +71,7 @@ pub(super) fn lower_if_expr(rest: &str, line_num: usize) -> Result<String, CliEr
         }
         lower_source_statement_block_expr(
             &after_else[1..else_close],
-            line_num,
+            else_base_line,
             SourceLowerDiagnostic::ControlExpression,
             "if branches must be non-empty expressions",
         )?

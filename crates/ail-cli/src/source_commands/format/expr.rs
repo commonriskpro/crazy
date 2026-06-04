@@ -800,6 +800,20 @@ pub(super) fn format_source_expr_node(
         );
     }
 
+    if let Some((helper, effect_args)) = source_clock_random_effect_call_helper(&func, &args) {
+        return (
+            format!(
+                "{helper}({})",
+                effect_args
+                    .iter()
+                    .map(|arg| format_source_expr(arg, module, constants))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            CALL_PRECEDENCE,
+        );
+    }
+
     if func == "option.unwrap_or" && args.len() == 2 {
         return (
             format!(
@@ -1167,6 +1181,20 @@ fn source_env_effect_call_helper<'a>(
     }
 }
 
+fn source_clock_random_effect_call_helper<'a>(
+    func: &str,
+    args: &'a [String],
+) -> Option<(&'static str, &'a [String])> {
+    if func != "effect_call" || args.len() < 2 {
+        return None;
+    }
+    match (args[0].as_str(), args[1].as_str(), args.len()) {
+        ("clock.now", "now", 2) => Some(("time_now", &args[2..])),
+        ("random.int", "next_int", 2) => Some(("random_next_int", &args[2..])),
+        _ => None,
+    }
+}
+
 fn source_env_helper(func: &str) -> Option<(&'static str, usize)> {
     match func {
         "env.get" | "std.env.get" => Some(("env_get", 1)),
@@ -1343,6 +1371,26 @@ pub(super) fn format_source_match_expr(
     module: Option<&str>,
     constants: &BTreeMap<String, String>,
 ) -> String {
+    let scrutinee = format_source_expr(&args[0], module, constants);
+    // Arms whose bodies are statement blocks (synthetic `__ail_stmt` lets) render as
+    // multi-line blocks; when every arm is a single expression the match stays inline.
+    let has_block_arm = args[1..]
+        .chunks_exact(2)
+        .any(|pair| !source_let_chain(&pair[1]).0.is_empty());
+    if !has_block_arm {
+        let arms = args[1..]
+            .chunks_exact(2)
+            .map(|pair| {
+                format!(
+                    "{} => {}",
+                    format_source_match_pattern(&pair[0]),
+                    format_source_expr(&pair[1], module, constants)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!("match {scrutinee} {{ {arms} }}");
+    }
     let arms = args[1..]
         .chunks_exact(2)
         .map(|pair| {
@@ -1354,10 +1402,7 @@ pub(super) fn format_source_match_expr(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!(
-        "match {} {{\n{arms}\n}}",
-        format_source_expr(&args[0], module, constants)
-    )
+    format!("match {scrutinee} {{\n{arms}\n}}")
 }
 
 fn format_source_match_arm_block(

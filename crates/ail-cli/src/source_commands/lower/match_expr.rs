@@ -140,6 +140,9 @@ fn lower_source_match_arm_body_expr(body: &str, line_num: usize) -> Result<Strin
             "match arm body must be a non-empty expression",
         );
     }
+    // A bare `return expression` arm is sugar for the expression itself; the match
+    // arm is already a tail position, so the return marker carries no extra meaning.
+    let body = body.strip_prefix("return ").map(str::trim).unwrap_or(body);
     lower_source_expr(body, line_num)
 }
 

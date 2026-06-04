@@ -203,12 +203,12 @@ pub(super) fn parse_source_function_with_body(
 ) -> Result<SourceFunction, CliError> {
     let (name, params, return_type, return_type_column) =
         parse_source_function_signature(rest, line_num, base_column)?;
-    build_source_function(
+    build_source_function_lowered(
         name,
         params,
         return_type.trim(),
         trimmed_fragment_column(return_type_column, &return_type),
-        body.trim(),
+        body.trim().to_string(),
         line_num,
     )
 }
@@ -291,6 +291,29 @@ pub(super) fn build_source_function(
             "function return type and body must be non-empty",
         ));
     }
+    let lowered_body = lower_source_expr(source_optional_return_expr(body), line_num)?;
+    build_source_function_lowered(name, params, return_type, return_type_column, lowered_body, line_num)
+}
+
+/// Build a function whose body has already been lowered (e.g. block bodies produced
+/// by `source_block_to_expr`). Re-lowering an already-lowered body is not idempotent
+/// for forms like match patterns, so the lowered body is stored verbatim here.
+pub(super) fn build_source_function_lowered(
+    name: String,
+    params: Vec<SourceParam>,
+    return_type: &str,
+    return_type_column: usize,
+    lowered_body: String,
+    line_num: usize,
+) -> Result<SourceFunction, CliError> {
+    if return_type.is_empty() || lowered_body.is_empty() {
+        return Err(source_parse_error_for_fragment(
+            line_num,
+            SourceParseDiagnostic::InvalidDeclaration,
+            &lowered_body,
+            "function return type and body must be non-empty",
+        ));
+    }
     validate_source_type_name_at(return_type, line_num, return_type_column)?;
     let return_type = normalize_source_type_name(return_type);
 
@@ -298,7 +321,7 @@ pub(super) fn build_source_function(
         name,
         params,
         return_type,
-        body: lower_source_expr(source_optional_return_expr(body), line_num)?,
+        body: lowered_body,
         line_num,
         source_path: None,
     })
@@ -433,6 +456,91 @@ fn append_source_block_fragment(combined: &mut String, fragment: &str) {
     combined.push_str(fragment.trim());
 }
 
+/// Detect whether a `fn`/`test` declaration line uses an inline expression body
+/// (`... = expression`) rather than a braced block body (`... { ... }`).
+///
+/// The distinction matters when an inline expression body (a `match`/`if`) opens a
+/// brace that spans multiple source lines: those lines belong to the expression, not
+/// to a statement block, and must be collected back into a single declaration.
+pub(super) fn source_decl_has_inline_body(rest: &str) -> bool {
+    source_top_level_assignment_index(rest).is_some()
+}
+
+fn source_top_level_assignment_index(input: &str) -> Option<usize> {
+    let mut paren_depth = 0isize;
+    let mut brace_depth = 0isize;
+    let mut bracket_depth = 0isize;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+
+    for (idx, ch) in input.char_indices() {
+        if in_string {
+            if ch == '"' && !prev_was_escape {
+                in_string = false;
+            }
+            prev_was_escape = ch == '\\' && !prev_was_escape;
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '=' if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 => {
+                let next = input[idx + ch.len_utf8()..].chars().next();
+                if matches!(next, Some('=') | Some('>')) {
+                    prev_was_escape = false;
+                    continue;
+                }
+                let prev = input[..idx].chars().next_back();
+                if matches!(prev, Some('<') | Some('>') | Some('!') | Some('=')) {
+                    prev_was_escape = false;
+                    continue;
+                }
+                return Some(idx);
+            }
+            _ => {}
+        }
+        prev_was_escape = false;
+    }
+    None
+}
+
+/// Collect the continuation lines of an inline declaration whose expression body
+/// opens unbalanced braces (a multi-line `match`/`if`), joining them back into a
+/// single logical declaration string the regular parser can consume.
+pub(super) fn collect_source_inline_declaration(
+    statements: &[(usize, usize, String)],
+    head: &str,
+    mut idx: usize,
+    opener_line: usize,
+) -> Result<(String, usize), CliError> {
+    let mut combined = head.to_string();
+    let mut depth = source_brace_delta(head);
+    while depth > 0 && idx < statements.len() {
+        let statement = &statements[idx].2;
+        combined.push('\n');
+        combined.push_str(statement);
+        depth += source_brace_delta(statement);
+        idx += 1;
+    }
+    if depth > 0 {
+        return Err(source_parse_error(
+            opener_line,
+            SourceParseDiagnostic::MissingDelimiter,
+            "inline declaration requires closing `}`",
+        ));
+    }
+    Ok((combined, idx))
+}
+
+pub(super) fn source_declaration_brace_delta(statement: &str) -> isize {
+    source_brace_delta(statement)
+}
+
 fn source_brace_delta(statement: &str) -> isize {
     let mut delta = 0isize;
     let mut in_string = false;
@@ -564,7 +672,7 @@ pub(super) fn parse_source_test_with_body(
     base_column: usize,
     body: String,
 ) -> Result<SourceTest, CliError> {
-    build_source_test(rest, body.trim(), line_num, base_column, rest)
+    build_source_test_with_options(rest, body.trim(), line_num, base_column, rest, true)
 }
 
 fn build_source_test(
@@ -573,6 +681,17 @@ fn build_source_test(
     line_num: usize,
     base_column: usize,
     diagnostic_fragment: &str,
+) -> Result<SourceTest, CliError> {
+    build_source_test_with_options(head, body, line_num, base_column, diagnostic_fragment, false)
+}
+
+fn build_source_test_with_options(
+    head: &str,
+    body: &str,
+    line_num: usize,
+    base_column: usize,
+    diagnostic_fragment: &str,
+    body_already_lowered: bool,
 ) -> Result<SourceTest, CliError> {
     let (raw_name_text, raw_name, return_type, return_type_column) =
         if let Some((name, ty)) = head.split_once("->") {
@@ -603,10 +722,16 @@ fn build_source_test(
     validate_source_type_name_at(return_type, line_num, return_type_column)?;
     let return_type = normalize_source_type_name(return_type);
 
+    let lowered_body = if body_already_lowered {
+        body.to_string()
+    } else {
+        lower_source_expr(source_optional_return_expr(body), line_num)?
+    };
+
     Ok(SourceTest {
         name: normalize_test_name(raw_name),
         return_type,
-        body: lower_source_expr(source_optional_return_expr(body), line_num)?,
+        body: lowered_body,
         line_num,
         source_path: None,
     })
