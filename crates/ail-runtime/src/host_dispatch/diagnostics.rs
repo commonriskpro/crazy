@@ -340,14 +340,12 @@ fn classify_instantiation_error(error: &str) -> &'static str {
         "instantiate.missing_import"
     } else if lower.contains("type mismatch") || lower.contains("incompatible import type") {
         "instantiate.abi_mismatch"
-    } else if lower.contains("failed to parse")
-        || lower.contains("unexpected end")
-        || lower.contains("magic")
-        || lower.contains("malformed")
-    {
-        "wasm.validation"
     } else {
-        "instantiate.failure"
+        // Any other `Module::new` failure means the bytes were rejected during
+        // parsing, validation, or compilation (e.g. bad magic header, truncated
+        // sections, invalid UTF-8 in name sections). These all collapse to the
+        // stable `wasm.validation` bucket: the module could not be validated.
+        "wasm.validation"
     }
 }
 

@@ -711,11 +711,14 @@ fn severity_rank(severity: DiagnosticSeverity) -> u8 {
 }
 
 fn cmp_solver_diagnostic(a: &SolverDiagnostic, b: &SolverDiagnostic) -> Ordering {
-    a.code
-        .cmp(&b.code)
+    // Order by solver status severity first (Timeout < ResourceLimited <
+    // Unsupported), mirroring `cmp_diagnostic`'s severity-first canonical order.
+    // Code, obligation id, and stage are stable tie-breakers within a status.
+    solver_status_rank(a.status)
+        .cmp(&solver_status_rank(b.status))
+        .then_with(|| a.code.cmp(&b.code))
         .then_with(|| a.obligation_id.cmp(&b.obligation_id))
         .then_with(|| a.source_stage.cmp(&b.source_stage))
-        .then_with(|| solver_status_rank(a.status).cmp(&solver_status_rank(b.status)))
         .then_with(|| a.reason.cmp(&b.reason))
         .then_with(|| a.repair_options.cmp(&b.repair_options))
 }

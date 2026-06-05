@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn base64_decode_errors_have_redacted_stable_issues() {
-        let err = base64_decode("secret-token").expect_err("invalid base64 length");
+        let err = base64_decode("secretToken").expect_err("invalid base64 length");
         let issue = err.issue_for(EncodingKind::Base64);
 
         assert_eq!(issue.kind, DecodeIssueKind::InvalidLength);

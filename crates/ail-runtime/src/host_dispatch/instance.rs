@@ -158,7 +158,7 @@ impl RuntimeInstance {
 
         self.store.data_mut().capability_calls_used = 0;
         func.call(&mut self.store, &wasm_args, &mut wasm_results)
-            .map_err(|e| RuntimeError::EncodingError(format!("export `{export_name}`: {e}")))?;
+            .map_err(|e| RuntimeError::EncodingError(invoke_failure_detail(export_name, &e)))?;
 
         match wasm_results.as_slice() {
             [] => Ok(RuntimeValue::Unit),
@@ -339,6 +339,28 @@ impl RuntimeInstance {
             .expect("audit_log lock must not be poisoned")
             .clone()
     }
+}
+
+/// Build a stable invocation-failure detail that preserves the underlying
+/// trap reason.
+///
+/// Wasmtime surfaces `func.call` failures as an `anyhow::Error` whose top-level
+/// `Display` is only the generic `"error while executing at wasm backtrace:"`
+/// header; the concrete [`wasmtime::Trap`] (e.g. `UnreachableCodeReached`) lives
+/// deeper in the source chain. We walk that chain and append the trap's stable
+/// reason so downstream classifiers (`classify_trap`) can map it to a stable
+/// `trap.*` classification without exposing raw guest backtraces.
+fn invoke_failure_detail(export_name: &str, error: &wasmtime::Error) -> String {
+    let mut detail = format!("export `{export_name}`: {error}");
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error.as_ref());
+    while let Some(err) = source {
+        if let Some(trap) = err.downcast_ref::<wasmtime::Trap>() {
+            detail.push_str(&format!(" ({trap})"));
+            break;
+        }
+        source = err.source();
+    }
+    detail
 }
 
 fn extern_kind(extern_: &Extern) -> &'static str {
