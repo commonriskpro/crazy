@@ -36,9 +36,9 @@ use crate::package_output::{
 };
 use crate::package_registry_io::{
     LocalRegistryClient, load_local_package_registry_file_for_read,
-    load_local_package_registry_file_for_update, load_package_lockfile, load_package_registry,
+    load_local_package_registry_file_for_update,     load_package_lockfile, load_package_registry,
     load_package_registry_with_advisories, load_package_registry_with_compatibility,
-    package_manifest_path, save_local_package_registry_file, save_package_lockfile,
+    package_manifest_path, packages_dir, save_local_package_registry_file, save_package_lockfile,
     save_package_manifest, save_package_registry, trusted_package_lookup,
 };
 use crate::store::StoreHandle;

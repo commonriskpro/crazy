@@ -620,6 +620,11 @@ pub(crate) async fn cmd_package(
             let (registry, compatibility_metadata) =
                 load_package_registry_with_compatibility(store)?;
             let mut seen = BTreeSet::new();
+            // Distinct registry coordinates can resolve to the same actual
+            // package (e.g. a requirement form "1.2" and the exact "1.2.0").
+            // Dedup post-resolution so reproducibility validation does not see a
+            // spurious duplicate actual coordinate for what is one package.
+            let mut seen_resolved = BTreeSet::new();
             let mut actual = Vec::new();
             let mut actual_artifact_evidence = Vec::new();
             let mut actual_by_package = BTreeMap::new();
@@ -640,6 +645,12 @@ pub(crate) async fn cmd_package(
                 }
                 match trusted_package_lookup(&registry, &manifest.name, &manifest.version) {
                     Ok(lookup) => {
+                        if !seen_resolved.insert((
+                            lookup.manifest.name.clone(),
+                            lookup.manifest.version.clone(),
+                        )) {
+                            continue;
+                        }
                         if let Some(warning) = lookup.warning {
                             warnings.push(warning);
                         }

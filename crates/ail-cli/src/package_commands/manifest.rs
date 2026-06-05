@@ -118,11 +118,19 @@ pub(super) async fn load_or_create_package_manifest(
     if !matches!(store, StoreHandle::File { .. }) {
         return package_manifest_for_current_graph(store, "local.package", "0.1.0").await;
     }
-    let path = package_manifest_path(store)?;
-    if path.exists() {
-        let bytes = std::fs::read(path)?;
-        return ciborium::from_reader(bytes.as_slice())
-            .map_err(|e| CliError::Domain(format!("package manifest decoding failed: {e}")));
+    // The package manifest is sourced from the package workspace
+    // (`.ail/packages/package.cbor`) where the registry and lockfile also live,
+    // falling back to the legacy `.ail/package.cbor` location for projects that
+    // still keep it there. Either location is decoded the same way.
+    for path in [
+        packages_dir(store)?.join("package.cbor"),
+        package_manifest_path(store)?,
+    ] {
+        if path.exists() {
+            let bytes = std::fs::read(path)?;
+            return ciborium::from_reader(bytes.as_slice())
+                .map_err(|e| CliError::Domain(format!("package manifest decoding failed: {e}")));
+        }
     }
     package_manifest_for_current_graph(store, "local.package", "0.1.0").await
 }

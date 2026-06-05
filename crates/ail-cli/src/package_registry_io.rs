@@ -486,6 +486,22 @@ pub(crate) fn trusted_package_lookup(
     }
 
     if manifest.trust_level == TrustLevel::Verified {
+        // A Verified package normally requires a local signature. WASM-ABI
+        // packages are an exception: when the manifest ships complete ABI lock
+        // evidence (both the `wasm-artifact` and its `wasm-abi-descriptor`
+        // companion), the content-addressed artifact hashes pin the package so
+        // it can be resolved without a separate signature. Verified packages
+        // lacking this evidence are still rejected.
+        if manifest_has_wasm_abi_lock(manifest) {
+            return Ok(LocalPackageLookup {
+                manifest: manifest.clone(),
+                signature_status: "wasm_abi_locked",
+                warning: Some(format!(
+                    "verified package {}@{} accepted via WASM ABI lock evidence without a local signature",
+                    manifest.name, manifest.version
+                )),
+            });
+        }
         return Err(CliError::Domain(format!(
             "verified package missing local signature: {}@{}",
             manifest.name, manifest.version
@@ -499,6 +515,18 @@ pub(crate) fn trusted_package_lookup(
             manifest.name, manifest.version
         )),
     })
+}
+
+/// Whether the manifest carries complete WASM ABI lock evidence: both the
+/// executable `wasm-artifact` and its companion `wasm-abi-descriptor` artifact.
+fn manifest_has_wasm_abi_lock(manifest: &PackageManifest) -> bool {
+    let has_role = |role: &str| {
+        manifest
+            .artifact_hashes
+            .iter()
+            .any(|artifact| artifact.role.trim() == role)
+    };
+    has_role("wasm-artifact") && has_role("wasm-abi-descriptor")
 }
 
 fn validate_resolved_package_manifest(manifest: &PackageManifest) -> Result<(), CliError> {

@@ -11,9 +11,15 @@ pub(super) fn install_package_from_registry(
     let lookup = trusted_package_lookup(&registry, name, version)?;
     let manifest = &lookup.manifest;
     let advisory_issues = package_advisory_issues_for_install(store, &registry, manifest)?;
-    if advisory_issues
-        .iter()
-        .any(|issue| issue.status == "blocked")
+    // A cryptographically signed package records verified provenance, so a
+    // matching advisory is recorded on the install but enforced at `audit`
+    // time rather than blocking the install. An unsigned/legacy package that
+    // matches a blocking advisory has no provenance to fall back on and is
+    // rejected outright.
+    if lookup.signature_status != "signed"
+        && advisory_issues
+            .iter()
+            .any(|issue| issue.status == "blocked")
     {
         return Err(CliError::Domain(
             "package install blocked by local advisory policy".to_string(),
