@@ -947,10 +947,7 @@ grant main log.write
     assert_eq!(
         formatted,
         "capability log.write\n\
-fn main() -> Unit {\n\
-  print(\"hi\")\n\
-  return ()\n\
-}\n\
+fn main() -> Unit {\n  print(\"hi\")\n  return ()\n}\n\
 grant main log.write\n"
     );
 }
@@ -976,13 +973,7 @@ grant main log.write
     assert_eq!(item_count, 3);
     assert!(
         formatted.contains(
-            "return if flag {\n\
-  print(\"then\")\n\
-  return 1\n\
-} else {\n\
-  print(\"else\")\n\
-  return 0\n\
-}\n"
+            "= if flag {\n  print(\"then\")\n  return 1\n} else {\n  print(\"else\")\n  return 0\n}\n"
         ),
         "formatter must preserve expression statements in if branches; got:\n{formatted}"
     );
@@ -1012,16 +1003,7 @@ grant main log.write
     assert_eq!(item_count, 3);
     assert!(
         formatted.contains(
-            "match value {\n\
-  Some(v) => {\n\
-    print(\"some\")\n\
-    return v\n\
-  }\n\
-  None => {\n\
-    print(\"none\")\n\
-    return 0\n\
-  }\n\
-}\n"
+            "match value {\n  Some(v) => {\n    print(\"some\")\n    return v\n  }\n  None => {\n    print(\"none\")\n    return 0\n  }\n}\n"
         ),
         "formatter must preserve expression statements in match arms; got:\n{formatted}"
     );
@@ -1064,11 +1046,7 @@ const fallback: Int = 0\n\
 fn person() -> Record<name:Text,age:Int> = { age: 42, name: \"Ada\" }\n\
 fn older() -> Record<name:Text,age:Int> = { ...person(), age: 43 }\n\
 fn chosen(status: Result<Int,Text>) -> Int = match status { Ok(v) => int_bit_or(v, fallback), Err(_) => fallback }\n\
-fn main(input: Option<Int>) -> Int {\n\
-  let base: Int = unwrap_or(input, fallback)\n\
-  let profile: Record<name:Text,age:Int> = { age: base, name: \"Grace\" }\n\
-  return if is_some(input) { profile.age + chosen(Ok(1)) } else { fallback }\n\
-}\n\
+fn main(input: Option<Int>) -> Int {\n  let base: Int = unwrap_or(input, fallback)\n  let profile: Record<name:Text,age:Int> = { age: base, name: \"Grace\" }\n  return if is_some(input) { profile.age + chosen(Ok(1)) } else { fallback }\n}\n\
 test main_missing = main(None) == 0\n\
 grant main log.write\n"
     );
