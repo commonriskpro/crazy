@@ -73,9 +73,10 @@ pub(super) fn lower_source_length_expr(
         ));
     }
     let lowered_arg = lower_source_expr(&args[0], line_num)?;
-    if format_aliases_preserved() {
+    if format_aliases_preserved() || type_aliases_preserved() {
         // Distinct length aliases collapse to the same `len(..)` core; preserve the
-        // `text.length`/`list.length` spelling so the formatter can round-trip them.
+        // `text.length`/`list.length` spelling so the formatter can round-trip them
+        // and the type checker can enforce the matching collection shape.
         let preserved = match func.as_str() {
             "list.length" | "list_length" => "list.length",
             _ => "text.length",

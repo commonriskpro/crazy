@@ -9,7 +9,8 @@ pub(super) fn validate_source_program_types(program: &SourceProgram) -> Result<(
 
     for constant in &program.constants {
         let mut scope = BTreeMap::new();
-        let inferred = infer_source_expr_type(&constant.body, &mut scope, &functions)
+        let body = constant.type_body.as_deref().unwrap_or(&constant.body);
+        let inferred = infer_source_expr_type(body, &mut scope, &functions)
             .map_err(|err| source_error_at_line(err, constant.line_num))?;
         validate_source_type_match(&constant.return_type, &inferred, &constant.name)
             .map_err(|err| source_error_at_line(err, constant.line_num))?;
@@ -20,14 +21,16 @@ pub(super) fn validate_source_program_types(program: &SourceProgram) -> Result<(
             .iter()
             .map(|param| (param.name.clone(), param.ty.clone()))
             .collect::<BTreeMap<_, _>>();
-        let inferred = infer_source_expr_type(&function.body, &mut scope, &functions)
+        let body = function.type_body.as_deref().unwrap_or(&function.body);
+        let inferred = infer_source_expr_type(body, &mut scope, &functions)
             .map_err(|err| source_error_at_line(err, function.line_num))?;
         validate_source_type_match(&function.return_type, &inferred, &function.name)
             .map_err(|err| source_error_at_line(err, function.line_num))?;
     }
     for test in &program.tests {
         let mut scope = BTreeMap::new();
-        let inferred = infer_source_expr_type(&test.body, &mut scope, &functions)
+        let body = test.type_body.as_deref().unwrap_or(&test.body);
+        let inferred = infer_source_expr_type(body, &mut scope, &functions)
             .map_err(|err| source_error_at_line(err, test.line_num))?;
         validate_source_type_match(&test.return_type, &inferred, &test.name)
             .map_err(|err| source_error_at_line(err, test.line_num))?;
@@ -362,10 +365,21 @@ pub(super) fn infer_source_call_type(
         | "int.bit_and"
         | "int.bit_or"
         | "int.bit_xor"
-        | "int.shift_left"
-        | "int.shift_right"
-        | "int.shift_right_unsigned" => {
+        | "int.shift_left" => {
             validate_source_arg_types(func, args, scope, functions, &["Int", "Int"])?;
+            Ok("Int".to_string())
+        }
+        // AIL exposes only a logical (unsigned) shift right; the `int.shift_right`
+        // alias is reported under its canonical `int.shift_right_unsigned` name in
+        // diagnostics so the type error matches the documented helper.
+        "int.shift_right" | "int.shift_right_unsigned" => {
+            validate_source_arg_types(
+                "int.shift_right_unsigned",
+                args,
+                scope,
+                functions,
+                &["Int", "Int"],
+            )?;
             Ok("Int".to_string())
         }
         "int.saturating_neg" | "int.wrapping_neg" | "int.bit_not" => {

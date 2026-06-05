@@ -43,13 +43,23 @@ pub(crate) async fn cmd_test(
         ));
     }
 
-    let graph = if let Some(path) = source_file {
+    let mut graph = if let Some(path) = source_file {
         load_source_graph(path)?
     } else {
         load_current_graph_for_cli(store).await?
     };
     verify_graph_for_compile(&graph)?;
     let tests = discover_tests(&graph, filter);
+
+    // The Core IR lowerer only materializes bodies for `Function` nodes, so a `Test`
+    // node would otherwise compile to an empty (zero-returning) export. Retag the
+    // discovered test nodes as functions before lowering so their assertion bodies
+    // are emitted and invoked. Discovery already captured the test set above.
+    for node in &mut graph.nodes {
+        if node.kind == NodeKind::Test {
+            node.kind = NodeKind::Function;
+        }
+    }
 
     let report = accepted_compile_report();
     let core = lower_to_core_ir(&graph, &report)

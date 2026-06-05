@@ -303,8 +303,8 @@ pub(crate) async fn cmd_compile(
         },
         &abi_descriptor_json_bytes,
     )?;
-    let persisted = persisted_paths.as_ref().map(|p| {
-        json!({
+    let persisted = match persisted_paths.as_ref() {
+        Some(p) => Some(json!({
             "wasm_path": p.wasm_path.to_string_lossy(),
             "source_map_path": p.source_map_path.to_string_lossy(),
             "manifest_path": p.manifest_path.to_string_lossy(),
@@ -313,8 +313,26 @@ pub(crate) async fn cmd_compile(
                 .abi_descriptor_path
                 .as_ref()
                 .map(|path| path.to_string_lossy().to_string()),
-        })
-    });
+        })),
+        // Non-file-backed stores (in-memory/Postgres) do not persist artifacts under
+        // `.ail/wasm/`. When compiling a standalone `--file` source, still emit the ABI
+        // descriptor sidecar next to the source so downstream tooling can locate it.
+        None => match source_file {
+            Some(path) => {
+                let abi_path = path.with_extension("abi.json");
+                std::fs::write(&abi_path, &abi_descriptor_json_bytes).map_err(|e| {
+                    CliError::Domain(format!(
+                        "compile (abi descriptor sidecar {}): {e}",
+                        abi_path.display()
+                    ))
+                })?;
+                Some(json!({
+                    "abi_descriptor_path": abi_path.to_string_lossy(),
+                }))
+            }
+            None => None,
+        },
+    };
 
     // Compiler report.
     let compiler_report = json!({

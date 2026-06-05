@@ -33,6 +33,10 @@ pub(super) use patterns::*;
 pub(super) use types::*;
 
 pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
+    // Surface user-facing record diagnostics (e.g. duplicate fields) for the full
+    // source-loading pipeline; direct `lower_source_expr` callers keep the
+    // lowering-internal binding-shape invariant.
+    let _record_diagnostics = StrictRecordDiagnosticsGuard::enable();
     let mut module = None;
     let mut imports = Vec::new();
     let mut capabilities = Vec::new();
@@ -128,7 +132,9 @@ pub(crate) fn parse_ail_source(src: &str) -> Result<SourceProgram, CliError> {
                 *line_num,
                 SourceParseDiagnostic::InvalidDeclaration,
                 statement,
-                "unsupported source export syntax; imported `.ail` files expose declarations by name automatically",
+                format!(
+                    "unsupported source export syntax `{statement}`; imported `.ail` files expose declarations by name automatically"
+                ),
             ));
         } else {
             let token = statement.split_whitespace().next().unwrap_or(statement);

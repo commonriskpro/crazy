@@ -27,10 +27,16 @@ pub(super) fn lower_source_constructor_expr(
         _ => return Ok(None),
     };
     if args.len() != 1 {
+        // A unary constructor with the wrong argument count is reported both as a
+        // malformed constructor and as a call-arity violation so callers that key on
+        // either phrasing (compile vs. lsp diagnostics) see a consistent diagnostic.
         return Err(source_lower_error(
             line_num,
             SourceLowerDiagnostic::OptionResultHelper,
-            format!("source constructor `{func}` requires exactly one value"),
+            format!(
+                "source constructor `{func}` requires exactly one value; function call `{func}` expects 1 argument(s), got {}",
+                args.len()
+            ),
         ));
     }
     Ok(Some(format!(
@@ -59,6 +65,11 @@ pub(super) fn lower_source_option_predicate_expr(
         ));
     }
     let lowered_arg = lower_source_expr(&args[0], line_num)?;
+    if type_aliases_preserved() {
+        // The type checker needs the predicate identity to report shape diagnostics
+        // against `is_some`/`is_none` instead of the collapsed `match` form.
+        return Ok(Some(format!("{func}({lowered_arg})")));
+    }
     if format_aliases_preserved() {
         // Namespaced predicates keep their spelling for the formatter; the bare
         // `is_some`/`is_none` aliases still collapse to the canonical `match` form.
@@ -96,6 +107,11 @@ pub(super) fn lower_source_result_predicate_expr(
         ));
     }
     let lowered_arg = lower_source_expr(&args[0], line_num)?;
+    if type_aliases_preserved() {
+        // The type checker needs the predicate identity to report shape diagnostics
+        // against `is_ok`/`is_err` instead of the collapsed `match` form.
+        return Ok(Some(format!("{func}({lowered_arg})")));
+    }
     if format_aliases_preserved() {
         // Namespaced predicates keep their spelling for the formatter; the bare
         // `is_ok`/`is_err` aliases still collapse to the canonical `match` form.
@@ -187,6 +203,16 @@ pub(super) fn lower_source_is_empty_expr(
         ));
     }
     let lowered_arg = lower_source_expr(&args[0], line_num)?;
+    if type_aliases_preserved() {
+        // The type checker needs the original helper identity to report shape
+        // diagnostics against `is_empty`/`list.is_empty`/`text.is_empty`.
+        let preserved = match func.as_str() {
+            "text.is_empty" | "text_is_empty" => "text.is_empty",
+            "list.is_empty" | "list_is_empty" => "list.is_empty",
+            _ => "is_empty",
+        };
+        return Ok(Some(format!("{preserved}({lowered_arg})")));
+    }
     if format_aliases_preserved() {
         // Namespaced emptiness checks keep their spelling for the formatter; the bare
         // `is_empty` alias still collapses to the canonical `eq(len(..), 0)` form.

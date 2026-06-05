@@ -92,6 +92,11 @@ pub(super) fn lower_source_list_get_expr(
     }
     let list = lower_source_expr(&args[0], line_num)?;
     let index = lower_source_expr(&args[1], line_num)?;
+    if type_aliases_preserved() {
+        // The type checker needs the `list.get` identity to report the
+        // List-shape diagnostic against the original helper name.
+        return Ok(Some(format!("list.get({list}, {index})")));
+    }
     Ok(Some(format!(
         "if(and(ge({index}, 0), lt({index}, len({list}))), some(index({list}, {index})), none())"
     )))
@@ -382,6 +387,15 @@ pub(super) fn parse_source_record_literal(
         }
         validate_source_local_name(field, line_num)?;
         if !seen_fields.insert(field.to_string()) {
+            // The full source-loading pipeline surfaces the dedicated user-facing
+            // record diagnostic; direct lowering keeps its binding-shape invariant.
+            if strict_record_diagnostics() {
+                return Err(source_lower_error(
+                    line_num,
+                    SourceLowerDiagnostic::RecordDuplicateField,
+                    format!("duplicate record field `{field}`"),
+                ));
+            }
             return Err(source_lower_expr_error(
                 line_num,
                 SourceLowerDiagnostic::BindingShape,

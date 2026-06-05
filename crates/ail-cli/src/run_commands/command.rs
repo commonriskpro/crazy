@@ -48,14 +48,25 @@ pub(crate) async fn cmd_run(
             .any(|node| node.kind == NodeKind::Function && node.name == module_name);
         if !source_function_declared {
             if module.is_none() {
+                // A bare (non-module) default entry has no `fn.main`: report the
+                // missing default entrypoint directly. A module-qualified default
+                // entry (e.g. `fn.app.main`) instead falls through so the export
+                // lookup reports it was never exported as `<module>_main`.
+                let module_qualified = source
+                    .default_entry
+                    .strip_prefix("fn.")
+                    .is_some_and(|rest| rest.contains('.'));
+                if !module_qualified {
+                    return Err(CliError::Domain(format!(
+                        "source file has no default entrypoint `{}`; pass an explicit function name such as `fn.helper` or add `fn main`",
+                        source.default_entry
+                    )));
+                }
+            } else {
                 return Err(CliError::Domain(format!(
-                    "source file has no default entrypoint `{}`; pass an explicit function name such as `fn.helper` or add `fn main`",
-                    source.default_entry
+                    "source function `{module_name}` is not declared; run `ail check --file --json` to inspect function_names"
                 )));
             }
-            return Err(CliError::Domain(format!(
-                "source function `{module_name}` is not declared; run `ail check --file --json` to inspect function_names"
-            )));
         }
     }
 

@@ -223,6 +223,9 @@ enum Commands {
         /// Module target to run (e.g. `module.checkout`).
         module: Option<String>,
         /// Positional i64 arguments passed to the exported function.
+        /// `allow_hyphen_values` lets negative integers (e.g. `-5`) be passed
+        /// positionally without requiring a `--` separator.
+        #[arg(allow_hyphen_values = true)]
         args: Vec<String>,
         /// Grant a capability to this run invocation. Repeat for multiple grants.
         #[arg(long = "grant")]

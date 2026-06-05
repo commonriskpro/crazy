@@ -21,6 +21,12 @@ pub(super) struct SourceConst {
     /// during lowering; this field keeps the original spelling so the formatter can
     /// round-trip it faithfully. `None` falls back to `body`.
     pub(super) source_body: Option<String>,
+    /// Helper-identity-preserving lowered body used only for type checking.
+    /// Collection helpers such as `is_empty`, `list.length`, and `list.get`
+    /// collapse to shared core forms (`eq(len(..),0)`, `len(..)`, `if(..index..)`)
+    /// in `body`. Type-shape diagnostics must report the original helper name,
+    /// so this field keeps the helper spelling. `None` falls back to `body`.
+    pub(super) type_body: Option<String>,
     pub(super) line_num: usize,
     pub(super) source_path: Option<PathBuf>,
 }
@@ -34,6 +40,9 @@ pub(super) struct SourceFunction {
     /// Alias-preserving lowered body used only for canonical formatting. See
     /// [`SourceConst::source_body`].
     pub(super) source_body: Option<String>,
+    /// Helper-identity-preserving lowered body used only for type checking. See
+    /// [`SourceConst::type_body`].
+    pub(super) type_body: Option<String>,
     pub(super) line_num: usize,
     pub(super) source_path: Option<PathBuf>,
 }
@@ -52,6 +61,9 @@ pub(super) struct SourceTest {
     /// Alias-preserving lowered body used only for canonical formatting. See
     /// [`SourceConst::source_body`].
     pub(super) source_body: Option<String>,
+    /// Helper-identity-preserving lowered body used only for type checking. See
+    /// [`SourceConst::type_body`].
+    pub(super) type_body: Option<String>,
     pub(super) line_num: usize,
     pub(super) source_path: Option<PathBuf>,
 }

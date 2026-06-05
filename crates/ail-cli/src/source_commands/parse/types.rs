@@ -55,7 +55,7 @@ pub(crate) fn is_supported_source_type(ty: &str) -> bool {
         })
 }
 
-fn validate_source_type_shape(ty: &str) -> Result<(), String> {
+pub(crate) fn validate_source_type_shape(ty: &str) -> Result<(), String> {
     let ty = compact_source_type_name(ty);
     validate_source_type_shape_inner(&ty)
 }

@@ -68,6 +68,7 @@ pub(super) enum SourceLowerDiagnostic {
     OptionResultHelper,
     PipeExpression,
     RecordLiteral,
+    RecordDuplicateField,
     TextHelper,
     TimeHelper,
     TupleHelper,
@@ -102,6 +103,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::OptionResultHelper => "AIL_SOURCE_LOWER_OPTION_RESULT_HELPER",
             SourceLowerDiagnostic::PipeExpression => "AIL_SOURCE_LOWER_PIPE_EXPRESSION",
             SourceLowerDiagnostic::RecordLiteral => "AIL_SOURCE_LOWER_RECORD_LITERAL",
+            SourceLowerDiagnostic::RecordDuplicateField => "AIL_SOURCE_RECORD_FIELD_DUPLICATE",
             SourceLowerDiagnostic::TextHelper => "AIL_SOURCE_LOWER_TEXT_HELPER",
             SourceLowerDiagnostic::TimeHelper => "AIL_SOURCE_LOWER_TIME_HELPER",
             SourceLowerDiagnostic::TupleHelper => "AIL_SOURCE_LOWER_TUPLE_HELPER",
@@ -130,6 +132,7 @@ impl SourceLowerDiagnostic {
             SourceLowerDiagnostic::PathHelper => "source.lower.path",
             SourceLowerDiagnostic::MatchExpression => "source.lower.match",
             SourceLowerDiagnostic::OptionResultHelper => "source.lower.option_result",
+            SourceLowerDiagnostic::RecordDuplicateField => "source.record.duplicate_field",
             SourceLowerDiagnostic::CollectionArity
             | SourceLowerDiagnostic::FieldAccess
             | SourceLowerDiagnostic::IndexExpression
@@ -360,6 +363,75 @@ std::thread_local! {
 /// Whether alias-preserving lowering is currently active (see [`PRESERVE_FORMAT_ALIASES`]).
 pub(super) fn format_aliases_preserved() -> bool {
     PRESERVE_FORMAT_ALIASES.with(std::cell::Cell::get)
+}
+
+std::thread_local! {
+    /// When set, collection-helper lowering routines preserve the original helper
+    /// identity (e.g. `is_empty`, `list.length`, `list.get`) instead of collapsing
+    /// it to the shared core form. This is used exclusively to build the
+    /// type-checker's `type_body`; the graph/ACL `body` is always produced with this
+    /// flag clear so the pinned lowering output is unaffected.
+    static PRESERVE_TYPE_ALIASES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether type-alias-preserving lowering is currently active.
+pub(super) fn type_aliases_preserved() -> bool {
+    PRESERVE_TYPE_ALIASES.with(std::cell::Cell::get)
+}
+
+struct PreserveTypeAliasesGuard(bool);
+
+impl PreserveTypeAliasesGuard {
+    fn enable() -> Self {
+        Self(PRESERVE_TYPE_ALIASES.with(|flag| flag.replace(true)))
+    }
+}
+
+impl Drop for PreserveTypeAliasesGuard {
+    fn drop(&mut self) {
+        PRESERVE_TYPE_ALIASES.with(|flag| flag.set(self.0));
+    }
+}
+
+/// Lower `expr` while preserving collection-helper identity so the type checker can
+/// report diagnostics against the original helper name. The graph/ACL body produced
+/// by [`lower_source_expr`] is unaffected by this entry point.
+pub(super) fn lower_source_expr_for_types(
+    expr: &str,
+    line_num: usize,
+) -> Result<String, CliError> {
+    let _guard = PreserveTypeAliasesGuard::enable();
+    lower_source_expr(expr, line_num)
+}
+
+std::thread_local! {
+    /// When set, record-literal lowering surfaces the user-facing
+    /// `AIL_SOURCE_RECORD_FIELD_DUPLICATE` diagnostic instead of the internal
+    /// `AIL_SOURCE_LOWER_BINDING_SHAPE` invariant. The full source-loading pipeline
+    /// (`parse_ail_source`) enables this so diagnostics surfaced to users carry the
+    /// dedicated record code, while direct `lower_source_expr` callers keep the
+    /// lowering-internal binding-shape diagnostic.
+    static STRICT_RECORD_DIAGNOSTICS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether record-literal lowering should surface user-facing record diagnostics.
+pub(super) fn strict_record_diagnostics() -> bool {
+    STRICT_RECORD_DIAGNOSTICS.with(std::cell::Cell::get)
+}
+
+/// RAII guard enabling user-facing record diagnostics for the enclosing scope.
+pub(super) struct StrictRecordDiagnosticsGuard(bool);
+
+impl StrictRecordDiagnosticsGuard {
+    pub(super) fn enable() -> Self {
+        Self(STRICT_RECORD_DIAGNOSTICS.with(|flag| flag.replace(true)))
+    }
+}
+
+impl Drop for StrictRecordDiagnosticsGuard {
+    fn drop(&mut self) {
+        STRICT_RECORD_DIAGNOSTICS.with(|flag| flag.set(self.0));
+    }
 }
 
 /// RAII guard that enables alias-preserving lowering and restores the previous
@@ -652,6 +724,11 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
             lower_source_expr(right, line_num)?
         ));
     }
+    // Reject the exponentiation-style `**` operator before the multiplicative split
+    // would otherwise tear it into `1` and `* 2`, reporting the whole expression.
+    if split_top_level_source_binary_str(expr, "**").is_some() {
+        return Err(source_expr_unsupported_error(expr));
+    }
     if let Some((left, op, right)) = split_top_level_source_binary_any(expr, &['*', '/', '%']) {
         let func = match op {
             '*' => "mul",
@@ -707,12 +784,19 @@ pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, C
     canonicalize_source_value_constructors(expr, line_num)
 }
 
-/// Recursively canonicalize value-position `Option`/`Result` constructors
-/// (`None`, `Some(x)`, `Ok(x)`, `Err(x)`) nested inside an unrecognized call,
-/// leaving the surrounding call structure and any namespaced helper calls intact.
+/// Lower the arguments of an otherwise-unrecognized `name(args)` call.
 ///
-/// The original text is preserved verbatim when nothing changes, so existing call
-/// spacing and structural forms (`match`/`let`) are never rewritten here.
+/// An unrecognized call is either a user-defined function or a core op already in
+/// call form (e.g. `add`, `eq`). Its arguments may still contain helper aliases
+/// (`text_length`, `is_empty`, ...), list literals, or value-position
+/// `Option`/`Result` constructors that must be lowered to their core forms so the
+/// emitted ACL is valid and consistently typed. Each argument is lowered through
+/// [`lower_source_expr`], which respects the active alias-preservation flags, so
+/// the formatter's `source_body` keeps the original spelling while the graph body
+/// collapses to the canonical core.
+///
+/// Structural forms (`match`/`let`) are left untouched, and the original text is
+/// returned verbatim when no argument changes so existing spacing is preserved.
 fn canonicalize_source_value_constructors(
     expr: &str,
     line_num: usize,
@@ -734,8 +818,22 @@ fn canonicalize_source_value_constructors(
     let canonical_args = args
         .iter()
         .map(|arg| {
-            let canonical = canonicalize_source_value_constructors(arg, line_num)?;
-            if canonical != arg.trim() {
+            let trimmed = arg.trim();
+            let canonical = if format_aliases_preserved() {
+                // Format mode: keep helper spellings verbatim so the formatter can
+                // round-trip them. Only canonicalize nested constructors, and lower
+                // list literals (the formatter reverses `list(..)` back to `[..]`).
+                if trimmed.starts_with('[') {
+                    lower_source_expr(arg, line_num)?
+                } else {
+                    canonicalize_source_value_constructors(arg, line_num)?
+                }
+            } else {
+                // Graph/type lowering: fully lower each argument to its core form so
+                // nested helper aliases (e.g. `text_length`) collapse consistently.
+                lower_source_expr(arg, line_num)?
+            };
+            if canonical != trimmed {
                 changed = true;
             }
             Ok(canonical)
@@ -796,12 +894,12 @@ fn lower_source_effect_call_expr(expr: &str, line_num: usize) -> Result<Option<S
     let capability = args[0].trim();
     let operation = args[1].trim();
     if !is_source_ident(capability) || !is_source_ident(operation) {
-        return Err(source_lower_expr_error(
+        // Use the dedicated effect-call-shape diagnostic (message-first format) so the
+        // rendered diagnostic reads `line N: effect_call ...` rather than embedding the
+        // lowering code/category between the line marker and the message.
+        return Err(source_error_at_line(
+            source_effect_call_shape_error(),
             line_num,
-            SourceLowerDiagnostic::CapabilityReference,
-            expr,
-            "effect_call",
-            "effect_call capability and operation must be identifiers",
         ));
     }
     let mut lowered = vec![capability.to_string(), operation.to_string()];
@@ -831,9 +929,10 @@ fn lower_source_log_write_expr(expr: &str, line_num: usize) -> Result<Option<Str
         ));
     }
     let lowered_arg = lower_source_expr(&args[0], line_num)?;
-    if format_aliases_preserved() {
-        // Preserve the `log.write` spelling for the formatter; the graph body still
-        // collapses to the `print` effect via the default (non-preserving) lowering.
+    if format_aliases_preserved() || type_aliases_preserved() {
+        // Preserve the `log.write` spelling for the formatter and the type checker
+        // (so a type mismatch is reported against `log.write`, not the lowered
+        // `print` effect); the graph body still collapses to `print` by default.
         return Ok(Some(format!("log.write({lowered_arg})")));
     }
     Ok(Some(format!("print({lowered_arg})")))
@@ -864,25 +963,24 @@ fn lower_source_typed_let_expr(expr: &str, line_num: usize) -> Result<Option<Str
             "typed let lowering requires a local binding name",
         ));
     }
-    validate_source_type_annotation(&args[1]).map_err(|_| {
-        source_lower_expr_error(
+    // A structurally malformed annotation (e.g. `List<Int, Text>`) keeps the redacted
+    // lowering shape diagnostic, while a well-formed but unknown type name (e.g.
+    // `Mystery`) surfaces the dedicated `AIL_SOURCE_TYPE_UNSUPPORTED_ANNOTATION`.
+    if validate_source_type_shape(&args[1]).is_err() {
+        return Err(source_lower_expr_error(
             line_num,
             SourceLowerDiagnostic::TypeShapeMismatch,
             expr,
             "typed_let",
             "typed let annotation has unsupported source type shape",
-        )
-    })?;
+        ));
+    }
+    // Propagate the dedicated annotation / line-marker diagnostics
+    // (`AIL_SOURCE_TYPE_UNSUPPORTED_ANNOTATION`, `AIL_SOURCE_LET_LINE_MARKER`) instead
+    // of masking them with generic lowering shape errors.
+    validate_source_type_annotation(&args[1])?;
     let ty = normalize_source_type_name(&args[1]);
-    let let_line = parse_source_let_line_marker(&args[2]).map_err(|_| {
-        source_lower_expr_error(
-            line_num,
-            SourceLowerDiagnostic::BindingShape,
-            expr,
-            "typed_let",
-            "typed let lowering requires a numeric source line marker",
-        )
-    })?;
+    let let_line = parse_source_let_line_marker(&args[2])?;
     Ok(Some(format!(
         "let_typed({}, {ty}, {let_line}, {}, {})",
         args[0].trim(),

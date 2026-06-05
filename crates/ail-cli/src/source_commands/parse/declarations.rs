@@ -164,6 +164,7 @@ pub(super) fn parse_source_const(
         return_type,
         body: lower_source_expr(body, line_num)?,
         source_body: Some(lower_source_expr_for_format(body, line_num)?),
+        type_body: Some(lower_source_expr_for_types(body, line_num)?),
         line_num,
         source_path: None,
     })
@@ -210,6 +211,7 @@ pub(super) fn parse_source_function_with_body(
         return_type.trim(),
         trimmed_fragment_column(return_type_column, &return_type),
         body.trim().to_string(),
+        None,
         None,
         line_num,
     )
@@ -296,6 +298,7 @@ pub(super) fn build_source_function(
     let return_expr = source_optional_return_expr(body);
     let lowered_body = lower_source_expr(return_expr, line_num)?;
     let source_body = Some(lower_source_expr_for_format(return_expr, line_num)?);
+    let type_body = Some(lower_source_expr_for_types(return_expr, line_num)?);
     build_source_function_lowered(
         name,
         params,
@@ -303,6 +306,7 @@ pub(super) fn build_source_function(
         return_type_column,
         lowered_body,
         source_body,
+        type_body,
         line_num,
     )
 }
@@ -320,6 +324,7 @@ pub(super) fn build_source_function_lowered(
     return_type_column: usize,
     lowered_body: String,
     source_body: Option<String>,
+    type_body: Option<String>,
     line_num: usize,
 ) -> Result<SourceFunction, CliError> {
     if return_type.is_empty() || lowered_body.is_empty() {
@@ -339,6 +344,7 @@ pub(super) fn build_source_function_lowered(
         return_type,
         body: lowered_body,
         source_body,
+        type_body,
         line_num,
         source_path: None,
     })
@@ -739,13 +745,14 @@ fn build_source_test_with_options(
     validate_source_type_name_at(return_type, line_num, return_type_column)?;
     let return_type = normalize_source_type_name(return_type);
 
-    let (lowered_body, source_body) = if body_already_lowered {
-        (body.to_string(), None)
+    let (lowered_body, source_body, type_body) = if body_already_lowered {
+        (body.to_string(), None, None)
     } else {
         let return_expr = source_optional_return_expr(body);
         (
             lower_source_expr(return_expr, line_num)?,
             Some(lower_source_expr_for_format(return_expr, line_num)?),
+            Some(lower_source_expr_for_types(return_expr, line_num)?),
         )
     };
 
@@ -754,6 +761,7 @@ fn build_source_test_with_options(
         return_type,
         body: lowered_body,
         source_body,
+        type_body,
         line_num,
         source_path: None,
     })

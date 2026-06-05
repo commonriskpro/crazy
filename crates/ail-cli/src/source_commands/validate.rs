@@ -378,7 +378,21 @@ fn format_source_declaration_origin(declaration: SourceDeclarationRef<'_>) -> St
 
 pub(super) fn source_function_builtin_shadow(name: &str) -> Option<&str> {
     let bare = name.strip_prefix("fn.")?.rsplit('.').next()?;
+    // Option/Result constructors and the unit literal are contextual builtins that
+    // share the user namespace: a function may legitimately be named `ok`, `some`,
+    // etc. They are only recognized as builtins when applied as constructors, so
+    // they must not trip the declaration-shadowing guard.
+    if is_source_contextual_builtin_name(bare) {
+        return None;
+    }
     known_source_builtin_arity(bare).map(|_| bare)
+}
+
+fn is_source_contextual_builtin_name(name: &str) -> bool {
+    matches!(
+        name,
+        "some" | "Some" | "none" | "None" | "ok" | "Ok" | "err" | "Err" | "unit"
+    )
 }
 
 pub(super) fn duplicate_name<'a>(names: impl Iterator<Item = &'a str>) -> Option<String> {
@@ -726,7 +740,7 @@ fn source_expr_unsupported_numeric_error(expr: &str) -> CliError {
     )
 }
 
-fn source_expr_unsupported_error(expr: &str) -> CliError {
+pub(super) fn source_expr_unsupported_error(expr: &str) -> CliError {
     source_expr_error(
         "AIL_SOURCE_EXPR_UNSUPPORTED",
         "source.expr.unsupported",
@@ -764,7 +778,7 @@ fn source_effect_capability_unknown_error(context: &str, capability: &str) -> Cl
     )
 }
 
-fn source_effect_call_shape_error() -> CliError {
+pub(super) fn source_effect_call_shape_error() -> CliError {
     source_effect_error(
         "AIL_SOURCE_EFFECT_CALL_SHAPE",
         "source.effect.call_shape",
@@ -870,11 +884,17 @@ pub(super) fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         | "set.contains" | "set_contains" | "set.insert" | "set_insert" | "map.get" | "map_get"
         | "map.contains_key" | "map_contains_key" | "unwrap_or" | "option.unwrap_or"
         | "option_unwrap_or" | "result.unwrap_or" | "result_unwrap_or" | "ok_or"
-        | "option.ok_or" | "option_ok_or" | "first_or" | "last_or" => SourceArity::Exact(2),
+        | "option.ok_or" | "option_ok_or" | "first_or" | "last_or"
+        | "time.duration_since" | "time_duration_since" | "std.time.duration_since"
+        | "time.add_duration" | "time_add_duration" | "std.time.add_duration"
+        | "bytes.at" | "bytes_at" | "std.bytes.at"
+        | "bytes.concat" | "bytes_concat" | "std.bytes.concat" => SourceArity::Exact(2),
+        "bytes.slice" | "bytes_slice" | "std.bytes.slice" => SourceArity::Exact(3),
         "tuple.get" | "tuple_get" => SourceArity::Exact(2),
         "get_or" => SourceArity::Exact(3),
         "update" => SourceArity::Exact(3),
-        "none"
+        "unit"
+        | "none"
         | "None"
         | "env.list"
         | "env_list"
@@ -971,13 +991,24 @@ pub(super) fn known_source_builtin_arity(call: &str) -> Option<SourceArity> {
         | "tuple.first"
         | "tuple_first"
         | "tuple.second"
-        | "tuple_second" => SourceArity::Exact(1),
+        | "tuple_second"
+        | "time.instant_to_ms"
+        | "time_instant_to_ms"
+        | "std.time.instant_to_ms"
+        | "bytes.length"
+        | "bytes_length"
+        | "std.bytes.length"
+        | "bytes.empty"
+        | "bytes_empty"
+        | "std.bytes.empty" => SourceArity::Exact(1),
         "some" | "Some" | "ok" | "Ok" | "err" | "Err" => SourceArity::Exact(1),
         "if" | "let" | "fold" => SourceArity::Exact(3),
         "let_typed" => SourceArity::Exact(5),
         "effect_call" => SourceArity::Min(2),
-        "map" | "record" => SourceArity::Even,
-        "tuple" | "list" | "set" => SourceArity::Any,
+        "record" => SourceArity::Even,
+        // `map` even-arity is enforced during type inference so the dedicated
+        // `AIL_SOURCE_MAP_ARITY` diagnostic wins over the generic call-arity check.
+        "map" | "tuple" | "list" | "set" => SourceArity::Any,
         "match" => SourceArity::Match,
         _ => return None,
     };
