@@ -179,13 +179,21 @@ fn fold_call(
         .collect::<Option<Vec<_>>>()?;
 
     match (func, ints.as_slice()) {
-        ("i64.add" | "+" | "add", [a, b]) => Some(LiteralValue::Int(a + b)),
-        ("i64.sub" | "-" | "sub", [a, b]) => Some(LiteralValue::Int(a - b)),
-        ("i64.mul" | "*" | "mul", [a, b]) => Some(LiteralValue::Int(a * b)),
-        ("i64.div_s" | "/" | "div", [_, 0]) => None,
-        ("i64.div_s" | "/" | "div", [a, b]) => Some(LiteralValue::Int(a / b)),
-        ("i64.rem_s" | "%" | "mod", [_, 0]) => None,
-        ("i64.rem_s" | "%" | "mod", [a, b]) => Some(LiteralValue::Int(a % b)),
+        // Wrapping (two's complement) semantics match the native backend
+        // (cranelift `iadd`/`isub`/`imul`) and the wasm backend (`i64.add`/
+        // `i64.sub`/`i64.mul`), which never trap on overflow. Folding with
+        // checked arithmetic here would panic on cases like `i64::MAX + 1`
+        // that the runtime resolves by wrapping.
+        ("i64.add" | "+" | "add", [a, b]) => Some(LiteralValue::Int(a.wrapping_add(*b))),
+        ("i64.sub" | "-" | "sub", [a, b]) => Some(LiteralValue::Int(a.wrapping_sub(*b))),
+        ("i64.mul" | "*" | "mul", [a, b]) => Some(LiteralValue::Int(a.wrapping_mul(*b))),
+        // Signed division/remainder trap at runtime on divide-by-zero and on
+        // the `i64::MIN / -1` overflow (cranelift `sdiv`/`srem`, wasm
+        // `i64.div_s`/`i64.rem_s`). `checked_div`/`checked_rem` return `None`
+        // for both, so we skip folding and let the runtime produce the trap
+        // instead of folding to an incorrect wrapped value.
+        ("i64.div_s" | "/" | "div", [a, b]) => a.checked_div(*b).map(LiteralValue::Int),
+        ("i64.rem_s" | "%" | "mod", [a, b]) => a.checked_rem(*b).map(LiteralValue::Int),
         ("i64.and" | "and" | "int.bit_and" | "int_bit_and", [a, b]) => {
             Some(LiteralValue::Int(a & b))
         }

@@ -559,9 +559,9 @@ fn literal_shape(value: &LiteralValue) -> Shape {
 fn call_abi(func: &str) -> Option<(usize, Shape)> {
     let arity = match func {
         "i64.neg" | "neg" | "negate" | "i64.eqz" | "not" | "!" | "int.bit_not" | "int_bit_not"
-        | "int.wrapping_neg" | "int_wrapping_neg" | "int.saturating_neg" | "int_saturating_neg" => {
-            1
-        }
+        | "int.wrapping_neg" | "int_wrapping_neg" | "int.saturating_neg" | "int_saturating_neg"
+        | "bytes.length" | "bytes_length" | "std.bytes.length" | "bytes.empty" | "bytes_empty"
+        | "std.bytes.empty" => 1,
         "int.clamp" | "int_clamp" | "int.add_or" | "int_add_or" | "int.sub_or" | "int_sub_or"
         | "int.mul_or" | "int_mul_or" | "int.div_or" | "int_div_or" | "int.rem_or"
         | "int_rem_or" => 3,
@@ -570,7 +570,7 @@ fn call_abi(func: &str) -> Option<(usize, Shape)> {
     let result = match func {
         "i64.eq" | "==" | "eq" | "i64.ne" | "!=" | "ne" | "i64.lt_s" | "<" | "lt" | "i64.le_s"
         | "<=" | "le" | "i64.gt_s" | ">" | "gt" | "i64.ge_s" | ">=" | "ge" | "i64.eqz" | "not"
-        | "!" => Shape::I8,
+        | "!" | "bytes.empty" | "bytes_empty" | "std.bytes.empty" => Shape::I8,
         "i64.add"
         | "+"
         | "add"
@@ -644,7 +644,13 @@ fn call_abi(func: &str) -> Option<(usize, Shape)> {
         | "int.div_or"
         | "int_div_or"
         | "int.rem_or"
-        | "int_rem_or" => Shape::I64,
+        | "int_rem_or"
+        | "bytes.at"
+        | "bytes_at"
+        | "std.bytes.at"
+        | "bytes.length"
+        | "bytes_length"
+        | "std.bytes.length" => Shape::I64,
         _ => return None,
     };
     Some((arity, result))
