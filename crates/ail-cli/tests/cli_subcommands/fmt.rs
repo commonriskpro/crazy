@@ -683,10 +683,7 @@ fn fmt_ail_source_preserves_block_tests_with_lets() {
 
     assert!(
         formatted.contains(
-            "test math {\n\
-  let actual: Int = 20 + 22\n\
-  return actual == 42\n\
-}\n"
+            "test math {\n  let actual: Int = 20 + 22\n  return actual == 42\n}\n"
         ),
         "formatter must preserve block test lets; got:\n{formatted}"
     );
