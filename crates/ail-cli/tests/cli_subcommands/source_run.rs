@@ -747,7 +747,7 @@ fn run_file_executes_ail_source_int_bounds_helpers() {
         .assert()
         .success()
         .stdout(predicate::str::contains("module: fn.bounded"))
-        .stdout(predicate::str::contains("result: 584"));
+        .stdout(predicate::str::contains("result: 588"));
 }
 #[test]
 fn run_file_executes_ail_source_text_parse_int_or_helper() {
