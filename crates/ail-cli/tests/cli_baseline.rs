@@ -61,8 +61,9 @@ fn unknown_subcommand_lists_ten() {
         .failure()
         .code(2)
         .stderr(predicate::str::contains(
-            "Available subcommands: context, change, verify, apply, compile, run, link, eval, \
-             init, status, inspect, diff",
+            "Available subcommands: context, change, verify, apply, compile, run, test, link, \
+             fmt, eval, new, lsp, init, status, inspect, diff, rollback, rebase, merge, refactor, \
+             approve, reject, policy, package, remote, doctor, gc",
         ));
 }
 
