@@ -49,7 +49,7 @@ pub(super) fn token_range_at_position(
             .match_indices(operator)
             .find_map(|(start, _)| {
                 let end = start + operator.len();
-                (byte_pos >= start && byte_pos <= end).then_some(start)
+                (byte_pos >= start && byte_pos < end).then_some(start)
             })
             .unwrap_or(byte_pos);
         let end = start + operator.len();
@@ -215,8 +215,8 @@ fn semantic_tokens_in_line(line_idx: u32, line: &str) -> Vec<SemanticToken> {
             continue;
         }
 
-        if is_acl_token_char(ch) {
-            let end = scan_while(line, byte_idx, is_acl_token_char);
+        if is_source_identifier_char(ch) {
+            let end = scan_while(line, byte_idx, is_source_identifier_char);
             let text = &line[byte_idx..end];
             let token_type = semantic_type_for_identifier(
                 text,
@@ -331,6 +331,10 @@ fn string_literal_end(line: &str, start: usize) -> usize {
     line.len()
 }
 
+fn is_source_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
 fn scan_while(line: &str, start: usize, predicate: impl Fn(char) -> bool) -> usize {
     line[start..]
         .char_indices()
@@ -347,7 +351,7 @@ fn source_operator_token_at_position(line: &str, byte_pos: usize) -> Option<&'st
     SOURCE_OPERATORS.iter().copied().find(|operator| {
         line.match_indices(operator).any(|(start, _)| {
             let end = start + operator.len();
-            byte_pos >= start && byte_pos <= end
+            byte_pos >= start && byte_pos < end
         })
     })
 }

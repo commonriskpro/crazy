@@ -159,12 +159,18 @@ fn references_for_ail_source_token(
     workspace_documents: &BTreeMap<String, String>,
 ) -> ReferenceResult {
     let query = SourceReferenceQuery::from_token(token);
-    let mut refs = source_references_in_text(uri, text, &query);
+    let canonical_root = file_path_from_uri(uri).and_then(|path| std::fs::canonicalize(path).ok());
+    // Use the canonical URI for the root document so reference ordering stays
+    // deterministic across files: imported documents are always discovered via
+    // their canonical path, and mixing a non-canonical root URI (e.g. /var vs
+    // /private/var on macOS) would sort references by filesystem aliasing.
+    let root_uri = canonical_root
+        .as_ref()
+        .map(|path| format!("file://{}", path.display()))
+        .unwrap_or_else(|| uri.to_string());
+    let mut refs = source_references_in_text(&root_uri, text, &query);
     let mut definition_count = source_definitions_in_text(text, &query);
-    let Some(root_path) = file_path_from_uri(uri) else {
-        return ReferenceResult::new(refs, Vec::new(), definition_count);
-    };
-    let Ok(canonical_root) = std::fs::canonicalize(&root_path) else {
+    let Some(canonical_root) = canonical_root else {
         return ReferenceResult::new(refs, Vec::new(), definition_count);
     };
 

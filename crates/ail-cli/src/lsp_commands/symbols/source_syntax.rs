@@ -58,7 +58,7 @@ pub(super) const AIL_SOURCE_SYNTAX_SYMBOLS: &[AclSymbol] = &[
     AclSymbol {
         label: "Path",
         detail: "AIL source builtin type",
-        documentation: "Filesystem path type used by source path and filesystem helpers.",
+        documentation: "Source filesystem path type used by path and filesystem helpers.",
         insert_text: "Path",
     },
     AclSymbol {
