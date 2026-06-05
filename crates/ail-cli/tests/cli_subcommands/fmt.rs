@@ -604,7 +604,7 @@ return if gt(x,10){3}else if gt(x,0){2}else{1}\n\
         .as_str()
         .expect("formatted must be string");
 
-    assert!(formatted.contains("  return if x > 10 { 3 } else if x > 0 { 2 } else { 1 }\n"));
+    assert!(formatted.contains("= if x > 10 { 3 } else if x > 0 { 2 } else { 1 }\n"));
     assert!(
         !formatted.contains("else { if x > 0"),
         "formatter must keep else-if as first-class source syntax; got:\n{formatted}"
@@ -612,7 +612,7 @@ return if gt(x,10){3}else if gt(x,0){2}else{1}\n\
 }
 
 #[test]
-fn fmt_ail_source_renders_match_blocks_without_arm_commas() {
+fn fmt_ail_source_renders_trivial_match_arms_inline() {
     use assert_fs::prelude::*;
 
     let dir = assert_fs::TempDir::new().expect("temp dir");
@@ -638,20 +638,8 @@ fn fmt_ail_source_renders_match_blocks_without_arm_commas() {
         .expect("formatted must be string");
 
     assert!(
-        formatted.contains(
-            "fn bucket(x: Int) -> Text = match x {\n\
-  0 => {\n\
-    return \"zero\"\n\
-  }\n\
-  1 => {\n\
-    return \"one\"\n\
-  }\n\
-  _ => {\n\
-    return \"many\"\n\
-  }\n\
-}\n"
-        ),
-        "formatter must emit block match arms without commas; got:\n{formatted}"
+        formatted.contains("fn bucket(x: Int) -> Text = match x { 0 => \"zero\", 1 => \"one\", _ => \"many\" }\n"),
+        "formatter must render trivial-expression match arms inline; got:\n{formatted}"
     );
 }
 
