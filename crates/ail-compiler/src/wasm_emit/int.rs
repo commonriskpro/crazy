@@ -313,6 +313,7 @@ pub(super) fn emit_int_shift_left<'a>(
     emit_local_as_i64(ctx, value, insns);
     emit_local_as_i64(ctx, amount, insns);
     insns.push(Instruction::I32WrapI64);
+    insns.push(Instruction::I64ExtendI32U);
     insns.push(Instruction::I64Shl);
 
     Some(ValType::I64)
@@ -331,6 +332,7 @@ pub(super) fn emit_int_shift_right<'a>(
     emit_local_as_i64(ctx, value, insns);
     emit_local_as_i64(ctx, amount, insns);
     insns.push(Instruction::I32WrapI64);
+    insns.push(Instruction::I64ExtendI32U);
     insns.push(Instruction::I64ShrS);
 
     Some(ValType::I64)
@@ -349,6 +351,7 @@ pub(super) fn emit_int_shift_right_unsigned<'a>(
     emit_local_as_i64(ctx, value, insns);
     emit_local_as_i64(ctx, amount, insns);
     insns.push(Instruction::I32WrapI64);
+    insns.push(Instruction::I64ExtendI32U);
     insns.push(Instruction::I64ShrU);
 
     Some(ValType::I64)

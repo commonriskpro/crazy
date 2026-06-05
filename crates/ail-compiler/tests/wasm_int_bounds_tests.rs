@@ -63,8 +63,17 @@ fn operator_names(wasm: &[u8]) -> Vec<&'static str> {
                     Operator::I64Sub => names.push("i64.sub"),
                     Operator::I64DivS => names.push("i64.div_s"),
                     Operator::I64RemS => names.push("i64.rem_s"),
+                    Operator::I64Mul => names.push("i64.mul"),
+                    Operator::I64And => names.push("i64.and"),
+                    Operator::I64Or => names.push("i64.or"),
+                    Operator::I64Xor => names.push("i64.xor"),
+                    Operator::I64Shl => names.push("i64.shl"),
+                    Operator::I64ShrS => names.push("i64.shr_s"),
+                    Operator::I64ShrU => names.push("i64.shr_u"),
                     Operator::I32And => names.push("i32.and"),
                     Operator::I32Or => names.push("i32.or"),
+                    Operator::I32Xor => names.push("i32.xor"),
+                    Operator::I32WrapI64 => names.push("i32.wrap_i64"),
                     Operator::If { .. } => names.push("if"),
                     _ => {}
                 }
