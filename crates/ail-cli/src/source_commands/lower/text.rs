@@ -72,10 +72,17 @@ pub(super) fn lower_source_length_expr(
             format!("{func} requires `{func}(value)`"),
         ));
     }
-    Ok(Some(format!(
-        "len({})",
-        lower_source_expr(&args[0], line_num)?
-    )))
+    let lowered_arg = lower_source_expr(&args[0], line_num)?;
+    if format_aliases_preserved() {
+        // Distinct length aliases collapse to the same `len(..)` core; preserve the
+        // `text.length`/`list.length` spelling so the formatter can round-trip them.
+        let preserved = match func.as_str() {
+            "list.length" | "list_length" => "list.length",
+            _ => "text.length",
+        };
+        return Ok(Some(format!("{preserved}({lowered_arg})")));
+    }
+    Ok(Some(format!("len({lowered_arg})")))
 }
 
 pub(super) fn lower_source_text_contains_expr(

@@ -58,9 +58,21 @@ pub(super) fn lower_source_option_predicate_expr(
             format!("{func} requires `{func}(option)`"),
         ));
     }
+    let lowered_arg = lower_source_expr(&args[0], line_num)?;
+    if format_aliases_preserved() {
+        // Namespaced predicates keep their spelling for the formatter; the bare
+        // `is_some`/`is_none` aliases still collapse to the canonical `match` form.
+        let preserved = match func.as_str() {
+            "option.is_some" | "option_is_some" => Some("option.is_some"),
+            "option.is_none" | "option_is_none" => Some("option.is_none"),
+            _ => None,
+        };
+        if let Some(name) = preserved {
+            return Ok(Some(format!("{name}({lowered_arg})")));
+        }
+    }
     Ok(Some(format!(
-        "match({}, Some(_), {some_body}, None, {none_body})",
-        lower_source_expr(&args[0], line_num)?
+        "match({lowered_arg}, Some(_), {some_body}, None, {none_body})"
     )))
 }
 
@@ -83,9 +95,21 @@ pub(super) fn lower_source_result_predicate_expr(
             format!("{func} requires `{func}(result)`"),
         ));
     }
+    let lowered_arg = lower_source_expr(&args[0], line_num)?;
+    if format_aliases_preserved() {
+        // Namespaced predicates keep their spelling for the formatter; the bare
+        // `is_ok`/`is_err` aliases still collapse to the canonical `match` form.
+        let preserved = match func.as_str() {
+            "result.is_ok" | "result_is_ok" => Some("result.is_ok"),
+            "result.is_err" | "result_is_err" => Some("result.is_err"),
+            _ => None,
+        };
+        if let Some(name) = preserved {
+            return Ok(Some(format!("{name}({lowered_arg})")));
+        }
+    }
     Ok(Some(format!(
-        "match({}, Ok(_), {ok_body}, Err(_), {err_body})",
-        lower_source_expr(&args[0], line_num)?
+        "match({lowered_arg}, Ok(_), {ok_body}, Err(_), {err_body})"
     )))
 }
 
@@ -162,8 +186,18 @@ pub(super) fn lower_source_is_empty_expr(
             "is_empty requires `is_empty(value)`",
         ));
     }
-    Ok(Some(format!(
-        "eq(len({}), 0)",
-        lower_source_expr(&args[0], line_num)?
-    )))
+    let lowered_arg = lower_source_expr(&args[0], line_num)?;
+    if format_aliases_preserved() {
+        // Namespaced emptiness checks keep their spelling for the formatter; the bare
+        // `is_empty` alias still collapses to the canonical `eq(len(..), 0)` form.
+        let preserved = match func.as_str() {
+            "text.is_empty" | "text_is_empty" => Some("text.is_empty"),
+            "list.is_empty" | "list_is_empty" => Some("list.is_empty"),
+            _ => None,
+        };
+        if let Some(name) = preserved {
+            return Ok(Some(format!("{name}({lowered_arg})")));
+        }
+    }
+    Ok(Some(format!("eq(len({lowered_arg}), 0)")))
 }

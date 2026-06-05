@@ -349,6 +349,46 @@ pub(super) fn source_expr_to_acl_body(expr: &str, constants: &BTreeMap<String, S
     )
 }
 
+std::thread_local! {
+    /// When set, the namespaced-helper lowering routines preserve the original
+    /// source alias (e.g. `log.write`, `option.is_some`) instead of collapsing it
+    /// to the shared core form. This is used exclusively to build the formatter's
+    /// `source_body`; the graph/ACL `body` is always produced with this flag clear.
+    static PRESERVE_FORMAT_ALIASES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether alias-preserving lowering is currently active (see [`PRESERVE_FORMAT_ALIASES`]).
+pub(super) fn format_aliases_preserved() -> bool {
+    PRESERVE_FORMAT_ALIASES.with(std::cell::Cell::get)
+}
+
+/// RAII guard that enables alias-preserving lowering and restores the previous
+/// state on drop, even across early returns.
+struct PreserveFormatAliasesGuard(bool);
+
+impl PreserveFormatAliasesGuard {
+    fn enable() -> Self {
+        Self(PRESERVE_FORMAT_ALIASES.with(|flag| flag.replace(true)))
+    }
+}
+
+impl Drop for PreserveFormatAliasesGuard {
+    fn drop(&mut self) {
+        PRESERVE_FORMAT_ALIASES.with(|flag| flag.set(self.0));
+    }
+}
+
+/// Lower `expr` while preserving namespaced helper aliases so the formatter can
+/// recover the original source spelling. The graph/ACL body produced by
+/// [`lower_source_expr`] is unaffected by this entry point.
+pub(super) fn lower_source_expr_for_format(
+    expr: &str,
+    line_num: usize,
+) -> Result<String, CliError> {
+    let _guard = PreserveFormatAliasesGuard::enable();
+    lower_source_expr(expr, line_num)
+}
+
 pub(super) fn lower_source_expr(expr: &str, line_num: usize) -> Result<String, CliError> {
     let expr = expr.trim();
     if expr == "()" {
@@ -790,10 +830,13 @@ fn lower_source_log_write_expr(expr: &str, line_num: usize) -> Result<Option<Str
             "log.write requires `log.write(message)`",
         ));
     }
-    Ok(Some(format!(
-        "print({})",
-        lower_source_expr(&args[0], line_num)?
-    )))
+    let lowered_arg = lower_source_expr(&args[0], line_num)?;
+    if format_aliases_preserved() {
+        // Preserve the `log.write` spelling for the formatter; the graph body still
+        // collapses to the `print` effect via the default (non-preserving) lowering.
+        return Ok(Some(format!("log.write({lowered_arg})")));
+    }
+    Ok(Some(format!("print({lowered_arg})")))
 }
 
 fn lower_source_typed_let_expr(expr: &str, line_num: usize) -> Result<Option<String>, CliError> {

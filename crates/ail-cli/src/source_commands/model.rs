@@ -16,6 +16,11 @@ pub(super) struct SourceConst {
     pub(super) name: String,
     pub(super) return_type: String,
     pub(super) body: String,
+    /// Alias-preserving lowered body used only for canonical formatting. Distinct
+    /// source aliases (e.g. `log.write` vs `print`) collapse to the same `body`
+    /// during lowering; this field keeps the original spelling so the formatter can
+    /// round-trip it faithfully. `None` falls back to `body`.
+    pub(super) source_body: Option<String>,
     pub(super) line_num: usize,
     pub(super) source_path: Option<PathBuf>,
 }
@@ -26,6 +31,9 @@ pub(super) struct SourceFunction {
     pub(super) params: Vec<SourceParam>,
     pub(super) return_type: String,
     pub(super) body: String,
+    /// Alias-preserving lowered body used only for canonical formatting. See
+    /// [`SourceConst::source_body`].
+    pub(super) source_body: Option<String>,
     pub(super) line_num: usize,
     pub(super) source_path: Option<PathBuf>,
 }
@@ -41,6 +49,9 @@ pub(super) struct SourceTest {
     pub(super) name: String,
     pub(super) return_type: String,
     pub(super) body: String,
+    /// Alias-preserving lowered body used only for canonical formatting. See
+    /// [`SourceConst::source_body`].
+    pub(super) source_body: Option<String>,
     pub(super) line_num: usize,
     pub(super) source_path: Option<PathBuf>,
 }

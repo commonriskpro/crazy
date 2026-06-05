@@ -163,6 +163,7 @@ pub(super) fn parse_source_const(
         name: normalize_function_name(name),
         return_type,
         body: lower_source_expr(body, line_num)?,
+        source_body: Some(lower_source_expr_for_format(body, line_num)?),
         line_num,
         source_path: None,
     })
@@ -209,6 +210,7 @@ pub(super) fn parse_source_function_with_body(
         return_type.trim(),
         trimmed_fragment_column(return_type_column, &return_type),
         body.trim().to_string(),
+        None,
         line_num,
     )
 }
@@ -291,19 +293,33 @@ pub(super) fn build_source_function(
             "function return type and body must be non-empty",
         ));
     }
-    let lowered_body = lower_source_expr(source_optional_return_expr(body), line_num)?;
-    build_source_function_lowered(name, params, return_type, return_type_column, lowered_body, line_num)
+    let return_expr = source_optional_return_expr(body);
+    let lowered_body = lower_source_expr(return_expr, line_num)?;
+    let source_body = Some(lower_source_expr_for_format(return_expr, line_num)?);
+    build_source_function_lowered(
+        name,
+        params,
+        return_type,
+        return_type_column,
+        lowered_body,
+        source_body,
+        line_num,
+    )
 }
 
 /// Build a function whose body has already been lowered (e.g. block bodies produced
 /// by `source_block_to_expr`). Re-lowering an already-lowered body is not idempotent
 /// for forms like match patterns, so the lowered body is stored verbatim here.
+///
+/// `source_body` carries the alias-preserving rendering form for inline declarations;
+/// block bodies pass `None` and fall back to `body` during formatting.
 pub(super) fn build_source_function_lowered(
     name: String,
     params: Vec<SourceParam>,
     return_type: &str,
     return_type_column: usize,
     lowered_body: String,
+    source_body: Option<String>,
     line_num: usize,
 ) -> Result<SourceFunction, CliError> {
     if return_type.is_empty() || lowered_body.is_empty() {
@@ -322,6 +338,7 @@ pub(super) fn build_source_function_lowered(
         params,
         return_type,
         body: lowered_body,
+        source_body,
         line_num,
         source_path: None,
     })
@@ -722,16 +739,21 @@ fn build_source_test_with_options(
     validate_source_type_name_at(return_type, line_num, return_type_column)?;
     let return_type = normalize_source_type_name(return_type);
 
-    let lowered_body = if body_already_lowered {
-        body.to_string()
+    let (lowered_body, source_body) = if body_already_lowered {
+        (body.to_string(), None)
     } else {
-        lower_source_expr(source_optional_return_expr(body), line_num)?
+        let return_expr = source_optional_return_expr(body);
+        (
+            lower_source_expr(return_expr, line_num)?,
+            Some(lower_source_expr_for_format(return_expr, line_num)?),
+        )
     };
 
     Ok(SourceTest {
         name: normalize_test_name(raw_name),
         return_type,
         body: lowered_body,
+        source_body,
         line_num,
         source_path: None,
     })

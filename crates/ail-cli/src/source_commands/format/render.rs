@@ -22,10 +22,11 @@ pub(crate) fn render_source_const(
         constant.name.strip_prefix("fn.").unwrap_or(&constant.name),
         module,
     );
+    let body = constant.source_body.as_deref().unwrap_or(&constant.body);
     out.push_str(&format!(
         "const {name}: {} = {}\n",
         constant.return_type,
-        format_source_expr(&constant.body, module, constants)
+        format_source_expr(body, module, constants)
     ));
 }
 
@@ -47,11 +48,12 @@ pub(crate) fn render_source_function(
         .join(", ");
     let signature = format!("fn {name}({params}) -> {}", function.return_type);
 
-    let (lets, final_expr) = source_let_chain(&function.body);
+    let body = function.source_body.as_deref().unwrap_or(&function.body);
+    let (lets, final_expr) = source_let_chain(body);
     if lets.is_empty() {
         out.push_str(&format!(
             "{signature} = {}\n",
-            format_source_expr(&function.body, module, constants)
+            format_source_expr(body, module, constants)
         ));
         return;
     }
@@ -94,7 +96,8 @@ pub(crate) fn render_source_test(
         test.name.strip_prefix("test.").unwrap_or(&test.name),
         module,
     );
-    let (lets, final_expr) = source_let_chain(&test.body);
+    let body = test.source_body.as_deref().unwrap_or(&test.body);
+    let (lets, final_expr) = source_let_chain(body);
     if !lets.is_empty() {
         if test.return_type == "Bool" {
             out.push_str(&format!("test {name} {{\n"));
@@ -132,13 +135,13 @@ pub(crate) fn render_source_test(
     if test.return_type == "Bool" {
         out.push_str(&format!(
             "test {name} = {}\n",
-            format_source_expr(&test.body, module, constants)
+            format_source_expr(body, module, constants)
         ));
     } else {
         out.push_str(&format!(
             "test {name} -> {} = {}\n",
             test.return_type,
-            format_source_expr(&test.body, module, constants)
+            format_source_expr(body, module, constants)
         ));
     }
 }
